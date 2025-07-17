@@ -81,9 +81,12 @@ class CollapsibleTableReportDisplay:
             table.add_row(*renderables)
         console.print(table)
 
-    def run(self):
+    def run(self, static: bool = False):
         """
-        Run the interactive display loop.
+        Run the interactive display loop. If static, then the terminal will only display the report.
+
+        Args:
+            static: Whether to display only or allow interaction with the report.
         
         Provides an interactive console interface where users can:
         - Expand/collapse individual test cases by entering their number
@@ -91,12 +94,15 @@ class CollapsibleTableReportDisplay:
         - Collapse all test cases with 'c'
         - Quit the interactive view with 'q'
         """
-        
         while True:
             console.clear()
             self.display_items()
-            choice = Prompt.ask("\nEnter the test case number to expand/collapse it, o to expand all, and c to collapse all (q to quit).")
+
+            if static:
+                return
             
+            choice = Prompt.ask("\nEnter the test case number to expand/collapse it, o to expand all, and c to collapse all (q to quit).")
+
             if choice.lower() == 'q':
                 break
 
@@ -109,3 +115,5 @@ class CollapsibleTableReportDisplay:
             else:
                 if choice in self.items:
                     self.items[choice]["expanded"] = not self.items[choice]["expanded"]
+            
+

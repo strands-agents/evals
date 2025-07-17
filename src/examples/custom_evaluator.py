@@ -59,6 +59,6 @@ def simple_example():
 if __name__ == "__main__":
     # run the file as a module: eg. python -m examples.custom_evaluator 
     report = simple_example()
-    # print(report)
-    report.display(include_input=False)
+    print(report)
     report.to_file("custom_report", "json")
+    report.display(include_input=False)

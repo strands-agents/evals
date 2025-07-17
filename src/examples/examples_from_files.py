@@ -96,5 +96,5 @@ if __name__ == "__main__":
     for f, t in zip(files, tasks):
         report = from_file_example(f, t, custom_evaluators=[TestSimilarityEvaluator])
         print(f"File: {f}")
-        print(report)
+        report.display()
         print("\n")

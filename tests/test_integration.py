@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import Mock, patch
 from src.strands_evaluation.dataset import Dataset
-from strands_evaluation.case import Case
+from src.strands_evaluation.case import Case
 from src.strands_evaluation.evaluators.evaluator import Evaluator
 from src.strands_evaluation.evaluators.llm_evaluator import LLMEvaluator
 from src.strands_evaluation.evaluators.trajectory_evaluator import TrajectoryEvaluator
