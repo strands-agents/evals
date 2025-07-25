@@ -1,9 +1,10 @@
 import pytest
-from unittest.mock import Mock, patch
+import asyncio
+from unittest.mock import Mock, patch, AsyncMock
 from src.strands_evaluation.dataset import Dataset
 from src.strands_evaluation.case import Case
 from src.strands_evaluation.evaluators.evaluator import Evaluator
-from src.strands_evaluation.evaluators.llm_evaluator import LLMEvaluator
+from src.strands_evaluation.evaluators.output_evaluator import OutputEvaluator
 from src.strands_evaluation.evaluators.trajectory_evaluator import TrajectoryEvaluator
 from src.strands_evaluation.types.evaluation import EvaluationOutput, EvaluationData
 
@@ -13,6 +14,13 @@ class SimpleEvaluator(Evaluator[str, str]):
     def evaluate(self, evaluation_case: EvaluationData[str, str]) -> EvaluationOutput:
         score = 1.0 if evaluation_case.actual_output == evaluation_case.expected_output else 0.0
         return EvaluationOutput(score=score, test_pass=score > 0.5, reason="Integration test")
+        
+    async def evaluate_async(self, evaluation_case: EvaluationData[str, str]) -> EvaluationOutput:
+        """Async version of evaluate"""
+        # Add a small delay to simulate async processing
+        await asyncio.sleep(0.01)
+        score = 1.0 if evaluation_case.actual_output == evaluation_case.expected_output else 0.0
+        return EvaluationOutput(score=score, test_pass=score > 0.5, reason="Async integration test")
 
 
 @pytest.fixture
@@ -30,6 +38,14 @@ def mock_agent():
     agent.structured_output.return_value = EvaluationOutput(
         score=mock_score, test_pass=True, reason="LLM evaluation"
     )
+    return agent
+
+@pytest.fixture
+def mock_async_agent():
+    agent = Mock()
+    agent.structured_output_async = AsyncMock(return_value=EvaluationOutput(
+        score=mock_score, test_pass=True, reason="Async LLM evaluation"
+    ))
     return agent
 
 
@@ -73,13 +89,13 @@ class TestIntegration:
         assert report.test_passes == [True, False, False]
         assert len(report.cases) == 3
     
-    @patch('src.strands_evaluation.evaluators.llm_evaluator.Agent')
-    def test_dataset_with_llm_evaluator(self, mock_agent_class, cases, mock_agent):
-        """Test Dataset with LLMEvaluator integration"""
+    @patch('src.strands_evaluation.evaluators.output_evaluator.Agent')
+    def test_dataset_with_output_evaluator(self, mock_agent_class, cases, mock_agent):
+        """Test Dataset with OutputEvaluator integration"""
         mock_agent_class.return_value = mock_agent
         
-        llm_evaluator = LLMEvaluator(rubric="Test if outputs match exactly")
-        dataset = Dataset(cases=cases, evaluator=llm_evaluator)
+        output_evaluator = OutputEvaluator(rubric="Test if outputs match exactly")
+        dataset = Dataset(cases=cases, evaluator=output_evaluator)
         
         def simple_task(input_val):
             return f"processed_{input_val}"
@@ -151,3 +167,88 @@ class TestIntegration:
         assert report.overall_score == 1.0
         assert report.test_passes == [True, True]
         assert len(report.cases) == 2
+        
+    @pytest.mark.asyncio
+    async def test_async_dataset_with_simple_evaluator(self, cases):
+        """Test async workflow: Dataset + Cases + SimpleEvaluator"""
+        dataset = Dataset(cases=cases, evaluator=SimpleEvaluator())
+        
+        def echo_task(input_val):
+            return input_val
+        
+        report = await dataset.run_evaluations_async(echo_task)
+        
+        # Verify complete workflow
+        assert len(report.scores) == 3
+        assert report.scores[0] == 1.0  # exact match
+        assert report.scores[1] == 0.0  # no match  
+        assert report.scores[2] == 0.0  # partial no match
+        assert report.overall_score == 1.0/3
+        assert report.test_passes == [True, False, False]
+        assert len(report.cases) == 3
+    
+    @pytest.mark.asyncio
+    async def test_async_dataset_with_async_task(self, cases):
+        """Test async workflow with async task function"""
+        dataset = Dataset(cases=cases, evaluator=SimpleEvaluator())
+        
+        async def async_echo_task(input_val):
+            await asyncio.sleep(0.01)  # Simulate async work
+            return input_val
+        
+        report = await dataset.run_evaluations_async(async_echo_task)
+        
+        # Verify complete workflow
+        assert len(report.scores) == 3
+        assert report.scores[0] == 1.0  # exact match
+        assert report.scores[1] == 0.0  # no match  
+        assert report.scores[2] == 0.0  # partial no match
+        assert report.overall_score == 1.0/3
+        assert report.test_passes == [True, False, False]
+        assert len(report.cases) == 3
+    
+    @pytest.mark.asyncio
+    @patch('src.strands_evaluation.evaluators.output_evaluator.Agent')
+    async def test_async_dataset_with_output_evaluator(self, mock_agent_class, cases, mock_async_agent):
+        """Test async Dataset with OutputEvaluator integration"""
+        mock_agent_class.return_value = mock_async_agent
+        
+        output_evaluator = OutputEvaluator(rubric="Test if outputs match exactly")
+        dataset = Dataset(cases=cases, evaluator=output_evaluator)
+        
+        def simple_task(input_val):
+            return f"processed_{input_val}"
+        
+        report = await dataset.run_evaluations_async(simple_task)
+        
+        # Verify results
+        assert len(report.scores) == 3
+        assert all(abs(score - mock_score) <= .00001 for score in report.scores)
+        assert abs(report.overall_score - mock_score) <= .00001
+    
+    @pytest.mark.asyncio
+    async def test_async_dataset_concurrency(self, cases):
+        """Test that async evaluations run concurrently"""
+        # Create a dataset with more test cases
+        many_cases = [Case(name=f"case{i}", input=f"input{i}", expected_output=f"input{i}") 
+                     for i in range(10)]
+        dataset = Dataset(cases=many_cases, evaluator=SimpleEvaluator())
+        
+        # Create a task with noticeable delay
+        async def slow_task(input_val):
+            await asyncio.sleep(0.1)  # Each task takes 0.1s
+            return input_val
+        
+        # Time the execution
+        start_time = asyncio.get_event_loop().time()
+        report = await dataset.run_evaluations_async(slow_task, max_workers=5)
+        end_time = asyncio.get_event_loop().time()
+        
+        # With 10 tasks taking 0.1s each and 5 workers, should take ~0.2s
+        # (two batches of 5 tasks), not 1.0s (if sequential)
+        assert end_time - start_time < 0.5  # Allow some overhead
+        
+        # Verify results
+        assert len(report.scores) == 10
+        assert all(score == 1.0 for score in report.scores)
+        assert report.overall_score == 1.0

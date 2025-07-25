@@ -15,6 +15,21 @@ def mock_agent():
     )
     return agent
 
+@pytest.fixture
+def mock_async_agent():
+    """Mock Agent for testing with async"""
+    agent = Mock()
+    # Create a mock coroutine function
+    async def mock_structured_output_async(*args, **kwargs):
+        return EvaluationOutput(
+            score=0.9, 
+            test_pass=True, 
+            reason="Mock async trajectory evaluation"
+        )
+    
+    agent.structured_output_async = mock_structured_output_async
+    return agent
+
 
 @pytest.fixture
 def evaluation_data():
@@ -168,3 +183,57 @@ class TestTrajectoryEvaluator:
         
         with pytest.raises(Exception, match="Please make sure the task function return a dictionary with the key 'trajectory'"):
             evaluator.evaluate(evaluation_data)
+            
+    @pytest.mark.asyncio
+    @patch('src.strands_evaluation.evaluators.trajectory_evaluator.Agent')
+    async def test_evaluate_async_with_full_data(self, mock_agent_class, evaluation_data, mock_async_agent):
+        """Test async evaluation with complete trajectory data"""
+        mock_agent_class.return_value = mock_async_agent
+        evaluator = TrajectoryEvaluator(rubric="Test rubric")
+        
+        result = await evaluator.evaluate_async(evaluation_data)
+        
+        # Verify Agent creation
+        mock_agent_class.assert_called_once_with(
+            model=None,
+            system_prompt=evaluator.system_prompt,
+            tools=evaluator._tools,
+            callback_handler=None
+        )
+
+        assert result.score == 0.9
+        assert result.test_pass == True
+        assert result.reason == "Mock async trajectory evaluation"
+    
+    @pytest.mark.asyncio
+    @patch('src.strands_evaluation.evaluators.trajectory_evaluator.Agent')
+    async def test_evaluate_async_without_inputs(self, mock_agent_class, evaluation_data, mock_async_agent):
+        """Test async evaluation without inputs included"""
+        mock_agent_class.return_value = mock_async_agent
+        evaluator = TrajectoryEvaluator(rubric="Test rubric", include_inputs=False)
+        
+        result = await evaluator.evaluate_async(evaluation_data)
+
+        # Verify Agent creation
+        mock_agent_class.assert_called_once_with(
+            model=None,
+            system_prompt=evaluator.system_prompt,
+            tools=evaluator._tools,
+            callback_handler=None
+        )
+        
+        assert result.score == 0.9
+        assert result.test_pass == True
+        assert result.reason == "Mock async trajectory evaluation"
+    
+    @pytest.mark.asyncio
+    async def test_evaluate_async_missing_actual_trajectory(self):
+        """Test async evaluation raises exception when actual_trajectory is missing"""
+        evaluator = TrajectoryEvaluator(rubric="Test rubric")
+        evaluation_data = EvaluationData(
+            input="test",
+            actual_output="result",
+        )
+        
+        with pytest.raises(Exception, match="Please make sure the task function return a dictionary with the key 'trajectory'"):
+            await evaluator.evaluate_async(evaluation_data)

@@ -25,6 +25,14 @@ class TestEvaluator:
         
         with pytest.raises(NotImplementedError, match="This method should be implemented in subclasses"):
             evaluator.evaluate(evaluation_data)
+            
+    @pytest.mark.asyncio
+    async def test_async_base_evaluator_not_implemented(self, evaluation_data):
+        """Test that base Evaluator raises NotImplementedError"""
+        evaluator = Evaluator[str, str]()
+        
+        with pytest.raises(NotImplementedError, match="This method should be implemented in subclasses, especially if you want to run evaluations asynchronously."):
+            await evaluator.evaluate_async(evaluation_data)
     
     def test_simple_evaluator_implementation(self, evaluation_data):
         """Test that simple implementation works"""

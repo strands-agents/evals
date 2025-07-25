@@ -3,14 +3,15 @@ from typing_extensions import TypeVar, Generic, Any
 from collections.abc import Callable
 
 from .case import Case
-from .types.evaluation import EvaluationData
+from .types.evaluation import EvaluationData, EvaluationOutput
 from .types.evaluation_report import EvaluationReport
 from .evaluators.evaluator import Evaluator
 from .evaluators.trajectory_evaluator import TrajectoryEvaluator
-from .evaluators.llm_evaluator import LLMEvaluator
+from .evaluators.output_evaluator import OutputEvaluator
 
 import json
 import os
+import asyncio
 
 InputT = TypeVar("InputT")
 OutputT = TypeVar("OutputT")
@@ -69,6 +70,77 @@ class Dataset(BaseModel, Generic[InputT, OutputT]):
         else: # evaluating only the output
             evaluation_context.actual_output = task_output
         return evaluation_context
+        
+    async def _run_task_async(self, task: Callable[[InputT], OutputT | dict[str, Any]], case: Case[InputT, OutputT]) -> EvaluationData[InputT, OutputT]:
+        """
+        Run the task with the inputs from the test case asynchronously.
+
+        Args:
+            task: The task to run the test case on. This function should take in InputT and returns either OutputT or {"output": OutputT, "trajectory": ...}.
+                The task can either run synchronously or asynchronously.
+            case: The test case containing neccessary information to run the task
+
+        Return:
+            An EvaluationData record containing the input and actual output, name, expected output, and metadata.
+        """
+        # Create evaluation context
+        evaluation_context = EvaluationData(name=case.name,
+                                          input=case.input,
+                                          expected_output=case.expected_output,
+                                          expected_trajectory=case.expected_trajectory,
+                                          metadata=case.metadata)
+        
+        # Handle both async and sync tasks
+        if asyncio.iscoroutinefunction(task):
+            task_output = await task(case.input)
+        else:
+            # Run sync function in separate thread to avoid blocking
+            task_output = await asyncio.to_thread(task, case.input)
+            
+        if isinstance(task_output, dict):
+            evaluation_context.actual_output = task_output.get("output")
+            evaluation_context.actual_trajectory = task_output.get("trajectory")
+        else:
+            evaluation_context.actual_output = task_output
+            
+        return evaluation_context
+
+    async def _worker(self, queue: asyncio.Queue, task: Callable, results: list):
+        """
+        Worker that processes cases from the queue. Run evaluation on the task.
+        
+        Args:
+            queue: Queue containing cases to process
+            task: Task function to run on each case
+            results: List to store results
+        """
+        while True:
+            try:
+                case = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            
+            ## Evaluation ##
+            try:
+                evaluation_context = await self._run_task_async(task, case)
+                evaluation_output = await self.evaluator.evaluate_async(evaluation_context)
+
+                # Store results
+                results.append({
+                    "case": evaluation_context.model_dump(),
+                    "test_pass": evaluation_output.test_pass,
+                    "score": evaluation_output.score,
+                    "reason": evaluation_output.reason or ""
+                })
+            except Exception as e:
+                results.append({
+                    "case": case.model_dump(),
+                    "test_pass": False,
+                    "score": 0,
+                    "reason": f"An error occurred: {str(e)}"
+                })
+            finally:
+                queue.task_done()
 
     def run_evaluations(self, task: Callable[[InputT], OutputT | dict[str, Any]]) -> EvaluationReport:
         """
@@ -108,6 +180,50 @@ class Dataset(BaseModel, Generic[InputT, OutputT]):
                                   reasons=reasons)
 
         return report
+    
+    async def run_evaluations_async(self, task: Callable, max_workers: int = 10) -> EvaluationReport:
+        """
+        Run evaluations asynchronously using a queue for parallel processing.
+        
+        Args:
+            task: The task function to run on each case. This function should take in InputT and returns either OutputT or {"output": OutputT, "trajectory": ...}.
+            The task can either run synchronously or asynchronously.
+            max_workers: Maximum number of parallel workers (default: 10)
+            
+        Returns:
+            EvaluationReport containing evaluation results
+        """
+        queue = asyncio.Queue()
+        results = []
+        
+        for case in self.cases:
+            queue.put_nowait(case)
+        
+        num_workers = min(max_workers, len(self.cases))
+        
+        # Create and start workers
+        workers = [asyncio.create_task(self._worker(queue, task, results)) 
+                  for _ in range(num_workers)]
+        
+        await queue.join()
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+        
+        # Process results
+        scores = [r["score"] for r in results]
+        test_passes = [r["test_pass"] for r in results]
+        cases = [r["case"] for r in results]
+        reasons = [r["reason"] for r in results]
+        
+        # Create and return report
+        return EvaluationReport(
+            overall_score=sum(scores)/len(scores) if scores else 0,
+            scores=scores,
+            test_passes=test_passes,
+            cases=cases,
+            reasons=reasons
+        )
     
     def to_dict(self) -> dict:
         """
@@ -151,7 +267,7 @@ class Dataset(BaseModel, Generic[InputT, OutputT]):
         """
         cases = [Case.model_validate(case_data) for case_data in data["cases"]]
         default_evaluators = {"Evaluator": Evaluator,
-                            "LLMEvaluator": LLMEvaluator,
+                            "OutputEvaluator": OutputEvaluator,
                             "TrajectoryEvaluator": TrajectoryEvaluator}
         all_evaluators = {**default_evaluators, **{v.get_type_name(): v for v in custom_evaluators}}
 

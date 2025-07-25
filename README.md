@@ -1,12 +1,41 @@
 # Strands Evaluation
 
+## Setup
+
+### Installation
+
+The package uses `pyproject.toml` for dependency management. To install:
+
+```bash
+# Create and activate a virtual environment (recommended)
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install the package in development mode with dependencies
+pip install -e .
+
+# Install with test dependencies
+pip install -e ".[test]"
+
+# Install with both test and dev dependencies
+pip install -e ".[test,dev]"
+```
+
+### Running Tests
+
+```bash
+# Run all tests
+cd tests
+pytest .
+```
+
 ## Basic Usage
 
 ```python
 from strands import Agent
 from strands_evaluation.dataset import Dataset
 from strands_evaluation.case import Case
-from strands_evaluation.evaluators.llm_evaluator import LLMEvaluator
+from strands_evaluation.evaluators.output_evaluator import OutputEvaluator
 
 # 1. Create test cases
 test_cases = [
@@ -24,7 +53,7 @@ test_cases = [
 ]
 
 # 2. Create an evaluator
-evaluator = LLMEvaluator(
+evaluator = OutputEvaluator(
     rubric="The output should represent a reasonable answer to the input."
 )
 
@@ -121,6 +150,34 @@ dataset = Dataset[str, str](
 )
 
 report = dataset.run_evaluations(get_response_with_tools)
+```
+
+## Async Evaluation
+
+For improved performance with many test cases, use async evaluation:
+
+```python
+import asyncio
+from strands_evaluation.dataset import Dataset
+from strands_evaluation.evaluators.output_evaluator import OutputEvaluator
+
+# Create dataset with cases and evaluator
+dataset = Dataset(cases=test_cases, evaluator=OutputEvaluator(rubric="Test rubric"))
+
+# Define async task function (optional)
+async def async_task(query):
+    agent = Agent(callback_handler=None)
+    response = await agent.invoke_async(query)
+    return str(response)
+
+# Run evaluations asynchronously (works with both sync and async task functions)
+async def main():
+    report = await dataset.run_evaluations_async(async_task, max_workers=5)
+    report.display()
+    return report
+
+# Run the async function
+report = asyncio.run(main())
 ```
 
 ## More Examples

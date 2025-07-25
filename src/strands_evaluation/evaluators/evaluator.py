@@ -27,6 +27,18 @@ class Evaluator(Generic[InputT, OutputT]):
         """
         raise NotImplementedError("This method should be implemented in subclasses.")
     
+    async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> EvaluationOutput:
+        """
+        Evaluate the performance of the task on the given test cases asynchronously.
+
+        Args:
+            evaluation_case: The test case with all of the neccessary context to be evaluated.
+
+        Raises:
+            NotImplementedError: This method is not implemented in the base class.
+        """
+        raise NotImplementedError("This method should be implemented in subclasses, especially if you want to run evaluations asynchronously.")
+    
     @classmethod
     def get_type_name(cls) -> str:
         """
