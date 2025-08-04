@@ -2,7 +2,6 @@ from strands.multiagent import SwarmResult
 from strands.multiagent import GraphResult
 from strands import Agent
 
-### Extracting Information from SWARM ###
 def extract_swarm_handoffs(swarm_result: SwarmResult) -> list[dict]:
     """
     Extract handoff information from swarm execution results.
@@ -79,7 +78,6 @@ def extract_swarm_interactions(swarm_result: SwarmResult) -> list[dict]:
     handoff_info = extract_swarm_handoffs(swarm_result)
     return extract_swarm_interactions_from_handoffs(handoff_info)
 
-### Extracting Information from GRAPH ###
 def extract_graph_interactions(graph_result: GraphResult):
     """
     Extract interaction information from graph execution results.
@@ -103,7 +101,6 @@ def extract_graph_interactions(graph_result: GraphResult):
         })
     return message_info
 
-### Extract Information from Agent result ###
 def extract_agent_tools_used_from_messages(agent_messages):
     """
     Extract tool usage information from agent message history.
@@ -157,7 +154,6 @@ def extract_agent_tools_used_from_metrics(agent_result):
         })
     return tools_used
 
-### Extract Information from Agent ###
 def extract_tools_description(agent: Agent, is_short: bool = True):
     """
     Extract a dictionary of all tools used in a given agent.

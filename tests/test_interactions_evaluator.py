@@ -141,7 +141,7 @@ class TestInteractionsEvaluator:
             actual_output="result"
         )
         
-        with pytest.raises(Exception, match="Please make sure the task function return a dictionary with the key 'interactions'"):
+        with pytest.raises(Exception, match="Please make sure the task function returns a dictionary with the key 'interactions'"):
             evaluator.evaluate(evaluation_data)
     
     @patch('src.strands_evaluation.evaluators.interactions_evaluator.Agent')
@@ -154,7 +154,7 @@ class TestInteractionsEvaluator:
             actual_interactions=[{"node_name": "test"}]  # Missing dependencies and message
         )
         
-        with pytest.raises(Exception, match="Please make sure the task function return a dictionary with the key 'interactions' that contains 'node_name', 'dependencies', and 'messages'"):
+        with pytest.raises(Exception, match="Please make sure the task function returns a dictionary with the key 'interactions' that contains 'node_name', 'dependencies', and 'messages'"):
             evaluator.evaluate(evaluation_data)
     
     @patch('src.strands_evaluation.evaluators.interactions_evaluator.Agent')

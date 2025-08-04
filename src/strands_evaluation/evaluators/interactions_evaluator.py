@@ -80,7 +80,7 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
         dependencies = interaction.get("dependencies", None)
         messages = interaction.get("messages", None)
         if node_name is None or dependencies is None or messages is None:
-            raise Exception("Please make sure the task function return a dictionary with the key 'interactions' that contains 'node_name', 'dependencies', and 'messages'.")
+            raise Exception("Please make sure the task function returns a dictionary with the key 'interactions' that contains 'node_name', 'dependencies', and 'messages'.")
         
         # Create Prompt
         if is_last:
@@ -130,7 +130,7 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
             The results of the evaluation as EvaluationOutput.
         """
         if not evaluation_case.actual_interactions:
-            raise Exception("Please make sure the task function return a dictionary with the key 'interactions'.")
+            raise Exception("Please make sure the task function returns a dictionary with the key 'interactions'.")
         num_interactions = len(evaluation_case.actual_interactions)
 
         # keep all of the context
@@ -148,11 +148,8 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
             evaluation_prompt = self._compose_prompt(evaluation_case, i, is_last)
 
             ## Evaluate ##
-            if is_last:
-                result = evaluator_agent.structured_output(EvaluationOutput, evaluation_prompt)
-            else:
-                evaluator_agent.structured_output(EvaluationOutput, evaluation_prompt)
-
+            result = evaluator_agent.structured_output(EvaluationOutput, evaluation_prompt)
+            
         return result
 
     async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> EvaluationOutput:
@@ -166,7 +163,7 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
             The results of the evaluation as EvaluationOutput.
         """
         if not evaluation_case.actual_interactions:
-            raise Exception("Please make sure the task function return a dictionary with the key 'interactions'.")
+            raise Exception("Please make sure the task function returns a dictionary with the key 'interactions'.")
         num_interactions = len(evaluation_case.actual_interactions)
 
         # keep all of the context
@@ -185,10 +182,7 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
             evaluation_prompt = self._compose_prompt(evaluation_case, i, is_last)
 
             ## Evaluate ##
-            if is_last:
-                result = await evaluator_agent.structured_output_async(EvaluationOutput, evaluation_prompt)
-            else:
-                await evaluator_agent.structured_output_async(EvaluationOutput, evaluation_prompt)
+            result = await evaluator_agent.structured_output_async(EvaluationOutput, evaluation_prompt)
 
         return result
     
