@@ -88,7 +88,7 @@ async def trajectory_dataset_generator() -> EvaluationReport:
     dataset = await generator.from_context_async(
         context=tool_context,
         num_cases=5,
-        evaluator=TrajectoryEvaluator,
+        evaluator=TrajectoryEvaluator,  # type: ignore
         task_description=(
             f"Banking operations with balance checks, spending, and debt collection with these people: "
             f"{balances_reference}"

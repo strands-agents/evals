@@ -4,13 +4,12 @@ from pydantic import create_model
 from strands import Agent
 from typing_extensions import Any, Generic, TypeVar
 
-from strands_evals.evaluators.evaluator import Evaluator
-from strands_evals.evaluators.interactions_evaluator import InteractionsEvaluator
-from strands_evals.evaluators.output_evaluator import OutputEvaluator
-from strands_evals.evaluators.trajectory_evaluator import TrajectoryEvaluator
-
 from ..case import Case
 from ..dataset import Dataset
+from ..evaluators.evaluator import Evaluator
+from ..evaluators.interactions_evaluator import InteractionsEvaluator
+from ..evaluators.output_evaluator import OutputEvaluator
+from ..evaluators.trajectory_evaluator import TrajectoryEvaluator
 from ..types.evaluation import Interaction
 from .prompt_template.prompt_templates import generate_case_template as CASE_SYSTEM_PROMPT
 from .prompt_template.prompt_templates import generate_rubric_template as RUBRIC_SYSTEM_PROMPT
@@ -391,10 +390,10 @@ class DatasetGenerator(Generic[InputT, OutputT]):
             )
 
         if add_new_rubric:
-            if not new_evaluator_type: # use the previous evaluator if no new evaluator is passed in
-                new_evaluator_type = type(source_evaluator) 
+            if not new_evaluator_type:  # use the previous evaluator if no new evaluator is passed in
+                new_evaluator_type = type(source_evaluator)
 
-            new_evaluator = Evaluator()
+            new_evaluator: Evaluator = Evaluator()
             if new_evaluator_type in self._default_evaluators:
                 source_rubric = source_evaluator.rubric if type(source_evaluator) in self._default_evaluators else None  # type: ignore
                 new_evaluator = await self.construct_evaluator_async(
@@ -402,7 +401,7 @@ class DatasetGenerator(Generic[InputT, OutputT]):
                         f"Create a new rubric based on the reference rubric if provided for the following context:"
                         f" {context}. Ensure that the rubric is relevant for this task: {task_description}."
                     ),
-                    evaluator=new_evaluator,
+                    evaluator=new_evaluator_type,
                     message_history=[{"role": "user", "content": [{"text": source_rubric}]}],
                 )
             else:  # use the original if it's not supported
