@@ -33,12 +33,10 @@ class DatasetGenerator(Generic[InputT, OutputT]):
             " trajectory nor interactions even if provided"
         ),
         TrajectoryEvaluator: (
-            "evaluates the trajectory and output if provided,"
-            " doesn't include info about interactions even if provided"
+            "evaluates the trajectory and output if provided, doesn't include info about interactions even if provided"
         ),
         InteractionsEvaluator: (
-            "evaluates the interactions and output if provided,"
-            " doesn't include info about trajectory even if provided"
+            "evaluates the interactions and output if provided, doesn't include info about trajectory even if provided"
         ),
     }
 
@@ -173,7 +171,7 @@ class DatasetGenerator(Generic[InputT, OutputT]):
         return generated_cases
 
     async def construct_evaluator_async(
-        self, prompt: str, evaluator: Evaluator, message_history: list | None = None
+        self, prompt: str, evaluator: type | None, message_history: list | None = None
     ) -> Evaluator:
         """
         Create an evaluator instance with a generated rubric.
@@ -205,16 +203,16 @@ class DatasetGenerator(Generic[InputT, OutputT]):
             messages=message_history if message_history else [],
         )
         final_prompt = prompt + (
-            f"The evaluator selected is {evaluator.get_type_name()}."
+            f"The evaluator selected is {evaluator.get_type_name()}."  # type: ignore
             f" This evaluator {self._default_evaluators[evaluator]}.\n"
             "IMPORTANT: Your response must be ONLY a few sentences describing how to evaluate the test cases."
         )
 
         rubric = await rubric_generator_agent.invoke_async(final_prompt)
-        return evaluator(rubric=str(rubric))
+        return evaluator(rubric=str(rubric))  # type: ignore
 
     async def from_scratch_async(
-        self, topics: list[str], task_description: str, num_cases: int = 5, evaluator: Evaluator = None
+        self, topics: list[str], task_description: str, num_cases: int = 5, evaluator: type | None = None
     ) -> Dataset:
         """
         Generate a dataset from scratch based on specified topics and task description.
@@ -233,13 +231,13 @@ class DatasetGenerator(Generic[InputT, OutputT]):
             Use the generic Evaluator as placeholder if no evaluator is passed in.
         """
         cases = await self.generate_cases_async(
-            f"""Create test cases for the following topics: {' '.join(topics)} for this task:
+            f"""Create test cases for the following topics: {" ".join(topics)} for this task:
                                      {task_description}.""",
             num_cases,
         )
         if evaluator:
             _evaluator = await self.construct_evaluator_async(
-                prompt=f"""Create a rubric for the following topics: {' '.join(topics)} for this task:
+                prompt=f"""Create a rubric for the following topics: {" ".join(topics)} for this task:
                                      {task_description}.""",
                 evaluator=evaluator,
             )
@@ -248,7 +246,7 @@ class DatasetGenerator(Generic[InputT, OutputT]):
             return Dataset(cases=cases)
 
     async def from_context_async(
-        self, context: str, task_description: str, num_cases: int = 5, evaluator: Evaluator = None
+        self, context: str, task_description: str, num_cases: int = 5, evaluator: type | None = None
     ) -> Dataset:
         """
         Generate a dataset based on specific context that test cases should reference.
@@ -327,7 +325,7 @@ class DatasetGenerator(Generic[InputT, OutputT]):
             num_cases=num_cases,
             message_history=messages,
         )
-        new_evaluator = Evaluator()
+        new_evaluator: Evaluator = Evaluator()
         if type(source_evaluator) in self._default_evaluators:
             source_rubric = source_evaluator.rubric  # type: ignore
             new_evaluator = await self.construct_evaluator_async(
@@ -349,7 +347,7 @@ class DatasetGenerator(Generic[InputT, OutputT]):
         context: str | None = None,
         add_new_cases: bool = True,
         add_new_rubric: bool = True,
-        new_evaluator_type: Evaluator | None = None,
+        new_evaluator_type: type | None = None,
     ) -> Dataset:
         """
         Update an existing dataset by adding new test cases and/or updating the evaluator.
@@ -393,12 +391,11 @@ class DatasetGenerator(Generic[InputT, OutputT]):
             )
 
         if add_new_rubric:
-            if new_evaluator_type:
-                new_evaluator = new_evaluator_type
-            else:
-                new_evaluator = type(source_evaluator)  # use the previous evaluator if no new evaluator is passed in
+            if not new_evaluator_type: # use the previous evaluator if no new evaluator is passed in
+                new_evaluator_type = type(source_evaluator) 
 
-            if new_evaluator in self._default_evaluators:
+            new_evaluator = Evaluator()
+            if new_evaluator_type in self._default_evaluators:
                 source_rubric = source_evaluator.rubric if type(source_evaluator) in self._default_evaluators else None  # type: ignore
                 new_evaluator = await self.construct_evaluator_async(
                     prompt=(

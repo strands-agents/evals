@@ -6,6 +6,7 @@ from langchain.evaluation.criteria import CriteriaEvalChain  # type: ignore
 ## Using a third party evaluator
 from langchain_aws import BedrockLLM  # type: ignore
 from strands import Agent
+
 from strands_evals import Case, Dataset
 from strands_evals.evaluators import Evaluator
 from strands_evals.types import EvaluationData, EvaluationOutput, EvaluationReport
@@ -34,21 +35,21 @@ def third_party_example() -> EvaluationReport:
         return str(agent(query))
 
     ### Step 2: Create test cases ###
-    test_case1 = Case[str, str](
+    test_case1: Case = Case[str, str](
         name="knowledge-1",
         input="What is the capital of France?",
         expected_output="The capital of France is Paris.",
         metadata={"category": "knowledge"},
     )
 
-    test_case2 = Case[str, str](
+    test_case2: Case = Case[str, str](
         name="knowledge-2",
         input="What color is the ocean?",
         expected_output="The ocean is blue.",
         metadata={"category": "knowledge"},
     )
-    test_case3 = Case(input="When was World War 2?")
-    test_case4 = Case(input="Who was the first president of the United States?")
+    test_case3: Case = Case(input="When was World War 2?")
+    test_case4: Case = Case(input="Who was the first president of the United States?")
 
     ### Step 3: Create evaluator using a third party evaluator ###
     class LangChainCriteriaEvaluator(Evaluator[str, str]):
@@ -110,21 +111,21 @@ async def async_third_party_example() -> EvaluationReport:
         return str(response)
 
     ### Step 2: Create test cases ###
-    test_case1 = Case[str, str](
+    test_case1: Case = Case[str, str](
         name="knowledge-1",
         input="What is the capital of France?",
         expected_output="The capital of France is Paris.",
         metadata={"category": "knowledge"},
     )
 
-    test_case2 = Case[str, str](
+    test_case2: Case = Case[str, str](
         name="knowledge-2",
         input="What color is the ocean?",
         expected_output="The ocean is blue.",
         metadata={"category": "knowledge"},
     )
-    test_case3 = Case(input="When was World War 2?")
-    test_case4 = Case(input="Who was the first president of the United States?")
+    test_case3: Case = Case(input="When was World War 2?")
+    test_case4: Case = Case(input="Who was the first president of the United States?")
 
     ### Step 3: Create evaluator using a third party evaluator ###
     class LangChainCriteriaEvaluator(Evaluator[str, str]):
@@ -178,12 +179,12 @@ if __name__ == "__main__":
     end = datetime.datetime.now()
     print("Sync: ", end - start)  # Sync:  0:00:33.125273
     report.display()
-    report.to_file("third_party_report", "json")
+    report.to_file("third_party_report")
 
     start = datetime.datetime.now()
     report = asyncio.run(async_third_party_example())
     end = datetime.datetime.now()
     print("Async: ", end - start)  # Async:  0:00:24.050895
-    report.to_file("async_third_party_report", "json")
+    report.to_file("async_third_party_report")
     report.to_file("async_third_party_report_horizontal", is_vertical=False)
     report.run_display(include_actual_output=True)

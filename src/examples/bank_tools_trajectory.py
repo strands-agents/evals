@@ -2,6 +2,7 @@ import asyncio
 import datetime
 
 from strands import Agent, tool
+
 from strands_evals import Case, Dataset
 from strands_evals.evaluators import TrajectoryEvaluator
 from strands_evals.extractors import tools_use_extractor
@@ -121,7 +122,7 @@ async def async_descriptive_tools_trajectory_example() -> EvaluationReport:
     )
 
     ### Step 3: Create evaluator ###
-    trajectory_evaluator = TrajectoryEvaluator(
+    trajectory_evaluator: TrajectoryEvaluator = TrajectoryEvaluator(
         rubric="The trajectory should be in the correct order with all of the steps as the expected."
         "The agent should know when and what action is logical. Strictly score 0 if any step is missing.",
         include_inputs=True,
@@ -144,5 +145,5 @@ if __name__ == "__main__":
     report = asyncio.run(async_descriptive_tools_trajectory_example())
     end = datetime.datetime.now()
     print("Async: ", end - start)
-    report.to_file("async_bank_tools_trajectory_report", "json")
+    report.to_file("async_bank_tools_trajectory_report")
     report.run_display(include_actual_trajectory=True)

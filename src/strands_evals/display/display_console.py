@@ -55,7 +55,7 @@ class CollapsibleTableReportDisplay:
         overall_score_string = f"[bold blue]Overall Score: {self.overall_score:.2f}[/bold blue]"
         overall_pass_rate = (
             f"[bold blue]Pass Rate: "
-            f"{sum([1 if case['details']['test_pass'] else 0 for case in self.items.values()])/len(self.items):.2f}"
+            f"{sum([1 if case['details']['test_pass'] else 0 for case in self.items.values()]) / len(self.items):.2f}"
             f"[/bold blue]"
         )
         spacing = "           "
@@ -118,8 +118,7 @@ class CollapsibleTableReportDisplay:
                 return
 
             choice = Prompt.ask(
-                "\nEnter the test case number to expand/collapse it, o to expand all,"
-                "and c to collapse all (q to quit)."
+                "\nEnter the test case number to expand/collapse it, o to expand all,and c to collapse all (q to quit)."
             )
 
             if choice.lower() == "q":

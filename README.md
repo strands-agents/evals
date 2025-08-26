@@ -83,10 +83,10 @@ report.run_display()
 
 ```python
 # Save dataset to JSON
-dataset.to_file("my_dataset", "json")
+dataset.to_file("my_dataset")
 
 # Load dataset from JSON
-loaded_dataset = Dataset.from_file("./dataset_files/my_dataset.json", "json")
+loaded_dataset = Dataset.from_file("./dataset_files/my_dataset.json")
 ```
 
 ## Custom Evaluators

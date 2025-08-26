@@ -2,6 +2,7 @@ import asyncio
 import datetime
 
 from strands import Agent, tool
+
 from strands_evals import Case, Dataset
 from strands_evals.evaluators import InteractionsEvaluator, TrajectoryEvaluator
 from strands_evals.extractors import tools_use_extractor
@@ -202,7 +203,7 @@ async def async_agents_as_tools_example() -> tuple[EvaluationReport, EvaluationR
         return {"output": str(response), "trajectory": tools_used, "interactions": interactions}
 
     ### Step 2: Create test cases ###
-    test_cases = [
+    test_cases: list[Case] = [
         Case(input="My app keeps crashing when I try to login for user123"),
         Case(input="I was charged twice this month, my customer ID is user456"),
         Case(input="What features are included in the pro_plan?"),
@@ -210,14 +211,14 @@ async def async_agents_as_tools_example() -> tuple[EvaluationReport, EvaluationR
     ]
 
     ### Step 3: Create evaluator ###
-    trajectory_evaluator = TrajectoryEvaluator(
+    trajectory_evaluator: TrajectoryEvaluator = TrajectoryEvaluator(
         rubric=(
             "Does the orchestrator route customer queries to the appropriate support specialist? "
             "Score 1.0 if the routing is correct (technical→technical_support, billing→billing_support, "
             "product→product_info, orders→returns_exchanges), 0.5 if partially correct, 0.0 if incorrect."
         )
     )
-    interaction_evaluator = InteractionsEvaluator(
+    interaction_evaluator: InteractionsEvaluator = InteractionsEvaluator(
         rubric=(
             "Does each specialist agent use the appropriate tools and provide complete, helpful responses? "
             "Score 1.0 if tools are used correctly and response is comprehensive, 0.5 if partially adequate, "
@@ -242,7 +243,7 @@ if __name__ == "__main__":
     report_trajectory, report_interactions = asyncio.run(async_agents_as_tools_example())
     end = datetime.datetime.now()
 
-    report_trajectory.to_file("customer_support_orchestrator_report_trajectory", "json")
+    report_trajectory.to_file("customer_support_orchestrator_report_trajectory")
     report_trajectory.display(include_actual_trajectory=True)
 
     report_interactions.to_file("customer_support_orchestrator_report_interactions")

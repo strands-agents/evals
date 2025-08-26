@@ -1,6 +1,7 @@
 import asyncio
 
 from strands import Agent
+
 from strands_evals.evaluators.output_evaluator import OutputEvaluator
 from strands_evals.generators.dataset_generator import DatasetGenerator
 from strands_evals.types import EvaluationReport
@@ -52,5 +53,5 @@ async def simple_dataset_generator() -> EvaluationReport:
 if __name__ == "__main__":
     # python -m examples.dataset_generator.simple_dataset
     report = asyncio.run(simple_dataset_generator())
-    report.to_file("generated_safety_judge_output_report", "json")
+    report.to_file("generated_safety_judge_output_report")
     report.run_display(include_actual_output=True)

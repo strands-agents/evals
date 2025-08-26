@@ -2,6 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
 from strands_evals import Case, Dataset
 from strands_evals.evaluators import Evaluator, InteractionsEvaluator, OutputEvaluator, TrajectoryEvaluator
 from strands_evals.generators import DatasetGenerator
@@ -22,8 +23,8 @@ def test_dataset_generator__init__():
         rubric_system_prompt="rubric system prompt",
         case_system_prompt="case system prompt",
     )
-    assert generator.input_type == str
-    assert generator.output_type == int
+    assert generator.input_type is str
+    assert generator.output_type is int
     assert generator.include_expected_output is False
     assert generator.include_expected_trajectory is True
     assert generator.include_expected_interactions is True
@@ -40,8 +41,8 @@ def test_dataset_generator__init__minimum():
         str,
         int,
     )
-    assert generator.input_type == str
-    assert generator.output_type == int
+    assert generator.input_type is str
+    assert generator.output_type is int
 
 
 @pytest.mark.asyncio

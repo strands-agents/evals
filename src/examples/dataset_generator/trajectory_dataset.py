@@ -1,11 +1,12 @@
 import asyncio
 
 from strands import Agent, tool
+from typing_extensions import TypedDict
+
 from strands_evals.evaluators import TrajectoryEvaluator
 from strands_evals.extractors import tools_use_extractor
 from strands_evals.generators import DatasetGenerator
 from strands_evals.types import EvaluationReport, TaskOutput
-from typing_extensions import TypedDict
 
 balances_reference = {"Anna": -100, "Cindy": 800, "Brian": 300, "Hailey": 0}
 

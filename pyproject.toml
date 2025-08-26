@@ -54,10 +54,6 @@ warn_unreachable = true
 follow_untyped_imports = true
 ignore_missing_imports = false
 
-[[tool.mypy.overrides]]
-module = "strands_evals.*"
-ignore_missing_imports = true
-
 [tool.ruff]
 line-length = 120
 include = ["src/**/*.py", "tests/**/*.py"]
@@ -83,6 +79,13 @@ prepare = [
     "hatch fmt --formatter",
     "hatch run test-lint",
     "hatch test --all"
+]
+
+[tool.hatch.envs.hatch-static-analysis]
+dependencies = [
+    "strands-agents>=1.0.0",
+    "mypy>=1.0",
+    "ruff>=0.4.4,<1.0.0",
 ]
 
 

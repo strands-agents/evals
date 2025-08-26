@@ -3,13 +3,14 @@ import datetime
 
 from strands import Agent
 from strands.multiagent import Swarm
+
 from strands_evals import Case, Dataset
 from strands_evals.evaluators import InteractionsEvaluator, TrajectoryEvaluator
 from strands_evals.extractors import swarm_extractor
 from strands_evals.types import EvaluationReport
 
 
-async def async_swarm_example() -> EvaluationReport:
+async def async_swarm_example() -> tuple[EvaluationReport, EvaluationReport]:
     """
     Demonstrates evaluating swarm agent interactions and trajectories for content creation tasks.
 
@@ -79,7 +80,7 @@ async def async_swarm_example() -> EvaluationReport:
         return {"interactions": interaction_info, "trajectory": [node.node_id for node in result.node_history]}
 
     ### Step 2: Create test cases ###
-    test_cases = [
+    test_cases: list[Case] = [
         Case(
             input="Create a comprehensive blog post about the benefits of remote work for productivity.",
             expected_trajectory=["researcher", "writer", "editor", "seo_specialist"],
@@ -93,7 +94,7 @@ async def async_swarm_example() -> EvaluationReport:
     ### Step 3: Create evaluator ###
     node_descriptions = {
         "researcher": (
-            "The researcher node should gather relevant information, statistics, " "and sources for the given topic."
+            "The researcher node should gather relevant information, statistics, and sources for the given topic."
         ),
         "writer": "The writer node should create engaging, well-structured content based on research provided.",
         "editor": "The editor node should review and refine written content for clarity, flow, grammar, and style.",
@@ -102,7 +103,7 @@ async def async_swarm_example() -> EvaluationReport:
             "adding relevant keywords and meta descriptions."
         ),
     }
-    interaction_evaluator = InteractionsEvaluator(
+    interaction_evaluator: InteractionsEvaluator = InteractionsEvaluator(
         rubric=(
             "Scoring should measure how well each agent handoff follows logical content creation workflow. "
             "Score 1.0 if handoffs are appropriate, include relevant context, and demonstrate clear content "
@@ -110,7 +111,7 @@ async def async_swarm_example() -> EvaluationReport:
         ),
         interaction_description=node_descriptions,
     )
-    trajectory_evaluator = TrajectoryEvaluator(
+    trajectory_evaluator: TrajectoryEvaluator = TrajectoryEvaluator(
         rubric=(
             "Scoring should measure how well the swarm utilizes the right sequence of agents for content creation. "
             "Score 1.0 if trajectory follows expected workflow, 0.5 if partially correct sequence, "
@@ -134,8 +135,8 @@ if __name__ == "__main__":
     trajectory_report, interaction_report = asyncio.run(async_swarm_example())
     end = datetime.datetime.now()
 
-    trajectory_report.to_file("content_creation_swarm_trajectory_report", "json")
-    interaction_report.to_file("content_creation_swarm_interaction_report", "json")
+    trajectory_report.to_file("content_creation_swarm_trajectory_report")
+    interaction_report.to_file("content_creation_swarm_interaction_report")
 
     trajectory_report.run_display(include_actual_trajectory=True)
     interaction_report.run_display(include_actual_interactions=True, include_expected_interactions=True)

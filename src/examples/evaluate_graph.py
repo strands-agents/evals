@@ -3,13 +3,14 @@ import datetime
 
 from strands import Agent
 from strands.multiagent import GraphBuilder
+
 from strands_evals import Case, Dataset
 from strands_evals.evaluators import InteractionsEvaluator, TrajectoryEvaluator
 from strands_evals.extractors import graph_extractor
 from strands_evals.types import EvaluationReport
 
 
-async def async_graph_example() -> EvaluationReport:
+async def async_graph_example() -> tuple[EvaluationReport, EvaluationReport]:
     """
     Demonstrates evaluating graph-based agent workflows for research tasks.
 
@@ -62,7 +63,7 @@ async def async_graph_example() -> EvaluationReport:
         return {"interactions": interactions, "trajectory": [node.node_id for node in result.execution_order]}
 
     ### Step 2: Create test cases ###
-    test1 = Case(
+    test1: Case = Case(
         input="Research the impact of AI on healthcare and create a short report",
         expected_interactions=[
             {"node_name": "research", "dependencies": []},
@@ -71,7 +72,7 @@ async def async_graph_example() -> EvaluationReport:
             {"node_name": "report", "dependencies": ["fact_check", "analysis"]},
         ],
     )
-    test2 = Case(input="Research the impact of robotics on healthcare and create a short report")
+    test2: Case = Case(input="Research the impact of robotics on healthcare and create a short report")
 
     ### Step 2: Create evaluator ###
     rubric = {
@@ -87,16 +88,16 @@ async def async_graph_example() -> EvaluationReport:
     #     " The actual interactions should include more information than expected."
     # )
     trajectory_rubric = "The graph system should ultilized the agents as expected with relevant information."
-    interaction_evaluator = InteractionsEvaluator(rubric=rubric)
-    trajectory_evaluator = TrajectoryEvaluator(rubric=trajectory_rubric)
+    interaction_evaluator: InteractionsEvaluator = InteractionsEvaluator(rubric=rubric)
+    trajectory_evaluator: TrajectoryEvaluator = TrajectoryEvaluator(rubric=trajectory_rubric)
 
     ### Step 4: Create dataset ###
     interaction_dataset = Dataset(cases=[test1, test2], evaluator=interaction_evaluator)
-    trajectory_evaluator = Dataset(cases=[test1, test2], evaluator=trajectory_evaluator)
+    trajectory_dataset = Dataset(cases=[test1, test2], evaluator=trajectory_evaluator)
 
     ### Step 5: Run evaluation ###
     interaction_report = await interaction_dataset.run_evaluations_async(research_graph)
-    trajectory_report = await trajectory_evaluator.run_evaluations_async(research_graph)
+    trajectory_report = await trajectory_dataset.run_evaluations_async(research_graph)
 
     return trajectory_report, interaction_report
 
@@ -108,8 +109,8 @@ if __name__ == "__main__":
     end = datetime.datetime.now()
     print("Async node interactions", end - start)
 
-    trajectory_report.to_file("research_graph_report_trajectory", "json")
+    trajectory_report.to_file("research_graph_report_trajectory")
     trajectory_report.display(include_actual_trajectory=True)
 
-    interaction_report.to_file("research_graph_report_interactions", "json")
+    interaction_report.to_file("research_graph_report_interactions")
     interaction_report.display(include_actual_interactions=True)
