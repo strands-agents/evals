@@ -54,6 +54,10 @@ warn_unreachable = true
 follow_untyped_imports = true
 ignore_missing_imports = false
 
+[[tool.mypy.overrides]]
+module = "strands_evals.*"
+ignore_missing_imports = true
+
 [tool.ruff]
 line-length = 120
 include = ["src/**/*.py", "tests/**/*.py"]
