@@ -108,7 +108,7 @@ class CustomEvaluator(Evaluator[str, str]):
         return EvaluationOutput(
             score=score,
             test_pass=test_pass,
-            reason="Custom evaluation reason"
+            reason="Custom evaluation reason" # None if not available
         )
 
 # Use custom evaluator

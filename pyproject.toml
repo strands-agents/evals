@@ -111,10 +111,18 @@ select = [
 
 [tool.hatch.version]
 path = "src/strands_evals/__init__.py"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 python_files = "test_*.py"
+
+[tool.hatch.envs.hatch-test]
+extra-dependencies = [
+    "pytest>=8.0.0,<9.0.0",
+    "pytest-cov>=6.0.0,<7.0.0",
+    "pytest-asyncio>=1.0.0,<1.2.0"
+    ]
 
 [tool.hatch.envs.default]
 dependencies = [

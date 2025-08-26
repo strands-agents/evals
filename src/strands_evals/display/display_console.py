@@ -55,9 +55,8 @@ class CollapsibleTableReportDisplay:
         overall_score_string = f"[bold blue]Overall Score: {self.overall_score:.2f}[/bold blue]"
         overall_pass_rate = (
             f"[bold blue]Pass Rate: "
-            f"{sum([1 if case['details']['test_pass'] else 0 for case in self.items.values()])
-                            / len(self.items):.2f}"
-            "[/bold blue]"
+            f"{sum([1 if case['details']['test_pass'] else 0 for case in self.items.values()])/len(self.items):.2f}"
+            f"[/bold blue]"
         )
         spacing = "           "
         console.print(Panel(f"{overall_score_string}{spacing}{overall_pass_rate}", title="📊 Evaluation Report"))
