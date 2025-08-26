@@ -58,7 +58,7 @@ async def test_dataset_generator_case_worker():
     mock_agent.structured_output_async.return_value = mock_case_data
 
     with patch("strands_evals.generators.dataset_generator.Agent", return_value=mock_agent):
-        await generator._case_worker(queue, "test prompt", [], results)
+        await generator._case_worker(queue, "test prompt", results, [])
 
     assert len(results) == 1
     assert isinstance(results[0], Case)

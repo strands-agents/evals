@@ -4,35 +4,13 @@ from strands import Agent, tool
 from strands_evals.evaluators import TrajectoryEvaluator
 from strands_evals.extractors import tools_use_extractor
 from strands_evals.generators import DatasetGenerator
-from strands_evals.types import TaskOutput
+from strands_evals.types import EvaluationReport, TaskOutput
+from typing_extensions import TypedDict
 
-# Bank account balances
-balances = {"Anna": -100, "Cindy": 800, "Brian": 300, "Hailey": 0}
-
-
-@tool
-def get_balance(person: str) -> int:
-    """Get the balance of a bank account."""
-    return balances.get(person, 0)
+balances_reference = {"Anna": -100, "Cindy": 800, "Brian": 300, "Hailey": 0}
 
 
-@tool
-def modify_balance(person: str, amount: int) -> None:
-    """Modify the balance of a bank account by a given amount."""
-    balances[person] += amount
-
-
-@tool
-def collect_debt() -> list[tuple]:
-    """Check all bank accounts for any debt."""
-    debt = []
-    for person in balances:
-        if balances[person] < 0:
-            debt.append((person, abs(balances[person])))
-    return debt
-
-
-async def trajectory_dataset_generator():
+async def trajectory_dataset_generator() -> EvaluationReport:
     """
     Demonstrates generating a dataset for bank tools trajectory evaluation.
 
@@ -51,6 +29,28 @@ async def trajectory_dataset_generator():
         """
         Banking task that handles spending, balance checks, and debt collection.
         """
+        # Bank account balances
+        balances = {"Anna": -100, "Cindy": 800, "Brian": 300, "Hailey": 0}
+
+        @tool
+        def get_balance(person: str) -> int:
+            """Get the balance of a bank account."""
+            return balances.get(person, 0)
+
+        @tool
+        def modify_balance(person: str, amount: int) -> None:
+            """Modify the balance of a bank account by a given amount."""
+            balances[person] += amount
+
+        @tool
+        def collect_debt() -> list[tuple]:
+            """Check all bank accounts for any debt."""
+            debt = []
+            for person in balances:
+                if balances[person] < 0:
+                    debt.append((person, abs(balances[person])))
+            return debt
+
         bank_prompt = (
             "You are a banker. Ensure only people with sufficient balance can spend money. "
             "Collect debt from people with negative balance. "
@@ -64,14 +64,19 @@ async def trajectory_dataset_generator():
         return TaskOutput(output=str(response), trajectory=trajectory)
 
     ### Step 2: Initialize the dataset generator ###
-    generator = DatasetGenerator[str, str](str, str)
+    class ToolType(TypedDict):
+        name: str
+        input: dict
+
+    generator = DatasetGenerator[str, str](str, str, include_expected_trajectory=True, trajectory_type=ToolType)
 
     ### Step 3: Generate dataset with tool context ###
     tool_context = """
     Available banking tools:
     - get_balance(person: str) -> int: Get the balance of a bank account for a specific person
     - modify_balance(person: str, amount: int) -> None: Modify the balance by adding/subtracting an amount
-    - collect_debt() -> list[tuple]: Check all accounts and return list of people with negative balances and their debt amounts
+    - collect_debt() -> list[tuple]: Check all accounts and return list of people with negative balances
+        and their debt amounts
     
     Banking rules:
     - Only allow spending if person has sufficient balance
@@ -83,7 +88,10 @@ async def trajectory_dataset_generator():
         context=tool_context,
         num_cases=5,
         evaluator=TrajectoryEvaluator,
-        task_description="Banking operations with balance checks, spending, and debt collection",
+        task_description=(
+            f"Banking operations with balance checks, spending, and debt collection with these people: "
+            f"{balances_reference}"
+        ),
     )
 
     ### Step 3.5: (Optional) Save the generated dataset ###
@@ -97,5 +105,7 @@ async def trajectory_dataset_generator():
 if __name__ == "__main__":
     # python -m examples.dataset_generator.trajectory_dataset
     report = asyncio.run(trajectory_dataset_generator())
-    report.to_file("generated_bank_trajectory_report", "json")
+    report.to_file("generated_bank_trajectory_report_horizontal", is_vertical=False)
+    report.to_file("generated_bank_trajectory_report_vertical")
+
     report.run_display(include_actual_trajectory=True)

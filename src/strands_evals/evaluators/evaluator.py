@@ -63,7 +63,7 @@ class Evaluator(Generic[InputT, OutputT]):
         _dict = {"evaluator_type": self.get_type_name()}
 
         # Get default values from __init__ signature
-        sig = inspect.signature(self.__init__)
+        sig = inspect.signature(self.__class__.__init__)
         defaults = {k: v.default for k, v in sig.parameters.items() if v.default != inspect.Parameter.empty}
         for k, v in self.__dict__.items():
             if not k.startswith("_") and (k not in defaults or v != defaults[k]):

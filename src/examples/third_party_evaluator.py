@@ -1,19 +1,19 @@
 import asyncio
 import datetime
 
-from langchain.evaluation.criteria import CriteriaEvalChain
+from langchain.evaluation.criteria import CriteriaEvalChain  # type: ignore
 
 ## Using a third party evaluator
-from langchain_aws import BedrockLLM
+from langchain_aws import BedrockLLM  # type: ignore
 from strands import Agent
 from strands_evals import Case, Dataset
 from strands_evals.evaluators import Evaluator
-from strands_evals.types import EvaluationData, EvaluationOutput
+from strands_evals.types import EvaluationData, EvaluationOutput, EvaluationReport
 
 ## Need to install $pip install langchain langchain_aws ##
 
 
-def third_party_example():
+def third_party_example() -> EvaluationReport:
     """
     Demonstrates integrating a third-party evaluator (LangChain) with the evaluation framework.
 
@@ -88,7 +88,7 @@ def third_party_example():
     return report
 
 
-async def async_third_party_example():
+async def async_third_party_example() -> EvaluationReport:
     """
     Demonstrates integrating a third-party evaluator (LangChain) with the evaluation framework asynchronously.
 
@@ -185,4 +185,5 @@ if __name__ == "__main__":
     end = datetime.datetime.now()
     print("Async: ", end - start)  # Async:  0:00:24.050895
     report.to_file("async_third_party_report", "json")
+    report.to_file("async_third_party_report_horizontal", is_vertical=False)
     report.run_display(include_actual_output=True)

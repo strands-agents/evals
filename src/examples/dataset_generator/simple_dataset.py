@@ -3,9 +3,10 @@ import asyncio
 from strands import Agent
 from strands_evals.evaluators.output_evaluator import OutputEvaluator
 from strands_evals.generators.dataset_generator import DatasetGenerator
+from strands_evals.types import EvaluationReport
 
 
-async def simple_dataset_generator():
+async def simple_dataset_generator() -> EvaluationReport:
     """
     Demonstrates the a simple dataset generation and evaluation process.
 

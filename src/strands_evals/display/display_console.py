@@ -45,7 +45,7 @@ class CollapsibleTableReportDisplay:
         self.items = items
         self.overall_score = overall_score
 
-    def display_items(self):
+    def display_items(self) -> None:
         """
         Display the evaluation report as a rich table with expandable/collapsible rows.
 
@@ -53,7 +53,12 @@ class CollapsibleTableReportDisplay:
         Expanded rows show full details, while collapsed rows show minimal information.
         """
         overall_score_string = f"[bold blue]Overall Score: {self.overall_score:.2f}[/bold blue]"
-        overall_pass_rate = f"[bold blue]Pass Rate: {sum([1 if case['details']['test_pass'] else 0 for case in self.items.values()]) / len(self.items)}[/bold blue]"
+        overall_pass_rate = (
+            f"[bold blue]Pass Rate: "
+            f"{sum([1 if case['details']['test_pass'] else 0 for case in self.items.values()])
+                            / len(self.items):.2f}"
+            "[/bold blue]"
+        )
         spacing = "           "
         console.print(Panel(f"{overall_score_string}{spacing}{overall_pass_rate}", title="📊 Evaluation Report"))
 
@@ -93,7 +98,7 @@ class CollapsibleTableReportDisplay:
             table.add_row(*renderables)
         console.print(table)
 
-    def run(self, static: bool = False):
+    def run(self, static: bool = False) -> None:
         """
         Run the interactive display loop. If static, then the terminal will only display the report.
 
@@ -114,7 +119,8 @@ class CollapsibleTableReportDisplay:
                 return
 
             choice = Prompt.ask(
-                "\nEnter the test case number to expand/collapse it, o to expand all, and c to collapse all (q to quit)."
+                "\nEnter the test case number to expand/collapse it, o to expand all,"
+                "and c to collapse all (q to quit)."
             )
 
             if choice.lower() == "q":

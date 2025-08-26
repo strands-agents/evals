@@ -10,20 +10,28 @@ def extract_swarm_handoffs(swarm_result: SwarmResult) -> list[dict]:
 
     Returns:
         list: Handoff information with from/to agents and output messages
-        [{from: str, to: str, messages: list[str]}, ...]
+        [{from: str, to: str, messages: list}, ...]
     """
     hand_off_info = []
-    for node_name, node_info in swarm_result.results.items():
-        messages = [m["text"] for m in node_info.result.message["content"]]
-        added = False
-        for tool_name, tool_info in node_info.result.metrics.tool_metrics.items():
-            if tool_name == "handoff_to_agent":
-                hand_off_info.append(
-                    {"from": node_name, "to": tool_info.tool["input"]["agent_name"], "messages": messages}
-                )
-                added = True
-        if not added:
+    for node_name, node_info in swarm_result.results.items():  # node_info is type NodeResult
+        if isinstance(node_info.result, Exception):  # there's no agent results for exceptions
+            messages = [str(node_info.result)]
             hand_off_info.append({"from": node_name, "to": None, "messages": messages})
+        else:  # either a singular AgentResult or MultiAgentResult which has nested AgentResults
+            agent_results = node_info.get_agent_results()
+            current_node = node_name
+            for agent_result in agent_results:
+                added = False
+                messages = [m["text"] for m in agent_result.message["content"]]
+                for tool_name, tool_info in agent_result.metrics.tool_metrics.items():
+                    if tool_name == "handoff_to_agent":
+                        hand_off_info.append(
+                            {"from": current_node, "to": tool_info.tool["input"]["agent_name"], "messages": messages}
+                        )
+                        added = True
+                        current_node = tool_info.tool["input"]["agent_name"]  # in case of MultiAgentResult
+                if not added:
+                    hand_off_info.append({"from": current_node, "to": None, "messages": messages})
 
     return hand_off_info
 
@@ -39,7 +47,7 @@ def extract_swarm_interactions_from_handoffs(handoffs_info: list[dict]) -> list[
         list: Interactions with node names, messages, and dependencies
         [{node_name: str, messages: list[str], dependencies: list[str]}, ...]
     """
-    dependencies = {}
+    dependencies: dict[str, list] = {}
     interactions = []
     for handoff in handoffs_info:
         if handoff["to"] not in dependencies:

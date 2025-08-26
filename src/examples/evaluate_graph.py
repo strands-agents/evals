@@ -6,9 +6,10 @@ from strands.multiagent import GraphBuilder
 from strands_evals import Case, Dataset
 from strands_evals.evaluators import InteractionsEvaluator, TrajectoryEvaluator
 from strands_evals.extractors import graph_extractor
+from strands_evals.types import EvaluationReport
 
 
-async def async_graph_example():
+async def async_graph_example() -> EvaluationReport:
     """
     Demonstrates evaluating graph-based agent workflows for research tasks.
 
@@ -24,12 +25,16 @@ async def async_graph_example():
     """
 
     ### Step 1: Define task ###
-    def research_graph(task: str):
+    def research_graph(task: str) -> dict:
         # Create specialized agents
-        researcher = Agent(name="researcher", system_prompt="You are a research specialist...")
-        analyst = Agent(name="analyst", system_prompt="You are a data analysis specialist...")
-        fact_checker = Agent(name="fact_checker", system_prompt="You are a fact checking specialist...")
-        report_writer = Agent(name="report_writer", system_prompt="You are a report writing specialist...")
+        researcher = Agent(name="researcher", system_prompt="You are a research specialist...", callback_handler=None)
+        analyst = Agent(name="analyst", system_prompt="You are a data analysis specialist...", callback_handler=None)
+        fact_checker = Agent(
+            name="fact_checker", system_prompt="You are a fact checking specialist...", callback_handler=None
+        )
+        report_writer = Agent(
+            name="report_writer", system_prompt="You are a report writing specialist...", callback_handler=None
+        )
 
         # Create a graph with these agents
         builder = GraphBuilder()
@@ -76,13 +81,14 @@ async def async_graph_example():
         "report": "The report node should come after analysis"
         " and fact check and synthesize the information into a coherent report.",
     }
-    # if want to use the same rubric
-    basic_rubric = (
-        "The graph system should ultilized the agents as expected with relevant information."
-        " The actual interactions should include more information than expected."
-    )
+    # # if want to use the same rubric
+    # basic_rubric = (
+    #     "The graph system should ultilized the agents as expected with relevant information."
+    #     " The actual interactions should include more information than expected."
+    # )
+    trajectory_rubric = "The graph system should ultilized the agents as expected with relevant information."
     interaction_evaluator = InteractionsEvaluator(rubric=rubric)
-    trajectory_evaluator = TrajectoryEvaluator(rubric=basic_rubric)
+    trajectory_evaluator = TrajectoryEvaluator(rubric=trajectory_rubric)
 
     ### Step 4: Create dataset ###
     interaction_dataset = Dataset(cases=[test1, test2], evaluator=interaction_evaluator)

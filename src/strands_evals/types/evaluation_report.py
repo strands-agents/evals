@@ -39,19 +39,25 @@ class EvaluationReport(BaseModel):
         include_actual_interactions: bool = False,
         include_expected_interactions: bool = False,
         include_meta: bool = False,
-    ):
+    ) -> None:
         """
         Render an interface of the report with as much details as configured using Rich.
 
         Args:
             static: Whether to render the interface as interactive or static.
             include_input: Whether to include the input in the display. Defaults to True.
-            include_actual_output: Whether to include the actual output in the display. Defaults to False.
-            include_expected_output: Whether to include the expected output in the display. Defaults to False.
-            include_expected_trajectory: Whether to include the expected trajectory in the display. Defaults to False.
-            include_actual_trajectory: Whether to include the actual trajectory in the display. Defaults to False.
-            include_actual_interactions: Whether to include the actual interactions in the display. Defaults to False.
-            include_expected_interactions: Whether to include the expected interactions in the display. Defaults to False.
+            include_actual_output: Whether to include the actual output in the display.
+                Defaults to False.
+            include_expected_output: Whether to include the expected output in the display.
+                Defaults to False.
+            include_expected_trajectory: Whether to include the expected trajectory in the display.
+                Defaults to False.
+            include_actual_trajectory: Whether to include the actual trajectory in the display.
+                Defaults to False.
+            include_actual_interactions: Whether to include the actual interactions in the display.
+                Defaults to False.
+            include_expected_interactions: Whether to include the expected interactions in the display.
+                Defaults to False.
             include_meta: Whether to include metadata in the display. Defaults to False.
 
         Note:
@@ -61,7 +67,7 @@ class EvaluationReport(BaseModel):
         report_data = {}
         for i in range(len(self.scores)):
             name = self.cases[i].get("name", f"Test {i + 1}")
-            reason = self.reasons[i] if i < len(self.reasons) else "N/A"
+            reason = self.reasons[i] if self.reasons and i < len(self.reasons) else "N/A"
             details_dict = {
                 "name": name,
                 "score": f"{self.scores[i]:.2f}",
@@ -100,19 +106,25 @@ class EvaluationReport(BaseModel):
         include_actual_interactions: bool = False,
         include_expected_interactions: bool = False,
         include_meta: bool = False,
-    ):
+    ) -> None:
         """
         Render the report with as much details as configured using Rich. Use run_display if want
         to interact with the table.
 
         Args:
             include_input: Whether to include the input in the display. Defaults to True.
-            include_actual_output: Whether to include the actual output in the display. Defaults to False.
-            include_expected_output: Whether to include the expected output in the display. Defaults to False.
-            include_expected_trajectory: Whether to include the expected trajectory in the display. Defaults to False.
-            include_actual_trajectory: Whether to include the actual trajectory in the display. Defaults to False.
-            include_actual_interactions: Whether to include the actual interactions in the display. Defaults to False.
-            include_expected_interactions: Whether to include the expected interactions in the display. Defaults to False.
+            include_actual_output: Whether to include the actual output in the display.
+                Defaults to False.
+            include_expected_output: Whether to include the expected output in the display.
+                Defaults to False.
+            include_expected_trajectory: Whether to include the expected trajectory in the display.
+                Defaults to False.
+            include_actual_trajectory: Whether to include the actual trajectory in the display.
+                Defaults to False.
+            include_actual_interactions: Whether to include the actual interactions in the display.
+                Defaults to False.
+            include_expected_interactions: Whether to include the expected interactions in the display.
+                Defaults to False.
             include_meta: Whether to include metadata in the display. Defaults to False.
         """
         self._display(
@@ -137,18 +149,24 @@ class EvaluationReport(BaseModel):
         include_actual_interactions: bool = False,
         include_expected_interactions: bool = False,
         include_meta: bool = False,
-    ):
+    ) -> None:
         """
         Render the report interactively with as much details as configured using Rich.
 
         Args:
             include_input: Whether to include the input in the display. Defaults to True.
-            include_actual_output: Whether to include the actual output in the display. Defaults to False.
-            include_expected_output: Whether to include the expected output in the display. Defaults to False.
-            include_expected_trajectory: Whether to include the expected trajectory in the display. Defaults to False.
-            include_actual_trajectory: Whether to include the actual trajectory in the display. Defaults to False.
-            include_actual_interactions: Whether to include the actual interactions in the display. Defaults to False.
-            include_expected_interactions: Whether to include the expected interactions in the display. Defaults to False.
+            include_actual_output: Whether to include the actual output in the display.
+                Defaults to False.
+            include_expected_output: Whether to include the expected output in the display.
+                Defaults to False.
+            include_expected_trajectory: Whether to include the expected trajectory in the display.
+                Defaults to False.
+            include_actual_trajectory: Whether to include the actual trajectory in the display.
+                Defaults to False.
+            include_actual_interactions: Whether to include the actual interactions in the display.
+                Defaults to False.
+            include_expected_interactions: Whether to include the expected interactions in the display.
+                Defaults to False.
             include_meta: Whether to include metadata in the display. Defaults to False.
         """
         self._display(
@@ -163,28 +181,84 @@ class EvaluationReport(BaseModel):
             include_meta=include_meta,
         )
 
-    def to_dict(self):
+    def to_dict(self, is_vertical: bool = True) -> dict:
         """
         Returns a dictionary representation of the report.
+
+        Args:
+            is_vertical: If True, returns data in vertical format (separate arrays for scores, test_passes, etc.).
+                        If False, returns horizontal format (evaluation results embedded in each case).
+
+        Returns:
+            dict: A dictionary representing the report.
         """
-        return self.model_dump()
+        vertical_format = self.model_dump()
+        if is_vertical:
+            return vertical_format
+
+        # Convert the dictionary to a list of dictionaries
+        horizontal_cases = []
+        cases = vertical_format["cases"]
+        scores = vertical_format["scores"]
+        test_passes = vertical_format["test_passes"]
+        reasons = vertical_format["reasons"]
+        for i, case in enumerate(cases):
+            evaluation_results = {
+                "score": scores[i],
+                "test_pass": test_passes[i],
+                "reason": reasons[i],
+            }
+            case["evaluation_results"] = evaluation_results
+            horizontal_cases.append(case)
+
+        return {"overall_score": vertical_format["overall_score"], "cases": horizontal_cases}
 
     @classmethod
-    def from_dict(cls, data: dict):
+    def from_dict(cls, data: dict) -> "EvaluationReport":
         """
         Create an EvaluationReport instance from a dictionary.
 
         Args:
             data: A dictionary containing the report data.
+
+        Returns: An EvaluationReport object created from the given dictionary.
         """
+        cases = data.get("cases", [])
+        if cases and isinstance(cases[0], dict) and "evaluation_results" in cases[0]:
+            # Convert the list of dictionaries back to the original format given horizontal format
+            new_cases = []
+            scores = []
+            test_passes = []
+            reasons = []
+            for case in cases:
+                evaluation_results = case.pop("evaluation_results")
+                new_cases.append(case)
+                scores.append(evaluation_results["score"])
+                test_passes.append(evaluation_results["test_pass"])
+                reasons.append(evaluation_results["reason"])
+
+            return cls.model_validate(
+                {
+                    "overall_score": data["overall_score"],
+                    "cases": new_cases,
+                    "scores": scores,
+                    "test_passes": test_passes,
+                    "reasons": reasons,
+                }
+            )
+
         return cls.model_validate(data)
 
-    def to_file(self, file_name: str, format: str = "json", directory: str = "report_files"):
+    def to_file(
+        self, file_name: str, is_vertical: bool = True, format: str = "json", directory: str = "report_files"
+    ) -> None:
         """
         Write the report to a file.
 
         Args:
             file_name: Name of the file without extension.
+            is_vertical: If True, saves in vertical format (separate arrays).
+              If False, saves in horizontal format (embedded results).
             format: The format of the file to be saved.
             directory: Directory to save the file (default: "report_files").
         """
@@ -193,12 +267,12 @@ class EvaluationReport(BaseModel):
 
         if format == "json":
             with open(f"{directory}/{file_name}.json", "w") as f:
-                json.dump(self.to_dict(), f, indent=2)
+                json.dump(self.to_dict(is_vertical), f, indent=2)
         else:
             raise ValueError(f"Unsupported format: {format}")
 
     @classmethod
-    def from_file(cls, file_path: str, format: str = "json"):
+    def from_file(cls, file_path: str, format: str = "json") -> "EvaluationReport":
         """
         Create an EvaluationReport instance from a file.
 

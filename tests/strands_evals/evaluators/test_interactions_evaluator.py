@@ -97,7 +97,13 @@ def test_interactions_evaluator_get_node_rubric_dict_missing_key():
     rubric_dict = {"planner": "Plan rubric"}
     evaluator = InteractionsEvaluator(rubric=rubric_dict)
 
-    with pytest.raises(Exception, match="Please make sure the rubric dictionary contains the key 'missing_node'"):
+    with pytest.raises(
+        Exception,
+        match=(
+            "Please make sure the list of interactions in the test case all contain a node_name and "
+            "the rubric dictionary contains the key 'missing_node'."
+        ),
+    ):
         evaluator._get_node_rubric("missing_node")
 
 
@@ -163,7 +169,13 @@ def test_interactions_evaluator_evaluate_missing_interaction_fields(mock_agent_c
         actual_interactions=[{}],  # Missing everything
     )
 
-    with pytest.raises(KeyError):
+    with pytest.raises(
+        KeyError,
+        match=(
+            "Please make sure the task function returns a dictionary with the key 'interactions'"
+            " that contains a list of Interactions with 'node_name', and/or 'dependencies', and/or 'messages'."
+        ),
+    ):
         evaluator.evaluate(evaluation_data)
 
 
@@ -227,7 +239,13 @@ def test_interactions_evaluator_evaluate_dict_rubric_missing_node(mock_agent_cla
         actual_interactions=[{"node_name": "missing_node", "dependencies": [], "messages": ["test message"]}],
     )
 
-    with pytest.raises(KeyError, match="Please make sure the rubric dictionary contains the key 'missing_node'"):
+    with pytest.raises(
+        KeyError,
+        match=(
+            "Please make sure the list of interactions in the test case all contain a node_name and "
+            "the rubric dictionary contains the key 'missing_node'."
+        ),
+    ):
         evaluator.evaluate(evaluation_data)
 
 
@@ -395,3 +413,14 @@ def test_interactions_evaluator_compose_prompt_with_mismatched_list_input():
     prompt_1 = evaluator._compose_prompt(evaluation_data, 1, True)
     assert "<Input>" not in prompt_1
     assert "Second response" in prompt_1
+
+
+def test_interactions_evaluator_to_dict():
+    """Test that InteractionsEvaluator to_dict works properly"""
+    evaluator = InteractionsEvaluator(rubric="custom rubric", model="custom_model")
+    evaluator_dict = evaluator.to_dict()
+    assert evaluator_dict["evaluator_type"] == "InteractionsEvaluator"
+    assert evaluator_dict["rubric"] == "custom rubric"
+    assert evaluator_dict["model"] == "custom_model"
+    assert evaluator_dict.get("include_inputs") is None  # shouldn't include default
+    assert evaluator_dict.get("interaction_description") is None

@@ -64,7 +64,7 @@ async def test_evaluator_custom_evaluate_async(evaluation_data):
     assert result.reason == "Test evaluation"
 
 
-def test_to_dict_evaluator():
+def test_evaluator_to_dict():
     """Test that evaluator to_dict works properly"""
     evaluator = Evaluator()
     evaluator_dict = evaluator.to_dict()
