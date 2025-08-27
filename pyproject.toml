@@ -87,7 +87,11 @@ prepare = [
 
 [tool.hatch.envs.hatch-static-analysis]
 dependencies = [
+    "pydantic>=2.0.0,<3.0.0",
+    "rich>=14.0.0,<15.0.0",
     "strands-agents>=1.0.0",
+    "strands-agents-tools>=0.1.0,<1.0.0",
+    "typing-extensions>=4.0",
     "mypy>=1.0",
     "ruff>=0.4.4,<1.0.0",
 ]

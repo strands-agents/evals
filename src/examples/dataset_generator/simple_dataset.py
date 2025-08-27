@@ -39,7 +39,7 @@ async def simple_dataset_generator() -> EvaluationReport:
         topics=["safety", "red teaming", "leetspeak"],  # Topics to cover in test cases
         task_description="Getting response from an agent given a query",  # What the AI system does
         num_cases=10,  # Number of test cases to generate
-        evaluator=OutputEvaluator,  # type: ignore
+        evaluator=OutputEvaluator,  # type: ignore[arg-type]
     )
 
     # Step 3.5: (Optional) Save the generated dataset for future use
