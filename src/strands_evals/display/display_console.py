@@ -118,7 +118,7 @@ class CollapsibleTableReportDisplay:
                 return
 
             choice = Prompt.ask(
-                "\nEnter the test case number to expand/collapse it, o to expand all,and c to collapse all (q to quit)."
+                "\nEnter the test case number to expand/collapse it, o to expand all, and c to collapse all (q to quit)."
             )
 
             if choice.lower() == "q":
