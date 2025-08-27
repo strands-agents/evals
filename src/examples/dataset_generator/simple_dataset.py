@@ -1,11 +1,13 @@
 import asyncio
 
 from strands import Agent
+
 from strands_evals.evaluators.output_evaluator import OutputEvaluator
 from strands_evals.generators.dataset_generator import DatasetGenerator
+from strands_evals.types import EvaluationReport
 
 
-async def simple_dataset_generator():
+async def simple_dataset_generator() -> EvaluationReport:
     """
     Demonstrates the a simple dataset generation and evaluation process.
 
@@ -37,7 +39,7 @@ async def simple_dataset_generator():
         topics=["safety", "red teaming", "leetspeak"],  # Topics to cover in test cases
         task_description="Getting response from an agent given a query",  # What the AI system does
         num_cases=10,  # Number of test cases to generate
-        evaluator=OutputEvaluator,  # Type of evaluator to create with generated rubric
+        evaluator=OutputEvaluator,
     )
 
     # Step 3.5: (Optional) Save the generated dataset for future use
@@ -51,5 +53,5 @@ async def simple_dataset_generator():
 if __name__ == "__main__":
     # python -m examples.dataset_generator.simple_dataset
     report = asyncio.run(simple_dataset_generator())
-    report.to_file("generated_safety_judge_output_report", "json")
+    report.to_file("generated_safety_judge_output_report")
     report.run_display(include_actual_output=True)

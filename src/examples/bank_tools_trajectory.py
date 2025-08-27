@@ -2,61 +2,14 @@ import asyncio
 import datetime
 
 from strands import Agent, tool
+
 from strands_evals import Case, Dataset
 from strands_evals.evaluators import TrajectoryEvaluator
 from strands_evals.extractors import tools_use_extractor
-from strands_evals.types import TaskOutput
-
-balances = {"Anna": -100, "Cindy": 800, "Brian": 300, "Hailey": 0}
+from strands_evals.types import EvaluationReport, TaskOutput
 
 
-@tool
-def get_balance(person: str) -> int:
-    """
-    get the balance of a bank account.
-
-    Args:
-        person (str): The person to check the balance for.
-
-    Returns:
-        int: The balance of the bank account on the given day.
-    """
-    # Simple example, but real case could check the database etc.
-    return balances.get(person, 0)
-
-
-@tool
-def modify_balance(person: str, amount: int) -> None:
-    """
-    Modify the balance of a bank account by a given amount.
-
-    Args:
-        person (str): The person to modify the balance for.
-        amount (int): The amount to add to the balance.
-
-    Returns:
-        None
-    """
-    balances[person] += amount
-
-
-@tool
-def collect_debt() -> list[tuple]:
-    """
-    Check all of the bank accounts for any debt.
-
-    Returns:
-        list: A list of tuples, where each tuple contains the person and their debt.
-    """
-    debt = []
-    for person in balances:
-        if balances[person] < 0:
-            debt.append((person, abs(balances[person])))
-
-    return debt
-
-
-async def async_descriptive_tools_trajectory_example():
+async def async_descriptive_tools_trajectory_example() -> EvaluationReport:
     """
     Demonstrates evaluating tool usage trajectories in agent responses asynchronously.
 
@@ -73,7 +26,52 @@ async def async_descriptive_tools_trajectory_example():
     """
 
     ### Step 1: Define task ###
-    async def get_response(query: str) -> dict:
+    async def get_response(query: str) -> TaskOutput:
+        balances = {"Anna": -100, "Cindy": 800, "Brian": 300, "Hailey": 0}
+
+        @tool
+        def get_balance(person: str) -> int:
+            """
+            get the balance of a bank account.
+
+            Args:
+                person (str): The person to check the balance for.
+
+            Returns:
+                int: The balance of the bank account on the given day.
+            """
+            # Simple example, but real case could check the database etc.
+            return balances.get(person, 0)
+
+        @tool
+        def modify_balance(person: str, amount: int) -> None:
+            """
+            Modify the balance of a bank account by a given amount.
+
+            Args:
+                person (str): The person to modify the balance for.
+                amount (int): The amount to add to the balance.
+
+            Returns:
+                None
+            """
+            balances[person] += amount
+
+        @tool
+        def collect_debt() -> list[tuple]:
+            """
+            Check all of the bank accounts for any debt.
+
+            Returns:
+                list: A list of tuples, where each tuple contains the person and their debt.
+            """
+            debt = []
+            for person in balances:
+                if balances[person] < 0:
+                    debt.append((person, abs(balances[person])))
+
+            return debt
+
         bank_prompt = (
             "You are a banker, ensure that only people with sufficient balance can spend them."
             " Collect debt from people with negative balance."
@@ -124,7 +122,7 @@ async def async_descriptive_tools_trajectory_example():
     )
 
     ### Step 3: Create evaluator ###
-    trajectory_evaluator = TrajectoryEvaluator(
+    trajectory_evaluator: TrajectoryEvaluator = TrajectoryEvaluator(
         rubric="The trajectory should be in the correct order with all of the steps as the expected."
         "The agent should know when and what action is logical. Strictly score 0 if any step is missing.",
         include_inputs=True,
@@ -147,5 +145,5 @@ if __name__ == "__main__":
     report = asyncio.run(async_descriptive_tools_trajectory_example())
     end = datetime.datetime.now()
     print("Async: ", end - start)
-    report.to_file("async_bank_tools_trajectory_report", "json")
+    report.to_file("async_bank_tools_trajectory_report")
     report.run_display(include_actual_trajectory=True)

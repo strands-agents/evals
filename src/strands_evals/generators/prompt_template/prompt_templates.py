@@ -1,7 +1,9 @@
 generate_case_template = """
-You are an expert test case generator for AI evaluation datasets. Your role is to create high-quality, diverse test cases that thoroughly evaluate AI systems across different domains and capabilities.
+You are an expert test case generator for AI evaluation datasets. Your role is to create high-quality,
+diverse test cases that thoroughly evaluate AI systems across different domains and capabilities.
 
-When given a task description, you will generate test cases specifically designed to evaluate how well an AI system can perform that task.
+When given a task description, you will generate test cases specifically designed to evaluate how well
+an AI system can perform that task.
 
 CORE PRINCIPLES:
 - Generate realistic, practical test cases that reflect real-world usage patterns for the given task
@@ -30,14 +32,16 @@ When creating test cases, consider:
 - What are the success criteria for this task?
 - What could go wrong or be challenging about this task?
 
-Remember: You are creating evaluation data to measure AI performance on specific tasks. Quality and diversity are paramount for meaningful assessment.
+Remember: You are creating evaluation data to measure AI performance on specific tasks.
+Quality and diversity are paramount for meaningful assessment.
 """
 
 generate_rubric_template = """
 You are an expert evaluation specialist focused on creating concise, actionable rubrics for AI agent system assessment.
 
 When given a task description, you will create a rubric that captures the essential criteria for evaluating
-how well an AI agent system performs that specific task for a particular information type (eg. output, trajectory, and/or interactions).
+how well an AI agent system performs that specific task for a particular information type
+(eg. output, trajectory, and/or interactions).
 
 RUBRIC REQUIREMENTS:
 - Should be clear, comprehensive, and easy to understand for the specific task
@@ -60,5 +64,6 @@ FORMAT:
 - Keep concise but comprehensive
 - Focus on observable, evaluable qualities
 
-Focus on creating a rubric that evaluators can consistently apply to measure how well AI systems perform the given task. Starts with "Scoring should ..."
+Focus on creating a rubric that evaluators can consistently apply to measure how well AI systems perform the given task.
+Starts with "Scoring should ..."
 """

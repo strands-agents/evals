@@ -11,7 +11,7 @@ def compose_test_prompt(
     rubric: str,
     include_inputs: bool,
     uses_trajectory: bool = False,
-    trajectory_description: dict = None,
+    trajectory_description: dict | None = None,
 ) -> str:
     """
     Compose the prompt for a test case evaluation.
@@ -30,7 +30,10 @@ def compose_test_prompt(
         Exception: If actual_output is missing for non-trajectory evaluations
         Exception: If actual_trajectory is missing for trajectory evaluations
     """
-    evaluation_prompt = "Evaluate this singular test case. THE FINAL SCORE MUST BE A DECIMAL BETWEEN 0.0 AND 1.0 (NOT 0 to 10 OR 0 to 100). \n"
+    evaluation_prompt = (
+        "Evaluate this singular test case. "
+        "THE FINAL SCORE MUST BE A DECIMAL BETWEEN 0.0 AND 1.0 (NOT 0 to 10 OR 0 to 100). \n"
+    )
     if include_inputs:
         evaluation_prompt += f"<Input>{evaluation_case.input}</Input>\n"
 

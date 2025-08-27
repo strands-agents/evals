@@ -83,10 +83,10 @@ report.run_display()
 
 ```python
 # Save dataset to JSON
-dataset.to_file("my_dataset", "json")
+dataset.to_file("my_dataset")
 
 # Load dataset from JSON
-loaded_dataset = Dataset.from_file("./dataset_files/my_dataset.json", "json")
+loaded_dataset = Dataset.from_file("./dataset_files/my_dataset.json")
 ```
 
 ## Custom Evaluators
@@ -108,7 +108,7 @@ class CustomEvaluator(Evaluator[str, str]):
         return EvaluationOutput(
             score=score,
             test_pass=test_pass,
-            reason="Custom evaluation reason"
+            reason="Custom evaluation reason" # None if not available
         )
 
 # Use custom evaluator

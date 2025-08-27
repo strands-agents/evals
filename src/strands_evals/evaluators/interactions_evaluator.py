@@ -50,7 +50,7 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
         """
         self.interaction_description = new_description
 
-    def _get_node_rubric(self, node_name: str) -> str:
+    def _get_node_rubric(self, node_name: str | None) -> str:
         """
         Get the rubric for the node involved in the interaction.
 
@@ -64,9 +64,12 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
             If the rubric is a dictionary, then expect it to contain the keys for every node.
         """
         if isinstance(self.rubric, dict):  # rubric for each node
-            rubric = self.rubric.get(node_name, None)
+            rubric = self.rubric.get(node_name, None) if node_name is not None else None
             if rubric is None:
-                raise KeyError(f"Please make sure the rubric dictionary contains the key '{node_name}'.")
+                raise KeyError(
+                    "Please make sure the list of interactions in the test case all contain a node_name and "
+                    f"the rubric dictionary contains the key '{node_name}'."
+                )
             return rubric
 
         return self.rubric  # use the same rubric for all of the nodes
@@ -86,25 +89,35 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
             The prompt for the given evaluation case.
         """
         if is_last:
-            evaluation_prompt = "Evaluate this final interaction. THE FINAL SCORE MUST BE A DECIMAL BETWEEN 0.0 AND 1.0 (NOT 0 to 10 OR 0 to 100). Your reasoning should include information from all of the previous interactions evaluated.\n"
+            evaluation_prompt = (
+                "Evaluate this final interaction. THE FINAL SCORE MUST BE A DECIMAL"
+                " BETWEEN 0.0 AND 1.0 (NOT 0 to 10 OR 0 to 100). Your reasoning should"
+                " include information from all of the previous interactions evaluated.\n"
+            )
         else:
-            evaluation_prompt = "Evaluate this interaction. THE SCORE MUST BE A DECIMAL BETWEEN 0.0 AND 1.0 (NOT 0 to 10 OR 0 to 100). \n"
+            evaluation_prompt = (
+                "Evaluate this interaction. THE SCORE MUST BE A DECIMAL BETWEEN 0.0 AND 1.0"
+                " (NOT 0 to 10 OR 0 to 100). \n"
+            )
 
         if self.include_inputs:
-            if isinstance(evaluation_case.input, list) and len(evaluation_case.input) == len(
-                evaluation_case.actual_interactions
+            if (
+                isinstance(evaluation_case.input, list)
+                and isinstance(evaluation_case.actual_interactions, list)
+                and len(evaluation_case.input) == len(evaluation_case.actual_interactions)
             ):
                 evaluation_prompt += f"<Input>{evaluation_case.input[current_case_i]}</Input>\n"
             elif current_case_i == 0:  # only include the input for the first interaction
                 evaluation_prompt += f"<Input>{evaluation_case.input}</Input>\n"
 
-        interaction = evaluation_case.actual_interactions[current_case_i]
+        interaction = evaluation_case.actual_interactions[current_case_i] if evaluation_case.actual_interactions else {}
         node_name = interaction.get("node_name", None)
         dependencies = interaction.get("dependencies", None)
         messages = interaction.get("messages", None)
         if node_name is None and dependencies is None and messages is None:
             raise KeyError(
-                "Please make sure the task function returns a dictionary with the key 'interactions' that contains a list of Interactions with 'node_name', and/or 'dependencies', and/or 'messages'."
+                "Please make sure the task function returns a dictionary with the key 'interactions'"
+                " that contains a list of Interactions with 'node_name', and/or 'dependencies', and/or 'messages'."
             )
 
         evaluation_prompt += (
@@ -125,7 +138,10 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
                 e_node_name = relevant_expected_interaction.get("node_name", None)
                 e_dependencies = relevant_expected_interaction.get("dependencies", None)
                 e_messages = relevant_expected_interaction.get("messages", None)
-                evaluation_prompt += f"<RelevantExpectedInteraction> Node Name: {e_node_name}, Depends on {e_dependencies}, Message: {e_messages} </RelevantExpectedInteraction>\n"
+                evaluation_prompt += (
+                    f"<RelevantExpectedInteraction> Node Name: {e_node_name}, "
+                    f"Depends on {e_dependencies}, Message: {e_messages} </RelevantExpectedInteraction>\n"
+                )
 
         if is_last:  # only include the actual output of the whole interaction in the last interaction
             if evaluation_case.actual_output:
@@ -152,7 +168,8 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
         """
         if evaluation_case.actual_interactions is None:
             raise KeyError(
-                "Please make sure the task function returns a dictionary with the key 'interactions' of type list[Interaction]."
+                "Please make sure the task function returns a dictionary with the key"
+                " 'interactions' of type list[Interaction]."
             )
         num_interactions = len(evaluation_case.actual_interactions)
 
@@ -166,7 +183,7 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
         )
 
         is_last = False
-        result = None
+        result = EvaluationOutput(score=0, test_pass=False, reason="No interactions evailable.")
         for i in range(num_interactions):  # evaluate one interaction at a time
             if i == num_interactions - 1:
                 is_last = True
@@ -201,7 +218,7 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
         )
 
         is_last = False
-        result = None
+        result = EvaluationOutput(score=0, test_pass=False, reason="No interactions evailable.")
         for i in range(num_interactions):  # evaluate one interaction at a time
             if i == num_interactions - 1:
                 is_last = True

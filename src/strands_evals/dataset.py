@@ -42,7 +42,8 @@ class Dataset(Generic[InputT, OutputT]):
                         expected_trajectory=["calculator],
                         metadata={"category": "math"})
             ],
-            evaluator=OutputEvaluator(rubric = "The output is relevant and complete. 0 if the output is incorrect or irrelevant.")
+            evaluator=OutputEvaluator(rubric = "The output is relevant and complete.
+            0 if the output is incorrect or irrelevant.")
         )
     """
 
@@ -75,8 +76,8 @@ class Dataset(Generic[InputT, OutputT]):
         """
         return self._evaluator
 
-    @cases.setter
-    def cases(self, new_cases: list[Case[InputT, OutputT]]):
+    @cases.setter  # type: ignore
+    def cases(self, new_cases: list[Case[InputT, OutputT]]) -> None:
         """
         Set the test cases for this dataset.
 
@@ -85,8 +86,8 @@ class Dataset(Generic[InputT, OutputT]):
         """
         self._cases = new_cases
 
-    @evaluator.setter
-    def evaluator(self, new_evaluator: Evaluator[InputT, OutputT]):
+    @evaluator.setter  # type: ignore
+    def evaluator(self, new_evaluator: Evaluator[InputT, OutputT]) -> None:
         """
         Set the evaluator for assessing test case performance.
 
@@ -102,7 +103,8 @@ class Dataset(Generic[InputT, OutputT]):
         Run the task with the inputs from the test case.
 
         Args:
-            task: The task to run the test case on. This function should take in InputT and returns either OutputT or {"output": OutputT, "trajectory": ...}.
+            task: The task to run the test case on. This function should take in InputT and
+            returns either OutputT or {"output": OutputT, "trajectory": ...}.
             case: The test case containing neccessary information to run the task
 
         Return:
@@ -138,12 +140,14 @@ class Dataset(Generic[InputT, OutputT]):
         Run the task with the inputs from the test case asynchronously.
 
         Args:
-            task: The task to run the test case on. This function should take in InputT and returns either OutputT or {"output": OutputT, "trajectory": ...}.
+            task: The task to run the test case on. This function should take in InputT and
+                returns either OutputT or {"output": OutputT, "trajectory": ...}.
                 The task can either run synchronously or asynchronously.
             case: The test case containing neccessary information to run the task
 
         Return:
-            An EvaluationData record containing the input and actual output, name, expected output, and metadata.
+            An EvaluationData record containing the input and
+            actual output, name, expected output, and metadata.
         """
         # Create evaluation context
         evaluation_context = EvaluationData(
@@ -174,9 +178,10 @@ class Dataset(Generic[InputT, OutputT]):
 
         return evaluation_context
 
-    async def _worker(self, queue: asyncio.Queue, task: Callable, results: list):
+    async def _worker(self, queue: asyncio.Queue, task: Callable, results: list) -> None:
         """
-        Worker that processes cases from the queue. Run evaluation on the task.
+        Worker that processes cases from the queue. Run evaluation on the task. Update results with
+        the evaluation result.
 
         Args:
             queue: Queue containing cases to process
@@ -220,10 +225,12 @@ class Dataset(Generic[InputT, OutputT]):
         Run the evaluations for all of the test cases with the evaluator.
 
         Args:
-            task: The task to run the test case on. This function should take in InputT and returns either OutputT or {"output": OutputT, "trajectory": ...}.
+            task: The task to run the test case on. This function should take in
+            InputT and returns either OutputT or {"output": OutputT, "trajectory": ...}.
 
         Return:
-            An EvaluationReport containing the overall score, individual case results, and basic feedback for each test case.
+            An EvaluationReport containing the overall score, individual case results,
+            and basic feedback for each test case.
         """
         scores = []
         test_passes = []
@@ -261,15 +268,16 @@ class Dataset(Generic[InputT, OutputT]):
         Run evaluations asynchronously using a queue for parallel processing.
 
         Args:
-            task: The task function to run on each case. This function should take in InputT and returns either OutputT or {"output": OutputT, "trajectory": ...}.
+            task: The task function to run on each case. This function should take in InputT and returns either
+                OutputT or {"output": OutputT, "trajectory": ...}.
             The task can either run synchronously or asynchronously.
             max_workers: Maximum number of parallel workers (default: 10)
 
         Returns:
             EvaluationReport containing evaluation results
         """
-        queue = asyncio.Queue()
-        results = []
+        queue = asyncio.Queue()  # type: ignore
+        results: list[dict] = []
 
         for case in self._cases:
             queue.put_nowait(case)
@@ -308,7 +316,7 @@ class Dataset(Generic[InputT, OutputT]):
         """
         return {"cases": [case.model_dump() for case in self._cases], "evaluator": self.evaluator.to_dict()}
 
-    def to_file(self, file_name: str, format: str = "json", directory: str = "dataset_files"):
+    def to_file(self, file_name: str, format: str = "json", directory: str = "dataset_files") -> None:
         """
         Write the dataset to a file.
 
@@ -325,7 +333,7 @@ class Dataset(Generic[InputT, OutputT]):
             raise Exception(f"Format {format} is not supported.")
 
     @classmethod
-    def from_dict(cls, data: dict, custom_evaluators: list[Evaluator] = None):
+    def from_dict(cls, data: dict, custom_evaluators: list[Evaluator] | None = None) -> "Dataset":
         """
         Create a dataset from a dictionary.
 
@@ -337,7 +345,7 @@ class Dataset(Generic[InputT, OutputT]):
             A Dataset object.
         """
         custom_evaluators = custom_evaluators or []
-        cases = [Case.model_validate(case_data) for case_data in data["cases"]]
+        cases: list[Case] = [Case.model_validate(case_data) for case_data in data["cases"]]
         default_evaluators = {
             "Evaluator": Evaluator,
             "OutputEvaluator": OutputEvaluator,
@@ -350,16 +358,23 @@ class Dataset(Generic[InputT, OutputT]):
         evaluator_args = {k: v for k, v in data["evaluator"].items() if k != "evaluator_type"}
 
         if evaluator_type in all_evaluators:
-            evaluator = all_evaluators[evaluator_type](**evaluator_args)
+            evaluator_class = all_evaluators[evaluator_type]
+            if isinstance(evaluator_class, type) and issubclass(evaluator_class, Evaluator):
+                evaluator = evaluator_class(**evaluator_args)
+            else:
+                evaluator = Evaluator()
         else:
             raise Exception(
-                f"Cannot find {evaluator_type}. Make sure the evaluator type is spelled correctly and all relevant custom evaluators are passed in."
+                f"Cannot find {evaluator_type}. Make sure the evaluator type is spelled correctly and"
+                " all relevant custom evaluators are passed in."
             )
 
         return cls(cases=cases, evaluator=evaluator)
 
     @classmethod
-    def from_file(cls, file_path: str, format: str = "json", custom_evaluators: list[Evaluator] = None):
+    def from_file(
+        cls, file_path: str, format: str = "json", custom_evaluators: list[Evaluator] | None = None
+    ) -> "Dataset":
         """
         Create a dataset from a file.
 

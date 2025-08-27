@@ -1,6 +1,7 @@
 from unittest.mock import Mock, patch
 
 import pytest
+
 from strands_evals.evaluators import OutputEvaluator
 from strands_evals.types import EvaluationData, EvaluationOutput
 
@@ -167,3 +168,14 @@ async def test_output_evaluator_evaluate_async_missing_actual_output():
 
     with pytest.raises(Exception, match="Please make sure the task function return the output"):
         await evaluator.evaluate_async(evaluation_data)
+
+
+def test_output_evaluator_to_dict():
+    """Test that OutputEvaluator to_dict works properly"""
+    evaluator = OutputEvaluator(rubric="custom rubric", model="custom_id")
+    evaluator_dict = evaluator.to_dict()
+    assert evaluator_dict["evaluator_type"] == "OutputEvaluator"
+    assert evaluator_dict["rubric"] == "custom rubric"
+    assert evaluator_dict["model"] == "custom_id"
+    assert evaluator_dict.get("include_intputs") is None  # shouldn't include default
+    assert evaluator_dict.get("system_prompt") is None

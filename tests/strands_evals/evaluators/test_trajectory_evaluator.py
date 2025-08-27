@@ -1,6 +1,7 @@
 from unittest.mock import Mock, patch
 
 import pytest
+
 from strands_evals.evaluators import TrajectoryEvaluator
 from strands_evals.types import EvaluationData, EvaluationOutput
 
@@ -249,3 +250,15 @@ def test_trajectory_evaluator_update_trajectory_description():
     evaluator.update_trajectory_description(new_description)
 
     assert evaluator.trajectory_description == new_description
+
+
+def test_trajectory_evaluator_to_dict():
+    """Test that TrajectoryEvaluator to_dict works properly"""
+    evaluator = TrajectoryEvaluator(rubric="custom rubric", model="custom_model", system_prompt="custom system prompt")
+    evaluator_dict = evaluator.to_dict()
+    assert evaluator_dict["evaluator_type"] == "TrajectoryEvaluator"
+    assert evaluator_dict["rubric"] == "custom rubric"
+    assert evaluator_dict["model"] == "custom_model"
+    assert evaluator_dict["system_prompt"] == "custom system prompt"
+    assert evaluator_dict.get("include_inputs") is None  # shouldn't include default
+    assert evaluator_dict.get("trajectory_description") is None

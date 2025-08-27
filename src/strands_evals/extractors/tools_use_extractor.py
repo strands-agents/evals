@@ -1,7 +1,8 @@
 from strands import Agent
+from strands.agent import AgentResult
 
 
-def extract_agent_tools_used_from_messages(agent_messages):
+def extract_agent_tools_used_from_messages(agent_messages: list) -> list[dict]:
     """
     Extract tool usage information from agent message history.
 
@@ -47,7 +48,7 @@ def extract_agent_tools_used_from_messages(agent_messages):
     return tools_used
 
 
-def extract_agent_tools_used_from_metrics(agent_result):
+def extract_agent_tools_used_from_metrics(agent_result: AgentResult) -> list[dict]:
     """
     Extract tool usage metrics from agent execution result.
 
@@ -79,7 +80,7 @@ def extract_agent_tools_used_from_metrics(agent_result):
     return tools_used
 
 
-def extract_tools_description(agent: Agent, is_short: bool = True):
+def extract_tools_description(agent: Agent, is_short: bool = True) -> dict[str, str]:
     """
     Extract a dictionary of all tools used in a given agent.
 
