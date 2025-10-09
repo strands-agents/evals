@@ -1,5 +1,7 @@
 from pydantic import BaseModel
-from typing_extensions import Any, Generic, TypedDict, TypeVar
+from typing_extensions import Any, Generic, TypedDict, TypeVar, Union
+
+from .trace import Session
 
 InputT = TypeVar("InputT")
 OutputT = TypeVar("OutputT")
@@ -79,8 +81,8 @@ class EvaluationData(BaseModel, Generic[InputT, OutputT]):
     actual_output: OutputT | None = None
     name: str | None = None
     expected_output: OutputT | None = None
-    expected_trajectory: list[Any] | None = None
-    actual_trajectory: list[Any] | None = None
+    expected_trajectory: Union[list[Any], Session, None] = None
+    actual_trajectory: Union[list[Any], Session, None] = None
     metadata: dict[str, Any] | None = None
     actual_interactions: list[Interaction] | None = None
     expected_interactions: list[Interaction] | None = None

@@ -1,7 +1,5 @@
-from typing import Union
-
 from strands import Agent
-from typing_extensions import Any, TypeVar
+from typing_extensions import Any, TypeVar, Union
 
 from ..tools.evaluation_tools import any_order_match_scorer, exact_match_scorer, in_order_match_scorer
 from ..types.evaluation import EvaluationData, EvaluationOutput
