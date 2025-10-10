@@ -19,6 +19,9 @@ dependencies = [
     "strands-agents>=1.0.0",
     "strands-agents-tools>=0.1.0,<1.0.0",
     "typing-extensions>=4.0",
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-instrumentation-threading>=0.51b0,<1.00b0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -37,6 +40,8 @@ dev = [
     "pre-commit>=3.2.0,<4.2.0",
     "ruff>=0.4.4,<1.0.0",
 ]
+
+otel = ["opentelemetry-exporter-otlp-proto-http>=1.30.0,<2.0.0"]
 
 [tool.ruff]
 line-length = 120
