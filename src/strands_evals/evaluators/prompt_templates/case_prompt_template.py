@@ -11,7 +11,7 @@ def compose_test_prompt(
     rubric: str,
     include_inputs: bool,
     uses_trajectory: bool = False,
-    trajectory_description: dict = None,
+    trajectory_description: dict | None = None,
 ) -> str:
     """
     Compose the prompt for a test case evaluation.

@@ -3,17 +3,22 @@ from unittest.mock import Mock
 from strands_evals.extractors.graph_extractor import extract_graph_interactions
 
 
+def _create_mock_node(node_id: str, messages: list[str], dependencies: list = None):
+    """Helper function to create a properly mocked node"""
+    mock_node = Mock()
+    mock_node.node_id = node_id
+    # Create a mock result - the hasattr checks in the implementation will handle validation
+    mock_result = Mock()
+    mock_result.result.message = {"content": [{"text": msg} for msg in messages]}
+    mock_node.result = mock_result
+    mock_node.dependencies = dependencies or []
+    return mock_node
+
+
 def test_graph_extractor_extract_interactions():
     """Test extracting interactions from graph result"""
-    mock_node1 = Mock()
-    mock_node1.node_id = "node1"
-    mock_node1.result.result.message = {"content": [{"text": "Message from node1"}]}
-    mock_node1.dependencies = []
-
-    mock_node2 = Mock()
-    mock_node2.node_id = "node2"
-    mock_node2.result.result.message = {"content": [{"text": "Message from node2"}]}
-    mock_node2.dependencies = [mock_node1]
+    mock_node1 = _create_mock_node("node1", ["Message from node1"])
+    mock_node2 = _create_mock_node("node2", ["Message from node2"], [mock_node1])
 
     mock_graph_result = Mock()
     mock_graph_result.execution_order = [mock_node1, mock_node2]
@@ -31,10 +36,7 @@ def test_graph_extractor_extract_interactions():
 
 def test_graph_extractor_extract_interactions_multiple_messages():
     """Test extracting interactions with multiple messages per node"""
-    mock_node = Mock()
-    mock_node.node_id = "node1"
-    mock_node.result.result.message = {"content": [{"text": "First message"}, {"text": "Second message"}]}
-    mock_node.dependencies = []
+    mock_node = _create_mock_node("node1", ["First message", "Second message"])
 
     mock_graph_result = Mock()
     mock_graph_result.execution_order = [mock_node]
@@ -49,20 +51,9 @@ def test_graph_extractor_extract_interactions_multiple_messages():
 
 def test_graph_extractor_extract_interactions_complex_dependencies():
     """Test extracting interactions with complex dependency structure"""
-    mock_node1 = Mock()
-    mock_node1.node_id = "node1"
-    mock_node1.result.result.message = {"content": [{"text": "Node1 message"}]}
-    mock_node1.dependencies = []
-
-    mock_node2 = Mock()
-    mock_node2.node_id = "node2"
-    mock_node2.result.result.message = {"content": [{"text": "Node2 message"}]}
-    mock_node2.dependencies = []
-
-    mock_node3 = Mock()
-    mock_node3.node_id = "node3"
-    mock_node3.result.result.message = {"content": [{"text": "Node3 message"}]}
-    mock_node3.dependencies = [mock_node1, mock_node2]
+    mock_node1 = _create_mock_node("node1", ["Node1 message"])
+    mock_node2 = _create_mock_node("node2", ["Node2 message"])
+    mock_node3 = _create_mock_node("node3", ["Node3 message"], [mock_node1, mock_node2])
 
     mock_graph_result = Mock()
     mock_graph_result.execution_order = [mock_node1, mock_node2, mock_node3]
@@ -90,10 +81,7 @@ def test_graph_extractor_extract_interactions_empty():
 
 def test_graph_extractor_extract_interactions_single_node():
     """Test extracting interactions from single node graph"""
-    mock_node = Mock()
-    mock_node.node_id = "single_node"
-    mock_node.result.result.message = {"content": [{"text": "Single node message"}]}
-    mock_node.dependencies = []
+    mock_node = _create_mock_node("single_node", ["Single node message"])
 
     mock_graph_result = Mock()
     mock_graph_result.execution_order = [mock_node]
@@ -108,10 +96,7 @@ def test_graph_extractor_extract_interactions_single_node():
 
 def test_graph_extractor_extract_interactions_empty_messages():
     """Test extracting interactions with empty message content"""
-    mock_node = Mock()
-    mock_node.node_id = "node1"
-    mock_node.result.result.message = {"content": []}
-    mock_node.dependencies = []
+    mock_node = _create_mock_node("node1", [])
 
     mock_graph_result = Mock()
     mock_graph_result.execution_order = [mock_node]

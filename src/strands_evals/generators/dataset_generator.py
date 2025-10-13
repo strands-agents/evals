@@ -1,19 +1,19 @@
 import asyncio
+import logging
 
 from pydantic import create_model
 from strands import Agent
 from typing_extensions import Any, Generic, TypeVar
 
-from strands_evals.evaluators.evaluator import Evaluator
-from strands_evals.evaluators.interactions_evaluator import InteractionsEvaluator
-from strands_evals.evaluators.output_evaluator import OutputEvaluator
-from strands_evals.evaluators.trajectory_evaluator import TrajectoryEvaluator
+from strands_evals.evaluators import Evaluator, InteractionsEvaluator, OutputEvaluator, TrajectoryEvaluator
 
 from ..case import Case
 from ..dataset import Dataset
 from ..types.evaluation import Interaction
 from .prompt_template.prompt_templates import generate_case_template as CASE_SYSTEM_PROMPT
 from .prompt_template.prompt_templates import generate_rubric_template as RUBRIC_SYSTEM_PROMPT
+
+logger = logging.getLogger(__name__)
 
 InputT = TypeVar("InputT")
 OutputT = TypeVar("OutputT")
@@ -28,16 +28,23 @@ class DatasetGenerator(Generic[InputT, OutputT]):
     """
 
     _default_evaluators = {
-        OutputEvaluator: "evaluates only the output response, don't include information about trajectory nor interactions even if provided",
-        TrajectoryEvaluator: "evaluates the trajectory and output if provided, don't include info about interactions even if provided",
-        InteractionsEvaluator: "evaluates the interactions and output if provided, don't include info about trajectory even if provided",
+        OutputEvaluator: (
+            "evaluates only the output response, don't include information about trajectory "
+            "nor interactions even if provided"
+        ),
+        TrajectoryEvaluator: (
+            "evaluates the trajectory and output if provided, don't include info about " "interactions even if provided"
+        ),
+        InteractionsEvaluator: (
+            "evaluates the interactions and output if provided, don't include info about " "trajectory even if provided"
+        ),
     }
 
     def __init__(
         self,
         input_type: type,
         output_type: type,
-        trajectory_type: type = None,
+        trajectory_type: type | None = None,
         include_expected_output: bool = True,
         include_expected_trajectory: bool = False,
         include_expected_interactions: bool = False,
@@ -76,18 +83,19 @@ class DatasetGenerator(Generic[InputT, OutputT]):
         self.case_system_prompt = case_system_prompt
 
         # Create class structure for Case with stricter/literal types, excluding any fields not needed
-        fields = {"name": (str, ...), "input": (self.input_type, ...)}
+        fields: dict[str, Any] = {"name": (str, ...), "input": (self.input_type, ...)}
         if self.include_expected_output:
             fields["expected_output"] = (self.output_type, ...)
         if self.include_expected_trajectory:
-            fields["expected_trajectory"] = (list[trajectory_type], ...) if trajectory_type else (list[Any], ...)
+            # Use Any for trajectory type since we can't use runtime variables as types
+            fields["expected_trajectory"] = (list[Any], ...)
         if self.include_expected_interactions:
             fields["expected_interactions"] = (list[Interaction], ...)
         if self.include_metadata:
             fields["metadata"] = (dict[str, Any], ...)
         self._Case = create_model("_Case", **fields)
 
-    async def _case_worker(self, queue: asyncio.Queue, prompt: str, message_history: list, results: list):
+    async def _case_worker(self, queue: asyncio.Queue, prompt: str, message_history: list | None, results: list):
         """
         Worker that generates cases from the queue.
 
@@ -112,16 +120,17 @@ class DatasetGenerator(Generic[InputT, OutputT]):
                 break
 
             try:
-                gen_case = await case_generator.structured_output_async(
-                    self._Case, prompt + f"Ensure that the test case has a difficulty level of {difficulty}."
-                )
+                full_prompt = prompt + f"Ensure that the test case has a difficulty level of {difficulty}."
+                gen_case = await case_generator.structured_output_async(self._Case, full_prompt)
                 results.append(Case(**gen_case.model_dump()))
             except Exception as e:
-                print(f"Error generating case: {e}")
+                logger.exception(f"Error generating case: {e}")
             finally:
                 queue.task_done()
 
-    async def generate_cases_async(self, prompt: str, num_cases: int = 5, message_history: list = None) -> list[Case]:
+    async def generate_cases_async(
+        self, prompt: str, num_cases: int = 5, message_history: list | None = None
+    ) -> list[Case]:
         """
         Generate test cases asynchronously using parallel workers.
 
@@ -133,8 +142,8 @@ class DatasetGenerator(Generic[InputT, OutputT]):
         Returns:
             List of generated Case objects matching the configured schema
         """
-        queue = asyncio.Queue()
-        generated_cases = []
+        queue: asyncio.Queue[str] = asyncio.Queue()
+        generated_cases: list = []
 
         # Fill queue with tasks
         for i in range(num_cases):
@@ -160,7 +169,7 @@ class DatasetGenerator(Generic[InputT, OutputT]):
         return generated_cases
 
     async def construct_evaluator_async(
-        self, prompt: str, evaluator: Evaluator, message_history: list = None
+        self, prompt: str, evaluator: Evaluator, message_history: list | None = None
     ) -> Evaluator:
         """
         Create an evaluator instance with a generated rubric.
@@ -181,7 +190,8 @@ class DatasetGenerator(Generic[InputT, OutputT]):
         """
         if evaluator not in self._default_evaluators:
             raise ValueError(
-                f"{evaluator} is not a default evaluator that needs a rubric. Please use one of the default evaluators: {list(self._default_evaluators.keys())}."
+                f"{evaluator} is not a default evaluator that needs a rubric. Please use one of the "
+                f"default evaluators: {list(self._default_evaluators.keys())}."
             )
 
         rubric_generator_agent = Agent(
@@ -190,9 +200,13 @@ class DatasetGenerator(Generic[InputT, OutputT]):
             callback_handler=None,
             messages=message_history if message_history else [],
         )
+        evaluator_name = evaluator.get_type_name()
+        evaluator_desc = self._default_evaluators[evaluator]
+        evaluator_info = f"""The evaluator selected is {evaluator_name}. This evaluator {evaluator_desc}."""
         final_prompt = (
             prompt
-            + f"""The evaluator selected is {evaluator.get_type_name()}. This evaluator {self._default_evaluators[evaluator]}.
+            + evaluator_info
+            + """
         IMPORTANT: Your response must be ONLY a few sentences describing how to evaluate the test cases."""
         )
 
@@ -215,17 +229,20 @@ class DatasetGenerator(Generic[InputT, OutputT]):
             evaluator: Optional evaluator class for assessment (generates rubric if provided).
 
         Returns:
-            Dataset containing generated test cases and evaluator. Use the generic Evaluator as placeholder if no evaluator is passed in.
+            Dataset containing generated test cases and evaluator. Use the generic Evaluator as placeholder
+            if no evaluator is passed in.
         """
-        cases = await self.generate_cases_async(
-            f"""Create test cases for the following topics: {' '.join(topics)} for this task:
-                                     {task_description}.""",
-            num_cases,
+        topics_str = " ".join(topics)
+        case_prompt = (
+            f"""Create test cases for the following topics: {topics_str} for this task: """ f"""{task_description}."""
         )
+        cases = await self.generate_cases_async(case_prompt, num_cases)
         if evaluator:
+            rubric_prompt = (
+                f"""Create a rubric for the following topics: {topics_str} for this task: """ f"""{task_description}."""
+            )
             _evaluator = await self.construct_evaluator_async(
-                prompt=f"""Create a rubric for the following topics: {' '.join(topics)} for this task:
-                                     {task_description}.""",
+                prompt=rubric_prompt,
                 evaluator=evaluator,
             )
             return Dataset(cases=cases, evaluator=_evaluator)
@@ -242,22 +259,27 @@ class DatasetGenerator(Generic[InputT, OutputT]):
         useful for testing knowledge retrieval, context understanding, or domain-specific tasks.
 
         Args:
-            context: Specific context/information that test cases should reference. If there's any tools they need to use, specify them here too.
-                Be sure to include as much information as you can about tools or sub-agents for generating interaction and/or trajectory.
+            context: Specific context/information that test cases should reference. If there's any tools
+                they need to use, specify them here too. Be sure to include as much information as you can
+                about tools or sub-agents for generating interaction and/or trajectory.
             task_description: Description of the task the AI system will perform
             num_cases: Number of test cases to generate
-            evaluator: Optional evaluator class for assessment (generates rubric if provided), use Evaluator() as a placeholder.
+            evaluator: Optional evaluator class for assessment (generates rubric if provided), use Evaluator()
+                as a placeholder.
 
         Returns:
-            Dataset containing context-based test cases and evaluator. Use the generic Evaluator as placeholder if no evaluator is passed in.
+            Dataset containing context-based test cases and evaluator. Use the generic Evaluator as placeholder
+            if no evaluator is passed in.
         """
         cases = await self.generate_cases_async(
-            f"""Create test cases with the following context: {context}. Ensure that the questions can be answer using the provided context for this task: {task_description} """,
+            f"""Create test cases with the following context: {context}. Ensure that the questions can be """
+            f"""answer using the provided context for this task: {task_description} """,
             num_cases=num_cases,
         )
         if evaluator:
             _evaluator = await self.construct_evaluator_async(
-                prompt=f"""Create a rubric with the following context: {context} for this task: {task_description} """,
+                prompt=f"""Create a rubric with the following context: {context} for this task: """
+                f"""{task_description} """,
                 evaluator=evaluator,
             )
             return Dataset(cases=cases, evaluator=_evaluator)
@@ -265,7 +287,7 @@ class DatasetGenerator(Generic[InputT, OutputT]):
             return Dataset(cases=cases)
 
     async def from_dataset_async(
-        self, source_dataset: Dataset, task_description: str, num_cases: int = 5, extra_information: str = None
+        self, source_dataset: Dataset, task_description: str, num_cases: int = 5, extra_information: str | None = None
     ) -> Dataset:
         """
         Generate a new dataset using an existing dataset as reference.
@@ -297,7 +319,11 @@ class DatasetGenerator(Generic[InputT, OutputT]):
             cases_string_list.append({"text": f"{i}. {case.model_dump()}"})
         messages.append({"role": "user", "content": cases_string_list})
         new_cases = await self.generate_cases_async(
-            prompt=f"Create new test cases similar to the reference cases. Ensure that the input and output are relevant for this task: {task_description}. Here are some extra information: {extra_information}.",
+            prompt=(
+                f"Create new test cases similar to the reference cases. Ensure that the input and output "
+                f"are relevant for this task: {task_description}. Here are some extra information: "
+                f"{extra_information}."
+            ),
             num_cases=num_cases,
             message_history=messages,
         )
@@ -305,7 +331,10 @@ class DatasetGenerator(Generic[InputT, OutputT]):
         if type(source_evaluator) in self._default_evaluators:
             source_rubric = source_evaluator.rubric
             new_evaluator = await self.construct_evaluator_async(
-                prompt=f"Create a new rubric based on the reference rubric. Ensure that the rubric is relevant for this task: {task_description}. Here are some extra information: {extra_information}.",
+                prompt=(
+                    f"Create a new rubric based on the reference rubric. Ensure that the rubric is relevant "
+                    f"for this task: {task_description}. Here are some extra information: {extra_information}."
+                ),
                 evaluator=type(source_evaluator),
                 message_history=[{"role": "user", "content": [{"text": source_rubric}]}],
             )
@@ -317,10 +346,10 @@ class DatasetGenerator(Generic[InputT, OutputT]):
         source_dataset: Dataset,
         task_description: str,
         num_cases: int = 5,
-        context: str = None,
+        context: str | None = None,
         add_new_cases: bool = True,
         add_new_rubric: bool = True,
-        new_evaluator_type: type = None,
+        new_evaluator_type: type | None = None,
     ) -> Dataset:
         """
         Update an existing dataset by adding new test cases and/or updating the evaluator.
@@ -355,22 +384,29 @@ class DatasetGenerator(Generic[InputT, OutputT]):
                 cases_string_list.append({"text": f"{i}. {case.model_dump()}"})
             messages.append({"role": "user", "content": cases_string_list})
             new_cases = await self.generate_cases_async(
-                prompt=f"Create new test cases, expanding on previous cases for the following context: {context}. Ensure that the input and output are relevant for this task: {task_description}.",
+                prompt=(
+                    f"Create new test cases, expanding on previous cases for the following context: {context}. "
+                    f"Ensure that the input and output are relevant for this task: {task_description}."
+                ),
                 num_cases=num_cases,
                 message_history=messages,
             )
 
         if add_new_rubric:
+            evaluator_type: type
             if new_evaluator_type:
-                new_evaluator = new_evaluator_type
+                evaluator_type = new_evaluator_type
             else:
-                new_evaluator = type(source_evaluator)  # use the previous evaluator if no new evaluator is passed in
+                evaluator_type = type(source_evaluator)  # use the previous evaluator if no new evaluator is passed in
 
-            if new_evaluator in self._default_evaluators:
+            if evaluator_type in self._default_evaluators:
                 source_rubric = source_evaluator.rubric if type(source_evaluator) in self._default_evaluators else None
                 new_evaluator = await self.construct_evaluator_async(
-                    prompt=f"Create a new rubric based on the reference rubric if provided for the following context: {context}. Ensure that the rubric is relevant for this task: {task_description}.",
-                    evaluator=new_evaluator,
+                    prompt=(
+                        f"Create a new rubric based on the reference rubric if provided for the following "
+                        f"context: {context}. Ensure that the rubric is relevant for this task: {task_description}."
+                    ),
+                    evaluator=evaluator_type,
                     message_history=[{"role": "user", "content": [{"text": source_rubric}]}],
                 )
             else:  # use the original if it's not supported

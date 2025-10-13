@@ -53,7 +53,9 @@ class CollapsibleTableReportDisplay:
         Expanded rows show full details, while collapsed rows show minimal information.
         """
         overall_score_string = f"[bold blue]Overall Score: {self.overall_score:.2f}[/bold blue]"
-        overall_pass_rate = f"[bold blue]Pass Rate: {sum([1 if case['details']['test_pass'] else 0 for case in self.items.values()]) / len(self.items)}[/bold blue]"
+        pass_count = sum([1 if case["details"]["test_pass"] else 0 for case in self.items.values()])
+        pass_rate = pass_count / len(self.items)
+        overall_pass_rate = f"[bold blue]Pass Rate: {pass_rate}[/bold blue]"
         spacing = "           "
         console.print(Panel(f"{overall_score_string}{spacing}{overall_pass_rate}", title="📊 Evaluation Report"))
 
@@ -114,7 +116,8 @@ class CollapsibleTableReportDisplay:
                 return
 
             choice = Prompt.ask(
-                "\nEnter the test case number to expand/collapse it, o to expand all, and c to collapse all (q to quit)."
+                "\nEnter the test case number to expand/collapse it, o to expand all, "
+                "and c to collapse all (q to quit)."
             )
 
             if choice.lower() == "q":

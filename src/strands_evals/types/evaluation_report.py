@@ -26,7 +26,7 @@ class EvaluationReport(BaseModel):
     scores: list[float]
     cases: list[dict]
     test_passes: list[bool]
-    reasons: list[str] | None = []
+    reasons: list[str] = []
 
     def _display(
         self,
@@ -45,14 +45,14 @@ class EvaluationReport(BaseModel):
 
         Args:
             static: Whether to render the interface as interactive or static.
-            include_input: Whether to include the input in the display. Defaults to True.
-            include_actual_output: Whether to include the actual output in the display. Defaults to False.
-            include_expected_output: Whether to include the expected output in the display. Defaults to False.
-            include_expected_trajectory: Whether to include the expected trajectory in the display. Defaults to False.
-            include_actual_trajectory: Whether to include the actual trajectory in the display. Defaults to False.
-            include_actual_interactions: Whether to include the actual interactions in the display. Defaults to False.
-            include_expected_interactions: Whether to include the expected interactions in the display. Defaults to False.
-            include_meta: Whether to include metadata in the display. Defaults to False.
+            include_input (Defaults to True): Include the input in the display.
+            include_actual_output (Defaults to False): Include the actual output in the display.
+            include_expected_output (Defaults to False): Include the expected output in the display.
+            include_expected_trajectory (Defaults to False): Include the expected trajectory in the display.
+            include_actual_trajectory (Defaults to False): Include the actual trajectory in the display.
+            include_actual_interactions (Defaults to False): Include the actual interactions in the display.
+            include_expected_interactions (Defaults to False): Include the expected interactions in the display.
+            include_meta (Defaults to False): Include metadata in the display.
 
         Note:
             This method provides an interactive console interface where users can expand or collapse
@@ -107,13 +107,13 @@ class EvaluationReport(BaseModel):
 
         Args:
             include_input: Whether to include the input in the display. Defaults to True.
-            include_actual_output: Whether to include the actual output in the display. Defaults to False.
-            include_expected_output: Whether to include the expected output in the display. Defaults to False.
-            include_expected_trajectory: Whether to include the expected trajectory in the display. Defaults to False.
-            include_actual_trajectory: Whether to include the actual trajectory in the display. Defaults to False.
-            include_actual_interactions: Whether to include the actual interactions in the display. Defaults to False.
-            include_expected_interactions: Whether to include the expected interactions in the display. Defaults to False.
-            include_meta: Whether to include metadata in the display. Defaults to False.
+            include_actual_output (Defaults to False): Include the actual output in the display.
+            include_expected_output (Defaults to False): Include the expected output in the display.
+            include_expected_trajectory (Defaults to False): Include the expected trajectory in the display.
+            include_actual_trajectory (Defaults to False): Include the actual trajectory in the display.
+            include_actual_interactions (Defaults to False): Include the actual interactions in the display.
+            include_expected_interactions (Defaults to False): Include the expected interactions in the display.
+            include_meta (Defaults to False): Include metadata in the display.
         """
         self._display(
             static=True,
@@ -143,13 +143,13 @@ class EvaluationReport(BaseModel):
 
         Args:
             include_input: Whether to include the input in the display. Defaults to True.
-            include_actual_output: Whether to include the actual output in the display. Defaults to False.
-            include_expected_output: Whether to include the expected output in the display. Defaults to False.
-            include_expected_trajectory: Whether to include the expected trajectory in the display. Defaults to False.
-            include_actual_trajectory: Whether to include the actual trajectory in the display. Defaults to False.
-            include_actual_interactions: Whether to include the actual interactions in the display. Defaults to False.
-            include_expected_interactions: Whether to include the expected interactions in the display. Defaults to False.
-            include_meta: Whether to include metadata in the display. Defaults to False.
+            include_actual_output (Defaults to False): Include the actual output in the display.
+            include_expected_output (Defaults to False): Include the expected output in the display.
+            include_expected_trajectory (Defaults to False): Include the expected trajectory in the display.
+            include_actual_trajectory (Defaults to False): Include the actual trajectory in the display.
+            include_actual_interactions (Defaults to False): Include the actual interactions in the display.
+            include_expected_interactions (Defaults to False): Include the expected interactions in the display.
+            include_meta (Defaults to False): Include metadata in the display.
         """
         self._display(
             static=False,

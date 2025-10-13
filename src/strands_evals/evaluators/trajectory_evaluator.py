@@ -1,5 +1,7 @@
+from typing import Union
+
 from strands import Agent
-from typing_extensions import TypeVar
+from typing_extensions import Any, TypeVar
 
 from ..tools.evaluation_tools import any_order_match_scorer, exact_match_scorer, in_order_match_scorer
 from ..types.evaluation import EvaluationData, EvaluationOutput
@@ -38,7 +40,11 @@ class TrajectoryEvaluator(Evaluator[InputT, OutputT]):
         self.trajectory_description = trajectory_description
         self.model = model
         self.include_inputs = include_inputs
-        self._tools = [exact_match_scorer, in_order_match_scorer, any_order_match_scorer]
+        self._tools: list[Union[str, dict[str, str], Any]] | None = [
+            exact_match_scorer,
+            in_order_match_scorer,
+            any_order_match_scorer,
+        ]
         self.system_prompt = system_prompt
 
     def update_trajectory_description(self, new_description: dict) -> None:

@@ -1,4 +1,4 @@
-from strands.multiagent import SwarmResult
+from strands.multiagent import MultiAgentResult, SwarmResult
 
 
 def extract_swarm_handoffs(swarm_result: SwarmResult) -> list[dict]:
@@ -14,6 +14,8 @@ def extract_swarm_handoffs(swarm_result: SwarmResult) -> list[dict]:
     """
     hand_off_info = []
     for node_name, node_info in swarm_result.results.items():
+        if isinstance(node_info.result, Exception) or isinstance(node_info.result, MultiAgentResult):
+            continue
         messages = [m["text"] for m in node_info.result.message["content"]]
         added = False
         for tool_name, tool_info in node_info.result.metrics.tool_metrics.items():
@@ -39,7 +41,7 @@ def extract_swarm_interactions_from_handoffs(handoffs_info: list[dict]) -> list[
         list: Interactions with node names, messages, and dependencies
         [{node_name: str, messages: list[str], dependencies: list[str]}, ...]
     """
-    dependencies = {}
+    dependencies: dict[str, list[str]] = {}
     interactions = []
     for handoff in handoffs_info:
         if handoff["to"] not in dependencies:
