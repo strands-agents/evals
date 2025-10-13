@@ -33,10 +33,10 @@ class DatasetGenerator(Generic[InputT, OutputT]):
             "nor interactions even if provided"
         ),
         TrajectoryEvaluator: (
-            "evaluates the trajectory and output if provided, don't include info about " "interactions even if provided"
+            "evaluates the trajectory and output if provided, don't include info about interactions even if provided"
         ),
         InteractionsEvaluator: (
-            "evaluates the interactions and output if provided, don't include info about " "trajectory even if provided"
+            "evaluates the interactions and output if provided, don't include info about trajectory even if provided"
         ),
     }
 

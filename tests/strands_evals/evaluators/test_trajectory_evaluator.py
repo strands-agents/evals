@@ -1,6 +1,7 @@
 from unittest.mock import Mock, patch
 
 import pytest
+
 from strands_evals.evaluators import TrajectoryEvaluator
 from strands_evals.types import EvaluationData, EvaluationOutput
 

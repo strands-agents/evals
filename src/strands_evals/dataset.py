@@ -10,6 +10,7 @@ from .evaluators.evaluator import Evaluator
 from .evaluators.interactions_evaluator import InteractionsEvaluator
 from .evaluators.output_evaluator import OutputEvaluator
 from .evaluators.trajectory_evaluator import TrajectoryEvaluator
+from .telemetry import get_tracer, serialize
 from .types.evaluation import EvaluationData
 from .types.evaluation_report import EvaluationReport
 
@@ -39,11 +40,14 @@ class Dataset(Generic[InputT, OutputT]):
                Case(name="Simple Math",
                         input="What is 2x2?",
                         expected_output="2x2 is 4.",
-                        expected_trajectory=["calculator],
+                        expected_trajectory=["calculator"],
                         metadata={"category": "math"})
             ],
-            evaluator=OutputEvaluator(rubric="The output is relevant and complete. 0 if the output is
-                incorrect or irrelevant.")
+            evaluator=OutputEvaluator(
+                rubric=(
+                    "The output is relevant and complete. 0 if the output is incorrect or irrelevant."
+                )
+            )
         )
     """
 
@@ -54,6 +58,7 @@ class Dataset(Generic[InputT, OutputT]):
     ):
         self._cases = cases or []
         self._evaluator = evaluator or Evaluator()
+        self._tracer = get_tracer()
 
     @property
     def cases(self) -> list[Case[InputT, OutputT]]:
@@ -171,7 +176,8 @@ class Dataset(Generic[InputT, OutputT]):
             evaluation_context.actual_output = task_output.get("output")
             evaluation_context.actual_trajectory = task_output.get("trajectory")
             evaluation_context.actual_interactions = task_output.get("interactions")
-            new_input = task_output.get("input", None)  # allows the user to update the input in the task function
+            # allows the user to update the input in the task function
+            new_input = task_output.get("input", None)
             if new_input is not None:
                 evaluation_context.input = new_input
         else:
@@ -194,31 +200,77 @@ class Dataset(Generic[InputT, OutputT]):
             except asyncio.QueueEmpty:
                 break
 
-            ## Evaluation ##
-            try:
-                evaluation_context = await self._run_task_async(task, case)
-                evaluation_output = await self.evaluator.evaluate_async(evaluation_context)
+            case_name = case.name or f"case_{len(results)}"
 
-                # Store results
-                results.append(
-                    {
-                        "case": evaluation_context.model_dump(),
-                        "test_pass": evaluation_output.test_pass,
-                        "score": evaluation_output.score,
-                        "reason": evaluation_output.reason or "",
-                    }
-                )
-            except Exception as e:
-                results.append(
-                    {
-                        "case": case.model_dump(),
-                        "test_pass": False,
-                        "score": 0,
-                        "reason": f"An error occurred: {str(e)}",
-                    }
-                )
-            finally:
-                queue.task_done()
+            ## Evaluation with tracing ##
+            with self._tracer.start_as_current_span(
+                f"eval_case {case_name}",
+                attributes={
+                    "gen_ai.eval.case.name": case_name,
+                    "gen_ai.eval.case.input": serialize(case.input),
+                },
+            ) as case_span:
+                try:
+                    # Task execution span
+                    with self._tracer.start_as_current_span(
+                        "task_execution",
+                        attributes={
+                            "gen_ai.eval.task.type": "agent_task",
+                            "gen_ai.eval.case.name": case_name,
+                        },
+                    ) as task_span:
+                        evaluation_context = await self._run_task_async(task, case)
+                        task_span.set_attributes(
+                            {
+                                "gen_ai.eval.data.input": serialize(evaluation_context.input),
+                                "gen_ai.eval.data.expected_output": serialize(evaluation_context.expected_output),
+                                "gen_ai.eval.data.actual_output": serialize(evaluation_context.actual_output),
+                                "gen_ai.eval.data.has_trajectory": (evaluation_context.actual_trajectory is not None),
+                                "gen_ai.eval.data.has_interactions": (
+                                    evaluation_context.actual_interactions is not None
+                                ),
+                            }
+                        )
+
+                    # Evaluator execution span
+                    with self._tracer.start_as_current_span(
+                        f"evaluator {self.evaluator.get_type_name()}",
+                        attributes={
+                            "gen_ai.eval.evaluator.type": self.evaluator.get_type_name(),
+                            "gen_ai.eval.case.name": case_name,
+                        },
+                    ) as eval_span:
+                        evaluation_output = await self.evaluator.evaluate_async(evaluation_context)
+                        eval_span.set_attributes(
+                            {
+                                "gen_ai.eval.output.score": evaluation_output.score,
+                                "gen_ai.eval.output.test_pass": evaluation_output.test_pass,
+                                "gen_ai.eval.output.reason": evaluation_output.reason or "",
+                            }
+                        )
+
+                    # Store results
+                    results.append(
+                        {
+                            "case": evaluation_context.model_dump(),
+                            "test_pass": evaluation_output.test_pass,
+                            "score": evaluation_output.score,
+                            "reason": evaluation_output.reason or "",
+                        }
+                    )
+
+                except Exception as e:
+                    case_span.record_exception(e)
+                    results.append(
+                        {
+                            "case": case.model_dump(),
+                            "test_pass": False,
+                            "score": 0,
+                            "reason": f"An error occurred: {str(e)}",
+                        }
+                    )
+                finally:
+                    queue.task_done()
 
     def run_evaluations(self, task: Callable[[InputT], OutputT | dict[str, Any]]) -> EvaluationReport:
         """
@@ -234,24 +286,70 @@ class Dataset(Generic[InputT, OutputT]):
         """
         scores = []
         test_passes = []
-        cases = []
+        cases: list = []
         reasons = []
+
         for case in self._cases:
-            try:
-                evaluation_context = self._run_task(task, case)
-                evaluation_output = self.evaluator.evaluate(evaluation_context)
-                cases.append(evaluation_context.model_dump())
-                test_passes.append(evaluation_output.test_pass)
-                scores.append(evaluation_output.score)
-                if evaluation_output.reason:
-                    reasons.append(evaluation_output.reason)
-                else:
-                    reasons.append("")
-            except Exception as e:
-                cases.append(case.model_dump())
-                test_passes.append(False)
-                scores.append(0)
-                reasons.append(f"An error occured : {str(e)}")
+            case_name = case.name or f"case_{len(cases)}"
+
+            # Create a separate trace for each case
+            with self._tracer.start_as_current_span(
+                f"eval_case {case_name}",
+                attributes={
+                    "gen_ai.eval.case.name": case_name,
+                    "gen_ai.eval.case.input": serialize(case.input),
+                },
+            ) as case_span:
+                try:
+                    # Task execution span
+                    with self._tracer.start_as_current_span(
+                        "task_execution",
+                        attributes={
+                            "gen_ai.eval.task.type": "agent_task",
+                            "gen_ai.eval.case.name": case_name,
+                        },
+                    ) as task_span:
+                        evaluation_context = self._run_task(task, case)
+                        task_span.set_attributes(
+                            {
+                                "gen_ai.eval.data.input": serialize(evaluation_context.input),
+                                "gen_ai.eval.data.expected_output": serialize(evaluation_context.expected_output),
+                                "gen_ai.eval.data.actual_output": serialize(evaluation_context.actual_output),
+                                "gen_ai.eval.data.has_trajectory": (evaluation_context.actual_trajectory is not None),
+                                "gen_ai.eval.data.has_interactions": (
+                                    evaluation_context.actual_interactions is not None
+                                ),
+                            }
+                        )
+
+                    # Evaluator execution span
+                    with self._tracer.start_as_current_span(
+                        f"evaluator {self.evaluator.get_type_name()}",
+                        attributes={
+                            "gen_ai.eval.evaluator.type": self.evaluator.get_type_name(),
+                            "gen_ai.eval.case.name": case_name,
+                        },
+                    ) as eval_span:
+                        evaluation_output = self.evaluator.evaluate(evaluation_context)
+                        eval_span.set_attributes(
+                            {
+                                "gen_ai.eval.output.score": evaluation_output.score,
+                                "gen_ai.eval.output.test_pass": evaluation_output.test_pass,
+                                "gen_ai.eval.output.reason": evaluation_output.reason or "",
+                            }
+                        )
+
+                    cases.append(evaluation_context.model_dump())
+                    test_passes.append(evaluation_output.test_pass)
+                    scores.append(evaluation_output.score)
+                    reasons.append(evaluation_output.reason or "")
+
+                except Exception as e:
+                    case_span.record_exception(e)
+                    cases.append(case.model_dump())
+                    test_passes.append(False)
+                    scores.append(0)
+                    reasons.append(f"An error occured : {str(e)}")
 
         report = EvaluationReport(
             overall_score=sum(scores) / len(scores) if len(scores) else 0,

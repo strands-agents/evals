@@ -123,8 +123,7 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
             )
 
         evaluation_prompt += (
-            f"<Interaction> Node Name: {node_name}, Depends on {dependencies} \n "
-            f"Message: {messages} </Interaction>\n"
+            f"<Interaction> Node Name: {node_name}, Depends on {dependencies} \n Message: {messages} </Interaction>\n"
         )
 
         if evaluation_case.expected_interactions:

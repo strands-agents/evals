@@ -3,6 +3,7 @@ import datetime
 
 from strands import Agent
 from strands.multiagent import Swarm
+
 from strands_evals import Case, Dataset
 from strands_evals.evaluators import InteractionsEvaluator, TrajectoryEvaluator
 from strands_evals.extractors import swarm_extractor
