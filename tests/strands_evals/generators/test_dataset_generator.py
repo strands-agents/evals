@@ -6,6 +6,7 @@ import pytest
 from strands_evals import Case, Dataset
 from strands_evals.evaluators import Evaluator, InteractionsEvaluator, OutputEvaluator, TrajectoryEvaluator
 from strands_evals.generators import DatasetGenerator
+from strands_evals.generators.topic_planner import Topic, TopicPlan
 
 
 def test_dataset_generator__init__():
@@ -335,3 +336,56 @@ def test_dataset_generator_default_evaluators_mapping():
     assert OutputEvaluator in generator._default_evaluators
     assert TrajectoryEvaluator in generator._default_evaluators
     assert InteractionsEvaluator in generator._default_evaluators
+
+
+@pytest.mark.asyncio
+async def test_dataset_generator_generate_cases_async_with_topics():
+    """Test async case generation with topic planning"""
+    generator = DatasetGenerator(str, str)
+
+    mock_agent = AsyncMock()
+    mock_case_data = MagicMock()
+    mock_case_data.model_dump.return_value = {"name": "test", "input": "hello"}
+    mock_agent.structured_output_async.return_value = mock_case_data
+
+    with patch("strands_evals.generators.dataset_generator.Agent", return_value=mock_agent):
+        with patch.object(generator, "_prepare_generation_prompts", return_value=[("prompt1", 2), ("prompt2", 1)]):
+            cases = await generator.generate_cases_async("test prompt", num_cases=3, num_topics=2)
+
+    assert len(cases) == 3
+
+
+@pytest.mark.asyncio
+async def test_dataset_generator_prepare_generation_prompts_with_topics():
+    """Test prompt preparation with topic planning"""
+    generator = DatasetGenerator(str, str)
+    
+    mock_plan = TopicPlan(topics=[
+        Topic(title="T1", description="D1", key_aspects=["a1"]),
+        Topic(title="T2", description="D2", key_aspects=["a2"])
+    ])
+    
+    with patch("strands_evals.generators.dataset_generator.TopicPlanner") as mock_planner_class:
+        mock_planner = AsyncMock()
+        mock_planner.plan_topics_async.return_value = mock_plan
+        mock_planner_class.return_value = mock_planner
+        
+        result = await generator._prepare_generation_prompts("base prompt", num_cases=10, num_topics=2)
+    
+    assert len(result) == 2
+    assert all(isinstance(prompt, str) and isinstance(count, int) for prompt, count in result)
+
+
+@pytest.mark.asyncio
+async def test_dataset_generator_from_context_async_with_num_topics():
+    """Test generating dataset from context with num_topics parameter"""
+    generator = DatasetGenerator(str, str)
+
+    mock_cases = [Case(name="test", input="hello")]
+
+    with patch.object(generator, "generate_cases_async", return_value=mock_cases) as mock_gen:
+        dataset = await generator.from_context_async("test context", "test task", num_cases=1, num_topics=3)
+
+    mock_gen.assert_called_once()
+    assert mock_gen.call_args[1]["num_topics"] == 3
+    assert isinstance(dataset, Dataset)
