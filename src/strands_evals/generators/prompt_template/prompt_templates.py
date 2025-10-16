@@ -1,3 +1,14 @@
+DEFAULT_PLANNING_SYSTEM_PROMPT = """You are a test scenario planner for AI agents. 
+Your role is to analyze agent configurations and generate strategic topic plans 
+that comprehensively evaluate agent capabilities.
+
+Your topics should:
+- Cover different aspects of the agent's capabilities
+- Test edge cases and common scenarios
+- Vary in complexity and scope
+- Ensure comprehensive coverage of available tools and features
+- Be diverse and non-overlapping"""
+
 generate_case_template = """
 You are an expert test case generator for AI evaluation datasets. Your role is to create high-quality, diverse test cases that thoroughly evaluate AI systems across different domains and capabilities.
 

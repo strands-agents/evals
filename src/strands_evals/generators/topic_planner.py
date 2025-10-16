@@ -1,8 +1,9 @@
 import math
-from typing import List
 
 from pydantic import BaseModel, Field
 from strands import Agent
+
+from strands_evals.generators.prompt_template.prompt_templates import DEFAULT_PLANNING_SYSTEM_PROMPT
 
 
 class Topic(BaseModel):
@@ -10,32 +11,21 @@ class Topic(BaseModel):
 
     title: str = Field(..., description="Brief descriptive title for the topic")
     description: str = Field(..., description="Short description explaining the topic")
-    key_aspects: List[str] = Field(..., description="2-5 key aspects that test cases should explore for this topic")
+    key_aspects: list[str] = Field(..., description="2-5 key aspects that test cases should explore for this topic")
 
 
 class TopicPlan(BaseModel):
     """Represents a complete topic plan with multiple topics."""
 
-    topics: List[Topic] = Field(..., description="List of diverse topics for comprehensive test coverage")
+    topics: list[Topic] = Field(..., description="List of diverse topics for comprehensive test coverage")
 
 
 class TopicPlanner:
     """Plans diverse topics for test case generation based on agent context."""
 
-    DEFAULT_PLANNING_PROMPT = """You are a test scenario planner for AI agents. 
-Your role is to analyze agent configurations and generate strategic topic plans 
-that comprehensively evaluate agent capabilities.
-
-Your topics should:
-- Cover different aspects of the agent's capabilities
-- Test edge cases and common scenarios
-- Vary in complexity and scope
-- Ensure comprehensive coverage of available tools and features
-- Be diverse and non-overlapping"""
-
     def __init__(self, model: str | None = None, planning_prompt: str | None = None):
         self.model = model
-        self.planning_prompt = planning_prompt or self.DEFAULT_PLANNING_PROMPT
+        self.planning_prompt = planning_prompt or DEFAULT_PLANNING_SYSTEM_PROMPT
 
     async def plan_topics_async(
         self, context: str, task_description: str, num_topics: int, num_cases: int

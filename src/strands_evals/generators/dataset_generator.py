@@ -193,10 +193,9 @@ class DatasetGenerator(Generic[InputT, OutputT]):
 
             topic_cases = min(cases_per_topic, remaining)
             topic_prompt = f"""{base_prompt}
-
-Focus on this topic:
-- {topic.title}: {topic.description}
-- Key aspects: {', '.join(topic.key_aspects)}"""
+            Focus on this topic:
+            - {topic.title}: {topic.description}
+            - Key aspects: {', '.join(topic.key_aspects)}"""
 
             prompt_specs.append((topic_prompt, topic_cases))
 
