@@ -359,19 +359,21 @@ async def test_dataset_generator_generate_cases_async_with_topics():
 async def test_dataset_generator_prepare_generation_prompts_with_topics():
     """Test prompt preparation with topic planning"""
     generator = DatasetGenerator(str, str)
-    
-    mock_plan = TopicPlan(topics=[
-        Topic(title="T1", description="D1", key_aspects=["a1"]),
-        Topic(title="T2", description="D2", key_aspects=["a2"])
-    ])
-    
+
+    mock_plan = TopicPlan(
+        topics=[
+            Topic(title="T1", description="D1", key_aspects=["a1"]),
+            Topic(title="T2", description="D2", key_aspects=["a2"]),
+        ]
+    )
+
     with patch("strands_evals.generators.dataset_generator.TopicPlanner") as mock_planner_class:
         mock_planner = AsyncMock()
         mock_planner.plan_topics_async.return_value = mock_plan
         mock_planner_class.return_value = mock_planner
-        
+
         result = await generator._prepare_generation_prompts("base prompt", num_cases=10, num_topics=2)
-    
+
     assert len(result) == 2
     assert all(isinstance(prompt, str) and isinstance(count, int) for prompt, count in result)
 

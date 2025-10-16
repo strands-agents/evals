@@ -179,7 +179,8 @@ dataset = await generator.generate_dataset(
     context=tool_context,
     num_cases=10,
     evaluator_type=TrajectoryEvaluator,
-    task_description="Math and research assistant with tool usage"
+    task_description="Math and research assistant with tool usage",
+    # num_topics=3  # Optional: Distribute cases across multiple topics
 )
 
 # 3. Save generated dataset

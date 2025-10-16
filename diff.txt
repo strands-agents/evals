@@ -1,0 +1,1354 @@
+diff --git a/.github/workflows/integration-test.yml b/.github/workflows/integration-test.yml
+index 9e73608..6422abd 100644
+--- a/.github/workflows/integration-test.yml
++++ b/.github/workflows/integration-test.yml
+@@ -62,12 +62,4 @@ jobs:
+           python-version: '3.10'
+       - name: Install dependencies
+         run: |
+-          pip install --no-cache-dir hatch
+-      - name: Run integration tests
+-        env:
+-          AWS_REGION: us-east-1
+-          AWS_REGION_NAME: us-east-1 # Needed for LiteLLM
+-          STRANDS_TEST_API_KEYS_SECRET_NAME: ${{ secrets.STRANDS_TEST_API_KEYS_SECRET_NAME }}
+-        id: tests
+-        run: |
+-          hatch test tests_integ
+\ No newline at end of file
++          pip install --no-cache-dir hatch
+\ No newline at end of file
+diff --git a/.gitignore b/.gitignore
+index 2aa39d2..76bdaa6 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -13,4 +13,6 @@ dist
+ repl_state
+ dataset_files
+ report_files
+-.venv
+\ No newline at end of file
++.venv
++
++*.DS_Store*
+\ No newline at end of file
+diff --git a/pyproject.toml b/pyproject.toml
+index b60a0f3..391cf6c 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -26,9 +26,10 @@ packages = ["src/strands_evals"]
+ 
+ [project.optional-dependencies]
+ test = [
+-    "pytest>=7.0",
+-    "pytest-asyncio>=0.26.0",
+-    "pytest-cov>=4.0",
++    "pytest>=8.0.0,<9.0.0",
++    "pytest-cov>=7.0.0,<8.0.0",
++    "pytest-asyncio>=1.0.0,<1.3.0",
++    "pytest-xdist>=3.0.0,<4.0.0",
+ ]
+ 
+ dev = [
+@@ -42,6 +43,17 @@ dev = [
+ line-length = 120
+ include = ["src/**/*.py", "tests/**/*.py"]
+ 
++[tool.hatch.envs.hatch-test]
++installer = "uv"
++extra-args = ["-n", "auto", "-vv"]
++dependencies = [
++    "pytest>=8.0.0,<9.0.0",
++    "pytest-cov>=7.0.0,<8.0.0",
++    "pytest-asyncio>=1.0.0,<1.3.0",
++    "pytest-xdist>=3.0.0,<4.0.0",
++    "moto>=5.1.0,<6.0.0",
++]
++
+ [tool.hatch.envs.default.scripts]
+ list = [
+     "echo 'Scripts commands available for default env:'; hatch env show --json | jq --raw-output '.default.scripts | keys[]'"
+@@ -58,6 +70,7 @@ lint = [
+ test-lint = [
+     "hatch fmt --linter --check"
+ ]
++
+ prepare = [
+     "hatch fmt --linter",
+     "hatch fmt --formatter",
+@@ -87,8 +100,27 @@ select = [
+   "F", # pyflakes
+   "I", # isort
+   "B", # flake8-bugbear
++  "T20", # flake8-print (disallow print statements)
+ ]
+ 
++[tool.ruff.lint.per-file-ignores]
++"src/strands_evals/evaluators/prompt_templates/*" = ["E501"] # line-length
++"src/strands_evals/generators/prompt_template/*" = ["E501"] # line-length
++"src/examples/*" = ["E501", "T201"] # line-length, print
++
++[tool.mypy]
++exclude = [
++    "src/examples/",
++]
++# Disable strict checks that cause false positives with Generic classes
++disable_error_code = [
++    "no-redef",  # Allows property setters without "already defined" errors
++    "attr-defined",  # Allows property.setter pattern in Generic classes
++    "import-untyped",  # Allows imports from modules without type stubs
++]
++# Allow untyped decorators (helps with @property in Generic classes)
++disallow_untyped_decorators = false
++
+ [tool.hatch.version]
+ path = "src/strands_evals/__init__.py"
+ [tool.pytest.ini_options]
+@@ -97,13 +129,31 @@ testpaths = ["tests"]
+ python_files = "test_*.py"
+ [tool.hatch.envs.default]
+ dependencies = [
+-    "pytest>=7.0",
+-    "pytest-asyncio>=0.26.0",
+-    "pytest-cov>=4.0",
++    "pytest>=8.0.0,<9.0.0",
++    "pytest-cov>=7.0.0,<8.0.0",
++    "pytest-asyncio>=1.0.0,<1.3.0",  # This fixed the async support
++    "pytest-xdist>=3.0.0,<4.0.0",
++    "moto>=5.1.0,<6.0.0",
+ ]
+ extra-dependencies = [
+     "hatch>=1.0.0,<2.0.0",
+     "mypy>=1.0",
+     "pre-commit>=3.2.0,<4.2.0",
+     "ruff>=0.4.4,<1.0.0",
+-]
+\ No newline at end of file
++]
++
++[tool.coverage.run]
++branch = true
++source = ["src/strands_evals"]
++context = "thread"
++parallel = true
++concurrency = ["thread", "multiprocessing"]
++
++[tool.coverage.report]
++show_missing = true
++
++[tool.coverage.html]
++directory = "build/coverage/html"
++
++[tool.coverage.xml]
++output = "build/coverage/coverage.xml"
+diff --git a/src/examples/dataset_generator/topic_planning_dataset.py b/src/examples/dataset_generator/topic_planning_dataset.py
+new file mode 100644
+index 0000000..2d28304
+--- /dev/null
++++ b/src/examples/dataset_generator/topic_planning_dataset.py
+@@ -0,0 +1,55 @@
++import asyncio
++
++from strands import Agent
++from strands_evals.evaluators.output_evaluator import OutputEvaluator
++from strands_evals.generators.dataset_generator import DatasetGenerator
++
++
++async def topic_planning_dataset_generator():
++    """
++    Demonstrates dataset generation with topic planning for improved diversity.
++
++    This function shows how to use the num_topics parameter to generate
++    more diverse test cases through multi-step topic planning.
++
++    Returns:
++        EvaluationReport: Results of running the generated test cases
++    """
++
++    ### Step 1: Define task ###
++    async def get_response(query: str) -> str:
++        """Simple task example to get a response from an agent given a query."""
++        agent = Agent(system_prompt="You are a helpful travel booking assistant", callback_handler=None)
++        response = await agent.invoke_async(query)
++        return str(response)
++
++    # Step 2: Initialize the dataset generator for string types
++    generator = DatasetGenerator[str, str](str, str)
++
++    # Step 3: Generate dataset with topic planning for better coverage
++    dataset = await generator.from_context_async(
++        context="""Available tools:
++        - book_flight(origin, destination, date)
++        - cancel_booking(confirmation_id)
++        - check_flight_status(flight_number)
++        - manage_loyalty_points(customer_id)
++        - request_special_assistance(needs)""",
++        task_description="Travel booking assistant that helps users with flights and reservations",
++        num_cases=30,
++        num_topics=6,  # Generate 6 diverse topics, ~5 cases per topic
++        evaluator=OutputEvaluator,
++    )
++
++    # Step 3.5: (Optional) Save the generated dataset for future use
++    dataset.to_file("topic_planning_travel_dataset")
++
++    # Step 4: Run evaluations on the generated test cases
++    report = await dataset.run_evaluations_async(get_response)
++    return report
++
++
++if __name__ == "__main__":
++    # python -m examples.dataset_generator.topic_planning_dataset
++    report = asyncio.run(topic_planning_dataset_generator())
++    report.to_file("topic_planning_travel_report", "json")
++    report.run_display(include_actual_output=True)
+diff --git a/src/strands_evals/dataset.py b/src/strands_evals/dataset.py
+index 450da51..ad40631 100644
+--- a/src/strands_evals/dataset.py
++++ b/src/strands_evals/dataset.py
+@@ -42,12 +42,15 @@ class Dataset(Generic[InputT, OutputT]):
+                         expected_trajectory=["calculator],
+                         metadata={"category": "math"})
+             ],
+-            evaluator=OutputEvaluator(rubric = "The output is relevant and complete. 0 if the output is incorrect or irrelevant.")
++            evaluator=OutputEvaluator(rubric="The output is relevant and complete. 0 if the output is
++                incorrect or irrelevant.")
+         )
+     """
+ 
+     def __init__(
+-        self, cases: list[Case[InputT, OutputT]] | None = None, evaluator: Evaluator[InputT, OutputT] | None = None
++        self,
++        cases: list[Case[InputT, OutputT]] | None = None,
++        evaluator: Evaluator[InputT, OutputT] | None = None,
+     ):
+         self._cases = cases or []
+         self._evaluator = evaluator or Evaluator()
+@@ -102,7 +105,8 @@ class Dataset(Generic[InputT, OutputT]):
+         Run the task with the inputs from the test case.
+ 
+         Args:
+-            task: The task to run the test case on. This function should take in InputT and returns either OutputT or {"output": OutputT, "trajectory": ...}.
++            task: The task to run the test case on. This function should take in InputT and returns either
++                OutputT or {"output": OutputT, "trajectory": ...}.
+             case: The test case containing neccessary information to run the task
+ 
+         Return:
+@@ -138,8 +142,9 @@ class Dataset(Generic[InputT, OutputT]):
+         Run the task with the inputs from the test case asynchronously.
+ 
+         Args:
+-            task: The task to run the test case on. This function should take in InputT and returns either OutputT or {"output": OutputT, "trajectory": ...}.
+-                The task can either run synchronously or asynchronously.
++            task: The task to run the test case on. This function should take in InputT and returns either
++                OutputT or {"output": OutputT, "trajectory": ...}. The task can either run synchronously
++                or asynchronously.
+             case: The test case containing neccessary information to run the task
+ 
+         Return:
+@@ -220,10 +225,12 @@ class Dataset(Generic[InputT, OutputT]):
+         Run the evaluations for all of the test cases with the evaluator.
+ 
+         Args:
+-            task: The task to run the test case on. This function should take in InputT and returns either OutputT or {"output": OutputT, "trajectory": ...}.
++            task: The task to run the test case on. This function should take in InputT and returns either
++                OutputT or {"output": OutputT, "trajectory": ...}.
+ 
+         Return:
+-            An EvaluationReport containing the overall score, individual case results, and basic feedback for each test case.
++            An EvaluationReport containing the overall score, individual case results, and basic feedback
++            for each test case.
+         """
+         scores = []
+         test_passes = []
+@@ -261,15 +268,16 @@ class Dataset(Generic[InputT, OutputT]):
+         Run evaluations asynchronously using a queue for parallel processing.
+ 
+         Args:
+-            task: The task function to run on each case. This function should take in InputT and returns either OutputT or {"output": OutputT, "trajectory": ...}.
+-            The task can either run synchronously or asynchronously.
++            task: The task function to run on each case. This function should take in InputT and returns
++                either OutputT or {"output": OutputT, "trajectory": ...}. The task can either run
++                synchronously or asynchronously.
+             max_workers: Maximum number of parallel workers (default: 10)
+ 
+         Returns:
+             EvaluationReport containing evaluation results
+         """
+-        queue = asyncio.Queue()
+-        results = []
++        queue: asyncio.Queue[Case[InputT, OutputT]] = asyncio.Queue()
++        results: list[Any] = []
+ 
+         for case in self._cases:
+             queue.put_nowait(case)
+@@ -325,7 +333,7 @@ class Dataset(Generic[InputT, OutputT]):
+             raise Exception(f"Format {format} is not supported.")
+ 
+     @classmethod
+-    def from_dict(cls, data: dict, custom_evaluators: list[Evaluator] = None):
++    def from_dict(cls, data: dict, custom_evaluators: list[type[Evaluator]] | None = None):
+         """
+         Create a dataset from a dictionary.
+ 
+@@ -337,14 +345,17 @@ class Dataset(Generic[InputT, OutputT]):
+             A Dataset object.
+         """
+         custom_evaluators = custom_evaluators or []
+-        cases = [Case.model_validate(case_data) for case_data in data["cases"]]
+-        default_evaluators = {
++        cases: list[Case] = [Case.model_validate(case_data) for case_data in data["cases"]]
++        default_evaluators: dict[str, type[Evaluator]] = {
+             "Evaluator": Evaluator,
+             "OutputEvaluator": OutputEvaluator,
+             "TrajectoryEvaluator": TrajectoryEvaluator,
+             "InteractionsEvaluator": InteractionsEvaluator,
+         }
+-        all_evaluators = {**default_evaluators, **{v.get_type_name(): v for v in custom_evaluators}}
++        all_evaluators: dict[str, type[Evaluator]] = {
++            **default_evaluators,
++            **{v.get_type_name(): v for v in custom_evaluators},
++        }
+ 
+         evaluator_type = data["evaluator"]["evaluator_type"]
+         evaluator_args = {k: v for k, v in data["evaluator"].items() if k != "evaluator_type"}
+@@ -353,13 +364,14 @@ class Dataset(Generic[InputT, OutputT]):
+             evaluator = all_evaluators[evaluator_type](**evaluator_args)
+         else:
+             raise Exception(
+-                f"Cannot find {evaluator_type}. Make sure the evaluator type is spelled correctly and all relevant custom evaluators are passed in."
++                f"Cannot find {evaluator_type}. Make sure the evaluator type is spelled correctly and "
++                f"all relevant custom evaluators are passed in."
+             )
+ 
+         return cls(cases=cases, evaluator=evaluator)
+ 
+     @classmethod
+-    def from_file(cls, file_path: str, format: str = "json", custom_evaluators: list[Evaluator] = None):
++    def from_file(cls, file_path: str, format: str = "json", custom_evaluators: list[type[Evaluator]] | None = None):
+         """
+         Create a dataset from a file.
+ 
+diff --git a/src/strands_evals/display/display_console.py b/src/strands_evals/display/display_console.py
+index 1d139ee..5ac702b 100644
+--- a/src/strands_evals/display/display_console.py
++++ b/src/strands_evals/display/display_console.py
+@@ -53,7 +53,9 @@ class CollapsibleTableReportDisplay:
+         Expanded rows show full details, while collapsed rows show minimal information.
+         """
+         overall_score_string = f"[bold blue]Overall Score: {self.overall_score:.2f}[/bold blue]"
+-        overall_pass_rate = f"[bold blue]Pass Rate: {sum([1 if case['details']['test_pass'] else 0 for case in self.items.values()]) / len(self.items)}[/bold blue]"
++        pass_count = sum([1 if case["details"]["test_pass"] else 0 for case in self.items.values()])
++        pass_rate = pass_count / len(self.items)
++        overall_pass_rate = f"[bold blue]Pass Rate: {pass_rate}[/bold blue]"
+         spacing = "           "
+         console.print(Panel(f"{overall_score_string}{spacing}{overall_pass_rate}", title="📊 Evaluation Report"))
+ 
+@@ -114,7 +116,8 @@ class CollapsibleTableReportDisplay:
+                 return
+ 
+             choice = Prompt.ask(
+-                "\nEnter the test case number to expand/collapse it, o to expand all, and c to collapse all (q to quit)."
++                "\nEnter the test case number to expand/collapse it, o to expand all, "
++                "and c to collapse all (q to quit)."
+             )
+ 
+             if choice.lower() == "q":
+diff --git a/src/strands_evals/evaluators/evaluator.py b/src/strands_evals/evaluators/evaluator.py
+index cb78ce7..a9bc060 100644
+--- a/src/strands_evals/evaluators/evaluator.py
++++ b/src/strands_evals/evaluators/evaluator.py
+@@ -63,7 +63,7 @@ class Evaluator(Generic[InputT, OutputT]):
+         _dict = {"evaluator_type": self.get_type_name()}
+ 
+         # Get default values from __init__ signature
+-        sig = inspect.signature(self.__init__)
++        sig = inspect.signature(self.__class__.__init__)
+         defaults = {k: v.default for k, v in sig.parameters.items() if v.default != inspect.Parameter.empty}
+         for k, v in self.__dict__.items():
+             if not k.startswith("_") and (k not in defaults or v != defaults[k]):
+diff --git a/src/strands_evals/evaluators/interactions_evaluator.py b/src/strands_evals/evaluators/interactions_evaluator.py
+index 69f1471..57b371a 100644
+--- a/src/strands_evals/evaluators/interactions_evaluator.py
++++ b/src/strands_evals/evaluators/interactions_evaluator.py
+@@ -86,29 +86,45 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
+             The prompt for the given evaluation case.
+         """
+         if is_last:
+-            evaluation_prompt = "Evaluate this final interaction. THE FINAL SCORE MUST BE A DECIMAL BETWEEN 0.0 AND 1.0 (NOT 0 to 10 OR 0 to 100). Your reasoning should include information from all of the previous interactions evaluated.\n"
++            evaluation_prompt = (
++                "Evaluate this final interaction. THE FINAL SCORE MUST BE A DECIMAL BETWEEN 0.0 AND 1.0 "
++                "(NOT 0 to 10 OR 0 to 100). Your reasoning should include information from all of the "
++                "previous interactions evaluated.\n"
++            )
+         else:
+-            evaluation_prompt = "Evaluate this interaction. THE SCORE MUST BE A DECIMAL BETWEEN 0.0 AND 1.0 (NOT 0 to 10 OR 0 to 100). \n"
++            evaluation_prompt = (
++                "Evaluate this interaction. THE SCORE MUST BE A DECIMAL BETWEEN 0.0 AND 1.0 "
++                "(NOT 0 to 10 OR 0 to 100). \n"
++            )
+ 
+         if self.include_inputs:
+-            if isinstance(evaluation_case.input, list) and len(evaluation_case.input) == len(
+-                evaluation_case.actual_interactions
++            if (
++                isinstance(evaluation_case.input, list)
++                and isinstance(evaluation_case.actual_interactions, list)
++                and len(evaluation_case.input) == len(evaluation_case.actual_interactions)
+             ):
+                 evaluation_prompt += f"<Input>{evaluation_case.input[current_case_i]}</Input>\n"
+             elif current_case_i == 0:  # only include the input for the first interaction
+                 evaluation_prompt += f"<Input>{evaluation_case.input}</Input>\n"
+ 
+-        interaction = evaluation_case.actual_interactions[current_case_i]
++        interaction = (
++            evaluation_case.actual_interactions[current_case_i]
++            if evaluation_case.actual_interactions is not None
++            else {}
++        )
+         node_name = interaction.get("node_name", None)
+         dependencies = interaction.get("dependencies", None)
+         messages = interaction.get("messages", None)
+         if node_name is None and dependencies is None and messages is None:
+             raise KeyError(
+-                "Please make sure the task function returns a dictionary with the key 'interactions' that contains a list of Interactions with 'node_name', and/or 'dependencies', and/or 'messages'."
++                "Please make sure the task function returns a dictionary with the key 'interactions' "
++                "that contains a list of Interactions with 'node_name', and/or 'dependencies', "
++                "and/or 'messages'."
+             )
+ 
+         evaluation_prompt += (
+-            f"<Interaction> Node Name: {node_name}, Depends on {dependencies} \n Message: {messages} </Interaction>\n"
++            f"<Interaction> Node Name: {node_name}, Depends on {dependencies} \n "
++            f"Message: {messages} </Interaction>\n"
+         )
+ 
+         if evaluation_case.expected_interactions:
+@@ -125,7 +141,10 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
+                 e_node_name = relevant_expected_interaction.get("node_name", None)
+                 e_dependencies = relevant_expected_interaction.get("dependencies", None)
+                 e_messages = relevant_expected_interaction.get("messages", None)
+-                evaluation_prompt += f"<RelevantExpectedInteraction> Node Name: {e_node_name}, Depends on {e_dependencies}, Message: {e_messages} </RelevantExpectedInteraction>\n"
++                evaluation_prompt += (
++                    f"<RelevantExpectedInteraction> Node Name: {e_node_name}, "
++                    f"Depends on {e_dependencies}, Message: {e_messages} </RelevantExpectedInteraction>\n"
++                )
+ 
+         if is_last:  # only include the actual output of the whole interaction in the last interaction
+             if evaluation_case.actual_output:
+@@ -136,7 +155,8 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
+         if self.interaction_description:
+             evaluation_prompt += f"<InteractionDescription>{self.interaction_description}</InteractionDescription>\n"
+ 
+-        evaluation_prompt += f"<Rubric>{self._get_node_rubric(node_name)}</Rubric>"
++        if node_name is not None:
++            evaluation_prompt += f"<Rubric>{self._get_node_rubric(node_name)}</Rubric>"
+ 
+         return evaluation_prompt
+ 
+@@ -152,7 +172,8 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
+         """
+         if evaluation_case.actual_interactions is None:
+             raise KeyError(
+-                "Please make sure the task function returns a dictionary with the key 'interactions' of type list[Interaction]."
++                "Please make sure the task function returns a dictionary with the key 'interactions' "
++                "of type list[Interaction]."
+             )
+         num_interactions = len(evaluation_case.actual_interactions)
+ 
+@@ -166,7 +187,7 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
+         )
+ 
+         is_last = False
+-        result = None
++        result: EvaluationOutput | None = None
+         for i in range(num_interactions):  # evaluate one interaction at a time
+             if i == num_interactions - 1:
+                 is_last = True
+@@ -175,6 +196,13 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
+             ## Evaluate ##
+             result = evaluator_agent.structured_output(EvaluationOutput, evaluation_prompt)
+ 
++        if result is None:
++            return EvaluationOutput(
++                score=0.0,
++                test_pass=False,
++                reason="No interactions were evaluated. Ensure actual_interactions is not empty.",
++            )
++
+         return result
+ 
+     async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> EvaluationOutput:
+@@ -201,7 +229,7 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
+         )
+ 
+         is_last = False
+-        result = None
++        result: EvaluationOutput | None = None
+         for i in range(num_interactions):  # evaluate one interaction at a time
+             if i == num_interactions - 1:
+                 is_last = True
+@@ -211,4 +239,11 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
+             ## Evaluate ##
+             result = await evaluator_agent.structured_output_async(EvaluationOutput, evaluation_prompt)
+ 
++        if result is None:
++            return EvaluationOutput(
++                score=0.0,
++                test_pass=False,
++                reason="No interactions were evaluated. Ensure actual_interactions is not empty.",
++            )
++
+         return result
+diff --git a/src/strands_evals/evaluators/prompt_templates/case_prompt_template.py b/src/strands_evals/evaluators/prompt_templates/case_prompt_template.py
+index 96f4ff8..bc6196f 100644
+--- a/src/strands_evals/evaluators/prompt_templates/case_prompt_template.py
++++ b/src/strands_evals/evaluators/prompt_templates/case_prompt_template.py
+@@ -11,7 +11,7 @@ def compose_test_prompt(
+     rubric: str,
+     include_inputs: bool,
+     uses_trajectory: bool = False,
+-    trajectory_description: dict = None,
++    trajectory_description: dict | None = None,
+ ) -> str:
+     """
+     Compose the prompt for a test case evaluation.
+diff --git a/src/strands_evals/evaluators/trajectory_evaluator.py b/src/strands_evals/evaluators/trajectory_evaluator.py
+index 4931026..f485196 100644
+--- a/src/strands_evals/evaluators/trajectory_evaluator.py
++++ b/src/strands_evals/evaluators/trajectory_evaluator.py
+@@ -1,5 +1,7 @@
++from typing import Union
++
+ from strands import Agent
+-from typing_extensions import TypeVar
++from typing_extensions import Any, TypeVar
+ 
+ from ..tools.evaluation_tools import any_order_match_scorer, exact_match_scorer, in_order_match_scorer
+ from ..types.evaluation import EvaluationData, EvaluationOutput
+@@ -38,7 +40,11 @@ class TrajectoryEvaluator(Evaluator[InputT, OutputT]):
+         self.trajectory_description = trajectory_description
+         self.model = model
+         self.include_inputs = include_inputs
+-        self._tools = [exact_match_scorer, in_order_match_scorer, any_order_match_scorer]
++        self._tools: list[Union[str, dict[str, str], Any]] | None = [
++            exact_match_scorer,
++            in_order_match_scorer,
++            any_order_match_scorer,
++        ]
+         self.system_prompt = system_prompt
+ 
+     def update_trajectory_description(self, new_description: dict) -> None:
+diff --git a/src/strands_evals/extractors/graph_extractor.py b/src/strands_evals/extractors/graph_extractor.py
+index 1ecdc10..7d22bd8 100644
+--- a/src/strands_evals/extractors/graph_extractor.py
++++ b/src/strands_evals/extractors/graph_extractor.py
+@@ -1,3 +1,5 @@
++from typing import Any
++
+ from strands.multiagent import GraphResult
+ 
+ 
+@@ -12,8 +14,15 @@ def extract_graph_interactions(graph_result: GraphResult):
+         list: Interactions with node names, dependencies, and messages
+         [{node_name: str, dependencies: list[str], messages: list[str]}]
+     """
+-    message_info = []
++    message_info: list[dict[str, Any]] = []
+     for node in graph_result.execution_order:
++        # Skip nodes without results
++        if node.result is None:
++            continue
++        # Skip if result doesn't have the expected structure
++        if not hasattr(node.result, "result") or not hasattr(node.result.result, "message"):
++            continue
++
+         node_name = node.node_id
+         node_messages = [m["text"] for m in node.result.result.message["content"]]
+         dependencies = [n.node_id for n in node.dependencies]
+diff --git a/src/strands_evals/extractors/swarm_extractor.py b/src/strands_evals/extractors/swarm_extractor.py
+index b3358e0..6da2d73 100644
+--- a/src/strands_evals/extractors/swarm_extractor.py
++++ b/src/strands_evals/extractors/swarm_extractor.py
+@@ -1,4 +1,4 @@
+-from strands.multiagent import SwarmResult
++from strands.multiagent import MultiAgentResult, SwarmResult
+ 
+ 
+ def extract_swarm_handoffs(swarm_result: SwarmResult) -> list[dict]:
+@@ -14,6 +14,8 @@ def extract_swarm_handoffs(swarm_result: SwarmResult) -> list[dict]:
+     """
+     hand_off_info = []
+     for node_name, node_info in swarm_result.results.items():
++        if isinstance(node_info.result, Exception) or isinstance(node_info.result, MultiAgentResult):
++            continue
+         messages = [m["text"] for m in node_info.result.message["content"]]
+         added = False
+         for tool_name, tool_info in node_info.result.metrics.tool_metrics.items():
+@@ -39,7 +41,7 @@ def extract_swarm_interactions_from_handoffs(handoffs_info: list[dict]) -> list[
+         list: Interactions with node names, messages, and dependencies
+         [{node_name: str, messages: list[str], dependencies: list[str]}, ...]
+     """
+-    dependencies = {}
++    dependencies: dict[str, list[str]] = {}
+     interactions = []
+     for handoff in handoffs_info:
+         if handoff["to"] not in dependencies:
+diff --git a/src/strands_evals/generators/dataset_generator.py b/src/strands_evals/generators/dataset_generator.py
+index f629915..ac7b1c1 100644
+--- a/src/strands_evals/generators/dataset_generator.py
++++ b/src/strands_evals/generators/dataset_generator.py
+@@ -1,20 +1,22 @@
+ import asyncio
++import logging
++import math
+ 
+ from pydantic import create_model
+ from strands import Agent
+-from typing_extensions import Any, Generic, TypeVar
++from typing_extensions import Any, Generic, TypeVar, Optional
+ 
+-from strands_evals.evaluators.evaluator import Evaluator
+-from strands_evals.evaluators.interactions_evaluator import InteractionsEvaluator
+-from strands_evals.evaluators.output_evaluator import OutputEvaluator
+-from strands_evals.evaluators.trajectory_evaluator import TrajectoryEvaluator
++from strands_evals.evaluators import Evaluator, InteractionsEvaluator, OutputEvaluator, TrajectoryEvaluator
+ 
+ from ..case import Case
+ from ..dataset import Dataset
++from .topic_planner import TopicPlanner
+ from ..types.evaluation import Interaction
+ from .prompt_template.prompt_templates import generate_case_template as CASE_SYSTEM_PROMPT
+ from .prompt_template.prompt_templates import generate_rubric_template as RUBRIC_SYSTEM_PROMPT
+ 
++logger = logging.getLogger(__name__)
++
+ InputT = TypeVar("InputT")
+ OutputT = TypeVar("OutputT")
+ 
+@@ -28,16 +30,23 @@ class DatasetGenerator(Generic[InputT, OutputT]):
+     """
+ 
+     _default_evaluators = {
+-        OutputEvaluator: "evaluates only the output response, don't include information about trajectory nor interactions even if provided",
+-        TrajectoryEvaluator: "evaluates the trajectory and output if provided, don't include info about interactions even if provided",
+-        InteractionsEvaluator: "evaluates the interactions and output if provided, don't include info about trajectory even if provided",
++        OutputEvaluator: (
++            "evaluates only the output response, don't include information about trajectory "
++            "nor interactions even if provided"
++        ),
++        TrajectoryEvaluator: (
++            "evaluates the trajectory and output if provided, don't include info about " "interactions even if provided"
++        ),
++        InteractionsEvaluator: (
++            "evaluates the interactions and output if provided, don't include info about " "trajectory even if provided"
++        ),
+     }
+ 
+     def __init__(
+         self,
+         input_type: type,
+         output_type: type,
+-        trajectory_type: type = None,
++        trajectory_type: type | None = None,
+         include_expected_output: bool = True,
+         include_expected_trajectory: bool = False,
+         include_expected_interactions: bool = False,
+@@ -76,18 +85,19 @@ class DatasetGenerator(Generic[InputT, OutputT]):
+         self.case_system_prompt = case_system_prompt
+ 
+         # Create class structure for Case with stricter/literal types, excluding any fields not needed
+-        fields = {"name": (str, ...), "input": (self.input_type, ...)}
++        fields: dict[str, Any] = {"name": (str, ...), "input": (self.input_type, ...)}
+         if self.include_expected_output:
+             fields["expected_output"] = (self.output_type, ...)
+         if self.include_expected_trajectory:
+-            fields["expected_trajectory"] = (list[trajectory_type], ...) if trajectory_type else (list[Any], ...)
++            # Use Any for trajectory type since we can't use runtime variables as types
++            fields["expected_trajectory"] = (list[Any], ...)
+         if self.include_expected_interactions:
+             fields["expected_interactions"] = (list[Interaction], ...)
+         if self.include_metadata:
+             fields["metadata"] = (dict[str, Any], ...)
+         self._Case = create_model("_Case", **fields)
+ 
+-    async def _case_worker(self, queue: asyncio.Queue, prompt: str, message_history: list, results: list):
++    async def _case_worker(self, queue: asyncio.Queue, prompt: str, message_history: list | None, results: list):
+         """
+         Worker that generates cases from the queue.
+ 
+@@ -112,16 +122,17 @@ class DatasetGenerator(Generic[InputT, OutputT]):
+                 break
+ 
+             try:
+-                gen_case = await case_generator.structured_output_async(
+-                    self._Case, prompt + f"Ensure that the test case has a difficulty level of {difficulty}."
+-                )
++                full_prompt = prompt + f"Ensure that the test case has a difficulty level of {difficulty}."
++                gen_case = await case_generator.structured_output_async(self._Case, full_prompt)
+                 results.append(Case(**gen_case.model_dump()))
+             except Exception as e:
+-                print(f"Error generating case: {e}")
++                logger.exception(f"Error generating case: {e}")
+             finally:
+                 queue.task_done()
+ 
+-    async def generate_cases_async(self, prompt: str, num_cases: int = 5, message_history: list = None) -> list[Case]:
++
++    async def generate_cases_async(self, prompt: str, num_cases: int = 5, message_history: list | None = None, num_topics: Optional[int] = None
++        ) -> list[Case]:
+         """
+         Generate test cases asynchronously using parallel workers.
+ 
+@@ -129,14 +140,89 @@ class DatasetGenerator(Generic[InputT, OutputT]):
+             prompt: Generation prompt describing the test case requirements
+             num_cases: Number of test cases to generate
+             message_history: Optional conversation history to provide context to the generation agent
++            num_topics: Optional number of topics for diverse coverage.
++                If None, generates all cases from the single prompt.
++                If specified, expands prompt into multiple topic-specific prompts.
+ 
+         Returns:
+             List of generated Case objects matching the configured schema
+         """
+-        queue = asyncio.Queue()
++        prompt_specs = await self._prepare_generation_prompts(
++            base_prompt=prompt,
++            num_cases=num_cases,
++            num_topics=num_topics
++        )
++
++        
++        generated_cases: list = []
++        for prompt_text, cases_for_prompt in prompt_specs:
++            cases = await self._generate_batch(
++                prompt=prompt_text,
++                num_cases=cases_for_prompt,
++                message_history=message_history
++            )
++            generated_cases.extend(cases)
++        
++        return generated_cases[:num_cases]
++    
++    async def _prepare_generation_prompts(
++        self,
++        base_prompt: str,
++        num_cases: int,
++        num_topics: Optional[int] = None
++    ) -> list[tuple[str, int]]:
++        """
++        Prepare generation prompts, optionally expanding via topic planning.
++        
++        Returns:
++            List of (prompt, num_cases) tuples. Always returns at least one prompt.
++        """
++        if num_topics is None:
++            return [(base_prompt, num_cases)]
++        
++        topic_planner = TopicPlanner(model=self.model)
++        
++        try:
++            topic_plan = await topic_planner.plan_topics_async(
++                context=base_prompt,
++                task_description="",
++                num_topics=num_topics,
++                num_cases=num_cases
++            )
++        except Exception as e:
++            print(f"Topic planning failed: {e}. Using single prompt.")
++            return [(base_prompt, num_cases)]
++        
++        # Distribute cases across topics
++        cases_per_topic = math.ceil(num_cases / len(topic_plan.topics))
++        prompt_specs = []
++        
++        for topic in topic_plan.topics:
++            remaining = num_cases - sum(count for _, count in prompt_specs)
++            if remaining <= 0:
++                break
++                
++            topic_cases = min(cases_per_topic, remaining)
++            topic_prompt = f"""{base_prompt}
++
++    Focus on this topic:
++    - {topic.title}: {topic.description}
++    - Key aspects: {', '.join(topic.key_aspects)}"""
++            
++            prompt_specs.append((topic_prompt, topic_cases))
++        
++        return prompt_specs
++    
++    async def _generate_batch(
++        self,
++        prompt: str,
++        num_cases: int,
++        message_history: list = None
++    ) -> list[Case]:
++        """Generate a batch of cases using the existing worker pattern."""
++        queue: asyncio.Queue[str] = asyncio.Queue()
+         generated_cases = []
+ 
+-        # Fill queue with tasks
+         for i in range(num_cases):
+             difficulty = "medium"
+             if i < num_cases * 0.3:
+@@ -146,9 +232,10 @@ class DatasetGenerator(Generic[InputT, OutputT]):
+             queue.put_nowait(difficulty)
+ 
+         num_workers = min(self.max_parallel_num_cases, num_cases)
+-
+         workers = [
+-            asyncio.create_task(self._case_worker(queue, prompt, message_history, generated_cases))
++            asyncio.create_task(
++                self._case_worker(queue, prompt, message_history, generated_cases)
++            )
+             for _ in range(num_workers)
+         ]
+ 
+@@ -159,8 +246,9 @@ class DatasetGenerator(Generic[InputT, OutputT]):
+ 
+         return generated_cases
+ 
++
+     async def construct_evaluator_async(
+-        self, prompt: str, evaluator: Evaluator, message_history: list = None
++        self, prompt: str, evaluator: Evaluator, message_history: list | None = None
+     ) -> Evaluator:
+         """
+         Create an evaluator instance with a generated rubric.
+@@ -181,7 +269,8 @@ class DatasetGenerator(Generic[InputT, OutputT]):
+         """
+         if evaluator not in self._default_evaluators:
+             raise ValueError(
+-                f"{evaluator} is not a default evaluator that needs a rubric. Please use one of the default evaluators: {list(self._default_evaluators.keys())}."
++                f"{evaluator} is not a default evaluator that needs a rubric. Please use one of the "
++                f"default evaluators: {list(self._default_evaluators.keys())}."
+             )
+ 
+         rubric_generator_agent = Agent(
+@@ -190,9 +279,13 @@ class DatasetGenerator(Generic[InputT, OutputT]):
+             callback_handler=None,
+             messages=message_history if message_history else [],
+         )
++        evaluator_name = evaluator.get_type_name()
++        evaluator_desc = self._default_evaluators[evaluator]
++        evaluator_info = f"""The evaluator selected is {evaluator_name}. This evaluator {evaluator_desc}."""
+         final_prompt = (
+             prompt
+-            + f"""The evaluator selected is {evaluator.get_type_name()}. This evaluator {self._default_evaluators[evaluator]}.
++            + evaluator_info
++            + """
+         IMPORTANT: Your response must be ONLY a few sentences describing how to evaluate the test cases."""
+         )
+ 
+@@ -215,17 +308,20 @@ class DatasetGenerator(Generic[InputT, OutputT]):
+             evaluator: Optional evaluator class for assessment (generates rubric if provided).
+ 
+         Returns:
+-            Dataset containing generated test cases and evaluator. Use the generic Evaluator as placeholder if no evaluator is passed in.
++            Dataset containing generated test cases and evaluator. Use the generic Evaluator as placeholder
++            if no evaluator is passed in.
+         """
+-        cases = await self.generate_cases_async(
+-            f"""Create test cases for the following topics: {' '.join(topics)} for this task:
+-                                     {task_description}.""",
+-            num_cases,
++        topics_str = " ".join(topics)
++        case_prompt = (
++            f"""Create test cases for the following topics: {topics_str} for this task: """ f"""{task_description}."""
+         )
++        cases = await self.generate_cases_async(case_prompt, num_cases)
+         if evaluator:
++            rubric_prompt = (
++                f"""Create a rubric for the following topics: {topics_str} for this task: """ f"""{task_description}."""
++            )
+             _evaluator = await self.construct_evaluator_async(
+-                prompt=f"""Create a rubric for the following topics: {' '.join(topics)} for this task:
+-                                     {task_description}.""",
++                prompt=rubric_prompt,
+                 evaluator=evaluator,
+             )
+             return Dataset(cases=cases, evaluator=_evaluator)
+@@ -233,7 +329,7 @@ class DatasetGenerator(Generic[InputT, OutputT]):
+             return Dataset(cases=cases)
+ 
+     async def from_context_async(
+-        self, context: str, task_description: str, num_cases: int = 5, evaluator: Evaluator = None
++        self, context: str, task_description: str, num_cases: int = 5, evaluator: Evaluator = None, num_topics: Optional[int] = None
+     ) -> Dataset:
+         """
+         Generate a dataset based on specific context that test cases should reference.
+@@ -242,22 +338,28 @@ class DatasetGenerator(Generic[InputT, OutputT]):
+         useful for testing knowledge retrieval, context understanding, or domain-specific tasks.
+ 
+         Args:
+-            context: Specific context/information that test cases should reference. If there's any tools they need to use, specify them here too.
+-                Be sure to include as much information as you can about tools or sub-agents for generating interaction and/or trajectory.
++            context: Specific context/information that test cases should reference. If there's any tools
++                they need to use, specify them here too. Be sure to include as much information as you can
++                about tools or sub-agents for generating interaction and/or trajectory.
+             task_description: Description of the task the AI system will perform
+             num_cases: Number of test cases to generate
+             evaluator: Optional evaluator class for assessment (generates rubric if provided), use Evaluator() as a placeholder.
++            num_topics: Optional number of topics for diverse coverage
+ 
+         Returns:
+-            Dataset containing context-based test cases and evaluator. Use the generic Evaluator as placeholder if no evaluator is passed in.
++            Dataset containing context-based test cases and evaluator. Use the generic Evaluator as placeholder
++            if no evaluator is passed in.
+         """
+         cases = await self.generate_cases_async(
+-            f"""Create test cases with the following context: {context}. Ensure that the questions can be answer using the provided context for this task: {task_description} """,
++            f"""Create test cases with the following context: {context}. Ensure that the questions can be """
++            f"""answer using the provided context for this task: {task_description} """,
+             num_cases=num_cases,
++            num_topics=num_topics
+         )
+         if evaluator:
+             _evaluator = await self.construct_evaluator_async(
+-                prompt=f"""Create a rubric with the following context: {context} for this task: {task_description} """,
++                prompt=f"""Create a rubric with the following context: {context} for this task: """
++                f"""{task_description} """,
+                 evaluator=evaluator,
+             )
+             return Dataset(cases=cases, evaluator=_evaluator)
+@@ -265,7 +367,7 @@ class DatasetGenerator(Generic[InputT, OutputT]):
+             return Dataset(cases=cases)
+ 
+     async def from_dataset_async(
+-        self, source_dataset: Dataset, task_description: str, num_cases: int = 5, extra_information: str = None
++        self, source_dataset: Dataset, task_description: str, num_cases: int = 5, extra_information: str | None = None
+     ) -> Dataset:
+         """
+         Generate a new dataset using an existing dataset as reference.
+@@ -297,7 +399,11 @@ class DatasetGenerator(Generic[InputT, OutputT]):
+             cases_string_list.append({"text": f"{i}. {case.model_dump()}"})
+         messages.append({"role": "user", "content": cases_string_list})
+         new_cases = await self.generate_cases_async(
+-            prompt=f"Create new test cases similar to the reference cases. Ensure that the input and output are relevant for this task: {task_description}. Here are some extra information: {extra_information}.",
++            prompt=(
++                f"Create new test cases similar to the reference cases. Ensure that the input and output "
++                f"are relevant for this task: {task_description}. Here are some extra information: "
++                f"{extra_information}."
++            ),
+             num_cases=num_cases,
+             message_history=messages,
+         )
+@@ -305,7 +411,10 @@ class DatasetGenerator(Generic[InputT, OutputT]):
+         if type(source_evaluator) in self._default_evaluators:
+             source_rubric = source_evaluator.rubric
+             new_evaluator = await self.construct_evaluator_async(
+-                prompt=f"Create a new rubric based on the reference rubric. Ensure that the rubric is relevant for this task: {task_description}. Here are some extra information: {extra_information}.",
++                prompt=(
++                    f"Create a new rubric based on the reference rubric. Ensure that the rubric is relevant "
++                    f"for this task: {task_description}. Here are some extra information: {extra_information}."
++                ),
+                 evaluator=type(source_evaluator),
+                 message_history=[{"role": "user", "content": [{"text": source_rubric}]}],
+             )
+@@ -317,10 +426,10 @@ class DatasetGenerator(Generic[InputT, OutputT]):
+         source_dataset: Dataset,
+         task_description: str,
+         num_cases: int = 5,
+-        context: str = None,
++        context: str | None = None,
+         add_new_cases: bool = True,
+         add_new_rubric: bool = True,
+-        new_evaluator_type: type = None,
++        new_evaluator_type: type | None = None,
+     ) -> Dataset:
+         """
+         Update an existing dataset by adding new test cases and/or updating the evaluator.
+@@ -355,22 +464,29 @@ class DatasetGenerator(Generic[InputT, OutputT]):
+                 cases_string_list.append({"text": f"{i}. {case.model_dump()}"})
+             messages.append({"role": "user", "content": cases_string_list})
+             new_cases = await self.generate_cases_async(
+-                prompt=f"Create new test cases, expanding on previous cases for the following context: {context}. Ensure that the input and output are relevant for this task: {task_description}.",
++                prompt=(
++                    f"Create new test cases, expanding on previous cases for the following context: {context}. "
++                    f"Ensure that the input and output are relevant for this task: {task_description}."
++                ),
+                 num_cases=num_cases,
+                 message_history=messages,
+             )
+ 
+         if add_new_rubric:
++            evaluator_type: type
+             if new_evaluator_type:
+-                new_evaluator = new_evaluator_type
++                evaluator_type = new_evaluator_type
+             else:
+-                new_evaluator = type(source_evaluator)  # use the previous evaluator if no new evaluator is passed in
++                evaluator_type = type(source_evaluator)  # use the previous evaluator if no new evaluator is passed in
+ 
+-            if new_evaluator in self._default_evaluators:
++            if evaluator_type in self._default_evaluators:
+                 source_rubric = source_evaluator.rubric if type(source_evaluator) in self._default_evaluators else None
+                 new_evaluator = await self.construct_evaluator_async(
+-                    prompt=f"Create a new rubric based on the reference rubric if provided for the following context: {context}. Ensure that the rubric is relevant for this task: {task_description}.",
+-                    evaluator=new_evaluator,
++                    prompt=(
++                        f"Create a new rubric based on the reference rubric if provided for the following "
++                        f"context: {context}. Ensure that the rubric is relevant for this task: {task_description}."
++                    ),
++                    evaluator=evaluator_type,
+                     message_history=[{"role": "user", "content": [{"text": source_rubric}]}],
+                 )
+             else:  # use the original if it's not supported
+diff --git a/src/strands_evals/generators/topic_planner.py b/src/strands_evals/generators/topic_planner.py
+new file mode 100644
+index 0000000..13f02c4
+--- /dev/null
++++ b/src/strands_evals/generators/topic_planner.py
+@@ -0,0 +1,79 @@
++import math
++from typing import List
++from pydantic import BaseModel, Field
++from strands import Agent
++
++
++class Topic(BaseModel):
++    """Represents a single topic for test case generation."""
++    title: str = Field(..., description="Brief descriptive title for the topic")
++    description: str = Field(..., description="Short description explaining the topic")
++    key_aspects: List[str] = Field(
++        ..., 
++        description="2-5 key aspects that test cases should explore for this topic"
++    )
++
++
++class TopicPlan(BaseModel):
++    """Represents a complete topic plan with multiple topics."""
++    topics: List[Topic] = Field(
++        ..., 
++        description="List of diverse topics for comprehensive test coverage"
++    )
++
++
++class TopicPlanner:
++    """Plans diverse topics for test case generation based on agent context."""
++    
++    DEFAULT_PLANNING_PROMPT = """You are a test scenario planner for AI agents. 
++Your role is to analyze agent configurations and generate strategic topic plans 
++that comprehensively evaluate agent capabilities.
++
++Your topics should:
++- Cover different aspects of the agent's capabilities
++- Test edge cases and common scenarios
++- Vary in complexity and scope
++- Ensure comprehensive coverage of available tools and features
++- Be diverse and non-overlapping"""
++    
++    def __init__(self, model: str = None, planning_prompt: str = None):
++        self.model = model
++        self.planning_prompt = planning_prompt or self.DEFAULT_PLANNING_PROMPT
++    
++    async def plan_topics_async(
++        self,
++        context: str,
++        task_description: str,
++        num_topics: int,
++        num_cases: int
++    ) -> TopicPlan:
++        """Generate a strategic plan of diverse topics for test case generation."""
++        cases_per_topic = math.ceil(num_cases / num_topics)
++        
++        planning_agent = Agent(
++            model=self.model,
++            system_prompt=self.planning_prompt,
++            callback_handler=None
++        )
++        
++        prompt = f"""Generate {num_topics} diverse topics for creating {num_cases} test cases.
++
++Agent Context:
++{context}
++
++Task Description:
++{task_description}
++
++Requirements:
++- Create exactly {num_topics} distinct topics
++- Each topic will generate approximately {cases_per_topic} test cases
++- Include 2-5 key aspects per topic that test cases should explore
++- Ensure topics span different complexity levels and use cases
++- Make topics diverse and non-overlapping"""
++        
++        topic_plan = await planning_agent.structured_output_async(TopicPlan, prompt)
++        
++        if len(topic_plan.topics) > num_topics:
++            topic_plan.topics = topic_plan.topics[:num_topics]
++        
++        return topic_plan
+diff --git a/src/strands_evals/types/evaluation_report.py b/src/strands_evals/types/evaluation_report.py
+index 398bbb2..735a192 100644
+--- a/src/strands_evals/types/evaluation_report.py
++++ b/src/strands_evals/types/evaluation_report.py
+@@ -26,7 +26,7 @@ class EvaluationReport(BaseModel):
+     scores: list[float]
+     cases: list[dict]
+     test_passes: list[bool]
+-    reasons: list[str] | None = []
++    reasons: list[str] = []
+ 
+     def _display(
+         self,
+@@ -45,14 +45,14 @@ class EvaluationReport(BaseModel):
+ 
+         Args:
+             static: Whether to render the interface as interactive or static.
+-            include_input: Whether to include the input in the display. Defaults to True.
+-            include_actual_output: Whether to include the actual output in the display. Defaults to False.
+-            include_expected_output: Whether to include the expected output in the display. Defaults to False.
+-            include_expected_trajectory: Whether to include the expected trajectory in the display. Defaults to False.
+-            include_actual_trajectory: Whether to include the actual trajectory in the display. Defaults to False.
+-            include_actual_interactions: Whether to include the actual interactions in the display. Defaults to False.
+-            include_expected_interactions: Whether to include the expected interactions in the display. Defaults to False.
+-            include_meta: Whether to include metadata in the display. Defaults to False.
++            include_input (Defaults to True): Include the input in the display.
++            include_actual_output (Defaults to False): Include the actual output in the display.
++            include_expected_output (Defaults to False): Include the expected output in the display.
++            include_expected_trajectory (Defaults to False): Include the expected trajectory in the display.
++            include_actual_trajectory (Defaults to False): Include the actual trajectory in the display.
++            include_actual_interactions (Defaults to False): Include the actual interactions in the display.
++            include_expected_interactions (Defaults to False): Include the expected interactions in the display.
++            include_meta (Defaults to False): Include metadata in the display.
+ 
+         Note:
+             This method provides an interactive console interface where users can expand or collapse
+@@ -107,13 +107,13 @@ class EvaluationReport(BaseModel):
+ 
+         Args:
+             include_input: Whether to include the input in the display. Defaults to True.
+-            include_actual_output: Whether to include the actual output in the display. Defaults to False.
+-            include_expected_output: Whether to include the expected output in the display. Defaults to False.
+-            include_expected_trajectory: Whether to include the expected trajectory in the display. Defaults to False.
+-            include_actual_trajectory: Whether to include the actual trajectory in the display. Defaults to False.
+-            include_actual_interactions: Whether to include the actual interactions in the display. Defaults to False.
+-            include_expected_interactions: Whether to include the expected interactions in the display. Defaults to False.
+-            include_meta: Whether to include metadata in the display. Defaults to False.
++            include_actual_output (Defaults to False): Include the actual output in the display.
++            include_expected_output (Defaults to False): Include the expected output in the display.
++            include_expected_trajectory (Defaults to False): Include the expected trajectory in the display.
++            include_actual_trajectory (Defaults to False): Include the actual trajectory in the display.
++            include_actual_interactions (Defaults to False): Include the actual interactions in the display.
++            include_expected_interactions (Defaults to False): Include the expected interactions in the display.
++            include_meta (Defaults to False): Include metadata in the display.
+         """
+         self._display(
+             static=True,
+@@ -143,13 +143,13 @@ class EvaluationReport(BaseModel):
+ 
+         Args:
+             include_input: Whether to include the input in the display. Defaults to True.
+-            include_actual_output: Whether to include the actual output in the display. Defaults to False.
+-            include_expected_output: Whether to include the expected output in the display. Defaults to False.
+-            include_expected_trajectory: Whether to include the expected trajectory in the display. Defaults to False.
+-            include_actual_trajectory: Whether to include the actual trajectory in the display. Defaults to False.
+-            include_actual_interactions: Whether to include the actual interactions in the display. Defaults to False.
+-            include_expected_interactions: Whether to include the expected interactions in the display. Defaults to False.
+-            include_meta: Whether to include metadata in the display. Defaults to False.
++            include_actual_output (Defaults to False): Include the actual output in the display.
++            include_expected_output (Defaults to False): Include the expected output in the display.
++            include_expected_trajectory (Defaults to False): Include the expected trajectory in the display.
++            include_actual_trajectory (Defaults to False): Include the actual trajectory in the display.
++            include_actual_interactions (Defaults to False): Include the actual interactions in the display.
++            include_expected_interactions (Defaults to False): Include the expected interactions in the display.
++            include_meta (Defaults to False): Include metadata in the display.
+         """
+         self._display(
+             static=False,
+diff --git a/tests/strands_evals/extractors/test_graph_extractor.py b/tests/strands_evals/extractors/test_graph_extractor.py
+index 9b69685..031f428 100644
+--- a/tests/strands_evals/extractors/test_graph_extractor.py
++++ b/tests/strands_evals/extractors/test_graph_extractor.py
+@@ -3,17 +3,22 @@ from unittest.mock import Mock
+ from strands_evals.extractors.graph_extractor import extract_graph_interactions
+ 
+ 
++def _create_mock_node(node_id: str, messages: list[str], dependencies: list = None):
++    """Helper function to create a properly mocked node"""
++    mock_node = Mock()
++    mock_node.node_id = node_id
++    # Create a mock result - the hasattr checks in the implementation will handle validation
++    mock_result = Mock()
++    mock_result.result.message = {"content": [{"text": msg} for msg in messages]}
++    mock_node.result = mock_result
++    mock_node.dependencies = dependencies or []
++    return mock_node
++
++
+ def test_graph_extractor_extract_interactions():
+     """Test extracting interactions from graph result"""
+-    mock_node1 = Mock()
+-    mock_node1.node_id = "node1"
+-    mock_node1.result.result.message = {"content": [{"text": "Message from node1"}]}
+-    mock_node1.dependencies = []
+-
+-    mock_node2 = Mock()
+-    mock_node2.node_id = "node2"
+-    mock_node2.result.result.message = {"content": [{"text": "Message from node2"}]}
+-    mock_node2.dependencies = [mock_node1]
++    mock_node1 = _create_mock_node("node1", ["Message from node1"])
++    mock_node2 = _create_mock_node("node2", ["Message from node2"], [mock_node1])
+ 
+     mock_graph_result = Mock()
+     mock_graph_result.execution_order = [mock_node1, mock_node2]
+@@ -31,10 +36,7 @@ def test_graph_extractor_extract_interactions():
+ 
+ def test_graph_extractor_extract_interactions_multiple_messages():
+     """Test extracting interactions with multiple messages per node"""
+-    mock_node = Mock()
+-    mock_node.node_id = "node1"
+-    mock_node.result.result.message = {"content": [{"text": "First message"}, {"text": "Second message"}]}
+-    mock_node.dependencies = []
++    mock_node = _create_mock_node("node1", ["First message", "Second message"])
+ 
+     mock_graph_result = Mock()
+     mock_graph_result.execution_order = [mock_node]
+@@ -49,20 +51,9 @@ def test_graph_extractor_extract_interactions_multiple_messages():
+ 
+ def test_graph_extractor_extract_interactions_complex_dependencies():
+     """Test extracting interactions with complex dependency structure"""
+-    mock_node1 = Mock()
+-    mock_node1.node_id = "node1"
+-    mock_node1.result.result.message = {"content": [{"text": "Node1 message"}]}
+-    mock_node1.dependencies = []
+-
+-    mock_node2 = Mock()
+-    mock_node2.node_id = "node2"
+-    mock_node2.result.result.message = {"content": [{"text": "Node2 message"}]}
+-    mock_node2.dependencies = []
+-
+-    mock_node3 = Mock()
+-    mock_node3.node_id = "node3"
+-    mock_node3.result.result.message = {"content": [{"text": "Node3 message"}]}
+-    mock_node3.dependencies = [mock_node1, mock_node2]
++    mock_node1 = _create_mock_node("node1", ["Node1 message"])
++    mock_node2 = _create_mock_node("node2", ["Node2 message"])
++    mock_node3 = _create_mock_node("node3", ["Node3 message"], [mock_node1, mock_node2])
+ 
+     mock_graph_result = Mock()
+     mock_graph_result.execution_order = [mock_node1, mock_node2, mock_node3]
+@@ -90,10 +81,7 @@ def test_graph_extractor_extract_interactions_empty():
+ 
+ def test_graph_extractor_extract_interactions_single_node():
+     """Test extracting interactions from single node graph"""
+-    mock_node = Mock()
+-    mock_node.node_id = "single_node"
+-    mock_node.result.result.message = {"content": [{"text": "Single node message"}]}
+-    mock_node.dependencies = []
++    mock_node = _create_mock_node("single_node", ["Single node message"])
+ 
+     mock_graph_result = Mock()
+     mock_graph_result.execution_order = [mock_node]
+@@ -108,10 +96,7 @@ def test_graph_extractor_extract_interactions_single_node():
+ 
+ def test_graph_extractor_extract_interactions_empty_messages():
+     """Test extracting interactions with empty message content"""
+-    mock_node = Mock()
+-    mock_node.node_id = "node1"
+-    mock_node.result.result.message = {"content": []}
+-    mock_node.dependencies = []
++    mock_node = _create_mock_node("node1", [])
+ 
+     mock_graph_result = Mock()
+     mock_graph_result.execution_order = [mock_node]
+diff --git a/tests/strands_evals/generators/test_dataset_generator.py b/tests/strands_evals/generators/test_dataset_generator.py
+index 1fff8ed..7e2ac02 100644
+--- a/tests/strands_evals/generators/test_dataset_generator.py
++++ b/tests/strands_evals/generators/test_dataset_generator.py
+@@ -5,6 +5,7 @@ import pytest
+ from strands_evals import Case, Dataset
+ from strands_evals.evaluators import Evaluator, InteractionsEvaluator, OutputEvaluator, TrajectoryEvaluator
+ from strands_evals.generators import DatasetGenerator
++from strands_evals.generators.topic_planner import Topic, TopicPlan
+ 
+ 
+ def test_dataset_generator__init__():
+@@ -334,3 +335,56 @@ def test_dataset_generator_default_evaluators_mapping():
+     assert OutputEvaluator in generator._default_evaluators
+     assert TrajectoryEvaluator in generator._default_evaluators
+     assert InteractionsEvaluator in generator._default_evaluators
++
++
++@pytest.mark.asyncio
++async def test_dataset_generator_generate_cases_async_with_topics():
++    """Test async case generation with topic planning"""
++    generator = DatasetGenerator(str, str)
++
++    mock_agent = AsyncMock()
++    mock_case_data = MagicMock()
++    mock_case_data.model_dump.return_value = {"name": "test", "input": "hello"}
++    mock_agent.structured_output_async.return_value = mock_case_data
++
++    with patch("strands_evals.generators.dataset_generator.Agent", return_value=mock_agent):
++        with patch.object(generator, "_prepare_generation_prompts", return_value=[("prompt1", 2), ("prompt2", 1)]):
++            cases = await generator.generate_cases_async("test prompt", num_cases=3, num_topics=2)
++
++    assert len(cases) == 3
++
++
++@pytest.mark.asyncio
++async def test_dataset_generator_prepare_generation_prompts_with_topics():
++    """Test prompt preparation with topic planning"""
++    generator = DatasetGenerator(str, str)
++    
++    mock_plan = TopicPlan(topics=[
++        Topic(title="T1", description="D1", key_aspects=["a1"]),
++        Topic(title="T2", description="D2", key_aspects=["a2"])
++    ])
++    
++    with patch("strands_evals.generators.dataset_generator.TopicPlanner") as mock_planner_class:
++        mock_planner = AsyncMock()
++        mock_planner.plan_topics_async.return_value = mock_plan
++        mock_planner_class.return_value = mock_planner
++        
++        result = await generator._prepare_generation_prompts("base prompt", num_cases=10, num_topics=2)
++    
++    assert len(result) == 2
++    assert all(isinstance(prompt, str) and isinstance(count, int) for prompt, count in result)
++
++
++@pytest.mark.asyncio
++async def test_dataset_generator_from_context_async_with_num_topics():
++    """Test generating dataset from context with num_topics parameter"""
++    generator = DatasetGenerator(str, str)
++
++    mock_cases = [Case(name="test", input="hello")]
++
++    with patch.object(generator, "generate_cases_async", return_value=mock_cases) as mock_gen:
++        dataset = await generator.from_context_async("test context", "test task", num_cases=1, num_topics=3)
++
++    mock_gen.assert_called_once()
++    assert mock_gen.call_args[1]["num_topics"] == 3
++    assert isinstance(dataset, Dataset)
+diff --git a/tests/strands_evals/generators/test_topic_planner.py b/tests/strands_evals/generators/test_topic_planner.py
+new file mode 100644
+index 0000000..a503e9b
+--- /dev/null
++++ b/tests/strands_evals/generators/test_topic_planner.py
+@@ -0,0 +1,23 @@
++from unittest.mock import AsyncMock, patch
++
++import pytest
++from strands_evals.generators.topic_planner import Topic, TopicPlan, TopicPlanner
++
++
++@pytest.mark.asyncio
++async def test_topic_planner_plan_topics_async():
++    """Test topic planning generates correct number of topics"""
++    planner = TopicPlanner()
++    
++    mock_agent = AsyncMock()
++    mock_plan = TopicPlan(topics=[
++        Topic(title="Topic 1", description="Desc 1", key_aspects=["aspect1", "aspect2"]),
++        Topic(title="Topic 2", description="Desc 2", key_aspects=["aspect3"])
++    ])
++    mock_agent.structured_output_async.return_value = mock_plan
++    
++    with patch("strands_evals.generators.topic_planner.Agent", return_value=mock_agent):
++        result = await planner.plan_topics_async("context", "task", num_topics=2, num_cases=10)
++    
++    assert len(result.topics) == 2
++    assert all(isinstance(t, Topic) for t in result.topics)
