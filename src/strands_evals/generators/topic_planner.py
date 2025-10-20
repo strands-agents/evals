@@ -1,4 +1,5 @@
 import math
+from textwrap import dedent
 
 from pydantic import BaseModel, Field
 from strands import Agent
@@ -35,20 +36,21 @@ class TopicPlanner:
 
         planning_agent = Agent(model=self.model, system_prompt=self.planning_prompt, callback_handler=None)
 
-        prompt = f"""Generate {num_topics} diverse topics for creating {num_cases} test cases.
+        prompt = dedent(f"""
+                        Generate {num_topics} diverse topics for creating {num_cases} test cases.
 
-Agent Context:
-{context}
+                        Agent Context:
+                        {context}
 
-Task Description:
-{task_description}
+                        Task Description:
+                        {task_description}
 
-Requirements:
-- Create exactly {num_topics} distinct topics
-- Each topic will generate approximately {cases_per_topic} test cases
-- Include 2-5 key aspects per topic that test cases should explore
-- Ensure topics span different complexity levels and use cases
-- Make topics diverse and non-overlapping"""
+                        Requirements:
+                        - Create exactly {num_topics} distinct topics
+                        - Each topic will generate approximately {cases_per_topic} test cases
+                        - Include 2-5 key aspects per topic that test cases should explore
+                        - Ensure topics span different complexity levels and use cases
+                        - Make topics diverse and non-overlapping""")
 
         topic_plan = await planning_agent.structured_output_async(TopicPlan, prompt)
 

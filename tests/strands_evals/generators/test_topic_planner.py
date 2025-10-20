@@ -1,6 +1,7 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
 from strands_evals.generators.topic_planner import Topic, TopicPlan, TopicPlanner
 
 

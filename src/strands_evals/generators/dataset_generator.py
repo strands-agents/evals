@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import math
+from textwrap import dedent
 
 from pydantic import create_model
 from strands import Agent
@@ -158,7 +159,7 @@ class DatasetGenerator(Generic[InputT, OutputT]):
             )
             generated_cases.extend(cases)
 
-        return generated_cases[:num_cases]
+        return generated_cases
 
     async def _prepare_generation_prompts(
         self, base_prompt: str, num_cases: int, num_topics: int | None = None
@@ -186,18 +187,22 @@ class DatasetGenerator(Generic[InputT, OutputT]):
         cases_per_topic = math.ceil(num_cases / len(topic_plan.topics))
         prompt_specs: list[tuple[str, int]] = []
 
+        num_generated_cases = 0
         for topic in topic_plan.topics:
-            remaining = num_cases - sum(count for _, count in prompt_specs)
+            remaining = num_cases - num_generated_cases
             if remaining <= 0:
                 break
 
             topic_cases = min(cases_per_topic, remaining)
-            topic_prompt = f"""{base_prompt}
-            Focus on this topic:
-            - {topic.title}: {topic.description}
-            - Key aspects: {', '.join(topic.key_aspects)}"""
+            topic_prompt = dedent(f"""
+                {base_prompt}
+                Focus on this topic:
+                - {topic.title}: {topic.description}
+                - Key aspects: {", ".join(topic.key_aspects)}
+            """)
 
             prompt_specs.append((topic_prompt, topic_cases))
+            num_generated_cases += topic_cases
 
         return prompt_specs
 
