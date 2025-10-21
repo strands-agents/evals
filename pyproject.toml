@@ -19,6 +19,9 @@ dependencies = [
     "strands-agents>=1.0.0",
     "strands-agents-tools>=0.1.0,<1.0.0",
     "typing-extensions>=4.0",
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-instrumentation-threading>=0.51b0,<1.00b0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -34,10 +37,12 @@ test = [
 
 dev = [
     "hatch>=1.0.0,<2.0.0",
-    "mypy>=1.0",
+    "mypy>=1.15.0,<2.0.0",
     "pre-commit>=3.2.0,<4.2.0",
-    "ruff>=0.4.4,<1.0.0",
+    "ruff>=0.13.0,<0.14.0",
 ]
+
+otel = ["opentelemetry-exporter-otlp-proto-http>=1.30.0,<2.0.0"]
 
 [tool.ruff]
 line-length = 120
@@ -46,6 +51,7 @@ include = ["src/**/*.py", "tests/**/*.py"]
 [tool.hatch.envs.hatch-test]
 installer = "uv"
 extra-args = ["-n", "auto", "-vv"]
+features = ["otel"]
 dependencies = [
     "pytest>=8.0.0,<9.0.0",
     "pytest-cov>=7.0.0,<8.0.0",
@@ -76,6 +82,17 @@ prepare = [
     "hatch fmt --formatter",
     "hatch run test-lint",
     "hatch test --all"
+]
+
+
+[tool.hatch.envs.hatch-static-analysis]
+installer = "uv"
+features = ["otel"]
+dependencies = [
+  "mypy>=1.15.0,<2.0.0",
+  "ruff>=0.13.0,<0.14.0",
+  # Include required pacakge dependencies for mypy
+  "strands-agents-evals @ {root:uri}",
 ]
 
 
@@ -137,9 +154,9 @@ dependencies = [
 ]
 extra-dependencies = [
     "hatch>=1.0.0,<2.0.0",
-    "mypy>=1.0",
+    "mypy>=1.15.0,<2.0.0",
     "pre-commit>=3.2.0,<4.2.0",
-    "ruff>=0.4.4,<1.0.0",
+    "ruff>=0.13.0,<0.14.0",
 ]
 
 [tool.coverage.run]
