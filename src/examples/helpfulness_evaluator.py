@@ -1,23 +1,22 @@
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from strands import Agent
+
 from strands_evals import Case, Dataset
 from strands_evals.evaluators import HelpfulnessEvaluator
 from strands_evals.mappers import StrandsInMemorySessionMapper
+from strands_evals.telemetry import StrandsEvalsTelemetry
 
 # ======================================
 # SETUP TELEMETRY
 # ======================================
 # 1. Set up the tracer provider
-provider = TracerProvider()
-trace.set_tracer_provider(provider)
+telemetry = StrandsEvalsTelemetry()
 
 # 2. Set up the in-memory exporter
 memory_exporter = InMemorySpanExporter()
 span_processor = BatchSpanProcessor(memory_exporter)
-provider.add_span_processor(span_processor)
+telemetry.tracer_provider.add_span_processor(span_processor)
 
 
 # ======================================

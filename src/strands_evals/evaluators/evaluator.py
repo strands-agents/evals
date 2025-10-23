@@ -108,7 +108,6 @@ class Evaluator(Generic[InputT, OutputT]):
         Returns one ToolLevelInput per tool execution, with conversation
         history and available tools context.
         """
-        
 
         evaluator_inputs: list[ToolLevelInput] = []
         conversation_history: list[Conversation] = []
@@ -161,7 +160,7 @@ class Evaluator(Generic[InputT, OutputT]):
 
         if not isinstance(trajectory, Session):
             raise TypeError(
-                f"Trace parsing requires actual_trajectory to be a Session object, " f"got {type(trajectory).__name__}."
+                f"Trace parsing requires actual_trajectory to be a Session object, got {type(trajectory).__name__}."
             )
 
         if self.evaluation_level == EvaluationLevel.TURN_LEVEL:
