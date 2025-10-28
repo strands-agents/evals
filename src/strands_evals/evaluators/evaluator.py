@@ -8,8 +8,10 @@ from ..types.trace import (
     AgentInvocationSpan,
     AssistantMessage,
     Conversation,
+    ConversationLevelInput,
     EvaluationLevel,
     Session,
+    SpanInfo,
     TextContent,
     ToolConfig,
     ToolExecutionSpan,
@@ -154,6 +156,50 @@ class Evaluator(Generic[InputT, OutputT]):
 
         return evaluator_inputs
 
+    def _parse_conversation_level(self, session: Session) -> ConversationLevelInput:
+        """
+        Parse trace for conversation-level evaluation.
+
+        Returns a single ConversationLevelInput with the full conversation history
+        and available tools.
+        """
+        conversation_history: list[Conversation] = []
+        available_tools: list[ToolConfig] = []
+        span_info: SpanInfo | None = None
+
+        for trace in session.traces:
+            tool_calls: list[ToolExecutionSpan] = []
+
+            # Collect tool executions in this trace
+            for span in trace.spans:
+                if isinstance(span, ToolExecutionSpan):
+                    tool_calls.append(span)
+
+            # Process each agent invocation span
+            for span in trace.spans:
+                if isinstance(span, AgentInvocationSpan):
+                    if not span_info:
+                        span_info = span.span_info
+                    if span.available_tools and not available_tools:
+                        available_tools = span.available_tools
+
+                    conversation_history.append(
+                        Conversation(
+                            user_prompt=TextContent(text=span.user_prompt),
+                            agent_response=TextContent(text=span.agent_response),
+                            tool_execution_history=tool_calls if tool_calls else None,
+                        )
+                    )
+
+        if not span_info:
+            raise ValueError("No AgentInvocationSpan found in session")
+
+        return ConversationLevelInput(
+            span_info=span_info,
+            conversation_history=conversation_history,
+            available_tools=available_tools if available_tools else None,
+        )
+
     def _parse_trajectory(self, evaluation_case: EvaluationData[InputT, OutputT]) -> Any:
         """Parse Session trajectory based on evaluation level."""
         trajectory = evaluation_case.actual_trajectory
@@ -167,8 +213,26 @@ class Evaluator(Generic[InputT, OutputT]):
             return self._parse_turn_level(trajectory)
         elif self.evaluation_level == EvaluationLevel.TOOL_LEVEL:
             return self._parse_tool_level(trajectory)
+        elif self.evaluation_level == EvaluationLevel.CONVERSATION_LEVEL:
+            return self._parse_conversation_level(trajectory)
         else:
             raise ValueError(f"Unsupported evaluation level: {self.evaluation_level}")
+
+    def _format_tools(self, tools: list[ToolConfig]) -> str:
+        """Format available tools for prompt display."""
+        return "\n".join([f"- {tool.name}: {tool.description or 'No description'}" for tool in tools])
+
+    def _format_conversation_history(self, conversations: list[Conversation]) -> str:
+        """Format conversation history with tool executions for prompt display."""
+        lines = []
+        for conv in conversations:
+            lines.append(f"User: {conv.user_prompt.text}")
+            if conv.tool_execution_history:
+                for tool_exec in conv.tool_execution_history:
+                    lines.append(f"Action: {tool_exec.tool_call.name}({tool_exec.tool_call.arguments})")
+                    lines.append(f"Tool: {tool_exec.tool_result.content}")
+            lines.append(f"Assistant: {conv.agent_response.text}")
+        return "\n".join(lines)
 
     @classmethod
     def get_type_name(cls) -> str:

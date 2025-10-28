@@ -134,11 +134,17 @@ def test_parse_trajectory_raises_on_invalid_type():
         evaluator._parse_trajectory(evaluation_data)
 
 
-def test_parse_trajectory_raises_on_unsupported_level(session_with_conversation):
+def test_parse_trajectory_conversation_level(session_with_conversation):
     evaluator = Evaluator()
     evaluator.evaluation_level = EvaluationLevel.CONVERSATION_LEVEL
 
     evaluation_data = EvaluationData(input="test", actual_output="output", actual_trajectory=session_with_conversation)
 
-    with pytest.raises(ValueError, match="Unsupported evaluation level"):
-        evaluator._parse_trajectory(evaluation_data)
+    result = evaluator._parse_trajectory(evaluation_data)
+
+    assert result.conversation_history is not None
+    assert len(result.conversation_history) == 2
+    assert result.conversation_history[0].user_prompt.text == "What is 2+2?"
+    assert result.conversation_history[0].agent_response.text == "4"
+    assert result.conversation_history[1].user_prompt.text == "What is 3+3?"
+    assert result.conversation_history[1].agent_response.text == "6"
