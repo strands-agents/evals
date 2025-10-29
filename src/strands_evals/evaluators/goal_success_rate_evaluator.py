@@ -5,7 +5,7 @@ from strands import Agent
 from typing_extensions import TypeVar
 
 from ..types.evaluation import EvaluationData, EvaluationOutput
-from ..types.trace import ConversationLevelInput, EvaluationLevel
+from ..types.trace import EvaluationLevel, SessionLevelInput
 from .evaluator import Evaluator
 from .prompt_templates.goal_success_rate import get_template
 
@@ -30,7 +30,7 @@ class GoalSuccessRating(BaseModel):
 class GoalSuccessRateEvaluator(Evaluator[InputT, OutputT]):
     """Evaluates whether all user goals were successfully achieved in a conversation."""
 
-    evaluation_level = EvaluationLevel.CONVERSATION_LEVEL
+    evaluation_level = EvaluationLevel.SESSION_LEVEL
 
     _score_mapping = {
         GoalSuccessScore.YES: 1.0,
@@ -49,8 +49,8 @@ class GoalSuccessRateEvaluator(Evaluator[InputT, OutputT]):
         self.model = model
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
-        conversation_input = self._parse_trajectory(evaluation_case)
-        prompt = self._format_prompt(conversation_input)
+        session_input = self._parse_trajectory(evaluation_case)
+        prompt = self._format_prompt(session_input)
         evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
         rating = evaluator_agent.structured_output(GoalSuccessRating, prompt)
         normalized_score = self._score_mapping[rating.score]
@@ -58,24 +58,22 @@ class GoalSuccessRateEvaluator(Evaluator[InputT, OutputT]):
         return [result]
 
     async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
-        conversation_input = self._parse_trajectory(evaluation_case)
-        prompt = self._format_prompt(conversation_input)
+        session_input = self._parse_trajectory(evaluation_case)
+        prompt = self._format_prompt(session_input)
         evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
         rating = await evaluator_agent.structured_output_async(GoalSuccessRating, prompt)
         normalized_score = self._score_mapping[rating.score]
         result = EvaluationOutput(score=normalized_score, test_pass=normalized_score >= 1.0, reason=rating.reasoning)
         return [result]
 
-    def _format_prompt(self, conversation_input: ConversationLevelInput) -> str:
-        """Format evaluation prompt from conversation-level input."""
+    def _format_prompt(self, session_input: SessionLevelInput) -> str:
+        """Format evaluation prompt from session-level input."""
         parts = []
 
-        if conversation_input.available_tools:
-            parts.append(f"# Available tools\n{self._format_tools(conversation_input.available_tools)}")
+        if session_input.available_tools:
+            parts.append(f"# Available tools\n{self._format_tools(session_input.available_tools)}")
 
-        if conversation_input.conversation_history:
-            parts.append(
-                f"# Conversation record\n{self._format_conversation_history(conversation_input.conversation_history)}"
-            )
+        if session_input.session_history:
+            parts.append(f"# Conversation record\n{self._format_session_history(session_input.session_history)}")
 
         return "\n\n".join(parts)

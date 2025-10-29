@@ -1,4 +1,5 @@
 from .evaluator import Evaluator
+from .faithfulness_evaluator import FaithfulnessEvaluator
 from .goal_success_rate_evaluator import GoalSuccessRateEvaluator
 from .helpfulness_evaluator import HelpfulnessEvaluator
 from .interactions_evaluator import InteractionsEvaluator
@@ -12,4 +13,5 @@ __all__ = [
     "InteractionsEvaluator",
     "HelpfulnessEvaluator",
     "GoalSuccessRateEvaluator",
+    "FaithfulnessEvaluator",
 ]

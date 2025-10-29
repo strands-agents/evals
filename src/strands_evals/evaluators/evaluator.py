@@ -1,11 +1,11 @@
 import inspect
 import logging
 
-from typing_extensions import Any, Generic, TypeVar
+from typing_extensions import Any, Generic, TypeGuard, TypeVar
 
 from ..extractors import TraceExtractor
 from ..types.evaluation import EvaluationData, EvaluationOutput
-from ..types.trace import Conversation, EvaluationLevel, Session, ToolConfig
+from ..types.trace import AssistantMessage, Context, EvaluationLevel, Session, TextContent, ToolConfig, UserMessage
 
 logger = logging.getLogger(__name__)
 
@@ -88,17 +88,33 @@ class Evaluator(Generic[InputT, OutputT]):
         """Format available tools for prompt display."""
         return "\n".join([f"- {tool.name}: {tool.description or 'No description'}" for tool in tools])
 
-    def _format_conversation_history(self, conversations: list[Conversation]) -> str:
-        """Format conversation history with tool executions for prompt display."""
+    def _format_session_history(self, contexts: list[Context]) -> str:
+        """Format session history with tool executions for prompt display."""
         lines = []
-        for conv in conversations:
-            lines.append(f"User: {conv.user_prompt.text}")
-            if conv.tool_execution_history:
-                for tool_exec in conv.tool_execution_history:
+        for ctx in contexts:
+            lines.append(f"User: {ctx.user_prompt.text}")
+            if ctx.tool_execution_history:
+                for tool_exec in ctx.tool_execution_history:
                     lines.append(f"Action: {tool_exec.tool_call.name}({tool_exec.tool_call.arguments})")
                     lines.append(f"Tool: {tool_exec.tool_result.content}")
-            lines.append(f"Assistant: {conv.agent_response.text}")
+            lines.append(f"Assistant: {ctx.agent_response.text}")
         return "\n".join(lines)
+
+    def _has_text_content(self, msg: UserMessage | AssistantMessage) -> TypeGuard[UserMessage | AssistantMessage]:
+        """Check if a message object has accessible text content.
+
+        Args:
+            msg: Message object to check (UserMessage or AssistantMessage)
+
+        Returns:
+            True if msg has content attribute with at least one item that is TextContent
+        """
+        return (
+            hasattr(msg, "content")
+            and bool(msg.content)
+            and len(msg.content) > 0
+            and isinstance(msg.content[0], TextContent)
+        )
 
     @classmethod
     def get_type_name(cls) -> str:

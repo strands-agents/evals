@@ -5,7 +5,7 @@ from strands import Agent
 from typing_extensions import TypeVar
 
 from ..types.evaluation import EvaluationData, EvaluationOutput
-from ..types.trace import EvaluationLevel, TurnLevelInput
+from ..types.trace import EvaluationLevel, TextContent, ToolExecution, TraceLevelInput
 from .evaluator import Evaluator
 from .prompt_templates.helpfulness import get_template
 
@@ -35,7 +35,7 @@ class HelpfulnessRating(BaseModel):
 class HelpfulnessEvaluator(Evaluator[InputT, OutputT]):
     """Evaluates helpfulness of agent responses from the user's perspective."""
 
-    evaluation_level = EvaluationLevel.TURN_LEVEL
+    evaluation_level = EvaluationLevel.TRACE_LEVEL
 
     _score_mapping = {
         HelpfulnessScore.NOT_HELPFUL: 0.0,
@@ -78,7 +78,7 @@ class HelpfulnessEvaluator(Evaluator[InputT, OutputT]):
         result = EvaluationOutput(score=normalized_score, test_pass=normalized_score >= 0.5, reason=rating.reasoning)
         return [result]
 
-    def _get_last_turn(self, evaluation_case: EvaluationData[InputT, OutputT]) -> TurnLevelInput:
+    def _get_last_turn(self, evaluation_case: EvaluationData[InputT, OutputT]) -> TraceLevelInput:
         """Extract the most recent turn from the conversation for evaluation."""
         parsed_inputs = self._parse_trajectory(evaluation_case)
         if not parsed_inputs:
@@ -88,25 +88,50 @@ class HelpfulnessEvaluator(Evaluator[InputT, OutputT]):
             )
         return parsed_inputs[-1]
 
-    def _format_prompt(self, parsed_input: TurnLevelInput) -> str:
-        """Format evaluation prompt from parsed turn data."""
+    def _extract_user_prompt(self, parsed_input: TraceLevelInput) -> str:
+        """Extract user prompt from last message in session history.
+
+        Args:
+            parsed_input: Trace-level input containing session history
+
+        Returns:
+            User prompt text, or empty string if not available
+        """
+        if not parsed_input.session_history:
+            return ""
+
+        last_msg = parsed_input.session_history[-1]
+        if not isinstance(last_msg, list) and self._has_text_content(last_msg):
+            first_content = last_msg.content[0]
+            if isinstance(first_content, TextContent):
+                return first_content.text
+
+        return ""
+
+    def _format_prompt(self, parsed_input: TraceLevelInput) -> str:
+        """Format evaluation prompt from parsed trace data.
+
+        Args:
+            parsed_input: Trace-level input containing agent response and session history
+
+        Returns:
+            Formatted prompt string with conversation history and target turn
+        """
         parts = []
 
-        if parsed_input.conversation_history:
+        if parsed_input.session_history:
             history_lines = []
-            for msg in parsed_input.conversation_history:
-                text = msg.content[0].text if msg.content and hasattr(msg.content[0], "text") else ""
-                history_lines.append(f"{msg.role.value.capitalize()}: {text}")
+            for msg in parsed_input.session_history:
+                if isinstance(msg, list) and msg and isinstance(msg[0], ToolExecution):
+                    continue  # Skip tool execution lists
+                if not isinstance(msg, list) and self._has_text_content(msg):
+                    first_content = msg.content[0]
+                    if isinstance(first_content, TextContent):
+                        history_lines.append(f"{msg.role.value.capitalize()}: {first_content.text}")
             history_str = "\n".join(history_lines)
             parts.append(f"# Previous turns:\n{history_str}")
 
-        # Extract user prompt from last message in history if available
-        user_prompt = ""
-        if parsed_input.conversation_history:
-            last_msg = parsed_input.conversation_history[-1]
-            if hasattr(last_msg, "content") and last_msg.content and hasattr(last_msg.content[0], "text"):
-                user_prompt = last_msg.content[0].text
-
+        user_prompt = self._extract_user_prompt(parsed_input)
         parts.append(f"# Target turn to evaluate:\nUser: {user_prompt}\nAssistant: {parsed_input.agent_response.text}")
 
         return "\n\n".join(parts)

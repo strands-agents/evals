@@ -37,7 +37,7 @@ def test_init_with_defaults():
     assert evaluator.model is None
     assert evaluator.include_inputs is True
     assert evaluator.system_prompt is not None
-    assert evaluator.evaluation_level == EvaluationLevel.TURN_LEVEL
+    assert evaluator.evaluation_level == EvaluationLevel.TRACE_LEVEL
 
 
 def test_init_with_custom_values():

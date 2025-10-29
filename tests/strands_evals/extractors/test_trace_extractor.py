@@ -5,9 +5,9 @@ import pytest
 from strands_evals.extractors import TraceExtractor
 from strands_evals.types.trace import (
     AgentInvocationSpan,
-    ConversationLevelInput,
     EvaluationLevel,
     Session,
+    SessionLevelInput,
     SpanInfo,
     ToolCall,
     ToolConfig,
@@ -15,7 +15,7 @@ from strands_evals.types.trace import (
     ToolLevelInput,
     ToolResult,
     Trace,
-    TurnLevelInput,
+    TraceLevelInput,
 )
 
 
@@ -58,36 +58,36 @@ def session_with_tools():
 
 
 def test_trace_extractor_initialization():
-    extractor = TraceExtractor(EvaluationLevel.TURN_LEVEL)
-    assert extractor.evaluation_level == EvaluationLevel.TURN_LEVEL
+    extractor = TraceExtractor(EvaluationLevel.TRACE_LEVEL)
+    assert extractor.evaluation_level == EvaluationLevel.TRACE_LEVEL
 
 
-def test_extract_turn_level(session_with_conversation):
-    extractor = TraceExtractor(EvaluationLevel.TURN_LEVEL)
+def test_extract_trace_level(session_with_conversation):
+    extractor = TraceExtractor(EvaluationLevel.TRACE_LEVEL)
     result = extractor.extract(session_with_conversation)
 
     assert isinstance(result, list)
     assert len(result) == 2
-    assert all(isinstance(item, TurnLevelInput) for item in result)
+    assert all(isinstance(item, TraceLevelInput) for item in result)
     assert result[0].agent_response.text == "4"
     assert result[1].agent_response.text == "6"
 
 
-def test_extract_turn_level_with_conversation_history(session_with_conversation):
-    """Test that conversation history accumulates correctly across turns."""
-    extractor = TraceExtractor(EvaluationLevel.TURN_LEVEL)
+def test_extract_trace_level_with_session_history(session_with_conversation):
+    """Test that session history accumulates correctly across turns."""
+    extractor = TraceExtractor(EvaluationLevel.TRACE_LEVEL)
     result = extractor.extract(session_with_conversation)
 
     assert len(result) == 2
     # Second turn should have history of first turn
     assert result[1].agent_response.text == "6"
-    assert len(result[1].conversation_history) == 3
-    assert result[1].conversation_history[0].role.value == "user"
-    assert result[1].conversation_history[0].content[0].text == "What is 2+2?"
-    assert result[1].conversation_history[1].role.value == "assistant"
-    assert result[1].conversation_history[1].content[0].text == "4"
-    assert result[1].conversation_history[2].role.value == "user"
-    assert result[1].conversation_history[2].content[0].text == "What is 3+3?"
+    assert len(result[1].session_history) == 3
+    assert result[1].session_history[0].role.value == "user"
+    assert result[1].session_history[0].content[0].text == "What is 2+2?"
+    assert result[1].session_history[1].role.value == "assistant"
+    assert result[1].session_history[1].content[0].text == "4"
+    assert result[1].session_history[2].role.value == "user"
+    assert result[1].session_history[2].content[0].text == "What is 3+3?"
 
 
 def test_extract_tool_level(session_with_tools):
@@ -102,20 +102,20 @@ def test_extract_tool_level(session_with_tools):
     assert result[0].tool_execution_details.tool_result.content == "4"
 
 
-def test_extract_conversation_level(session_with_conversation):
-    extractor = TraceExtractor(EvaluationLevel.CONVERSATION_LEVEL)
+def test_extract_session_level(session_with_conversation):
+    extractor = TraceExtractor(EvaluationLevel.SESSION_LEVEL)
     result = extractor.extract(session_with_conversation)
 
-    assert isinstance(result, ConversationLevelInput)
-    assert len(result.conversation_history) == 2
-    assert result.conversation_history[0].user_prompt.text == "What is 2+2?"
-    assert result.conversation_history[0].agent_response.text == "4"
-    assert result.conversation_history[1].user_prompt.text == "What is 3+3?"
-    assert result.conversation_history[1].agent_response.text == "6"
+    assert isinstance(result, SessionLevelInput)
+    assert len(result.session_history) == 2
+    assert result.session_history[0].user_prompt.text == "What is 2+2?"
+    assert result.session_history[0].agent_response.text == "4"
+    assert result.session_history[1].user_prompt.text == "What is 3+3?"
+    assert result.session_history[1].agent_response.text == "6"
 
 
 def test_extract_raises_on_invalid_session_type():
-    extractor = TraceExtractor(EvaluationLevel.TURN_LEVEL)
+    extractor = TraceExtractor(EvaluationLevel.TRACE_LEVEL)
 
     with pytest.raises(TypeError, match="Expected Session object"):
         extractor.extract(["not", "a", "session"])
@@ -129,18 +129,18 @@ def test_extract_raises_on_unsupported_level():
 
 def test_composability_multiple_extractors(session_with_conversation):
     """Test that multiple extractors can be composed for different purposes."""
-    turn_extractor = TraceExtractor(EvaluationLevel.TURN_LEVEL)
-    conversation_extractor = TraceExtractor(EvaluationLevel.CONVERSATION_LEVEL)
+    trace_extractor = TraceExtractor(EvaluationLevel.TRACE_LEVEL)
+    session_extractor = TraceExtractor(EvaluationLevel.SESSION_LEVEL)
 
-    turn_result = turn_extractor.extract(session_with_conversation)
-    conversation_result = conversation_extractor.extract(session_with_conversation)
+    trace_result = trace_extractor.extract(session_with_conversation)
+    session_result = session_extractor.extract(session_with_conversation)
 
-    assert len(turn_result) == 2
-    assert len(conversation_result.conversation_history) == 2
+    assert len(trace_result) == 2
+    assert len(session_result.session_history) == 2
 
 
-def test_extract_empty_session_turn_level():
-    extractor = TraceExtractor(EvaluationLevel.TURN_LEVEL)
+def test_extract_empty_session_trace_level():
+    extractor = TraceExtractor(EvaluationLevel.TRACE_LEVEL)
     session = Session(traces=[], session_id="test")
 
     result = extractor.extract(session)

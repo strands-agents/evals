@@ -4,7 +4,7 @@ from strands_evals.types.trace import (
     AgentInvocationSpan,
     AssistantMessage,
     ContentType,
-    Conversation,
+    Context,
     InferenceSpan,
     Role,
     Session,
@@ -17,7 +17,7 @@ from strands_evals.types.trace import (
     ToolLevelInput,
     ToolResult,
     Trace,
-    TurnLevelInput,
+    TraceLevelInput,
     UserMessage,
 )
 
@@ -139,17 +139,17 @@ def test_session_creation():
     assert len(session.traces) == 1
 
 
-def test_turn_level_input_creation():
-    """Test TurnLevelInput model creation"""
+def test_trace_level_input_creation():
+    """Test TraceLevelInput model creation"""
     now = datetime.now()
-    turn_input = TurnLevelInput(
+    trace_input = TraceLevelInput(
         span_info=SpanInfo(session_id="test", start_time=now, end_time=now),
         agent_response=TextContent(text="4"),
-        conversation_history=[UserMessage(content=[TextContent(text="Hi")])],
+        session_history=[UserMessage(content=[TextContent(text="Hi")])],
     )
 
-    assert turn_input.agent_response.text == "4"
-    assert len(turn_input.conversation_history) == 1
+    assert trace_input.agent_response.text == "4"
+    assert len(trace_input.session_history) == 1
 
 
 def test_tool_level_input_creation():
@@ -162,7 +162,7 @@ def test_tool_level_input_creation():
         tool_result=ToolResult(content="4"),
     )
     tool_input = ToolLevelInput(
-        span_info=span_info, available_tools=[], tool_execution_details=tool_exec, conversation_history=[]
+        span_info=span_info, available_tools=[], tool_execution_details=tool_exec, session_history=[]
     )
 
     assert tool_input.tool_execution_details.tool_call.name == "calculator"
@@ -170,12 +170,12 @@ def test_tool_level_input_creation():
     assert tool_input.tool_execution_details.tool_result.content == "4"
 
 
-def test_conversation_creation():
-    """Test Conversation model creation"""
-    conversation = Conversation(
+def test_context_creation():
+    """Test Context model creation"""
+    context = Context(
         user_prompt=TextContent(text="What is 2+2?"), agent_response=TextContent(text="4"), tool_execution_history=None
     )
 
-    assert conversation.user_prompt.text == "What is 2+2?"
-    assert conversation.agent_response.text == "4"
-    assert conversation.tool_execution_history is None
+    assert context.user_prompt.text == "What is 2+2?"
+    assert context.agent_response.text == "4"
+    assert context.tool_execution_history is None

@@ -31,8 +31,8 @@ class SpanType(str, Enum):
 class EvaluationLevel(str, Enum):
     """Type of evaluation based on trace granularity."""
 
-    CONVERSATION_LEVEL = "Conversation"
-    TURN_LEVEL = "Turn"
+    SESSION_LEVEL = "Session"
+    TRACE_LEVEL = "Trace"
     TOOL_LEVEL = "ToolCall"
 
 
@@ -140,24 +140,29 @@ class BaseEvaluationInput(BaseModel):
     span_info: SpanInfo
 
 
-class Conversation(BaseModel):
+class ToolExecution(BaseModel):
+    tool_call: ToolCall
+    tool_result: ToolResult
+
+
+class Context(BaseModel):
     user_prompt: TextContent
     agent_response: TextContent
-    tool_execution_history: list[ToolExecutionSpan] | None = None
+    tool_execution_history: list[ToolExecution] | None = None
 
 
-class ConversationLevelInput(BaseEvaluationInput):
-    """Input for conversation-level evaluators"""
+class SessionLevelInput(BaseEvaluationInput):
+    """Input for session-level evaluators"""
 
-    conversation_history: list[Conversation]
+    session_history: list[Context]
     available_tools: list[ToolConfig] | None = None
 
 
-class TurnLevelInput(BaseEvaluationInput):
-    """Input for turn-level evaluators"""
+class TraceLevelInput(BaseEvaluationInput):
+    """Input for trace-level evaluators"""
 
     agent_response: TextContent
-    conversation_history: list[Union[UserMessage, AssistantMessage]]
+    session_history: list[Union[UserMessage, list[ToolExecution], AssistantMessage]]
 
 
 class ToolLevelInput(BaseEvaluationInput):
@@ -165,7 +170,7 @@ class ToolLevelInput(BaseEvaluationInput):
 
     available_tools: list[ToolConfig]
     tool_execution_details: ToolExecutionSpan
-    conversation_history: list[Conversation]
+    session_history: list[Union[UserMessage, list[ToolExecution], AssistantMessage]]
 
 
 class EvaluatorScore(BaseModel):
