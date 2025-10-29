@@ -92,8 +92,8 @@ def test_trajectory_evaluator_evaluate_with_full_data(mock_agent_class, evaluati
     assert "<Trajectory>['calculator']</Trajectory>" in prompt
     assert "<ExpectedTrajectory>['calculator']</ExpectedTrajectory>" in prompt
     assert "<Rubric>Test rubric</Rubric>" in prompt
-    assert result.score == 0.9
-    assert result.test_pass is True
+    assert result[0].score == 0.9
+    assert result[0].test_pass is True
 
 
 @patch("strands_evals.evaluators.trajectory_evaluator.Agent")
@@ -112,8 +112,8 @@ def test_trajectory_evaluator_evaluate_without_inputs(mock_agent_class, evaluati
     assert "<Trajectory>['calculator']</Trajectory>" in prompt
     assert "<ExpectedTrajectory>['calculator']</ExpectedTrajectory>" in prompt
     assert "<Rubric>Test rubric</Rubric>" in prompt
-    assert result.score == 0.9
-    assert result.test_pass is True
+    assert result[0].score == 0.9
+    assert result[0].test_pass is True
 
 
 @patch("strands_evals.evaluators.trajectory_evaluator.Agent")
@@ -200,9 +200,10 @@ async def test_trajectory_evaluator_evaluate_async_with_full_data(mock_agent_cla
         model=None, system_prompt=evaluator.system_prompt, tools=evaluator._tools, callback_handler=None
     )
 
-    assert result.score == 0.9
-    assert result.test_pass is True
-    assert result.reason == "Mock async trajectory evaluation"
+    assert len(result) == 1
+    assert result[0].score == 0.9
+    assert result[0].test_pass is True
+    assert result[0].reason == "Mock async trajectory evaluation"
 
 
 @pytest.mark.asyncio
@@ -219,9 +220,10 @@ async def test_trajectory_evaluator_evaluate_async_without_inputs(mock_agent_cla
         model=None, system_prompt=evaluator.system_prompt, tools=evaluator._tools, callback_handler=None
     )
 
-    assert result.score == 0.9
-    assert result.test_pass is True
-    assert result.reason == "Mock async trajectory evaluation"
+    assert len(result) == 1
+    assert result[0].score == 0.9
+    assert result[0].test_pass is True
+    assert result[0].reason == "Mock async trajectory evaluation"
 
 
 @pytest.mark.asyncio

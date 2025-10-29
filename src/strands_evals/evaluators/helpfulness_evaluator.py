@@ -60,21 +60,23 @@ class HelpfulnessEvaluator(Evaluator[InputT, OutputT]):
         self.model = model
         self.include_inputs = include_inputs
 
-    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> EvaluationOutput:
+    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         parsed_input = self._get_last_turn(evaluation_case)
         prompt = self._format_prompt(parsed_input)
         evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
         rating = evaluator_agent.structured_output(HelpfulnessRating, prompt)
         normalized_score = self._score_mapping[rating.score]
-        return EvaluationOutput(score=normalized_score, test_pass=normalized_score >= 0.5, reason=rating.reasoning)
+        result = EvaluationOutput(score=normalized_score, test_pass=normalized_score >= 0.5, reason=rating.reasoning)
+        return [result]
 
-    async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> EvaluationOutput:
+    async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         parsed_input = self._get_last_turn(evaluation_case)
         prompt = self._format_prompt(parsed_input)
         evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
         rating = await evaluator_agent.structured_output_async(HelpfulnessRating, prompt)
         normalized_score = self._score_mapping[rating.score]
-        return EvaluationOutput(score=normalized_score, test_pass=normalized_score >= 0.5, reason=rating.reasoning)
+        result = EvaluationOutput(score=normalized_score, test_pass=normalized_score >= 0.5, reason=rating.reasoning)
+        return [result]
 
     def _get_last_turn(self, evaluation_case: EvaluationData[InputT, OutputT]) -> TurnLevelInput:
         """Extract the most recent turn from the conversation for evaluation."""

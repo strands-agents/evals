@@ -12,13 +12,13 @@ class MockEvaluator(Evaluator[str, str]):
     def evaluate(self, evaluation_case: EvaluationData[str, str]) -> EvaluationOutput:
         # Simple mock: pass if actual equals expected
         score = 1.0 if evaluation_case.actual_output == evaluation_case.expected_output else 0.0
-        return EvaluationOutput(score=score, test_pass=score > 0.5, reason="Mock evaluation")
+        return [EvaluationOutput(score=score, test_pass=score > 0.5, reason="Mock evaluation")]
 
     async def evaluate_async(self, evaluation_case: EvaluationData[str, str]) -> EvaluationOutput:
         # Add a small delay to simulate async processing
         await asyncio.sleep(0.01)
         score = 1.0 if evaluation_case.actual_output == evaluation_case.expected_output else 0.0
-        return EvaluationOutput(score=score, test_pass=score > 0.5, reason="Async test evaluation")
+        return [EvaluationOutput(score=score, test_pass=score > 0.5, reason="Async test evaluation")]
 
 
 @pytest.fixture

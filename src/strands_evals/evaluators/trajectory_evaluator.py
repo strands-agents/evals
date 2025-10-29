@@ -54,7 +54,7 @@ class TrajectoryEvaluator(Evaluator[InputT, OutputT]):
         """
         self.trajectory_description = new_description
 
-    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> EvaluationOutput:
+    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         """
         Evaluate the performance of the task on the given test cases.
 
@@ -74,9 +74,9 @@ class TrajectoryEvaluator(Evaluator[InputT, OutputT]):
             uses_trajectory=True,
         )
         result = evaluator_agent.structured_output(EvaluationOutput, evaluation_prompt)
-        return result
+        return [result]
 
-    async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> EvaluationOutput:
+    async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         """
         Evaluate the performance of the task on the given test cases asynchronously.
 
@@ -96,4 +96,4 @@ class TrajectoryEvaluator(Evaluator[InputT, OutputT]):
             uses_trajectory=True,
         )
         result = await evaluator_agent.structured_output_async(EvaluationOutput, evaluation_prompt)
-        return result
+        return [result]

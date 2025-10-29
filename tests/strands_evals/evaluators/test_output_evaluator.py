@@ -78,8 +78,9 @@ def test_output_evaluator_evaluate_with_inputs(mock_agent_class, evaluation_data
     assert "<ExpectedOutput>4</ExpectedOutput>" in prompt
     assert "<Rubric>Test rubric</Rubric>" in prompt
 
-    assert result.score == 0.8
-    assert result.test_pass is True
+    assert len(result) == 1
+    assert result[0].score == 0.8
+    assert result[0].test_pass is True
 
 
 @patch("strands_evals.evaluators.output_evaluator.Agent")
@@ -99,8 +100,9 @@ def test_output_evaluator_evaluate_without_inputs(mock_agent_class, evaluation_d
     assert "<ExpectedOutput>4</ExpectedOutput>" in prompt
     assert "<Rubric>Test rubric</Rubric>" in prompt
 
-    assert result.score == 0.8
-    assert result.test_pass is True
+    assert len(result) == 1
+    assert result[0].score == 0.8
+    assert result[0].test_pass is True
 
 
 @patch("strands_evals.evaluators.output_evaluator.Agent")
@@ -142,9 +144,10 @@ async def test_output_evaluator_evaluate_async_with_inputs(mock_agent_class, eva
     # Verify Agent was created with correct parameters
     mock_agent_class.assert_called_once_with(model=None, system_prompt=evaluator.system_prompt, callback_handler=None)
 
-    assert result.score == 0.8
-    assert result.test_pass is True
-    assert result.reason == "Mock async evaluation result"
+    assert len(result) == 1
+    assert result[0].score == 0.8
+    assert result[0].test_pass is True
+    assert result[0].reason == "Mock async evaluation result"
 
 
 @pytest.mark.asyncio
@@ -156,8 +159,9 @@ async def test_output_evaluator_evaluate_async_without_inputs(mock_agent_class, 
 
     result = await evaluator.evaluate_async(evaluation_data)
 
-    assert result.score == 0.8
-    assert result.test_pass is True
+    assert len(result) == 1
+    assert result[0].score == 0.8
+    assert result[0].test_pass is True
 
 
 @pytest.mark.asyncio

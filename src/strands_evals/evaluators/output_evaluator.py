@@ -32,7 +32,7 @@ class OutputEvaluator(Evaluator[InputT, OutputT]):
         self.include_inputs = include_inputs
         self.system_prompt = system_prompt
 
-    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> EvaluationOutput:
+    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         """
         Evaluate the performance of the task on the given test cases.
 
@@ -47,9 +47,9 @@ class OutputEvaluator(Evaluator[InputT, OutputT]):
             evaluation_case=evaluation_case, rubric=self.rubric, include_inputs=self.include_inputs
         )
         result = evaluator_agent.structured_output(EvaluationOutput, evaluation_prompt)
-        return result
+        return [result]
 
-    async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> EvaluationOutput:
+    async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         """
         Evaluate the performance of the task on the given test cases asynchronously.
 
@@ -64,4 +64,4 @@ class OutputEvaluator(Evaluator[InputT, OutputT]):
             evaluation_case=evaluation_case, rubric=self.rubric, include_inputs=self.include_inputs
         )
         result = await evaluator_agent.structured_output_async(EvaluationOutput, evaluation_prompt)
-        return result
+        return [result]

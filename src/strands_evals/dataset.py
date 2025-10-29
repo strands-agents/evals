@@ -240,12 +240,15 @@ class Dataset(Generic[InputT, OutputT]):
                             "gen_ai.eval.case.name": case_name,
                         },
                     ) as eval_span:
-                        evaluation_output = await self.evaluator.evaluate_async(evaluation_context)
+                        evaluation_outputs = await self.evaluator.evaluate_async(evaluation_context)
+                        (aggregate_score, aggregate_pass, aggregate_reason) = self.evaluator.aggregator(
+                            evaluation_outputs
+                        )
                         eval_span.set_attributes(
                             {
-                                "gen_ai.eval.output.score": evaluation_output.score,
-                                "gen_ai.eval.output.test_pass": evaluation_output.test_pass,
-                                "gen_ai.eval.output.reason": evaluation_output.reason or "",
+                                "gen_ai.eval.output.score": aggregate_score,
+                                "gen_ai.eval.output.test_pass": aggregate_pass,
+                                "gen_ai.eval.output.reason": aggregate_reason or "",
                             }
                         )
 
@@ -253,9 +256,10 @@ class Dataset(Generic[InputT, OutputT]):
                     results.append(
                         {
                             "case": evaluation_context.model_dump(),
-                            "test_pass": evaluation_output.test_pass,
-                            "score": evaluation_output.score,
-                            "reason": evaluation_output.reason or "",
+                            "test_pass": aggregate_pass,
+                            "score": aggregate_score,
+                            "reason": aggregate_reason or "",
+                            "detailed_results": evaluation_outputs,
                         }
                     )
 
@@ -267,6 +271,7 @@ class Dataset(Generic[InputT, OutputT]):
                             "test_pass": False,
                             "score": 0,
                             "reason": f"An error occurred: {str(e)}",
+                            "detailed_results": [],
                         }
                     )
                 finally:
@@ -288,6 +293,7 @@ class Dataset(Generic[InputT, OutputT]):
         test_passes = []
         cases: list = []
         reasons = []
+        detailed_results = []
 
         for case in self._cases:
             case_name = case.name or f"case_{len(cases)}"
@@ -330,19 +336,23 @@ class Dataset(Generic[InputT, OutputT]):
                             "gen_ai.eval.case.name": case_name,
                         },
                     ) as eval_span:
-                        evaluation_output = self.evaluator.evaluate(evaluation_context)
+                        evaluation_outputs = self.evaluator.evaluate(evaluation_context)
+                        (aggregate_score, aggregate_pass, aggregate_reason) = self.evaluator.aggregator(
+                            evaluation_outputs
+                        )
                         eval_span.set_attributes(
                             {
-                                "gen_ai.eval.output.score": evaluation_output.score,
-                                "gen_ai.eval.output.test_pass": evaluation_output.test_pass,
-                                "gen_ai.eval.output.reason": evaluation_output.reason or "",
+                                "gen_ai.eval.output.score": aggregate_score,
+                                "gen_ai.eval.output.test_pass": aggregate_pass,
+                                "gen_ai.eval.output.reason": aggregate_reason or "",
                             }
                         )
 
                     cases.append(evaluation_context.model_dump())
-                    test_passes.append(evaluation_output.test_pass)
-                    scores.append(evaluation_output.score)
-                    reasons.append(evaluation_output.reason or "")
+                    test_passes.append(aggregate_pass)
+                    scores.append(aggregate_score)
+                    reasons.append(aggregate_reason or "")
+                    detailed_results.append(evaluation_outputs)
 
                 except Exception as e:
                     case_span.record_exception(e)
@@ -350,6 +360,7 @@ class Dataset(Generic[InputT, OutputT]):
                     test_passes.append(False)
                     scores.append(0)
                     reasons.append(f"An error occured : {str(e)}")
+                    detailed_results.append([])
 
         report = EvaluationReport(
             overall_score=sum(scores) / len(scores) if len(scores) else 0,
@@ -357,6 +368,7 @@ class Dataset(Generic[InputT, OutputT]):
             test_passes=test_passes,
             cases=cases,
             reasons=reasons,
+            detailed_results=detailed_results,
         )
 
         return report
@@ -395,6 +407,7 @@ class Dataset(Generic[InputT, OutputT]):
         test_passes = [r["test_pass"] for r in results]
         cases = [r["case"] for r in results]
         reasons = [r["reason"] for r in results]
+        detailed_results = [r["detailed_results"] for r in results]
 
         # Create and return report
         return EvaluationReport(
@@ -403,6 +416,7 @@ class Dataset(Generic[InputT, OutputT]):
             test_passes=test_passes,
             cases=cases,
             reasons=reasons,
+            detailed_results=detailed_results,
         )
 
     def to_dict(self) -> dict:

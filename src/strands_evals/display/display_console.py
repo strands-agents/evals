@@ -2,6 +2,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
+from rich.tree import Tree
 
 console = Console()
 
@@ -28,7 +29,8 @@ class CollapsibleTableReportDisplay:
                 "test_pass: bool,
                 "reason": str,
                 ... # will display everything that's given like actual_output etc.
-                }
+                },
+                "detailed_results": list[EvaluationOutput],
             },
             "expanded": bool
         }
@@ -93,7 +95,21 @@ class CollapsibleTableReportDisplay:
                     pass_status,
                 ] + len(other_fields) * ["..."]
             table.add_row(*renderables)
+
         console.print(table)
+
+        for key, item in self.items.items():
+            if item["expanded"] and item.get("detailed_results"):
+                detailed_results = item["detailed_results"]
+                if len(detailed_results) > 1:  # Only show if multiple metrics
+                    tree = Tree(f"[bold cyan]📋 Detailed Metrics for Case {key}[/bold cyan]")
+                    for i, result in enumerate(detailed_results):
+                        status = "✅" if result.test_pass else "❌"
+                        metric_node = tree.add(f"[yellow]Metric {i + 1}[/yellow]: Score={result.score:.2f} {status}")
+                        if result.reason:
+                            metric_node.add(f"[dim]{result.reason}[/dim]")
+                    console.print(tree)
+                    console.print()
 
     def run(self, static: bool = False):
         """

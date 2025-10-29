@@ -13,14 +13,14 @@ class SimpleEvaluator(Evaluator[str, str]):
 
     def evaluate(self, evaluation_case: EvaluationData[str, str]) -> EvaluationOutput:
         score = 1.0 if evaluation_case.actual_output == evaluation_case.expected_output else 0.0
-        return EvaluationOutput(score=score, test_pass=score > 0.5, reason="Integration test")
+        return [EvaluationOutput(score=score, test_pass=score > 0.5, reason="Integration test")]
 
     async def evaluate_async(self, evaluation_case: EvaluationData[str, str]) -> EvaluationOutput:
         """Async version of evaluate"""
         # Add a small delay to simulate async processing
         await asyncio.sleep(0.01)
         score = 1.0 if evaluation_case.actual_output == evaluation_case.expected_output else 0.0
-        return EvaluationOutput(score=score, test_pass=score > 0.5, reason="Async integration test")
+        return [EvaluationOutput(score=score, test_pass=score > 0.5, reason="Async integration test")]
 
 
 @pytest.fixture

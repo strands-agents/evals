@@ -35,7 +35,17 @@ class Evaluator(Generic[InputT, OutputT]):
     # Optional: subclasses can set this to enable trace parsing
     evaluation_level: EvaluationLevel | None = None
 
-    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> EvaluationOutput:
+    def __init__(self):
+        self.aggregator = self._default_aggregator
+
+    @staticmethod
+    def _default_aggregator(outputs: list[EvaluationOutput]) -> tuple[float, bool, str]:
+        avg_score = sum(o.score for o in outputs) / len(outputs)
+        all_pass = all(o.test_pass for o in outputs)
+        combined_reason = " | ".join(o.reason for o in outputs if o.reason)
+        return avg_score, all_pass, combined_reason
+
+    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         """
         Evaluate the performance of the task on the given test cases.
 
@@ -47,7 +57,7 @@ class Evaluator(Generic[InputT, OutputT]):
         """
         raise NotImplementedError("This method should be implemented in subclasses.")
 
-    async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> EvaluationOutput:
+    async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         """
         Evaluate the performance of the task on the given test cases asynchronously.
 
@@ -193,7 +203,8 @@ class Evaluator(Generic[InputT, OutputT]):
         # Get default values from __init__ signature
         sig = inspect.signature(self.__class__.__init__)
         defaults = {k: v.default for k, v in sig.parameters.items() if v.default != inspect.Parameter.empty}
+        exclude_attrs = {"aggregator"}
         for k, v in self.__dict__.items():
-            if not k.startswith("_") and (k not in defaults or v != defaults[k]):
+            if not k.startswith("_") and k not in exclude_attrs and (k not in defaults or v != defaults[k]):
                 _dict[k] = v
         return _dict

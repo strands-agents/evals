@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from typing_extensions import TypeVar
 
 from ..display.display_console import CollapsibleTableReportDisplay
+from ..types.evaluation import EvaluationOutput
 
 InputT = TypeVar("InputT")
 OutputT = TypeVar("OutputT")
@@ -27,6 +28,7 @@ class EvaluationReport(BaseModel):
     cases: list[dict]
     test_passes: list[bool]
     reasons: list[str] = []
+    detailed_results: list[list[EvaluationOutput]] = []
 
     def _display(
         self,
@@ -85,7 +87,11 @@ class EvaluationReport(BaseModel):
             if include_meta:
                 details_dict["metadata"] = str(self.cases[i].get("metadata"))
 
-            report_data[str(i)] = {"details": details_dict, "expanded": False}
+            report_data[str(i)] = {
+                "details": details_dict,
+                "detailed_results": self.detailed_results[i] if i < len(self.detailed_results) else [],  # NEW
+                "expanded": False,
+            }
 
         display_console = CollapsibleTableReportDisplay(items=report_data, overall_score=self.overall_score)
         display_console.run(static=static)

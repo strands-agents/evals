@@ -159,7 +159,7 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
 
         return evaluation_prompt
 
-    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> EvaluationOutput:
+    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         """
         Evaluate the performance of the task on the given test cases.
 
@@ -176,7 +176,15 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
             )
         num_interactions = len(evaluation_case.actual_interactions)
 
-        # keep all of the context
+        if num_interactions == 0:
+            return [
+                EvaluationOutput(
+                    score=0.0,
+                    test_pass=False,
+                    reason="No interactions were evaluated. Ensure actual_interactions is not empty.",
+                )
+            ]
+
         conversation_manager = SlidingWindowConversationManager(window_size=num_interactions)
         evaluator_agent = Agent(
             model=self.model,
@@ -185,26 +193,16 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
             conversation_manager=conversation_manager,
         )
 
-        is_last = False
-        result: EvaluationOutput | None = None
-        for i in range(num_interactions):  # evaluate one interaction at a time
-            if i == num_interactions - 1:
-                is_last = True
+        results = []
+        for i in range(num_interactions):
+            is_last = i == num_interactions - 1
             evaluation_prompt = self._compose_prompt(evaluation_case, i, is_last)
-
-            ## Evaluate ##
             result = evaluator_agent.structured_output(EvaluationOutput, evaluation_prompt)
+            results.append(result)
 
-        if result is None:
-            return EvaluationOutput(
-                score=0.0,
-                test_pass=False,
-                reason="No interactions were evaluated. Ensure actual_interactions is not empty.",
-            )
+        return results
 
-        return result
-
-    async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> EvaluationOutput:
+    async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         """
         Evaluate the performance of the task on the given test cases asynchronously.
 
@@ -218,7 +216,15 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
             raise KeyError("Please make sure the task function returns a dictionary with the key 'interactions'.")
         num_interactions = len(evaluation_case.actual_interactions)
 
-        # keep all of the context
+        if num_interactions == 0:
+            return [
+                EvaluationOutput(
+                    score=0.0,
+                    test_pass=False,
+                    reason="No interactions were evaluated. Ensure actual_interactions is not empty.",
+                )
+            ]
+
         conversation_manager = SlidingWindowConversationManager(window_size=num_interactions)
         evaluator_agent = Agent(
             model=self.model,
@@ -227,22 +233,11 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
             conversation_manager=conversation_manager,
         )
 
-        is_last = False
-        result: EvaluationOutput | None = None
-        for i in range(num_interactions):  # evaluate one interaction at a time
-            if i == num_interactions - 1:
-                is_last = True
-
+        results = []
+        for i in range(num_interactions):
+            is_last = i == num_interactions - 1
             evaluation_prompt = self._compose_prompt(evaluation_case, i, is_last)
-
-            ## Evaluate ##
             result = await evaluator_agent.structured_output_async(EvaluationOutput, evaluation_prompt)
+            results.append(result)
 
-        if result is None:
-            return EvaluationOutput(
-                score=0.0,
-                test_pass=False,
-                reason="No interactions were evaluated. Ensure actual_interactions is not empty.",
-            )
-
-        return result
+        return results

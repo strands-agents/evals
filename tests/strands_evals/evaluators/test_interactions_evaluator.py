@@ -120,8 +120,8 @@ def test_interactions_evaluator_evaluate_with_full_data(mock_agent_class, evalua
     # Verify structured_output was called twice (for each interaction)
     assert mock_agent.structured_output.call_count == 2
 
-    assert result.score == 0.85
-    assert result.test_pass is True
+    assert result[0].score == 0.85
+    assert result[0].test_pass is True
 
 
 @patch("strands_evals.evaluators.interactions_evaluator.Agent")
@@ -134,8 +134,8 @@ def test_interactions_evaluator_evaluate_without_inputs(mock_agent_class, evalua
 
     # Check that structured_output was called
     assert mock_agent.structured_output.call_count == 2
-    assert result.score == 0.85
-    assert result.test_pass is True
+    assert result[0].score == 0.85
+    assert result[0].test_pass is True
 
     call_args = mock_agent.structured_output.call_args
     prompt = call_args[0][1]
@@ -212,8 +212,8 @@ def test_interactions_evaluator_evaluate_with_dict_rubric(mock_agent_class, mock
     assert "Evaluate planning quality and task breakdown" in first_prompt
     assert "Assess research thoroughness and accuracy" in second_prompt
 
-    assert result.score == 0.85
-    assert result.test_pass is True
+    assert result[0].score == 0.85
+    assert result[0].test_pass is True
 
 
 @patch("strands_evals.evaluators.interactions_evaluator.Agent")
@@ -249,8 +249,8 @@ async def test_interactions_evaluator_evaluate_async_with_dict_rubric(mock_agent
 
     result = await evaluator.evaluate_async(evaluation_data)
 
-    assert result.score == 0.85
-    assert result.test_pass is True
+    assert result[0].score == 0.85
+    assert result[0].test_pass is True
 
 
 def test_interactions_evaluator_compose_prompt_first_interaction():
