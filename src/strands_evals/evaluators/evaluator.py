@@ -1,24 +1,11 @@
 import inspect
 import logging
 
-from typing_extensions import Any, Generic, TypeVar, Union
+from typing_extensions import Any, Generic, TypeVar
 
+from ..extractors import TraceExtractor
 from ..types.evaluation import EvaluationData, EvaluationOutput
-from ..types.trace import (
-    AgentInvocationSpan,
-    AssistantMessage,
-    Conversation,
-    ConversationLevelInput,
-    EvaluationLevel,
-    Session,
-    SpanInfo,
-    TextContent,
-    ToolConfig,
-    ToolExecutionSpan,
-    ToolLevelInput,
-    TurnLevelInput,
-    UserMessage,
-)
+from ..types.trace import Conversation, EvaluationLevel, Session, ToolConfig
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +23,19 @@ class Evaluator(Generic[InputT, OutputT]):
 
     # Optional: subclasses can set this to enable trace parsing
     evaluation_level: EvaluationLevel | None = None
+    _trace_extractor: TraceExtractor | None = None
+
+    def __init__(self, trace_extractor: TraceExtractor | None = None):
+        """Initialize evaluator with optional custom trace extractor.
+
+        Args:
+            trace_extractor: Custom trace extractor. If None and evaluation_level is set,
+                           a default TraceExtractor will be created.
+        """
+        if trace_extractor:
+            self._trace_extractor = trace_extractor
+        elif self.evaluation_level:
+            self._trace_extractor = TraceExtractor(self.evaluation_level)
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> EvaluationOutput:
         """
@@ -63,160 +63,18 @@ class Evaluator(Generic[InputT, OutputT]):
             "This method should be implemented in subclasses, especially if you want to run evaluations asynchronously."
         )
 
-    def _parse_turn_level(self, session: Session) -> list[TurnLevelInput]:
-        """
-        Parse trace for turn-level evaluation.
-
-        Returns one TurnLevelInput per agent turn, with conversation history
-        up to that point.
-        """
-        evaluation_inputs: list[TurnLevelInput] = []
-        previous_turns: list[Union[UserMessage, AssistantMessage]] = []
-
-        for trace in session.traces:
-            for span in trace.spans:
-                if not isinstance(span, AgentInvocationSpan):
-                    continue
-
-                # Add user message to conversation history
-                try:
-                    text_content = TextContent(text=span.user_prompt)
-                    previous_turns.append(UserMessage(content=[text_content]))
-                except (AttributeError, TypeError, ValueError) as e:
-                    logger.warning(f"Failed to create user message: {e}")
-                    continue
-
-                # Create turn input with history up to this point
-                turn_input = TurnLevelInput(
-                    span_info=span.span_info,
-                    agent_response=TextContent(text=span.agent_response),
-                    conversation_history=list(previous_turns),
-                )
-                evaluation_inputs.append(turn_input)
-
-                # Add agent response to conversation history for next turn
-                try:
-                    text_content = TextContent(text=span.agent_response)
-                    previous_turns.append(AssistantMessage(content=[text_content]))
-                except (AttributeError, TypeError, ValueError) as e:
-                    logger.warning(f"Failed to create assistant message: {e}")
-
-        return evaluation_inputs
-
-    def _parse_tool_level(self, session: Session) -> list[ToolLevelInput]:
-        """
-        Parse trace for tool-level evaluation.
-
-        Returns one ToolLevelInput per tool execution, with conversation
-        history and available tools context.
-        """
-
-        evaluator_inputs: list[ToolLevelInput] = []
-        conversation_history: list[Conversation] = []
-        available_tools: list[ToolConfig] = []
-
-        for trace in session.traces:
-            user_prompt = None
-            agent_response = None
-            tool_calls: list[ToolExecutionSpan] = []
-
-            # First pass: collect agent invocation info
-            for span in trace.spans:
-                if isinstance(span, AgentInvocationSpan):
-                    if span.available_tools:
-                        available_tools = span.available_tools
-                    if hasattr(span, "user_prompt") and span.user_prompt:
-                        user_prompt = span.user_prompt
-                    if hasattr(span, "agent_response") and span.agent_response:
-                        agent_response = span.agent_response
-                elif isinstance(span, ToolExecutionSpan):
-                    tool_calls.append(span)
-
-            # Second pass: create tool-level inputs
-            for span in trace.spans:
-                if isinstance(span, ToolExecutionSpan):
-                    evaluator_inputs.append(
-                        ToolLevelInput(
-                            span_info=span.span_info,
-                            available_tools=available_tools or [],
-                            tool_execution_details=span,
-                            conversation_history=list(conversation_history),
-                        )
-                    )
-
-            # Update conversation history after processing all spans in trace
-            if user_prompt and agent_response:
-                conversation_history.append(
-                    Conversation(
-                        user_prompt=TextContent(text=user_prompt),
-                        agent_response=TextContent(text=agent_response),
-                        tool_execution_history=tool_calls if tool_calls else None,
-                    )
-                )
-
-        return evaluator_inputs
-
-    def _parse_conversation_level(self, session: Session) -> ConversationLevelInput:
-        """
-        Parse trace for conversation-level evaluation.
-
-        Returns a single ConversationLevelInput with the full conversation history
-        and available tools.
-        """
-        conversation_history: list[Conversation] = []
-        available_tools: list[ToolConfig] = []
-        span_info: SpanInfo | None = None
-
-        for trace in session.traces:
-            tool_calls: list[ToolExecutionSpan] = []
-
-            # Collect tool executions in this trace
-            for span in trace.spans:
-                if isinstance(span, ToolExecutionSpan):
-                    tool_calls.append(span)
-
-            # Process each agent invocation span
-            for span in trace.spans:
-                if isinstance(span, AgentInvocationSpan):
-                    if not span_info:
-                        span_info = span.span_info
-                    if span.available_tools and not available_tools:
-                        available_tools = span.available_tools
-
-                    conversation_history.append(
-                        Conversation(
-                            user_prompt=TextContent(text=span.user_prompt),
-                            agent_response=TextContent(text=span.agent_response),
-                            tool_execution_history=tool_calls if tool_calls else None,
-                        )
-                    )
-
-        if not span_info:
-            raise ValueError("No AgentInvocationSpan found in session")
-
-        return ConversationLevelInput(
-            span_info=span_info,
-            conversation_history=conversation_history,
-            available_tools=available_tools if available_tools else None,
-        )
-
     def _parse_trajectory(self, evaluation_case: EvaluationData[InputT, OutputT]) -> Any:
-        """Parse Session trajectory based on evaluation level."""
-        trajectory = evaluation_case.actual_trajectory
+        """Parse Session trajectory using TraceExtractor."""
+        if not self._trace_extractor:
+            raise ValueError("No trace extractor configured. Set evaluation_level or provide trace_extractor.")
 
+        trajectory = evaluation_case.actual_trajectory
         if not isinstance(trajectory, Session):
             raise TypeError(
                 f"Trace parsing requires actual_trajectory to be a Session object, got {type(trajectory).__name__}."
             )
 
-        if self.evaluation_level == EvaluationLevel.TURN_LEVEL:
-            return self._parse_turn_level(trajectory)
-        elif self.evaluation_level == EvaluationLevel.TOOL_LEVEL:
-            return self._parse_tool_level(trajectory)
-        elif self.evaluation_level == EvaluationLevel.CONVERSATION_LEVEL:
-            return self._parse_conversation_level(trajectory)
-        else:
-            raise ValueError(f"Unsupported evaluation level: {self.evaluation_level}")
+        return self._trace_extractor.extract(trajectory)
 
     def _format_tools(self, tools: list[ToolConfig]) -> str:
         """Format available tools for prompt display."""
