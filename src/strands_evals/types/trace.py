@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from enum import Enum
 
 from pydantic import BaseModel, field_serializer
-from typing_extensions import TypeAlias, Union
+from typing_extensions import Mapping, Sequence, TypeAlias, Union
 
 
 class Role(str, Enum):
@@ -191,3 +191,10 @@ class EvaluatorResult(BaseModel):
 
 class EvaluationResponse(BaseModel):
     evaluator_results: list[EvaluatorResult]
+
+
+AttributeValue = Mapping[
+    str, str | bool | int | float | Sequence[str] | Sequence[bool] | Sequence[int] | Sequence[float]
+]
+
+Attributes = Mapping[str, AttributeValue] | None
