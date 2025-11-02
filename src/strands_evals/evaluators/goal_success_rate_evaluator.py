@@ -48,21 +48,23 @@ class GoalSuccessRateEvaluator(Evaluator[InputT, OutputT]):
         self.version = version
         self.model = model
 
-    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> EvaluationOutput:
+    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         conversation_input = self._parse_trajectory(evaluation_case)
         prompt = self._format_prompt(conversation_input)
         evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
         rating = evaluator_agent.structured_output(GoalSuccessRating, prompt)
         normalized_score = self._score_mapping[rating.score]
-        return EvaluationOutput(score=normalized_score, test_pass=normalized_score >= 1.0, reason=rating.reasoning)
+        result = EvaluationOutput(score=normalized_score, test_pass=normalized_score >= 1.0, reason=rating.reasoning)
+        return [result]
 
-    async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> EvaluationOutput:
+    async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         conversation_input = self._parse_trajectory(evaluation_case)
         prompt = self._format_prompt(conversation_input)
         evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
         rating = await evaluator_agent.structured_output_async(GoalSuccessRating, prompt)
         normalized_score = self._score_mapping[rating.score]
-        return EvaluationOutput(score=normalized_score, test_pass=normalized_score >= 1.0, reason=rating.reasoning)
+        result = EvaluationOutput(score=normalized_score, test_pass=normalized_score >= 1.0, reason=rating.reasoning)
+        return [result]
 
     def _format_prompt(self, conversation_input: ConversationLevelInput) -> str:
         """Format evaluation prompt from conversation-level input."""

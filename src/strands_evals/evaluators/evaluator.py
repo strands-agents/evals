@@ -32,13 +32,11 @@ class Evaluator(Generic[InputT, OutputT]):
             trace_extractor: Custom trace extractor. If None and evaluation_level is set,
                            a default TraceExtractor will be created.
         """
+        self.aggregator = self._default_aggregator
         if trace_extractor:
             self._trace_extractor = trace_extractor
         elif self.evaluation_level:
             self._trace_extractor = TraceExtractor(self.evaluation_level)
-
-    def __init__(self):
-        self.aggregator = self._default_aggregator
 
     @staticmethod
     def _default_aggregator(outputs: list[EvaluationOutput]) -> tuple[float, bool, str]:
