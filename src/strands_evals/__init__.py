@@ -1,8 +1,9 @@
 __version__ = "0.1.0"
 
-from . import evaluators, extractors, generators, telemetry, types
+from . import evaluators, extractors, generators, simulation, telemetry, types
 from .case import Case
 from .dataset import Dataset
+from .simulation import ActorSimulator, UserSimulator
 from .telemetry import StrandsEvalsTelemetry, get_tracer
 
 __all__ = [
@@ -12,7 +13,10 @@ __all__ = [
     "extractors",
     "types",
     "generators",
+    "simulation",
     "telemetry",
     "StrandsEvalsTelemetry",
     "get_tracer",
+    "ActorSimulator",
+    "UserSimulator",
 ]

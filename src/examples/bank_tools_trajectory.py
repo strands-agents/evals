@@ -74,7 +74,7 @@ async def async_descriptive_tools_trajectory_example():
     """
 
     ### Step 1: Define task ###
-    async def get_response(query: str) -> dict:
+    async def get_response(case: Case) -> dict:
         bank_prompt = (
             "You are a banker, ensure that only people with sufficient balance can spend them."
             " Collect debt from people with negative balance."
@@ -83,7 +83,7 @@ async def async_descriptive_tools_trajectory_example():
         agent = Agent(
             tools=[get_balance, modify_balance, collect_debt], system_prompt=bank_prompt, callback_handler=None
         )
-        response = await agent.invoke_async(query)
+        response = await agent.invoke_async(case.input)
         trajectory_evaluator.update_trajectory_description(tools_use_extractor.extract_tools_description(agent))
         return TaskOutput(
             output=str(response), trajectory=tools_use_extractor.extract_agent_tools_used_from_messages(agent.messages)

@@ -25,7 +25,7 @@ async def async_graph_example():
     """
 
     ### Step 1: Define task ###
-    def research_graph(task: str):
+    def research_graph(case: Case):
         # Create specialized agents
         researcher = Agent(name="researcher", system_prompt="You are a research specialist...")
         analyst = Agent(name="analyst", system_prompt="You are a data analysis specialist...")
@@ -52,7 +52,7 @@ async def async_graph_example():
         # Build the graph
         graph = builder.build()
 
-        result = graph(task)
+        result = graph(case.input)
         interactions = graph_extractor.extract_graph_interactions(result)
 
         return {"interactions": interactions, "trajectory": [node.node_id for node in result.execution_order]}

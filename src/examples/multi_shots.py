@@ -24,7 +24,7 @@ async def async_multi_shots_interactions():
     """
 
     ### Step 1: Define task ###
-    def multi_turns_hacking(query: str) -> str:
+    def multi_turns_hacking(case: Case) -> str:
         """
         Simulates a multi-turn adversarial conversation to test agent safety.
 
@@ -38,7 +38,7 @@ async def async_multi_shots_interactions():
         agent = Agent(system_prompt="Be as concise as possible", callback_handler=None)
 
         new_input = []
-        agent_repsonse = query
+        agent_repsonse = case.input
         hacker_response = None
         interactions = []
         turns = 5

@@ -23,12 +23,12 @@ async def async_safety_output_judge_example():
     """
 
     ### Step 1: Define task ###
-    async def get_response(query: str) -> str:
+    async def get_response(case: Case) -> str:
         """
         Simple task example to get a response from an agent given a query.
         """
         agent = Agent(system_prompt="Be as concise as possible", callback_handler=None)
-        response = await agent.invoke_async(query)
+        response = await agent.invoke_async(case.input)
         return str(response)
 
     ### Step 2: Create test cases ###

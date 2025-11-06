@@ -39,8 +39,8 @@ def mock_span():
 def simple_task():
     """Fixture that provides a simple echo task function"""
 
-    def task(input_val):
-        return input_val
+    def task(case):
+        return case.input
 
     return task
 
@@ -124,8 +124,8 @@ def test_dataset__run_task_simple_output(mock_evaluator):
     case = Case(name="test", input="hello", expected_output="world")
     dataset = Dataset(cases=[case], evaluator=mock_evaluator)
 
-    def simple_task(input_val):
-        return f"response to {input_val}"
+    def simple_task(c):
+        return f"response to {c.input}"
 
     result = dataset._run_task(simple_task, case)
 
@@ -145,8 +145,8 @@ def test_dataset__run_task_dict_output(mock_evaluator):
     case = Case(name="test", input="hello", expected_output="world")
     dataset = Dataset(cases=[case], evaluator=mock_evaluator)
 
-    def dict_task(input_val):
-        return {"output": f"response to {input_val}", "trajectory": ["step1", "step2"]}
+    def dict_task(c):
+        return {"output": f"response to {c.input}", "trajectory": ["step1", "step2"]}
 
     result = dataset._run_task(dict_task, case)
 
@@ -160,9 +160,9 @@ def test_dataset_run_task_dict_output_with_interactions(mock_evaluator):
     case = Case(name="test", input="hello", expected_output="world", expected_interactions=interactions)
     dataset = Dataset(cases=[case], evaluator=mock_evaluator)
 
-    def dict_task(input_val):
+    def dict_task(c):
         return {
-            "output": f"response to {input_val}",
+            "output": f"response to {c.input}",
             "trajectory": ["step1", "step2"],
             "interactions": interactions,
         }
@@ -182,8 +182,8 @@ def test_dataset__run_task_dict_output_with_input_update(mock_evaluator):
     case = Case(name="test", input="original_input", expected_output="world")
     dataset = Dataset(cases=[case], evaluator=mock_evaluator)
 
-    def task_with_input_update(input_val):
-        return {"output": f"response to {input_val}", "input": "updated_input", "trajectory": ["step1"]}
+    def task_with_input_update(c):
+        return {"output": f"response to {c.input}", "input": "updated_input", "trajectory": ["step1"]}
 
     result = dataset._run_task(task_with_input_update, case)
 
@@ -198,8 +198,8 @@ async def test_dataset__run_task_async_with_input_update():
     case = Case(name="test", input="original_input", expected_output="world")
     dataset = Dataset(cases=[case], evaluator=MockEvaluator())
 
-    def task_with_input_update(input_val):
-        return {"output": f"response to {input_val}", "input": "async_updated_input"}
+    def task_with_input_update(c):
+        return {"output": f"response to {c.input}", "input": "async_updated_input"}
 
     result = await dataset._run_task_async(task_with_input_update, case)
 
@@ -212,8 +212,8 @@ def test_dataset__run_task_async_function_raises_error(mock_evaluator):
     case = Case(name="test", input="hello", expected_output="world")
     dataset = Dataset(cases=[case], evaluator=mock_evaluator)
 
-    async def async_task(input_val):
-        return f"response to {input_val}"
+    async def async_task(c):
+        return f"response to {c.input}"
 
     with pytest.raises(ValueError, match="Async task is not supported. Please use run_evaluations_async instead."):
         dataset._run_task(async_task, case)
@@ -223,8 +223,8 @@ def test_dataset__run_task_async_function_raises_error(mock_evaluator):
 async def test_dataset__run_task_async_with_sync_task():
     """Test _run_task_async with a synchronous task function"""
 
-    def sync_task(input_val):
-        return input_val
+    def sync_task(c):
+        return c.input
 
     case = Case(name="test", input="hello", expected_output="world")
     dataset = Dataset(cases=[case], evaluator=MockEvaluator())
@@ -238,8 +238,8 @@ async def test_dataset__run_task_async_with_sync_task():
 async def test_dataset__run_task_async_with_async_task():
     """Test _run_task_async with an asynchronous task function"""
 
-    async def async_task(input_val):
-        return input_val
+    async def async_task(c):
+        return c.input
 
     case = Case(name="test", input="hello", expected_output="world")
     dataset = Dataset(cases=[case], evaluator=MockEvaluator())
@@ -257,8 +257,8 @@ def test_dataset_run_evaluations(mock_evaluator):
     ]
     dataset = Dataset(cases=cases, evaluator=mock_evaluator)
 
-    def echo_task(input_val):
-        return input_val
+    def echo_task(c):
+        return c.input
 
     report = dataset.run_evaluations(echo_task)
 
@@ -600,8 +600,8 @@ def test_dataset_from_dict_InteractionsEvaluator_defaults():
 async def test_dataset_run_evaluations_async():
     """Test run_evaluations_async with a simple task"""
 
-    def task(input_str):
-        return input_str
+    def task(c):
+        return c.input
 
     case = Case(name="test", input="hello", expected_output="hello")
     case1 = Case(name="test1", input="world", expected_output="world")
@@ -619,9 +619,9 @@ async def test_dataset_run_evaluations_async():
 async def test_dataset_run_evaluations_async_with_async_task():
     """Test run_evaluations_async with an async task"""
 
-    async def async_task(input_str):
+    async def async_task(c):
         await asyncio.sleep(0.01)
-        return input_str
+        return c.input
 
     case = Case(name="test", input="hello", expected_output="hello")
     case1 = Case(name="test1", input="world", expected_output="world")
@@ -638,10 +638,10 @@ async def test_dataset_run_evaluations_async_with_async_task():
 async def test_datset_run_evaluations_async_with_errors():
     """Test run_evaluations_async handles errors gracefully"""
 
-    def failing_task(input_str):
-        if input_str == "hello":
+    def failing_task(c):
+        if c.input == "hello":
             raise ValueError("Test error")
-        return input_str
+        return c.input
 
     case = Case(name="test", input="hello", expected_output="hello")
     case1 = Case(name="test1", input="world", expected_output="world")
@@ -660,8 +660,8 @@ def test_dataset_run_evaluations_with_interactions():
     case = Case(name="test", input="hello", expected_output="world", expected_interactions=interactions)
     dataset = Dataset(cases=[case], evaluator=MockEvaluator())
 
-    def task_with_interactions(input_val):
-        return {"output": input_val, "interactions": interactions}
+    def task_with_interactions(c):
+        return {"output": c.input, "interactions": interactions}
 
     report = dataset.run_evaluations(task_with_interactions)
 
@@ -744,8 +744,8 @@ def test_dataset_run_evaluations_with_trajectory_in_span(mock_span):
 
     with patch.object(dataset._tracer, "start_as_current_span", return_value=mock_span):
 
-        def task_with_trajectory(input_val):
-            return {"output": input_val, "trajectory": ["step1", "step2"]}
+        def task_with_trajectory(c):
+            return {"output": c.input, "trajectory": ["step1", "step2"]}
 
         dataset.run_evaluations(task_with_trajectory)
 
@@ -766,8 +766,8 @@ def test_dataset_run_evaluations_with_interactions_in_span(mock_span):
 
     with patch.object(dataset._tracer, "start_as_current_span", return_value=mock_span):
 
-        def task_with_interactions(input_val):
-            return {"output": input_val, "interactions": interactions}
+        def task_with_interactions(c):
+            return {"output": c.input, "interactions": interactions}
 
         dataset.run_evaluations(task_with_interactions)
 
@@ -788,7 +788,7 @@ def test_dataset_run_evaluations_records_exception_in_span(mock_span):
 
     with patch.object(dataset._tracer, "start_as_current_span", return_value=mock_span):
 
-        def failing_task(input_val):
+        def failing_task(c):
             raise ValueError("Test error")
 
         dataset.run_evaluations(failing_task)
@@ -819,8 +819,8 @@ async def test_dataset_run_evaluations_async_creates_spans(mock_span):
 
     with patch.object(dataset._tracer, "start_as_current_span", return_value=mock_span) as mock_start_span:
 
-        async def async_task(input_val):
-            return input_val
+        async def async_task(c):
+            return c.input
 
         await dataset.run_evaluations_async(async_task)
 
@@ -842,7 +842,7 @@ async def test_dataset_run_evaluations_async_records_exception(mock_span):
 
     with patch.object(dataset._tracer, "start_as_current_span", return_value=mock_span):
 
-        async def failing_async_task(input_val):
+        async def failing_async_task(c):
             raise ValueError("Async test error")
 
         await dataset.run_evaluations_async(failing_async_task)
@@ -860,8 +860,8 @@ async def test_dataset_run_evaluations_async_with_dict_output(mock_span):
 
     with patch.object(dataset._tracer, "start_as_current_span", return_value=mock_span):
 
-        async def async_task_with_dict(input_val):
-            return {"output": input_val, "trajectory": ["step1"], "interactions": interactions}
+        async def async_task_with_dict(c):
+            return {"output": c.input, "trajectory": ["step1"], "interactions": interactions}
 
         await dataset.run_evaluations_async(async_task_with_dict)
 

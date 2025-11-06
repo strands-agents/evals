@@ -25,7 +25,7 @@ async def async_swarm_example():
     """
 
     ### Step 1: Define task ###
-    def sde_swarm(task: str):
+    def sde_swarm(case: Case):
         # Create specialized agents
         researcher = Agent(name="researcher", system_prompt="You are a research specialist...", callback_handler=None)
         coder = Agent(name="coder", system_prompt="You are a coding specialist...", callback_handler=None)
@@ -45,7 +45,7 @@ async def async_swarm_example():
             repetitive_handoff_min_unique_agents=2,
         )
 
-        result = swarm(task)
+        result = swarm(case.input)
         interaction_info = swarm_extractor.extract_swarm_interactions(result)
 
         return {"interactions": interaction_info, "trajectory": [node.node_id for node in result.node_history]}

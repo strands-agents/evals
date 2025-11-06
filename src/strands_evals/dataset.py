@@ -104,7 +104,7 @@ class Dataset(Generic[InputT, OutputT]):
         self._evaluator = new_evaluator
 
     def _run_task(
-        self, task: Callable[[InputT], OutputT | dict[str, Any]], case: Case[InputT, OutputT]
+        self, task: Callable[[Case[InputT, OutputT]], OutputT | dict[str, Any]], case: Case[InputT, OutputT]
     ) -> EvaluationData[InputT, OutputT]:
         """
         Run the task with the inputs from the test case.
@@ -128,7 +128,7 @@ class Dataset(Generic[InputT, OutputT]):
             expected_interactions=case.expected_interactions,
             metadata=case.metadata,
         )
-        task_output = task(case.input)
+        task_output = task(case)
         if isinstance(task_output, dict):  # could be evaluating the trajectory as well
             evaluation_context.actual_output = task_output.get("output")
             evaluation_context.actual_trajectory = task_output.get("trajectory")
@@ -141,7 +141,7 @@ class Dataset(Generic[InputT, OutputT]):
         return evaluation_context
 
     async def _run_task_async(
-        self, task: Callable[[InputT], OutputT | dict[str, Any]], case: Case[InputT, OutputT]
+        self, task: Callable[[Case[InputT, OutputT]], OutputT | dict[str, Any]], case: Case[InputT, OutputT]
     ) -> EvaluationData[InputT, OutputT]:
         """
         Run the task with the inputs from the test case asynchronously.
@@ -167,10 +167,10 @@ class Dataset(Generic[InputT, OutputT]):
 
         # Handle both async and sync tasks
         if asyncio.iscoroutinefunction(task):
-            task_output = await task(case.input)
+            task_output = await task(case)
         else:
             # Run sync function in separate thread to avoid blocking
-            task_output = await asyncio.to_thread(task, case.input)
+            task_output = await asyncio.to_thread(task, case)
 
         if isinstance(task_output, dict):
             evaluation_context.actual_output = task_output.get("output")
@@ -277,7 +277,7 @@ class Dataset(Generic[InputT, OutputT]):
                 finally:
                     queue.task_done()
 
-    def run_evaluations(self, task: Callable[[InputT], OutputT | dict[str, Any]]) -> EvaluationReport:
+    def run_evaluations(self, task: Callable[[Case[InputT, OutputT]], OutputT | dict[str, Any]]) -> EvaluationReport:
         """
         Run the evaluations for all of the test cases with the evaluator.
 

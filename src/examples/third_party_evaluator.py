@@ -30,9 +30,9 @@ def third_party_example():
     """
 
     ### Step 1: Define task ###
-    def get_response(query: str) -> str:
+    def get_response(case: Case) -> str:
         agent = Agent(callback_handler=None)
-        return str(agent(query))
+        return str(agent(case.input))
 
     ### Step 2: Create test cases ###
     test_case1 = Case[str, str](
@@ -105,9 +105,9 @@ async def async_third_party_example():
     """
 
     ### Step 1: Define task ###
-    async def get_response(query: str) -> str:
+    async def get_response(case: Case) -> str:
         agent = Agent(system_prompt="Be as concise as possible", callback_handler=None)
-        response = await agent.invoke_async(query)
+        response = await agent.invoke_async(case.input)
         return str(response)
 
     ### Step 2: Create test cases ###

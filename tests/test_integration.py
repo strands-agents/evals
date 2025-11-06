@@ -70,8 +70,8 @@ def test_integration_dataset_with_simple_evaluator(cases):
     """Test complete workflow: Dataset + Cases + SimpleEvaluator + EvaluationReport"""
     dataset = Dataset(cases=cases, evaluator=SimpleEvaluator())
 
-    def echo_task(input_val):
-        return input_val
+    def echo_task(case):
+        return case.input
 
     report = dataset.run_evaluations(echo_task)
 
@@ -89,9 +89,9 @@ def test_integration_dataset_with_dict_output_task(cases):
     """Test Dataset with task returning dictionary output"""
     dataset = Dataset(cases=cases, evaluator=SimpleEvaluator())
 
-    def dict_task(input_val):
+    def dict_task(case):
         return TaskOutput(
-            output=input_val,
+            output=case.input,
             trajectory=["step1", "step2"],
             interactions=[Interaction(node_name="agent1", dependencies=[], messages=["processing hello"])],
         )
@@ -115,8 +115,8 @@ def test_integration_dataset_with_output_evaluator(mock_agent_class, cases, mock
     output_evaluator = OutputEvaluator(rubric="Test if outputs match exactly")
     dataset = Dataset(cases=cases, evaluator=output_evaluator)
 
-    def simple_task(input_val):
-        return f"processed_{input_val}"
+    def simple_task(case):
+        return f"processed_{case.input}"
 
     report = dataset.run_evaluations(simple_task)
 
@@ -131,8 +131,8 @@ def test_integration_evaluation_report_display(cases):
     """Test that EvaluationReport display works with real data"""
     dataset = Dataset(cases=cases, evaluator=SimpleEvaluator())
 
-    def mixed_task(input_val):
-        if input_val == "hello":
+    def mixed_task(case):
+        if case.input == "hello":
             return "hello"
         return "different"
 
@@ -156,8 +156,8 @@ def test_integration_dataset_with_trajectory_evaluator(mock_agent_class, cases, 
     trajectory_evaluator = TrajectoryEvaluator(rubric="Test if trajectories match exactly")
     dataset = Dataset(cases=cases, evaluator=trajectory_evaluator)
 
-    def simple_task(input_val):
-        return {"output": f"processed_{input_val}", "trajectory": ["step1", "step2"]}
+    def simple_task(case):
+        return {"output": f"processed_{case.input}", "trajectory": ["step1", "step2"]}
 
     report = dataset.run_evaluations(simple_task)
 
@@ -175,8 +175,8 @@ def test_integration_dataset_with_list_inputs():
     ]
     dataset = Dataset(cases=cases, evaluator=SimpleEvaluator())
 
-    def list_task(input_val):
-        return input_val
+    def list_task(case):
+        return case.input
 
     report = dataset.run_evaluations(list_task)
 
@@ -195,8 +195,8 @@ async def test_integration_async_dataset_with_simple_evaluator(cases):
     """Test async workflow: Dataset + Cases + SimpleEvaluator"""
     dataset = Dataset(cases=cases, evaluator=SimpleEvaluator())
 
-    def echo_task(input_val):
-        return input_val
+    def echo_task(case):
+        return case.input
 
     report = await dataset.run_evaluations_async(echo_task)
 
@@ -215,9 +215,9 @@ async def test_integration_async_dataset_with_async_task(cases):
     """Test async workflow with async task function"""
     dataset = Dataset(cases=cases, evaluator=SimpleEvaluator())
 
-    async def async_echo_task(input_val):
+    async def async_echo_task(case):
         await asyncio.sleep(0.01)  # Simulate async work
-        return input_val
+        return case.input
 
     report = await dataset.run_evaluations_async(async_echo_task)
 
@@ -240,8 +240,8 @@ async def test_integration_async_dataset_with_output_evaluator(mock_agent_class,
     output_evaluator = OutputEvaluator(rubric="Test if outputs match exactly")
     dataset = Dataset(cases=cases, evaluator=output_evaluator)
 
-    def simple_task(input_val):
-        return f"processed_{input_val}"
+    def simple_task(case):
+        return f"processed_{case.input}"
 
     report = await dataset.run_evaluations_async(simple_task)
 
@@ -259,9 +259,9 @@ async def test_integration_async_dataset_concurrency():
     dataset = Dataset(cases=many_cases, evaluator=SimpleEvaluator())
 
     # Create a task with noticeable delay
-    async def slow_task(input_val):
+    async def slow_task(case):
         await asyncio.sleep(0.1)  # Each task takes 0.1s
-        return input_val
+        return case.input
 
     # Time the execution
     start_time = asyncio.get_event_loop().time()
@@ -285,7 +285,7 @@ def test_dataset_with_interactions_evaluator(mock_agent_class, interaction_case,
     interactions_evaluator = InteractionsEvaluator(rubric="Test if interactions match expected sequence")
     dataset = Dataset(cases=interaction_case, evaluator=interactions_evaluator)
 
-    def task_with_interactions(input_val):
+    def task_with_interactions(case):
         return {
             "output": "world",
             "interactions": [
@@ -308,7 +308,7 @@ async def test_async_dataset_with_interactions(interaction_case):
     """Test async Dataset with interactions data"""
     dataset = Dataset(cases=interaction_case, evaluator=SimpleEvaluator())
 
-    async def async_interactions_task(input_val):
+    async def async_interactions_task(case):
         await asyncio.sleep(0.01)
         return {
             "output": "world",

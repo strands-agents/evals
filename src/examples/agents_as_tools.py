@@ -102,7 +102,7 @@ async def async_agents_as_tools_example():
     """
 
     ### Step 1: Define task ###
-    def customer_support(task: str):
+    def customer_support(case: Case):
         @tool
         def technical_support(query: str) -> str:
             """Handle technical issues, bugs, and troubleshooting."""
@@ -158,7 +158,7 @@ async def async_agents_as_tools_example():
             callback_handler=None,
             tools=[technical_support, billing_support, product_info, returns_exchanges],
         )
-        response = orchestrator(task)
+        response = orchestrator(case.input)
         description = tools_use_extractor.extract_tools_description(orchestrator)
         trajectory_evaluator.update_trajectory_description(description)
         interaction_evaluator.update_interaction_description(description)
