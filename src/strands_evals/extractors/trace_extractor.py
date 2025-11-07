@@ -81,42 +81,46 @@ class TraceExtractor:
         available_tools: list[ToolConfig] = []
 
         for trace in session.traces:
-            user_prompt = None
-            agent_response = None
-            tool_calls: list[ToolExecutionSpan] = []
+            agent_span = self._find_agent_invocation_span(trace)
+            tool_spans = self._find_tool_execution_spans(trace)
 
-            for span in trace.spans:
-                if isinstance(span, AgentInvocationSpan):
-                    if span.available_tools:
-                        available_tools = span.available_tools
-                    if hasattr(span, "user_prompt") and span.user_prompt:
-                        user_prompt = span.user_prompt
-                    if hasattr(span, "agent_response") and span.agent_response:
-                        agent_response = span.agent_response
-                elif isinstance(span, ToolExecutionSpan):
-                    tool_calls.append(span)
+            if agent_span and agent_span.available_tools:
+                available_tools = agent_span.available_tools
 
-            for span in trace.spans:
-                if isinstance(span, ToolExecutionSpan):
-                    evaluator_inputs.append(
-                        ToolLevelInput(
-                            span_info=span.span_info,
-                            available_tools=available_tools or [],
-                            tool_execution_details=span,
-                            session_history=list(session_history),
-                        )
+            if agent_span and agent_span.user_prompt:
+                session_history.append(UserMessage(content=[TextContent(text=agent_span.user_prompt)]))
+
+            for tool_span in tool_spans:
+                evaluator_inputs.append(
+                    ToolLevelInput(
+                        span_info=tool_span.span_info,
+                        available_tools=available_tools,
+                        tool_execution_details=tool_span,
+                        session_history=list(session_history),
                     )
+                )
 
-            if user_prompt and agent_response:
-                session_history.append(UserMessage(content=[TextContent(text=user_prompt)]))
-                if tool_calls:
-                    tool_executions = [
-                        ToolExecution(tool_call=tc.tool_call, tool_result=tc.tool_result) for tc in tool_calls
-                    ]
-                    session_history.append(tool_executions)
-                session_history.append(AssistantMessage(content=[TextContent(text=agent_response)]))
+            if tool_spans:
+                tool_executions = [
+                    ToolExecution(tool_call=span.tool_call, tool_result=span.tool_result) for span in tool_spans
+                ]
+                session_history.append(tool_executions)
+
+            if agent_span and agent_span.agent_response:
+                session_history.append(AssistantMessage(content=[TextContent(text=agent_span.agent_response)]))
 
         return evaluator_inputs
+
+    def _find_agent_invocation_span(self, trace) -> AgentInvocationSpan | None:
+        """Find the AgentInvocationSpan in a trace."""
+        for span in trace.spans:
+            if isinstance(span, AgentInvocationSpan):
+                return span
+        return None
+
+    def _find_tool_execution_spans(self, trace) -> list[ToolExecutionSpan]:
+        """Find all ToolExecutionSpans in a trace."""
+        return [span for span in trace.spans if isinstance(span, ToolExecutionSpan)]
 
     def _extract_session_level(self, session: Session) -> SessionLevelInput:
         """Extract session-level input with full history."""

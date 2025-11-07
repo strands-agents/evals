@@ -4,6 +4,7 @@ from .goal_success_rate_evaluator import GoalSuccessRateEvaluator
 from .helpfulness_evaluator import HelpfulnessEvaluator
 from .interactions_evaluator import InteractionsEvaluator
 from .output_evaluator import OutputEvaluator
+from .tool_selection_accuracy_evaluator import ToolSelectionAccuracyEvaluator
 from .trajectory_evaluator import TrajectoryEvaluator
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "HelpfulnessEvaluator",
     "GoalSuccessRateEvaluator",
     "FaithfulnessEvaluator",
+    "ToolSelectionAccuracyEvaluator",
 ]
