@@ -7,34 +7,34 @@ from typing_extensions import TypeVar
 from ..types.evaluation import EvaluationData, EvaluationOutput
 from ..types.trace import EvaluationLevel, ToolLevelInput
 from .evaluator import Evaluator
-from .prompt_templates.tool_selection_accuracy import get_template
+from .prompt_templates.tool_parameter_accuracy import get_template
 
 InputT = TypeVar("InputT")
 OutputT = TypeVar("OutputT")
 
 
-class ToolSelectionScore(str, Enum):
-    """Binary tool selection accuracy ratings."""
+class ToolParameterAccuracyScore(str, Enum):
+    """Binary tool parameter accuracy ratings."""
 
     YES = "Yes"
     NO = "No"
 
 
-class ToolSelectionRating(BaseModel):
-    """Structured output for tool selection accuracy evaluation."""
+class ToolParameterAccuracyRating(BaseModel):
+    """Structured output for tool parameter accuracy evaluation."""
 
     reasoning: str = Field(description="Step by step reasoning to derive the final score")
-    score: ToolSelectionScore = Field(description="Score should be one of 'Yes' or 'No'")
+    score: ToolParameterAccuracyScore = Field(description="Score should be one of 'Yes' or 'No'")
 
 
-class ToolSelectionAccuracyEvaluator(Evaluator[InputT, OutputT]):
-    """Evaluates whether tool calls are justified at specific points in the conversation."""
+class ToolParameterAccuracyEvaluator(Evaluator[InputT, OutputT]):
+    """Evaluates whether tool call parameters faithfully use information from the preceding context."""
 
     evaluation_level = EvaluationLevel.TOOL_LEVEL
 
     _score_mapping = {
-        ToolSelectionScore.YES: 1.0,
-        ToolSelectionScore.NO: 0.0,
+        ToolParameterAccuracyScore.YES: 1.0,
+        ToolParameterAccuracyScore.NO: 0.0,
     }
 
     def __init__(
@@ -55,7 +55,7 @@ class ToolSelectionAccuracyEvaluator(Evaluator[InputT, OutputT]):
         for tool_input in tool_inputs:
             prompt = self._format_prompt(tool_input)
             evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
-            rating = evaluator_agent.structured_output(ToolSelectionRating, prompt)
+            rating = evaluator_agent.structured_output(ToolParameterAccuracyRating, prompt)
             normalized_score = self._score_mapping[rating.score]
             result = EvaluationOutput(
                 score=normalized_score, test_pass=normalized_score == 1.0, reason=rating.reasoning
@@ -71,7 +71,7 @@ class ToolSelectionAccuracyEvaluator(Evaluator[InputT, OutputT]):
         for tool_input in tool_inputs:
             prompt = self._format_prompt(tool_input)
             evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
-            rating = await evaluator_agent.structured_output_async(ToolSelectionRating, prompt)
+            rating = await evaluator_agent.structured_output_async(ToolParameterAccuracyRating, prompt)
             normalized_score = self._score_mapping[rating.score]
             result = EvaluationOutput(
                 score=normalized_score, test_pass=normalized_score == 1.0, reason=rating.reasoning
