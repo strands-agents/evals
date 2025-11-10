@@ -38,7 +38,7 @@ test = [
 dev = [
     "hatch>=1.0.0,<2.0.0",
     "mypy>=1.15.0,<2.0.0",
-    "pre-commit>=3.2.0,<4.2.0",
+    "pre-commit>=3.2.0,<4.5.0",
     "ruff>=0.13.0,<0.14.0",
 ]
 
@@ -155,7 +155,7 @@ dependencies = [
 extra-dependencies = [
     "hatch>=1.0.0,<2.0.0",
     "mypy>=1.15.0,<2.0.0",
-    "pre-commit>=3.2.0,<4.2.0",
+    "pre-commit>=3.2.0,<4.5.0",
     "ruff>=0.13.0,<0.14.0",
 ]
 
