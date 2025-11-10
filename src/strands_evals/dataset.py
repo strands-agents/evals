@@ -206,8 +206,8 @@ class Dataset(Generic[InputT, OutputT]):
             with self._tracer.start_as_current_span(
                 f"eval_case {case_name}",
                 attributes={
-                    "gen_ai.eval.case.name": case_name,
-                    "gen_ai.eval.case.input": serialize(case.input),
+                    "gen_ai.evaluation.case.name": case_name,
+                    "gen_ai.evaluation.case.input": serialize(case.input),
                 },
             ) as case_span:
                 try:
@@ -215,18 +215,20 @@ class Dataset(Generic[InputT, OutputT]):
                     with self._tracer.start_as_current_span(
                         "task_execution",
                         attributes={
-                            "gen_ai.eval.task.type": "agent_task",
-                            "gen_ai.eval.case.name": case_name,
+                            "gen_ai.evaluation.task.type": "agent_task",
+                            "gen_ai.evaluation.case.name": case_name,
                         },
                     ) as task_span:
                         evaluation_context = await self._run_task_async(task, case)
                         task_span.set_attributes(
                             {
-                                "gen_ai.eval.data.input": serialize(evaluation_context.input),
-                                "gen_ai.eval.data.expected_output": serialize(evaluation_context.expected_output),
-                                "gen_ai.eval.data.actual_output": serialize(evaluation_context.actual_output),
-                                "gen_ai.eval.data.has_trajectory": (evaluation_context.actual_trajectory is not None),
-                                "gen_ai.eval.data.has_interactions": (
+                                "gen_ai.evaluation.data.input": serialize(evaluation_context.input),
+                                "gen_ai.evaluation.data.expected_output": serialize(evaluation_context.expected_output),
+                                "gen_ai.evaluation.data.actual_output": serialize(evaluation_context.actual_output),
+                                "gen_ai.evaluation.data.has_trajectory": (
+                                    evaluation_context.actual_trajectory is not None
+                                ),
+                                "gen_ai.evaluation.data.has_interactions": (
                                     evaluation_context.actual_interactions is not None
                                 ),
                             }
@@ -236,8 +238,8 @@ class Dataset(Generic[InputT, OutputT]):
                     with self._tracer.start_as_current_span(
                         f"evaluator {self.evaluator.get_type_name()}",
                         attributes={
-                            "gen_ai.eval.evaluator.type": self.evaluator.get_type_name(),
-                            "gen_ai.eval.case.name": case_name,
+                            "gen_ai.evaluation.name": self.evaluator.get_type_name(),
+                            "gen_ai.evaluation.case.name": case_name,
                         },
                     ) as eval_span:
                         evaluation_outputs = await self.evaluator.evaluate_async(evaluation_context)
@@ -246,9 +248,10 @@ class Dataset(Generic[InputT, OutputT]):
                         )
                         eval_span.set_attributes(
                             {
-                                "gen_ai.eval.output.score": aggregate_score,
-                                "gen_ai.eval.output.test_pass": aggregate_pass,
-                                "gen_ai.eval.output.reason": aggregate_reason or "",
+                                # To-do: include gen_ai.evaluation.score.label
+                                "gen_ai.evaluation.score.value": aggregate_score,
+                                "gen_ai.evaluation.test_pass": aggregate_pass,
+                                "gen_ai.evaluation.explanation": aggregate_reason or "",
                             }
                         )
 
@@ -302,8 +305,8 @@ class Dataset(Generic[InputT, OutputT]):
             with self._tracer.start_as_current_span(
                 f"eval_case {case_name}",
                 attributes={
-                    "gen_ai.eval.case.name": case_name,
-                    "gen_ai.eval.case.input": serialize(case.input),
+                    "gen_ai.evaluation.case.name": case_name,
+                    "gen_ai.evaluation.case.input": serialize(case.input),
                 },
             ) as case_span:
                 try:
@@ -311,18 +314,20 @@ class Dataset(Generic[InputT, OutputT]):
                     with self._tracer.start_as_current_span(
                         "task_execution",
                         attributes={
-                            "gen_ai.eval.task.type": "agent_task",
-                            "gen_ai.eval.case.name": case_name,
+                            "gen_ai.evaluation.task.type": "agent_task",
+                            "gen_ai.evaluation.case.name": case_name,
                         },
                     ) as task_span:
                         evaluation_context = self._run_task(task, case)
                         task_span.set_attributes(
                             {
-                                "gen_ai.eval.data.input": serialize(evaluation_context.input),
-                                "gen_ai.eval.data.expected_output": serialize(evaluation_context.expected_output),
-                                "gen_ai.eval.data.actual_output": serialize(evaluation_context.actual_output),
-                                "gen_ai.eval.data.has_trajectory": (evaluation_context.actual_trajectory is not None),
-                                "gen_ai.eval.data.has_interactions": (
+                                "gen_ai.evaluation.data.input": serialize(evaluation_context.input),
+                                "gen_ai.evaluation.data.expected_output": serialize(evaluation_context.expected_output),
+                                "gen_ai.evaluation.data.actual_output": serialize(evaluation_context.actual_output),
+                                "gen_ai.evaluation.data.has_trajectory": (
+                                    evaluation_context.actual_trajectory is not None
+                                ),
+                                "gen_ai.evaluation.data.has_interactions": (
                                     evaluation_context.actual_interactions is not None
                                 ),
                             }
@@ -332,8 +337,8 @@ class Dataset(Generic[InputT, OutputT]):
                     with self._tracer.start_as_current_span(
                         f"evaluator {self.evaluator.get_type_name()}",
                         attributes={
-                            "gen_ai.eval.evaluator.type": self.evaluator.get_type_name(),
-                            "gen_ai.eval.case.name": case_name,
+                            "gen_ai.evaluation.name": self.evaluator.get_type_name(),
+                            "gen_ai.evaluation.case.name": case_name,
                         },
                     ) as eval_span:
                         evaluation_outputs = self.evaluator.evaluate(evaluation_context)
@@ -342,9 +347,10 @@ class Dataset(Generic[InputT, OutputT]):
                         )
                         eval_span.set_attributes(
                             {
-                                "gen_ai.eval.output.score": aggregate_score,
-                                "gen_ai.eval.output.test_pass": aggregate_pass,
-                                "gen_ai.eval.output.reason": aggregate_reason or "",
+                                # To-do: include gen_ai.evaluation.score.label
+                                "gen_ai.evaluation.score.value": aggregate_score,
+                                "gen_ai.evaluation.test_pass": aggregate_pass,
+                                "gen_ai.evaluation.explanation": aggregate_reason or "",
                             }
                         )
 

@@ -694,9 +694,9 @@ def test_dataset_run_evaluations_creates_case_span(mock_span, simple_task):
         calls = mock_start_span.call_args_list
         case_span_call = calls[0]
         assert case_span_call[0][0] == "eval_case test_case"
-        assert "gen_ai.eval.case.name" in case_span_call[1]["attributes"]
-        assert case_span_call[1]["attributes"]["gen_ai.eval.case.name"] == "test_case"
-        assert "gen_ai.eval.case.input" in case_span_call[1]["attributes"]
+        assert "gen_ai.evaluation.case.name" in case_span_call[1]["attributes"]
+        assert case_span_call[1]["attributes"]["gen_ai.evaluation.case.name"] == "test_case"
+        assert "gen_ai.evaluation.case.input" in case_span_call[1]["attributes"]
 
 
 def test_dataset_run_evaluations_creates_task_span(mock_span, simple_task):
@@ -712,8 +712,8 @@ def test_dataset_run_evaluations_creates_task_span(mock_span, simple_task):
         assert len(calls) >= 2
         task_span_call = calls[1]
         assert task_span_call[0][0] == "task_execution"
-        assert "gen_ai.eval.task.type" in task_span_call[1]["attributes"]
-        assert "gen_ai.eval.case.name" in task_span_call[1]["attributes"]
+        assert "gen_ai.evaluation.task.type" in task_span_call[1]["attributes"]
+        assert "gen_ai.evaluation.case.name" in task_span_call[1]["attributes"]
         # Verify set_attributes was called with data attributes
         mock_span.set_attributes.assert_called()
 
@@ -731,8 +731,8 @@ def test_dataset_run_evaluations_creates_evaluator_span(mock_span, simple_task):
         assert len(calls) >= 3
         evaluator_span_call = calls[2]
         assert evaluator_span_call[0][0] == "evaluator MockEvaluator"
-        assert "gen_ai.eval.evaluator.type" in evaluator_span_call[1]["attributes"]
-        assert "gen_ai.eval.case.name" in evaluator_span_call[1]["attributes"]
+        assert "gen_ai.evaluation.name" in evaluator_span_call[1]["attributes"]
+        assert "gen_ai.evaluation.case.name" in evaluator_span_call[1]["attributes"]
         # Verify set_attributes was called with output attributes
         mock_span.set_attributes.assert_called()
 
@@ -754,7 +754,9 @@ def test_dataset_run_evaluations_with_trajectory_in_span(mock_span):
         # Verify has_trajectory flag is set
         set_attrs_calls = mock_span.set_attributes.call_args_list
         # Find the call that includes has_trajectory
-        has_trajectory_set = any("gen_ai.eval.data.has_trajectory" in call[0][0] for call in set_attrs_calls if call[0])
+        has_trajectory_set = any(
+            "gen_ai.evaluation.data.has_trajectory" in call[0][0] for call in set_attrs_calls if call[0]
+        )
         assert has_trajectory_set
 
 
@@ -776,7 +778,7 @@ def test_dataset_run_evaluations_with_interactions_in_span(mock_span):
         # Verify has_interactions flag is set
         set_attrs_calls = mock_span.set_attributes.call_args_list
         has_interactions_set = any(
-            "gen_ai.eval.data.has_interactions" in call[0][0] for call in set_attrs_calls if call[0]
+            "gen_ai.evaluation.data.has_interactions" in call[0][0] for call in set_attrs_calls if call[0]
         )
         assert has_interactions_set
 
@@ -831,7 +833,7 @@ async def test_dataset_run_evaluations_async_creates_spans(mock_span):
         # Check case span
         case_span_call = calls[0]
         assert case_span_call[0][0] == "eval_case async_test"
-        assert "gen_ai.eval.case.name" in case_span_call[1]["attributes"]
+        assert "gen_ai.evaluation.case.name" in case_span_call[1]["attributes"]
 
 
 @pytest.mark.asyncio
@@ -869,9 +871,11 @@ async def test_dataset_run_evaluations_async_with_dict_output(mock_span):
         mock_span.set_attributes.assert_called()
         # Verify has_trajectory and has_interactions flags are set
         set_attrs_calls = mock_span.set_attributes.call_args_list
-        has_trajectory_set = any("gen_ai.eval.data.has_trajectory" in call[0][0] for call in set_attrs_calls if call[0])
+        has_trajectory_set = any(
+            "gen_ai.evaluation.data.has_trajectory" in call[0][0] for call in set_attrs_calls if call[0]
+        )
         has_interactions_set = any(
-            "gen_ai.eval.data.has_interactions" in call[0][0] for call in set_attrs_calls if call[0]
+            "gen_ai.evaluation.data.has_interactions" in call[0][0] for call in set_attrs_calls if call[0]
         )
         assert has_trajectory_set
         assert has_interactions_set
