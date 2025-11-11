@@ -31,7 +31,7 @@ packages = ["src/strands_evals"]
 test = [
     "pytest>=8.0.0,<9.0.0",
     "pytest-cov>=7.0.0,<8.0.0",
-    "pytest-asyncio>=1.0.0,<1.3.0",
+    "pytest-asyncio>=1.0.0,<1.4.0",
     "pytest-xdist>=3.0.0,<4.0.0",
 ]
 
@@ -55,7 +55,7 @@ features = ["otel"]
 dependencies = [
     "pytest>=8.0.0,<9.0.0",
     "pytest-cov>=7.0.0,<8.0.0",
-    "pytest-asyncio>=1.0.0,<1.3.0",
+    "pytest-asyncio>=1.0.0,<1.4.0",
     "pytest-xdist>=3.0.0,<4.0.0",
     "moto>=5.1.0,<6.0.0",
 ]
@@ -148,7 +148,7 @@ python_files = "test_*.py"
 dependencies = [
     "pytest>=8.0.0,<9.0.0",
     "pytest-cov>=7.0.0,<8.0.0",
-    "pytest-asyncio>=1.0.0,<1.3.0",  # This fixed the async support
+    "pytest-asyncio>=1.0.0,<1.4.0",  # This fixed the async support
     "pytest-xdist>=3.0.0,<4.0.0",
     "moto>=5.1.0,<6.0.0",
 ]
