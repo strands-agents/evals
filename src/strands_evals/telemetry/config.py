@@ -14,6 +14,7 @@ from opentelemetry.propagators.composite import CompositePropagator
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter, SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,8 @@ class StrandsEvalsTelemetry:
         trace exporters must be configured separately using the setup methods.
         """
         self.resource = get_otel_resource()
+        self._in_memory_exporter: InMemorySpanExporter | None = None
+
         if tracer_provider:
             self.tracer_provider = tracer_provider
         else:
@@ -112,6 +115,22 @@ class StrandsEvalsTelemetry:
             )
         )
 
+    @property
+    def in_memory_exporter(self) -> InMemorySpanExporter:
+        """Get the in-memory exporter instance.
+
+        Returns:
+            The configured in-memory span exporter.
+
+        Raises:
+            RuntimeError: If setup_in_memory_exporter() has not been called.
+        """
+        if self._in_memory_exporter is None:
+            raise RuntimeError(
+                "In-memory exporter is not configured. Call setup_in_memory_exporter() before accessing this property."
+            )
+        return self._in_memory_exporter
+
     def setup_console_exporter(self, **kwargs: Any) -> "StrandsEvalsTelemetry":
         """Set up console exporter for the tracer provider.
 
@@ -130,6 +149,29 @@ class StrandsEvalsTelemetry:
             logger.info("Enabling console export for strands-evals")
             console_processor = SimpleSpanProcessor(ConsoleSpanExporter(**kwargs))
             self.tracer_provider.add_span_processor(console_processor)
+        except Exception as e:
+            logger.exception("error=<%s> | Failed to configure console exporter", e)
+        return self
+
+    def setup_in_memory_exporter(self, **kwargs: Any) -> "StrandsEvalsTelemetry":
+        """Set up in-memory exporter for the tracer provider.
+
+        Args:
+            **kwargs: Optional keyword arguments passed directly to
+                OpenTelemetry's InMemorySpanExporter initializer.
+
+        Returns:
+            self: Enables method chaining.
+
+        This method configures a BatchSpanProcessor with an InMemorySpanExporter,
+        allowing trace data to be stored in memory for testing and debugging purposes.
+        Any additional keyword arguments provided will be forwarded to the InMemorySpanExporter.
+        """
+        try:
+            logger.info("Enabling in-memory export for strands-evals")
+            self._in_memory_exporter = InMemorySpanExporter()
+            span_processor = BatchSpanProcessor(self._in_memory_exporter)
+            self.tracer_provider.add_span_processor(span_processor)
         except Exception as e:
             logger.exception("error=<%s> | Failed to configure console exporter", e)
         return self

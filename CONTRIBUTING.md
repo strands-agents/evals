@@ -53,6 +53,43 @@ This project has adopted the [Amazon Open Source Code of Conduct](https://aws.gi
 For more information see the [Code of Conduct FAQ](https://aws.github.io/code-of-conduct-faq) or contact
 opensource-codeofconduct@amazon.com with any additional questions or comments.
 
+## Development Environment
+
+This project uses [hatchling](https://hatch.pypa.io/latest/build/#hatchling) as the build backend and [hatch](https://hatch.pypa.io/latest/) for development workflow management.
+
+### Setting Up Your Development Environment
+```bash
+# Create and activate a virtual environment (recommended)
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install the package in development mode with dependencies
+pip install -e .
+
+# Install with test dependencies
+pip install -e ".[test]"
+
+# Install with both test and dev dependencies
+pip install -e ".[test,dev]"
+```
+
+### Format code
+hatch run format
+
+### Check formatting (without making changes)
+hatch run test-format
+
+### Lint code
+hatch run lint
+
+### Check linting (without making changes)
+hatch run test-lint
+
+### Run tests
+pytest tests/
+
+### List available commands
+hatch run list
 
 ## Licensing
 

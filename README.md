@@ -18,37 +18,16 @@ pip install -e ".[test]"
 pip install -e ".[test,dev]"
 ```
 
-### Format code
-hatch run format
-
-### Check formatting (without making changes)
-hatch run test-format
-
-### Lint code
-hatch run lint
-
-### Check linting (without making changes)
-hatch run test-lint
-
-### Run tests
-pytest tests/
-
-### List available commands
-hatch run list
-
 ## Basic Usage
+
+### OutuptEvaluator (LLM judge)
 
 ```python
 from strands import Agent
 from strands_evals import Case, Dataset
 from strands_evals.evaluators import OutputEvaluator
 
-# 1. Define a task function
-def get_response(query: str) -> str:
-    agent = Agent(callback_handler=None)
-    return str(agent(query))
-
-# 2. Create test cases
+# 1. Create test cases
 test_cases = [
     Case[str, str](
         name="knowledge-1",
@@ -63,19 +42,66 @@ test_cases = [
     )
 ]
 
-# 3. Create an evaluator
+# 2. Create an evaluator
 evaluator = OutputEvaluator(
     rubric="The output should represent a reasonable answer to the input."
 )
 
-# 4. Create a dataset
+# 3. Create a dataset
 dataset = Dataset[str, str](
     cases=test_cases,
     evaluator=evaluator
 )
 
+# 4. Define a task function
+def get_response(case: Case) -> str:
+    agent = Agent(callback_handler=None)
+    return str(agent(case.input))
+
 # 5. Run evaluations
 report = dataset.run_evaluations(get_response)
+report.run_display()
+```
+
+### Trace-based Evaluator
+
+```python
+from strands import Agent
+
+from strands_evals import Case, Dataset
+from strands_evals.evaluators import HelpfulnessEvaluator
+from strands_evals.telemetry import StrandsEvalsTelemetry
+
+
+# 1. Set up the tracer provider with in_memory_exporter
+telemetry = StrandsEvalsTelemetry().setup_in_memory_exporter()
+
+
+# 2. Create test cases
+test_cases = [
+    Case[str, str](name="knowledge-1", input="What is the capital of France?", metadata={"category": "knowledge"}),
+    Case[str, str](name="knowledge-2", input="What color is the ocean?", metadata={"category": "knowledge"}),
+]
+
+# 3. Create an evaluator
+evaluator = HelpfulnessEvaluator()
+
+# 4. Create a dataset
+dataset = Dataset[str, str](cases=test_cases, evaluator=evaluator)
+
+# 5. Define a task function
+def user_task_function(case: Case) -> dict:
+    agent = Agent(callback_handler=None)
+    agent_response = agent(case.input)
+    finished_spans = telemetry.memory_exporter.get_finished_spans()
+    
+    mapper = StrandsInMemorySessionMapper()
+    session = mapper.map_to_session(finished_spans, session_id="test-session")
+
+    return {"output": str(agent_response), "trajectory": session}
+
+# 6. Run evaluations
+report = dataset.run_evaluations(user_task_function)
 report.run_display()
 ```
 
@@ -126,9 +152,9 @@ from strands_evals.evaluators import TrajectoryEvaluator
 from strands_tools import calculator
 
 # 1. Define task that returns tool usage
-def get_response_with_tools(query: str) -> dict:
+def get_response_with_tools(case: Case) -> dict:
     agent = Agent(tools=[calculator])
-    response = agent(query)
+    response = agent(case.input)
     
     return {
         "output": str(response),

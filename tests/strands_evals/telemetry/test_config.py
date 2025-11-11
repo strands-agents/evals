@@ -16,12 +16,14 @@ def mock_telemetry_patches():
         patch("strands_evals.telemetry.config.SimpleSpanProcessor") as mock_simple,
         patch("strands_evals.telemetry.config.ConsoleSpanExporter") as mock_console,
         patch("strands_evals.telemetry.config.BatchSpanProcessor") as mock_batch,
+        patch("strands_evals.telemetry.config.InMemorySpanExporter") as mock_memory,
         patch("opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter") as mock_otlp,
     ):
         yield {
             "simple_processor": mock_simple,
             "console_exporter": mock_console,
             "batch_processor": mock_batch,
+            "memory_exporter": mock_memory,
             "otlp_exporter": mock_otlp,
         }
 
@@ -117,6 +119,73 @@ def test_strands_evals_telemetry_setup_console_exporter_handles_exception():
 
         # Should still return self for chaining
         assert result is telemetry
+
+
+def test_strands_evals_telemetry_setup_in_memory_exporter(mock_telemetry_patches, mock_tracer_provider):
+    """Test setup_in_memory_exporter configures in-memory exporter"""
+    mock_processor = MagicMock()
+    mock_telemetry_patches["batch_processor"].return_value = mock_processor
+    mock_exporter = MagicMock()
+    mock_telemetry_patches["memory_exporter"].return_value = mock_exporter
+
+    telemetry = StrandsEvalsTelemetry(tracer_provider=mock_tracer_provider)
+    result = telemetry.setup_in_memory_exporter()
+
+    # Verify in-memory exporter was created
+    mock_telemetry_patches["memory_exporter"].assert_called_once_with()
+    mock_telemetry_patches["batch_processor"].assert_called_once_with(mock_exporter)
+
+    # Verify processor was added to tracer provider
+    mock_tracer_provider.add_span_processor.assert_called_once_with(mock_processor)
+
+    # Verify exporter is stored in instance variable
+    assert telemetry._in_memory_exporter == mock_exporter
+
+    # Verify method chaining
+    assert result is telemetry
+
+
+def test_strands_evals_telemetry_setup_in_memory_exporter_with_kwargs(mock_telemetry_patches):
+    """Test setup_in_memory_exporter passes kwargs to InMemorySpanExporter"""
+    telemetry = StrandsEvalsTelemetry()
+    # InMemorySpanExporter doesn't take many kwargs, but we can test the pattern
+    telemetry.setup_in_memory_exporter()
+
+    # Verify exporter was called
+    mock_telemetry_patches["memory_exporter"].assert_called_once_with()
+
+
+def test_strands_evals_telemetry_setup_in_memory_exporter_handles_exception():
+    """Test setup_in_memory_exporter handles exceptions gracefully"""
+    with patch("strands_evals.telemetry.config.InMemorySpanExporter", side_effect=Exception("Test error")):
+        telemetry = StrandsEvalsTelemetry()
+
+        # Should not raise exception
+        result = telemetry.setup_in_memory_exporter()
+
+        # Should still return self for chaining
+        assert result is telemetry
+
+
+def test_strands_evals_telemetry_in_memory_exporter_property(mock_telemetry_patches, mock_tracer_provider):
+    """Test in_memory_exporter property returns the configured exporter"""
+    mock_exporter = MagicMock()
+    mock_telemetry_patches["memory_exporter"].return_value = mock_exporter
+
+    telemetry = StrandsEvalsTelemetry(tracer_provider=mock_tracer_provider)
+    telemetry.setup_in_memory_exporter()
+
+    # Verify property returns the exporter
+    assert telemetry.in_memory_exporter == mock_exporter
+
+
+def test_strands_evals_telemetry_in_memory_exporter_property_raises_when_not_configured():
+    """Test in_memory_exporter property raises RuntimeError when not configured"""
+    telemetry = StrandsEvalsTelemetry()
+
+    # Should raise RuntimeError when accessing property before setup
+    with pytest.raises(RuntimeError, match="In-memory exporter is not configured"):
+        _ = telemetry.in_memory_exporter
 
 
 def test_strands_evals_telemetry_setup_otlp_exporter(mock_telemetry_patches, mock_tracer_provider):
