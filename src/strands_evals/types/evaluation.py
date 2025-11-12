@@ -96,8 +96,10 @@ class EvaluationOutput(BaseModel):
         score: The score of the test case.
         test_pass: Whether the test pass or fail.
         reason: The reason for the score for each test case.
+        label: The categorical label corresponding to the score.
     """
 
     score: float
     test_pass: bool
     reason: str | None = None
+    label: str | None = None
