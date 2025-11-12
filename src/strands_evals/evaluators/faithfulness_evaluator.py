@@ -60,7 +60,12 @@ class FaithfulnessEvaluator(Evaluator[InputT, OutputT]):
         evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
         rating = evaluator_agent.structured_output(FaithfulnessRating, prompt)
         normalized_score = self._score_mapping[rating.score]
-        result = EvaluationOutput(score=normalized_score, test_pass=normalized_score >= 0.5, reason=rating.reasoning)
+        result = EvaluationOutput(
+            score=normalized_score,
+            test_pass=normalized_score >= 0.5,
+            reason=rating.reasoning,
+            label=rating.score,
+        )
         return [result]
 
     async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
@@ -69,7 +74,12 @@ class FaithfulnessEvaluator(Evaluator[InputT, OutputT]):
         evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
         rating = await evaluator_agent.structured_output_async(FaithfulnessRating, prompt)
         normalized_score = self._score_mapping[rating.score]
-        result = EvaluationOutput(score=normalized_score, test_pass=normalized_score >= 0.5, reason=rating.reasoning)
+        result = EvaluationOutput(
+            score=normalized_score,
+            test_pass=normalized_score >= 0.5,
+            reason=rating.reasoning,
+            label=rating.score,
+        )
         return [result]
 
     def _get_last_turn(self, evaluation_case: EvaluationData[InputT, OutputT]) -> TraceLevelInput:

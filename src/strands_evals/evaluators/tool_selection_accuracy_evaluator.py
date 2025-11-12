@@ -58,7 +58,7 @@ class ToolSelectionAccuracyEvaluator(Evaluator[InputT, OutputT]):
             rating = evaluator_agent.structured_output(ToolSelectionRating, prompt)
             normalized_score = self._score_mapping[rating.score]
             result = EvaluationOutput(
-                score=normalized_score, test_pass=normalized_score == 1.0, reason=rating.reasoning
+                score=normalized_score, test_pass=normalized_score == 1.0, reason=rating.reasoning, label=rating.score
             )
             results.append(result)
 
@@ -74,7 +74,7 @@ class ToolSelectionAccuracyEvaluator(Evaluator[InputT, OutputT]):
             rating = await evaluator_agent.structured_output_async(ToolSelectionRating, prompt)
             normalized_score = self._score_mapping[rating.score]
             result = EvaluationOutput(
-                score=normalized_score, test_pass=normalized_score == 1.0, reason=rating.reasoning
+                score=normalized_score, test_pass=normalized_score == 1.0, reason=rating.reasoning, label=rating.score
             )
             results.append(result)
 

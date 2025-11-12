@@ -64,6 +64,7 @@ def test_evaluate(mock_agent_class, evaluation_data):
     assert result[0].score == 0.833
     assert result[0].test_pass is True
     assert result[0].reason == "The response is helpful"
+    assert result[0].label == HelpfulnessScore.VERY_HELPFUL
 
 
 @pytest.mark.parametrize(
@@ -90,6 +91,7 @@ def test_score_mapping(mock_agent_class, evaluation_data, score, expected_value,
     assert len(result) == 1
     assert result[0].score == expected_value
     assert result[0].test_pass == expected_pass
+    assert result[0].label == score
 
 
 @pytest.mark.asyncio
@@ -110,3 +112,4 @@ async def test_evaluate_async(mock_agent_class, evaluation_data):
     assert result[0].score == 0.833
     assert result[0].test_pass is True
     assert result[0].reason == "The response is helpful"
+    assert result[0].label == HelpfulnessScore.VERY_HELPFUL
