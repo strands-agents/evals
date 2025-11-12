@@ -25,9 +25,9 @@ telemetry.tracer_provider.add_span_processor(span_processor)
 
 
 # 1. Define a task function
-def user_task_function(query: str) -> str:
+def user_task_function(case: Case) -> str:
     agent = Agent(callback_handler=None)
-    agent_response = agent(query)
+    agent_response = agent(case.input)
     finished_spans = memory_exporter.get_finished_spans()
     mapper = StrandsInMemorySessionMapper()
     session = mapper.map_to_session(finished_spans, session_id="test-session")
