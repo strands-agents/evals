@@ -2,6 +2,7 @@ import asyncio
 
 from strands import Agent, tool
 
+from strands_evals.case import Case
 from strands_evals.evaluators import TrajectoryEvaluator
 from strands_evals.extractors import tools_use_extractor
 from strands_evals.generators import DatasetGenerator
@@ -48,7 +49,7 @@ async def trajectory_dataset_generator():
     """
 
     ### Step 1: Define task ###
-    async def bank_task(query: str) -> TaskOutput:
+    async def bank_task(case: Case) -> TaskOutput:
         """
         Banking task that handles spending, balance checks, and debt collection.
         """
@@ -60,7 +61,7 @@ async def trajectory_dataset_generator():
         agent = Agent(
             tools=[get_balance, modify_balance, collect_debt], system_prompt=bank_prompt, callback_handler=None
         )
-        response = await agent.invoke_async(query)
+        response = await agent.invoke_async(case.input)
         trajectory = tools_use_extractor.extract_agent_tools_used_from_messages(agent.messages)
         return TaskOutput(output=str(response), trajectory=trajectory)
 

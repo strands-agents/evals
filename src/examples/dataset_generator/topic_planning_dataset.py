@@ -2,6 +2,7 @@ import asyncio
 
 from strands import Agent
 
+from strands_evals.case import Case
 from strands_evals.evaluators.output_evaluator import OutputEvaluator
 from strands_evals.generators.dataset_generator import DatasetGenerator
 
@@ -18,10 +19,10 @@ async def topic_planning_dataset_generator():
     """
 
     ### Step 1: Define task ###
-    async def get_response(query: str) -> str:
+    async def get_response(case: Case) -> str:
         """Simple task example to get a response from an agent given a query."""
         agent = Agent(system_prompt="You are a helpful travel booking assistant", callback_handler=None)
-        response = await agent.invoke_async(query)
+        response = await agent.invoke_async(case.input)
         return str(response)
 
     # Step 2: Initialize the dataset generator for string types

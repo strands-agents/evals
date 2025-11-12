@@ -67,8 +67,8 @@ class MultiAspectEvaluator(Evaluator[str, str]):
 
 
 # Task function: simple echo with modifications
-def simple_task(query: str) -> str:
-    return f"This is a great response to: {query}. It provides excellent information!"
+def simple_task(case: Case) -> str:
+    return f"This is a great response to: {case.input}. It provides excellent information!"
 
 
 if __name__ == "__main__":
