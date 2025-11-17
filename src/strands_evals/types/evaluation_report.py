@@ -1,5 +1,5 @@
 import json
-import os
+from pathlib import Path
 
 from pydantic import BaseModel
 from typing_extensions import TypeVar
@@ -185,40 +185,60 @@ class EvaluationReport(BaseModel):
         """
         return cls.model_validate(data)
 
-    def to_file(self, file_name: str, format: str = "json", directory: str = "report_files"):
+    def to_file(self, path: str):
         """
-        Write the report to a file.
+        Write the report to a JSON file.
 
         Args:
-            file_name: Name of the file without extension.
-            format: The format of the file to be saved.
-            directory: Directory to save the file (default: "report_files").
-        """
-        if not os.path.exists(directory):
-            os.makedirs(directory)
+            path: The file path where the report will be saved. Can be:
+                  - A filename only (e.g., "foo.json" or "foo") - saves in current working directory
+                  - A relative path (e.g., "relative_path/foo.json") - saves relative to current working directory
+                  - An absolute path (e.g., "/path/to/dir/foo.json") - saves in exact directory
 
-        if format == "json":
-            with open(f"{directory}/{file_name}.json", "w") as f:
-                json.dump(self.to_dict(), f, indent=2)
+                  If no extension is provided, ".json" will be added automatically.
+                  Only .json format is supported.
+
+        Raises:
+            ValueError: If the path has a non-JSON extension.
+        """
+        file_path = Path(path)
+        
+        if file_path.suffix:
+            if file_path.suffix != ".json":
+                raise ValueError(
+                    f"Only .json format is supported. Got path with extension: {path}. "
+                    f"Please use a .json extension or provide a path without an extension."
+                )
         else:
-            raise ValueError(f"Unsupported format: {format}")
+            file_path = file_path.with_suffix(".json")
+
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(file_path, "w") as f:
+            json.dump(self.to_dict(), f, indent=2)
 
     @classmethod
-    def from_file(cls, file_path: str, format: str = "json"):
+    def from_file(cls, path: str):
         """
-        Create an EvaluationReport instance from a file.
+        Create an EvaluationReport instance from a JSON file.
 
         Args:
-            file_path: Path to the file.
-            format: The format of the file to be read.
+            path: Path to the JSON file.
 
         Return:
             An EvaluationReport object.
-        """
-        if format == "json":
-            with open(file_path, "r") as f:
-                data = json.load(f)
-        else:
-            raise ValueError(f"Unsupported format: {format}")
 
+        Raises:
+            ValueError: If the file does not have a .json extension.
+        """
+        file_path = Path(path)
+        
+        if file_path.suffix != ".json":
+            raise ValueError(
+                f"Only .json format is supported. Got file: {path}. Please provide a path with .json extension."
+            )
+
+        with open(file_path, "r") as f:
+            data = json.load(f)
+        
         return cls.from_dict(data)

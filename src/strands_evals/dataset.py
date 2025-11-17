@@ -1,7 +1,7 @@
 import asyncio
 import json
-import os
 from collections.abc import Callable
+from pathlib import Path
 
 from typing_extensions import Any, Generic, TypeVar
 
@@ -434,21 +434,37 @@ class Dataset(Generic[InputT, OutputT]):
         """
         return {"cases": [case.model_dump() for case in self._cases], "evaluator": self.evaluator.to_dict()}
 
-    def to_file(self, file_name: str, format: str = "json", directory: str = "dataset_files"):
+    def to_file(self, path: str):
         """
-        Write the dataset to a file.
+        Write the dataset to a JSON file.
 
         Args:
-            file_name: Name of the file without extension.
-            format: The format of the file to be saved.
-            directory: Directory to save the file (default: "dataset_files").
+            path: The file path where the dataset will be saved. Can be:
+                  - A filename only (e.g., "foo.json" or "foo") - saves in current working directory
+                  - A relative path (e.g., "relative_path/foo.json") - saves relative to current working directory
+                  - An absolute path (e.g., "/path/to/dir/foo.json") - saves in exact directory
+
+                  If no extension is provided, ".json" will be added automatically.
+                  Only .json format is supported.
+
+        Raises:
+            ValueError: If the path has a non-JSON extension.
         """
-        os.makedirs(directory, exist_ok=True)
-        if format == "json":
-            with open(f"{directory}/{file_name}.json", "w") as f:
-                json.dump(self.to_dict(), f, indent=2)
+        file_path = Path(path)
+        
+        if file_path.suffix:
+            if file_path.suffix != ".json":
+                raise ValueError(
+                    f"Only .json format is supported. Got path with extension: {path}. "
+                    f"Please use a .json extension or provide a path without an extension."
+                )
         else:
-            raise Exception(f"Format {format} is not supported.")
+            file_path = file_path.with_suffix(".json")
+
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(file_path, "w") as f:
+            json.dump(self.to_dict(), f, indent=2)
 
     @classmethod
     def from_dict(cls, data: dict, custom_evaluators: list[type[Evaluator]] | None = None):
@@ -489,22 +505,28 @@ class Dataset(Generic[InputT, OutputT]):
         return cls(cases=cases, evaluator=evaluator)
 
     @classmethod
-    def from_file(cls, file_path: str, format: str = "json", custom_evaluators: list[type[Evaluator]] | None = None):
+    def from_file(cls, path: str, custom_evaluators: list[type[Evaluator]] | None = None):
         """
-        Create a dataset from a file.
+        Create a dataset from a JSON file.
 
         Args:
-            file_path: Path to the file.
-            format: The format of the file to be read.
+            path: Path to the JSON file.
             custom_evaluators: A list of relevant custom evaluators.
 
         Return:
             A Dataset object.
-        """
-        if format == "json":
-            with open(file_path, "r") as f:
-                data = json.load(f)
-        else:
-            raise Exception(f"Format {format} is not supported.")
 
+        Raises:
+            ValueError: If the file does not have a .json extension.
+        """
+        file_path = Path(path)
+        
+        if file_path.suffix != ".json":
+            raise ValueError(
+                f"Only .json format is supported. Got file: {path}. Please provide a path with .json extension."
+            )
+
+        with open(file_path, "r") as f:
+            data = json.load(f)
+        
         return cls.from_dict(data, custom_evaluators)
