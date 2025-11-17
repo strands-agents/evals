@@ -1,6 +1,10 @@
-import pytest
+from unittest.mock import MagicMock
 
-from strands_evals.evaluators import Evaluator
+import pytest
+from strands.models.model import Model
+
+from strands_evals.evaluators import Evaluator, OutputEvaluator
+from strands_evals.evaluators.evaluator import DEFAULT_BEDROCK_MODEL_ID
 from strands_evals.types import EvaluationData, EvaluationOutput
 
 
@@ -71,3 +75,77 @@ def test_to_dict_evaluator():
     evaluator_dict = evaluator.to_dict()
     assert evaluator_dict["evaluator_type"] == "Evaluator"
     assert len(evaluator_dict) == 1
+
+
+def test_get_model_id_with_string():
+    """Test _get_model_id with string model ID"""
+    evaluator = Evaluator()
+    model_id = evaluator._get_model_id("anthropic.claude-3-5-sonnet-20241022-v2:0")
+    assert model_id == "anthropic.claude-3-5-sonnet-20241022-v2:0"
+
+
+def test_get_model_id_with_none():
+    """Test _get_model_id with None returns default Bedrock model ID"""
+    evaluator = Evaluator()
+    model_id = evaluator._get_model_id(None)
+    assert model_id == DEFAULT_BEDROCK_MODEL_ID
+
+
+def test_get_model_id_with_model_instance():
+    """Test _get_model_id with Model instance"""
+
+    evaluator = Evaluator()
+    mock_model = MagicMock(spec=Model)
+    mock_model.config = {"model_id": "test-model-id"}
+
+    model_id = evaluator._get_model_id(mock_model)
+    assert model_id == "test-model-id"
+
+
+def test_get_model_id_with_model_instance_no_config():
+    """Test _get_model_id with Model instance without config returns empty string"""
+
+    evaluator = Evaluator()
+    mock_model = MagicMock(spec=Model)
+    del mock_model.config
+
+    model_id = evaluator._get_model_id(mock_model)
+    assert model_id == ""
+
+
+def test_to_dict_with_model_instance():
+    """Test that to_dict properly serializes Model instances to model_id"""
+
+    mock_model = MagicMock(spec=Model)
+    mock_model.config = {"model_id": "test-model-123"}
+
+    evaluator = OutputEvaluator(rubric="test rubric", model=mock_model)
+    evaluator_dict = evaluator.to_dict()
+
+    assert evaluator_dict["evaluator_type"] == "OutputEvaluator"
+    assert evaluator_dict["rubric"] == "test rubric"
+    assert "model" not in evaluator_dict
+    assert evaluator_dict["model_id"] == "test-model-123"
+
+
+def test_to_dict_with_string_model():
+    """Test that to_dict handles string model IDs correctly"""
+
+    evaluator = OutputEvaluator(rubric="test rubric", model="bedrock-model-id")
+    evaluator_dict = evaluator.to_dict()
+
+    assert evaluator_dict["evaluator_type"] == "OutputEvaluator"
+    assert evaluator_dict["rubric"] == "test rubric"
+    assert evaluator_dict["model"] == "bedrock-model-id"
+
+
+def test_to_dict_with_none_model():
+    """Test that to_dict handles None model correctly (uses default)"""
+
+    evaluator = OutputEvaluator(rubric="test rubric", model=None)
+    evaluator_dict = evaluator.to_dict()
+
+    assert evaluator_dict["evaluator_type"] == "OutputEvaluator"
+    assert evaluator_dict["rubric"] == "test rubric"
+    assert "model" not in evaluator_dict
+    assert evaluator_dict["model_id"] == DEFAULT_BEDROCK_MODEL_ID

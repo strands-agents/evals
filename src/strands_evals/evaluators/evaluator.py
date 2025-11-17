@@ -1,7 +1,8 @@
 import inspect
 import logging
 
-from typing_extensions import Any, Generic, TypeGuard, TypeVar
+from strands.models.model import Model
+from typing_extensions import Any, Generic, TypeGuard, TypeVar, Union
 
 from ..extractors import TraceExtractor
 from ..types.evaluation import EvaluationData, EvaluationOutput
@@ -11,6 +12,8 @@ logger = logging.getLogger(__name__)
 
 InputT = TypeVar("InputT")
 OutputT = TypeVar("OutputT")
+
+DEFAULT_BEDROCK_MODEL_ID = "us.anthropic.claude-sonnet-4-20250514-v1:0"
 
 
 class Evaluator(Generic[InputT, OutputT]):
@@ -37,6 +40,26 @@ class Evaluator(Generic[InputT, OutputT]):
             self._trace_extractor = trace_extractor
         elif self.evaluation_level:
             self._trace_extractor = TraceExtractor(self.evaluation_level)
+
+    def _get_model_id(self, model: Union[Model, str, None]) -> str:
+        """Extract model_id from a Model instance or string for serialization.
+
+        This helper method should be called in subclass __init__ methods that accept a model parameter.
+
+        Args:
+            model: Model instance, string model ID, or None
+
+        Returns:
+            The model ID string, DEFAULT_BEDROCK_MODEL_ID if None, or empty string for invalid types
+        """
+        if isinstance(model, str):
+            return model
+        elif isinstance(model, Model) and hasattr(model, "config") and isinstance(model.config, dict):
+            return model.config.get("model_id", "")
+        elif model is None:
+            return DEFAULT_BEDROCK_MODEL_ID
+        else:
+            return ""
 
     @staticmethod
     def _default_aggregator(outputs: list[EvaluationOutput]) -> tuple[float, bool, str]:
@@ -134,6 +157,7 @@ class Evaluator(Generic[InputT, OutputT]):
             dict: A dictionary containing the evaluator's information. Omit private attributes
             (attributes starting with '_') and attributes with default values.
         """
+
         _dict = {"evaluator_type": self.get_type_name()}
 
         # Get default values from __init__ signature
@@ -141,6 +165,18 @@ class Evaluator(Generic[InputT, OutputT]):
         defaults = {k: v.default for k, v in sig.parameters.items() if v.default != inspect.Parameter.empty}
         exclude_attrs = {"aggregator"}
         for k, v in self.__dict__.items():
-            if not k.startswith("_") and k not in exclude_attrs and (k not in defaults or v != defaults[k]):
-                _dict[k] = v
+            if not k.startswith("_") and k not in exclude_attrs:
+                # Handle model attribute specially
+                if k == "model":
+                    if isinstance(v, Model):
+                        # Serialize Model instance to model_id
+                        _dict["model_id"] = self._get_model_id(v)
+                    elif v is None and "model" in defaults and defaults["model"] is None:
+                        # model=None is default, serialize as model_id with default value
+                        _dict["model_id"] = self._get_model_id(None)
+                    elif v is not None:
+                        # String model ID, include as-is
+                        _dict[k] = v
+                elif k not in defaults or v != defaults[k]:
+                    _dict[k] = v
         return _dict

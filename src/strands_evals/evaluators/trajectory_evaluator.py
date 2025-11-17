@@ -1,4 +1,5 @@
 from strands import Agent
+from strands.models.model import Model
 from typing_extensions import Any, TypeVar, Union
 
 from ..tools.evaluation_tools import any_order_match_scorer, exact_match_scorer, in_order_match_scorer
@@ -18,7 +19,7 @@ class TrajectoryEvaluator(Evaluator[InputT, OutputT]):
     Attributes:
         rubric: The user-specified criteria for evaluating a collection of test cases.
         trajectory_description: A description of the available trajectory types. eg. tool descriptions
-        model: A string representing the model-id for Bedrock to use.
+        model: A string representing the model-id for Bedrock to use, or a Model instance.
                     Defaults to strands.models.BedrockModel if None.
         system_prompt: System prompt to guide model behavior.
                     If None, the evaluator will use one of the default template.
@@ -29,7 +30,7 @@ class TrajectoryEvaluator(Evaluator[InputT, OutputT]):
         self,
         rubric: str,
         trajectory_description: dict | None = None,
-        model: str | None = None,
+        model: Union[Model, str, None] = None,
         system_prompt: str = SYSTEM_PROMPT,
         include_inputs: bool = True,
     ):

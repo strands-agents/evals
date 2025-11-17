@@ -478,6 +478,10 @@ class Dataset(Generic[InputT, OutputT]):
         evaluator_type = data["evaluator"]["evaluator_type"]
         evaluator_args = {k: v for k, v in data["evaluator"].items() if k != "evaluator_type"}
 
+        # Handle model_id -> model conversion for all evaluators that use model parameter
+        if "model_id" in evaluator_args:
+            evaluator_args["model"] = evaluator_args.pop("model_id")
+
         if evaluator_type in all_evaluators:
             evaluator = all_evaluators[evaluator_type](**evaluator_args)
         else:

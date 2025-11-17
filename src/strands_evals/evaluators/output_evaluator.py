@@ -1,5 +1,6 @@
 from strands import Agent
-from typing_extensions import TypeVar
+from strands.models.model import Model
+from typing_extensions import TypeVar, Union
 
 from ..types.evaluation import EvaluationData, EvaluationOutput
 from .evaluator import Evaluator
@@ -16,7 +17,7 @@ class OutputEvaluator(Evaluator[InputT, OutputT]):
 
     Attributes:
         rubric: The user-specified criteria for evaluating a collection of test cases.
-        model: A string representing the model-id for Bedrock to use.
+        model: A string representing the model-id for Bedrock to use, or a Model instance.
                     Defaults to strands.models.BedrockModel if None.
         system_prompt: System prompt to guide model behavior.
                     If None, the evaluator will use one of the default template.
@@ -24,7 +25,11 @@ class OutputEvaluator(Evaluator[InputT, OutputT]):
     """
 
     def __init__(
-        self, rubric: str, model: str | None = None, system_prompt: str = SYSTEM_PROMPT, include_inputs: bool = True
+        self,
+        rubric: str,
+        model: Union[Model, str, None] = None,
+        system_prompt: str = SYSTEM_PROMPT,
+        include_inputs: bool = True,
     ):
         super().__init__()
         self.rubric = rubric

@@ -1,6 +1,7 @@
 from strands import Agent
 from strands.agent.conversation_manager import SlidingWindowConversationManager
-from typing_extensions import TypeVar
+from strands.models.model import Model
+from typing_extensions import TypeVar, Union
 
 from ..types.evaluation import EvaluationData, EvaluationOutput
 from .evaluator import Evaluator
@@ -19,7 +20,7 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
             if the rubric is a string, then use the same rubric for all of the evaluations, else
             get the node-specific rubric for evaluation.
         interaction_description: A dictionary describing the evailable interactions.
-        model: A string representing the model-id for Bedrock to use.
+        model: A string representing the model-id for Bedrock to use, or a Model instance.
                     Defaults to strands.models.BedrockModel if None.
         system_prompt: System prompt to guide model behavior.
                     If None, the evaluator will use one of the default template.
@@ -30,7 +31,7 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
         self,
         rubric: str | dict[str, str],
         interaction_description: dict | None = None,
-        model: str | None = None,
+        model: Union[Model, str, None] = None,
         system_prompt: str = SYSTEM_PROMPT,
         include_inputs: bool = True,
     ):

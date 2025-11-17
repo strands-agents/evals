@@ -2,9 +2,11 @@ import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
+from strands.models.model import Model
 
 from strands_evals import Case, Dataset
 from strands_evals.evaluators import Evaluator, InteractionsEvaluator, OutputEvaluator, TrajectoryEvaluator
+from strands_evals.evaluators.evaluator import DEFAULT_BEDROCK_MODEL_ID
 from strands_evals.types import EvaluationData, EvaluationOutput
 
 
@@ -328,7 +330,9 @@ def test_dataset_to_dict_OutputEvaluator_default():
     cases = [Case(name="test", input="hello", expected_output="world")]
     evaluator = OutputEvaluator(rubric="rubric")
     dataset = Dataset(cases=cases, evaluator=evaluator)
-    assert dataset.to_dict() == {
+
+    result = dataset.to_dict()
+    assert result == {
         "cases": [
             {
                 "name": "test",
@@ -339,7 +343,7 @@ def test_dataset_to_dict_OutputEvaluator_default():
                 "metadata": None,
             }
         ],
-        "evaluator": {"evaluator_type": "OutputEvaluator", "rubric": "rubric"},
+        "evaluator": {"evaluator_type": "OutputEvaluator", "rubric": "rubric", "model_id": DEFAULT_BEDROCK_MODEL_ID},
     }
 
 
@@ -360,7 +364,11 @@ def test_dataset_to_dict_TrajectoryEvaluator_default():
                 "metadata": None,
             }
         ],
-        "evaluator": {"evaluator_type": "TrajectoryEvaluator", "rubric": "rubric"},
+        "evaluator": {
+            "evaluator_type": "TrajectoryEvaluator",
+            "rubric": "rubric",
+            "model_id": DEFAULT_BEDROCK_MODEL_ID,
+        },
     }
 
 
@@ -407,7 +415,11 @@ def test_dataset_to_dict_InteractionsEvaluator_default():
                 "metadata": None,
             }
         ],
-        "evaluator": {"evaluator_type": "InteractionsEvaluator", "rubric": "rubric"},
+        "evaluator": {
+            "evaluator_type": "InteractionsEvaluator",
+            "rubric": "rubric",
+            "model_id": DEFAULT_BEDROCK_MODEL_ID,
+        },
     }
 
 
@@ -524,6 +536,62 @@ def test_dataset_from_dict_OutputEvaluator_defaults():
     assert dataset.evaluator.rubric == "rubric"
     assert dataset.evaluator.model is None
     assert dataset.evaluator.include_inputs is True
+
+
+def test_dataset_from_dict_with_model_id():
+    """Test creating a Dataset from dict with model_id (should convert to model parameter)"""
+    cases = [Case(name="test", input="hello", expected_output="world")]
+    dict_dataset = {
+        "cases": cases,
+        "evaluator": {
+            "evaluator_type": "OutputEvaluator",
+            "rubric": "test rubric",
+            "model_id": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+        },
+    }
+    dataset = Dataset.from_dict(dict_dataset)
+
+    assert isinstance(dataset.evaluator, OutputEvaluator)
+    assert dataset.evaluator.rubric == "test rubric"
+    assert dataset.evaluator.model == "anthropic.claude-3-5-sonnet-20241022-v2:0"
+
+
+def test_dataset_to_dict_from_dict_roundtrip_with_model():
+    """Test that to_dict and from_dict work correctly for roundtrip with model"""
+
+    # Create dataset with Model instance
+    mock_model = MagicMock(spec=Model)
+    mock_model.config = {"model_id": "test-model-roundtrip"}
+
+    cases = [Case(name="test", input="hello", expected_output="world")]
+    evaluator = OutputEvaluator(rubric="test rubric", model=mock_model)
+    dataset = Dataset(cases=cases, evaluator=evaluator)
+
+    # Serialize to dict
+    dataset_dict = dataset.to_dict()
+    assert dataset_dict["evaluator"]["model_id"] == "test-model-roundtrip"
+    assert "model" not in dataset_dict["evaluator"]
+
+    # Deserialize from dict
+    restored_dataset = Dataset.from_dict(dataset_dict)
+    assert isinstance(restored_dataset.evaluator, OutputEvaluator)
+    assert restored_dataset.evaluator.model == "test-model-roundtrip"
+
+
+def test_dataset_to_dict_from_dict_roundtrip_with_string_model():
+    """Test that to_dict and from_dict work correctly for roundtrip with string model"""
+    cases = [Case(name="test", input="hello", expected_output="world")]
+    evaluator = OutputEvaluator(rubric="test rubric", model="bedrock-model-id")
+    dataset = Dataset(cases=cases, evaluator=evaluator)
+
+    # Serialize to dict
+    dataset_dict = dataset.to_dict()
+    assert dataset_dict["evaluator"]["model"] == "bedrock-model-id"
+
+    # Deserialize from dict
+    restored_dataset = Dataset.from_dict(dataset_dict)
+    assert isinstance(restored_dataset.evaluator, OutputEvaluator)
+    assert restored_dataset.evaluator.model == "bedrock-model-id"
 
 
 def test_dataset_from_dict_TrajectoryEvaluator():
