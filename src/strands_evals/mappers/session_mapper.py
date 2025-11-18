@@ -13,7 +13,9 @@ class SessionMapper(ABC):
     """Base class for mapping telemetry data to Session format for evaluation."""
 
     @abstractmethod
-    def map_to_session(self, spans: list[Any], session_id: str) -> Session:
+    def map_to_session(
+        self, spans: list[Any], session_id: str, trace_id: str | None = None, use_current_context: bool = False
+    ) -> Session:
         """
         Map spans to Session format.
 

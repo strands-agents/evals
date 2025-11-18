@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from opentelemetry import context
+from opentelemetry import trace as trace_api
 from opentelemetry.sdk.trace import ReadableSpan
 
 from ..types.trace import (
@@ -60,18 +62,33 @@ class StrandsInMemorySessionMapper(SessionMapper):
         super().__init__()
         self._convention_version = GenAIConventionVersion.LEGACY
 
-    def map_to_session(self, otel_spans: list[ReadableSpan], session_id: str) -> Session:
+    def map_to_session(
+        self,
+        otel_spans: list[ReadableSpan],
+        session_id: str,
+        trace_id: str | None = None,
+        use_current_context: bool = False,
+    ) -> Session:
         if otel_spans:
             self._convention_version = self._detect_convention_version(otel_spans[0])
 
+        target_trace_id: str | None = None
+        if trace_id:
+            target_trace_id = trace_id
+        elif use_current_context:
+            current_context = context.get_current()
+            current_span = trace_api.get_current_span(current_context)
+            target_trace_id = format(current_span.get_span_context().trace_id, "032x")
+
         traces_by_id = defaultdict(list)
         for span in otel_spans:
-            trace_id = format(span.context.trace_id, "032x")
-            traces_by_id[trace_id].append(span)
+            trace_id_extracted = format(span.context.trace_id, "032x")
+            if not target_trace_id or target_trace_id == trace_id_extracted:
+                traces_by_id[trace_id_extracted].append(span)
 
         traces: list[Trace] = []
-        for trace_id, spans in traces_by_id.items():
-            trace = self._convert_trace(trace_id, spans, session_id)
+        for trace_id_extracted, spans in traces_by_id.items():
+            trace = self._convert_trace(trace_id_extracted, spans, session_id)
             if trace.spans:
                 traces.append(trace)
 

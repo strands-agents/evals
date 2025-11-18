@@ -424,3 +424,124 @@ def test_convention_detection_defaults_to_legacy_when_no_markers(provider):
 
     # Should default to legacy
     assert mapper._convention_version == GenAIConventionVersion.LEGACY
+
+
+def test_filter_by_trace_id(provider):
+    """Test filtering spans by specific trace_id."""
+    s1 = make_span(
+        provider,
+        0xAAA,
+        0xB1,
+        0xC1,
+        "chat",
+        {"gen_ai.operation.name": "chat"},
+        lambda s: s.add_event("gen_ai.choice", {"message": '[{"text": "trace_aaa"}]'}),
+    )
+    s2 = make_span(
+        provider,
+        0xBBB,
+        0xB2,
+        0xC2,
+        "chat",
+        {"gen_ai.operation.name": "chat"},
+        lambda s: s.add_event("gen_ai.choice", {"message": '[{"text": "trace_bbb"}]'}),
+    )
+
+    # Request only trace 0xAAA
+    session = StrandsInMemorySessionMapper().map_to_session(
+        [s1, s2], "sid", trace_id="00000000000000000000000000000aaa"
+    )
+
+    # Should only have one trace
+    assert len(session.traces) == 1
+    assert session.traces[0].trace_id == "00000000000000000000000000000aaa"
+    assert session.traces[0].spans[0].messages[0].content[0].text == "trace_aaa"
+
+
+def test_filter_by_trace_id_no_match(provider):
+    """Test filtering with trace_id that doesn't match any spans."""
+    s1 = make_span(
+        provider,
+        0xAAA,
+        0xB1,
+        0xC1,
+        "chat",
+        {"gen_ai.operation.name": "chat"},
+        lambda s: s.add_event("gen_ai.choice", {"message": '[{"text": "trace_aaa"}]'}),
+    )
+
+    # Request trace that doesn't exist
+    session = StrandsInMemorySessionMapper().map_to_session([s1], "sid", trace_id="00000000000000000000000000000fff")
+
+    # Should have no traces
+    assert len(session.traces) == 0
+
+
+def test_filter_multiple_spans_same_trace(provider):
+    """Test that filtering by trace_id includes all spans from that trace."""
+    s1 = make_span(
+        provider,
+        0xAAA,
+        0xB1,
+        0xC1,
+        "chat",
+        {"gen_ai.operation.name": "chat"},
+        lambda s: s.add_event("gen_ai.choice", {"message": '[{"text": "span1"}]'}),
+    )
+    s2 = make_span(
+        provider,
+        0xAAA,  # Same trace as s1
+        0xB2,
+        0xC2,
+        "chat",
+        {"gen_ai.operation.name": "chat"},
+        lambda s: s.add_event("gen_ai.choice", {"message": '[{"text": "span2"}]'}),
+    )
+    s3 = make_span(
+        provider,
+        0xBBB,  # Different trace
+        0xB3,
+        0xC3,
+        "chat",
+        {"gen_ai.operation.name": "chat"},
+        lambda s: s.add_event("gen_ai.choice", {"message": '[{"text": "span3"}]'}),
+    )
+
+    # Request only trace 0xAAA
+    session = StrandsInMemorySessionMapper().map_to_session(
+        [s1, s2, s3], "sid", trace_id="00000000000000000000000000000aaa"
+    )
+
+    # Should have one trace with two spans
+    assert len(session.traces) == 1
+    assert len(session.traces[0].spans) == 2
+    assert session.traces[0].spans[0].messages[0].content[0].text == "span1"
+    assert session.traces[0].spans[1].messages[0].content[0].text == "span2"
+
+
+def test_no_filter_returns_all_traces(provider):
+    """Test that without trace_id filter, all traces are returned."""
+    s1 = make_span(
+        provider,
+        0xAAA,
+        0xB1,
+        0xC1,
+        "chat",
+        {"gen_ai.operation.name": "chat"},
+        lambda s: s.add_event("gen_ai.choice", {"message": '[{"text": "a"}]'}),
+    )
+    s2 = make_span(
+        provider,
+        0xBBB,
+        0xB2,
+        0xC2,
+        "chat",
+        {"gen_ai.operation.name": "chat"},
+        lambda s: s.add_event("gen_ai.choice", {"message": '[{"text": "b"}]'}),
+    )
+
+    # No trace_id filter
+    session = StrandsInMemorySessionMapper().map_to_session([s1, s2], "sid")
+
+    # Should have both traces
+    assert len(session.traces) == 2
