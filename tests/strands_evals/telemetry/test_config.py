@@ -50,13 +50,21 @@ def test_strands_evals_telemetry_init_without_provider():
     """Test StrandsEvalsTelemetry initialization without custom provider"""
     with (
         patch("strands_evals.telemetry.config.trace_api.set_tracer_provider") as mock_set_provider,
+        patch("strands_evals.telemetry.config.trace_api.get_tracer_provider") as mock_get_provider,
         patch("strands_evals.telemetry.config.propagate.set_global_textmap") as mock_set_propagator,
     ):
+        # Mock the returned tracer provider from get_tracer_provider
+        mock_provider = MagicMock()
+        mock_get_provider.return_value = mock_provider
+
         telemetry = StrandsEvalsTelemetry()
 
-        # Verify tracer provider was created and set
-        assert isinstance(telemetry.tracer_provider, SDKTracerProvider)
-        mock_set_provider.assert_called_once_with(telemetry.tracer_provider)
+        # Verify tracer provider was set globally
+        mock_set_provider.assert_called_once()
+        # Verify we retrieved the global provider
+        mock_get_provider.assert_called_once()
+        # Verify we stored the retrieved provider
+        assert telemetry.tracer_provider == mock_provider
         mock_set_propagator.assert_called_once()
 
         # Verify resource was created
@@ -124,7 +132,7 @@ def test_strands_evals_telemetry_setup_console_exporter_handles_exception():
 def test_strands_evals_telemetry_setup_in_memory_exporter(mock_telemetry_patches, mock_tracer_provider):
     """Test setup_in_memory_exporter configures in-memory exporter"""
     mock_processor = MagicMock()
-    mock_telemetry_patches["batch_processor"].return_value = mock_processor
+    mock_telemetry_patches["simple_processor"].return_value = mock_processor
     mock_exporter = MagicMock()
     mock_telemetry_patches["memory_exporter"].return_value = mock_exporter
 
@@ -133,7 +141,7 @@ def test_strands_evals_telemetry_setup_in_memory_exporter(mock_telemetry_patches
 
     # Verify in-memory exporter was created
     mock_telemetry_patches["memory_exporter"].assert_called_once_with()
-    mock_telemetry_patches["batch_processor"].assert_called_once_with(mock_exporter)
+    mock_telemetry_patches["simple_processor"].assert_called_once_with(mock_exporter)
 
     # Verify processor was added to tracer provider
     mock_tracer_provider.add_span_processor.assert_called_once_with(mock_processor)
@@ -257,6 +265,7 @@ def test_strands_evals_telemetry_one_liner_setup(mock_telemetry_patches):
     with (
         patch("strands_evals.telemetry.config.SDKTracerProvider", return_value=mock_tracer_provider),
         patch("strands_evals.telemetry.config.trace_api.set_tracer_provider"),
+        patch("strands_evals.telemetry.config.trace_api.get_tracer_provider", return_value=mock_tracer_provider),
         patch("strands_evals.telemetry.config.propagate.set_global_textmap"),
     ):
         # This should work as a one-liner

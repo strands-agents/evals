@@ -15,6 +15,7 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter, SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import TracerProvider
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,7 @@ class StrandsEvalsTelemetry:
         """
         self.resource = get_otel_resource()
         self._in_memory_exporter: InMemorySpanExporter | None = None
+        self.tracer_provider: TracerProvider
 
         if tracer_provider:
             self.tracer_provider = tracer_provider
@@ -100,10 +102,13 @@ class StrandsEvalsTelemetry:
         logger.info("Initializing tracer for strands-evals")
 
         # Create tracer provider
-        self.tracer_provider = SDKTracerProvider(resource=self.resource)
+        tracer_provider = SDKTracerProvider(resource=self.resource)
 
         # Set as global tracer provider
-        trace_api.set_tracer_provider(self.tracer_provider)
+        trace_api.set_tracer_provider(tracer_provider)
+
+        # Get the global tracer provider (may be wrapped in a proxy)
+        self.tracer_provider = trace_api.get_tracer_provider()
 
         # Set up propagators
         propagate.set_global_textmap(
@@ -163,14 +168,14 @@ class StrandsEvalsTelemetry:
         Returns:
             self: Enables method chaining.
 
-        This method configures a BatchSpanProcessor with an InMemorySpanExporter,
+        This method configures a SimpleSpanProcessor with an InMemorySpanExporter,
         allowing trace data to be stored in memory for testing and debugging purposes.
         Any additional keyword arguments provided will be forwarded to the InMemorySpanExporter.
         """
         try:
             logger.info("Enabling in-memory export for strands-evals")
             self._in_memory_exporter = InMemorySpanExporter()
-            span_processor = BatchSpanProcessor(self._in_memory_exporter)
+            span_processor = SimpleSpanProcessor(self._in_memory_exporter)
             self.tracer_provider.add_span_processor(span_processor)
         except Exception as e:
             logger.exception("error=<%s> | Failed to configure console exporter", e)
