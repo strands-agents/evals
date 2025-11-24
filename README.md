@@ -213,6 +213,53 @@ dataset = await generator.generate_dataset(
 dataset.to_file("generated_math_research_dataset")
 ```
 
+### Evaluating Langfuse Traces
+
+```python
+from langfuse_utils.utils import get_langfuse_trace
+
+from strands_evals import Case, Dataset
+from strands_evals.evaluators import HelpfulnessEvaluator
+from strands_evals.mappers.langfuse_mapper import (
+    LangfuseSessionMapper,
+)
+
+# 1. Define a task function
+def user_task_function(case: Case) -> str:
+    # Initialise Langfuse mapper
+    mapper = LangfuseSessionMapper()
+    # Get trace id from case if available
+    trace_id = case.metadata.get("trace_id", "") if case.metadata else ""
+    # Fetch traces from langfuse 
+    langfuse_traces = get_langfuse_trace(trace_id=trace_id)
+    # Map to session
+    session = mapper.map_to_session(langfuse_traces, trace_id)
+    agent_response = mapper.get_agent_final_response(session)
+
+    return {"output": str(agent_response), "trajectory": session}
+
+# 2. Define test cases
+test_cases = [
+    Case[str, str](
+        name="knowledge-1",
+        input="What is the status of my package",
+        metadata={"category": "knowledge", "trace_id": "xxxxxxx"},
+    ),
+]
+
+
+# 3. Create an evaluator
+evaluator = HelpfulnessEvaluator()
+
+# 4. Create a dataset
+dataset = Dataset[str, str](cases=test_cases, evaluator=evaluator)
+
+# 5. Run evaluations
+report = dataset.run_evaluations(user_task_function)
+report.run_display()
+```
+
+
 ## Available Evaluators
 
 - **OutputEvaluator**: Evaluates the quality and correctness of agent outputs
