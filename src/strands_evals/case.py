@@ -1,4 +1,6 @@
-from pydantic import BaseModel
+import uuid
+
+from pydantic import BaseModel, Field
 from typing_extensions import Any, Generic, TypeVar
 
 from .types.evaluation import Interaction
@@ -18,6 +20,7 @@ class Case(BaseModel, Generic[InputT, OutputT]):
     Attributes:
         input: The input to the task. eg. the query to the agent
         name: The name of the test case. This will be used to identify the test in the summary report.
+        session_id: The session ID for the test case. Automatically generates a UUID4 if not provided.
         expected_output: The expected response given the input. eg. the agent's response
         expected_trajectory: The expected trajectory of a task given the input. eg. sequence of tools
         expected_interactions: The expected interaction sequence given the input (ideal for multi-agent systems).
@@ -42,6 +45,7 @@ class Case(BaseModel, Generic[InputT, OutputT]):
     """
 
     name: str | None = None
+    session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     input: InputT
     expected_output: OutputT | None = None
     expected_trajectory: list[Any] | None = None

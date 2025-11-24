@@ -26,7 +26,11 @@ def task_function(case: Case) -> dict:
     user_sim = ActorSimulator.from_case_for_user_simulator(case=case, max_turns=3)
 
     # Create target agent
-    agent = Agent(system_prompt="You are a helpful travel assistant.", callback_handler=None)
+    agent = Agent(
+        trace_attributes={"gen_ai.conversation.id": case.session_id, "session.id": case.session_id},
+        system_prompt="You are a helpful travel assistant.",
+        callback_handler=None,
+    )
 
     # Accumulate target spans across all turns
     all_target_spans = []
@@ -43,7 +47,7 @@ def task_function(case: Case) -> dict:
         user_message = str(user_result.structured_output.message)
 
     mapper = StrandsInMemorySessionMapper()
-    session = mapper.map_to_session(all_target_spans, session_id="test-session")
+    session = mapper.map_to_session(all_target_spans, session_id=case.session_id)
 
     return {"output": agent_message, "trajectory": session}
 

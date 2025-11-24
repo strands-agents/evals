@@ -424,3 +424,152 @@ def test_convention_detection_defaults_to_legacy_when_no_markers(provider):
 
     # Should default to legacy
     assert mapper._convention_version == GenAIConventionVersion.LEGACY
+
+
+# Tests for session_id filtering
+
+
+def test_session_id_filtering_with_matching_session_id(provider):
+    """Test that spans with matching session.id are included."""
+    span1 = make_span(
+        provider,
+        0xAAA,
+        0xBBB,
+        0xCCC,
+        "chat",
+        {"gen_ai.operation.name": "chat", "session.id": "session-123"},
+        lambda s: s.add_event("gen_ai.choice", {"message": '[{"text": "response1"}]'}),
+    )
+    span2 = make_span(
+        provider,
+        0xAAA,
+        0xDDD,
+        0xCCC,
+        "chat",
+        {"gen_ai.operation.name": "chat", "session.id": "session-456"},
+        lambda s: s.add_event("gen_ai.choice", {"message": '[{"text": "response2"}]'}),
+    )
+
+    mapper = StrandsInMemorySessionMapper()
+    session = mapper.map_to_session([span1, span2], "session-123")
+
+    # Should only include span1 with matching session_id
+    assert len(session.traces) == 1
+    assert len(session.traces[0].spans) == 1
+    assert session.traces[0].spans[0].messages[0].content[0].text == "response1"
+
+
+def test_session_id_filtering_with_gen_ai_conversation_id(provider):
+    """Test that spans with matching gen_ai.conversation.id are included."""
+    span1 = make_span(
+        provider,
+        0xAAA,
+        0xBBB,
+        0xCCC,
+        "chat",
+        {"gen_ai.operation.name": "chat", "gen_ai.conversation.id": "conv-123"},
+        lambda s: s.add_event("gen_ai.choice", {"message": '[{"text": "response1"}]'}),
+    )
+    span2 = make_span(
+        provider,
+        0xAAA,
+        0xDDD,
+        0xCCC,
+        "chat",
+        {"gen_ai.operation.name": "chat", "gen_ai.conversation.id": "conv-456"},
+        lambda s: s.add_event("gen_ai.choice", {"message": '[{"text": "response2"}]'}),
+    )
+
+    mapper = StrandsInMemorySessionMapper()
+    session = mapper.map_to_session([span1, span2], "conv-123")
+
+    # Should only include span1 with matching gen_ai.conversation.id
+    assert len(session.traces) == 1
+    assert len(session.traces[0].spans) == 1
+    assert session.traces[0].spans[0].messages[0].content[0].text == "response1"
+
+
+def test_session_id_filtering_no_session_ids_includes_all(provider):
+    """Test that when no spans have session IDs, all spans are included."""
+    span1 = make_span(
+        provider,
+        0xAAA,
+        0xBBB,
+        0xCCC,
+        "chat",
+        {"gen_ai.operation.name": "chat"},  # No session ID
+        lambda s: s.add_event("gen_ai.choice", {"message": '[{"text": "response1"}]'}),
+    )
+    span2 = make_span(
+        provider,
+        0xBBB,
+        0xDDD,
+        0xEEE,
+        "chat",
+        {"gen_ai.operation.name": "chat"},  # No session ID
+        lambda s: s.add_event("gen_ai.choice", {"message": '[{"text": "response2"}]'}),
+    )
+
+    mapper = StrandsInMemorySessionMapper()
+    session = mapper.map_to_session([span1, span2], "any-session-id")
+
+    # Should include all spans since none have session IDs
+    assert len(session.traces) == 2
+
+
+def test_session_id_filtering_mixed_with_and_without_session_id(provider):
+    """Test filtering when some spans have session IDs and some don't."""
+    span1 = make_span(
+        provider,
+        0xAAA,
+        0xBBB,
+        0xCCC,
+        "chat",
+        {"gen_ai.operation.name": "chat", "session.id": "session-123"},
+        lambda s: s.add_event("gen_ai.choice", {"message": '[{"text": "response1"}]'}),
+    )
+    span2 = make_span(
+        provider,
+        0xAAA,
+        0xDDD,
+        0xCCC,
+        "chat",
+        {"gen_ai.operation.name": "chat"},  # No session ID
+        lambda s: s.add_event("gen_ai.choice", {"message": '[{"text": "response2"}]'}),
+    )
+
+    mapper = StrandsInMemorySessionMapper()
+    session = mapper.map_to_session([span1, span2], "session-123")
+
+    # Should only include span1 since span2 has no session ID and at least one span has a session ID
+    assert len(session.traces) == 1
+    assert len(session.traces[0].spans) == 1
+    assert session.traces[0].spans[0].messages[0].content[0].text == "response1"
+
+
+def test_session_id_filtering_gen_ai_conversation_id_takes_precedence(provider):
+    """Test that gen_ai.conversation.id is checked before session.id."""
+    span = make_span(
+        provider,
+        0xAAA,
+        0xBBB,
+        0xCCC,
+        "chat",
+        {
+            "gen_ai.operation.name": "chat",
+            "gen_ai.conversation.id": "conv-123",
+            "session.id": "session-456",  # This should be ignored
+        },
+        lambda s: s.add_event("gen_ai.choice", {"message": '[{"text": "response"}]'}),
+    )
+
+    mapper = StrandsInMemorySessionMapper()
+    session = mapper.map_to_session([span], "conv-123")
+
+    # Should match on gen_ai.conversation.id
+    assert len(session.traces) == 1
+    assert len(session.traces[0].spans) == 1
+
+    # Should NOT match on session.id when gen_ai.conversation.id is present
+    session2 = mapper.map_to_session([span], "session-456")
+    assert len(session2.traces) == 0

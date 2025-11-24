@@ -1,7 +1,6 @@
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from strands import Agent
-from strands_tools import calculator
 
 from strands_evals import Case, Dataset
 from strands_evals.evaluators import GoalSuccessRateEvaluator
@@ -27,11 +26,14 @@ telemetry.tracer_provider.add_span_processor(span_processor)
 
 # 1. Define a task function
 def user_task_function(case: Case) -> dict:
-    agent = Agent(tools=[calculator], callback_handler=None)
+    agent = Agent(
+        trace_attributes={"gen_ai.conversation.id": case.session_id, "session.id": case.session_id},
+        callback_handler=None,
+    )
     agent_response = agent(case.input)
     finished_spans = memory_exporter.get_finished_spans()
     mapper = StrandsInMemorySessionMapper()
-    session = mapper.map_to_session(finished_spans, session_id="test-session")
+    session = mapper.map_to_session(finished_spans, session_id=case.session_id)
 
     return {"output": str(agent_response), "trajectory": session}
 

@@ -283,10 +283,16 @@ def test_dataset_to_dict_non_empty(mock_evaluator):
     """Test converting non-empty dataset to dictionary"""
     cases = [Case(name="test", input="hello", expected_output="world")]
     dataset = Dataset(cases=cases, evaluator=mock_evaluator)
-    assert dataset.to_dict() == {
+    result = dataset.to_dict()
+
+    # Extract session_id from result to use in assertion
+    session_id = result["cases"][0]["session_id"]
+
+    assert result == {
         "cases": [
             {
                 "name": "test",
+                "session_id": session_id,
                 "input": "hello",
                 "expected_output": "world",
                 "expected_trajectory": None,
@@ -303,10 +309,16 @@ def test_dataset_to_dict_OutputEvaluator_full():
     cases = [Case(name="test", input="hello", expected_output="world")]
     evaluator = OutputEvaluator(rubric="rubric", model="model", include_inputs=False, system_prompt="system prompt")
     dataset = Dataset(cases=cases, evaluator=evaluator)
-    assert dataset.to_dict() == {
+    result = dataset.to_dict()
+
+    # Extract session_id from result to use in assertion
+    session_id = result["cases"][0]["session_id"]
+
+    assert result == {
         "cases": [
             {
                 "name": "test",
+                "session_id": session_id,
                 "input": "hello",
                 "expected_output": "world",
                 "expected_trajectory": None,
@@ -332,10 +344,15 @@ def test_dataset_to_dict_OutputEvaluator_default():
     dataset = Dataset(cases=cases, evaluator=evaluator)
 
     result = dataset.to_dict()
+
+    # Extract session_id from result to use in assertion
+    session_id = result["cases"][0]["session_id"]
+
     assert result == {
         "cases": [
             {
                 "name": "test",
+                "session_id": session_id,
                 "input": "hello",
                 "expected_output": "world",
                 "expected_trajectory": None,
@@ -353,10 +370,16 @@ def test_dataset_to_dict_TrajectoryEvaluator_default():
     cases = [Case(name="test", input="hello", expected_output="world", expected_trajectory=["step1", "step2"])]
     evaluator = TrajectoryEvaluator(rubric="rubric")
     dataset = Dataset(cases=cases, evaluator=evaluator)
-    assert dataset.to_dict() == {
+    result = dataset.to_dict()
+
+    # Extract session_id from result to use in assertion
+    session_id = result["cases"][0]["session_id"]
+
+    assert result == {
         "cases": [
             {
                 "name": "test",
+                "session_id": session_id,
                 "input": "hello",
                 "expected_output": "world",
                 "expected_trajectory": ["step1", "step2"],
@@ -377,10 +400,16 @@ def test_dataset_to_dict_TrajectoryEvaluator_full():
     cases = [Case(name="test", input="hello", expected_output="world", expected_trajectory=["step1", "step2"])]
     evaluator = TrajectoryEvaluator(rubric="rubric", model="model", include_inputs=False, system_prompt="system prompt")
     dataset = Dataset(cases=cases, evaluator=evaluator)
-    assert dataset.to_dict() == {
+    result = dataset.to_dict()
+
+    # Extract session_id from result to use in assertion
+    session_id = result["cases"][0]["session_id"]
+
+    assert result == {
         "cases": [
             {
                 "name": "test",
+                "session_id": session_id,
                 "input": "hello",
                 "expected_output": "world",
                 "expected_trajectory": ["step1", "step2"],
@@ -404,10 +433,16 @@ def test_dataset_to_dict_InteractionsEvaluator_default():
     cases = [Case(name="test", input="hello", expected_output="world", expected_interactions=interactions)]
     evaluator = InteractionsEvaluator(rubric="rubric")
     dataset = Dataset(cases=cases, evaluator=evaluator)
-    assert dataset.to_dict() == {
+    result = dataset.to_dict()
+
+    # Extract session_id from result to use in assertion
+    session_id = result["cases"][0]["session_id"]
+
+    assert result == {
         "cases": [
             {
                 "name": "test",
+                "session_id": session_id,
                 "input": "hello",
                 "expected_output": "world",
                 "expected_trajectory": None,
@@ -431,10 +466,16 @@ def test_dataset_to_dict_InteractionsEvaluator_full():
         rubric="rubric", model="model", include_inputs=False, system_prompt="system prompt"
     )
     dataset = Dataset(cases=cases, evaluator=evaluator)
-    assert dataset.to_dict() == {
+    result = dataset.to_dict()
+
+    # Extract session_id from result to use in assertion
+    session_id = result["cases"][0]["session_id"]
+
+    assert result == {
         "cases": [
             {
                 "name": "test",
+                "session_id": session_id,
                 "input": "hello",
                 "expected_output": "world",
                 "expected_trajectory": None,
@@ -457,10 +498,16 @@ def test_dataset_to_dict_case_dict():
     case = Case(name="test", input={"field1": "hello"}, expected_output={"field2": "world"}, metadata={})
     evaluator = MockEvaluator()
     dataset = Dataset(cases=[case], evaluator=evaluator)
-    assert dataset.to_dict() == {
+    result = dataset.to_dict()
+
+    # Extract session_id from result to use in assertion
+    session_id = result["cases"][0]["session_id"]
+
+    assert result == {
         "cases": [
             {
                 "name": "test",
+                "session_id": session_id,
                 "input": {"field1": "hello"},
                 "expected_output": {"field2": "world"},
                 "expected_trajectory": None,
@@ -481,10 +528,16 @@ def test_dataset_to_dict_case_function():
     case = Case(name="test", input=simple_echo)
     evaluator = MockEvaluator()
     dataset = Dataset(cases=[case], evaluator=evaluator)
-    assert dataset.to_dict() == {
+    result = dataset.to_dict()
+
+    # Extract session_id from result to use in assertion
+    session_id = result["cases"][0]["session_id"]
+
+    assert result == {
         "cases": [
             {
                 "name": "test",
+                "session_id": session_id,
                 "input": simple_echo,
                 "expected_output": None,
                 "expected_trajectory": None,
@@ -751,38 +804,36 @@ def test_dataset_init_always_initializes_tracer():
 
 
 def test_dataset_run_evaluations_creates_case_span(mock_span, simple_task):
-    """Test that run_evaluations creates a span for each case with correct attributes"""
+    """Test that run_evaluations creates an evaluator span with case information"""
     case = Case(name="test_case", input="hello", expected_output="hello")
     dataset = Dataset(cases=[case], evaluator=MockEvaluator())
 
     with patch.object(dataset._tracer, "start_as_current_span", return_value=mock_span) as mock_start_span:
         dataset.run_evaluations(simple_task)
 
-        # Verify case span was created
+        # Verify evaluator span was created with case information
         calls = mock_start_span.call_args_list
-        case_span_call = calls[0]
-        assert case_span_call[0][0] == "eval_case test_case"
-        assert "gen_ai.evaluation.case.name" in case_span_call[1]["attributes"]
-        assert case_span_call[1]["attributes"]["gen_ai.evaluation.case.name"] == "test_case"
-        assert "gen_ai.evaluation.case.input" in case_span_call[1]["attributes"]
+        assert len(calls) == 1
+        evaluator_span_call = calls[0]
+        assert evaluator_span_call[0][0] == "evaluator MockEvaluator"
+        assert "gen_ai.evaluation.case.name" in evaluator_span_call[1]["attributes"]
+        assert evaluator_span_call[1]["attributes"]["gen_ai.evaluation.case.name"] == "test_case"
 
 
 def test_dataset_run_evaluations_creates_task_span(mock_span, simple_task):
-    """Test that run_evaluations creates a task span with correct attributes"""
+    """Test that run_evaluations creates an evaluator span (no separate task span in current implementation)"""
     case = Case(name="test_case", input="hello", expected_output="hello")
     dataset = Dataset(cases=[case], evaluator=MockEvaluator())
 
     with patch.object(dataset._tracer, "start_as_current_span", return_value=mock_span) as mock_start_span:
         dataset.run_evaluations(simple_task)
 
-        # Verify task span was created (second call)
+        # Current implementation only creates evaluator span
         calls = mock_start_span.call_args_list
-        assert len(calls) >= 2
-        task_span_call = calls[1]
-        assert task_span_call[0][0] == "task_execution"
-        assert "gen_ai.evaluation.task.type" in task_span_call[1]["attributes"]
-        assert "gen_ai.evaluation.case.name" in task_span_call[1]["attributes"]
-        # Verify set_attributes was called with data attributes
+        assert len(calls) == 1
+        evaluator_span_call = calls[0]
+        assert evaluator_span_call[0][0] == "evaluator MockEvaluator"
+        # Verify set_attributes was called with evaluation results
         mock_span.set_attributes.assert_called()
 
 
@@ -794,10 +845,10 @@ def test_dataset_run_evaluations_creates_evaluator_span(mock_span, simple_task):
     with patch.object(dataset._tracer, "start_as_current_span", return_value=mock_span) as mock_start_span:
         dataset.run_evaluations(simple_task)
 
-        # Verify evaluator span was created (third call)
+        # Verify evaluator span was created
         calls = mock_start_span.call_args_list
-        assert len(calls) >= 3
-        evaluator_span_call = calls[2]
+        assert len(calls) == 1
+        evaluator_span_call = calls[0]
         assert evaluator_span_call[0][0] == "evaluator MockEvaluator"
         assert "gen_ai.evaluation.name" in evaluator_span_call[1]["attributes"]
         assert "gen_ai.evaluation.case.name" in evaluator_span_call[1]["attributes"]
@@ -806,7 +857,7 @@ def test_dataset_run_evaluations_creates_evaluator_span(mock_span, simple_task):
 
 
 def test_dataset_run_evaluations_with_trajectory_in_span(mock_span):
-    """Test that run_evaluations includes trajectory in task span attributes"""
+    """Test that run_evaluations includes trajectory in span attributes"""
     case = Case(name="test_case", input="hello", expected_output="world")
     dataset = Dataset(cases=[case], evaluator=MockEvaluator())
 
@@ -817,19 +868,20 @@ def test_dataset_run_evaluations_with_trajectory_in_span(mock_span):
 
         dataset.run_evaluations(task_with_trajectory)
 
-        # Check that set_attributes was called (trajectory is set via set_attributes, not initial attributes)
+        # Check that set_attributes was called
         mock_span.set_attributes.assert_called()
         # Verify has_trajectory flag is set
         set_attrs_calls = mock_span.set_attributes.call_args_list
-        # Find the call that includes has_trajectory
+        # The attributes dict is the first positional argument in the call
         has_trajectory_set = any(
-            "gen_ai.evaluation.data.has_trajectory" in call[0][0] for call in set_attrs_calls if call[0]
+            "gen_ai.evaluation.data.has_trajectory" in call[0][0] if call[0] and isinstance(call[0][0], dict) else False
+            for call in set_attrs_calls
         )
-        assert has_trajectory_set
+        assert has_trajectory_set, f"has_trajectory not found in set_attributes calls: {set_attrs_calls}"
 
 
 def test_dataset_run_evaluations_with_interactions_in_span(mock_span):
-    """Test that run_evaluations includes interactions in task span attributes"""
+    """Test that run_evaluations includes interactions in span attributes"""
     interactions = [{"node_name": "agent1", "dependencies": [], "messages": ["hello"]}]
     case = Case(name="test_case", input="hello", expected_output="world", expected_interactions=interactions)
     dataset = Dataset(cases=[case], evaluator=MockEvaluator())
@@ -841,30 +893,18 @@ def test_dataset_run_evaluations_with_interactions_in_span(mock_span):
 
         dataset.run_evaluations(task_with_interactions)
 
-        # Check that set_attributes was called (interactions are set via set_attributes)
+        # Check that set_attributes was called
         mock_span.set_attributes.assert_called()
         # Verify has_interactions flag is set
         set_attrs_calls = mock_span.set_attributes.call_args_list
+        # The attributes dict is the first positional argument in the call
         has_interactions_set = any(
-            "gen_ai.evaluation.data.has_interactions" in call[0][0] for call in set_attrs_calls if call[0]
+            "gen_ai.evaluation.data.has_interactions" in call[0][0]
+            if call[0] and isinstance(call[0][0], dict)
+            else False
+            for call in set_attrs_calls
         )
-        assert has_interactions_set
-
-
-def test_dataset_run_evaluations_records_exception_in_span(mock_span):
-    """Test that run_evaluations records exceptions in the case span"""
-    case = Case(name="test_case", input="hello", expected_output="hello")
-    dataset = Dataset(cases=[case], evaluator=MockEvaluator())
-
-    with patch.object(dataset._tracer, "start_as_current_span", return_value=mock_span):
-
-        def failing_task(c):
-            raise ValueError("Test error")
-
-        dataset.run_evaluations(failing_task)
-
-        # Verify record_exception was called (set_status is not called in the implementation)
-        mock_span.record_exception.assert_called()
+        assert has_interactions_set, f"has_interactions not found in set_attributes calls: {set_attrs_calls}"
 
 
 def test_dataset_run_evaluations_with_unnamed_case(mock_span, simple_task):
@@ -875,15 +915,19 @@ def test_dataset_run_evaluations_with_unnamed_case(mock_span, simple_task):
     with patch.object(dataset._tracer, "start_as_current_span", return_value=mock_span) as mock_start_span:
         dataset.run_evaluations(simple_task)
 
-        # Verify case span was created with auto-generated name
+        # Verify evaluator span was created with auto-generated case name
         calls = mock_start_span.call_args_list
-        case_span_call = calls[0]
-        assert case_span_call[0][0].startswith("eval_case case_")
+        assert len(calls) == 1
+        evaluator_span_call = calls[0]
+        assert evaluator_span_call[0][0] == "evaluator MockEvaluator"
+        # Check that case name was auto-generated
+        assert "gen_ai.evaluation.case.name" in evaluator_span_call[1]["attributes"]
+        assert evaluator_span_call[1]["attributes"]["gen_ai.evaluation.case.name"] == "case_0"
 
 
 @pytest.mark.asyncio
 async def test_dataset_run_evaluations_async_creates_spans(mock_span):
-    """Test that run_evaluations_async creates spans with correct attributes"""
+    """Test that run_evaluations_async creates evaluator spans"""
     case = Case(name="async_test", input="hello", expected_output="hello")
     dataset = Dataset(cases=[case], evaluator=MockEvaluator())
 
@@ -894,19 +938,16 @@ async def test_dataset_run_evaluations_async_creates_spans(mock_span):
 
         await dataset.run_evaluations_async(async_task)
 
-        # Verify spans were created
+        # Verify evaluator span was created
         calls = mock_start_span.call_args_list
-        assert len(calls) >= 3  # case, task, evaluator spans
-
-        # Check case span
-        case_span_call = calls[0]
-        assert case_span_call[0][0] == "eval_case async_test"
-        assert "gen_ai.evaluation.case.name" in case_span_call[1]["attributes"]
+        assert len(calls) == 1
+        evaluator_span_call = calls[0]
+        assert evaluator_span_call[0][0] == "evaluator MockEvaluator"
 
 
 @pytest.mark.asyncio
 async def test_dataset_run_evaluations_async_records_exception(mock_span):
-    """Test that run_evaluations_async records exceptions in spans"""
+    """Test that run_evaluations_async handles exceptions gracefully"""
     case = Case(name="async_test", input="hello", expected_output="hello")
     dataset = Dataset(cases=[case], evaluator=MockEvaluator())
 
@@ -915,10 +956,12 @@ async def test_dataset_run_evaluations_async_records_exception(mock_span):
         async def failing_async_task(c):
             raise ValueError("Async test error")
 
-        await dataset.run_evaluations_async(failing_async_task)
+        report = await dataset.run_evaluations_async(failing_async_task)
 
-        # Verify record_exception was called (set_status is not called in the implementation)
-        mock_span.record_exception.assert_called()
+        # Verify the error was handled gracefully
+        assert len(report.scores) == 1
+        assert report.scores[0] == 0
+        assert "Async test error" in report.reasons[0]
 
 
 @pytest.mark.asyncio
@@ -950,7 +993,7 @@ async def test_dataset_run_evaluations_async_with_dict_output(mock_span):
 
 
 def test_dataset_run_evaluations_multiple_cases_separate_traces(mock_span, simple_task):
-    """Test that each case gets its own separate trace (case span)"""
+    """Test that each case gets its own evaluator span"""
     cases = [
         Case(name="case1", input="hello", expected_output="hello"),
         Case(name="case2", input="world", expected_output="world"),
@@ -960,9 +1003,12 @@ def test_dataset_run_evaluations_multiple_cases_separate_traces(mock_span, simpl
     with patch.object(dataset._tracer, "start_as_current_span", return_value=mock_span) as mock_start_span:
         dataset.run_evaluations(simple_task)
 
-        # Verify we have separate case spans for each case
+        # Verify we have separate evaluator spans for each case
         calls = mock_start_span.call_args_list
-        case_span_calls = [call for call in calls if call[0][0].startswith("eval_case")]
-        assert len(case_span_calls) == 2
-        assert case_span_calls[0][0][0] == "eval_case case1"
-        assert case_span_calls[1][0][0] == "eval_case case2"
+        assert len(calls) == 2
+        # Both should be evaluator spans
+        assert calls[0][0][0] == "evaluator MockEvaluator"
+        assert calls[1][0][0] == "evaluator MockEvaluator"
+        # But with different case names
+        assert calls[0][1]["attributes"]["gen_ai.evaluation.case.name"] == "case1"
+        assert calls[1][1]["attributes"]["gen_ai.evaluation.case.name"] == "case2"

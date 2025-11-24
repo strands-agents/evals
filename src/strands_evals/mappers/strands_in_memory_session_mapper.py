@@ -60,18 +60,49 @@ class StrandsInMemorySessionMapper(SessionMapper):
         super().__init__()
         self._convention_version = GenAIConventionVersion.LEGACY
 
-    def map_to_session(self, otel_spans: list[ReadableSpan], session_id: str) -> Session:
+    def map_to_session(
+        self,
+        otel_spans: list[ReadableSpan],
+        session_id: str,
+    ) -> Session:
         if otel_spans:
             self._convention_version = self._detect_convention_version(otel_spans[0])
 
+        # Check if any spans have session.id or gen_ai.conversation.id attribute
+        any_span_has_session_id = any(
+            span.attributes and ("session.id" in span.attributes or "gen_ai.conversation.id" in span.attributes)
+            for span in otel_spans
+        )
+
+        # Build traces: if no spans have session IDs, include all; otherwise filter by matching session_id
         traces_by_id = defaultdict(list)
         for span in otel_spans:
-            trace_id = format(span.context.trace_id, "032x")
-            traces_by_id[trace_id].append(span)
+            should_include = False
+
+            if not any_span_has_session_id:
+                # If no spans have session IDs, include all spans
+                should_include = True
+            else:
+                # Check if this span's session ID matches
+                if span.attributes:
+                    span_session_id = None
+                    # Check for gen_ai.conversation.id first
+                    if "gen_ai.conversation.id" in span.attributes:
+                        span_session_id = str(span.attributes["gen_ai.conversation.id"])
+                    # Then check for session.id
+                    elif "session.id" in span.attributes:
+                        span_session_id = str(span.attributes["session.id"])
+
+                    # Include if session ID matches the provided session_id
+                    should_include = span_session_id == session_id
+
+            if should_include:
+                trace_id_extracted = format(span.context.trace_id, "032x")
+                traces_by_id[trace_id_extracted].append(span)
 
         traces: list[Trace] = []
-        for trace_id, spans in traces_by_id.items():
-            trace = self._convert_trace(trace_id, spans, session_id)
+        for trace_id_extracted, spans in traces_by_id.items():
+            trace = self._convert_trace(trace_id_extracted, spans, session_id)
             if trace.spans:
                 traces.append(trace)
 
