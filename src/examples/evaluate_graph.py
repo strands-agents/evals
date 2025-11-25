@@ -83,15 +83,17 @@ async def async_graph_example():
         " The actual interactions should include more information than expected."
     )
     interaction_evaluator = InteractionsEvaluator(rubric=rubric)
-    trajectory_evaluator = TrajectoryEvaluator(rubric=basic_rubric)
+    trajectory_eval = TrajectoryEvaluator(rubric=basic_rubric)
 
     ### Step 4: Create dataset ###
-    interaction_experiment = Experiment(cases=[test1, test2], evaluator=interaction_evaluator)
-    trajectory_evaluator = Experiment(cases=[test1, test2], evaluator=trajectory_evaluator)
+    interaction_experiment = Experiment(cases=[test1, test2], evaluators=[interaction_evaluator])
+    trajectory_experiment = Experiment(cases=[test1, test2], evaluators=[trajectory_eval])
 
     ### Step 5: Run evaluation ###
-    interaction_report = await interaction_experiment.run_evaluations_async(research_graph)
-    trajectory_report = await trajectory_evaluator.run_evaluations_async(research_graph)
+    interaction_reports = await interaction_experiment.run_evaluations_async(research_graph)
+    trajectory_reports = await trajectory_experiment.run_evaluations_async(research_graph)
+    interaction_report = interaction_reports[0]
+    trajectory_report = trajectory_reports[0]
 
     return trajectory_report, interaction_report
 

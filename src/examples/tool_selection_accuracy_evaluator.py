@@ -39,7 +39,7 @@ test_cases = [
     ),
 ]
 
-evaluator = ToolSelectionAccuracyEvaluator()
-experiment = Experiment[str, str](cases=test_cases, evaluator=evaluator)
-report = experiment.run_evaluations(user_task_function)
-report.run_display()
+evaluators = [ToolSelectionAccuracyEvaluator()]
+experiment = Experiment[str, str](cases=test_cases, evaluators=evaluators)
+reports = experiment.run_evaluations(user_task_function)
+reports[0].run_display()

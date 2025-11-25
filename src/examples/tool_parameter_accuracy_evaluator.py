@@ -52,11 +52,11 @@ test_cases = [
     ),
 ]
 
-# Create an evaluator
+# Create evaluators
 # The evaluator will check if tool parameters are faithful to the context
-evaluator = ToolParameterAccuracyEvaluator()
-experiment = Experiment[str, str](cases=test_cases, evaluator=evaluator)
+evaluators = [ToolParameterAccuracyEvaluator()]
+experiment = Experiment[str, str](cases=test_cases, evaluators=evaluators)
 
 # Run evaluations
-report = experiment.run_evaluations(user_task_function)
-report.run_display()
+reports = experiment.run_evaluations(user_task_function)
+reports[0].run_display()

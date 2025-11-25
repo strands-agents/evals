@@ -46,8 +46,8 @@ async def topic_planning_experiment_generator():
     experiment.to_file("topic_planning_travel_experiment")
 
     # Step 4: Run evaluations on the generated test cases
-    report = await experiment.run_evaluations_async(get_response)
-    return report
+    reports = await experiment.run_evaluations_async(get_response)
+    return reports[0]
 
 
 if __name__ == "__main__":
