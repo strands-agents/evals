@@ -4,10 +4,6 @@ from strands_evals import Case, Dataset
 from strands_evals.evaluators import GoalSuccessRateEvaluator
 from strands_evals.mappers.langfuse_mapper import LangfuseSessionMapper
 
-# ======================================
-# SETUP AND RUN STRANDS EVAL
-# ======================================
-
 
 # 1. Define a task function
 def user_task_function(case: Case) -> dict:
