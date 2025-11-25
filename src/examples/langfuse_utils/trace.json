@@ -1,0 +1,915 @@
+{
+    "id": "13cc6db7f2e290b54bab3061a6fc5db0",
+    "timestamp": "2025-11-14T01:00:01.245000Z",
+    "name": "run_agent",
+    "input": [
+        {
+            "role": "user",
+            "content": "[{\"text\": \"What is the status of my package\"}]"
+        },
+        {
+            "role": "assistant",
+            "content": "[{\"text\": \"I'll check the status of your package for you, Bob.\"}, {\"toolUse\": {\"toolUseId\": \"tooluse_sYup7HMFTFOAopB_4kgTqA\", \"name\": \"check_package_status\", \"input\": {\"user_name\": \"Bob\"}}}]"
+        },
+        {
+            "role": "tool",
+            "content": "[{\"toolResult\": {\"toolUseId\": \"tooluse_sYup7HMFTFOAopB_4kgTqA\", \"status\": \"success\", \"content\": [{\"text\": \"Package is ready for pickup\"}]}}]"
+        },
+        {
+            "role": "assistant",
+            "content": "[{\"text\": \"Great news! Your package is ready for pickup. Since it's ready, let me also check the total cost for you.\"}, {\"toolUse\": {\"toolUseId\": \"tooluse_eyRoAW-ARTq9inBduvuTtg\", \"name\": \"calculate_price\", \"input\": {}}}]"
+        },
+        {
+            "role": "tool",
+            "content": "[{\"toolResult\": {\"toolUseId\": \"tooluse_eyRoAW-ARTq9inBduvuTtg\", \"status\": \"success\", \"content\": [{\"text\": \"Total cost is $100\"}]}}]"
+        }
+    ],
+    "output": {
+        "message": "[{\"text\": \"Your package is ready for pickup and the total cost is $100. You can come collect it whenever convenient for you!\"}]"
+    },
+    "sessionId": "test_session",
+    "release": null,
+    "version": "1.10.0",
+    "userId": null,
+    "metadata": {
+        "attributes": {
+            "session.id": "test_session",
+            "gen_ai.event.start_time": "2025-11-14T01:00:04.562535+00:00",
+            "gen_ai.system": "strands-agents",
+            "gen_ai.agent.name": "Strands Agents",
+            "gen_ai.operation.name": "chat",
+            "gen_ai.request.model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+            "gen_ai.agent.tools": "[\"check_package_status\", \"calculate_price\"]",
+            "system_prompt": "You are a helpful assistant, user will ask you about their package. You should first check it's status. If status is ready for pickup you should check cost. The name of the user is Bob",
+            "gen_ai.event.end_time": "2025-11-14T01:00:06.456260+00:00",
+            "gen_ai.usage.prompt_tokens": "653",
+            "gen_ai.usage.completion_tokens": "27",
+            "gen_ai.usage.input_tokens": "653",
+            "gen_ai.usage.output_tokens": "27",
+            "gen_ai.usage.total_tokens": "680",
+            "gen_ai.usage.cache_read_input_tokens": "{\"intValue\":0}",
+            "gen_ai.usage.cache_write_input_tokens": "{\"intValue\":0}",
+            "event_loop.cycle_id": "48b3f3e3-8549-4126-909d-b2d9a15b938e",
+            "gen_ai.tool.name": "calculate_price",
+            "gen_ai.tool.call.id": "tooluse_eyRoAW-ARTq9inBduvuTtg",
+            "tool.status": "success",
+            "event_loop.parent_cycle_id": "e46a39a5-f765-4628-9618-acf741d74b77"
+        },
+        "resourceAttributes": {
+            "telemetry.sdk.language": "python",
+            "telemetry.sdk.name": "opentelemetry",
+            "telemetry.sdk.version": "1.35.0",
+            "service.name": "strands-agents",
+            "service.version": "1.10.0"
+        },
+        "scope": {
+            "name": "strands.telemetry.tracer",
+            "version": "3.9.3",
+            "attributes": {
+                "public_key": "pk-lf-5f6607e2-6846-4ce2-97d2-b01375ddd4cb"
+            }
+        }
+    },
+    "tags": [],
+    "public": false,
+    "environment": "default",
+    "htmlPath": "/project/cmhenx6m80006z4075iumt8px/traces/13cc6db7f2e290b54bab3061a6fc5db0",
+    "latency": 5.282,
+    "totalCost": 0.0,
+    "observations": [
+        {
+            "id": "ca8183085bc4c831",
+            "traceId": "13cc6db7f2e290b54bab3061a6fc5db0",
+            "type": "SPAN",
+            "name": "run_agent",
+            "startTime": "2025-11-14T01:00:01.241000Z",
+            "endTime": "2025-11-14T01:00:06.523000Z",
+            "completionStartTime": null,
+            "model": null,
+            "modelParameters": null,
+            "input": {
+                "args": [
+                    "What is the status of my package"
+                ],
+                "kwargs": {}
+            },
+            "version": "1.10.0",
+            "metadata": {
+                "resourceAttributes": {
+                    "telemetry.sdk.language": "python",
+                    "telemetry.sdk.name": "opentelemetry",
+                    "telemetry.sdk.version": "1.35.0",
+                    "service.name": "strands-agents",
+                    "service.version": "1.10.0"
+                },
+                "scope": {
+                    "name": "langfuse-sdk",
+                    "version": "3.9.3",
+                    "attributes": {
+                        "public_key": "pk-lf-5f6607e2-6846-4ce2-97d2-b01375ddd4cb"
+                    }
+                }
+            },
+            "output": null,
+            "usage": {
+                "input": 0,
+                "output": 0,
+                "total": 0,
+                "unit": "TOKENS"
+            },
+            "level": "DEFAULT",
+            "statusMessage": null,
+            "parentObservationId": null,
+            "promptId": null,
+            "usageDetails": {},
+            "costDetails": {},
+            "environment": "default",
+            "promptName": null,
+            "promptVersion": null,
+            "modelId": null,
+            "inputPrice": 0.0,
+            "outputPrice": 0.0,
+            "totalPrice": 0.0,
+            "calculatedInputCost": null,
+            "calculatedOutputCost": null,
+            "calculatedTotalCost": 0.0,
+            "latency": 5282.0,
+            "timeToFirstToken": null,
+            "promptTokens": 0,
+            "completionTokens": 0,
+            "updatedAt": "2025-11-14T01:00:11.193Z",
+            "totalTokens": 0,
+            "projectId": "cmhenx6m80006z4075iumt8px",
+            "unit": "TOKENS",
+            "createdAt": "2025-11-14T01:00:11.179Z"
+        },
+        {
+            "id": "28b7038083b46985",
+            "traceId": "13cc6db7f2e290b54bab3061a6fc5db0",
+            "type": "GENERATION",
+            "name": "invoke_agent Strands Agents",
+            "startTime": "2025-11-14T01:00:01.242000Z",
+            "endTime": "2025-11-14T01:00:06.495000Z",
+            "completionStartTime": null,
+            "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+            "modelParameters": {},
+            "input": [
+                {
+                    "role": "user",
+                    "content": "[{\"text\": \"What is the status of my package\"}]"
+                }
+            ],
+            "version": "1.10.0",
+            "metadata": {
+                "attributes": {
+                    "session.id": "test_session",
+                    "gen_ai.event.start_time": "2025-11-14T01:00:01.242853+00:00",
+                    "gen_ai.system": "strands-agents",
+                    "gen_ai.agent.name": "Strands Agents",
+                    "gen_ai.operation.name": "invoke_agent",
+                    "gen_ai.request.model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+                    "gen_ai.agent.tools": "[\"check_package_status\", \"calculate_price\"]",
+                    "system_prompt": "You are a helpful assistant, user will ask you about their package. You should first check it's status. If status is ready for pickup you should check cost. The name of the user is Bob",
+                    "gen_ai.event.end_time": "2025-11-14T01:00:06.495171+00:00",
+                    "gen_ai.usage.prompt_tokens": "1709",
+                    "gen_ai.usage.completion_tokens": "164",
+                    "gen_ai.usage.input_tokens": "1709",
+                    "gen_ai.usage.output_tokens": "164",
+                    "gen_ai.usage.total_tokens": "1873",
+                    "gen_ai.usage.cache_read_input_tokens": "{\"intValue\":0}",
+                    "gen_ai.usage.cache_write_input_tokens": "{\"intValue\":0}"
+                },
+                "resourceAttributes": {
+                    "telemetry.sdk.language": "python",
+                    "telemetry.sdk.name": "opentelemetry",
+                    "telemetry.sdk.version": "1.35.0",
+                    "service.name": "strands-agents",
+                    "service.version": "1.10.0"
+                },
+                "scope": {
+                    "name": "strands.telemetry.tracer",
+                    "attributes": {}
+                }
+            },
+            "output": {
+                "message": "Your package is ready for pickup and the total cost is $100. You can come collect it whenever convenient for you!\n",
+                "finish_reason": "end_turn"
+            },
+            "usage": {
+                "input": 1709,
+                "output": 164,
+                "total": 1873,
+                "unit": "TOKENS"
+            },
+            "level": "DEFAULT",
+            "statusMessage": null,
+            "parentObservationId": "ca8183085bc4c831",
+            "promptId": null,
+            "usageDetails": {
+                "input": 1709,
+                "output": 164,
+                "total": 1873
+            },
+            "costDetails": {},
+            "environment": "default",
+            "promptName": null,
+            "promptVersion": null,
+            "modelId": null,
+            "inputPrice": 0.0,
+            "outputPrice": 0.0,
+            "totalPrice": 0.0,
+            "calculatedInputCost": null,
+            "calculatedOutputCost": null,
+            "calculatedTotalCost": 0.0,
+            "latency": 5253.0,
+            "timeToFirstToken": null,
+            "promptTokens": 1709,
+            "completionTokens": 164,
+            "updatedAt": "2025-11-14T01:00:06.626Z",
+            "totalTokens": 1873,
+            "projectId": "cmhenx6m80006z4075iumt8px",
+            "unit": "TOKENS",
+            "createdAt": "2025-11-14T01:00:06.601Z"
+        },
+        {
+            "id": "09a3d2c149be6213",
+            "traceId": "13cc6db7f2e290b54bab3061a6fc5db0",
+            "type": "SPAN",
+            "name": "execute_event_loop_cycle",
+            "startTime": "2025-11-14T01:00:04.562000Z",
+            "endTime": "2025-11-14T01:00:06.456000Z",
+            "completionStartTime": null,
+            "model": null,
+            "modelParameters": null,
+            "input": [
+                {
+                    "role": "user",
+                    "content": "[{\"text\": \"What is the status of my package\"}]"
+                },
+                {
+                    "role": "assistant",
+                    "content": "[{\"text\": \"I'll check the status of your package for you, Bob.\"}, {\"toolUse\": {\"toolUseId\": \"tooluse_sYup7HMFTFOAopB_4kgTqA\", \"name\": \"check_package_status\", \"input\": {\"user_name\": \"Bob\"}}}]"
+                },
+                {
+                    "role": "tool",
+                    "content": "[{\"toolResult\": {\"toolUseId\": \"tooluse_sYup7HMFTFOAopB_4kgTqA\", \"status\": \"success\", \"content\": [{\"text\": \"Package is ready for pickup\"}]}}]"
+                },
+                {
+                    "role": "assistant",
+                    "content": "[{\"text\": \"Great news! Your package is ready for pickup. Since it's ready, let me also check the total cost for you.\"}, {\"toolUse\": {\"toolUseId\": \"tooluse_eyRoAW-ARTq9inBduvuTtg\", \"name\": \"calculate_price\", \"input\": {}}}]"
+                },
+                {
+                    "role": "tool",
+                    "content": "[{\"toolResult\": {\"toolUseId\": \"tooluse_eyRoAW-ARTq9inBduvuTtg\", \"status\": \"success\", \"content\": [{\"text\": \"Total cost is $100\"}]}}]"
+                }
+            ],
+            "version": "1.10.0",
+            "metadata": {
+                "attributes": {
+                    "session.id": "test_session",
+                    "gen_ai.event.start_time": "2025-11-14T01:00:04.562535+00:00",
+                    "event_loop.cycle_id": "48b3f3e3-8549-4126-909d-b2d9a15b938e",
+                    "event_loop.parent_cycle_id": "e46a39a5-f765-4628-9618-acf741d74b77",
+                    "gen_ai.event.end_time": "2025-11-14T01:00:06.456260+00:00"
+                },
+                "resourceAttributes": {
+                    "telemetry.sdk.language": "python",
+                    "telemetry.sdk.name": "opentelemetry",
+                    "telemetry.sdk.version": "1.35.0",
+                    "service.name": "strands-agents",
+                    "service.version": "1.10.0"
+                },
+                "scope": {
+                    "name": "strands.telemetry.tracer",
+                    "attributes": {}
+                }
+            },
+            "output": {
+                "message": "[{\"text\": \"Your package is ready for pickup and the total cost is $100. You can come collect it whenever convenient for you!\"}]"
+            },
+            "usage": {
+                "input": 0,
+                "output": 0,
+                "total": 0,
+                "unit": "TOKENS"
+            },
+            "level": "DEFAULT",
+            "statusMessage": null,
+            "parentObservationId": "28b7038083b46985",
+            "promptId": null,
+            "usageDetails": {},
+            "costDetails": {},
+            "environment": "default",
+            "promptName": null,
+            "promptVersion": null,
+            "modelId": null,
+            "inputPrice": 0.0,
+            "outputPrice": 0.0,
+            "totalPrice": 0.0,
+            "calculatedInputCost": null,
+            "calculatedOutputCost": null,
+            "calculatedTotalCost": 0.0,
+            "latency": 1894.0,
+            "timeToFirstToken": null,
+            "promptTokens": 0,
+            "completionTokens": 0,
+            "updatedAt": "2025-11-14T01:00:06.597Z",
+            "totalTokens": 0,
+            "projectId": "cmhenx6m80006z4075iumt8px",
+            "unit": "TOKENS",
+            "createdAt": "2025-11-14T01:00:06.569Z"
+        },
+        {
+            "id": "3f1a15bd9e8cd207",
+            "traceId": "13cc6db7f2e290b54bab3061a6fc5db0",
+            "type": "GENERATION",
+            "name": "chat",
+            "startTime": "2025-11-14T01:00:04.562000Z",
+            "endTime": "2025-11-14T01:00:06.384000Z",
+            "completionStartTime": null,
+            "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+            "modelParameters": {},
+            "input": [
+                {
+                    "role": "user",
+                    "content": "[{\"text\": \"What is the status of my package\"}]"
+                },
+                {
+                    "role": "assistant",
+                    "content": "[{\"text\": \"I'll check the status of your package for you, Bob.\"}, {\"toolUse\": {\"toolUseId\": \"tooluse_sYup7HMFTFOAopB_4kgTqA\", \"name\": \"check_package_status\", \"input\": {\"user_name\": \"Bob\"}}}]"
+                },
+                {
+                    "role": "tool",
+                    "content": "[{\"toolResult\": {\"toolUseId\": \"tooluse_sYup7HMFTFOAopB_4kgTqA\", \"status\": \"success\", \"content\": [{\"text\": \"Package is ready for pickup\"}]}}]"
+                },
+                {
+                    "role": "assistant",
+                    "content": "[{\"text\": \"Great news! Your package is ready for pickup. Since it's ready, let me also check the total cost for you.\"}, {\"toolUse\": {\"toolUseId\": \"tooluse_eyRoAW-ARTq9inBduvuTtg\", \"name\": \"calculate_price\", \"input\": {}}}]"
+                },
+                {
+                    "role": "tool",
+                    "content": "[{\"toolResult\": {\"toolUseId\": \"tooluse_eyRoAW-ARTq9inBduvuTtg\", \"status\": \"success\", \"content\": [{\"text\": \"Total cost is $100\"}]}}]"
+                }
+            ],
+            "version": "1.10.0",
+            "metadata": {
+                "attributes": {
+                    "session.id": "test_session",
+                    "gen_ai.event.start_time": "2025-11-14T01:00:04.562625+00:00",
+                    "gen_ai.system": "strands-agents",
+                    "gen_ai.operation.name": "chat",
+                    "gen_ai.request.model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+                    "gen_ai.event.end_time": "2025-11-14T01:00:06.384344+00:00",
+                    "gen_ai.usage.prompt_tokens": "653",
+                    "gen_ai.usage.input_tokens": "653",
+                    "gen_ai.usage.completion_tokens": "27",
+                    "gen_ai.usage.output_tokens": "27",
+                    "gen_ai.usage.total_tokens": "680",
+                    "gen_ai.usage.cache_read_input_tokens": "{\"intValue\":0}",
+                    "gen_ai.usage.cache_write_input_tokens": "{\"intValue\":0}"
+                },
+                "resourceAttributes": {
+                    "telemetry.sdk.language": "python",
+                    "telemetry.sdk.name": "opentelemetry",
+                    "telemetry.sdk.version": "1.35.0",
+                    "service.name": "strands-agents",
+                    "service.version": "1.10.0"
+                },
+                "scope": {
+                    "name": "strands.telemetry.tracer",
+                    "attributes": {}
+                }
+            },
+            "output": {
+                "finish_reason": "end_turn",
+                "message": "[{\"text\": \"Your package is ready for pickup and the total cost is $100. You can come collect it whenever convenient for you!\"}]"
+            },
+            "usage": {
+                "input": 653,
+                "output": 27,
+                "total": 680,
+                "unit": "TOKENS"
+            },
+            "level": "DEFAULT",
+            "statusMessage": null,
+            "parentObservationId": "09a3d2c149be6213",
+            "promptId": null,
+            "usageDetails": {
+                "input": 653,
+                "output": 27,
+                "total": 680
+            },
+            "costDetails": {},
+            "environment": "default",
+            "promptName": null,
+            "promptVersion": null,
+            "modelId": null,
+            "inputPrice": 0.0,
+            "outputPrice": 0.0,
+            "totalPrice": 0.0,
+            "calculatedInputCost": null,
+            "calculatedOutputCost": null,
+            "calculatedTotalCost": 0.0,
+            "latency": 1822.0,
+            "timeToFirstToken": null,
+            "promptTokens": 653,
+            "completionTokens": 27,
+            "updatedAt": "2025-11-14T01:00:06.520Z",
+            "totalTokens": 680,
+            "projectId": "cmhenx6m80006z4075iumt8px",
+            "unit": "TOKENS",
+            "createdAt": "2025-11-14T01:00:06.490Z"
+        },
+        {
+            "id": "5bd8962273e7ddba",
+            "traceId": "13cc6db7f2e290b54bab3061a6fc5db0",
+            "type": "SPAN",
+            "name": "execute_event_loop_cycle",
+            "startTime": "2025-11-14T01:00:03.135000Z",
+            "endTime": "2025-11-14T01:00:04.533000Z",
+            "completionStartTime": null,
+            "model": null,
+            "modelParameters": null,
+            "input": [
+                {
+                    "role": "user",
+                    "content": "[{\"text\": \"What is the status of my package\"}]"
+                },
+                {
+                    "role": "assistant",
+                    "content": "[{\"text\": \"I'll check the status of your package for you, Bob.\"}, {\"toolUse\": {\"toolUseId\": \"tooluse_sYup7HMFTFOAopB_4kgTqA\", \"name\": \"check_package_status\", \"input\": {\"user_name\": \"Bob\"}}}]"
+                },
+                {
+                    "role": "tool",
+                    "content": "[{\"toolResult\": {\"toolUseId\": \"tooluse_sYup7HMFTFOAopB_4kgTqA\", \"status\": \"success\", \"content\": [{\"text\": \"Package is ready for pickup\"}]}}]"
+                }
+            ],
+            "version": "1.10.0",
+            "metadata": {
+                "attributes": {
+                    "session.id": "test_session",
+                    "gen_ai.event.start_time": "2025-11-14T01:00:03.135597+00:00",
+                    "event_loop.cycle_id": "e46a39a5-f765-4628-9618-acf741d74b77",
+                    "event_loop.parent_cycle_id": "b7e8bff4-37b4-41d2-b939-9547f56ccb24",
+                    "gen_ai.event.end_time": "2025-11-14T01:00:04.533362+00:00"
+                },
+                "resourceAttributes": {
+                    "telemetry.sdk.language": "python",
+                    "telemetry.sdk.name": "opentelemetry",
+                    "telemetry.sdk.version": "1.35.0",
+                    "service.name": "strands-agents",
+                    "service.version": "1.10.0"
+                },
+                "scope": {
+                    "name": "strands.telemetry.tracer",
+                    "attributes": {}
+                }
+            },
+            "output": {
+                "message": "[{\"text\": \"Great news! Your package is ready for pickup. Since it's ready, let me also check the total cost for you.\"}, {\"toolUse\": {\"toolUseId\": \"tooluse_eyRoAW-ARTq9inBduvuTtg\", \"name\": \"calculate_price\", \"input\": {}}}]",
+                "tool.result": "[{\"toolResult\": {\"toolUseId\": \"tooluse_eyRoAW-ARTq9inBduvuTtg\", \"status\": \"success\", \"content\": [{\"text\": \"Total cost is $100\"}]}}]"
+            },
+            "usage": {
+                "input": 0,
+                "output": 0,
+                "total": 0,
+                "unit": "TOKENS"
+            },
+            "level": "DEFAULT",
+            "statusMessage": null,
+            "parentObservationId": "28b7038083b46985",
+            "promptId": null,
+            "usageDetails": {},
+            "costDetails": {},
+            "environment": "default",
+            "promptName": null,
+            "promptVersion": null,
+            "modelId": null,
+            "inputPrice": 0.0,
+            "outputPrice": 0.0,
+            "totalPrice": 0.0,
+            "calculatedInputCost": null,
+            "calculatedOutputCost": null,
+            "calculatedTotalCost": 0.0,
+            "latency": 1398.0,
+            "timeToFirstToken": null,
+            "promptTokens": 0,
+            "completionTokens": 0,
+            "updatedAt": "2025-11-14T01:00:04.666Z",
+            "totalTokens": 0,
+            "projectId": "cmhenx6m80006z4075iumt8px",
+            "unit": "TOKENS",
+            "createdAt": "2025-11-14T01:00:04.646Z"
+        },
+        {
+            "id": "364c5b004ed7f062",
+            "traceId": "13cc6db7f2e290b54bab3061a6fc5db0",
+            "type": "SPAN",
+            "name": "execute_tool calculate_price",
+            "startTime": "2025-11-14T01:00:04.479000Z",
+            "endTime": "2025-11-14T01:00:04.480000Z",
+            "completionStartTime": null,
+            "model": null,
+            "modelParameters": null,
+            "input": [
+                {
+                    "role": "tool",
+                    "content": "{}",
+                    "id": "tooluse_eyRoAW-ARTq9inBduvuTtg"
+                }
+            ],
+            "version": "1.10.0",
+            "metadata": {
+                "attributes": {
+                    "session.id": "test_session",
+                    "gen_ai.event.start_time": "2025-11-14T01:00:04.480024+00:00",
+                    "gen_ai.operation.name": "execute_tool",
+                    "gen_ai.system": "strands-agents",
+                    "gen_ai.tool.name": "calculate_price",
+                    "gen_ai.tool.call.id": "tooluse_eyRoAW-ARTq9inBduvuTtg",
+                    "gen_ai.event.end_time": "2025-11-14T01:00:04.480406+00:00",
+                    "tool.status": "success"
+                },
+                "resourceAttributes": {
+                    "telemetry.sdk.language": "python",
+                    "telemetry.sdk.name": "opentelemetry",
+                    "telemetry.sdk.version": "1.35.0",
+                    "service.name": "strands-agents",
+                    "service.version": "1.10.0"
+                },
+                "scope": {
+                    "name": "strands.telemetry.tracer",
+                    "attributes": {}
+                }
+            },
+            "output": {
+                "message": "[{\"text\": \"Total cost is $100\"}]",
+                "id": "tooluse_eyRoAW-ARTq9inBduvuTtg"
+            },
+            "usage": {
+                "input": 0,
+                "output": 0,
+                "total": 0,
+                "unit": "TOKENS"
+            },
+            "level": "DEFAULT",
+            "statusMessage": null,
+            "parentObservationId": "5bd8962273e7ddba",
+            "promptId": null,
+            "usageDetails": {},
+            "costDetails": {},
+            "environment": "default",
+            "promptName": null,
+            "promptVersion": null,
+            "modelId": null,
+            "inputPrice": 0.0,
+            "outputPrice": 0.0,
+            "totalPrice": 0.0,
+            "calculatedInputCost": null,
+            "calculatedOutputCost": null,
+            "calculatedTotalCost": 0.0,
+            "latency": 1.0,
+            "timeToFirstToken": null,
+            "promptTokens": 0,
+            "completionTokens": 0,
+            "updatedAt": "2025-11-14T01:00:04.641Z",
+            "totalTokens": 0,
+            "projectId": "cmhenx6m80006z4075iumt8px",
+            "unit": "TOKENS",
+            "createdAt": "2025-11-14T01:00:04.589Z"
+        },
+        {
+            "id": "290b5c80c9aed3f3",
+            "traceId": "13cc6db7f2e290b54bab3061a6fc5db0",
+            "type": "GENERATION",
+            "name": "chat",
+            "startTime": "2025-11-14T01:00:03.135000Z",
+            "endTime": "2025-11-14T01:00:04.410000Z",
+            "completionStartTime": null,
+            "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+            "modelParameters": {},
+            "input": [
+                {
+                    "role": "user",
+                    "content": "[{\"text\": \"What is the status of my package\"}]"
+                },
+                {
+                    "role": "assistant",
+                    "content": "[{\"text\": \"I'll check the status of your package for you, Bob.\"}, {\"toolUse\": {\"toolUseId\": \"tooluse_sYup7HMFTFOAopB_4kgTqA\", \"name\": \"check_package_status\", \"input\": {\"user_name\": \"Bob\"}}}]"
+                },
+                {
+                    "role": "tool",
+                    "content": "[{\"toolResult\": {\"toolUseId\": \"tooluse_sYup7HMFTFOAopB_4kgTqA\", \"status\": \"success\", \"content\": [{\"text\": \"Package is ready for pickup\"}]}}]"
+                }
+            ],
+            "version": "1.10.0",
+            "metadata": {
+                "attributes": {
+                    "session.id": "test_session",
+                    "gen_ai.event.start_time": "2025-11-14T01:00:03.135749+00:00",
+                    "gen_ai.system": "strands-agents",
+                    "gen_ai.operation.name": "chat",
+                    "gen_ai.request.model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+                    "gen_ai.event.end_time": "2025-11-14T01:00:04.410065+00:00",
+                    "gen_ai.usage.prompt_tokens": "574",
+                    "gen_ai.usage.input_tokens": "574",
+                    "gen_ai.usage.completion_tokens": "62",
+                    "gen_ai.usage.output_tokens": "62",
+                    "gen_ai.usage.total_tokens": "636",
+                    "gen_ai.usage.cache_read_input_tokens": "{\"intValue\":0}",
+                    "gen_ai.usage.cache_write_input_tokens": "{\"intValue\":0}"
+                },
+                "resourceAttributes": {
+                    "telemetry.sdk.language": "python",
+                    "telemetry.sdk.name": "opentelemetry",
+                    "telemetry.sdk.version": "1.35.0",
+                    "service.name": "strands-agents",
+                    "service.version": "1.10.0"
+                },
+                "scope": {
+                    "name": "strands.telemetry.tracer",
+                    "attributes": {}
+                }
+            },
+            "output": {
+                "finish_reason": "tool_use",
+                "message": "[{\"text\": \"Great news! Your package is ready for pickup. Since it's ready, let me also check the total cost for you.\"}, {\"toolUse\": {\"toolUseId\": \"tooluse_eyRoAW-ARTq9inBduvuTtg\", \"name\": \"calculate_price\", \"input\": {}}}]"
+            },
+            "usage": {
+                "input": 574,
+                "output": 62,
+                "total": 636,
+                "unit": "TOKENS"
+            },
+            "level": "DEFAULT",
+            "statusMessage": null,
+            "parentObservationId": "5bd8962273e7ddba",
+            "promptId": null,
+            "usageDetails": {
+                "input": 574,
+                "output": 62,
+                "total": 636
+            },
+            "costDetails": {},
+            "environment": "default",
+            "promptName": null,
+            "promptVersion": null,
+            "modelId": null,
+            "inputPrice": 0.0,
+            "outputPrice": 0.0,
+            "totalPrice": 0.0,
+            "calculatedInputCost": null,
+            "calculatedOutputCost": null,
+            "calculatedTotalCost": 0.0,
+            "latency": 1275.0,
+            "timeToFirstToken": null,
+            "promptTokens": 574,
+            "completionTokens": 62,
+            "updatedAt": "2025-11-14T01:00:04.544Z",
+            "totalTokens": 636,
+            "projectId": "cmhenx6m80006z4075iumt8px",
+            "unit": "TOKENS",
+            "createdAt": "2025-11-14T01:00:04.520Z"
+        },
+        {
+            "id": "9596bbd4668349ad",
+            "traceId": "13cc6db7f2e290b54bab3061a6fc5db0",
+            "type": "SPAN",
+            "name": "execute_event_loop_cycle",
+            "startTime": "2025-11-14T01:00:01.245000Z",
+            "endTime": "2025-11-14T01:00:03.086000Z",
+            "completionStartTime": null,
+            "model": null,
+            "modelParameters": null,
+            "input": [
+                {
+                    "role": "user",
+                    "content": "[{\"text\": \"What is the status of my package\"}]"
+                }
+            ],
+            "version": "1.10.0",
+            "metadata": {
+                "attributes": {
+                    "session.id": "test_session",
+                    "gen_ai.event.start_time": "2025-11-14T01:00:01.245201+00:00",
+                    "event_loop.cycle_id": "b7e8bff4-37b4-41d2-b939-9547f56ccb24",
+                    "gen_ai.event.end_time": "2025-11-14T01:00:03.086492+00:00"
+                },
+                "resourceAttributes": {
+                    "telemetry.sdk.language": "python",
+                    "telemetry.sdk.name": "opentelemetry",
+                    "telemetry.sdk.version": "1.35.0",
+                    "service.name": "strands-agents",
+                    "service.version": "1.10.0"
+                },
+                "scope": {
+                    "name": "strands.telemetry.tracer",
+                    "attributes": {}
+                }
+            },
+            "output": {
+                "message": "[{\"text\": \"I'll check the status of your package for you, Bob.\"}, {\"toolUse\": {\"toolUseId\": \"tooluse_sYup7HMFTFOAopB_4kgTqA\", \"name\": \"check_package_status\", \"input\": {\"user_name\": \"Bob\"}}}]",
+                "tool.result": "[{\"toolResult\": {\"toolUseId\": \"tooluse_sYup7HMFTFOAopB_4kgTqA\", \"status\": \"success\", \"content\": [{\"text\": \"Package is ready for pickup\"}]}}]"
+            },
+            "usage": {
+                "input": 0,
+                "output": 0,
+                "total": 0,
+                "unit": "TOKENS"
+            },
+            "level": "DEFAULT",
+            "statusMessage": null,
+            "parentObservationId": "28b7038083b46985",
+            "promptId": null,
+            "usageDetails": {},
+            "costDetails": {},
+            "environment": "default",
+            "promptName": null,
+            "promptVersion": null,
+            "modelId": null,
+            "inputPrice": 0.0,
+            "outputPrice": 0.0,
+            "totalPrice": 0.0,
+            "calculatedInputCost": null,
+            "calculatedOutputCost": null,
+            "calculatedTotalCost": 0.0,
+            "latency": 1841.0,
+            "timeToFirstToken": null,
+            "promptTokens": 0,
+            "completionTokens": 0,
+            "updatedAt": "2025-11-14T01:00:03.188Z",
+            "totalTokens": 0,
+            "projectId": "cmhenx6m80006z4075iumt8px",
+            "unit": "TOKENS",
+            "createdAt": "2025-11-14T01:00:03.174Z"
+        },
+        {
+            "id": "bcad6196d9821f76",
+            "traceId": "13cc6db7f2e290b54bab3061a6fc5db0",
+            "type": "SPAN",
+            "name": "execute_tool check_package_status",
+            "startTime": "2025-11-14T01:00:03.022000Z",
+            "endTime": "2025-11-14T01:00:03.023000Z",
+            "completionStartTime": null,
+            "model": null,
+            "modelParameters": null,
+            "input": [
+                {
+                    "role": "tool",
+                    "content": "{\"user_name\": \"Bob\"}",
+                    "id": "tooluse_sYup7HMFTFOAopB_4kgTqA"
+                }
+            ],
+            "version": "1.10.0",
+            "metadata": {
+                "attributes": {
+                    "session.id": "test_session",
+                    "gen_ai.event.start_time": "2025-11-14T01:00:03.022945+00:00",
+                    "gen_ai.operation.name": "execute_tool",
+                    "gen_ai.system": "strands-agents",
+                    "gen_ai.tool.name": "check_package_status",
+                    "gen_ai.tool.call.id": "tooluse_sYup7HMFTFOAopB_4kgTqA",
+                    "gen_ai.event.end_time": "2025-11-14T01:00:03.023720+00:00",
+                    "tool.status": "success"
+                },
+                "resourceAttributes": {
+                    "telemetry.sdk.language": "python",
+                    "telemetry.sdk.name": "opentelemetry",
+                    "telemetry.sdk.version": "1.35.0",
+                    "service.name": "strands-agents",
+                    "service.version": "1.10.0"
+                },
+                "scope": {
+                    "name": "strands.telemetry.tracer",
+                    "attributes": {}
+                }
+            },
+            "output": {
+                "message": "[{\"text\": \"Package is ready for pickup\"}]",
+                "id": "tooluse_sYup7HMFTFOAopB_4kgTqA"
+            },
+            "usage": {
+                "input": 0,
+                "output": 0,
+                "total": 0,
+                "unit": "TOKENS"
+            },
+            "level": "DEFAULT",
+            "statusMessage": null,
+            "parentObservationId": "9596bbd4668349ad",
+            "promptId": null,
+            "usageDetails": {},
+            "costDetails": {},
+            "environment": "default",
+            "promptName": null,
+            "promptVersion": null,
+            "modelId": null,
+            "inputPrice": 0.0,
+            "outputPrice": 0.0,
+            "totalPrice": 0.0,
+            "calculatedInputCost": null,
+            "calculatedOutputCost": null,
+            "calculatedTotalCost": 0.0,
+            "latency": 1.0,
+            "timeToFirstToken": null,
+            "promptTokens": 0,
+            "completionTokens": 0,
+            "updatedAt": "2025-11-14T01:00:03.163Z",
+            "totalTokens": 0,
+            "projectId": "cmhenx6m80006z4075iumt8px",
+            "unit": "TOKENS",
+            "createdAt": "2025-11-14T01:00:03.130Z"
+        },
+        {
+            "id": "156c1779bdf680d1",
+            "traceId": "13cc6db7f2e290b54bab3061a6fc5db0",
+            "type": "GENERATION",
+            "name": "chat",
+            "startTime": "2025-11-14T01:00:01.245000Z",
+            "endTime": "2025-11-14T01:00:02.922000Z",
+            "completionStartTime": null,
+            "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+            "modelParameters": {},
+            "input": [
+                {
+                    "role": "user",
+                    "content": "[{\"text\": \"What is the status of my package\"}]"
+                }
+            ],
+            "version": "1.10.0",
+            "metadata": {
+                "attributes": {
+                    "session.id": "test_session",
+                    "gen_ai.event.start_time": "2025-11-14T01:00:01.245246+00:00",
+                    "gen_ai.system": "strands-agents",
+                    "gen_ai.operation.name": "chat",
+                    "gen_ai.request.model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+                    "gen_ai.event.end_time": "2025-11-14T01:00:02.922311+00:00",
+                    "gen_ai.usage.prompt_tokens": "482",
+                    "gen_ai.usage.input_tokens": "482",
+                    "gen_ai.usage.completion_tokens": "75",
+                    "gen_ai.usage.output_tokens": "75",
+                    "gen_ai.usage.total_tokens": "557",
+                    "gen_ai.usage.cache_read_input_tokens": "{\"intValue\":0}",
+                    "gen_ai.usage.cache_write_input_tokens": "{\"intValue\":0}"
+                },
+                "resourceAttributes": {
+                    "telemetry.sdk.language": "python",
+                    "telemetry.sdk.name": "opentelemetry",
+                    "telemetry.sdk.version": "1.35.0",
+                    "service.name": "strands-agents",
+                    "service.version": "1.10.0"
+                },
+                "scope": {
+                    "name": "strands.telemetry.tracer",
+                    "attributes": {}
+                }
+            },
+            "output": {
+                "finish_reason": "tool_use",
+                "message": "[{\"text\": \"I'll check the status of your package for you, Bob.\"}, {\"toolUse\": {\"toolUseId\": \"tooluse_sYup7HMFTFOAopB_4kgTqA\", \"name\": \"check_package_status\", \"input\": {\"user_name\": \"Bob\"}}}]"
+            },
+            "usage": {
+                "input": 482,
+                "output": 75,
+                "total": 557,
+                "unit": "TOKENS"
+            },
+            "level": "DEFAULT",
+            "statusMessage": null,
+            "parentObservationId": "9596bbd4668349ad",
+            "promptId": null,
+            "usageDetails": {
+                "input": 482,
+                "output": 75,
+                "total": 557
+            },
+            "costDetails": {},
+            "environment": "default",
+            "promptName": null,
+            "promptVersion": null,
+            "modelId": null,
+            "inputPrice": 0.0,
+            "outputPrice": 0.0,
+            "totalPrice": 0.0,
+            "calculatedInputCost": null,
+            "calculatedOutputCost": null,
+            "calculatedTotalCost": 0.0,
+            "latency": 1677.0,
+            "timeToFirstToken": null,
+            "promptTokens": 482,
+            "completionTokens": 75,
+            "updatedAt": "2025-11-14T01:00:03.112Z",
+            "totalTokens": 557,
+            "projectId": "cmhenx6m80006z4075iumt8px",
+            "unit": "TOKENS",
+            "createdAt": "2025-11-14T01:00:03.069Z"
+        }
+    ],
+    "scores": [],
+    "updatedAt": "2025-11-14T01:00:11.186Z",
+    "projectId": "cmhenx6m80006z4075iumt8px",
+    "bookmarked": false,
+    "externalId": null,
+    "createdAt": "2025-11-14T01:00:03.109Z"
+}
