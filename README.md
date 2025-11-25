@@ -24,7 +24,7 @@ pip install -e ".[test,dev]"
 
 ```python
 from strands import Agent
-from strands_evals import Case, Dataset
+from strands_evals import Case, Experiment
 from strands_evals.evaluators import OutputEvaluator
 
 # 1. Create test cases
@@ -47,8 +47,8 @@ evaluator = OutputEvaluator(
     rubric="The output should represent a reasonable answer to the input."
 )
 
-# 3. Create a dataset
-dataset = Dataset[str, str](
+# 3. Create an experiment
+experiment = Experiment[str, str](
     cases=test_cases,
     evaluator=evaluator
 )
@@ -59,7 +59,7 @@ def get_response(case: Case) -> str:
     return str(agent(case.input))
 
 # 5. Run evaluations
-report = dataset.run_evaluations(get_response)
+report = experiment.run_evaluations(get_response)
 report.run_display()
 ```
 
@@ -68,7 +68,7 @@ report.run_display()
 ```python
 from strands import Agent
 
-from strands_evals import Case, Dataset
+from strands_evals import Case, Experiment
 from strands_evals.evaluators import HelpfulnessEvaluator
 from strands_evals.telemetry import StrandsEvalsTelemetry
 
@@ -86,8 +86,8 @@ test_cases = [
 # 3. Create an evaluator
 evaluator = HelpfulnessEvaluator()
 
-# 4. Create a dataset
-dataset = Dataset[str, str](cases=test_cases, evaluator=evaluator)
+# 4. Create an experiment
+experiment = Experiment[str, str](cases=test_cases, evaluator=evaluator)
 
 # 5. Define a task function
 def user_task_function(case: Case) -> dict:
@@ -101,18 +101,18 @@ def user_task_function(case: Case) -> dict:
     return {"output": str(agent_response), "trajectory": session}
 
 # 6. Run evaluations
-report = dataset.run_evaluations(user_task_function)
+report = experiment.run_evaluations(user_task_function)
 report.run_display()
 ```
 
-## Saving and Loading Datasets
+## Saving and Loading Experiments
 
 ```python
-# Save dataset to JSON
-dataset.to_file("my_dataset", "json")
+# Save experiment to JSON
+experiment.to_file("my_experiment", "json")
 
-# Load dataset from JSON
-loaded_dataset = Dataset.from_file("./dataset_files/my_dataset.json", "json")
+# Load experiment from JSON
+loaded_experiment = Experiment.from_file("./experiment_files/my_experiment.json", "json")
 ```
 
 ## Custom Evaluators
@@ -138,7 +138,7 @@ class CustomEvaluator(Evaluator[str, str]):
         )
 
 # Use custom evaluator
-dataset = Dataset[str, str](
+experiment = Experiment[str, str](
     cases=test_cases,
     evaluator=CustomEvaluator()
 )
@@ -147,7 +147,7 @@ dataset = Dataset[str, str](
 ## Evaluating Tool Usage
 
 ```python
-from strands_evals import Case, Dataset
+from strands_evals import Case, Experiment
 from strands_evals.evaluators import TrajectoryEvaluator
 from strands_tools import calculator
 
@@ -176,19 +176,19 @@ trajectory_evaluator = TrajectoryEvaluator(
     include_inputs=True
 )
 
-# 4. Create dataset and run evaluations
-dataset = Dataset[str, str](
+# 4. Create experiment and run evaluations
+experiment = Experiment[str, str](
     cases=[test_case],
     evaluator=trajectory_evaluator
 )
 
-report = dataset.run_evaluations(get_response_with_tools)
+report = experiment.run_evaluations(get_response_with_tools)
 ```
 
-## Dataset Generation
+## Experiment Generation
 
 ```python
-from strands_evals.generators import DatasetGenerator
+from strands_evals.generators import ExperimentGenerator
 from strands_evals.evaluators import TrajectoryEvaluator
 
 # 1. Define tool context
@@ -198,19 +198,19 @@ Available tools:
 - web_search(query: str) -> str: Search the web for information
 """
 
-# 2. Generate dataset from context
-generator = DatasetGenerator[str, str](str, str)
+# 2. Generate experiment from context
+generator = ExperimentGenerator[str, str](str, str)
 
-dataset = await generator.generate_dataset(
+experiment = await generator.from_context_async(
     context=tool_context,
     num_cases=10,
-    evaluator_type=TrajectoryEvaluator,
+    evaluator=TrajectoryEvaluator,
     task_description="Math and research assistant with tool usage",
     # num_topics=3  # Optional: Distribute cases across multiple topics
 )
 
-# 3. Save generated dataset
-dataset.to_file("generated_math_research_dataset")
+# 3. Save generated experiment
+experiment.to_file("generated_math_research_experiment")
 ```
 
 ## Available Evaluators

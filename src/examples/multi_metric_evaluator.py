@@ -9,7 +9,7 @@ This toy evaluator checks multiple aspects of a response:
 Each check produces its own metric, and they're aggregated into a final score.
 """
 
-from strands_evals import Case, Dataset
+from strands_evals import Case, Experiment
 from strands_evals.evaluators import Evaluator
 from strands_evals.types import EvaluationData, EvaluationOutput
 
@@ -90,8 +90,8 @@ if __name__ == "__main__":
     evaluator = MultiAspectEvaluator(min_length=20, required_keywords=["response", "information"])
 
     # Create dataset and run
-    dataset = Dataset[str, str](cases=test_cases, evaluator=evaluator)
-    report = dataset.run_evaluations(simple_task)
+    experiment = Experiment[str, str](cases=test_cases, evaluator=evaluator)
+    report = experiment.run_evaluations(simple_task)
 
     # Show results
     print("\n=== Programmatic Access to Detailed Results ===")

@@ -3,7 +3,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from strands import Agent
 from strands_tools import calculator
 
-from strands_evals import Case, Dataset
+from strands_evals import Case, Experiment
 from strands_evals.evaluators import ToolSelectionAccuracyEvaluator
 from strands_evals.mappers import StrandsInMemorySessionMapper
 from strands_evals.telemetry import StrandsEvalsTelemetry
@@ -40,6 +40,6 @@ test_cases = [
 ]
 
 evaluator = ToolSelectionAccuracyEvaluator()
-dataset = Dataset[str, str](cases=test_cases, evaluator=evaluator)
-report = dataset.run_evaluations(user_task_function)
+experiment = Experiment[str, str](cases=test_cases, evaluator=evaluator)
+report = experiment.run_evaluations(user_task_function)
 report.run_display()

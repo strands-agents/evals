@@ -2,7 +2,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from strands import Agent
 
-from strands_evals import ActorSimulator, Case, Dataset
+from strands_evals import ActorSimulator, Case, Experiment
 from strands_evals.evaluators import HelpfulnessEvaluator
 from strands_evals.mappers import StrandsInMemorySessionMapper
 from strands_evals.telemetry import StrandsEvalsTelemetry
@@ -61,7 +61,7 @@ test_cases = [
 ]
 
 evaluator = HelpfulnessEvaluator()
-dataset = Dataset[str, str](cases=test_cases, evaluator=evaluator)
+experiment = Experiment[str, str](cases=test_cases, evaluator=evaluator)
 
-report = dataset.run_evaluations(task_function)
+report = experiment.run_evaluations(task_function)
 report.run_display()

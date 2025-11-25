@@ -4,12 +4,12 @@ from strands import Agent
 
 from strands_evals.case import Case
 from strands_evals.evaluators.output_evaluator import OutputEvaluator
-from strands_evals.generators.dataset_generator import DatasetGenerator
+from strands_evals.generators.experiment_generator import ExperimentGenerator
 
 
-async def topic_planning_dataset_generator():
+async def topic_planning_experiment_generator():
     """
-    Demonstrates dataset generation with topic planning for improved diversity.
+    Demonstrates experiment generation with topic planning for improved diversity.
 
     This function shows how to use the num_topics parameter to generate
     more diverse test cases through multi-step topic planning.
@@ -25,11 +25,11 @@ async def topic_planning_dataset_generator():
         response = await agent.invoke_async(case.input)
         return str(response)
 
-    # Step 2: Initialize the dataset generator for string types
-    generator = DatasetGenerator[str, str](str, str)
+    # Step 2: Initialize the experiment generator for string types
+    generator = ExperimentGenerator[str, str](str, str)
 
-    # Step 3: Generate dataset with topic planning for better coverage
-    dataset = await generator.from_context_async(
+    # Step 3: Generate experiment with topic planning for better coverage
+    experiment = await generator.from_context_async(
         context="""Available tools:
         - book_flight(origin, destination, date)
         - cancel_booking(confirmation_id)
@@ -42,16 +42,16 @@ async def topic_planning_dataset_generator():
         evaluator=OutputEvaluator,
     )
 
-    # Step 3.5: (Optional) Save the generated dataset for future use
-    dataset.to_file("topic_planning_travel_dataset")
+    # Step 3.5: (Optional) Save the generated experiment for future use
+    experiment.to_file("topic_planning_travel_experiment")
 
     # Step 4: Run evaluations on the generated test cases
-    report = await dataset.run_evaluations_async(get_response)
+    report = await experiment.run_evaluations_async(get_response)
     return report
 
 
 if __name__ == "__main__":
-    # python -m examples.dataset_generator.topic_planning_dataset
-    report = asyncio.run(topic_planning_dataset_generator())
+    # python -m examples.experiment_generator.topic_planning_experiment
+    report = asyncio.run(topic_planning_experiment_generator())
     report.to_file("topic_planning_travel_report", "json")
     report.run_display(include_actual_output=True)

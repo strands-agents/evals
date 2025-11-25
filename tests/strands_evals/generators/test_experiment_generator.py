@@ -3,15 +3,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from strands_evals import Case, Dataset
+from strands_evals import Case, Experiment
 from strands_evals.evaluators import Evaluator, InteractionsEvaluator, OutputEvaluator, TrajectoryEvaluator
-from strands_evals.generators import DatasetGenerator
+from strands_evals.generators import ExperimentGenerator
 from strands_evals.generators.topic_planner import Topic, TopicPlan
 
 
-def test_dataset_generator__init__():
+def test_experiment_generator__init__():
     """Test initialization with no defaults"""
-    generator = DatasetGenerator(
+    generator = ExperimentGenerator(
         str,
         int,
         trajectory_type=str,
@@ -36,9 +36,9 @@ def test_dataset_generator__init__():
     assert generator.case_system_prompt == "case system prompt"
 
 
-def test_dataset_generator__init__minimum():
+def test_experiment_generator__init__minimum():
     """Test initialization with all defaults"""
-    generator = DatasetGenerator(
+    generator = ExperimentGenerator(
         str,
         int,
     )
@@ -47,9 +47,9 @@ def test_dataset_generator__init__minimum():
 
 
 @pytest.mark.asyncio
-async def test_dataset_generator_case_worker():
+async def test_experiment_generator_case_worker():
     """Test case worker functionality"""
-    generator = DatasetGenerator(str, str)
+    generator = ExperimentGenerator(str, str)
     queue = asyncio.Queue()
     queue.put_nowait(None)
     results = []
@@ -59,7 +59,7 @@ async def test_dataset_generator_case_worker():
     mock_case_data.model_dump.return_value = {"name": "test", "input": "hello"}
     mock_agent.structured_output_async.return_value = mock_case_data
 
-    with patch("strands_evals.generators.dataset_generator.Agent", return_value=mock_agent):
+    with patch("strands_evals.generators.experiment_generator.Agent", return_value=mock_agent):
         await generator._case_worker(queue, "test prompt", [], results)
 
     assert len(results) == 1
@@ -67,16 +67,16 @@ async def test_dataset_generator_case_worker():
 
 
 @pytest.mark.asyncio
-async def test_dataset_generator_generate_cases_async():
+async def test_experiment_generator_generate_cases_async():
     """Test async case generation"""
-    generator = DatasetGenerator(str, str, max_parallel_num_cases=2)
+    generator = ExperimentGenerator(str, str, max_parallel_num_cases=2)
 
     mock_agent = AsyncMock()
     mock_case_data = MagicMock()
     mock_case_data.model_dump.return_value = {"name": "test", "input": "hello"}
     mock_agent.structured_output_async.return_value = mock_case_data
 
-    with patch("strands_evals.generators.dataset_generator.Agent", return_value=mock_agent):
+    with patch("strands_evals.generators.experiment_generator.Agent", return_value=mock_agent):
         cases = await generator.generate_cases_async("test prompt", num_cases=3)
 
     assert len(cases) == 3
@@ -84,14 +84,14 @@ async def test_dataset_generator_generate_cases_async():
 
 
 @pytest.mark.asyncio
-async def test_dataset_generator_construct_evaluator_async_output():
+async def test_experiment_generator_construct_evaluator_async_output():
     """Test constructing OutputEvaluator"""
-    generator = DatasetGenerator(str, str)
+    generator = ExperimentGenerator(str, str)
 
     mock_agent = AsyncMock()
     mock_agent.invoke_async.return_value = "Generated rubric"
 
-    with patch("strands_evals.generators.dataset_generator.Agent", return_value=mock_agent):
+    with patch("strands_evals.generators.experiment_generator.Agent", return_value=mock_agent):
         evaluator = await generator.construct_evaluator_async("test prompt", OutputEvaluator)
 
     assert isinstance(evaluator, OutputEvaluator)
@@ -99,14 +99,14 @@ async def test_dataset_generator_construct_evaluator_async_output():
 
 
 @pytest.mark.asyncio
-async def test_dataset_generator_construct_evaluator_async_trajectory():
+async def test_experiment_generator_construct_evaluator_async_trajectory():
     """Test constructing TrajectoryEvaluator"""
-    generator = DatasetGenerator(str, str)
+    generator = ExperimentGenerator(str, str)
 
     mock_agent = AsyncMock()
     mock_agent.invoke_async.return_value = "Generated rubric"
 
-    with patch("strands_evals.generators.dataset_generator.Agent", return_value=mock_agent):
+    with patch("strands_evals.generators.experiment_generator.Agent", return_value=mock_agent):
         evaluator = await generator.construct_evaluator_async("test prompt", TrajectoryEvaluator)
 
     assert isinstance(evaluator, TrajectoryEvaluator)
@@ -114,14 +114,14 @@ async def test_dataset_generator_construct_evaluator_async_trajectory():
 
 
 @pytest.mark.asyncio
-async def test_dataset_generator_construct_evaluator_async_interactions():
+async def test_experiment_generator_construct_evaluator_async_interactions():
     """Test constructing InteractionsEvaluator"""
-    generator = DatasetGenerator(str, str)
+    generator = ExperimentGenerator(str, str)
 
     mock_agent = AsyncMock()
     mock_agent.invoke_async.return_value = "Generated rubric"
 
-    with patch("strands_evals.generators.dataset_generator.Agent", return_value=mock_agent):
+    with patch("strands_evals.generators.experiment_generator.Agent", return_value=mock_agent):
         evaluator = await generator.construct_evaluator_async("test prompt", InteractionsEvaluator)
 
     assert isinstance(evaluator, InteractionsEvaluator)
@@ -129,9 +129,9 @@ async def test_dataset_generator_construct_evaluator_async_interactions():
 
 
 @pytest.mark.asyncio
-async def test_dataset_generator_construct_evaluator_async_invalid():
+async def test_experiment_generator_construct_evaluator_async_invalid():
     """Test constructing evaluator with invalid type"""
-    generator = DatasetGenerator(str, str)
+    generator = ExperimentGenerator(str, str)
 
     class CustomEvaluator(Evaluator):
         pass
@@ -141,24 +141,24 @@ async def test_dataset_generator_construct_evaluator_async_invalid():
 
 
 @pytest.mark.asyncio
-async def test_dataset_generator_from_scratch_async_no_evaluator():
-    """Test generating dataset from scratch without evaluator"""
-    generator = DatasetGenerator(str, str)
+async def test_experiment_generator_from_scratch_async_no_evaluator():
+    """Test generating experiment from scratch without evaluator"""
+    generator = ExperimentGenerator(str, str)
 
     mock_cases = [Case(name="test", input="hello")]
 
     with patch.object(generator, "generate_cases_async", return_value=mock_cases):
-        dataset = await generator.from_scratch_async(["topic1"], "test task", num_cases=1)
+        experiment = await generator.from_scratch_async(["topic1"], "test task", num_cases=1)
 
-    assert isinstance(dataset, Dataset)
-    assert dataset.cases == mock_cases
-    assert isinstance(dataset.evaluator, Evaluator)
+    assert isinstance(experiment, Experiment)
+    assert experiment.cases == mock_cases
+    assert isinstance(experiment.evaluator, Evaluator)
 
 
 @pytest.mark.asyncio
-async def test_dataset_generator_from_scratch_async_with_evaluator():
-    """Test generating dataset from scratch with evaluator"""
-    generator = DatasetGenerator(str, str)
+async def test_experiment_generator_from_scratch_async_with_evaluator():
+    """Test generating experiment from scratch with evaluator"""
+    generator = ExperimentGenerator(str, str)
 
     mock_cases = [Case(name="test", input="hello")]
     mock_evaluator = OutputEvaluator(rubric="test rubric")
@@ -167,32 +167,32 @@ async def test_dataset_generator_from_scratch_async_with_evaluator():
         patch.object(generator, "generate_cases_async", return_value=mock_cases),
         patch.object(generator, "construct_evaluator_async", return_value=mock_evaluator),
     ):
-        dataset = await generator.from_scratch_async(["topic1"], "test task", evaluator=OutputEvaluator)
+        experiment = await generator.from_scratch_async(["topic1"], "test task", evaluator=OutputEvaluator)
 
-    assert isinstance(dataset, Dataset)
-    assert dataset.cases == mock_cases
-    assert dataset.evaluator == mock_evaluator
+    assert isinstance(experiment, Experiment)
+    assert experiment.cases == mock_cases
+    assert experiment.evaluator == mock_evaluator
 
 
 @pytest.mark.asyncio
-async def test_dataset_generator_from_context_async_no_evaluator():
-    """Test generating dataset from context without evaluator"""
-    generator = DatasetGenerator(str, str)
+async def test_experiment_generator_from_context_async_no_evaluator():
+    """Test generating experiment from context without evaluator"""
+    generator = ExperimentGenerator(str, str)
 
     mock_cases = [Case(name="test", input="hello")]
 
     with patch.object(generator, "generate_cases_async", return_value=mock_cases):
-        dataset = await generator.from_context_async("test context", "test task", num_cases=1)
+        experiment = await generator.from_context_async("test context", "test task", num_cases=1)
 
-    assert isinstance(dataset, Dataset)
-    assert dataset.cases == mock_cases
-    assert isinstance(dataset.evaluator, Evaluator)
+    assert isinstance(experiment, Experiment)
+    assert experiment.cases == mock_cases
+    assert isinstance(experiment.evaluator, Evaluator)
 
 
 @pytest.mark.asyncio
-async def test_dataset_generator_from_context_async_with_evaluator():
-    """Test generating dataset from context with evaluator"""
-    generator = DatasetGenerator(str, str)
+async def test_experiment_generator_from_context_async_with_evaluator():
+    """Test generating experiment from context with evaluator"""
+    generator = ExperimentGenerator(str, str)
 
     mock_cases = [Case(name="test", input="hello")]
     mock_evaluator = OutputEvaluator(rubric="test rubric")
@@ -201,38 +201,38 @@ async def test_dataset_generator_from_context_async_with_evaluator():
         patch.object(generator, "generate_cases_async", return_value=mock_cases),
         patch.object(generator, "construct_evaluator_async", return_value=mock_evaluator),
     ):
-        dataset = await generator.from_context_async("test context", "test task", evaluator=OutputEvaluator)
+        experiment = await generator.from_context_async("test context", "test task", evaluator=OutputEvaluator)
 
-    assert isinstance(dataset, Dataset)
-    assert dataset.cases == mock_cases
-    assert dataset.evaluator == mock_evaluator
+    assert isinstance(experiment, Experiment)
+    assert experiment.cases == mock_cases
+    assert experiment.evaluator == mock_evaluator
 
 
 @pytest.mark.asyncio
-async def test_dataset_generator_from_dataset_async_generic_evaluator():
-    """Test generating dataset from existing dataset with generic evaluator"""
-    generator = DatasetGenerator(str, str)
+async def test_experiment_generator_from_experiment_async_generic_evaluator():
+    """Test generating experiment from existing experiment with generic evaluator"""
+    generator = ExperimentGenerator(str, str)
 
     source_cases = [Case(name="source", input="source_input")]
-    source_dataset = Dataset(cases=source_cases, evaluator=Evaluator())
+    source_experiment = Experiment(cases=source_cases, evaluator=Evaluator())
     mock_new_cases = [Case(name="new", input="new_input")]
 
     with patch.object(generator, "generate_cases_async", return_value=mock_new_cases):
-        dataset = await generator.from_dataset_async(source_dataset, "test task")
+        experiment = await generator.from_experiment_async(source_experiment, "test task")
 
-    assert isinstance(dataset, Dataset)
-    assert dataset.cases == mock_new_cases
-    assert isinstance(dataset.evaluator, Evaluator)
+    assert isinstance(experiment, Experiment)
+    assert experiment.cases == mock_new_cases
+    assert isinstance(experiment.evaluator, Evaluator)
 
 
 @pytest.mark.asyncio
-async def test_dataset_generator_from_dataset_async_default_evaluator():
-    """Test generating dataset from existing dataset with default evaluator"""
-    generator = DatasetGenerator(str, str)
+async def test_experiment_generator_from_experiment_async_default_evaluator():
+    """Test generating experiment from existing experiment with default evaluator"""
+    generator = ExperimentGenerator(str, str)
 
     source_cases = [Case(name="source", input="source_input")]
     source_evaluator = OutputEvaluator(rubric="source rubric")
-    source_dataset = Dataset(cases=source_cases, evaluator=source_evaluator)
+    source_experiment = Experiment(cases=source_cases, evaluator=source_evaluator)
     mock_new_cases = [Case(name="new", input="new_input")]
     mock_new_evaluator = OutputEvaluator(rubric="new rubric")
 
@@ -240,98 +240,102 @@ async def test_dataset_generator_from_dataset_async_default_evaluator():
         patch.object(generator, "generate_cases_async", return_value=mock_new_cases),
         patch.object(generator, "construct_evaluator_async", return_value=mock_new_evaluator),
     ):
-        dataset = await generator.from_dataset_async(source_dataset, "test task")
+        experiment = await generator.from_experiment_async(source_experiment, "test task")
 
-    assert isinstance(dataset, Dataset)
-    assert dataset.cases == mock_new_cases
-    assert dataset.evaluator == mock_new_evaluator
+    assert isinstance(experiment, Experiment)
+    assert experiment.cases == mock_new_cases
+    assert experiment.evaluator == mock_new_evaluator
 
 
 @pytest.mark.asyncio
-async def test_dataset_generator_update_current_dataset_async_add_cases_only():
-    """Test updating dataset by adding new cases only"""
-    generator = DatasetGenerator(str, str)
+async def test_experiment_generator_update_current_experiment_async_add_cases_only():
+    """Test updating experiment by adding new cases only"""
+    generator = ExperimentGenerator(str, str)
 
     source_cases = [Case(name="source", input="source_input")]
     source_evaluator = Evaluator()
-    source_dataset = Dataset(cases=source_cases, evaluator=source_evaluator)
+    source_experiment = Experiment(cases=source_cases, evaluator=source_evaluator)
     mock_new_cases = [Case(name="new", input="new_input")]
 
     with patch.object(generator, "generate_cases_async", return_value=mock_new_cases):
-        dataset = await generator.update_current_dataset_async(
-            source_dataset, "test task", add_new_cases=True, add_new_rubric=False
+        experiment = await generator.update_current_experiment_async(
+            source_experiment, "test task", add_new_cases=True, add_new_rubric=False
         )
 
-    assert len(dataset.cases) == 2
-    assert dataset.cases == source_cases + mock_new_cases
-    assert dataset.evaluator == source_evaluator
+    assert len(experiment.cases) == 2
+    assert experiment.cases == source_cases + mock_new_cases
+    assert experiment.evaluator == source_evaluator
 
 
 @pytest.mark.asyncio
-async def test_dataset_generator_update_current_dataset_async_add_rubric_only():
-    """Test updating dataset by adding new rubric only"""
-    generator = DatasetGenerator(str, str)
+async def test_experiment_generator_update_current_experiment_async_add_rubric_only():
+    """Test updating experiment by adding new rubric only"""
+    generator = ExperimentGenerator(str, str)
 
     source_cases = [Case(name="source", input="source_input")]
     source_evaluator = OutputEvaluator(rubric="source rubric")
-    source_dataset = Dataset(cases=source_cases, evaluator=source_evaluator)
+    source_experiment = Experiment(cases=source_cases, evaluator=source_evaluator)
     mock_new_evaluator = OutputEvaluator(rubric="new rubric")
 
     with patch.object(generator, "construct_evaluator_async", return_value=mock_new_evaluator):
-        dataset = await generator.update_current_dataset_async(
-            source_dataset, "test task", add_new_cases=False, add_new_rubric=True
+        experiment = await generator.update_current_experiment_async(
+            source_experiment, "test task", add_new_cases=False, add_new_rubric=True
         )
 
-    assert dataset.cases == source_cases
-    assert dataset.evaluator == mock_new_evaluator
+    assert experiment.cases == source_cases
+    assert experiment.evaluator == mock_new_evaluator
 
 
 @pytest.mark.asyncio
-async def test_dataset_generator_update_current_dataset_async_new_evaluator_type():
-    """Test updating dataset with new evaluator type"""
-    generator = DatasetGenerator(str, str)
+async def test_experiment_generator_update_current_experiment_async_new_evaluator_type():
+    """Test updating experiment with new evaluator type"""
+    generator = ExperimentGenerator(str, str)
 
     source_cases = [Case(name="source", input="source_input")]
     source_evaluator = OutputEvaluator(rubric="source rubric")
-    source_dataset = Dataset(cases=source_cases, evaluator=source_evaluator)
+    source_experiment = Experiment(cases=source_cases, evaluator=source_evaluator)
     mock_new_evaluator = TrajectoryEvaluator(rubric="new rubric")
 
     with patch.object(generator, "construct_evaluator_async", return_value=mock_new_evaluator):
-        dataset = await generator.update_current_dataset_async(
-            source_dataset,
+        experiment = await generator.update_current_experiment_async(
+            source_experiment,
             "test task",
             add_new_cases=False,
             add_new_rubric=True,
             new_evaluator_type=TrajectoryEvaluator,
         )
 
-    assert dataset.cases == source_cases
-    assert isinstance(dataset.evaluator, TrajectoryEvaluator)
+    assert experiment.cases == source_cases
+    assert isinstance(experiment.evaluator, TrajectoryEvaluator)
 
 
 @pytest.mark.asyncio
-async def test_dataset_generator_update_current_dataset_async_unsupported_evaluator_type():
-    """Test updating dataset with unsupported evaluator type falls back to original"""
-    generator = DatasetGenerator(str, str)
+async def test_experiment_generator_update_current_experiment_async_unsupported_evaluator_type():
+    """Test updating experiment with unsupported evaluator type falls back to original"""
+    generator = ExperimentGenerator(str, str)
 
     source_cases = [Case(name="source", input="source_input")]
     source_evaluator = OutputEvaluator(rubric="source rubric")
-    source_dataset = Dataset(cases=source_cases, evaluator=source_evaluator)
+    source_experiment = Experiment(cases=source_cases, evaluator=source_evaluator)
 
     class UnsupportedEvaluator(Evaluator):
         pass
 
-    dataset = await generator.update_current_dataset_async(
-        source_dataset, "test task", add_new_cases=False, add_new_rubric=True, new_evaluator_type=UnsupportedEvaluator
+    experiment = await generator.update_current_experiment_async(
+        source_experiment,
+        "test task",
+        add_new_cases=False,
+        add_new_rubric=True,
+        new_evaluator_type=UnsupportedEvaluator,
     )
 
-    assert dataset.cases == source_cases
-    assert dataset.evaluator == source_evaluator
+    assert experiment.cases == source_cases
+    assert experiment.evaluator == source_evaluator
 
 
-def test_dataset_generator_default_evaluators_mapping():
+def test_experiment_generator_default_evaluators_mapping():
     """Test that default evaluators are properly mapped"""
-    generator = DatasetGenerator(str, str)
+    generator = ExperimentGenerator(str, str)
 
     assert OutputEvaluator in generator._default_evaluators
     assert TrajectoryEvaluator in generator._default_evaluators
@@ -339,16 +343,16 @@ def test_dataset_generator_default_evaluators_mapping():
 
 
 @pytest.mark.asyncio
-async def test_dataset_generator_generate_cases_async_with_topics():
+async def test_experiment_generator_generate_cases_async_with_topics():
     """Test async case generation with topic planning"""
-    generator = DatasetGenerator(str, str)
+    generator = ExperimentGenerator(str, str)
 
     mock_agent = AsyncMock()
     mock_case_data = MagicMock()
     mock_case_data.model_dump.return_value = {"name": "test", "input": "hello"}
     mock_agent.structured_output_async.return_value = mock_case_data
 
-    with patch("strands_evals.generators.dataset_generator.Agent", return_value=mock_agent):
+    with patch("strands_evals.generators.experiment_generator.Agent", return_value=mock_agent):
         with patch.object(generator, "_prepare_generation_prompts", return_value=[("prompt1", 2), ("prompt2", 1)]):
             cases = await generator.generate_cases_async("test prompt", num_cases=3, num_topics=2)
 
@@ -356,9 +360,9 @@ async def test_dataset_generator_generate_cases_async_with_topics():
 
 
 @pytest.mark.asyncio
-async def test_dataset_generator_prepare_generation_prompts_with_topics():
+async def test_experiment_generator_prepare_generation_prompts_with_topics():
     """Test prompt preparation with topic planning"""
-    generator = DatasetGenerator(str, str)
+    generator = ExperimentGenerator(str, str)
 
     mock_plan = TopicPlan(
         topics=[
@@ -367,7 +371,7 @@ async def test_dataset_generator_prepare_generation_prompts_with_topics():
         ]
     )
 
-    with patch("strands_evals.generators.dataset_generator.TopicPlanner") as mock_planner_class:
+    with patch("strands_evals.generators.experiment_generator.TopicPlanner") as mock_planner_class:
         mock_planner = AsyncMock()
         mock_planner.plan_topics_async.return_value = mock_plan
         mock_planner_class.return_value = mock_planner
@@ -379,15 +383,15 @@ async def test_dataset_generator_prepare_generation_prompts_with_topics():
 
 
 @pytest.mark.asyncio
-async def test_dataset_generator_from_context_async_with_num_topics():
-    """Test generating dataset from context with num_topics parameter"""
-    generator = DatasetGenerator(str, str)
+async def test_experiment_generator_from_context_async_with_num_topics():
+    """Test generating experiment from context with num_topics parameter"""
+    generator = ExperimentGenerator(str, str)
 
     mock_cases = [Case(name="test", input="hello")]
 
     with patch.object(generator, "generate_cases_async", return_value=mock_cases) as mock_gen:
-        dataset = await generator.from_context_async("test context", "test task", num_cases=1, num_topics=3)
+        experiment = await generator.from_context_async("test context", "test task", num_cases=1, num_topics=3)
 
     mock_gen.assert_called_once()
     assert mock_gen.call_args[1]["num_topics"] == 3
-    assert isinstance(dataset, Dataset)
+    assert isinstance(experiment, Experiment)

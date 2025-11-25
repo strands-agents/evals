@@ -11,7 +11,7 @@ OutputT = TypeVar("OutputT")
 
 class Case(BaseModel, Generic[InputT, OutputT]):
     """
-    A single test case, representing a row in Dataset.
+    A single test case, representing a row in an Experiment.
 
     Each test case represents a single test scenario with inputs to test.
     Optionally, a test case may contains a name, expected outputs, expected trajectory, expected interactions

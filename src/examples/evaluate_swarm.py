@@ -4,7 +4,7 @@ import datetime
 from strands import Agent
 from strands.multiagent import Swarm
 
-from strands_evals import Case, Dataset
+from strands_evals import Case, Experiment
 from strands_evals.evaluators import InteractionsEvaluator, TrajectoryEvaluator
 from strands_evals.extractors import swarm_extractor
 
@@ -66,12 +66,12 @@ async def async_swarm_example():
     )
 
     ### Step 4: Create dataset ###
-    trajectory_dataset = Dataset(cases=[test1], evaluator=trajectory_evaluator)
-    interaction_dataset = Dataset(cases=[test1], evaluator=interaction_evaluator)
+    trajectory_experiment = Experiment(cases=[test1], evaluator=trajectory_evaluator)
+    interaction_experiment = Experiment(cases=[test1], evaluator=interaction_evaluator)
 
     ### Step 5: Run evaluation ###
-    trajectory_report = await trajectory_dataset.run_evaluations_async(sde_swarm)
-    interaction_report = await interaction_dataset.run_evaluations_async(sde_swarm)
+    trajectory_report = await trajectory_experiment.run_evaluations_async(sde_swarm)
+    interaction_report = await interaction_experiment.run_evaluations_async(sde_swarm)
     return trajectory_report, interaction_report
 
 

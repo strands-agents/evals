@@ -4,7 +4,7 @@ import datetime
 from strands import Agent
 from strands.multiagent import GraphBuilder
 
-from strands_evals import Case, Dataset
+from strands_evals import Case, Experiment
 from strands_evals.evaluators import InteractionsEvaluator, TrajectoryEvaluator
 from strands_evals.extractors import graph_extractor
 
@@ -86,11 +86,11 @@ async def async_graph_example():
     trajectory_evaluator = TrajectoryEvaluator(rubric=basic_rubric)
 
     ### Step 4: Create dataset ###
-    interaction_dataset = Dataset(cases=[test1, test2], evaluator=interaction_evaluator)
-    trajectory_evaluator = Dataset(cases=[test1, test2], evaluator=trajectory_evaluator)
+    interaction_experiment = Experiment(cases=[test1, test2], evaluator=interaction_evaluator)
+    trajectory_evaluator = Experiment(cases=[test1, test2], evaluator=trajectory_evaluator)
 
     ### Step 5: Run evaluation ###
-    interaction_report = await interaction_dataset.run_evaluations_async(research_graph)
+    interaction_report = await interaction_experiment.run_evaluations_async(research_graph)
     trajectory_report = await trajectory_evaluator.run_evaluations_async(research_graph)
 
     return trajectory_report, interaction_report

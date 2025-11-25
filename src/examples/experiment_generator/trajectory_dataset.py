@@ -5,7 +5,7 @@ from strands import Agent, tool
 from strands_evals.case import Case
 from strands_evals.evaluators import TrajectoryEvaluator
 from strands_evals.extractors import tools_use_extractor
-from strands_evals.generators import DatasetGenerator
+from strands_evals.generators import ExperimentGenerator
 from strands_evals.types import TaskOutput
 
 # Bank account balances
@@ -34,14 +34,14 @@ def collect_debt() -> list[tuple]:
     return debt
 
 
-async def trajectory_dataset_generator():
+async def trajectory_experiment_generator():
     """
-    Demonstrates generating a dataset for bank tools trajectory evaluation.
+    Demonstrates generating an experiment for bank tools trajectory evaluation.
 
     This function:
     1. Defines a task function that uses banking tools
-    2. Creates a DatasetGenerator for trajectory evaluation
-    3. Generates a dataset from banking-related topics
+    2. Creates an ExperimentGenerator for trajectory evaluation
+    3. Generates an experiment from banking-related topics
     4. Runs evaluations on the generated test cases
 
     Returns:
@@ -65,10 +65,10 @@ async def trajectory_dataset_generator():
         trajectory = tools_use_extractor.extract_agent_tools_used_from_messages(agent.messages)
         return TaskOutput(output=str(response), trajectory=trajectory)
 
-    ### Step 2: Initialize the dataset generator ###
-    generator = DatasetGenerator[str, str](str, str)
+    ### Step 2: Initialize the experiment generator ###
+    generator = ExperimentGenerator[str, str](str, str)
 
-    ### Step 3: Generate dataset with tool context ###
+    ### Step 3: Generate experiment with tool context ###
     tool_context = """
     Available banking tools:
     - get_balance(person: str) -> int: Get the balance of a bank account for a specific person
@@ -81,23 +81,23 @@ async def trajectory_dataset_generator():
     - Always report final balance after transactions
     """
 
-    dataset = await generator.from_context_async(
+    experiment = await generator.from_context_async(
         context=tool_context,
         num_cases=5,
         evaluator=TrajectoryEvaluator,
         task_description="Banking operations with balance checks, spending, and debt collection",
     )
 
-    ### Step 3.5: (Optional) Save the generated dataset ###
-    dataset.to_file("generated_bank_trajectory_dataset")
+    ### Step 3.5: (Optional) Save the generated experiment ###
+    experiment.to_file("generated_bank_trajectory_experiment")
 
     ### Step 4: Run evaluations on the generated test cases ###
-    report = await dataset.run_evaluations_async(bank_task)
+    report = await experiment.run_evaluations_async(bank_task)
     return report
 
 
 if __name__ == "__main__":
-    # python -m examples.dataset_generator.trajectory_dataset
-    report = asyncio.run(trajectory_dataset_generator())
+    # python -m examples.experiment_generator.trajectory_experiment
+    report = asyncio.run(trajectory_experiment_generator())
     report.to_file("generated_bank_trajectory_report", "json")
     report.run_display(include_actual_trajectory=True)

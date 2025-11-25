@@ -3,7 +3,7 @@ import datetime
 
 from strands import Agent, tool
 
-from strands_evals import Case, Dataset
+from strands_evals import Case, Experiment
 from strands_evals.evaluators import TrajectoryEvaluator
 from strands_evals.extractors import tools_use_extractor
 from strands_evals.types import TaskOutput
@@ -66,7 +66,7 @@ async def async_descriptive_tools_trajectory_example():
        and returns both the response and the tools used
     2. Creates test cases with expected outputs and tool trajectories
     3. Creates a TrajectoryEvaluator to assess tool usage
-    4. Creates a dataset with the test cases and evaluator
+    4. Creates an experiment with the test cases and evaluator
     5. Runs evaluations and returns the report
 
     Returns:
@@ -131,14 +131,14 @@ async def async_descriptive_tools_trajectory_example():
         include_inputs=True,
     )
 
-    ### Step 4: Create dataset ###
-    dataset = Dataset[str, str](cases=[case1, case2, case3, case4], evaluator=trajectory_evaluator)
+    ### Step 4: Create experiment ###
+    experiment = Experiment[str, str](cases=[case1, case2, case3, case4], evaluator=trajectory_evaluator)
 
-    ### Step 4.5: (Optional) Save the dataset ###
-    dataset.to_file("async_bank_tools_trajectory_dataset", "json")
+    ### Step 4.5: (Optional) Save the experiment ###
+    experiment.to_file("async_bank_tools_trajectory_experiment", "json")
 
     ### Step 5: Run evaluation ###
-    report = await dataset.run_evaluations_async(get_response)
+    report = await experiment.run_evaluations_async(get_response)
     return report
 
 

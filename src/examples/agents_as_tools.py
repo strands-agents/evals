@@ -3,7 +3,7 @@ import datetime
 
 from strands import Agent, tool
 
-from strands_evals import Case, Dataset
+from strands_evals import Case, Experiment
 from strands_evals.evaluators import InteractionsEvaluator, TrajectoryEvaluator
 from strands_evals.extractors import tools_use_extractor
 from strands_evals.types import Interaction
@@ -190,8 +190,8 @@ async def async_agents_as_tools_example():
     )
 
     ### Step 4: Create dataset ###
-    dataset_trajectory = Dataset(cases=test_cases, evaluator=trajectory_evaluator)
-    dataset_interactions = Dataset(cases=test_cases, evaluator=interaction_evaluator)
+    dataset_trajectory = Experiment(cases=test_cases, evaluator=trajectory_evaluator)
+    dataset_interactions = Experiment(cases=test_cases, evaluator=interaction_evaluator)
 
     ### Step 5: Run the evaluation ###
     report_trajectory = await dataset_trajectory.run_evaluations_async(customer_support)

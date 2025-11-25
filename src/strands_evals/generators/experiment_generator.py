@@ -10,7 +10,7 @@ from typing_extensions import Any, Generic, TypeVar
 from strands_evals.evaluators import Evaluator, InteractionsEvaluator, OutputEvaluator, TrajectoryEvaluator
 
 from ..case import Case
-from ..dataset import Dataset
+from ..experiment import Experiment
 from ..types.evaluation import Interaction
 from .prompt_template.prompt_templates import generate_case_template as CASE_SYSTEM_PROMPT
 from .prompt_template.prompt_templates import generate_rubric_template as RUBRIC_SYSTEM_PROMPT
@@ -22,9 +22,9 @@ InputT = TypeVar("InputT")
 OutputT = TypeVar("OutputT")
 
 
-class DatasetGenerator(Generic[InputT, OutputT]):
+class ExperimentGenerator(Generic[InputT, OutputT]):
     """
-    Generates evaluation datasets with test cases and rubrics for LLM-based evaluators for agent assessment.
+    Generates evaluation experiments with test cases and rubrics for LLM-based evaluators for agent assessment.
 
     This class creates structured test cases and evaluation rubrics tailored to specific tasks
     and domains, enabling comprehensive evaluation of agents' performance.
@@ -58,7 +58,7 @@ class DatasetGenerator(Generic[InputT, OutputT]):
         case_system_prompt: str = CASE_SYSTEM_PROMPT,
     ):
         """
-        Initialize the dataset generator with configuration for test case structure.
+        Initialize the experiment generator with configuration for test case structure.
 
         Args:
             input_type: Type of input data for test cases (e.g., str, dict)
@@ -279,9 +279,9 @@ class DatasetGenerator(Generic[InputT, OutputT]):
 
     async def from_scratch_async(
         self, topics: list[str], task_description: str, num_cases: int = 5, evaluator: Evaluator = None
-    ) -> Dataset:
+    ) -> Experiment:
         """
-        Generate a dataset from scratch based on specified topics and task description.
+        Generate an experiment from scratch based on specified topics and task description.
 
         Creates diverse test cases covering the given topics for the specified task,
         with optional evaluator and rubric generation.
@@ -293,7 +293,7 @@ class DatasetGenerator(Generic[InputT, OutputT]):
             evaluator: Optional evaluator class for assessment (generates rubric if provided).
 
         Returns:
-            Dataset containing generated test cases and evaluator. Use the generic Evaluator as placeholder
+            Experiment containing generated test cases and evaluator. Use the generic Evaluator as placeholder
             if no evaluator is passed in.
         """
         topics_str = " ".join(topics)
@@ -309,9 +309,9 @@ class DatasetGenerator(Generic[InputT, OutputT]):
                 prompt=rubric_prompt,
                 evaluator=evaluator,
             )
-            return Dataset(cases=cases, evaluator=_evaluator)
+            return Experiment(cases=cases, evaluator=_evaluator)
         else:
-            return Dataset(cases=cases)
+            return Experiment(cases=cases)
 
     async def from_context_async(
         self,
@@ -320,9 +320,9 @@ class DatasetGenerator(Generic[InputT, OutputT]):
         num_cases: int = 5,
         evaluator: Evaluator = None,
         num_topics: int | None = None,
-    ) -> Dataset:
+    ) -> Experiment:
         """
-        Generate a dataset based on specific context that test cases should reference.
+        Generate an experiment based on specific context that test cases should reference.
 
         Creates test cases that can be answered using the provided context,
         useful for testing knowledge retrieval, context understanding, or domain-specific tasks.
@@ -338,7 +338,7 @@ class DatasetGenerator(Generic[InputT, OutputT]):
             num_topics: Optional number of topics for diverse coverage
 
         Returns:
-            Dataset containing context-based test cases and evaluator. Use the generic Evaluator as placeholder
+            Experiment containing context-based test cases and evaluator. Use the generic Evaluator as placeholder
             if no evaluator is passed in.
         """
         cases = await self.generate_cases_async(
@@ -353,22 +353,26 @@ class DatasetGenerator(Generic[InputT, OutputT]):
                 f"""{task_description} """,
                 evaluator=evaluator,
             )
-            return Dataset(cases=cases, evaluator=_evaluator)
+            return Experiment(cases=cases, evaluator=_evaluator)
         else:
-            return Dataset(cases=cases)
+            return Experiment(cases=cases)
 
-    async def from_dataset_async(
-        self, source_dataset: Dataset, task_description: str, num_cases: int = 5, extra_information: str | None = None
-    ) -> Dataset:
+    async def from_experiment_async(
+        self,
+        source_experiment: Experiment,
+        task_description: str,
+        num_cases: int = 5,
+        extra_information: str | None = None,
+    ) -> Experiment:
         """
-        Generate a new dataset using an existing dataset as reference.
+        Generate a new experiment using an existing experiment as reference.
 
-        Creates new test cases that are similar in style and structure to the source dataset,
-        while adapting them for the specified task. If the source dataset uses a default
+        Creates new test cases that are similar in style and structure to the source experiment,
+        while adapting them for the specified task. If the source experiment uses a default
         evaluator with a rubric, generates a new rubric based on the original.
 
         Args:
-            source_dataset: Original dataset to use as reference for generating new test cases
+            source_experiment: Original experiment to use as reference for generating new test cases
             task_description: Description of the task the AI system will perform
             num_cases: Number of test cases to generate
             extra_information: Optional additional context or requirements for the new test cases and rubric,
@@ -376,12 +380,12 @@ class DatasetGenerator(Generic[InputT, OutputT]):
                 for generating interaction and/or trajectory.
 
         Returns:
-            A new Dataset containing test cases inspired by the source dataset but adapted
+            A new Experiment containing test cases inspired by the source experiment but adapted
             for the new task. Uses an updated evaluator with new rubric if the source
             evaluator is a default type, otherwise uses generic Evaluator.
         """
-        source_cases = source_dataset.cases
-        source_evaluator = source_dataset.evaluator
+        source_cases = source_experiment.cases
+        source_evaluator = source_experiment.evaluator
 
         # construct messages to initialize the agent with context about the previous test cases
         messages = [{"role": "user", "content": [{"text": "Here are the reference test cases: "}]}]
@@ -410,42 +414,42 @@ class DatasetGenerator(Generic[InputT, OutputT]):
                 message_history=[{"role": "user", "content": [{"text": source_rubric}]}],
             )
 
-        return Dataset(cases=new_cases, evaluator=new_evaluator)
+        return Experiment(cases=new_cases, evaluator=new_evaluator)
 
-    async def update_current_dataset_async(
+    async def update_current_experiment_async(
         self,
-        source_dataset: Dataset,
+        source_experiment: Experiment,
         task_description: str,
         num_cases: int = 5,
         context: str | None = None,
         add_new_cases: bool = True,
         add_new_rubric: bool = True,
         new_evaluator_type: type | None = None,
-    ) -> Dataset:
+    ) -> Experiment:
         """
-        Update an existing dataset by adding new test cases and/or updating the evaluator.
+        Update an existing experiment by adding new test cases and/or updating the evaluator.
 
-        Extends the source dataset with additional test cases that complement the existing ones,
-        and optionally updates the evaluation rubric. Useful for iteratively improving datasets
+        Extends the source experiment with additional test cases that complement the existing ones,
+        and optionally updates the evaluation rubric. Useful for iteratively improving experiments
         or adapting them to new requirements while preserving the original test cases.
 
         Args:
-            source_dataset: Original dataset to extend and update
+            source_experiment: Original experiment to extend and update
             task_description: Description of the task the AI system will perform
             num_cases: Number of new test cases to add (if add_new_cases is True)
             context: Additional context or requirements for new test cases and rubric,
                 be sure to include as much information as you can about tools or sub-agents
                 for generating interaction and/or trajectory.
-            add_new_cases: Whether to generate and add new test cases to the dataset
+            add_new_cases: Whether to generate and add new test cases to the experiment
             add_new_rubric: Whether to generate a new evaluation rubric
             new_evaluator_type: Optional new evaluator type to use instead of the source evaluator type
 
         Returns:
-            Updated Dataset containing original cases plus new cases (if requested) and
+            Updated Experiment containing original cases plus new cases (if requested) and
             updated evaluator with new rubric (if requested and evaluator supports it).
         """
-        source_cases = source_dataset.cases
-        source_evaluator = source_dataset.evaluator
+        source_cases = source_experiment.cases
+        source_evaluator = source_experiment.evaluator
 
         if add_new_cases:
             # construct messages to initialize the agent with context about the previous test cases
@@ -483,7 +487,7 @@ class DatasetGenerator(Generic[InputT, OutputT]):
             else:  # use the original if it's not supported
                 new_evaluator = source_evaluator
 
-        return Dataset(
+        return Experiment(
             cases=source_cases + new_cases if add_new_cases else source_cases,
             evaluator=new_evaluator if add_new_rubric else source_evaluator,
         )

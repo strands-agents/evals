@@ -7,7 +7,7 @@ from langchain.evaluation.criteria import CriteriaEvalChain
 from langchain_aws import BedrockLLM
 from strands import Agent
 
-from strands_evals import Case, Dataset
+from strands_evals import Case, Experiment
 from strands_evals.evaluators import Evaluator
 from strands_evals.types import EvaluationData, EvaluationOutput
 
@@ -77,15 +77,15 @@ def third_party_example():
             )
 
     ### Step 4: Create dataset ###
-    dataset = Dataset[str, str](
+    experiment = Experiment[str, str](
         cases=[test_case1, test_case2, test_case3, test_case4], evaluator=LangChainCriteriaEvaluator()
     )
 
     ### Step 4.5: (Optional) Save the dataset ###
-    dataset.to_file("third_party_dataset", "json")
+    experiment.to_file("third_party_dataset", "json")
 
     ### Step 5: Run evaluation ###
-    report = dataset.run_evaluations(get_response)
+    report = experiment.run_evaluations(get_response)
     return report
 
 
@@ -160,15 +160,15 @@ async def async_third_party_example():
             return self.evaluate(evaluation_case)
 
     ### Step 4: Create dataset ###
-    dataset = Dataset[str, str](
+    experiment = Experiment[str, str](
         cases=[test_case1, test_case2, test_case3, test_case4], evaluator=LangChainCriteriaEvaluator()
     )
 
     ### Step 4.5: (Optional) Save the dataset ###
-    dataset.to_file("async_third_party_dataset", "json")
+    experiment.to_file("async_third_party_dataset", "json")
 
     ### Step 5: Run evaluation ###
-    report = await dataset.run_evaluations_async(get_response)
+    report = await experiment.run_evaluations_async(get_response)
     return report
 
 

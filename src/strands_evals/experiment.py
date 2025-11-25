@@ -19,24 +19,23 @@ from .types.trace import AttributeValue
 InputT = TypeVar("InputT")
 OutputT = TypeVar("OutputT")
 
-
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 
-class Dataset(Generic[InputT, OutputT]):
+class Experiment(Generic[InputT, OutputT]):
     """
-    A collection of test cases, representing a dataset.
+    An evaluation experiment containing test cases and an evaluator.
 
-    Dataset organizes a collection of test cases and evaluate them all with
+    Experiment organizes a collection of test cases and evaluates them all with
     the defined evaluator on some task.
 
     Attributes:
-        cases: A list of test cases in the dataset.
+        cases: A list of test cases in the experiment.
         evaluator: The evaluator to be used on the test cases.
 
     Example:
-        dataset = Dataset[str, str](
+        experiment = Experiment[str, str](
             cases=[
                 Case(name="Simple Knowledge",
                         input="What is the capital of France?",
@@ -70,13 +69,13 @@ class Dataset(Generic[InputT, OutputT]):
     @property
     def cases(self) -> list[Case[InputT, OutputT]]:
         """
-        Get a deep copy of all test cases in the dataset.
+        Get a deep copy of all test cases in the experiment.
 
         Returns deep copies to prevent accidental mutation of the original test cases.
-        Users can safely modify the returned cases without affecting the dataset.
+        Users can safely modify the returned cases without affecting the experiment.
 
         Returns:
-            List of Case objects (deep copies) containing all test cases in the dataset
+            List of Case objects (deep copies) containing all test cases in the experiment
         """
         return [case.model_copy(deep=True) for case in self._cases]
 
@@ -86,17 +85,17 @@ class Dataset(Generic[InputT, OutputT]):
         Get the evaluator used for assessing test case performance.
 
         Returns:
-            The evaluator instance configured for this dataset
+            The evaluator instance configured for this experiment
         """
         return self._evaluator
 
     @cases.setter
     def cases(self, new_cases: list[Case[InputT, OutputT]]):
         """
-        Set the test cases for this dataset.
+        Set the test cases for this experiment.
 
         Args:
-            new_cases: List of Case objects to use as the dataset's test cases
+            new_cases: List of Case objects to use as the experiment's test cases
         """
         self._cases = new_cases
 
@@ -399,19 +398,19 @@ class Dataset(Generic[InputT, OutputT]):
 
     def to_dict(self) -> dict:
         """
-        Convert the dataset to a dictionary.
+        Convert the experiment to a dictionary.
 
         Return:
-            A dictionary representation of the dataset.
+            A dictionary representation of the experiment.
         """
         return {"cases": [case.model_dump() for case in self._cases], "evaluator": self.evaluator.to_dict()}
 
     def to_file(self, path: str):
         """
-        Write the dataset to a JSON file.
+        Write the experiment to a JSON file.
 
         Args:
-            path: The file path where the dataset will be saved. Can be:
+            path: The file path where the experiment will be saved. Can be:
                   - A filename only (e.g., "foo.json" or "foo") - saves in current working directory
                   - A relative path (e.g., "relative_path/foo.json") - saves relative to current working directory
                   - An absolute path (e.g., "/path/to/dir/foo.json") - saves in exact directory
@@ -423,7 +422,7 @@ class Dataset(Generic[InputT, OutputT]):
             ValueError: If the path has a non-JSON extension.
         """
         file_path = Path(path)
-        
+
         if file_path.suffix:
             if file_path.suffix != ".json":
                 raise ValueError(
@@ -441,14 +440,14 @@ class Dataset(Generic[InputT, OutputT]):
     @classmethod
     def from_dict(cls, data: dict, custom_evaluators: list[type[Evaluator]] | None = None):
         """
-        Create a dataset from a dictionary.
+        Create an experiment from a dictionary.
 
         Args:
-            data: A dictionary representation of the dataset.
+            data: A dictionary representation of the experiment.
             custom_evaluators: A list of relevant custom evaluators.
 
         Return:
-            A Dataset object.
+            An Experiment object.
         """
         custom_evaluators = custom_evaluators or []
         cases: list[Case] = [Case.model_validate(case_data) for case_data in data["cases"]]
@@ -483,20 +482,20 @@ class Dataset(Generic[InputT, OutputT]):
     @classmethod
     def from_file(cls, path: str, custom_evaluators: list[type[Evaluator]] | None = None):
         """
-        Create a dataset from a JSON file.
+        Create an experiment from a JSON file.
 
         Args:
             path: Path to the JSON file.
             custom_evaluators: A list of relevant custom evaluators.
 
         Return:
-            A Dataset object.
+            An Experiment object.
 
         Raises:
             ValueError: If the file does not have a .json extension.
         """
         file_path = Path(path)
-        
+
         if file_path.suffix != ".json":
             raise ValueError(
                 f"Only .json format is supported. Got file: {path}. Please provide a path with .json extension."
@@ -504,5 +503,5 @@ class Dataset(Generic[InputT, OutputT]):
 
         with open(file_path, "r") as f:
             data = json.load(f)
-        
+
         return cls.from_dict(data, custom_evaluators)

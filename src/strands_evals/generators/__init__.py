@@ -1,3 +1,3 @@
-from .dataset_generator import DatasetGenerator
+from .experiment_generator import ExperimentGenerator
 
-__all__ = ["DatasetGenerator"]
+__all__ = ["ExperimentGenerator"]

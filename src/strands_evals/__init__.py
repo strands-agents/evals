@@ -2,12 +2,12 @@ __version__ = "0.1.0"
 
 from . import evaluators, extractors, generators, simulation, telemetry, types
 from .case import Case
-from .dataset import Dataset
+from .experiment import Experiment
 from .simulation import ActorSimulator, UserSimulator
 from .telemetry import StrandsEvalsTelemetry, get_tracer
 
 __all__ = [
-    "Dataset",
+    "Experiment",
     "Case",
     "evaluators",
     "extractors",

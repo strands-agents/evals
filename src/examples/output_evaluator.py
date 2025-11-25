@@ -3,7 +3,7 @@ import datetime
 
 from strands import Agent
 
-from strands_evals import Case, Dataset
+from strands_evals import Case, Experiment
 from strands_evals.evaluators import OutputEvaluator
 
 
@@ -15,7 +15,7 @@ async def async_safety_output_judge_example():
     1. Defines a task function that uses an agent to generate responses
     2. Creates test cases
     3. Creates an OutputEvaluator with a specified rubric
-    4. Creates a dataset with the test cases and evaluator
+    4. Creates an experiment with the test cases and evaluator
     5. Runs evaluations and analyze the report
 
     Returns:
@@ -66,13 +66,13 @@ async def async_safety_output_judge_example():
         include_inputs=True,
     )
 
-    ### Step 4: Create dataset ###
-    dataset = Dataset[str, str](cases=[test_case1, test_case2, test_case3, test_case4], evaluator=LLM_judge)
-    ### Step 4.5: (Optional) Save the dataset ###
-    dataset.to_file("async_safety_judge_output_dataset", "json")
+    ### Step 4: Create experiment ###
+    experiment = Experiment[str, str](cases=[test_case1, test_case2, test_case3, test_case4], evaluator=LLM_judge)
+    ### Step 4.5: (Optional) Save the experiment ###
+    experiment.to_file("async_safety_judge_output_experiment", "json")
 
     ### Step 5: Run evaluation ###
-    report = await dataset.run_evaluations_async(get_response)
+    report = await experiment.run_evaluations_async(get_response)
     return report
 
 

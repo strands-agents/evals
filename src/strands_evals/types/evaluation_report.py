@@ -202,7 +202,7 @@ class EvaluationReport(BaseModel):
             ValueError: If the path has a non-JSON extension.
         """
         file_path = Path(path)
-        
+
         if file_path.suffix:
             if file_path.suffix != ".json":
                 raise ValueError(
@@ -232,7 +232,7 @@ class EvaluationReport(BaseModel):
             ValueError: If the file does not have a .json extension.
         """
         file_path = Path(path)
-        
+
         if file_path.suffix != ".json":
             raise ValueError(
                 f"Only .json format is supported. Got file: {path}. Please provide a path with .json extension."
@@ -240,5 +240,5 @@ class EvaluationReport(BaseModel):
 
         with open(file_path, "r") as f:
             data = json.load(f)
-        
+
         return cls.from_dict(data)
