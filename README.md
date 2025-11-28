@@ -1,14 +1,105 @@
-# Strands Evaluation
+<div align="center">
+  <div>
+    <a href="https://strandsagents.com">
+      <img src="https://strandsagents.com/latest/assets/logo-github.svg" alt="Strands Agents" width="55px" height="105px">
+    </a>
+  </div>
 
-## Setup
+  <h1>
+    Strands Evaluation
+  </h1>
 
-### Installation
+  <h2>
+    A comprehensive evaluation framework for AI agents and LLM applications.
+  </h2>
+
+  <div align="center">
+    <a href="https://github.com/strands-agents/evals/graphs/commit-activity"><img alt="GitHub commit activity" src="https://img.shields.io/github/commit-activity/m/strands-agents/evals"/></a>
+    <a href="https://github.com/strands-agents/evals/issues"><img alt="GitHub open issues" src="https://img.shields.io/github/issues/strands-agents/evals"/></a>
+    <a href="https://github.com/strands-agents/evals/pulls"><img alt="GitHub open pull requests" src="https://img.shields.io/github/issues-pr/strands-agents/evals"/></a>
+    <a href="https://github.com/strands-agents/evals/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/strands-agents/evals"/></a>
+    <a href="https://pypi.org/project/strands-agents-evals/"><img alt="PyPI version" src="https://img.shields.io/pypi/v/strands-agents-evals"/></a>
+    <a href="https://python.org"><img alt="Python versions" src="https://img.shields.io/pypi/pyversions/strands-agents-evals"/></a>
+  </div>
+  
+  <p>
+    <a href="https://strandsagents.com/">Documentation</a>
+    ◆ <a href="https://github.com/strands-agents/samples">Samples</a>
+    ◆ <a href="https://github.com/strands-agents/sdk-python">Python SDK</a>
+    ◆ <a href="https://github.com/strands-agents/tools">Tools</a>
+    ◆ <a href="https://github.com/strands-agents/evals">Evaluations</a>
+  </p>
+</div>
+
+Strands Evaluation is a powerful framework for evaluating AI agents and LLM applications. From simple output validation to complex multi-agent interaction analysis, trajectory evaluation, and automated experiment generation, Strands Evaluation provides comprehensive tools to measure and improve your AI systems.
+
+## Feature Overview
+
+- **Multiple Evaluation Types**: Output evaluation, trajectory analysis, tool usage assessment, and interaction evaluation
+- **LLM-as-a-Judge**: Built-in evaluators using language models for sophisticated assessment with structured scoring
+- **Trace-based Evaluation**: Analyze agent behavior through OpenTelemetry execution traces
+- **Automated Experiment Generation**: Generate comprehensive test suites from context descriptions
+- **Custom Evaluators**: Extensible framework for domain-specific evaluation logic
+- **Experiment Management**: Save, load, and version your evaluation experiments with JSON serialization
+- **Built-in Scoring Tools**: Helper functions for exact, in-order, and any-order trajectory matching
+
+## Quick Start
+
 ```bash
-# Create and activate a virtual environment (recommended)
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+# Install Strands Evaluation
+pip install strands-agents-evals
+```
 
-# Install the package in development mode with dependencies
+```python
+from strands import Agent
+from strands_evals import Case, Experiment
+from strands_evals.evaluators import OutputEvaluator
+
+# Create test cases
+test_cases = [
+    Case[str, str](
+        name="knowledge-1",
+        input="What is the capital of France?",
+        expected_output="The capital of France is Paris.",
+        metadata={"category": "knowledge"}
+    )
+]
+
+# Create evaluator with custom rubric
+evaluator = OutputEvaluator(
+    rubric="""
+    Evaluate based on:
+    1. Accuracy - Is the information correct?
+    2. Completeness - Does it fully answer the question?
+    3. Clarity - Is it easy to understand?
+    
+    Score 1.0 if all criteria are met excellently.
+    Score 0.5 if some criteria are partially met.
+    Score 0.0 if the response is inadequate.
+    """
+)
+
+# Create experiment and run evaluation
+experiment = Experiment[str, str](cases=test_cases, evaluator=evaluator)
+
+def get_response(case: Case) -> str:
+    agent = Agent(callback_handler=None)
+    return str(agent(case.input))
+
+report = experiment.run_evaluations(get_response)
+report.run_display()
+```
+
+## Installation
+
+Ensure you have Python 3.10+ installed, then:
+
+```bash
+# Create and activate virtual environment
+python -m venv .venv
+source .venv/bin/activate  # On Windows use: .venv\Scripts\activate
+
+# Install in development mode
 pip install -e .
 
 # Install with test dependencies
@@ -18,211 +109,247 @@ pip install -e ".[test]"
 pip install -e ".[test,dev]"
 ```
 
-## Basic Usage
+## Features at a Glance
 
-### OutuptEvaluator (LLM judge)
+### Output Evaluation with Custom Rubrics
+
+Evaluate agent responses using LLM-as-a-judge with flexible scoring criteria:
 
 ```python
-from strands import Agent
-from strands_evals import Case, Experiment
 from strands_evals.evaluators import OutputEvaluator
 
-# 1. Create test cases
-test_cases = [
-    Case[str, str](
-        name="knowledge-1",
-        input="What is the capital of France?",
-        expected_output="The capital of France is Paris.",
-        metadata={"category": "knowledge"}
-    ),
-    Case[str, str](
-        name="knowledge-2",
-        input="What color is the ocean?",
-        metadata={"category": "knowledge"}
-    )
-]
-
-# 2. Create an evaluator
 evaluator = OutputEvaluator(
-    rubric="The output should represent a reasonable answer to the input."
-)
-
-# 3. Create an experiment
-experiment = Experiment[str, str](
-    cases=test_cases,
-    evaluator=evaluator
-)
-
-# 4. Define a task function
-def get_response(case: Case) -> str:
-    agent = Agent(callback_handler=None)
-    return str(agent(case.input))
-
-# 5. Run evaluations
-report = experiment.run_evaluations(get_response)
-report.run_display()
-```
-
-### Trace-based Evaluator
-
-```python
-from strands import Agent
-
-from strands_evals import Case, Experiment
-from strands_evals.evaluators import HelpfulnessEvaluator
-from strands_evals.telemetry import StrandsEvalsTelemetry
-
-
-# 1. Set up the tracer provider with in_memory_exporter
-telemetry = StrandsEvalsTelemetry().setup_in_memory_exporter()
-
-
-# 2. Create test cases
-test_cases = [
-    Case[str, str](name="knowledge-1", input="What is the capital of France?", metadata={"category": "knowledge"}),
-    Case[str, str](name="knowledge-2", input="What color is the ocean?", metadata={"category": "knowledge"}),
-]
-
-# 3. Create an evaluator
-evaluator = HelpfulnessEvaluator()
-
-# 4. Create an experiment
-experiment = Experiment[str, str](cases=test_cases, evaluator=evaluator)
-
-# 5. Define a task function
-def user_task_function(case: Case) -> dict:
-    agent = Agent(callback_handler=None)
-    agent_response = agent(case.input)
-    finished_spans = telemetry.memory_exporter.get_finished_spans()
-    
-    mapper = StrandsInMemorySessionMapper()
-    session = mapper.map_to_session(finished_spans, session_id="test-session")
-
-    return {"output": str(agent_response), "trajectory": session}
-
-# 6. Run evaluations
-report = experiment.run_evaluations(user_task_function)
-report.run_display()
-```
-
-## Saving and Loading Experiments
-
-```python
-# Save experiment to JSON
-experiment.to_file("my_experiment", "json")
-
-# Load experiment from JSON
-loaded_experiment = Experiment.from_file("./experiment_files/my_experiment.json", "json")
-```
-
-## Custom Evaluators
-
-```python
-from strands_evals.evaluators import Evaluator
-from strands_evals.types import EvaluationData, EvaluationOutput
-
-class CustomEvaluator(Evaluator[str, str]):
-    def evaluate(self, evaluation_case: EvaluationData[str, str]) -> EvaluationOutput:
-        # Custom evaluation logic
-        if evaluation_case.expected_output in evaluation_case.actual_output:
-            score = 1.0
-            test_pass = True
-        else:
-            score = 0.0
-            test_pass = False
-            
-        return EvaluationOutput(
-            score=score,
-            test_pass=test_pass,
-            reason="Custom evaluation reason"
-        )
-
-# Use custom evaluator
-experiment = Experiment[str, str](
-    cases=test_cases,
-    evaluator=CustomEvaluator()
+    rubric="Score 1.0 for accurate, complete responses. Score 0.5 for partial answers. Score 0.0 for incorrect or unhelpful responses.",
+    include_inputs=True,  # Include context in evaluation
+    model="us.anthropic.claude-sonnet-4-20250514-v1:0"  # Custom judge model
 )
 ```
 
-## Evaluating Tool Usage
+### Trajectory Evaluation with Built-in Scoring
+
+Analyze agent tool usage and action sequences with helper scoring functions:
 
 ```python
-from strands_evals import Case, Experiment
 from strands_evals.evaluators import TrajectoryEvaluator
+from strands_evals.extractors import tools_use_extractor
 from strands_tools import calculator
 
-# 1. Define task that returns tool usage
 def get_response_with_tools(case: Case) -> dict:
     agent = Agent(tools=[calculator])
     response = agent(case.input)
     
-    return {
-        "output": str(response),
-        "trajectory": list(response.metrics.tool_metrics.keys())
-    }
+    # Extract trajectory efficiently to prevent context overflow
+    trajectory = tools_use_extractor.extract_agent_tools_used_from_messages(agent.messages)
+    
+    # Update evaluator with tool descriptions
+    evaluator.update_trajectory_description(
+        tools_use_extractor.extract_tools_description(agent, is_short=True)
+    )
+    
+    return {"output": str(response), "trajectory": trajectory}
 
-# 2. Create test cases with expected tool trajectories
-test_case = Case[str, str](
-    name="calculator-1",
-    input="What is the square root of 9?",
-    expected_output="The square root of 9 is 3.",
-    expected_trajectory=["calculator"],
-    metadata={"category": "math"}
+# Evaluator includes built-in scoring tools: exact_match_scorer, in_order_match_scorer, any_order_match_scorer
+evaluator = TrajectoryEvaluator(
+    rubric="Score 1.0 if correct tools used in proper sequence. Use scoring tools to verify trajectory matches."
 )
-
-# 3. Create trajectory evaluator
-trajectory_evaluator = TrajectoryEvaluator(
-    rubric="Scoring should measure how well the agent uses appropriate tools for the given task.",
-    include_inputs=True
-)
-
-# 4. Create experiment and run evaluations
-experiment = Experiment[str, str](
-    cases=[test_case],
-    evaluator=trajectory_evaluator
-)
-
-report = experiment.run_evaluations(get_response_with_tools)
 ```
 
-## Experiment Generation
+### Trace-based Helpfulness Evaluation
+
+Evaluate agent helpfulness using OpenTelemetry traces with seven-level scoring:
+
+```python
+from strands_evals.evaluators import HelpfulnessEvaluator
+from strands_evals.telemetry import StrandsEvalsTelemetry
+from strands_evals.mappers import StrandsInMemorySessionMapper
+
+# Setup telemetry for trace capture
+telemetry = StrandsEvalsTelemetry().setup_in_memory_exporter()
+
+def user_task_function(case: Case) -> dict:
+    telemetry.memory_exporter.clear()
+    
+    agent = Agent(
+        trace_attributes={"session.id": case.session_id},
+        callback_handler=None
+    )
+    response = agent(case.input)
+    
+    # Map spans to session for evaluation
+    spans = telemetry.memory_exporter.get_finished_spans()
+    mapper = StrandsInMemorySessionMapper()
+    session = mapper.map_to_session(spans, session_id=case.session_id)
+    
+    return {"output": str(response), "trajectory": session}
+
+# Seven-level scoring: Not helpful (0.0) to Above and beyond (1.0)
+evaluator = HelpfulnessEvaluator()
+```
+
+### Automated Experiment Generation
+
+Generate comprehensive test suites automatically from context descriptions:
 
 ```python
 from strands_evals.generators import ExperimentGenerator
 from strands_evals.evaluators import TrajectoryEvaluator
 
-# 1. Define tool context
+# Define available tools and context
 tool_context = """
 Available tools:
 - calculator(expression: str) -> float: Evaluate mathematical expressions
 - web_search(query: str) -> str: Search the web for information
+- file_read(path: str) -> str: Read file contents
 """
 
-# 2. Generate experiment from context
+# Generate experiment with multiple test cases
 generator = ExperimentGenerator[str, str](str, str)
-
 experiment = await generator.from_context_async(
     context=tool_context,
     num_cases=10,
     evaluator=TrajectoryEvaluator,
     task_description="Math and research assistant with tool usage",
-    # num_topics=3  # Optional: Distribute cases across multiple topics
+    num_topics=3  # Distribute cases across multiple topics
 )
 
-# 3. Save generated experiment
-experiment.to_file("generated_math_research_experiment")
+# Save generated experiment
+experiment.to_file("generated_experiment", "json")
+```
+
+### Custom Evaluators with Structured Output
+
+Create domain-specific evaluation logic with standardized output format:
+
+```python
+from strands_evals.evaluators import Evaluator
+from strands_evals.types import EvaluationData, EvaluationOutput
+
+class PolicyComplianceEvaluator(Evaluator[str, str]):
+    def evaluate(self, evaluation_case: EvaluationData[str, str]) -> EvaluationOutput:
+        # Custom evaluation logic
+        response = evaluation_case.actual_output
+        
+        # Check for policy violations
+        violations = self._check_policy_violations(response)
+        
+        if not violations:
+            return EvaluationOutput(
+                score=1.0,
+                test_pass=True,
+                reason="Response complies with all policies",
+                label="compliant"
+            )
+        else:
+            return EvaluationOutput(
+                score=0.0,
+                test_pass=False,
+                reason=f"Policy violations: {', '.join(violations)}",
+                label="non_compliant"
+            )
+    
+    def _check_policy_violations(self, response: str) -> list[str]:
+        # Implementation details...
+        return []
+```
+
+### Tool Usage and Parameter Evaluation
+
+Evaluate specific aspects of tool usage with specialized evaluators:
+
+```python
+from strands_evals.evaluators import ToolSelectionAccuracyEvaluator, ToolParameterAccuracyEvaluator
+
+# Evaluate if correct tools were selected
+tool_selection_evaluator = ToolSelectionAccuracyEvaluator(
+    rubric="Score 1.0 if optimal tools selected, 0.5 if suboptimal but functional, 0.0 if wrong tools"
+)
+
+# Evaluate if tool parameters were correct
+tool_parameter_evaluator = ToolParameterAccuracyEvaluator(
+    rubric="Score based on parameter accuracy and appropriateness for the task"
+)
 ```
 
 ## Available Evaluators
 
-- **OutputEvaluator**: Evaluates the quality and correctness of agent outputs
-- **TrajectoryEvaluator**: Evaluates the sequence of tools/actions used by agents
-- **InteractionsEvaluator**: Evaluates multi-agent interactions and handoffs
-- **Custom Evaluators**: Create your own evaluation logic by extending the base Evaluator class
+### Core Evaluators
+- **OutputEvaluator**: Flexible LLM-based evaluation with custom rubrics
+- **TrajectoryEvaluator**: Action sequence evaluation with built-in scoring tools
+- **HelpfulnessEvaluator**: Seven-level helpfulness assessment from user perspective
+- **FaithfulnessEvaluator**: Evaluates if responses are grounded in conversation history
+- **GoalSuccessRateEvaluator**: Measures if user goals were achieved
 
-## More Examples
+### Specialized Evaluators
+- **ToolSelectionAccuracyEvaluator**: Evaluates appropriateness of tool choices
+- **ToolParameterAccuracyEvaluator**: Evaluates correctness of tool parameters
+- **InteractionsEvaluator**: Multi-agent interaction and handoff evaluation
+- **Custom Evaluators**: Extensible base class for domain-specific logic
 
-See the `examples` directory for more detailed examples.
+## Experiment Management and Serialization
+
+Save, load, and version experiments for reproducibility:
+
+```python
+# Save experiment with metadata
+experiment.to_file("customer_service_eval", "json")
+
+# Load experiment from file
+loaded_experiment = Experiment.from_file("./experiment_files/customer_service_eval.json", "json")
+
+# Experiment files include:
+# - Test cases with metadata
+# - Evaluator configuration
+# - Expected outputs and trajectories
+# - Versioning information
+```
+
+## Evaluation Metrics and Analysis
+
+Track comprehensive metrics across multiple dimensions:
+
+```python
+# Built-in metrics to consider:
+metrics = {
+    "accuracy": "Factual correctness of responses",
+    "task_completion": "Whether agent completed the task",
+    "tool_selection": "Appropriateness of tool choices", 
+    "response_time": "Agent response latency",
+    "hallucination_rate": "Frequency of fabricated information",
+    "token_usage": "Efficiency of token consumption",
+    "user_satisfaction": "Subjective helpfulness ratings"
+}
+
+# Generate analysis reports
+report = experiment.run_evaluations(task_function)
+report.run_display()  # Interactive display with metrics breakdown
+```
+
+## Best Practices
+
+### Evaluation Strategy
+1. **Diversify Test Cases**: Cover knowledge, reasoning, tool usage, conversation, edge cases, and safety scenarios
+2. **Use Statistical Baselines**: Run multiple evaluations to account for LLM non-determinism
+3. **Combine Multiple Evaluators**: Use output, trajectory, and helpfulness evaluators together
+4. **Regular Evaluation Cadence**: Implement consistent evaluation schedules for continuous improvement
+
+### Performance Optimization
+1. **Use Extractors**: Always use `tools_use_extractor` functions to prevent context overflow
+2. **Update Descriptions Dynamically**: Call `update_trajectory_description()` with tool descriptions
+3. **Choose Appropriate Judge Models**: Use stronger models for complex evaluations
+4. **Batch Evaluations**: Process multiple test cases efficiently
+
+### Experiment Design
+1. **Write Clear Rubrics**: Include explicit scoring criteria and examples
+2. **Include Expected Trajectories**: Define exact sequences for trajectory evaluation
+3. **Use Appropriate Matching**: Choose between exact, in-order, or any-order matching
+4. **Version Control**: Track agent configurations alongside evaluation results
+
+## Documentation
+
+For detailed guidance & examples, explore our documentation:
+
+- [User Guide](https://strandsagents.com/latest//user-guide/evals-sdk/quickstart.md)
+- [Evaluator Reference](https://strandsagents.com/latest/user-guide/evals-sdk/evaluators/)
 
 ## Contributing ❤️
 
