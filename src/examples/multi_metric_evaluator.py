@@ -86,12 +86,13 @@ if __name__ == "__main__":
         ),
     ]
 
-    # Create evaluator that checks: length >= 20, contains ["response", "information"]
-    evaluator = MultiAspectEvaluator(min_length=20, required_keywords=["response", "information"])
+    # Create evaluators that checks: length >= 20, contains ["response", "information"]
+    evaluators = [MultiAspectEvaluator(min_length=20, required_keywords=["response", "information"])]
 
     # Create dataset and run
-    experiment = Experiment[str, str](cases=test_cases, evaluator=evaluator)
-    report = experiment.run_evaluations(simple_task)
+    experiment = Experiment[str, str](cases=test_cases, evaluators=evaluators)
+    reports = experiment.run_evaluations(simple_task)
+    report = reports[0]
 
     # Show results
     print("\n=== Programmatic Access to Detailed Results ===")

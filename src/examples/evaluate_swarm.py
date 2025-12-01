@@ -66,13 +66,13 @@ async def async_swarm_example():
     )
 
     ### Step 4: Create dataset ###
-    trajectory_experiment = Experiment(cases=[test1], evaluator=trajectory_evaluator)
-    interaction_experiment = Experiment(cases=[test1], evaluator=interaction_evaluator)
+    trajectory_experiment = Experiment(cases=[test1], evaluators=[trajectory_evaluator])
+    interaction_experiment = Experiment(cases=[test1], evaluators=[interaction_evaluator])
 
     ### Step 5: Run evaluation ###
-    trajectory_report = await trajectory_experiment.run_evaluations_async(sde_swarm)
-    interaction_report = await interaction_experiment.run_evaluations_async(sde_swarm)
-    return trajectory_report, interaction_report
+    trajectory_reports = await trajectory_experiment.run_evaluations_async(sde_swarm)
+    interaction_reports = await interaction_experiment.run_evaluations_async(sde_swarm)
+    return trajectory_reports[0], interaction_reports[0]
 
 
 if __name__ == "__main__":

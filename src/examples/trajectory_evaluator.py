@@ -124,7 +124,7 @@ async def async_descriptive_tools_trajectory_example():
         metadata={"category": "banking"},
     )
 
-    ### Step 3: Create evaluator ###
+    ### Step 3: Create evaluators ###
     trajectory_evaluator = TrajectoryEvaluator(
         rubric="The trajectory should be in the correct order with all of the steps as the expected."
         "The agent should know when and what action is logical. Strictly score 0 if any step is missing.",
@@ -132,14 +132,14 @@ async def async_descriptive_tools_trajectory_example():
     )
 
     ### Step 4: Create experiment ###
-    experiment = Experiment[str, str](cases=[case1, case2, case3, case4], evaluator=trajectory_evaluator)
+    experiment = Experiment[str, str](cases=[case1, case2, case3, case4], evaluators=[trajectory_evaluator])
 
     ### Step 4.5: (Optional) Save the experiment ###
     experiment.to_file("async_bank_tools_trajectory_experiment", "json")
 
     ### Step 5: Run evaluation ###
-    report = await experiment.run_evaluations_async(get_response)
-    return report
+    reports = await experiment.run_evaluations_async(get_response)
+    return reports[0]
 
 
 if __name__ == "__main__":

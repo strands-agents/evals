@@ -78,15 +78,15 @@ def third_party_example():
 
     ### Step 4: Create dataset ###
     experiment = Experiment[str, str](
-        cases=[test_case1, test_case2, test_case3, test_case4], evaluator=LangChainCriteriaEvaluator()
+        cases=[test_case1, test_case2, test_case3, test_case4], evaluators=[LangChainCriteriaEvaluator()]
     )
 
     ### Step 4.5: (Optional) Save the dataset ###
     experiment.to_file("third_party_dataset", "json")
 
     ### Step 5: Run evaluation ###
-    report = experiment.run_evaluations(get_response)
-    return report
+    reports = experiment.run_evaluations(get_response)
+    return reports[0]
 
 
 async def async_third_party_example():
@@ -161,15 +161,15 @@ async def async_third_party_example():
 
     ### Step 4: Create dataset ###
     experiment = Experiment[str, str](
-        cases=[test_case1, test_case2, test_case3, test_case4], evaluator=LangChainCriteriaEvaluator()
+        cases=[test_case1, test_case2, test_case3, test_case4], evaluators=[LangChainCriteriaEvaluator()]
     )
 
     ### Step 4.5: (Optional) Save the dataset ###
     experiment.to_file("async_third_party_dataset", "json")
 
     ### Step 5: Run evaluation ###
-    report = await experiment.run_evaluations_async(get_response)
-    return report
+    reports = await experiment.run_evaluations_async(get_response)
+    return reports[0]
 
 
 if __name__ == "__main__":

@@ -152,7 +152,8 @@ async def test_experiment_generator_from_scratch_async_no_evaluator():
 
     assert isinstance(experiment, Experiment)
     assert experiment.cases == mock_cases
-    assert isinstance(experiment.evaluator, Evaluator)
+    assert len(experiment.evaluators) == 1
+    assert isinstance(experiment.evaluators[0], Evaluator)
 
 
 @pytest.mark.asyncio
@@ -171,7 +172,8 @@ async def test_experiment_generator_from_scratch_async_with_evaluator():
 
     assert isinstance(experiment, Experiment)
     assert experiment.cases == mock_cases
-    assert experiment.evaluator == mock_evaluator
+    assert len(experiment.evaluators) == 1
+    assert experiment.evaluators[0] == mock_evaluator
 
 
 @pytest.mark.asyncio
@@ -186,7 +188,8 @@ async def test_experiment_generator_from_context_async_no_evaluator():
 
     assert isinstance(experiment, Experiment)
     assert experiment.cases == mock_cases
-    assert isinstance(experiment.evaluator, Evaluator)
+    assert len(experiment.evaluators) == 1
+    assert isinstance(experiment.evaluators[0], Evaluator)
 
 
 @pytest.mark.asyncio
@@ -205,7 +208,8 @@ async def test_experiment_generator_from_context_async_with_evaluator():
 
     assert isinstance(experiment, Experiment)
     assert experiment.cases == mock_cases
-    assert experiment.evaluator == mock_evaluator
+    assert len(experiment.evaluators) == 1
+    assert experiment.evaluators[0] == mock_evaluator
 
 
 @pytest.mark.asyncio
@@ -214,7 +218,7 @@ async def test_experiment_generator_from_experiment_async_generic_evaluator():
     generator = ExperimentGenerator(str, str)
 
     source_cases = [Case(name="source", input="source_input")]
-    source_experiment = Experiment(cases=source_cases, evaluator=Evaluator())
+    source_experiment = Experiment(cases=source_cases, evaluators=[Evaluator()])
     mock_new_cases = [Case(name="new", input="new_input")]
 
     with patch.object(generator, "generate_cases_async", return_value=mock_new_cases):
@@ -222,7 +226,8 @@ async def test_experiment_generator_from_experiment_async_generic_evaluator():
 
     assert isinstance(experiment, Experiment)
     assert experiment.cases == mock_new_cases
-    assert isinstance(experiment.evaluator, Evaluator)
+    assert len(experiment.evaluators) == 1
+    assert isinstance(experiment.evaluators[0], Evaluator)
 
 
 @pytest.mark.asyncio
@@ -232,7 +237,7 @@ async def test_experiment_generator_from_experiment_async_default_evaluator():
 
     source_cases = [Case(name="source", input="source_input")]
     source_evaluator = OutputEvaluator(rubric="source rubric")
-    source_experiment = Experiment(cases=source_cases, evaluator=source_evaluator)
+    source_experiment = Experiment(cases=source_cases, evaluators=[source_evaluator])
     mock_new_cases = [Case(name="new", input="new_input")]
     mock_new_evaluator = OutputEvaluator(rubric="new rubric")
 
@@ -244,7 +249,8 @@ async def test_experiment_generator_from_experiment_async_default_evaluator():
 
     assert isinstance(experiment, Experiment)
     assert experiment.cases == mock_new_cases
-    assert experiment.evaluator == mock_new_evaluator
+    assert len(experiment.evaluators) == 1
+    assert experiment.evaluators[0] == mock_new_evaluator
 
 
 @pytest.mark.asyncio
@@ -254,7 +260,7 @@ async def test_experiment_generator_update_current_experiment_async_add_cases_on
 
     source_cases = [Case(name="source", input="source_input")]
     source_evaluator = Evaluator()
-    source_experiment = Experiment(cases=source_cases, evaluator=source_evaluator)
+    source_experiment = Experiment(cases=source_cases, evaluators=[source_evaluator])
     mock_new_cases = [Case(name="new", input="new_input")]
 
     with patch.object(generator, "generate_cases_async", return_value=mock_new_cases):
@@ -264,7 +270,8 @@ async def test_experiment_generator_update_current_experiment_async_add_cases_on
 
     assert len(experiment.cases) == 2
     assert experiment.cases == source_cases + mock_new_cases
-    assert experiment.evaluator == source_evaluator
+    assert len(experiment.evaluators) == 1
+    assert experiment.evaluators[0] == source_evaluator
 
 
 @pytest.mark.asyncio
@@ -274,7 +281,7 @@ async def test_experiment_generator_update_current_experiment_async_add_rubric_o
 
     source_cases = [Case(name="source", input="source_input")]
     source_evaluator = OutputEvaluator(rubric="source rubric")
-    source_experiment = Experiment(cases=source_cases, evaluator=source_evaluator)
+    source_experiment = Experiment(cases=source_cases, evaluators=[source_evaluator])
     mock_new_evaluator = OutputEvaluator(rubric="new rubric")
 
     with patch.object(generator, "construct_evaluator_async", return_value=mock_new_evaluator):
@@ -283,7 +290,8 @@ async def test_experiment_generator_update_current_experiment_async_add_rubric_o
         )
 
     assert experiment.cases == source_cases
-    assert experiment.evaluator == mock_new_evaluator
+    assert len(experiment.evaluators) == 1
+    assert experiment.evaluators[0] == mock_new_evaluator
 
 
 @pytest.mark.asyncio
@@ -293,7 +301,7 @@ async def test_experiment_generator_update_current_experiment_async_new_evaluato
 
     source_cases = [Case(name="source", input="source_input")]
     source_evaluator = OutputEvaluator(rubric="source rubric")
-    source_experiment = Experiment(cases=source_cases, evaluator=source_evaluator)
+    source_experiment = Experiment(cases=source_cases, evaluators=[source_evaluator])
     mock_new_evaluator = TrajectoryEvaluator(rubric="new rubric")
 
     with patch.object(generator, "construct_evaluator_async", return_value=mock_new_evaluator):
@@ -306,7 +314,8 @@ async def test_experiment_generator_update_current_experiment_async_new_evaluato
         )
 
     assert experiment.cases == source_cases
-    assert isinstance(experiment.evaluator, TrajectoryEvaluator)
+    assert len(experiment.evaluators) == 1
+    assert isinstance(experiment.evaluators[0], TrajectoryEvaluator)
 
 
 @pytest.mark.asyncio
@@ -316,7 +325,7 @@ async def test_experiment_generator_update_current_experiment_async_unsupported_
 
     source_cases = [Case(name="source", input="source_input")]
     source_evaluator = OutputEvaluator(rubric="source rubric")
-    source_experiment = Experiment(cases=source_cases, evaluator=source_evaluator)
+    source_experiment = Experiment(cases=source_cases, evaluators=[source_evaluator])
 
     class UnsupportedEvaluator(Evaluator):
         pass
@@ -330,7 +339,8 @@ async def test_experiment_generator_update_current_experiment_async_unsupported_
     )
 
     assert experiment.cases == source_cases
-    assert experiment.evaluator == source_evaluator
+    assert len(experiment.evaluators) == 1
+    assert experiment.evaluators[0] == source_evaluator
 
 
 def test_experiment_generator_default_evaluators_mapping():
