@@ -46,7 +46,7 @@ otel = ["opentelemetry-exporter-otlp-proto-http>=1.30.0,<2.0.0"]
 
 [tool.ruff]
 line-length = 120
-include = ["src/**/*.py", "tests/**/*.py"]
+include = ["src/**/*.py", "tests/**/*.py", "tests_integ/**/*.py"]
 
 [tool.hatch.envs.hatch-test]
 installer = "uv"
@@ -76,6 +76,8 @@ lint = [
 test-lint = [
     "hatch fmt --linter --check"
 ]
+
+test-integ = "hatch test tests_integ {args}"
 
 prepare = [
     "hatch fmt --linter",
