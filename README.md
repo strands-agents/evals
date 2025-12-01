@@ -6,9 +6,8 @@
   </div>
 
   <h1>
-    Strands Evaluation
+    Strands Evals SDK
   </h1>
-
   <h2>
     A comprehensive evaluation framework for AI agents and LLM applications.
   </h2>
@@ -26,6 +25,7 @@
     <a href="https://strandsagents.com/">Documentation</a>
     ◆ <a href="https://github.com/strands-agents/samples">Samples</a>
     ◆ <a href="https://github.com/strands-agents/sdk-python">Python SDK</a>
+    ◆ <a href="https://github.com/strands-agents/sdk-typescript">Typescript SDK</a>
     ◆ <a href="https://github.com/strands-agents/tools">Tools</a>
     ◆ <a href="https://github.com/strands-agents/evals">Evaluations</a>
   </p>
@@ -46,7 +46,7 @@ Strands Evaluation is a powerful framework for evaluating AI agents and LLM appl
 ## Quick Start
 
 ```bash
-# Install Strands Evaluation
+# Install Strands Evals SDK
 pip install strands-agents-evals
 ```
 
@@ -354,7 +354,6 @@ For detailed guidance & examples, explore our documentation:
 ## Contributing ❤️
 
 We welcome contributions! See our [Contributing Guide](CONTRIBUTING.md) for details on:
-- Reporting bugs & features
 - Development setup
 - Contributing via Pull Requests
 - Code of Conduct
