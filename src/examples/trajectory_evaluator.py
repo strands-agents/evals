@@ -86,14 +86,24 @@ async def async_descriptive_tools_trajectory_example():
         response = await agent.invoke_async(case.input)
         trajectory_evaluator.update_trajectory_description(tools_use_extractor.extract_tools_description(agent))
         return TaskOutput(
-            output=str(response), trajectory=tools_use_extractor.extract_agent_tools_used_from_messages(agent.messages)
+            output=str(response), trajectory=tools_use_extractor.extract_agent_tools_used(agent.messages)
         )
 
-        # or
-        # return {
-        #     "output": str(response),
-        #     "trajectory": helper_funcs.extract_agent_tools_used_from_messages(agent.messages),
-        # }
+        # Or construct the trajectory based on the trace for TrajectoryEvaluator
+
+        # agent = Agent(
+        #     trace_attributes={"gen_ai.conversation.id": case.session_id, "session.id": case.session_id},
+        #     tools=[get_balance, modify_balance, collect_debt],
+        #     system_prompt=bank_prompt,
+        #     callback_handler=None,
+        # )
+        # response = agent(case.input)
+        # finished_spans = memory_exporter.get_finished_spans()
+        # mapper = StrandsInMemorySessionMapper()
+        # session = mapper.map_to_session(finished_spans, session_id=case.session_id)
+        # return TaskOutput(
+        #     output=str(response), trajectory=tools_use_extractor.extract_agent_tools_used(session)
+        # )
 
     ### Step 2: Create test cases ###
     case1 = Case(
@@ -124,7 +134,7 @@ async def async_descriptive_tools_trajectory_example():
         metadata={"category": "banking"},
     )
 
-    ### Step 3: Create evaluator ###
+    ### Step 3: Create evaluators ###
     trajectory_evaluator = TrajectoryEvaluator(
         rubric="The trajectory should be in the correct order with all of the steps as the expected."
         "The agent should know when and what action is logical. Strictly score 0 if any step is missing.",
@@ -132,14 +142,14 @@ async def async_descriptive_tools_trajectory_example():
     )
 
     ### Step 4: Create experiment ###
-    experiment = Experiment[str, str](cases=[case1, case2, case3, case4], evaluator=trajectory_evaluator)
+    experiment = Experiment[str, str](cases=[case1, case2, case3, case4], evaluators=[trajectory_evaluator])
 
     ### Step 4.5: (Optional) Save the experiment ###
     experiment.to_file("async_bank_tools_trajectory_experiment", "json")
 
     ### Step 5: Run evaluation ###
-    report = await experiment.run_evaluations_async(get_response)
-    return report
+    reports = await experiment.run_evaluations_async(get_response)
+    return reports[0]
 
 
 if __name__ == "__main__":

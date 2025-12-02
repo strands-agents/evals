@@ -42,15 +42,17 @@ test_cases = [
     )
 ]
 
-# 2. Create an evaluator
-evaluator = OutputEvaluator(
-    rubric="The output should represent a reasonable answer to the input."
-)
+# 2. Create evaluators
+evaluators = [
+    OutputEvaluator(
+        rubric="The output should represent a reasonable answer to the input."
+    )
+]
 
 # 3. Create an experiment
 experiment = Experiment[str, str](
     cases=test_cases,
-    evaluator=evaluator
+    evaluators=evaluators
 )
 
 # 4. Define a task function
@@ -59,8 +61,8 @@ def get_response(case: Case) -> str:
     return str(agent(case.input))
 
 # 5. Run evaluations
-report = experiment.run_evaluations(get_response)
-report.run_display()
+reports = experiment.run_evaluations(get_response)
+reports[0].run_display()
 ```
 
 ### Trace-based Evaluator
@@ -83,11 +85,11 @@ test_cases = [
     Case[str, str](name="knowledge-2", input="What color is the ocean?", metadata={"category": "knowledge"}),
 ]
 
-# 3. Create an evaluator
-evaluator = HelpfulnessEvaluator()
+# 3. Create evaluators
+evaluators = [HelpfulnessEvaluator()]
 
 # 4. Create an experiment
-experiment = Experiment[str, str](cases=test_cases, evaluator=evaluator)
+experiment = Experiment[str, str](cases=test_cases, evaluators=evaluators)
 
 # 5. Define a task function
 def user_task_function(case: Case) -> dict:
@@ -101,8 +103,8 @@ def user_task_function(case: Case) -> dict:
     return {"output": str(agent_response), "trajectory": session}
 
 # 6. Run evaluations
-report = experiment.run_evaluations(user_task_function)
-report.run_display()
+reports = experiment.run_evaluations(user_task_function)
+reports[0].run_display()
 ```
 
 ## Saving and Loading Experiments
@@ -140,7 +142,7 @@ class CustomEvaluator(Evaluator[str, str]):
 # Use custom evaluator
 experiment = Experiment[str, str](
     cases=test_cases,
-    evaluator=CustomEvaluator()
+    evaluators=[CustomEvaluator()]
 )
 ```
 
@@ -179,10 +181,10 @@ trajectory_evaluator = TrajectoryEvaluator(
 # 4. Create experiment and run evaluations
 experiment = Experiment[str, str](
     cases=[test_case],
-    evaluator=trajectory_evaluator
+    evaluators=[trajectory_evaluator]
 )
 
-report = experiment.run_evaluations(get_response_with_tools)
+reports = experiment.run_evaluations(get_response_with_tools)
 ```
 
 ## Experiment Generation

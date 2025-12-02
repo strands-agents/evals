@@ -44,12 +44,12 @@ test_cases = [
     Case[str, str](name="knowledge-2", input="What color is the ocean?", metadata={"category": "knowledge"}),
 ]
 
-# 3. Create an evaluator
-evaluator = HelpfulnessEvaluator()
+# 3. Create evaluators
+evaluators = [HelpfulnessEvaluator()]
 
 # 4. Create a dataset
-experiment = Experiment[str, str](cases=test_cases, evaluator=evaluator)
+experiment = Experiment[str, str](cases=test_cases, evaluators=evaluators)
 
 # 5. Run evaluations
-report = experiment.run_evaluations(user_task_function)
-report.run_display()
+reports = experiment.run_evaluations(user_task_function)
+reports[0].run_display()

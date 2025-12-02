@@ -11,11 +11,11 @@ from strands_evals.types import EvaluationData, EvaluationOutput, Interaction, T
 class SimpleEvaluator(Evaluator[str, str]):
     """Simple evaluator for integration testing"""
 
-    def evaluate(self, evaluation_case: EvaluationData[str, str]) -> EvaluationOutput:
+    def evaluate(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
         score = 1.0 if evaluation_case.actual_output == evaluation_case.expected_output else 0.0
         return [EvaluationOutput(score=score, test_pass=score > 0.5, reason="Integration test")]
 
-    async def evaluate_async(self, evaluation_case: EvaluationData[str, str]) -> EvaluationOutput:
+    async def evaluate_async(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
         """Async version of evaluate"""
         # Add a small delay to simulate async processing
         await asyncio.sleep(0.01)
@@ -68,14 +68,16 @@ def mock_async_agent():
 
 def test_integration_dataset_with_simple_evaluator(cases):
     """Test complete workflow: Dataset + Cases + SimpleEvaluator + EvaluationReport"""
-    experiment = Experiment(cases=cases, evaluator=SimpleEvaluator())
+    experiment = Experiment(cases=cases, evaluators=[SimpleEvaluator()])
 
     def echo_task(case):
         return case.input
 
-    report = experiment.run_evaluations(echo_task)
+    reports = experiment.run_evaluations(echo_task)
 
     # Verify complete workflow
+    assert len(reports) == 1
+    report = reports[0]
     assert len(report.scores) == 3
     assert report.scores[0] == 1.0  # exact match
     assert report.scores[1] == 0.0  # no match
@@ -87,7 +89,7 @@ def test_integration_dataset_with_simple_evaluator(cases):
 
 def test_integration_dataset_with_dict_output_task(cases):
     """Test Experiment with task returning dictionary output"""
-    experiment = Experiment(cases=cases, evaluator=SimpleEvaluator())
+    experiment = Experiment(cases=cases, evaluators=[SimpleEvaluator()])
 
     def dict_task(case):
         return TaskOutput(
@@ -96,8 +98,10 @@ def test_integration_dataset_with_dict_output_task(cases):
             interactions=[Interaction(node_name="agent1", dependencies=[], messages=["processing hello"])],
         )
 
-    report = experiment.run_evaluations(dict_task)
+    reports = experiment.run_evaluations(dict_task)
 
+    assert len(reports) == 1
+    report = reports[0]
     assert len(report.scores) == 3
     assert report.scores[0] == 1.0  # exact match
     assert report.scores[1] == 0.0  # no match
@@ -113,15 +117,17 @@ def test_integration_dataset_with_output_evaluator(mock_agent_class, cases, mock
     mock_agent_class.return_value = mock_agent
 
     output_evaluator = OutputEvaluator(rubric="Test if outputs match exactly")
-    experiment = Experiment(cases=cases, evaluator=output_evaluator)
+    experiment = Experiment(cases=cases, evaluators=[output_evaluator])
 
     def simple_task(case):
         return f"processed_{case.input}"
 
-    report = experiment.run_evaluations(simple_task)
+    reports = experiment.run_evaluations(simple_task)
 
     # Verify LLM evaluator was called for each test case
     assert mock_agent.structured_output.call_count == 3
+    assert len(reports) == 1
+    report = reports[0]
     assert len(report.scores) == 3
     assert all(abs(score - mock_score) <= 0.00001 for score in report.scores)
     assert abs(report.overall_score - mock_score) <= 0.00001
@@ -129,16 +135,18 @@ def test_integration_dataset_with_output_evaluator(mock_agent_class, cases, mock
 
 def test_integration_evaluation_report_display(cases):
     """Test that EvaluationReport display works with real data"""
-    experiment = Experiment(cases=cases, evaluator=SimpleEvaluator())
+    experiment = Experiment(cases=cases, evaluators=[SimpleEvaluator()])
 
     def mixed_task(case):
         if case.input == "hello":
             return "hello"
         return "different"
 
-    report = experiment.run_evaluations(mixed_task)
+    reports = experiment.run_evaluations(mixed_task)
 
     # Test that display method doesn't crash
+    assert len(reports) == 1
+    report = reports[0]
     try:
         report.display()
         display_success = True
@@ -154,14 +162,16 @@ def test_integration_dataset_with_trajectory_evaluator(mock_agent_class, cases, 
     """Test Experiment with TrajectoryEvaluator integration"""
     mock_agent_class.return_value = mock_agent
     trajectory_evaluator = TrajectoryEvaluator(rubric="Test if trajectories match exactly")
-    experiment = Experiment(cases=cases, evaluator=trajectory_evaluator)
+    experiment = Experiment(cases=cases, evaluators=[trajectory_evaluator])
 
     def simple_task(case):
         return {"output": f"processed_{case.input}", "trajectory": ["step1", "step2"]}
 
-    report = experiment.run_evaluations(simple_task)
+    reports = experiment.run_evaluations(simple_task)
 
     # Verify the evaluator was called for each test case
+    assert len(reports) == 1
+    report = reports[0]
     assert len(report.scores) == 3
     assert all(abs(score - mock_score) <= 0.00001 for score in report.scores)
     assert abs(report.overall_score - mock_score) <= 0.00001
@@ -173,13 +183,15 @@ def test_integration_dataset_with_list_inputs():
         Case(input=["hello", "world"], expected_output=["hello", "world"]),
         Case(input=["foo", "bar"], expected_output=["foo", "bar"]),
     ]
-    experiment = Experiment(cases=cases, evaluator=SimpleEvaluator())
+    experiment = Experiment(cases=cases, evaluators=[SimpleEvaluator()])
 
     def list_task(case):
         return case.input
 
-    report = experiment.run_evaluations(list_task)
+    reports = experiment.run_evaluations(list_task)
 
+    assert len(reports) == 1
+    report = reports[0]
     # no error in display
     report.display()
     assert len(report.scores) == 2
@@ -193,14 +205,16 @@ def test_integration_dataset_with_list_inputs():
 @pytest.mark.asyncio
 async def test_integration_async_dataset_with_simple_evaluator(cases):
     """Test async workflow: Dataset + Cases + SimpleEvaluator"""
-    experiment = Experiment(cases=cases, evaluator=SimpleEvaluator())
+    experiment = Experiment(cases=cases, evaluators=[SimpleEvaluator()])
 
     def echo_task(case):
         return case.input
 
-    report = await experiment.run_evaluations_async(echo_task)
+    reports = await experiment.run_evaluations_async(echo_task)
 
     # Verify complete workflow
+    assert len(reports) == 1
+    report = reports[0]
     assert len(report.scores) == 3
     assert report.scores[0] == 1.0  # exact match
     assert report.scores[1] == 0.0  # no match
@@ -213,15 +227,17 @@ async def test_integration_async_dataset_with_simple_evaluator(cases):
 @pytest.mark.asyncio
 async def test_integration_async_dataset_with_async_task(cases):
     """Test async workflow with async task function"""
-    experiment = Experiment(cases=cases, evaluator=SimpleEvaluator())
+    experiment = Experiment(cases=cases, evaluators=[SimpleEvaluator()])
 
     async def async_echo_task(case):
         await asyncio.sleep(0.01)  # Simulate async work
         return case.input
 
-    report = await experiment.run_evaluations_async(async_echo_task)
+    reports = await experiment.run_evaluations_async(async_echo_task)
 
     # Verify complete workflow
+    assert len(reports) == 1
+    report = reports[0]
     assert len(report.scores) == 3
     assert report.scores[0] == 1.0  # exact match
     assert report.scores[1] == 0.0  # no match
@@ -238,14 +254,16 @@ async def test_integration_async_dataset_with_output_evaluator(mock_agent_class,
     mock_agent_class.return_value = mock_async_agent
 
     output_evaluator = OutputEvaluator(rubric="Test if outputs match exactly")
-    experiment = Experiment(cases=cases, evaluator=output_evaluator)
+    experiment = Experiment(cases=cases, evaluators=[output_evaluator])
 
     def simple_task(case):
         return f"processed_{case.input}"
 
-    report = await experiment.run_evaluations_async(simple_task)
+    reports = await experiment.run_evaluations_async(simple_task)
 
     # Verify results
+    assert len(reports) == 1
+    report = reports[0]
     assert len(report.scores) == 3
     assert all(abs(score - mock_score) <= 0.00001 for score in report.scores)
     assert abs(report.overall_score - mock_score) <= 0.00001
@@ -256,7 +274,7 @@ async def test_integration_async_dataset_concurrency():
     """Test that async evaluations run concurrently"""
     # Create a dataset with more test cases
     many_cases = [Case(name=f"case{i}", input=f"input{i}", expected_output=f"input{i}") for i in range(10)]
-    experiment = Experiment(cases=many_cases, evaluator=SimpleEvaluator())
+    experiment = Experiment(cases=many_cases, evaluators=[SimpleEvaluator()])
 
     # Create a task with noticeable delay
     async def slow_task(case):
@@ -265,7 +283,7 @@ async def test_integration_async_dataset_concurrency():
 
     # Time the execution
     start_time = asyncio.get_event_loop().time()
-    report = await experiment.run_evaluations_async(slow_task, max_workers=5)
+    reports = await experiment.run_evaluations_async(slow_task, max_workers=5)
     end_time = asyncio.get_event_loop().time()
 
     # With 10 tasks taking 0.1s each and 5 workers, should take ~0.2s
@@ -273,6 +291,8 @@ async def test_integration_async_dataset_concurrency():
     assert end_time - start_time < 0.5  # Allow some overhead
 
     # Verify results
+    assert len(reports) == 1
+    report = reports[0]
     assert len(report.scores) == 10
     assert all(score == 1.0 for score in report.scores)
     assert report.overall_score == 1.0
@@ -283,7 +303,7 @@ def test_experiment_with_interactions_evaluator(mock_agent_class, interaction_ca
     """Test Experiment with InteractionsEvaluator integration"""
     mock_agent_class.return_value = mock_agent
     interactions_evaluator = InteractionsEvaluator(rubric="Test if interactions match expected sequence")
-    experiment = Experiment(cases=interaction_case, evaluator=interactions_evaluator)
+    experiment = Experiment(cases=interaction_case, evaluators=[interactions_evaluator])
 
     def task_with_interactions(case):
         return {
@@ -294,10 +314,12 @@ def test_experiment_with_interactions_evaluator(mock_agent_class, interaction_ca
             ],
         }
 
-    report = experiment.run_evaluations(task_with_interactions)
+    reports = experiment.run_evaluations(task_with_interactions)
 
     # Verify the evaluator was called (once per interaction, so 2 times)
     assert mock_agent.structured_output.call_count == 2
+    assert len(reports) == 1
+    report = reports[0]
     assert len(report.scores) == 1
     assert abs(report.scores[0] - mock_score) <= 0.00001
     assert abs(report.overall_score - mock_score) <= 0.00001
@@ -306,7 +328,7 @@ def test_experiment_with_interactions_evaluator(mock_agent_class, interaction_ca
 @pytest.mark.asyncio
 async def test_async_dataset_with_interactions(interaction_case):
     """Test async Experiment with interactions data"""
-    experiment = Experiment(cases=interaction_case, evaluator=SimpleEvaluator())
+    experiment = Experiment(cases=interaction_case, evaluators=[SimpleEvaluator()])
 
     async def async_interactions_task(case):
         await asyncio.sleep(0.01)
@@ -318,8 +340,10 @@ async def test_async_dataset_with_interactions(interaction_case):
             ],
         }
 
-    report = await experiment.run_evaluations_async(async_interactions_task)
+    reports = await experiment.run_evaluations_async(async_interactions_task)
 
+    assert len(reports) == 1
+    report = reports[0]
     assert len(report.scores) == 1
     assert len(report.cases) == 1
     assert report.cases[0].get("actual_interactions") is not None

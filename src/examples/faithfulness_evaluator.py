@@ -39,9 +39,9 @@ test_cases = [
     Case[str, str](name="knowledge-2", input="What color is the ocean?", metadata={"category": "knowledge"}),
 ]
 
-evaluator = FaithfulnessEvaluator()
+evaluators = [FaithfulnessEvaluator()]
 
-experiment = Experiment[str, str](cases=test_cases, evaluator=evaluator)
+experiment = Experiment[str, str](cases=test_cases, evaluators=evaluators)
 
-report = experiment.run_evaluations(user_task_function)
-report.run_display()
+reports = experiment.run_evaluations(user_task_function)
+reports[0].run_display()

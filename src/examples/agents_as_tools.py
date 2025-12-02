@@ -190,14 +190,14 @@ async def async_agents_as_tools_example():
     )
 
     ### Step 4: Create dataset ###
-    dataset_trajectory = Experiment(cases=test_cases, evaluator=trajectory_evaluator)
-    dataset_interactions = Experiment(cases=test_cases, evaluator=interaction_evaluator)
+    dataset_trajectory = Experiment(cases=test_cases, evaluators=[trajectory_evaluator])
+    dataset_interactions = Experiment(cases=test_cases, evaluators=[interaction_evaluator])
 
     ### Step 5: Run the evaluation ###
-    report_trajectory = await dataset_trajectory.run_evaluations_async(customer_support)
-    report_interactions = await dataset_interactions.run_evaluations_async(customer_support)
+    reports_trajectory = await dataset_trajectory.run_evaluations_async(customer_support)
+    reports_interactions = await dataset_interactions.run_evaluations_async(customer_support)
 
-    return report_trajectory, report_interactions
+    return reports_trajectory[0], reports_interactions[0]
 
 
 if __name__ == "__main__":

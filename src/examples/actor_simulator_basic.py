@@ -60,8 +60,8 @@ test_cases = [
     )
 ]
 
-evaluator = HelpfulnessEvaluator()
-experiment = Experiment[str, str](cases=test_cases, evaluator=evaluator)
+evaluators = [HelpfulnessEvaluator()]
+experiment = Experiment[str, str](cases=test_cases, evaluators=evaluators)
 
-report = experiment.run_evaluations(task_function)
-report.run_display()
+reports = experiment.run_evaluations(task_function)
+reports[0].run_display()

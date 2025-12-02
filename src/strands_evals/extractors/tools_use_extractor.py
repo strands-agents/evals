@@ -1,4 +1,9 @@
+from typing import Union, cast
+
 from strands import Agent
+
+from ..types.trace import Session, ToolLevelInput
+from .trace_extractor import TraceExtractor
 
 
 def extract_agent_tools_used_from_messages(agent_messages):
@@ -77,6 +82,64 @@ def extract_agent_tools_used_from_metrics(agent_result):
             }
         )
     return tools_used
+
+
+def extract_agent_tools_used_from_trace(session: Session) -> list[dict]:
+    """
+    Extract tool usage information from trace data (Session object).
+    This function uses TraceExtractor to parse the session at TOOL_LEVEL,
+    then transforms the ToolLevelInput objects into the same format as
+    extract_agent_tools_used_from_messages for consistency.
+
+    Args:
+        session: Session object containing trace data
+
+    Returns:
+        list: Tool usage information with name, input, and tool_result
+        [{name: str, input: dict, tool_result: str}, ...]
+    """
+    from ..types.trace import EvaluationLevel
+
+    # Use TraceExtractor to get tool-level inputs
+    extractor = TraceExtractor(evaluation_level=EvaluationLevel.TOOL_LEVEL)
+    tool_inputs = cast(list[ToolLevelInput], extractor.extract(session))
+
+    # Transform to the same format as message-based extraction
+    tools_used = []
+    for tool_input in tool_inputs:
+        tool_execution = tool_input.tool_execution_details
+        tool_name = tool_execution.tool_call.name
+        tool_input_args = tool_execution.tool_call.arguments
+        tool_result = tool_execution.tool_result.content if tool_execution.tool_result else None
+
+        tools_used.append({"name": tool_name, "input": tool_input_args, "tool_result": tool_result})
+
+    return tools_used
+
+
+def extract_agent_tools_used(source: Union[list, Session]) -> list[dict]:
+    """
+    Extract tool usage information from either agent messages or trace data.
+    This is a unified interface that automatically detects the input type and uses
+    the appropriate extraction method:
+    - If source is a Session object, uses trace-based extraction
+    - If source is a list, uses message-based extraction
+
+    Args:
+        source: Either agent_messages (list) or Session object
+
+    Returns:
+        list: Tool usage information with name, input, and tool_result
+        [{name: str, input: dict, tool_result: str}, ...]
+    Raises:
+        TypeError: If source is neither a list nor a Session object
+    """
+    if isinstance(source, Session):
+        return extract_agent_tools_used_from_trace(source)
+    elif isinstance(source, list):
+        return extract_agent_tools_used_from_messages(source)
+    else:
+        raise TypeError(f"source must be either a list (agent messages) or Session object, got {type(source).__name__}")
 
 
 def extract_tools_description(agent: Agent, is_short: bool = True):
