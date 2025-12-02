@@ -86,14 +86,24 @@ async def async_descriptive_tools_trajectory_example():
         response = await agent.invoke_async(case.input)
         trajectory_evaluator.update_trajectory_description(tools_use_extractor.extract_tools_description(agent))
         return TaskOutput(
-            output=str(response), trajectory=tools_use_extractor.extract_agent_tools_used_from_messages(agent.messages)
+            output=str(response), trajectory=tools_use_extractor.extract_agent_tools_used(agent.messages)
         )
 
-        # or
-        # return {
-        #     "output": str(response),
-        #     "trajectory": helper_funcs.extract_agent_tools_used_from_messages(agent.messages),
-        # }
+        # Or construct the trajectory based on the trace for TrajectoryEvaluator
+
+        # agent = Agent(
+        #     trace_attributes={"gen_ai.conversation.id": case.session_id, "session.id": case.session_id},
+        #     tools=[get_balance, modify_balance, collect_debt],
+        #     system_prompt=bank_prompt,
+        #     callback_handler=None,
+        # )
+        # response = agent(case.input)
+        # finished_spans = memory_exporter.get_finished_spans()
+        # mapper = StrandsInMemorySessionMapper()
+        # session = mapper.map_to_session(finished_spans, session_id=case.session_id)
+        # return TaskOutput(
+        #     output=str(response), trajectory=tools_use_extractor.extract_agent_tools_used(session)
+        # )
 
     ### Step 2: Create test cases ###
     case1 = Case(
