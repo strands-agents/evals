@@ -1,9 +1,11 @@
 import asyncio
 import json
 import logging
+import os
 from collections.abc import Callable
 from pathlib import Path
 
+from opentelemetry.trace import format_trace_id
 from typing_extensions import Any, Generic, TypeVar
 
 from .case import Case
@@ -12,6 +14,7 @@ from .evaluators.interactions_evaluator import InteractionsEvaluator
 from .evaluators.output_evaluator import OutputEvaluator
 from .evaluators.trajectory_evaluator import TrajectoryEvaluator
 from .telemetry import get_tracer, serialize
+from .telemetry._cloudwatch_logger import _send_to_cloudwatch
 from .types.evaluation import EvaluationData
 from .types.evaluation_report import EvaluationReport
 
@@ -20,6 +23,30 @@ OutputT = TypeVar("OutputT")
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+
+def _get_label_from_score(evaluator: Evaluator, score: float) -> str:
+    """
+    Get the label from score using evaluator's _score_mapping if available.
+    If no mapping exists, returns "YES" for scores >= 0.5, "NO" otherwise.
+
+    Args:
+        evaluator: The evaluator instance
+        score: The numeric score
+        default_label: Default label to return if provided and no mapping found
+
+    Returns:
+        The label corresponding to the score
+    """
+    if hasattr(evaluator, "_score_mapping") and evaluator._score_mapping:
+        # Create reverse mapping from score to label
+        reverse_mapping = {v: k for k, v in evaluator._score_mapping.items()}
+        # Find the score in the mapping
+        if score in reverse_mapping:
+            return str(reverse_mapping[score])
+
+    # Otherwise, return YES/NO based on score
+    return "YES" if score >= 0.5 else "NO"
 
 
 class Experiment(Generic[InputT, OutputT]):
@@ -66,6 +93,8 @@ class Experiment(Generic[InputT, OutputT]):
         self._evaluators = evaluators or [Evaluator()]
         self._tracer = get_tracer()
         # self._logger = get_logger(__name__)
+
+        self._config_id = os.environ.get("EVALUATION_RESULTS_LOG_GROUP", "default-strands-evals")
 
     @property
     def cases(self) -> list[Case[InputT, OutputT]]:
@@ -208,77 +237,124 @@ class Experiment(Generic[InputT, OutputT]):
                 break
 
             case_name = case.name or f"case_{len(results)}"
+            trace_id = None
 
-            with self._tracer.start_as_current_span(
-                f"eval_case {case_name}",
-                attributes={
-                    "gen_ai.evaluation.case.name": case_name,
-                    "gen_ai.evaluation.case.input": serialize(case.input),
-                },
-            ) as case_span:
-                try:
+            try:
+                with self._tracer.start_as_current_span(
+                    f"execute_case {case_name}",
+                ) as case_span:
                     evaluation_context = await self._run_task_async(task, case)
-
-                    # Evaluate with each evaluator
-                    evaluator_results = []
-                    for evaluator in self._evaluators:
-                        with self._tracer.start_as_current_span(
-                            f"evaluator {evaluator.get_type_name()}",
-                            attributes={
-                                "gen_ai.evaluation.name": evaluator.get_type_name(),
-                                "gen_ai.evaluation.case.name": case_name,
-                            },
-                        ) as eval_span:
-                            evaluation_outputs = await evaluator.evaluate_async(evaluation_context)
-                            (aggregate_score, aggregate_pass, aggregate_reason) = evaluator.aggregator(
-                                evaluation_outputs
-                            )
-                            eval_span.set_attributes(
-                                {
-                                    "gen_ai.evaluation.score.value": aggregate_score,
-                                    "gen_ai.evaluation.test_pass": aggregate_pass,
-                                    "gen_ai.evaluation.explanation": aggregate_reason or "",
-                                }
-                            )
-                            evaluator_results.append(
-                                {
-                                    "evaluator_name": evaluator.get_type_name(),
-                                    "test_pass": aggregate_pass,
-                                    "score": aggregate_score,
-                                    "reason": aggregate_reason or "",
-                                    "detailed_results": evaluation_outputs,
-                                }
-                            )
-
-                    # Store results
-                    results.append(
+                    case_span.set_attributes(
                         {
-                            "case": evaluation_context.model_dump(),
-                            "evaluator_results": evaluator_results,
+                            "gen_ai.evaluation.data.input": serialize(evaluation_context.input),
+                            "gen_ai.evaluation.data.expected_output": serialize(evaluation_context.expected_output),
+                            "gen_ai.evaluation.data.actual_output": serialize(evaluation_context.actual_output),
+                            "gen_ai.evaluation.data.has_trajectory": (evaluation_context.actual_trajectory is not None),
+                            "gen_ai.evaluation.data.has_interactions": (
+                                evaluation_context.actual_interactions is not None
+                            ),
                         }
                     )
+                    trace_id = format_trace_id(case_span.get_span_context().trace_id)
 
-                except Exception as e:
-                    case_span.record_exception(e)
-                    evaluator_results = []
-                    for evaluator in self._evaluators:
+                # Evaluate with each evaluator
+                evaluator_results = []
+                for evaluator in self._evaluators:
+                    with self._tracer.start_as_current_span(
+                        f"evaluator {evaluator.get_type_name()}",
+                    ) as eval_span:
+                        evaluation_outputs = await evaluator.evaluate_async(evaluation_context)
+                        (aggregate_score, aggregate_pass, aggregate_reason) = evaluator.aggregator(evaluation_outputs)
+
+                        try:
+                            label = _get_label_from_score(evaluator, aggregate_score)
+                        except Exception:
+                            label = "UNKNOWN"
+
+                        eval_span.set_attributes(
+                            {
+                                "gen_ai.evaluation.score.label": label,
+                                "gen_ai.evaluation.score.value": str(aggregate_score),
+                                "gen_ai.evaluation.test_pass": aggregate_pass,
+                                "gen_ai.evaluation.explanation": aggregate_reason or "",
+                            }
+                        )
+
                         evaluator_results.append(
                             {
                                 "evaluator_name": evaluator.get_type_name(),
-                                "test_pass": False,
-                                "score": 0,
-                                "reason": f"An error occurred: {str(e)}",
-                                "detailed_results": [],
+                                "test_pass": aggregate_pass,
+                                "score": aggregate_score,
+                                "reason": aggregate_reason or "",
+                                "detailed_results": evaluation_outputs,
                             }
                         )
-                    results.append(
+
+                        # CloudWatch logging for this evaluator
+                        try:
+                            evaluator_full_name = f"Custom.{evaluator.get_type_name()}"
+                            region = os.environ.get("AWS_REGION", "us-east-1")
+                            _config_arn = f"arn:aws:strands:{region}::strands-evaluation-empty-config/{self._config_id}"
+                            _evaluator_arn = f"arn:aws:strands-evals:::evaluator/{evaluator_full_name}"
+
+                            log_data = {
+                                "gen_ai.evaluation.name": evaluator_full_name,
+                                "gen_ai.evaluation.score.value": str(aggregate_score),
+                                "gen_ai.evaluation.explanation": aggregate_reason or "",
+                                "gen_ai.evaluation.score.label": label,
+                                "gen_ai.response.id": trace_id,
+                                "aws.bedrock_agentcore.evaluator.rating_scale": "Numerical",
+                                "aws.bedrock_agentcore.evaluation_level": evaluator.evaluation_level or "Trace",
+                                "event.name": "gen_ai.evaluation.result",
+                                "aws.bedrock_agentcore.online_evaluation_config.arn": _config_arn,
+                                "aws.bedrock_agentcore.online_evaluation_config.name": "strands-local-evaluation",
+                                "aws.bedrock_agentcore.evaluator.arn": _evaluator_arn,
+                                "session.id": case.session_id,
+                            }
+
+                            agent_observability_enabled = os.environ.get("AGENT_OBSERVABILITY_ENABLED", "")
+                            if agent_observability_enabled:
+                                _send_to_cloudwatch(
+                                    message="gen_ai.evaluation.result",
+                                    log_data=log_data,
+                                    trace_id=trace_id,
+                                    evaluator_name=evaluator_full_name,
+                                    score=aggregate_score,
+                                    config_id=self._config_id,
+                                    label=label,
+                                )
+                        except Exception as e:
+                            logger.debug(f"Skipping CloudWatch logging: {str(e)}")
+
+                # Store results
+                results.append(
+                    {
+                        "case": evaluation_context.model_dump(),
+                        "evaluator_results": evaluator_results,
+                    }
+                )
+
+            except Exception as e:
+                # Handle task execution errors
+                evaluator_results = []
+                for evaluator in self._evaluators:
+                    evaluator_results.append(
                         {
-                            "case": case.model_dump(),
-                            "evaluator_results": evaluator_results,
+                            "evaluator_name": evaluator.get_type_name(),
+                            "test_pass": False,
+                            "score": 0,
+                            "reason": f"An error occurred: {str(e)}",
+                            "detailed_results": [],
                         }
                     )
-                finally:
-                    queue.task_done()
+                results.append(
+                    {
+                        "case": case.model_dump(),
+                        "evaluator_results": evaluator_results,
+                    }
+                )
+            finally:
+                queue.task_done()
 
     def run_evaluations(
         self, task: Callable[[Case[InputT, OutputT]], OutputT | dict[str, Any]]

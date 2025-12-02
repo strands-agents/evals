@@ -972,14 +972,20 @@ async def test_experiment_run_evaluations_async_creates_spans(mock_span):
     experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
 
     with patch.object(experiment._tracer, "start_as_current_span", return_value=mock_span) as mock_start_span:
+        with patch("strands_evals.experiment.format_trace_id", return_value="mock_trace_id"):
 
-        async def async_task(c):
-            return c.input
+            async def async_task(c):
+                return c.input
 
-        await experiment.run_evaluations_async(async_task)
+            await experiment.run_evaluations_async(async_task)
 
-        # Verify spans were created
-        assert mock_start_span.called
+            # Verify both execute_case and evaluator spans were created
+            calls = mock_start_span.call_args_list
+            assert len(calls) == 2
+            execute_case_span_call = calls[0]
+            evaluator_span_call = calls[1]
+            assert execute_case_span_call[0][0] == "execute_case async_test"
+            assert evaluator_span_call[0][0] == "evaluator MockEvaluator"
 
 
 @pytest.mark.asyncio
@@ -1011,14 +1017,25 @@ async def test_experiment_run_evaluations_async_with_dict_output(mock_span):
     experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
 
     with patch.object(experiment._tracer, "start_as_current_span", return_value=mock_span):
+        with patch("strands_evals.experiment.format_trace_id", return_value="mock_trace_id"):
 
-        async def async_task_with_dict(c):
-            return {"output": c.input, "trajectory": ["step1"], "interactions": interactions}
+            async def async_task_with_dict(c):
+                return {"output": c.input, "trajectory": ["step1"], "interactions": interactions}
 
-        await experiment.run_evaluations_async(async_task_with_dict)
+            await experiment.run_evaluations_async(async_task_with_dict)
 
-        # Check that set_attributes was called
-        mock_span.set_attributes.assert_called()
+            # Check that set_attributes was called (trajectory/interactions are set via set_attributes)
+            mock_span.set_attributes.assert_called()
+            # Verify has_trajectory and has_interactions flags are set
+            set_attrs_calls = mock_span.set_attributes.call_args_list
+            has_trajectory_set = any(
+                "gen_ai.evaluation.data.has_trajectory" in call[0][0] for call in set_attrs_calls if call[0]
+            )
+            has_interactions_set = any(
+                "gen_ai.evaluation.data.has_interactions" in call[0][0] for call in set_attrs_calls if call[0]
+            )
+            assert has_trajectory_set
+            assert has_interactions_set
 
 
 def test_experiment_run_evaluations_multiple_cases(mock_span, simple_task):
