@@ -309,7 +309,7 @@ class ExperimentGenerator(Generic[InputT, OutputT]):
                 prompt=rubric_prompt,
                 evaluator=evaluator,
             )
-            return Experiment(cases=cases, evaluator=_evaluator)
+            return Experiment(cases=cases, evaluators=[_evaluator])
         else:
             return Experiment(cases=cases)
 
@@ -353,7 +353,7 @@ class ExperimentGenerator(Generic[InputT, OutputT]):
                 f"""{task_description} """,
                 evaluator=evaluator,
             )
-            return Experiment(cases=cases, evaluator=_evaluator)
+            return Experiment(cases=cases, evaluators=[_evaluator])
         else:
             return Experiment(cases=cases)
 
@@ -385,7 +385,7 @@ class ExperimentGenerator(Generic[InputT, OutputT]):
             evaluator is a default type, otherwise uses generic Evaluator.
         """
         source_cases = source_experiment.cases
-        source_evaluator = source_experiment.evaluator
+        source_evaluators = source_experiment.evaluators
 
         # construct messages to initialize the agent with context about the previous test cases
         messages = [{"role": "user", "content": [{"text": "Here are the reference test cases: "}]}]
@@ -402,19 +402,23 @@ class ExperimentGenerator(Generic[InputT, OutputT]):
             num_cases=num_cases,
             message_history=messages,
         )
-        new_evaluator = Evaluator()
-        if type(source_evaluator) in self._default_evaluators:
-            source_rubric = source_evaluator.rubric
-            new_evaluator = await self.construct_evaluator_async(
-                prompt=(
-                    f"Create a new rubric based on the reference rubric. Ensure that the rubric is relevant "
-                    f"for this task: {task_description}. Here are some extra information: {extra_information}."
-                ),
-                evaluator=type(source_evaluator),
-                message_history=[{"role": "user", "content": [{"text": source_rubric}]}],
-            )
+        new_evaluators = []
+        for source_evaluator in source_evaluators:
+            if type(source_evaluator) in self._default_evaluators:
+                source_rubric = source_evaluator.rubric
+                new_evaluator = await self.construct_evaluator_async(
+                    prompt=(
+                        f"Create a new rubric based on the reference rubric. Ensure that the rubric is relevant "
+                        f"for this task: {task_description}. Here are some extra information: {extra_information}."
+                    ),
+                    evaluator=type(source_evaluator),
+                    message_history=[{"role": "user", "content": [{"text": source_rubric}]}],
+                )
+                new_evaluators.append(new_evaluator)
+            else:
+                new_evaluators.append(Evaluator())
 
-        return Experiment(cases=new_cases, evaluator=new_evaluator)
+        return Experiment(cases=new_cases, evaluators=new_evaluators if new_evaluators else [Evaluator()])
 
     async def update_current_experiment_async(
         self,
@@ -449,7 +453,7 @@ class ExperimentGenerator(Generic[InputT, OutputT]):
             updated evaluator with new rubric (if requested and evaluator supports it).
         """
         source_cases = source_experiment.cases
-        source_evaluator = source_experiment.evaluator
+        source_evaluators = source_experiment.evaluators
 
         if add_new_cases:
             # construct messages to initialize the agent with context about the previous test cases
@@ -468,26 +472,27 @@ class ExperimentGenerator(Generic[InputT, OutputT]):
             )
 
         if add_new_rubric:
-            evaluator_type: type
-            if new_evaluator_type:
-                evaluator_type = new_evaluator_type
-            else:
-                evaluator_type = type(source_evaluator)  # use the previous evaluator if no new evaluator is passed in
+            new_evaluators = []
+            for source_evaluator in source_evaluators:
+                evaluator_type = new_evaluator_type if new_evaluator_type else type(source_evaluator)
 
-            if evaluator_type in self._default_evaluators:
-                source_rubric = source_evaluator.rubric if type(source_evaluator) in self._default_evaluators else None
-                new_evaluator = await self.construct_evaluator_async(
-                    prompt=(
-                        f"Create a new rubric based on the reference rubric if provided for the following "
-                        f"context: {context}. Ensure that the rubric is relevant for this task: {task_description}."
-                    ),
-                    evaluator=evaluator_type,
-                    message_history=[{"role": "user", "content": [{"text": source_rubric}]}],
-                )
-            else:  # use the original if it's not supported
-                new_evaluator = source_evaluator
+                if evaluator_type in self._default_evaluators:
+                    source_rubric = (
+                        source_evaluator.rubric if type(source_evaluator) in self._default_evaluators else None
+                    )
+                    new_evaluator = await self.construct_evaluator_async(
+                        prompt=(
+                            f"Create a new rubric based on the reference rubric if provided for the following "
+                            f"context: {context}. Ensure that the rubric is relevant for this task: {task_description}."
+                        ),
+                        evaluator=evaluator_type,
+                        message_history=[{"role": "user", "content": [{"text": source_rubric}]}],
+                    )
+                    new_evaluators.append(new_evaluator)
+                else:
+                    new_evaluators.append(source_evaluator)
 
         return Experiment(
             cases=source_cases + new_cases if add_new_cases else source_cases,
-            evaluator=new_evaluator if add_new_rubric else source_evaluator,
+            evaluators=new_evaluators if add_new_rubric else source_evaluators,
         )

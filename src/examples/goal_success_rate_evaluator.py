@@ -44,12 +44,12 @@ test_cases = [
     Case[str, str](name="math-2", input="Calculate the square root of 144", metadata={"category": "math"}),
 ]
 
-# 3. Create an evaluator
-evaluator = GoalSuccessRateEvaluator()
+# 3. Create evaluators
+evaluators = [GoalSuccessRateEvaluator()]
 
 # 4. Create a dataset
-experiment = Experiment[str, str](cases=test_cases, evaluator=evaluator)
+experiment = Experiment[str, str](cases=test_cases, evaluators=evaluators)
 
 # 5. Run evaluations
-report = experiment.run_evaluations(user_task_function)
-report.run_display()
+reports = experiment.run_evaluations(user_task_function)
+reports[0].run_display()

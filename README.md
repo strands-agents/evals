@@ -65,29 +65,32 @@ test_cases = [
     )
 ]
 
-# Create evaluator with custom rubric
-evaluator = OutputEvaluator(
-    rubric="""
-    Evaluate based on:
-    1. Accuracy - Is the information correct?
-    2. Completeness - Does it fully answer the question?
-    3. Clarity - Is it easy to understand?
-    
-    Score 1.0 if all criteria are met excellently.
-    Score 0.5 if some criteria are partially met.
-    Score 0.0 if the response is inadequate.
-    """
-)
+# Create evaluators with custom rubric
+evaluators = [
+    OutputEvaluator(
+        rubric="""
+        Evaluate based on:
+        1. Accuracy - Is the information correct?
+        2. Completeness - Does it fully answer the question?
+        3. Clarity - Is it easy to understand?
+        
+        Score 1.0 if all criteria are met excellently.
+        Score 0.5 if some criteria are partially met.
+        Score 0.0 if the response is inadequate.
+        """
+    )
+]
 
 # Create experiment and run evaluation
-experiment = Experiment[str, str](cases=test_cases, evaluator=evaluator)
+experiment = Experiment[str, str](cases=test_cases, evaluators=evaluators)
 
 def get_response(case: Case) -> str:
     agent = Agent(callback_handler=None)
     return str(agent(case.input))
 
-report = experiment.run_evaluations(get_response)
-report.run_display()
+# Run evaluations
+reports = experiment.run_evaluations(get_response)
+reports[0].run_display()
 ```
 
 ## Installation
@@ -183,7 +186,12 @@ def user_task_function(case: Case) -> dict:
     return {"output": str(response), "trajectory": session}
 
 # Seven-level scoring: Not helpful (0.0) to Above and beyond (1.0)
-evaluator = HelpfulnessEvaluator()
+evaluators = [HelpfulnessEvaluator()]
+experiment = Experiment[str, str](cases=test_cases, evaluators=evaluators)
+
+# Run evaluations
+reports = experiment.run_evaluations(user_task_function)
+reports[0].run_display()
 ```
 
 ### Automated Experiment Generation
@@ -320,8 +328,8 @@ metrics = {
 }
 
 # Generate analysis reports
-report = experiment.run_evaluations(task_function)
-report.run_display()  # Interactive display with metrics breakdown
+reports = experiment.run_evaluations(task_function)
+reports[0].run_display()  # Interactive display with metrics breakdown
 ```
 
 ## Best Practices
