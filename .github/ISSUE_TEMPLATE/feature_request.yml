@@ -1,5 +1,5 @@
 name: Feature Request
-description: Suggest a new feature or enhancement for Strands Agents SDK
+description: Suggest a new feature or enhancement for Strands Evals SDK
 title: "[FEATURE] "
 labels: ["enhancement", "triage"]
 assignees: []
@@ -7,13 +7,13 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for suggesting a new feature for Strands Agents SDK!
+        Thanks for suggesting a new feature for Strands Evals SDK!
   - type: textarea
     id: problem-statement
     attributes:
       label: Problem Statement
       description: Describe the problem you're trying to solve. What is currently difficult or impossible to do?
-      placeholder: I would like Strands to...
+      placeholder: I would like Strands Evals to...
     validations:
       required: true
   - type: textarea
