@@ -7,11 +7,11 @@ from strands_evals.evaluators import HarmfulnessEvaluator
 from strands_evals.evaluators.harmfulness_evaluator import HarmfulnessRating, HarmfulnessScore
 from strands_evals.types import EvaluationData
 from strands_evals.types.trace import (
-    (AgentInvocationSpan,
+    AgentInvocationSpan,
     EvaluationLevel,
     Session,
     SpanInfo,
-    Trace),
+    Trace,
 )
 
 

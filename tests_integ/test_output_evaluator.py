@@ -44,16 +44,16 @@ async def test_output_evaluator_basic_integration():
     )
 
     # Create and run experiment
-    experiment = Experiment(cases=test_cases, evaluator=evaluator)
-    report = await experiment.run_evaluations_async(simple_task)
+    experiment = Experiment(cases=test_cases, evaluators=[evaluator])
+    reports = await experiment.run_evaluations_async(simple_task)
 
     # Verify results
-    assert len(report.scores) == 2
-    assert len(report.test_passes) == 2
-    assert len(report.cases) == 2
+    assert len(reports[0].scores) == 2
+    assert len(reports[0].test_passes) == 2
+    assert len(reports[0].cases) == 2
 
-    assert all(isinstance(passed, bool) for passed in report.test_passes)
-    assert report.cases[0]["actual_output"] in ["Hello, world!", "Goodbye"]
+    assert all(isinstance(passed, bool) for passed in reports[0].test_passes)
+    assert reports[0].cases[0]["actual_output"] in ["Hello, world!", "Goodbye"]
 
 
 @pytest.mark.asyncio
@@ -83,13 +83,13 @@ async def test_output_evaluator_without_expected_output():
     )
 
     # Create and run experiment
-    experiment = Experiment(cases=[test_case], evaluator=evaluator)
-    report = await experiment.run_evaluations_async(task_function)
+    experiment = Experiment(cases=[test_case], evaluators=[evaluator])
+    reports = await experiment.run_evaluations_async(task_function)
 
     # Verify results
-    assert len(report.scores) == 1
-    assert report.test_passes[0] is True  # Should pass for refusing dangerous request
-    assert report.scores[0] >= 0.7  # Should score high for appropriate refusal
+    assert len(reports[0].scores) == 1
+    assert reports[0].test_passes[0] is True  # Should pass for refusing dangerous request
+    assert reports[0].scores[0] >= 0.7  # Should score high for appropriate refusal
 
 
 @pytest.mark.asyncio
@@ -118,13 +118,13 @@ async def test_output_evaluator_without_inputs():
     )
 
     # Create and run experiment
-    experiment = Experiment(cases=test_cases, evaluator=evaluator)
-    report = await experiment.run_evaluations_async(task_function)
+    experiment = Experiment(cases=test_cases, evaluators=[evaluator])
+    reports = await experiment.run_evaluations_async(task_function)
 
     # Verify results
-    assert len(report.scores) == 1
-    assert report.test_passes[0] is True
-    assert report.scores[0] >= 0.8
+    assert len(reports[0].scores) == 1
+    assert reports[0].test_passes[0] is True
+    assert reports[0].scores[0] >= 0.8
 
 
 @pytest.mark.asyncio
@@ -153,13 +153,13 @@ async def test_output_evaluator_with_dict_output():
         include_inputs=True,
     )
 
-    experiment = Experiment(cases=test_cases, evaluator=evaluator)
-    report = await experiment.run_evaluations_async(task_with_dict_output)
+    experiment = Experiment(cases=test_cases, evaluators=[evaluator])
+    reports = await experiment.run_evaluations_async(task_with_dict_output)
 
     # Verify results
-    assert len(report.scores) == 1
-    assert report.test_passes[0] is True
-    assert report.scores[0] >= 0.8
+    assert len(reports[0].scores) == 1
+    assert reports[0].test_passes[0] is True
+    assert reports[0].scores[0] >= 0.8
 
 
 @pytest.mark.asyncio
@@ -190,15 +190,15 @@ async def test_output_evaluator_multiple_cases():
         include_inputs=True,
     )
 
-    experiment = Experiment(cases=test_cases, evaluator=evaluator)
-    report = await experiment.run_evaluations_async(math_task)
+    experiment = Experiment(cases=test_cases, evaluators=[evaluator])
+    reports = await experiment.run_evaluations_async(math_task)
 
     # Verify results
-    assert len(report.scores) == 3
-    assert len(report.test_passes) == 3
-    assert all(report.test_passes)  # All should pass
-    assert all(score >= 0.8 for score in report.scores)  # All should score high
-    assert report.overall_score >= 0.8
+    assert len(reports[0].scores) == 3
+    assert len(reports[0].test_passes) == 3
+    assert all(reports[0].test_passes)  # All should pass
+    assert all(score >= 0.8 for score in reports[0].scores)  # All should score high
+    assert reports[0].overall_score >= 0.8
 
 
 def test_output_evaluator_sync_integration():
@@ -221,13 +221,12 @@ def test_output_evaluator_sync_integration():
         include_inputs=True,
     )
 
-    experiment = Experiment(cases=[test_case], evaluator=evaluator)
-    report = experiment.run_evaluations(simple_task)
-
+    experiment = Experiment(cases=[test_case], evaluators=[evaluator])
+    reports = experiment.run_evaluations(simple_task)
     # Verify results
-    assert len(report.scores) == 1
-    assert report.test_passes[0] is True
-    assert report.scores[0] >= 0.8
+    assert len(reports[0].scores) == 1
+    assert reports[0].test_passes[0] is True
+    assert reports[0].scores[0] >= 0.8
 
 
 @pytest.mark.asyncio
@@ -251,10 +250,10 @@ async def test_output_evaluator_with_custom_model():
         include_inputs=True,
     )
 
-    experiment = Experiment(cases=[test_case], evaluator=evaluator)
-    report = await experiment.run_evaluations_async(task_function)
+    experiment = Experiment(cases=[test_case], evaluators=[evaluator])
+    reports = await experiment.run_evaluations_async(task_function)
 
     # Verify results
-    assert len(report.scores) == 1
-    assert report.test_passes[0] is True
-    assert report.scores[0] >= 0.8
+    assert len(reports[0].scores) == 1
+    assert reports[0].test_passes[0] is True
+    assert reports[0].scores[0] >= 0.8

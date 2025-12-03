@@ -126,12 +126,8 @@ select = [
 [tool.ruff.lint.per-file-ignores]
 "src/strands_evals/evaluators/prompt_templates/*" = ["E501"] # line-length
 "src/strands_evals/generators/prompt_template/*" = ["E501"] # line-length
-"src/examples/*" = ["E501", "T201"] # line-length, print
 
 [tool.mypy]
-exclude = [
-    "src/examples/",
-]
 # Disable strict checks that cause false positives with Generic classes
 disable_error_code = [
     "no-redef",  # Allows property setters without "already defined" errors
