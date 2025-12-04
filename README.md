@@ -356,8 +356,8 @@ reports[0].run_display()  # Interactive display with metrics breakdown
 
 For detailed guidance & examples, explore our documentation:
 
-- [User Guide](https://strandsagents.com/latest//user-guide/evals-sdk/quickstart.md)
-- [Evaluator Reference](https://strandsagents.com/latest/user-guide/evals-sdk/evaluators/)
+- [User Guide](https://strandsagents.com/latest/documentation/docs/user-guide/evals-sdk/quickstart/)
+- [Evaluator Reference](https://strandsagents.com/latest/documentation/docs/user-guide/evals-sdk/evaluators/)
 
 ## Contributing ❤️
 
