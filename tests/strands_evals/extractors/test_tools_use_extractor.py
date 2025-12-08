@@ -45,6 +45,7 @@ def test_tools_use_extractor_extract_from_messages_with_tools():
     assert result[0]["name"] == "calculator"
     assert result[0]["input"] == {"expression": "2+2"}
     assert result[0]["tool_result"] == "Result: 4"
+    assert result[0]["is_error"] is False
 
 
 def test_tools_use_extractor_extract_from_messages_no_tools():
@@ -57,6 +58,38 @@ def test_tools_use_extractor_extract_from_messages_no_tools():
     result = extract_agent_tools_used_from_messages(messages)
 
     assert result == []
+
+
+def test_tools_use_extractor_extract_from_messages_with_error():
+    """Test extracting tool usage from messages with error status"""
+    messages = [
+        {"role": "user", "content": [{"text": "Calculate invalid"}]},
+        {
+            "role": "assistant",
+            "content": [
+                {"toolUse": {"toolUseId": "tool_123", "name": "calculator", "input": {"expression": "invalid"}}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "toolResult": {
+                        "status": "error",
+                        "content": [{"text": "Invalid expression"}],
+                        "toolUseId": "tool_123",
+                    }
+                }
+            ],
+        },
+    ]
+
+    result = extract_agent_tools_used_from_messages(messages)
+
+    assert len(result) == 1
+    assert result[0]["name"] == "calculator"
+    assert result[0]["tool_result"] == "Invalid expression"
+    assert result[0]["is_error"] is True
 
 
 def test_tools_use_extractor_extract_from_messages_empty():
@@ -96,6 +129,7 @@ def test_tools_use_extractor_extract_from_messages_no_tool_result():
     assert result[0]["name"] == "calculator"
     assert result[0]["input"] == {"expression": "2+2"}
     assert result[0]["tool_result"] is None
+    assert result[0]["is_error"] is False
 
 
 def test_tools_use_extractor_extract_from_messages_malformed_tool_result():
