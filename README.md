@@ -36,6 +36,7 @@ Strands Evaluation is a powerful framework for evaluating AI agents and LLM appl
 ## Feature Overview
 
 - **Multiple Evaluation Types**: Output evaluation, trajectory analysis, tool usage assessment, and interaction evaluation
+- **Dynamic Simulators**: Multi-turn conversation simulation with realistic user behavior and goal-oriented interactions
 - **LLM-as-a-Judge**: Built-in evaluators using language models for sophisticated assessment with structured scoring
 - **Trace-based Evaluation**: Analyze agent behavior through OpenTelemetry execution traces
 - **Automated Experiment Generation**: Generate comprehensive test suites from context descriptions
@@ -193,6 +194,73 @@ experiment = Experiment[str, str](cases=test_cases, evaluators=evaluators)
 reports = experiment.run_evaluations(user_task_function)
 reports[0].run_display()
 ```
+
+### Multi-turn Conversation Simulation
+
+Simulate realistic user interactions with dynamic, goal-oriented conversations using ActorSimulator:
+
+```python
+from strands import Agent
+from strands_evals import Case, Experiment, ActorSimulator
+from strands_evals.evaluators import HelpfulnessEvaluator, GoalSuccessRateEvaluator
+from strands_evals.mappers import StrandsInMemorySessionMapper
+from strands_evals.telemetry import StrandsEvalsTelemetry
+
+# Setup telemetry
+telemetry = StrandsEvalsTelemetry().setup_in_memory_exporter()
+memory_exporter = telemetry.in_memory_exporter
+
+def task_function(case: Case) -> dict:
+    # Create simulator to drive conversation
+    simulator = ActorSimulator.from_case_for_user_simulator(
+        case=case,
+        max_turns=10
+    )
+
+    # Create agent to evaluate
+    agent = Agent(
+        trace_attributes={
+            "gen_ai.conversation.id": case.session_id,
+            "session.id": case.session_id
+        },
+        callback_handler=None
+    )
+
+    # Run multi-turn conversation
+    all_spans = []
+    user_message = case.input
+
+    while simulator.has_next():
+        memory_exporter.clear()
+        agent_response = agent(user_message)
+        turn_spans = list(memory_exporter.get_finished_spans())
+        all_spans.extend(turn_spans)
+
+        user_result = simulator.act(str(agent_response))
+        user_message = str(user_result.structured_output.message)
+
+    # Map to session for evaluation
+    mapper = StrandsInMemorySessionMapper()
+    session = mapper.map_to_session(all_spans, session_id=case.session_id)
+
+    return {"output": str(agent_response), "trajectory": session}
+
+# Use evaluators to assess simulated conversations
+evaluators = [
+    HelpfulnessEvaluator(),
+    GoalSuccessRateEvaluator()
+]
+
+experiment = Experiment(cases=test_cases, evaluators=evaluators)
+reports = experiment.run_evaluations(task_function)
+```
+
+**Key Benefits:**
+- **Dynamic Interactions**: Simulator adapts responses based on agent behavior
+- **Goal-Oriented Testing**: Verify agents can complete user objectives through dialogue
+- **Realistic Conversations**: Generate authentic multi-turn interaction patterns
+- **No Predefined Scripts**: Test agents without hardcoded conversation paths
+- **Comprehensive Evaluation**: Combine with trace-based evaluators for full assessment
 
 ### Automated Experiment Generation
 
@@ -358,6 +426,7 @@ For detailed guidance & examples, explore our documentation:
 
 - [User Guide](https://strandsagents.com/latest/documentation/docs/user-guide/evals-sdk/quickstart/)
 - [Evaluator Reference](https://strandsagents.com/latest/documentation/docs/user-guide/evals-sdk/evaluators/)
+- [Simulators Guide](https://strandsagents.com/latest/documentation/docs/user-guide/evals-sdk/simulators/)
 
 ## Contributing ❤️
 
