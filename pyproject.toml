@@ -138,7 +138,8 @@ disable_error_code = [
 disallow_untyped_decorators = false
 
 [tool.hatch.version]
-path = "src/strands_evals/__init__.py"
+source = "vcs"  # Use git tags for versioning
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

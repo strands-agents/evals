@@ -1,5 +1,3 @@
-__version__ = "0.1.0"
-
 from . import evaluators, extractors, generators, simulation, telemetry, types
 from .case import Case
 from .experiment import Experiment
