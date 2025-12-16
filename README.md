@@ -346,6 +346,44 @@ tool_parameter_evaluator = ToolParameterAccuracyEvaluator(
 )
 ```
 
+### RAG Evaluation with Contextual Faithfulness
+
+Evaluate whether RAG (Retrieval-Augmented Generation) responses are grounded in the retrieved context:
+
+```python
+from strands_evals import Case, Experiment
+from strands_evals.evaluators import ContextualFaithfulnessEvaluator
+
+# Create test cases with retrieval context
+test_cases = [
+    Case(
+        name="refund-policy",
+        input="What is the refund policy?",
+        retrieval_context=[
+            "Refunds are available within 30 days of purchase.",
+            "Items must be unopened and in original packaging for a full refund.",
+            "Opened items may be eligible for store credit only."
+        ]
+    )
+]
+
+# Evaluator checks if response claims are supported by the context
+evaluator = ContextualFaithfulnessEvaluator()
+
+experiment = Experiment(cases=test_cases, evaluators=[evaluator])
+
+def rag_pipeline(case: Case) -> str:
+    # Your RAG implementation here
+    # Returns the generated response
+    return "You can get a full refund within 30 days if the item is unopened."
+
+reports = experiment.run_evaluations(rag_pipeline)
+reports[0].run_display()
+
+# Scoring: Fully Faithful (1.0), Mostly Faithful (0.67),
+#          Partially Faithful (0.33), Not Faithful (0.0)
+```
+
 ## Available Evaluators
 
 ### Core Evaluators
@@ -353,7 +391,9 @@ tool_parameter_evaluator = ToolParameterAccuracyEvaluator(
 - **TrajectoryEvaluator**: Action sequence evaluation with built-in scoring tools
 - **HelpfulnessEvaluator**: Seven-level helpfulness assessment from user perspective
 - **FaithfulnessEvaluator**: Evaluates if responses are grounded in conversation history
+- **ContextualFaithfulnessEvaluator**: Evaluates if RAG responses are grounded in retrieval context (detects hallucinations)
 - **GoalSuccessRateEvaluator**: Measures if user goals were achieved
+- **HarmfulnessEvaluator**: Binary safety evaluation for harmful content
 
 ### Specialized Evaluators
 - **ToolSelectionAccuracyEvaluator**: Evaluates appropriateness of tool choices

@@ -75,6 +75,7 @@ class EvaluationData(BaseModel, Generic[InputT, OutputT]):
         metadata: Additional information about the test case.
         actual_interactions: The actual interaction sequence given the input.
         expected_interactions: The expected interaction sequence given the input.
+        retrieval_context: The retrieved context for RAG evaluation (e.g., documents from vector store).
     """
 
     input: InputT
@@ -86,6 +87,7 @@ class EvaluationData(BaseModel, Generic[InputT, OutputT]):
     metadata: dict[str, Any] | None = None
     actual_interactions: list[Interaction] | None = None
     expected_interactions: list[Interaction] | None = None
+    retrieval_context: list[str] | None = None
 
 
 class EvaluationOutput(BaseModel):
