@@ -10,9 +10,9 @@ from strands_evals.types.evaluation import EvaluationData, EvaluationOutput
 def mock_agent():
     """Mock Agent for testing"""
     agent = Mock()
-    agent.structured_output.return_value = EvaluationOutput(
-        score=0.85, test_pass=True, reason="Mock interaction evaluation"
-    )
+    mock_result = Mock()
+    mock_result.structured_output = EvaluationOutput(score=0.85, test_pass=True, reason="Mock interaction evaluation")
+    agent.return_value = mock_result
     return agent
 
 
@@ -21,11 +21,14 @@ def mock_async_agent():
     """Mock Agent for testing with async"""
     agent = Mock()
 
-    # Create a mock coroutine function
-    async def mock_structured_output_async(*args, **kwargs):
-        return EvaluationOutput(score=0.85, test_pass=True, reason="Mock async interaction evaluation")
+    async def mock_invoke_async(*args, **kwargs):
+        mock_result = Mock()
+        mock_result.structured_output = EvaluationOutput(
+            score=0.85, test_pass=True, reason="Mock async interaction evaluation"
+        )
+        return mock_result
 
-    agent.structured_output_async = mock_structured_output_async
+    agent.invoke_async = mock_invoke_async
     return agent
 
 
@@ -118,7 +121,7 @@ def test_interactions_evaluator_evaluate_with_full_data(mock_agent_class, evalua
     assert call_kwargs["callback_handler"] is None
 
     # Verify structured_output was called twice (for each interaction)
-    assert mock_agent.structured_output.call_count == 2
+    assert mock_agent.call_count == 2
 
     assert result[0].score == 0.85
     assert result[0].test_pass is True
@@ -132,13 +135,13 @@ def test_interactions_evaluator_evaluate_without_inputs(mock_agent_class, evalua
 
     result = evaluator.evaluate(evaluation_data)
 
-    # Check that structured_output was called
-    assert mock_agent.structured_output.call_count == 2
+    # Check that agent was called
+    assert mock_agent.call_count == 2
     assert result[0].score == 0.85
     assert result[0].test_pass is True
 
-    call_args = mock_agent.structured_output.call_args
-    prompt = call_args[0][1]
+    call_args = mock_agent.call_args
+    prompt = call_args[0][0]
     assert "<Input>" not in prompt
     assert "<Trajectory>" not in prompt
 
@@ -202,12 +205,12 @@ def test_interactions_evaluator_evaluate_with_dict_rubric(mock_agent_class, mock
     result = evaluator.evaluate(evaluation_data)
 
     # Verify both interactions were evaluated
-    assert mock_agent.structured_output.call_count == 2
+    assert mock_agent.call_count == 2
 
     # Check that correct rubrics were used in prompts
-    call_args_list = mock_agent.structured_output.call_args_list
-    first_prompt = call_args_list[0][0][1]
-    second_prompt = call_args_list[1][0][1]
+    call_args_list = mock_agent.call_args_list
+    first_prompt = call_args_list[0][0][0]
+    second_prompt = call_args_list[1][0][0]
 
     assert "Evaluate planning quality and task breakdown" in first_prompt
     assert "Assess research thoroughness and accuracy" in second_prompt

@@ -1,3 +1,5 @@
+from typing import cast
+
 from strands import Agent
 from strands.agent.conversation_manager import SlidingWindowConversationManager
 from strands.models.model import Model
@@ -198,8 +200,8 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
         for i in range(num_interactions):
             is_last = i == num_interactions - 1
             evaluation_prompt = self._compose_prompt(evaluation_case, i, is_last)
-            result = evaluator_agent.structured_output(EvaluationOutput, evaluation_prompt)
-            results.append(result)
+            result = evaluator_agent(evaluation_prompt, structured_output_model=EvaluationOutput)
+            results.append(cast(EvaluationOutput, result.structured_output))
 
         return results
 
@@ -238,7 +240,7 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
         for i in range(num_interactions):
             is_last = i == num_interactions - 1
             evaluation_prompt = self._compose_prompt(evaluation_case, i, is_last)
-            result = await evaluator_agent.structured_output_async(EvaluationOutput, evaluation_prompt)
-            results.append(result)
+            result = await evaluator_agent.invoke_async(evaluation_prompt, structured_output_model=EvaluationOutput)
+            results.append(cast(EvaluationOutput, result.structured_output))
 
         return results
