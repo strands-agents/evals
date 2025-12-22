@@ -577,8 +577,8 @@ class Experiment(Generic[InputT, OutputT]):
 
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(file_path, "w") as f:
-            json.dump(self.to_dict(), f, indent=2)
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
 
     @classmethod
     def from_dict(cls, data: dict, custom_evaluators: list[type[Evaluator]] | None = None):
@@ -646,7 +646,7 @@ class Experiment(Generic[InputT, OutputT]):
                 f"Only .json format is supported. Got file: {path}. Please provide a path with .json extension."
             )
 
-        with open(file_path, "r") as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         return cls.from_dict(data, custom_evaluators)

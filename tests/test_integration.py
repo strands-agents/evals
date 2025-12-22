@@ -348,3 +348,45 @@ async def test_async_dataset_with_interactions(interaction_case):
     assert len(report.cases) == 1
     assert report.cases[0].get("actual_interactions") is not None
     assert len(report.cases[0].get("actual_interactions")) == 2
+
+
+def test_integration_tool_error_extraction():
+    """Test that is_error field is correctly extracted from tool execution"""
+    from strands_evals.extractors.tools_use_extractor import extract_agent_tools_used_from_messages
+
+    # Create mock messages simulating tool success and error
+    messages = [
+        {"role": "user", "content": [{"text": "test"}]},
+        {
+            "role": "assistant",
+            "content": [
+                {"toolUse": {"toolUseId": "tool1", "name": "success_tool", "input": {}}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"toolResult": {"status": "success", "content": [{"text": "ok"}], "toolUseId": "tool1"}},
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": [
+                {"toolUse": {"toolUseId": "tool2", "name": "error_tool", "input": {}}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"toolResult": {"status": "error", "content": [{"text": "failed"}], "toolUseId": "tool2"}},
+            ],
+        },
+    ]
+
+    tools_used = extract_agent_tools_used_from_messages(messages)
+
+    assert len(tools_used) == 2
+    assert tools_used[0]["name"] == "success_tool"
+    assert tools_used[0]["is_error"] is False
+    assert tools_used[1]["name"] == "error_tool"
+    assert tools_used[1]["is_error"] is True
