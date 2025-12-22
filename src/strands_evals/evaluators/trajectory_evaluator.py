@@ -1,3 +1,5 @@
+from typing import cast
+
 from strands import Agent
 from strands.models.model import Model
 from typing_extensions import Any, TypeVar, Union
@@ -74,8 +76,8 @@ class TrajectoryEvaluator(Evaluator[InputT, OutputT]):
             include_inputs=self.include_inputs,
             uses_trajectory=True,
         )
-        result = evaluator_agent.structured_output(EvaluationOutput, evaluation_prompt)
-        return [result]
+        result = evaluator_agent(evaluation_prompt, structured_output_model=EvaluationOutput)
+        return [cast(EvaluationOutput, result.structured_output)]
 
     async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         """
@@ -96,5 +98,5 @@ class TrajectoryEvaluator(Evaluator[InputT, OutputT]):
             include_inputs=self.include_inputs,
             uses_trajectory=True,
         )
-        result = await evaluator_agent.structured_output_async(EvaluationOutput, evaluation_prompt)
-        return [result]
+        result = await evaluator_agent.invoke_async(evaluation_prompt, structured_output_model=EvaluationOutput)
+        return [cast(EvaluationOutput, result.structured_output)]

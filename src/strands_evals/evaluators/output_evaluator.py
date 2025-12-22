@@ -1,3 +1,5 @@
+from typing import cast
+
 from strands import Agent
 from strands.models.model import Model
 from typing_extensions import TypeVar, Union
@@ -52,7 +54,7 @@ class OutputEvaluator(Evaluator[InputT, OutputT]):
             evaluation_case=evaluation_case, rubric=self.rubric, include_inputs=self.include_inputs
         )
         result = evaluator_agent(evaluation_prompt, structured_output_model=EvaluationOutput)
-        return [result]
+        return [cast(EvaluationOutput, result.structured_output)]
 
     async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         """
@@ -69,4 +71,4 @@ class OutputEvaluator(Evaluator[InputT, OutputT]):
             evaluation_case=evaluation_case, rubric=self.rubric, include_inputs=self.include_inputs
         )
         result = await evaluator_agent.invoke_async(evaluation_prompt, structured_output_model=EvaluationOutput)
-        return [result]
+        return [cast(EvaluationOutput, result.structured_output)]
