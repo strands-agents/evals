@@ -45,9 +45,11 @@ class TraceExtractor:
     def _extract_trace_level(self, session: Session) -> list[TraceLevelInput]:
         """Extract trace-level inputs with session history up to each turn."""
         evaluation_inputs: list[TraceLevelInput] = []
-        previous_turns: list[Union[UserMessage, AssistantMessage]] = []
+        previous_turns: list[Union[UserMessage, list[ToolExecution], AssistantMessage]] = []
 
         for trace in session.traces:
+            tool_spans = self._find_tool_execution_spans(trace)
+
             for span in trace.spans:
                 if not isinstance(span, AgentInvocationSpan):
                     continue
@@ -58,6 +60,17 @@ class TraceExtractor:
                 except (AttributeError, TypeError, ValueError) as e:
                     logger.warning(f"Failed to create user message: {e}")
                     continue
+
+                # Include tool executions in session history
+                if tool_spans:
+                    try:
+                        tool_executions = [
+                            ToolExecution(tool_call=ts.tool_call, tool_result=ts.tool_result)
+                            for ts in tool_spans
+                        ]
+                        previous_turns.append(tool_executions)
+                    except (AttributeError, TypeError, ValueError) as e:
+                        logger.warning(f"Failed to create tool executions: {e}")
 
                 trace_input = TraceLevelInput(
                     span_info=span.span_info,
