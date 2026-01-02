@@ -48,6 +48,70 @@ def test_tools_use_extractor_extract_from_messages_with_tools():
     assert result[0]["is_error"] is False
 
 
+def test_tools_use_extractor_extract_from_messages_with_multiple_tools():
+    """Test extracting multiple tool usages from messages"""
+    messages = [
+        {"role": "user", "content": [{"text": "Calculate 2+2 and search for weather"}]},
+        {
+            "role": "assistant",
+            "content": [
+                {"text": "I'll calculate and search for you."},
+                {
+                    "toolUse": {
+                        "toolUseId": "tool1",
+                        "name": "calculator",
+                        "input": {"expression": "2+2"},
+                    }
+                },
+                {
+                    "toolUse": {
+                        "toolUseId": "tool2",
+                        "name": "web_search",
+                        "input": {"query": "current weather"},
+                    }
+                },
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "toolResult": {
+                        "status": "success",
+                        "content": [{"text": "Result: 4"}],
+                        "toolUseId": "tool1",
+                    }
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "toolResult": {
+                        "status": "success",
+                        "content": [{"text": "Sunny, 25°C"}],
+                        "toolUseId": "tool2",
+                    }
+                }
+            ],
+        },
+        {"role": "assistant", "content": [{"text": "Results: 4 and sunny weather."}]},
+    ]
+
+    result = extract_agent_tools_used_from_messages(messages)
+
+    assert len(result) == 2
+    assert result[0]["name"] == "calculator"
+    assert result[0]["input"] == {"expression": "2+2"}
+    assert result[0]["tool_result"] == "Result: 4"
+    assert result[0]["is_error"] is False
+    assert result[1]["name"] == "web_search"
+    assert result[1]["input"] == {"query": "current weather"}
+    assert result[1]["tool_result"] == "Sunny, 25°C"
+    assert result[1]["is_error"] is False
+
+
 def test_tools_use_extractor_extract_from_messages_no_tools():
     """Test extracting tool usage from messages without tool usage"""
     messages = [
