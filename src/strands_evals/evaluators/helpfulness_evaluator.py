@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import cast
 
 from pydantic import BaseModel, Field
 from strands import Agent
@@ -65,29 +66,33 @@ class HelpfulnessEvaluator(Evaluator[InputT, OutputT]):
         parsed_input = self._get_last_turn(evaluation_case)
         prompt = self._format_prompt(parsed_input)
         evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
-        rating = evaluator_agent.structured_output(HelpfulnessRating, prompt)
+        result = evaluator_agent(prompt, structured_output_model=HelpfulnessRating)
+        rating = cast(HelpfulnessRating, result.structured_output)
         normalized_score = self._score_mapping[rating.score]
-        result = EvaluationOutput(
-            score=normalized_score,
-            test_pass=normalized_score >= 0.5,
-            reason=rating.reasoning,
-            label=rating.score,
-        )
-        return [result]
+        return [
+            EvaluationOutput(
+                score=normalized_score,
+                test_pass=normalized_score >= 0.5,
+                reason=rating.reasoning,
+                label=rating.score,
+            )
+        ]
 
     async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         parsed_input = self._get_last_turn(evaluation_case)
         prompt = self._format_prompt(parsed_input)
         evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
-        rating = await evaluator_agent.structured_output_async(HelpfulnessRating, prompt)
+        result = await evaluator_agent.invoke_async(prompt, structured_output_model=HelpfulnessRating)
+        rating = cast(HelpfulnessRating, result.structured_output)
         normalized_score = self._score_mapping[rating.score]
-        result = EvaluationOutput(
-            score=normalized_score,
-            test_pass=normalized_score >= 0.5,
-            reason=rating.reasoning,
-            label=rating.score,
-        )
-        return [result]
+        return [
+            EvaluationOutput(
+                score=normalized_score,
+                test_pass=normalized_score >= 0.5,
+                reason=rating.reasoning,
+                label=rating.score,
+            )
+        ]
 
     def _get_last_turn(self, evaluation_case: EvaluationData[InputT, OutputT]) -> TraceLevelInput:
         """Extract the most recent turn from the conversation for evaluation."""
