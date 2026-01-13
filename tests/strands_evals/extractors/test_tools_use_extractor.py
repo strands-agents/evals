@@ -243,3 +243,38 @@ def test_tools_use_extractor_extract_tools_description_empty():
     result = extract_tools_description(mock_agent, is_short=True)
 
     assert result == {}
+
+
+def test_tools_use_extractor_extract_from_messages_user_message_without_tool_result():
+    """Test extracting tool usage when user message content lacks toolResult key."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {"toolUse": {"toolUseId": "tool_abc", "name": "calculator", "input": {"expression": "5+5"}}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [{"text": "Some user text without toolResult"}],  # No toolResult key
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "toolResult": {
+                        "status": "success",
+                        "content": [{"text": "Result: 10"}],
+                        "toolUseId": "tool_abc",
+                    }
+                }
+            ],
+        },
+    ]
+    result = extract_agent_tools_used_from_messages(messages)
+
+    assert len(result) == 1
+    assert result[0]["name"] == "calculator"
+    assert result[0]["input"] == {"expression": "5+5"}
+    assert result[0]["tool_result"] == "Result: 10"
+    assert result[0]["is_error"] is False

@@ -43,7 +43,7 @@ def extract_agent_tools_used_from_messages(agent_messages):
                             content = next_message.get("content")
                             if content:
                                 tool_result_dict = content[0].get("toolResult")
-                                if tool_result_dict.get("toolUseId") == tool_id:
+                                if tool_result_dict and tool_result_dict.get("toolUseId") == tool_id:
                                     tool_result_content = tool_result_dict.get("content", [])
                                     if len(tool_result_content) > 0:
                                         tool_result = tool_result_content[0].get("text")
