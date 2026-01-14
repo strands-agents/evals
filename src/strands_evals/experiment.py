@@ -391,8 +391,8 @@ class Experiment(Generic[InputT, OutputT]):
                     "gen_ai.evaluation.case.input": serialize(case.input),
                 },
             ) as case_span:
+                # Task execution span - execute once
                 try:
-                    # Task execution span - execute once
                     with self._tracer.start_as_current_span(
                         "task_execution",
                         attributes={
@@ -414,9 +414,21 @@ class Experiment(Generic[InputT, OutputT]):
                                 ),
                             }
                         )
-
-                    # Evaluate with each evaluator using the same task output
+                except Exception as e:
+                    case_span.record_exception(e)
                     for evaluator in self._evaluators:
+                        eval_name = evaluator.get_type_name()
+                        evaluator_data[eval_name]["cases"].append(case.model_dump())
+                        evaluator_data[eval_name]["test_passes"].append(False)
+                        evaluator_data[eval_name]["scores"].append(0)
+                        evaluator_data[eval_name]["reasons"].append(f"Task execution error: {str(e)}")
+                        evaluator_data[eval_name]["detailed_results"].append([])
+                    continue
+
+                # Evaluate with each evaluator using the same task output
+                for evaluator in self._evaluators:
+                    eval_name = evaluator.get_type_name()
+                    try:
                         with self._tracer.start_as_current_span(
                             f"evaluator {evaluator.get_type_name()}",
                             attributes={
@@ -436,21 +448,16 @@ class Experiment(Generic[InputT, OutputT]):
                                 }
                             )
 
-                            eval_name = evaluator.get_type_name()
                             evaluator_data[eval_name]["cases"].append(evaluation_context.model_dump())
                             evaluator_data[eval_name]["test_passes"].append(aggregate_pass)
                             evaluator_data[eval_name]["scores"].append(aggregate_score)
                             evaluator_data[eval_name]["reasons"].append(aggregate_reason or "")
                             evaluator_data[eval_name]["detailed_results"].append(evaluation_outputs)
-
-                except Exception as e:
-                    case_span.record_exception(e)
-                    for evaluator in self._evaluators:
-                        eval_name = evaluator.get_type_name()
-                        evaluator_data[eval_name]["cases"].append(case.model_dump())
+                    except Exception as e:
+                        evaluator_data[eval_name]["cases"].append(evaluation_context.model_dump())
                         evaluator_data[eval_name]["test_passes"].append(False)
                         evaluator_data[eval_name]["scores"].append(0)
-                        evaluator_data[eval_name]["reasons"].append(f"An error occured : {str(e)}")
+                        evaluator_data[eval_name]["reasons"].append(f"Evaluator error: {str(e)}")
                         evaluator_data[eval_name]["detailed_results"].append([])
 
         reports = []

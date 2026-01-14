@@ -34,6 +34,16 @@ class MockEvaluator2(Evaluator[str, str]):
         return [EvaluationOutput(score=0.5, test_pass=True, reason="Async test evaluation 2")]
 
 
+class ThrowingEvaluator(Evaluator[str, str]):
+    """Evaluator that always throws an exception - used to test error isolation"""
+
+    def evaluate(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
+        raise RuntimeError("Evaluator exploded")
+
+    async def evaluate_async(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
+        raise RuntimeError("Async evaluator exploded")
+
+
 @pytest.fixture
 def mock_evaluator():
     return MockEvaluator()
@@ -1052,3 +1062,29 @@ def test_experiment_run_evaluations_multiple_cases(mock_span, simple_task):
         assert len(reports) == 1
         assert len(reports[0].scores) == 2
         assert all(score == 1.0 for score in reports[0].scores)
+
+
+def test_experiment_run_evaluations_evaluator_error_isolated():
+    """Test that one evaluator failing doesn't affect other evaluators."""
+    case = Case(name="test", input="hello", expected_output="hello")
+
+    # MockEvaluator succeeds, ThrowingEvaluator fails
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator(), ThrowingEvaluator()])
+
+    def echo_task(c):
+        return c.input
+
+    reports = experiment.run_evaluations(echo_task)
+
+    assert len(reports) == 2
+
+    # First evaluator (MockEvaluator) should succeed
+    assert reports[0].scores[0] == 1.0
+    assert reports[0].test_passes[0] is True
+    assert reports[0].reasons[0] == "Mock evaluation"
+
+    # Second evaluator (ThrowingEvaluator) should fail with error message
+    assert reports[1].scores[0] == 0
+    assert reports[1].test_passes[0] is False
+    assert "Evaluator error" in reports[1].reasons[0]
+    assert "Evaluator exploded" in reports[1].reasons[0]

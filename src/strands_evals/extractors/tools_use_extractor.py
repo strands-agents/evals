@@ -54,6 +54,34 @@ def extract_agent_tools_used_from_messages(agent_messages):
                         tools_used.append(
                             {"name": tool_name, "input": tool_input, "tool_result": tool_result, "is_error": is_error}
                         )
+                        tool = message.get("toolUse")
+
+                if tool:
+                    tool_name = tool.get("name")
+                    tool_input = tool.get("input")
+                    tool_id = tool.get("toolUseId")
+                    # get the tool result from the next message
+                    tool_result = None
+                    is_error = False
+                    next_message_i = i + 1
+                    while next_message_i < len(agent_messages):
+                        next_message = agent_messages[next_message_i]
+                        next_message_i += 1
+
+                        if next_message.get("role") == "user":
+                            content = next_message.get("content")
+                            if content:
+                                tool_result_dict = content[0].get("toolResult")
+                                if tool_result_dict and tool_result_dict.get("toolUseId") == tool_id:
+                                    tool_result_content = tool_result_dict.get("content", [])
+                                    if len(tool_result_content) > 0:
+                                        tool_result = tool_result_content[0].get("text")
+                                        is_error = tool_result_dict.get("status") == "error"
+                                        break
+
+                    tools_used.append(
+                        {"name": tool_name, "input": tool_input, "tool_result": tool_result, "is_error": is_error}
+                    )
     return tools_used
 
 
