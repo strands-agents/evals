@@ -1088,3 +1088,386 @@ def test_experiment_run_evaluations_evaluator_error_isolated():
     assert reports[1].test_passes[0] is False
     assert "Evaluator error" in reports[1].reasons[0]
     assert "Evaluator exploded" in reports[1].reasons[0]
+
+
+def test_is_throttling_error_detects_model_throttled_exception():
+    """Test that ModelThrottledException is detected as throttling error"""
+    from strands.types.exceptions import ModelThrottledException
+
+    from strands_evals.experiment import _is_throttling_error
+
+    exc = ModelThrottledException("Too many tokens")
+    assert _is_throttling_error(exc) is True
+
+
+def test_is_throttling_error_detects_event_loop_exception():
+    """Test that EventLoopException is detected as throttling error"""
+    from strands.types.exceptions import EventLoopException
+
+    from strands_evals.experiment import _is_throttling_error
+
+    exc = EventLoopException(Exception("Throttling"), {})
+    assert _is_throttling_error(exc) is True
+
+
+def test_is_throttling_error_detects_botocore_throttling():
+    """Test that botocore ThrottlingException is detected"""
+    from strands_evals.experiment import _is_throttling_error
+
+    # Create a mock exception with ThrottlingException class name
+    class ThrottlingException(Exception):
+        pass
+
+    exc = ThrottlingException("Rate limit exceeded")
+    assert _is_throttling_error(exc) is True
+
+
+def test_is_throttling_error_detects_client_error_with_codes():
+    """Test that ClientError with throttling codes is detected"""
+    from botocore.exceptions import ClientError
+
+    from strands_evals.experiment import _is_throttling_error
+
+    # Test various throttling error codes
+    throttling_codes = [
+        "ThrottlingException",
+        "TooManyRequestsException",
+        "RequestLimitExceeded",
+        "ServiceUnavailable",
+        "ProvisionedThroughputExceededException",
+    ]
+
+    for code in throttling_codes:
+        exc = ClientError({"Error": {"Code": code, "Message": "Test"}}, "TestOperation")
+        assert _is_throttling_error(exc) is True, f"Failed to detect {code}"
+
+
+def test_is_throttling_error_ignores_regular_exceptions():
+    """Test that regular exceptions are not detected as throttling"""
+    from strands_evals.experiment import _is_throttling_error
+
+    regular_exceptions = [
+        ValueError("Invalid input"),
+        RuntimeError("Runtime error"),
+        TypeError("Type error"),
+    ]
+
+    for exc in regular_exceptions:
+        assert _is_throttling_error(exc) is False
+
+
+def test_is_throttling_error_ignores_client_error_non_throttling():
+    """Test that ClientError with non-throttling codes is not detected"""
+    from botocore.exceptions import ClientError
+
+    from strands_evals.experiment import _is_throttling_error
+
+    exc = ClientError({"Error": {"Code": "ValidationException", "Message": "Invalid"}}, "TestOperation")
+    assert _is_throttling_error(exc) is False
+
+
+def test_experiment_run_evaluations_retries_on_throttling():
+    """Test that run_evaluations retries task execution on throttling errors"""
+    from strands.types.exceptions import ModelThrottledException
+
+    call_count = 0
+
+    def throttling_task(c):
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 2:
+            raise ModelThrottledException("Too many tokens")
+        return c.input
+
+    case = Case(name="test", input="hello", expected_output="hello")
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
+
+    with patch("strands_evals.experiment.INITIAL_RETRY_DELAY", 0.01):
+        with patch("strands_evals.experiment.MAX_RETRY_DELAY", 0.02):
+            reports = experiment.run_evaluations(throttling_task)
+
+    # Task should have been retried
+    assert call_count == 3
+    assert len(reports) == 1
+    assert reports[0].scores[0] == 1.0
+    assert reports[0].test_passes[0] is True
+
+
+def test_experiment_run_evaluations_fails_after_max_retries():
+    """Test that run_evaluations fails after max retries on throttling"""
+    from strands.types.exceptions import ModelThrottledException
+
+    call_count = 0
+
+    def always_throttling_task(c):
+        nonlocal call_count
+        call_count += 1
+        raise ModelThrottledException("Too many tokens")
+
+    case = Case(name="test", input="hello", expected_output="hello")
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
+
+    with patch("strands_evals.experiment.MAX_RETRY_ATTEMPTS", 3):
+        with patch("strands_evals.experiment.INITIAL_RETRY_DELAY", 0.01):
+            with patch("strands_evals.experiment.MAX_RETRY_DELAY", 0.02):
+                reports = experiment.run_evaluations(always_throttling_task)
+
+    # Should have retried max times
+    assert call_count == 3
+    assert len(reports) == 1
+    assert reports[0].scores[0] == 0
+    assert reports[0].test_passes[0] is False
+    assert "Task execution error" in reports[0].reasons[0]
+
+
+def test_experiment_run_evaluations_no_retry_on_non_throttling():
+    """Test that run_evaluations doesn't retry on non-throttling errors"""
+    call_count = 0
+
+    def non_throttling_error_task(c):
+        nonlocal call_count
+        call_count += 1
+        raise ValueError("Invalid input")
+
+    case = Case(name="test", input="hello", expected_output="hello")
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
+
+    reports = experiment.run_evaluations(non_throttling_error_task)
+
+    # Should NOT have retried
+    assert call_count == 1
+    assert len(reports) == 1
+    assert reports[0].scores[0] == 0
+    assert "Invalid input" in reports[0].reasons[0]
+
+
+def test_experiment_run_evaluations_exponential_backoff():
+    """Test that run_evaluations uses exponential backoff for retries"""
+    from strands.types.exceptions import ModelThrottledException
+
+    sleep_delays = []
+
+    def mock_sleep(delay):
+        sleep_delays.append(delay)
+
+    call_count = 0
+
+    def throttling_task(c):
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 3:
+            raise ModelThrottledException("Too many tokens")
+        return c.input
+
+    case = Case(name="test", input="hello", expected_output="hello")
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
+
+    with patch("time.sleep", mock_sleep):
+        with patch("strands_evals.experiment.INITIAL_RETRY_DELAY", 1):
+            with patch("strands_evals.experiment.MAX_RETRY_DELAY", 10):
+                experiment.run_evaluations(throttling_task)
+
+    # Verify exponential backoff: 1, 2, 4
+    assert len(sleep_delays) == 3
+    assert sleep_delays[0] == 1
+    assert sleep_delays[1] == 2
+    assert sleep_delays[2] == 4
+
+
+def test_experiment_run_evaluations_evaluator_retries_on_throttling():
+    """Test that evaluator execution retries on throttling errors"""
+    from strands.types.exceptions import ModelThrottledException
+
+    class ThrottlingEvaluator(Evaluator[str, str]):
+        def __init__(self):
+            super().__init__()
+            self.call_count = 0
+
+        def evaluate(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
+            self.call_count += 1
+            if self.call_count <= 2:
+                raise ModelThrottledException("Too many tokens")
+            return [EvaluationOutput(score=1.0, test_pass=True, reason="Success after retry")]
+
+    def simple_task(c):
+        return c.input
+
+    case = Case(name="test", input="hello", expected_output="hello")
+    evaluator = ThrottlingEvaluator()
+    experiment = Experiment(cases=[case], evaluators=[evaluator])
+
+    with patch("strands_evals.experiment.INITIAL_RETRY_DELAY", 0.01):
+        with patch("strands_evals.experiment.MAX_RETRY_DELAY", 0.02):
+            reports = experiment.run_evaluations(simple_task)
+
+    # Evaluator should have been retried
+    assert evaluator.call_count == 3
+    assert len(reports) == 1
+    assert reports[0].scores[0] == 1.0
+    assert reports[0].test_passes[0] is True
+
+
+@pytest.mark.asyncio
+async def test_experiment_run_evaluations_async_retries_on_throttling():
+    """Test that run_evaluations_async retries task execution on throttling"""
+    from strands.types.exceptions import ModelThrottledException
+
+    call_count = 0
+
+    async def throttling_task(c):
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 2:
+            raise ModelThrottledException("Too many tokens")
+        return c.input
+
+    case = Case(name="test", input="hello", expected_output="hello")
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
+
+    with patch("strands_evals.experiment.INITIAL_RETRY_DELAY", 0.01):
+        with patch("strands_evals.experiment.MAX_RETRY_DELAY", 0.02):
+            reports = await experiment.run_evaluations_async(throttling_task, max_workers=1)
+
+    # Task should have been retried
+    assert call_count == 3
+    assert len(reports) == 1
+    assert reports[0].scores[0] == 1.0
+    assert reports[0].test_passes[0] is True
+
+
+@pytest.mark.asyncio
+async def test_experiment_run_evaluations_async_fails_after_max_retries():
+    """Test that run_evaluations_async fails after max retries"""
+    from strands.types.exceptions import ModelThrottledException
+
+    call_count = 0
+
+    async def always_throttling_task(c):
+        nonlocal call_count
+        call_count += 1
+        raise ModelThrottledException("Too many tokens")
+
+    case = Case(name="test", input="hello", expected_output="hello")
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
+
+    with patch("strands_evals.experiment.MAX_RETRY_ATTEMPTS", 3):
+        with patch("strands_evals.experiment.INITIAL_RETRY_DELAY", 0.01):
+            with patch("strands_evals.experiment.MAX_RETRY_DELAY", 0.02):
+                reports = await experiment.run_evaluations_async(always_throttling_task, max_workers=1)
+
+    # Should have retried max times
+    assert call_count == 3
+    assert len(reports) == 1
+    assert reports[0].scores[0] == 0
+    assert reports[0].test_passes[0] is False
+    assert "An error occurred" in reports[0].reasons[0]
+
+
+@pytest.mark.asyncio
+async def test_experiment_run_evaluations_async_no_retry_on_non_throttling():
+    """Test that run_evaluations_async doesn't retry on non-throttling errors"""
+    call_count = 0
+
+    async def non_throttling_error_task(c):
+        nonlocal call_count
+        call_count += 1
+        raise ValueError("Invalid input")
+
+    case = Case(name="test", input="hello", expected_output="hello")
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
+
+    reports = await experiment.run_evaluations_async(non_throttling_error_task, max_workers=1)
+
+    # Should NOT have retried
+    assert call_count == 1
+    assert len(reports) == 1
+    assert reports[0].scores[0] == 0
+    assert "Invalid input" in reports[0].reasons[0]
+
+
+@pytest.mark.asyncio
+async def test_experiment_run_evaluations_async_exponential_backoff():
+    """Test that run_evaluations_async uses exponential backoff"""
+    from strands.types.exceptions import ModelThrottledException
+
+    sleep_delays = []
+
+    async def mock_async_sleep(delay):
+        sleep_delays.append(delay)
+
+    call_count = 0
+
+    async def throttling_task(c):
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 3:
+            raise ModelThrottledException("Too many tokens")
+        return c.input
+
+    case = Case(name="test", input="hello", expected_output="hello")
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
+
+    with patch("asyncio.sleep", mock_async_sleep):
+        with patch("strands_evals.experiment.INITIAL_RETRY_DELAY", 1):
+            with patch("strands_evals.experiment.MAX_RETRY_DELAY", 10):
+                await experiment.run_evaluations_async(throttling_task, max_workers=1)
+
+    # Filter out MockEvaluator's sleep calls (0.01) and verify exponential backoff: 1, 2, 4
+    retry_delays = [d for d in sleep_delays if d >= 1]
+    assert len(retry_delays) == 3
+    assert retry_delays[0] == 1
+    assert retry_delays[1] == 2
+    assert retry_delays[2] == 4
+
+
+@pytest.mark.asyncio
+async def test_experiment_run_evaluations_async_evaluator_retries():
+    """Test that async evaluator execution retries on throttling"""
+    from strands.types.exceptions import ModelThrottledException
+
+    class AsyncThrottlingEvaluator(Evaluator[str, str]):
+        def __init__(self):
+            super().__init__()
+            self.call_count = 0
+
+        async def evaluate_async(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
+            self.call_count += 1
+            if self.call_count <= 2:
+                raise ModelThrottledException("Too many tokens")
+            return [EvaluationOutput(score=1.0, test_pass=True, reason="Success after retry")]
+
+    async def simple_task(c):
+        return c.input
+
+    case = Case(name="test", input="hello", expected_output="hello")
+    evaluator = AsyncThrottlingEvaluator()
+    experiment = Experiment(cases=[case], evaluators=[evaluator])
+
+    with patch("strands_evals.experiment.INITIAL_RETRY_DELAY", 0.01):
+        with patch("strands_evals.experiment.MAX_RETRY_DELAY", 0.02):
+            reports = await experiment.run_evaluations_async(simple_task, max_workers=1)
+
+    # Evaluator should have been retried
+    assert evaluator.call_count == 3
+    assert len(reports) == 1
+    assert reports[0].scores[0] == 1.0
+    assert reports[0].test_passes[0] is True
+
+
+@pytest.mark.asyncio
+async def test_experiment_run_evaluations_async_task_executed_once_with_retry():
+    """Test that task is executed once per case even with evaluator retries"""
+    task_call_count = 0
+
+    async def counting_task(c):
+        nonlocal task_call_count
+        task_call_count += 1
+        return c.input
+
+    case = Case(name="test", input="hello", expected_output="hello")
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator(), MockEvaluator2()])
+
+    await experiment.run_evaluations_async(counting_task, max_workers=1)
+
+    # Task should be called once per case, not once per evaluator
+    assert task_call_count == 1

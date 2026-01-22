@@ -2,10 +2,14 @@ import asyncio
 import json
 import logging
 import os
+import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
+from botocore.exceptions import ClientError
 from opentelemetry.trace import format_trace_id
+from strands.types.exceptions import EventLoopException, ModelThrottledException
 from typing_extensions import Any, Generic, TypeVar
 
 from .case import Case
@@ -23,6 +27,46 @@ OutputT = TypeVar("OutputT")
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+# Retry configuration for handling throttling
+MAX_RETRY_ATTEMPTS = 6
+INITIAL_RETRY_DELAY = 4
+MAX_RETRY_DELAY = 240  # 4 minutes
+
+THROTTLING_ERROR_CODES = {
+    "ThrottlingException",
+    "TooManyRequestsException",
+    "RequestLimitExceeded",
+    "ServiceUnavailable",
+    "ProvisionedThroughputExceededException",
+}
+
+
+def _is_throttling_error(exception: Exception) -> bool:
+    """
+    Check if an exception is a throttling/rate limiting error.
+
+    Args:
+        exception: The exception to check
+
+    Returns:
+        True if the exception indicates throttling, False otherwise
+    """
+    # Check for Strands-specific throttling exceptions
+    if isinstance(exception, (ModelThrottledException, EventLoopException)):
+        return True
+
+    # Check for botocore.errorfactory.ThrottlingException (dynamically generated)
+    if type(exception).__name__ == "ThrottlingException":
+        return True
+
+    # Check for botocore ClientError with throttling error codes
+    if isinstance(exception, ClientError):
+        error_code = exception.response.get("Error", {}).get("Code", "")
+        if error_code in THROTTLING_ERROR_CODES:
+            return True
+
+    return False
 
 
 def _get_label_from_score(evaluator: Evaluator, score: float) -> str:
@@ -240,67 +284,156 @@ class Experiment(Generic[InputT, OutputT]):
             trace_id = None
 
             try:
-                with self._tracer.start_as_current_span(
-                    f"execute_case {case_name}",
-                ) as case_span:
-                    evaluation_context = await self._run_task_async(task, case)
-                    case_span.set_attributes(
-                        {
-                            "gen_ai.evaluation.data.input": serialize(evaluation_context.input),
-                            "gen_ai.evaluation.data.expected_output": serialize(evaluation_context.expected_output),
-                            "gen_ai.evaluation.data.actual_output": serialize(evaluation_context.actual_output),
-                            "gen_ai.evaluation.data.has_trajectory": (evaluation_context.actual_trajectory is not None),
-                            "gen_ai.evaluation.data.has_interactions": (
-                                evaluation_context.actual_interactions is not None
-                            ),
-                        }
-                    )
-                    trace_id = format_trace_id(case_span.get_span_context().trace_id)
+                # Task execution with retry logic for throttling exceptions
+                evaluation_context = None
+                task_current_delay = INITIAL_RETRY_DELAY
+
+                for task_attempt in range(MAX_RETRY_ATTEMPTS):
+                    try:
+                        with self._tracer.start_as_current_span(
+                            f"execute_case {case_name}",
+                        ) as case_span:
+                            evaluation_context = await self._run_task_async(task, case)
+                            case_span.set_attributes(
+                                {
+                                    "gen_ai.evaluation.data.input": serialize(evaluation_context.input),
+                                    "gen_ai.evaluation.data.expected_output": serialize(
+                                        evaluation_context.expected_output
+                                    ),
+                                    "gen_ai.evaluation.data.actual_output": serialize(evaluation_context.actual_output),
+                                    "gen_ai.evaluation.data.has_trajectory": (
+                                        evaluation_context.actual_trajectory is not None
+                                    ),
+                                    "gen_ai.evaluation.data.has_interactions": (
+                                        evaluation_context.actual_interactions is not None
+                                    ),
+                                }
+                            )
+                            trace_id = format_trace_id(case_span.get_span_context().trace_id)
+                            break
+
+                    except Exception as e:
+                        if _is_throttling_error(e):
+                            if task_attempt + 1 == MAX_RETRY_ATTEMPTS:
+                                # Max retries exceeded for task execution
+                                logger.error(
+                                    f"Max retry attempts ({MAX_RETRY_ATTEMPTS}) exceeded for task execution "
+                                    f"on case {case_name}. Last error: {str(e)}"
+                                )
+                                raise
+
+                            # Log and retry with exponential backoff
+                            logger.warning(
+                                f"Throttling error on attempt {task_attempt + 1}/{MAX_RETRY_ATTEMPTS} for task "
+                                f"execution on case {case_name}. Retrying in {task_current_delay} seconds... "
+                                f"Error: {str(e)}"
+                            )
+                            await asyncio.sleep(task_current_delay)
+                            task_current_delay = min(task_current_delay * 2, MAX_RETRY_DELAY)
+                        else:
+                            # Non-throttling error, raise immediately
+                            raise
+
+                # Check if task execution succeeded
+                if evaluation_context is None:
+                    raise Exception(f"Task execution failed for case {case_name}")
+
+                trace_id = trace_id or "unknown"
 
                 # Evaluate with each evaluator
                 evaluator_results = []
                 for evaluator in self._evaluators:
-                    with self._tracer.start_as_current_span(
-                        f"evaluator {evaluator.get_type_name()}",
-                    ) as eval_span:
-                        evaluation_outputs = await evaluator.evaluate_async(evaluation_context)
-                        (aggregate_score, aggregate_pass, aggregate_reason) = evaluator.aggregator(evaluation_outputs)
+                    try:
+                        # Retry loop for handling throttling exceptions
+                        current_delay = INITIAL_RETRY_DELAY
+                        for attempt in range(MAX_RETRY_ATTEMPTS):
+                            try:
+                                with self._tracer.start_as_current_span(
+                                    f"evaluator {evaluator.get_type_name()}",
+                                ) as eval_span:
+                                    evaluation_outputs = await evaluator.evaluate_async(evaluation_context)
+                                    (aggregate_score, aggregate_pass, aggregate_reason) = evaluator.aggregator(
+                                        evaluation_outputs
+                                    )
+                                    aggregate_score = float(aggregate_score)
 
-                        try:
-                            label = _get_label_from_score(evaluator, aggregate_score)
-                        except Exception:
-                            label = "UNKNOWN"
+                                    try:
+                                        label = _get_label_from_score(evaluator, aggregate_score)
+                                    except Exception:
+                                        label = "UNKNOWN"
 
-                        eval_span.set_attributes(
-                            {
-                                "gen_ai.evaluation.score.label": label,
-                                "gen_ai.evaluation.score.value": str(aggregate_score),
-                                "gen_ai.evaluation.test_pass": aggregate_pass,
-                                "gen_ai.evaluation.explanation": aggregate_reason or "",
-                            }
-                        )
+                                    eval_span.set_attributes(
+                                        {
+                                            "gen_ai.evaluation.score.label": label,
+                                            "gen_ai.evaluation.score.value": str(aggregate_score),
+                                            "gen_ai.evaluation.test_pass": aggregate_pass,
+                                            "gen_ai.evaluation.explanation": aggregate_reason or "",
+                                        }
+                                    )
 
+                                    evaluator_results.append(
+                                        {
+                                            "evaluator_name": evaluator.get_type_name(),
+                                            "test_pass": aggregate_pass,
+                                            "score": aggregate_score,
+                                            "reason": aggregate_reason or "",
+                                            "detailed_results": evaluation_outputs,
+                                        }
+                                    )
+                                    break
+
+                            except Exception as e:
+                                # Check if this is a throttling error
+                                if _is_throttling_error(e):
+                                    if attempt + 1 == MAX_RETRY_ATTEMPTS:
+                                        # Max retries exceeded, log and re-raise
+                                        logger.error(
+                                            f"Max retry attempts ({MAX_RETRY_ATTEMPTS}) exceeded for evaluator "
+                                            f"{evaluator.get_type_name()} on case {case_name}. Last error: {str(e)}"
+                                        )
+                                        raise
+
+                                    # Log and retry with exponential backoff
+                                    logger.warning(
+                                        f"Throttling error on attempt {attempt + 1}/{MAX_RETRY_ATTEMPTS} for evaluator "
+                                        f"{evaluator.get_type_name()} on case {case_name}. "
+                                        f"Retrying in {current_delay} seconds... Error: {str(e)}"
+                                    )
+                                    await asyncio.sleep(current_delay)
+                                    current_delay = min(current_delay * 2, MAX_RETRY_DELAY)
+                                else:
+                                    # Non-throttling error, raise immediately
+                                    raise
+                    except Exception as e:
+                        # Catch non-throttling errors and record as failure (error isolation)
                         evaluator_results.append(
                             {
                                 "evaluator_name": evaluator.get_type_name(),
-                                "test_pass": aggregate_pass,
-                                "score": aggregate_score,
-                                "reason": aggregate_reason or "",
-                                "detailed_results": evaluation_outputs,
+                                "test_pass": False,
+                                "score": 0,
+                                "reason": f"Evaluator error: {str(e)}",
+                                "detailed_results": [],
                             }
                         )
 
-                        # CloudWatch logging for this evaluator
+                    # CloudWatch logging for this evaluator (after successful evaluation)
+                    if evaluator_results:  # Only log if we have results
                         try:
+                            last_result = evaluator_results[-1]
                             evaluator_full_name = f"Custom.{evaluator.get_type_name()}"
                             region = os.environ.get("AWS_REGION", "us-east-1")
                             _config_arn = f"arn:aws:strands:{region}::strands-evaluation-empty-config/{self._config_id}"
                             _evaluator_arn = f"arn:aws:strands-evals:::evaluator/{evaluator_full_name}"
 
+                            try:
+                                label = _get_label_from_score(evaluator, cast(float, last_result["score"]))
+                            except Exception:
+                                label = "UNKNOWN"
+
                             log_data = {
                                 "gen_ai.evaluation.name": evaluator_full_name,
-                                "gen_ai.evaluation.score.value": str(aggregate_score),
-                                "gen_ai.evaluation.explanation": aggregate_reason or "",
+                                "gen_ai.evaluation.score.value": str(last_result["score"]),
+                                "gen_ai.evaluation.explanation": last_result["reason"],
                                 "gen_ai.evaluation.score.label": label,
                                 "gen_ai.response.id": trace_id,
                                 "aws.bedrock_agentcore.evaluator.rating_scale": "Numerical",
@@ -319,7 +452,7 @@ class Experiment(Generic[InputT, OutputT]):
                                     log_data=log_data,
                                     trace_id=trace_id,
                                     evaluator_name=evaluator_full_name,
-                                    score=aggregate_score,
+                                    score=cast(float, last_result["score"]),
                                     config_id=self._config_id,
                                     label=label,
                                 )
@@ -391,75 +524,131 @@ class Experiment(Generic[InputT, OutputT]):
                     "gen_ai.evaluation.case.input": serialize(case.input),
                 },
             ) as case_span:
-                # Task execution span - execute once
-                try:
-                    with self._tracer.start_as_current_span(
-                        "task_execution",
-                        attributes={
-                            "gen_ai.evaluation.task.type": "agent_task",
-                            "gen_ai.evaluation.case.name": case_name,
-                        },
-                    ) as task_span:
-                        evaluation_context = self._run_task(task, case)
-                        task_span.set_attributes(
-                            {
-                                "gen_ai.evaluation.data.input": serialize(evaluation_context.input),
-                                "gen_ai.evaluation.data.expected_output": serialize(evaluation_context.expected_output),
-                                "gen_ai.evaluation.data.actual_output": serialize(evaluation_context.actual_output),
-                                "gen_ai.evaluation.data.has_trajectory": (
-                                    evaluation_context.actual_trajectory is not None
-                                ),
-                                "gen_ai.evaluation.data.has_interactions": (
-                                    evaluation_context.actual_interactions is not None
-                                ),
-                            }
-                        )
-                except Exception as e:
-                    case_span.record_exception(e)
-                    for evaluator in self._evaluators:
-                        eval_name = evaluator.get_type_name()
-                        evaluator_data[eval_name]["cases"].append(case.model_dump())
-                        evaluator_data[eval_name]["test_passes"].append(False)
-                        evaluator_data[eval_name]["scores"].append(0)
-                        evaluator_data[eval_name]["reasons"].append(f"Task execution error: {str(e)}")
-                        evaluator_data[eval_name]["detailed_results"].append([])
+                # Task execution span - execute with retry logic for throttling
+                evaluation_context = None
+                task_current_delay = INITIAL_RETRY_DELAY
+
+                for task_attempt in range(MAX_RETRY_ATTEMPTS):
+                    try:
+                        with self._tracer.start_as_current_span(
+                            "task_execution",
+                            attributes={
+                                "gen_ai.evaluation.task.type": "agent_task",
+                                "gen_ai.evaluation.case.name": case_name,
+                            },
+                        ) as task_span:
+                            evaluation_context = self._run_task(task, case)
+                            task_span.set_attributes(
+                                {
+                                    "gen_ai.evaluation.data.input": serialize(evaluation_context.input),
+                                    "gen_ai.evaluation.data.expected_output": serialize(
+                                        evaluation_context.expected_output
+                                    ),
+                                    "gen_ai.evaluation.data.actual_output": serialize(evaluation_context.actual_output),
+                                    "gen_ai.evaluation.data.has_trajectory": (
+                                        evaluation_context.actual_trajectory is not None
+                                    ),
+                                    "gen_ai.evaluation.data.has_interactions": (
+                                        evaluation_context.actual_interactions is not None
+                                    ),
+                                }
+                            )
+                            break  # Success! Break out of retry loop
+
+                    except Exception as e:
+                        # Check if this is a throttling error
+                        if _is_throttling_error(e):
+                            if task_attempt + 1 < MAX_RETRY_ATTEMPTS:
+                                # Log and retry with exponential backoff
+                                logger.warning(
+                                    f"Throttling error on attempt {task_attempt + 1}/{MAX_RETRY_ATTEMPTS} "
+                                    f"for task execution on case {case_name}. "
+                                    f"Retrying in {task_current_delay} seconds... Error: {str(e)}"
+                                )
+                                time.sleep(task_current_delay)
+                                task_current_delay = min(task_current_delay * 2, MAX_RETRY_DELAY)
+                                continue  # Retry
+
+                            # Max retries exceeded for task execution
+                            logger.error(
+                                f"Max retry attempts ({MAX_RETRY_ATTEMPTS}) exceeded for task execution "
+                                f"on case {case_name}. Last error: {str(e)}"
+                            )
+
+                        # Record error for both throttling (after max retries) and non-throttling errors
+                        case_span.record_exception(e)
+                        for evaluator in self._evaluators:
+                            eval_name = evaluator.get_type_name()
+                            evaluator_data[eval_name]["cases"].append(case.model_dump())
+                            evaluator_data[eval_name]["test_passes"].append(False)
+                            evaluator_data[eval_name]["scores"].append(0)
+                            evaluator_data[eval_name]["reasons"].append(f"Task execution error: {str(e)}")
+                            evaluator_data[eval_name]["detailed_results"].append([])
+                        break
+
+                # If task execution failed after all retries, skip to next case
+                if evaluation_context is None:
                     continue
 
                 # Evaluate with each evaluator using the same task output
                 for evaluator in self._evaluators:
-                    eval_name = evaluator.get_type_name()
                     try:
-                        with self._tracer.start_as_current_span(
-                            f"evaluator {evaluator.get_type_name()}",
-                            attributes={
-                                "gen_ai.evaluation.name": evaluator.get_type_name(),
-                                "gen_ai.evaluation.case.name": case_name,
-                            },
-                        ) as eval_span:
-                            evaluation_outputs = evaluator.evaluate(evaluation_context)
-                            (aggregate_score, aggregate_pass, aggregate_reason) = evaluator.aggregator(
-                                evaluation_outputs
-                            )
-                            eval_span.set_attributes(
-                                {
-                                    "gen_ai.evaluation.score.value": aggregate_score,
-                                    "gen_ai.evaluation.test_pass": aggregate_pass,
-                                    "gen_ai.evaluation.explanation": aggregate_reason or "",
-                                }
-                            )
+                        current_delay = INITIAL_RETRY_DELAY
+                        for attempt in range(MAX_RETRY_ATTEMPTS):
+                            try:
+                                with self._tracer.start_as_current_span(
+                                    f"evaluator {evaluator.get_type_name()}",
+                                    attributes={
+                                        "gen_ai.evaluation.name": evaluator.get_type_name(),
+                                        "gen_ai.evaluation.case.name": case_name,
+                                    },
+                                ) as eval_span:
+                                    evaluation_outputs = evaluator.evaluate(evaluation_context)
+                                    (aggregate_score, aggregate_pass, aggregate_reason) = evaluator.aggregator(
+                                        evaluation_outputs
+                                    )
+                                    eval_span.set_attributes(
+                                        {
+                                            "gen_ai.evaluation.score.value": aggregate_score,
+                                            "gen_ai.evaluation.test_pass": aggregate_pass,
+                                            "gen_ai.evaluation.explanation": aggregate_reason or "",
+                                        }
+                                    )
 
-                            evaluator_data[eval_name]["cases"].append(evaluation_context.model_dump())
-                            evaluator_data[eval_name]["test_passes"].append(aggregate_pass)
-                            evaluator_data[eval_name]["scores"].append(aggregate_score)
-                            evaluator_data[eval_name]["reasons"].append(aggregate_reason or "")
-                            evaluator_data[eval_name]["detailed_results"].append(evaluation_outputs)
+                                    eval_name = evaluator.get_type_name()
+                                    evaluator_data[eval_name]["cases"].append(evaluation_context.model_dump())
+                                    evaluator_data[eval_name]["test_passes"].append(aggregate_pass)
+                                    evaluator_data[eval_name]["scores"].append(aggregate_score)
+                                    evaluator_data[eval_name]["reasons"].append(aggregate_reason or "")
+                                    evaluator_data[eval_name]["detailed_results"].append(evaluation_outputs)
+                                    break
+
+                            except Exception as e:
+                                if _is_throttling_error(e):
+                                    if attempt + 1 == MAX_RETRY_ATTEMPTS:
+                                        logger.error(
+                                            f"Max retry attempts ({MAX_RETRY_ATTEMPTS}) exceeded for evaluator "
+                                            f"{evaluator.get_type_name()} on case {case_name}. Last error: {str(e)}"
+                                        )
+                                        raise
+
+                                    logger.warning(
+                                        f"Throttling error on attempt {attempt + 1}/{MAX_RETRY_ATTEMPTS} for evaluator "
+                                        f"{evaluator.get_type_name()} on case {case_name}. "
+                                        f"Retrying in {current_delay} seconds... Error: {str(e)}"
+                                    )
+                                    time.sleep(current_delay)
+                                    current_delay = min(current_delay * 2, MAX_RETRY_DELAY)
+                                else:
+                                    raise
                     except Exception as e:
+                        # Catch non-throttling errors and record as failure (error isolation)
+                        eval_name = evaluator.get_type_name()
                         evaluator_data[eval_name]["cases"].append(evaluation_context.model_dump())
                         evaluator_data[eval_name]["test_passes"].append(False)
                         evaluator_data[eval_name]["scores"].append(0)
                         evaluator_data[eval_name]["reasons"].append(f"Evaluator error: {str(e)}")
                         evaluator_data[eval_name]["detailed_results"].append([])
-
         reports = []
         for evaluator in self._evaluators:
             eval_name = evaluator.get_type_name()
