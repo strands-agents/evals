@@ -71,6 +71,7 @@ class ToolSimulator:
 
         # Initialize tool simulators for registered tools
         self._active_simulators: Dict[str, Any] = {}
+        self._initialize_shared_states()
         self._initialize_simulators()
 
     def _function_has_implementation(self, func: Callable) -> bool:
@@ -94,6 +95,24 @@ class ToolSimulator:
         except Exception:
             # If we can't analyze bytecode, assume it's implemented
             return True
+
+    def _initialize_shared_states(self):
+        """Initialize shared states from registered tools' initial descriptions."""
+        for tool_name, registered_tool in self._registered_tools.items():
+            if registered_tool.initial_state_description:
+                # Determine state key from tool name or simulator kwargs
+                state_key = (
+                    registered_tool.simulator_kwargs.get("share_state_id", registered_tool.name)
+                    if registered_tool.simulator_kwargs
+                    else registered_tool.name
+                )
+                
+                # Initialize state with description
+                self._state_registry.initialize_state_via_description(
+                    registered_tool.initial_state_description, 
+                    state_key
+                )
+                logger.info(f"Initialized state for tool '{tool_name}' with key '{state_key}'")
 
     def _initialize_simulators(self):
         """Initialize simulators for all registered tools with overrides."""
@@ -279,10 +298,15 @@ class ToolSimulator:
         try:
             from .prompt_templates.tool_response_generation import FUNCTION_TOOL_RESPONSE_GENERATION_PROMPT
             
+            # Get initial state description from state registry
+            current_state = self._state_registry.get_state(state_key)
+            initial_state_description = current_state.get("initial_state", "No initial state provided.")
+            
             prompt = FUNCTION_TOOL_RESPONSE_GENERATION_PROMPT.format(
                 tool_name=tool_name,
                 parameters=json.dumps(parameters, indent=2) if parameters else "{}",
-                previous_responses=json.dumps(self._state_registry.get_state(state_key), indent=2) or "{}"
+                initial_state_description=initial_state_description,
+                previous_responses=json.dumps(current_state, indent=2) or "{}"
             )
             
             llm_response = self._generate_llm_response(prompt)
@@ -311,10 +335,15 @@ class ToolSimulator:
         try:
             from .prompt_templates.tool_response_generation import MCP_TOOL_RESPONSE_GENERATION_PROMPT
             
+            # Get initial state description from state registry
+            current_state = self._state_registry.get_state(state_key)
+            initial_state_description = current_state.get("initial_state", "No initial state provided.")
+            
             prompt = MCP_TOOL_RESPONSE_GENERATION_PROMPT.format(
                 tool_name=tool_name,
                 mcp_payload=json.dumps(input_mcp_payload, indent=2) if input_mcp_payload else "{}",
-                previous_responses=json.dumps(self._state_registry.get_state(state_key), indent=2) or "{}"
+                initial_state_description=initial_state_description,
+                previous_responses=json.dumps(current_state, indent=2) or "{}"
             )
             
             llm_response = self._generate_llm_response(prompt)
@@ -345,12 +374,17 @@ class ToolSimulator:
         try:
             from .prompt_templates.tool_response_generation import API_TOOL_RESPONSE_GENERATION_PROMPT
             
+            # Get initial state description from state registry
+            current_state = self._state_registry.get_state(state_key)
+            initial_state_description = current_state.get("initial_state", "No initial state provided.")
+            
             prompt = API_TOOL_RESPONSE_GENERATION_PROMPT.format(
                 tool_name=tool_name,
                 path=path,
                 method=method,
                 api_payload=json.dumps(user_input_api_payload, indent=2) if user_input_api_payload else "{}",
-                previous_responses=json.dumps(self._state_registry.get_state(state_key), indent=2) or "{}"
+                initial_state_description=initial_state_description,
+                previous_responses=json.dumps(current_state, indent=2) or "{}"
             )
             
             llm_response = self._generate_llm_response(prompt)
@@ -452,12 +486,13 @@ class ToolSimulator:
         return error_titles.get(status_code, 'Error')
 
     @classmethod
-    def function_tool(cls, name: Optional[str] = None, **simulator_kwargs) -> Callable:
+    def function_tool(cls, name: Optional[str] = None, initial_state_description: Optional[str] = None, **simulator_kwargs) -> Callable:
         """
         Decorator for registering Python function tools.
 
         Args:
             name: Optional name for the tool. If None, uses function.__name__
+            initial_state_description: Optional initial state description for the tool's context
             **simulator_kwargs: Additional simulator configuration
 
         Returns:
@@ -472,6 +507,7 @@ class ToolSimulator:
                     name=tool_name,
                     tool_type=ToolType.FUNCTION,
                     function=func,
+                    initial_state_description=initial_state_description,
                     simulator_kwargs=simulator_kwargs,
                 )
                 cls._registered_tools[tool_name] = registered_tool
@@ -487,13 +523,14 @@ class ToolSimulator:
         return decorator
 
     @classmethod
-    def mcp_tool(cls, name: Optional[str] = None, schema: Optional[Dict[str, Any]] = None, **simulator_kwargs) -> Callable:
+    def mcp_tool(cls, name: Optional[str] = None, schema: Optional[Dict[str, Any]] = None, initial_state_description: Optional[str] = None, **simulator_kwargs) -> Callable:
         """
         Decorator for registering MCP (Model Context Protocol) tools.
 
         Args:
             name: Optional name for the tool. If None, uses function.__name__
             schema: MCP tool schema dictionary
+            initial_state_description: Optional initial state description for the tool's context
             **simulator_kwargs: Additional simulator configuration
 
         Returns:
@@ -511,6 +548,7 @@ class ToolSimulator:
                 tool_type=ToolType.MCP,
                 function=func,
                 mcp_schema=schema,
+                initial_state_description=initial_state_description,
                 simulator_kwargs=simulator_kwargs,
             )
             cls._registered_tools[tool_name] = registered_tool
@@ -527,6 +565,7 @@ class ToolSimulator:
         path: Optional[str] = None,
         method: Optional[str] = None,
         schema: Optional[Dict[str, Any]] = None,
+        initial_state_description: Optional[str] = None,
         **simulator_kwargs,
     ) -> Callable:
         """
@@ -537,6 +576,7 @@ class ToolSimulator:
             path: API endpoint path
             method: HTTP method (GET, POST, etc.)
             schema: API tool schema dictionary
+            initial_state_description: Optional initial state description for the tool's context
             **simulator_kwargs: Additional simulator configuration
 
         Returns:
@@ -557,6 +597,7 @@ class ToolSimulator:
                 function=func,
                 api_path=path,
                 api_method=method,
+                initial_state_description=initial_state_description,
                 simulator_kwargs=simulator_kwargs,
             )
             cls._registered_tools[tool_name] = registered_tool

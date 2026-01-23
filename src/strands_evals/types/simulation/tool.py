@@ -72,6 +72,7 @@ class RegisteredTool(BaseModel):
         mcp_schema: MCP tool schema dictionary for MCP type tools.
         api_path: API endpoint path for API type tools.
         api_method: HTTP method for API type tools (GET, POST, etc.).
+        initial_state_description: Initial state description for the tool's context.
         simulator_kwargs: Additional simulator configuration parameters.
     """
     name: str = Field(..., description="Name of the tool")
@@ -80,6 +81,7 @@ class RegisteredTool(BaseModel):
     mcp_schema: Optional[Dict[str, Any]] = Field(default=None, description="MCP tool schema")
     api_path: Optional[str] = Field(default=None, description="API endpoint path")
     api_method: Optional[str] = Field(default=None, description="HTTP method")
+    initial_state_description: Optional[str] = Field(default=None, description="Initial state description for the tool's context")
     simulator_kwargs: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional simulator configuration")
 
     class Config:
@@ -88,10 +90,8 @@ class RegisteredTool(BaseModel):
 
 class StateRegistry:
     """
-    Simple state registry for maintaining tool state across calls.
-
-    Attributes:
-        _states: Internal dictionary mapping state keys to recorded call history.
+    State registry for managing shared state between tool simulators.
+    Organized by state_key to isolate state between different tools or shared state groups.
     """
     
     def __init__(self):
@@ -103,81 +103,192 @@ class StateRegistry:
         """
         self._states: Dict[str, Dict[str, Any]] = {}
     
-    def get_state(self, key: str) -> Dict[str, Any]:
+    def initialize_state_via_description(self, initial_state_description: str, state_key: str) -> None:
         """
-        Get state for a given key.
+        Initialize state based on the provided description.
+
+        This method pre-seeds the state with an initial description that will be
+        included in all subsequent LLM prompts, allowing the simulator to have
+        context about pre-existing data or system state.
 
         Args:
-            key: State key to retrieve recorded calls for.
+            initial_state_description: Description of the initial state (e.g., existing
+                database records, system configuration, etc.).
+            state_key: Key for the state in the registry (typically tool_name or share_state_id).
+        """
+        if state_key not in self._states:
+            self._states[state_key] = {
+                "initial_state": initial_state_description,
+                "previous_calls": [],
+                "user_context": {},
+            }
+
+    def get_state(self, state_key: str) -> Dict[str, Any]:
+        """
+        Get state for a specific tool or shared state group.
+
+        Args:
+            state_key: Key for the state (tool_name or share_state_id).
 
         Returns:
-            Dictionary containing recorded call history for the key, empty if not found.
+            State dictionary containing previous_calls and user_context.
         """
-        return self._states.get(key, {})
-    
-    def record_function_call(self, tool_name: str, state_key: str, parameters: Dict[str, Any], response_data: Any):
+        if state_key is None:
+            raise ValueError("Value of state_key is required.")
+
+        if state_key not in self._states:
+            self._states[state_key] = {
+                "previous_calls": [],
+                "user_context": {},
+            }
+
+        return dict(self._states[state_key])
+
+    def record_function_call(
+        self,
+        tool_name: str,
+        state_key: str,
+        parameters: Dict[str, Any],
+        response_data: Any,
+    ) -> Dict[str, Any]:
         """
-        Record a function call in state.
+        Record a function call in the tool's state history.
 
         Args:
-            tool_name: Name of the function tool that was called.
-            state_key: State key to record the call under.
+            tool_name: Name of the function being called.
+            state_key: Key for the state (tool_name or share_state_id).
             parameters: Parameters passed to the function.
-            response_data: Response data returned from the function.
+            response_data: Response from the function call.
+
+        Returns:
+            Updated state dictionary.
         """
-        if state_key not in self._states:
-            self._states[state_key] = {"function_calls": []}
-        
-        call_record = {
-            "tool_name": tool_name,
-            "parameters": parameters,
-            "response": response_data,
-            "timestamp": datetime.now().isoformat()
-        }
-        self._states[state_key]["function_calls"].append(call_record)
-    
-    def record_mcp_tool_call(self, tool_name: str, state_key: str, input_mcp_payload: Dict[str, Any], response_data: Any):
+        state = self.get_state(state_key)
+        date_timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+
+        state["previous_calls"].append({
+            'tool_name': tool_name,
+            'tool_type': 'function',
+            'parameters': parameters,
+            'response': response_data,
+            'timestamp': date_timestamp
+        })
+
+        # Keep history manageable
+        if len(state["previous_calls"]) > 20:
+            state["previous_calls"] = state["previous_calls"][-20:]
+
+        # Update the stored state
+        self._states[state_key] = state
+
+        return state
+
+    def record_mcp_tool_call(
+        self,
+        tool_name: str,
+        state_key: str,
+        input_mcp_payload: Dict[str, Any],
+        response_data: Any,
+    ) -> Dict[str, Any]:
         """
-        Record an MCP tool call in state.
+        Record an MCP tool call in the tool's state history.
 
         Args:
-            tool_name: Name of the MCP tool that was called.
-            state_key: State key to record the call under.
-            input_mcp_payload: Input payload sent to the MCP tool.
-            response_data: Response data returned from the MCP tool.
+            tool_name: Name of the MCP tool being called.
+            state_key: Key for the state (tool_name or share_state_id).
+            input_mcp_payload: Input payload for the MCP tool call.
+            response_data: Response from the MCP tool call.
+
+        Returns:
+            Updated state dictionary.
         """
-        if state_key not in self._states:
-            self._states[state_key] = {"mcp_calls": []}
-        
-        call_record = {
-            "tool_name": tool_name,
-            "input": input_mcp_payload,
-            "response": response_data,
-            "timestamp": datetime.now().isoformat()
-        }
-        self._states[state_key]["mcp_calls"].append(call_record)
-    
-    def record_api_call(self, tool_name: str, state_key: str, path: str, method: str, input_data: Dict[str, Any], response: Dict[str, Any]):
+        state = self.get_state(state_key)
+        date_timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+
+        state["previous_calls"].append({
+            'tool_name': tool_name,
+            'tool_type': 'mcp',
+            'input_mcp_payload': input_mcp_payload,
+            'response': response_data,
+            'timestamp': date_timestamp
+        })
+
+        # Keep history manageable
+        if len(state["previous_calls"]) > 20:
+            state["previous_calls"] = state["previous_calls"][-20:]
+
+        # Update the stored state
+        self._states[state_key] = state
+
+        return state
+
+    def record_api_call(
+        self,
+        tool_name: str,
+        state_key: str,
+        path: str,
+        method: str,
+        input_data: Any,
+        response: Any,
+    ) -> Dict[str, Any]:
         """
-        Record an API call in state.
+        Record an API call in the tool's state history.
 
         Args:
-            tool_name: Name of the API tool that was called.
-            state_key: State key to record the call under.
-            path: API endpoint path that was called.
-            method: HTTP method used for the API call.
-            input_data: Input data sent to the API endpoint.
-            response: Response data returned from the API endpoint.
+            tool_name: Name of the API tool being called.
+            state_key: Key for the state (tool_name or share_state_id).
+            path: API endpoint path.
+            method: HTTP method.
+            input_data: Input data for the API call.
+            response: Response from the API call.
+
+        Returns:
+            Updated state dictionary.
         """
-        if state_key not in self._states:
-            self._states[state_key] = {"api_calls": []}
-        
-        call_record = {
-            "tool_name": tool_name,
-            "path": path,
-            "method": method,
-            "input": input_data,
-            "response": response,
-            "timestamp": datetime.now().isoformat()
-        }
-        self._states[state_key]["api_calls"].append(call_record)
+        state = self.get_state(state_key)
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+
+        state["previous_calls"].append({
+            'tool_name': tool_name,
+            'tool_type': 'api',
+            'path': path,
+            'method': method,
+            'input': input_data,
+            'response': response,
+            'timestamp': timestamp
+        })
+
+        # Keep history manageable
+        if len(state["previous_calls"]) > 20:
+            state["previous_calls"] = state["previous_calls"][-20:]
+
+        # Update the stored state
+        self._states[state_key] = state
+
+        return state
+
+    def set_user_context(self, state_key: str, user_context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Set user context for a state.
+
+        Args:
+            state_key: Key for the state (tool_name or share_state_id).
+            user_context: User context dictionary to store.
+
+        Returns:
+            Updated state dictionary.
+        """
+        state = self.get_state(state_key)
+        state["user_context"] = user_context
+        self._states[state_key] = state
+        return state
+
+    def clear_state(self, state_key: str) -> None:
+        """
+        Clear state for a specific tool or shared state group.
+
+        Args:
+            state_key: Key for the state to clear.
+        """
+        if state_key in self._states:
+            del self._states[state_key]

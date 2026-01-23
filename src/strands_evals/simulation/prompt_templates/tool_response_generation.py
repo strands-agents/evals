@@ -37,14 +37,19 @@ You are simulating a function tool call for agent evaluation. Generate a realist
 Tool Name: {tool_name}
 Parameters: {parameters}
 
-## Previous Tool Responses (for context)
+## Initial State Context
+{initial_state_description}
+
+## Current State & Previous Tool Responses (for context)
 {previous_responses}
 
 ## Instructions
 1. Analyze the function name and parameters to understand what this tool should do
-2. Generate a realistic response that would be returned by such a function
-3. Consider the previous responses to maintain consistency in the simulation
-4. Return valid JSON that represents the function's return value
+2. Use the initial state description to understand the starting context and available data
+3. Generate a realistic response that would be returned by such a function
+4. Consider the previous responses to maintain consistency in the simulation
+5. Ensure responses are consistent with the established state and realistic for the domain
+6. Return valid JSON that represents the function's return value
 
 ## Response Format
 Return a JSON object that represents what this function would return. Examples:
@@ -87,14 +92,19 @@ MCP_TOOL_RESPONSE_GENERATION_PROMPT = dedent(
 Tool Name: {tool_name}
 Input Payload: {mcp_payload}
 
-## Previous Tool Responses (for context)
+## Initial State Context
+{initial_state_description}
+
+## Current State & Previous Tool Responses (for context)
 {previous_responses}
 
 ## Instructions
 1. Analyze the tool name and input payload to understand what this MCP tool should do
-2. Generate a realistic response following MCP response format
-3. Consider the previous responses to maintain consistency in the simulation
-4. Return valid JSON in MCP response format
+2. Use the initial state description to understand the starting context and available data
+3. Generate a realistic response following MCP response format
+4. Consider the previous responses to maintain consistency in the simulation
+5. Ensure responses are consistent with the established state and realistic for the domain
+6. Return valid JSON in MCP response format
 
 ## MCP Response Format
 MCP tools return responses in this format:
@@ -156,14 +166,19 @@ Path: {path}
 Method: {method}
 Request Payload: {api_payload}
 
-## Previous Tool Responses (for context)
+## Initial State Context
+{initial_state_description}
+
+## Current State & Previous Tool Responses (for context)
 {previous_responses}
 
 ## Instructions
 1. Analyze the API path, method, and payload to understand what this endpoint should do
-2. Generate a realistic HTTP response with appropriate status code and data
-3. Consider the previous responses to maintain consistency in the simulation
-4. Return valid JSON in HTTP response format
+2. Use the initial state description to understand the starting context and available data
+3. Generate a realistic HTTP response with appropriate status code and data
+4. Consider the previous responses to maintain consistency in the simulation
+5. Ensure responses are consistent with the established state and realistic for the domain
+6. Return valid JSON in HTTP response format
 
 ## HTTP Response Format
 API responses should include status codes and appropriate data:
