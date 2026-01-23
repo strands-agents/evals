@@ -115,14 +115,13 @@ Configure failure simulation with these parameters:
       "category_rationale": "Category 1: Compute tool - pure mathematical operation with no side effects",
       "resource_dependencies": ["resource_name"],
       "consistency_requirements": ["related_tool1", "related_tool2"],
-      "should_simulate": false,
       "failure_conditions": {{
         "enabled": false,
         "error_rate": 0.0,
         "error_type": "execution_error",
         "error_message": "Error message if failure occurs"
       }},
-      "rationale": "Final decision rationale considering category and consistency rules"
+      "rationale": "Simulation configuration rationale focusing on failure conditions and error patterns"
     }}
   ]
 }}

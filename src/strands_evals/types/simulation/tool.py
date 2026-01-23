@@ -83,6 +83,9 @@ class RegisteredTool(BaseModel):
     api_method: Optional[str] = Field(default=None, description="HTTP method")
     initial_state_description: Optional[str] = Field(default=None, description="Initial state description for the tool's context")
     simulator_kwargs: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional simulator configuration")
+    mode: str = Field(default="dynamic", description="Simulation mode: dynamic, static, mock")
+    static_response: Optional[Dict[str, Any]] = Field(default=None, description="Static response for static mode")
+    mock_function: Optional[Callable] = Field(default=None, description="Mock function for mock mode", exclude=True)
 
     class Config:
         arbitrary_types_allowed = True
