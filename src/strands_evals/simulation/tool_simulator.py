@@ -32,7 +32,6 @@ class ToolSimulator:
         tool_overrides: Dictionary mapping tool names to override configurations.
         system_prompt_template: Template string for system prompts.
         model: Provider for running inference or model identifier for Bedrock.
-        _active_simulators: Dictionary of active tool simulators.
         _registered_tools: Class-level registry for all registered tools.
         _state_registry: Registry for maintaining tool state across calls.
     """
@@ -69,10 +68,8 @@ class ToolSimulator:
         elif self._state_registry is None:
             self._state_registry = StateRegistry()
 
-        # Initialize tool simulators for registered tools
-        self._active_simulators: Dict[str, Any] = {}
+        # Initialize shared states from registered tools
         self._initialize_shared_states()
-        self._initialize_simulators()
 
     def _function_has_implementation(self, func: Callable) -> bool:
         """Check if a function has actual implementation or is just an empty stub."""
@@ -114,148 +111,15 @@ class ToolSimulator:
                 )
                 logger.info(f"Initialized state for tool '{tool_name}' with key '{state_key}'")
 
-    def _initialize_simulators(self):
-        """Initialize simulators for all registered tools with overrides."""
-        for tool_name, registered_tool in self._registered_tools.items():
-            # Check if we have override config for this tool
-            override_config = self.tool_overrides.get(tool_name)
-
-            if override_config:
-                # Create simulator with override configuration
-                simulator = self._create_tool_simulator(registered_tool, override_config)
-                self._active_simulators[tool_name] = simulator
-            else:
-                # Check if function is an empty stub or has real implementation
-                if registered_tool.function and self._function_has_implementation(registered_tool.function):
-                    # Use real function for implemented functions
-                    self._active_simulators[tool_name] = registered_tool.function
-                else:
-                    # Create default simulator for empty stubs
-                    default_config = ToolOverrideConfig()
-                    simulator = self._create_tool_simulator(registered_tool, default_config)
-                    self._active_simulators[tool_name] = simulator
-
-    def _create_tool_simulator(self, registered_tool: RegisteredTool, config: ToolOverrideConfig) -> Any:
-        """Create a tool simulator instance based on the registered tool type."""
-        # Determine state key from tool name or simulator kwargs
-        state_key = (
-            registered_tool.simulator_kwargs.get("share_state_id", registered_tool.name)
-            if registered_tool.simulator_kwargs
-            else registered_tool.name
-        )
-
-        # Create wrapper function that handles the simulation
-        if registered_tool.tool_type == ToolType.FUNCTION:
-            return self._create_function_simulator_wrapper(registered_tool, registered_tool.tool_type, state_key)
-        elif registered_tool.tool_type == ToolType.MCP:
-            return self._create_mcp_simulator_wrapper(registered_tool, registered_tool.tool_type, state_key)
-        elif registered_tool.tool_type == ToolType.API:
-            return self._create_api_simulator_wrapper(registered_tool, registered_tool.tool_type, state_key)
-        else:
-            raise ValueError(f"Unsupported tool type: {registered_tool.tool_type}")
-
-    def _create_function_simulator_wrapper(self, registered_tool: RegisteredTool, tool_type: ToolType, state_key: str) -> Callable:
-        """Create a wrapper function for function tool simulation."""
-        def wrapper(*args, **kwargs):
-            try:
-                # Build parameters as expected by simulation
-                parameters_string = (
-                    json.dumps({"args": args, "kwargs": kwargs}, indent=2)
-                    if args
-                    else json.dumps(kwargs, indent=2)
-                )
-
-                # Get tool behavior configuration from tool overrides
-                tool_override_config = {}
-                if registered_tool.name in self.tool_overrides:
-                    override_config = self.tool_overrides[registered_tool.name]
-                    if override_config.failure_conditions:
-                        tool_override_config["failure_conditions"] = override_config.failure_conditions.model_dump()
-                else:
-                    tool_override_config["failure_conditions"] = {"enabled": False}
-
-                input_data = {
-                    "tool_name": registered_tool.name,
-                    "parameters": parameters_string,
-                    "tool_override": tool_override_config,
-                }
-
-                return self._simulate_tool_call(tool_type, state_key, input_data)
-            except Exception as e:
-                logger.error(f"Error in function simulation for {registered_tool.name}: {e}")
-                raise
-
-        # Copy function metadata
-        if registered_tool.function:
-            wrapper.__name__ = registered_tool.function.__name__
-            try:
-                wrapper.__signature__ = inspect.signature(registered_tool.function)  # type: ignore
-            except (ValueError, TypeError):
-                pass
-            wrapper.__doc__ = registered_tool.function.__doc__
-        else:
-            wrapper.__name__ = registered_tool.name
-
-        return wrapper
-
-    def _create_mcp_simulator_wrapper(self, registered_tool: RegisteredTool, tool_type: ToolType, state_key: str) -> Callable:
-        """Create a wrapper function for MCP tool simulation."""
-        def wrapper(**params):
-            try:
-                # Get tool behavior configuration from tool overrides
-                tool_override_config = {}
-                if registered_tool.name in self.tool_overrides:
-                    override_config = self.tool_overrides[registered_tool.name]
-                    if override_config.failure_conditions:
-                        tool_override_config["failure_conditions"] = override_config.failure_conditions.model_dump()
-                else:
-                    tool_override_config["failure_conditions"] = {"enabled": False}
-
-                input_data = {
-                    "tool_name": registered_tool.name,
-                    "input_mcp_payload": params,
-                    "tool_override": tool_override_config,
-                }
-
-                return self._simulate_tool_call(tool_type, state_key, input_data)
-            except Exception as e:
-                logger.error(f"Error in MCP simulation for {registered_tool.name}: {e}")
-                raise
-
-        wrapper.__name__ = registered_tool.name
-        return wrapper
-
-    def _create_api_simulator_wrapper(self, registered_tool: RegisteredTool, tool_type: ToolType, state_key: str) -> Callable:
-        """Create a wrapper function for API tool simulation."""
-        def wrapper(**kwargs):
-            try:
-                # Get tool behavior configuration from tool overrides
-                tool_override_config = {}
-                if registered_tool.name in self.tool_overrides:
-                    override_config = self.tool_overrides[registered_tool.name]
-                    if override_config.failure_conditions:
-                        tool_override_config["failure_conditions"] = override_config.failure_conditions.model_dump()
-                else:
-                    tool_override_config["failure_conditions"] = {"enabled": False}
-
-                input_data = {
-                    "tool_name": registered_tool.name,
-                    "user_input_api_payload": kwargs,
-                    "path": registered_tool.api_path or "",
-                    "method": registered_tool.api_method or "GET",
-                    "tool_override": tool_override_config,
-                }
-
-                return self._simulate_tool_call(tool_type, state_key, input_data)
-            except Exception as e:
-                logger.error(f"Error in API simulation for {registered_tool.name}: {e}")
-                raise
-
-        wrapper.__name__ = registered_tool.name
-        return wrapper
 
     def _simulate_tool_call(self, tool_type: ToolType, state_key: str, input_data: Dict[str, Any]) -> Any:
         """Simulate a tool invocation and return the response."""
+        tool_name = input_data.get("tool_name", "")
+        registered_tool = self._registered_tools.get(tool_name)
+        
+        if not registered_tool:
+            return self._create_error_response("tool_not_found", f"Tool '{tool_name}' not found")
+        
         # Handle tool behavior configuration
         tool_override = input_data.get("tool_override", {})
         
@@ -276,15 +140,23 @@ class ToolSimulator:
                         "message": error_message
                     }
         
-        # Route to appropriate handler based on tool type
-        if tool_type == ToolType.FUNCTION:
-            return self._handle_function_tool(input_data, state_key)
-        elif tool_type == ToolType.MCP:
-            return self._handle_mcp_tool(input_data, state_key)
-        elif tool_type == ToolType.API:
-            return self._handle_api_tool(input_data, state_key)
+        # Handle different simulation modes
+        if registered_tool.mode == "static":
+            return self._handle_static_mode(registered_tool, tool_type)
+        elif registered_tool.mode == "mock":
+            return self._handle_mock_mode(registered_tool, input_data, state_key, tool_type)
+        elif registered_tool.mode == "dynamic":
+            # Route to appropriate handler based on tool type
+            if tool_type == ToolType.FUNCTION:
+                return self._handle_function_tool(input_data, state_key)
+            elif tool_type == ToolType.MCP:
+                return self._handle_mcp_tool(input_data, state_key)
+            elif tool_type == ToolType.API:
+                return self._handle_api_tool(input_data, state_key)
+            else:
+                return self._create_error_response("unsupported_tool_type", f"Tool type '{tool_type}' not supported")
         else:
-            return self._create_error_response("unsupported_tool_type", f"Tool type '{tool_type}' not supported")
+            return self._create_error_response("unsupported_mode", f"Simulation mode '{registered_tool.mode}' not supported")
     
     def _handle_function_tool(self, input_data: Dict[str, Any], state_key: str) -> Dict[str, Any]:
         """Handle function tool simulation."""
@@ -485,14 +357,96 @@ class ToolSimulator:
         }
         return error_titles.get(status_code, 'Error')
 
+    def _handle_static_mode(self, registered_tool: RegisteredTool, tool_type: ToolType) -> Dict[str, Any]:
+        """Handle static mode simulation - returns predefined static response."""
+        if registered_tool.static_response is not None:
+            return registered_tool.static_response
+        
+        # Default static responses for different tool types
+        if tool_type == ToolType.FUNCTION:
+            return {"status": "success", "result": f"Static response from {registered_tool.name}"}
+        elif tool_type == ToolType.MCP:
+            return {
+                "isError": False,
+                "content": [{"type": "text", "text": f"Static response from {registered_tool.name}"}]
+            }
+        elif tool_type == ToolType.API:
+            return {"status": 200, "data": {"message": f"Static response from {registered_tool.name}"}}
+        else:
+            return {"status": "error", "message": "Unsupported tool type for static mode"}
+
+    def _handle_mock_mode(self, registered_tool: RegisteredTool, input_data: Dict[str, Any], state_key: str, tool_type: ToolType) -> Dict[str, Any]:
+        """Handle mock mode simulation - calls custom mock function."""
+        if registered_tool.mock_function is not None:
+            try:
+                # Extract parameters based on tool type
+                if tool_type == ToolType.FUNCTION:
+                    parameters = input_data.get("parameters", {})
+                    if isinstance(parameters, str):
+                        parameters = json.loads(parameters)
+                    
+                    # Call mock function with extracted parameters
+                    if "kwargs" in parameters:
+                        result = registered_tool.mock_function(**parameters["kwargs"])
+                    elif "args" in parameters:
+                        result = registered_tool.mock_function(*parameters["args"])
+                    else:
+                        result = registered_tool.mock_function(**parameters)
+                    
+                elif tool_type == ToolType.MCP:
+                    input_mcp_payload = input_data.get("input_mcp_payload", {})
+                    result = registered_tool.mock_function(**input_mcp_payload)
+                    
+                elif tool_type == ToolType.API:
+                    user_input_api_payload = input_data.get("user_input_api_payload", {})
+                    result = registered_tool.mock_function(**user_input_api_payload)
+                    
+                else:
+                    return {"status": "error", "message": "Unsupported tool type for mock mode"}
+                
+                # Record the call in state registry
+                tool_name = registered_tool.name
+                if tool_type == ToolType.FUNCTION:
+                    self._state_registry.record_function_call(tool_name, state_key, parameters, result)
+                elif tool_type == ToolType.MCP:
+                    self._state_registry.record_mcp_tool_call(tool_name, state_key, input_mcp_payload, result)
+                elif tool_type == ToolType.API:
+                    path = input_data.get("path", "")
+                    method = input_data.get("method", "GET")
+                    self._state_registry.record_api_call(tool_name, state_key, path, method, user_input_api_payload, result)
+                
+                return result
+                
+            except Exception as e:
+                logger.error(f"Error calling mock function for {registered_tool.name}: {e}")
+                if tool_type == ToolType.API:
+                    return self._create_error_response("mock_error", str(e), 500)
+                else:
+                    return {"status": "error", "error_type": "mock_error", "message": str(e)}
+        
+        # Fallback to static mode if no mock function provided
+        logger.warning(f"No mock function provided for {registered_tool.name}, falling back to static mode")
+        return self._handle_static_mode(registered_tool, tool_type)
+
     @classmethod
-    def function_tool(cls, name: Optional[str] = None, initial_state_description: Optional[str] = None, **simulator_kwargs) -> Callable:
+    def function_tool(
+        cls, 
+        name: Optional[str] = None, 
+        initial_state_description: Optional[str] = None, 
+        mode: str = "dynamic",
+        static_response: Optional[Dict[str, Any]] = None,
+        mock_function: Optional[Callable] = None,
+        **simulator_kwargs
+    ) -> Callable:
         """
         Decorator for registering Python function tools.
 
         Args:
             name: Optional name for the tool. If None, uses function.__name__
             initial_state_description: Optional initial state description for the tool's context
+            mode: Simulation mode - "dynamic", "static", or "mock"
+            static_response: Static response dict for static mode
+            mock_function: Custom callable for mock mode
             **simulator_kwargs: Additional simulator configuration
 
         Returns:
@@ -509,6 +463,9 @@ class ToolSimulator:
                     function=func,
                     initial_state_description=initial_state_description,
                     simulator_kwargs=simulator_kwargs,
+                    mode=mode,
+                    static_response=static_response,
+                    mock_function=mock_function,
                 )
                 cls._registered_tools[tool_name] = registered_tool
 
@@ -523,7 +480,16 @@ class ToolSimulator:
         return decorator
 
     @classmethod
-    def mcp_tool(cls, name: Optional[str] = None, schema: Optional[Dict[str, Any]] = None, initial_state_description: Optional[str] = None, **simulator_kwargs) -> Callable:
+    def mcp_tool(
+        cls, 
+        name: Optional[str] = None, 
+        schema: Optional[Dict[str, Any]] = None, 
+        initial_state_description: Optional[str] = None,
+        mode: str = "dynamic",
+        static_response: Optional[Dict[str, Any]] = None,
+        mock_function: Optional[Callable] = None,
+        **simulator_kwargs
+    ) -> Callable:
         """
         Decorator for registering MCP (Model Context Protocol) tools.
 
@@ -531,6 +497,9 @@ class ToolSimulator:
             name: Optional name for the tool. If None, uses function.__name__
             schema: MCP tool schema dictionary
             initial_state_description: Optional initial state description for the tool's context
+            mode: Simulation mode - "dynamic", "static", or "mock"
+            static_response: Static response dict for static mode
+            mock_function: Custom callable for mock mode
             **simulator_kwargs: Additional simulator configuration
 
         Returns:
@@ -550,6 +519,9 @@ class ToolSimulator:
                 mcp_schema=schema,
                 initial_state_description=initial_state_description,
                 simulator_kwargs=simulator_kwargs,
+                mode=mode,
+                static_response=static_response,
+                mock_function=mock_function,
             )
             cls._registered_tools[tool_name] = registered_tool
 
@@ -566,6 +538,9 @@ class ToolSimulator:
         method: Optional[str] = None,
         schema: Optional[Dict[str, Any]] = None,
         initial_state_description: Optional[str] = None,
+        mode: str = "dynamic",
+        static_response: Optional[Dict[str, Any]] = None,
+        mock_function: Optional[Callable] = None,
         **simulator_kwargs,
     ) -> Callable:
         """
@@ -577,6 +552,9 @@ class ToolSimulator:
             method: HTTP method (GET, POST, etc.)
             schema: API tool schema dictionary
             initial_state_description: Optional initial state description for the tool's context
+            mode: Simulation mode - "dynamic", "static", or "mock"
+            static_response: Static response dict for static mode
+            mock_function: Custom callable for mock mode
             **simulator_kwargs: Additional simulator configuration
 
         Returns:
@@ -599,6 +577,9 @@ class ToolSimulator:
                 api_method=method,
                 initial_state_description=initial_state_description,
                 simulator_kwargs=simulator_kwargs,
+                mode=mode,
+                static_response=static_response,
+                mock_function=mock_function,
             )
             cls._registered_tools[tool_name] = registered_tool
 
@@ -725,9 +706,8 @@ class ToolSimulator:
 
             for override in tool_overrides:
                 tool_name = override.get("tool_name")
-                should_simulate = override.get("should_simulate", True)
 
-                if not tool_name or not should_simulate:
+                if not tool_name:
                     continue
 
                 # Add failure conditions using new schema format
@@ -761,15 +741,104 @@ class ToolSimulator:
 
     def get_tool(self, tool_name: str) -> Optional[Callable]:
         """
-        Get a tool by name from the active simulators.
+        Get a tool by name and create a simulation wrapper.
 
         Args:
             tool_name: Name of the tool to retrieve
 
         Returns:
-            Tool callable if found, None otherwise
+            Tool callable wrapper if found, None otherwise
         """
-        return self._active_simulators.get(tool_name)
+        registered_tool = self._registered_tools.get(tool_name)
+        if not registered_tool:
+            return None
+        
+        return self._create_tool_wrapper(registered_tool)
+
+    def _create_tool_wrapper(self, registered_tool: RegisteredTool) -> Callable:
+        """Create a wrapper function for direct tool access."""
+        def wrapper(*args, **kwargs):
+            # Determine state key
+            state_key = (
+                registered_tool.simulator_kwargs.get("share_state_id", registered_tool.name)
+                if registered_tool.simulator_kwargs
+                else registered_tool.name
+            )
+            
+            # Build input data based on tool type
+            if registered_tool.tool_type == ToolType.FUNCTION:
+                parameters_string = (
+                    json.dumps({"args": args, "kwargs": kwargs}, indent=2)
+                    if args
+                    else json.dumps(kwargs, indent=2)
+                )
+                
+                # Get tool override configuration
+                tool_override_config = {}
+                if registered_tool.name in self.tool_overrides:
+                    override_config = self.tool_overrides[registered_tool.name]
+                    if override_config.failure_conditions:
+                        tool_override_config["failure_conditions"] = override_config.failure_conditions.model_dump()
+                else:
+                    tool_override_config["failure_conditions"] = {"enabled": False}
+                
+                input_data = {
+                    "tool_name": registered_tool.name,
+                    "parameters": parameters_string,
+                    "tool_override": tool_override_config,
+                }
+                
+            elif registered_tool.tool_type == ToolType.MCP:
+                # Get tool override configuration
+                tool_override_config = {}
+                if registered_tool.name in self.tool_overrides:
+                    override_config = self.tool_overrides[registered_tool.name]
+                    if override_config.failure_conditions:
+                        tool_override_config["failure_conditions"] = override_config.failure_conditions.model_dump()
+                else:
+                    tool_override_config["failure_conditions"] = {"enabled": False}
+                
+                input_data = {
+                    "tool_name": registered_tool.name,
+                    "input_mcp_payload": kwargs,
+                    "tool_override": tool_override_config,
+                }
+                
+            elif registered_tool.tool_type == ToolType.API:
+                # Get tool override configuration
+                tool_override_config = {}
+                if registered_tool.name in self.tool_overrides:
+                    override_config = self.tool_overrides[registered_tool.name]
+                    if override_config.failure_conditions:
+                        tool_override_config["failure_conditions"] = override_config.failure_conditions.model_dump()
+                else:
+                    tool_override_config["failure_conditions"] = {"enabled": False}
+                
+                input_data = {
+                    "tool_name": registered_tool.name,
+                    "user_input_api_payload": kwargs,
+                    "path": registered_tool.api_path or "",
+                    "method": registered_tool.api_method or "GET",
+                    "tool_override": tool_override_config,
+                }
+                
+            else:
+                raise ValueError(f"Unsupported tool type: {registered_tool.tool_type}")
+            
+            return self._simulate_tool_call(registered_tool.tool_type, state_key, input_data)
+        
+        # Copy function metadata
+        if registered_tool.function:
+            wrapper.__name__ = registered_tool.function.__name__
+            try:
+                wrapper.__signature__ = inspect.signature(registered_tool.function)  # type: ignore
+            except (ValueError, TypeError):
+                pass
+            wrapper.__doc__ = registered_tool.function.__doc__
+        else:
+            wrapper.__name__ = registered_tool.name
+            
+        return wrapper
 
     def list_tools(self) -> List[str]:
         """
@@ -800,7 +869,8 @@ class ToolSimulator:
         Raises:
             AttributeError: If tool not found
         """
-        if name in self._active_simulators:
-            return self._active_simulators[name]
+        registered_tool = self._registered_tools.get(name)
+        if registered_tool:
+            return self._create_tool_wrapper(registered_tool)
 
-        raise AttributeError(f"Tool '{name}' not found in active simulators")
+        raise AttributeError(f"Tool '{name}' not found in registered tools")
