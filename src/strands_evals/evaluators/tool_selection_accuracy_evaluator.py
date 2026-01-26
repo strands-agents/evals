@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import cast
 
 from pydantic import BaseModel, Field
 from strands import Agent
@@ -56,12 +57,17 @@ class ToolSelectionAccuracyEvaluator(Evaluator[InputT, OutputT]):
         for tool_input in tool_inputs:
             prompt = self._format_prompt(tool_input)
             evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
-            rating = evaluator_agent.structured_output(ToolSelectionRating, prompt)
+            result = evaluator_agent(prompt, structured_output_model=ToolSelectionRating)
+            rating = cast(ToolSelectionRating, result.structured_output)
             normalized_score = self._score_mapping[rating.score]
-            result = EvaluationOutput(
-                score=normalized_score, test_pass=normalized_score == 1.0, reason=rating.reasoning, label=rating.score
+            results.append(
+                EvaluationOutput(
+                    score=normalized_score,
+                    test_pass=normalized_score == 1.0,
+                    reason=rating.reasoning,
+                    label=rating.score,
+                )
             )
-            results.append(result)
 
         return results
 
@@ -72,12 +78,17 @@ class ToolSelectionAccuracyEvaluator(Evaluator[InputT, OutputT]):
         for tool_input in tool_inputs:
             prompt = self._format_prompt(tool_input)
             evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
-            rating = await evaluator_agent.structured_output_async(ToolSelectionRating, prompt)
+            result = await evaluator_agent.invoke_async(prompt, structured_output_model=ToolSelectionRating)
+            rating = cast(ToolSelectionRating, result.structured_output)
             normalized_score = self._score_mapping[rating.score]
-            result = EvaluationOutput(
-                score=normalized_score, test_pass=normalized_score == 1.0, reason=rating.reasoning, label=rating.score
+            results.append(
+                EvaluationOutput(
+                    score=normalized_score,
+                    test_pass=normalized_score == 1.0,
+                    reason=rating.reasoning,
+                    label=rating.score,
+                )
             )
-            results.append(result)
 
         return results
 
