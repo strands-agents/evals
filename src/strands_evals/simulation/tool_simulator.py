@@ -1,23 +1,227 @@
 import inspect
 import json
 import logging
-import random
+import warnings
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
-from strands import Agent
 from strands.models.bedrock import BedrockModel
 from strands.models.model import Model
 
-from strands_evals.case import Case
 from strands_evals.types.simulation.tool import (
-    FailureConditions,
     RegisteredTool, 
-    StateRegistry,
-    ToolOverrideConfig,
     ToolType,
 )
 
 logger = logging.getLogger(__name__)
+
+
+class StateRegistry:
+    """
+    State registry for managing shared state between tool simulators.
+    Organized by state_key to isolate state between different tools or shared state groups.
+    """
+    
+    def __init__(self):
+        """
+        Initialize state registry.
+
+        Creates an empty state dictionary to track tool calls and responses
+        across different simulation sessions.
+        """
+        self._states: Dict[str, Dict[str, Any]] = {}
+    
+    def initialize_state_via_description(self, initial_state_description: str, state_key: str) -> None:
+        """
+        Initialize state based on the provided description.
+
+        This method pre-seeds the state with an initial description that will be
+        included in all subsequent LLM prompts, allowing the simulator to have
+        context about pre-existing data or system state.
+
+        Args:
+            initial_state_description: Description of the initial state (e.g., existing
+                database records, system configuration, etc.).
+            state_key: Key for the state in the registry (typically tool_name or share_state_id).
+        """
+        if state_key not in self._states:
+            self._states[state_key] = {
+                "initial_state": initial_state_description,
+                "previous_calls": [],
+                "user_context": {},
+            }
+        else:
+            warnings.warn(f"State with key '{state_key}' already initialized. Skipping re-initialization.")
+
+    def get_state(self, state_key: str) -> Dict[str, Any]:
+        """
+        Get state for a specific tool or shared state group.
+
+        Args:
+            state_key: Key for the state (tool_name or share_state_id).
+
+        Returns:
+            State dictionary containing previous_calls and user_context.
+        """
+        if state_key is None:
+            raise ValueError("Value of state_key is required.")
+
+        if state_key not in self._states:
+            self._states[state_key] = {
+                "previous_calls": [],
+                "user_context": {},
+            }
+
+        return dict(self._states[state_key])
+
+    def record_function_call(
+        self,
+        tool_name: str,
+        state_key: str,
+        parameters: Dict[str, Any],
+        response_data: Any,
+    ) -> Dict[str, Any]:
+        """
+        Record a function call in the tool's state history.
+
+        Args:
+            tool_name: Name of the function being called.
+            state_key: Key for the state (tool_name or share_state_id).
+            parameters: Parameters passed to the function.
+            response_data: Response from the function call.
+
+        Returns:
+            Updated state dictionary.
+        """
+        state = self.get_state(state_key)
+        date_timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+
+        state["previous_calls"].append({
+            'tool_name': tool_name,
+            'tool_type': 'function',
+            'parameters': parameters,
+            'response': response_data,
+            'timestamp': date_timestamp
+        })
+
+        # Keep history manageable
+        if len(state["previous_calls"]) > 20:
+            state["previous_calls"] = state["previous_calls"][-20:]
+
+        # Update the stored state
+        self._states[state_key] = state
+
+        return state
+
+    def record_mcp_tool_call(
+        self,
+        tool_name: str,
+        state_key: str,
+        input_mcp_payload: Dict[str, Any],
+        response_data: Any,
+    ) -> Dict[str, Any]:
+        """
+        Record an MCP tool call in the tool's state history.
+
+        Args:
+            tool_name: Name of the MCP tool being called.
+            state_key: Key for the state (tool_name or share_state_id).
+            input_mcp_payload: Input payload for the MCP tool call.
+            response_data: Response from the MCP tool call.
+
+        Returns:
+            Updated state dictionary.
+        """
+        state = self.get_state(state_key)
+        date_timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+
+        state["previous_calls"].append({
+            'tool_name': tool_name,
+            'tool_type': 'mcp',
+            'input_mcp_payload': input_mcp_payload,
+            'response': response_data,
+            'timestamp': date_timestamp
+        })
+
+        # Keep history manageable
+        if len(state["previous_calls"]) > 20:
+            state["previous_calls"] = state["previous_calls"][-20:]
+
+        # Update the stored state
+        self._states[state_key] = state
+
+        return state
+
+    def record_api_call(
+        self,
+        tool_name: str,
+        state_key: str,
+        path: str,
+        method: str,
+        input_data: Any,
+        response: Any,
+    ) -> Dict[str, Any]:
+        """
+        Record an API call in the tool's state history.
+
+        Args:
+            tool_name: Name of the API tool being called.
+            state_key: Key for the state (tool_name or share_state_id).
+            path: API endpoint path.
+            method: HTTP method.
+            input_data: Input data for the API call.
+            response: Response from the API call.
+
+        Returns:
+            Updated state dictionary.
+        """
+        state = self.get_state(state_key)
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+
+        state["previous_calls"].append({
+            'tool_name': tool_name,
+            'tool_type': 'api',
+            'path': path,
+            'method': method,
+            'input': input_data,
+            'response': response,
+            'timestamp': timestamp
+        })
+
+        # Keep history manageable
+        if len(state["previous_calls"]) > 20:
+            state["previous_calls"] = state["previous_calls"][-20:]
+
+        # Update the stored state
+        self._states[state_key] = state
+
+        return state
+
+    def set_user_context(self, state_key: str, user_context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Set user context for a state.
+
+        Args:
+            state_key: Key for the state (tool_name or share_state_id).
+            user_context: User context dictionary to store.
+
+        Returns:
+            Updated state dictionary.
+        """
+        state = self.get_state(state_key)
+        state["user_context"] = user_context
+        self._states[state_key] = state
+        return state
+
+    def clear_state(self, state_key: str) -> None:
+        """
+        Clear state for a specific tool or shared state group.
+
+        Args:
+            state_key: Key for the state to clear.
+        """
+        if state_key in self._states:
+            del self._states[state_key]
 
 
 class ToolSimulator:
@@ -42,22 +246,44 @@ class ToolSimulator:
 
     def __init__(
         self,
-        tool_overrides: Optional[Dict[str, ToolOverrideConfig]] = None,
         state_registry: Optional[StateRegistry] = None,
         system_prompt_template: Optional[str] = None,
+        function_tool_prompt: Optional[str] = None,
+        mcp_tool_prompt: Optional[str] = None,
+        api_tool_prompt: Optional[str] = None,
         model: Model | str | None = None,
     ):
         """
         Initialize a ToolSimulator instance.
 
         Args:
-            tool_overrides: Dictionary mapping tool names to ToolOverrideConfig instances
             state_registry: Registry for maintaining tool state
             system_prompt_template: Template for system prompts
+            function_tool_prompt: Optional custom prompt for function tool response generation
+            mcp_tool_prompt: Optional custom prompt for MCP tool response generation
+            api_tool_prompt: Optional custom prompt for API tool response generation
             model: Provider for running inference or a string representing the model-id for Bedrock to use
         """
-        self.tool_overrides = tool_overrides or {}
         self.system_prompt_template = system_prompt_template
+        
+        # Set custom prompts or use defaults
+        if function_tool_prompt is None:
+            from .prompt_templates.tool_response_generation import FUNCTION_TOOL_RESPONSE_GENERATION_PROMPT
+            self.function_tool_prompt = FUNCTION_TOOL_RESPONSE_GENERATION_PROMPT
+        else:
+            self.function_tool_prompt = function_tool_prompt
+            
+        if mcp_tool_prompt is None:
+            from .prompt_templates.tool_response_generation import MCP_TOOL_RESPONSE_GENERATION_PROMPT
+            self.mcp_tool_prompt = MCP_TOOL_RESPONSE_GENERATION_PROMPT
+        else:
+            self.mcp_tool_prompt = mcp_tool_prompt
+            
+        if api_tool_prompt is None:
+            from .prompt_templates.tool_response_generation import API_TOOL_RESPONSE_GENERATION_PROMPT
+            self.api_tool_prompt = API_TOOL_RESPONSE_GENERATION_PROMPT
+        else:
+            self.api_tool_prompt = api_tool_prompt
         
         # Initialize model following Agent pattern
         self.model = BedrockModel() if not model else BedrockModel(model_id=model) if isinstance(model, str) else model
@@ -71,27 +297,6 @@ class ToolSimulator:
         # Initialize shared states from registered tools
         self._initialize_shared_states()
 
-    def _function_has_implementation(self, func: Callable) -> bool:
-        """Check if a function has actual implementation or is just an empty stub."""
-        try:
-            import dis
-            # Get function bytecode
-            bytecode = list(dis.get_instructions(func))
-
-            # Check if function only contains simple return patterns
-            if len(bytecode) <= 3:
-                load_const_none_count = sum(
-                    1 for instr in bytecode if instr.opname == "LOAD_CONST" and instr.argval is None
-                )
-                return_count = sum(1 for instr in bytecode if instr.opname == "RETURN_VALUE")
-
-                if load_const_none_count >= 1 and return_count == 1 and len(bytecode) <= 3:
-                    return False
-
-            return True
-        except Exception:
-            # If we can't analyze bytecode, assume it's implemented
-            return True
 
     def _initialize_shared_states(self):
         """Initialize shared states from registered tools' initial descriptions."""
@@ -119,26 +324,6 @@ class ToolSimulator:
         
         if not registered_tool:
             return self._create_error_response("tool_not_found", f"Tool '{tool_name}' not found")
-        
-        # Handle tool behavior configuration
-        tool_override = input_data.get("tool_override", {})
-        
-        # Check for failure conditions
-        failure_conditions = tool_override.get("failure_conditions", {})
-        if failure_conditions and failure_conditions.get("enabled", False):
-            error_rate = failure_conditions.get("error_rate", 0.0)
-            if random.random() < error_rate:
-                error_type = failure_conditions.get("error_type", "execution_error")
-                error_message = failure_conditions.get("error_message", "An error occurred")
-                
-                if tool_type == ToolType.API:
-                    return self._create_error_response(error_type, error_message)
-                elif tool_type in [ToolType.FUNCTION, ToolType.MCP]:
-                    return {
-                        "status": "error",
-                        "error_type": error_type,
-                        "message": error_message
-                    }
         
         # Handle different simulation modes
         if registered_tool.mode == "static":
@@ -168,13 +353,11 @@ class ToolSimulator:
         
         # Generate response using LLM
         try:
-            from .prompt_templates.tool_response_generation import FUNCTION_TOOL_RESPONSE_GENERATION_PROMPT
-            
             # Get initial state description from state registry
             current_state = self._state_registry.get_state(state_key)
             initial_state_description = current_state.get("initial_state", "No initial state provided.")
             
-            prompt = FUNCTION_TOOL_RESPONSE_GENERATION_PROMPT.format(
+            prompt = self.function_tool_prompt.format(
                 tool_name=tool_name,
                 parameters=json.dumps(parameters, indent=2) if parameters else "{}",
                 initial_state_description=initial_state_description,
@@ -205,13 +388,11 @@ class ToolSimulator:
             }
         
         try:
-            from .prompt_templates.tool_response_generation import MCP_TOOL_RESPONSE_GENERATION_PROMPT
-            
             # Get initial state description from state registry
             current_state = self._state_registry.get_state(state_key)
             initial_state_description = current_state.get("initial_state", "No initial state provided.")
             
-            prompt = MCP_TOOL_RESPONSE_GENERATION_PROMPT.format(
+            prompt = self.mcp_tool_prompt.format(
                 tool_name=tool_name,
                 mcp_payload=json.dumps(input_mcp_payload, indent=2) if input_mcp_payload else "{}",
                 initial_state_description=initial_state_description,
@@ -244,13 +425,11 @@ class ToolSimulator:
             return self._create_error_response("missing_tool_name", "Tool name is required", 400)
         
         try:
-            from .prompt_templates.tool_response_generation import API_TOOL_RESPONSE_GENERATION_PROMPT
-            
             # Get initial state description from state registry
             current_state = self._state_registry.get_state(state_key)
             initial_state_description = current_state.get("initial_state", "No initial state provided.")
             
-            prompt = API_TOOL_RESPONSE_GENERATION_PROMPT.format(
+            prompt = self.api_tool_prompt.format(
                 tool_name=tool_name,
                 path=path,
                 method=method,
@@ -588,156 +767,6 @@ class ToolSimulator:
 
         return decorator
 
-    @classmethod
-    def from_case_for_tool_simulator(
-        cls,
-        case: Case,
-        system_prompt_template: Optional[str] = None,
-        model: Optional[str] = None,
-        **kwargs,
-    ) -> "ToolSimulator":
-        """
-        Create a ToolSimulator instance configured for a specific case.
-
-        Args:
-            case: Case object containing test case information and metadata
-            system_prompt_template: Template for system prompts
-            model: Model identifier for LLM-based simulation
-            **kwargs: Additional configuration options
-
-        Returns:
-            Configured ToolSimulator instance
-        """
-        tool_overrides = cls._generate_override_from_case(case)
-        return cls(
-            tool_overrides=tool_overrides,
-            system_prompt_template=system_prompt_template,
-            model=model,
-            **kwargs,
-        )
-
-    @staticmethod
-    def _generate_override_from_case(case: Case) -> Dict[str, ToolOverrideConfig]:
-        """Generate tool override configuration from a case using LLM."""
-        # Extract scenario description from case
-        scenario_description = f"Test case: {case.name or 'unnamed'}. Input: {case.input}"
-        if case.metadata:
-            scenario_description += f". Metadata: {case.metadata}"
-
-        # Create tools list from registered tools
-        tools_list = []
-        for tool_name, registered_tool in ToolSimulator._registered_tools.items():
-            tool_info = {
-                "name": tool_name,
-                "type": registered_tool.tool_type.value,
-                "description": (
-                    getattr(registered_tool.function, "__doc__", "")
-                    if registered_tool.function
-                    else ""
-                ),
-            }
-
-            # Add schema information based on tool type
-            if registered_tool.tool_type == ToolType.FUNCTION and registered_tool.function:
-                sig = inspect.signature(registered_tool.function)
-                parameters = {}
-                for param_name, param in sig.parameters.items():
-                    param_type = "string"
-                    if param.annotation != inspect.Parameter.empty:
-                        type_map = {
-                            int: "integer",
-                            float: "number",
-                            bool: "boolean",
-                            list: "array",
-                            dict: "object",
-                            str: "string",
-                        }
-                        param_type = type_map.get(param.annotation, "string")
-
-                    parameters[param_name] = {
-                        "type": param_type,
-                        "required": param.default == inspect.Parameter.empty,
-                    }
-
-                tool_info["parameters"] = parameters
-
-            elif registered_tool.tool_type == ToolType.MCP and registered_tool.mcp_schema:
-                tool_info["schema"] = registered_tool.mcp_schema
-
-            elif registered_tool.tool_type == ToolType.API:
-                tool_info["path"] = registered_tool.api_path
-                tool_info["method"] = registered_tool.api_method
-
-            tools_list.append(tool_info)
-
-        # If no registered tools, return empty override
-        if not tools_list:
-            logger.warning("No registered tools found for override generation")
-            return {}
-
-        # Generate overrides using LLM prompt
-        try:
-            tools_json = json.dumps(tools_list, indent=2)
-
-            # Use the tool override generation prompt
-            from .prompt_templates.tool_override_generation import TOOL_OVERRIDE_GENERATION_PROMPT
-            
-            prompt = TOOL_OVERRIDE_GENERATION_PROMPT.format(
-                scenario=scenario_description,
-                tools_json=tools_json,
-            )
-
-            # Generate response
-            agent = Agent(callback_handler=None)
-            result = agent(prompt)
-            llm_response = str(result)
-
-            # Parse LLM response
-            try:
-                response_data = json.loads(llm_response.strip())
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse LLM response as JSON: {e}")
-                logger.debug(f"Raw LLM response: {llm_response}")
-                return {}
-
-            # Convert LLM response to ToolOverrideConfig instances
-            tool_configs: Dict[str, ToolOverrideConfig] = {}
-            tool_overrides = response_data.get("tool_overrides", [])
-
-            for override in tool_overrides:
-                tool_name = override.get("tool_name")
-
-                if not tool_name:
-                    continue
-
-                # Add failure conditions using new schema format
-                failure_conditions = override.get("failure_conditions", {})
-                failure_conditions = {
-                    "enabled": failure_conditions.get("enabled", False),
-                    "error_rate": failure_conditions.get("error_rate", 0.0),
-                    "error_type": failure_conditions.get("error_type", "execution_error"),
-                    "error_message": failure_conditions.get("error_message"),
-                }
-
-                try:
-                    # Create FailureConditions instance
-                    failure_conditions_instance = FailureConditions(**failure_conditions)
-
-                    # Create ToolOverrideConfig instance
-                    tool_configs[tool_name] = ToolOverrideConfig(
-                        failure_conditions=failure_conditions_instance,
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to create ToolOverrideConfig for {tool_name}: {e}")
-                    continue
-
-            logger.info(f"Generated overrides for {len(tool_configs)} tools using LLM")
-            return tool_configs
-
-        except Exception as e:
-            logger.error(f"Error generating overrides using LLM: {e}")
-            logger.warning("Falling back to empty override configuration")
-            return {}
 
     def get_tool(self, tool_name: str) -> Optional[Callable]:
         """
@@ -773,53 +802,23 @@ class ToolSimulator:
                     else json.dumps(kwargs, indent=2)
                 )
                 
-                # Get tool override configuration
-                tool_override_config = {}
-                if registered_tool.name in self.tool_overrides:
-                    override_config = self.tool_overrides[registered_tool.name]
-                    if override_config.failure_conditions:
-                        tool_override_config["failure_conditions"] = override_config.failure_conditions.model_dump()
-                else:
-                    tool_override_config["failure_conditions"] = {"enabled": False}
-                
                 input_data = {
                     "tool_name": registered_tool.name,
                     "parameters": parameters_string,
-                    "tool_override": tool_override_config,
                 }
                 
             elif registered_tool.tool_type == ToolType.MCP:
-                # Get tool override configuration
-                tool_override_config = {}
-                if registered_tool.name in self.tool_overrides:
-                    override_config = self.tool_overrides[registered_tool.name]
-                    if override_config.failure_conditions:
-                        tool_override_config["failure_conditions"] = override_config.failure_conditions.model_dump()
-                else:
-                    tool_override_config["failure_conditions"] = {"enabled": False}
-                
                 input_data = {
                     "tool_name": registered_tool.name,
                     "input_mcp_payload": kwargs,
-                    "tool_override": tool_override_config,
                 }
                 
             elif registered_tool.tool_type == ToolType.API:
-                # Get tool override configuration
-                tool_override_config = {}
-                if registered_tool.name in self.tool_overrides:
-                    override_config = self.tool_overrides[registered_tool.name]
-                    if override_config.failure_conditions:
-                        tool_override_config["failure_conditions"] = override_config.failure_conditions.model_dump()
-                else:
-                    tool_override_config["failure_conditions"] = {"enabled": False}
-                
                 input_data = {
                     "tool_name": registered_tool.name,
                     "user_input_api_payload": kwargs,
                     "path": registered_tool.api_path or "",
                     "method": registered_tool.api_method or "GET",
-                    "tool_override": tool_override_config,
                 }
                 
             else:
