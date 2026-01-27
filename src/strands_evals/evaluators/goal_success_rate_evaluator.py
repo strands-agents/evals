@@ -6,7 +6,7 @@ from strands.models.model import Model
 from typing_extensions import TypeVar, Union
 
 from ..types.evaluation import EvaluationData, EvaluationOutput
-from ..types.trace import EvaluationLevel, SessionLevelInput
+from ..types.trace import EvaluationLevel
 from .evaluator import Evaluator
 from .prompt_templates.goal_success_rate import get_template
 
@@ -40,7 +40,7 @@ class GoalSuccessRateEvaluator(Evaluator[InputT, OutputT]):
 
     def __init__(
         self,
-        version: str = "v0",
+        version: str = "v1",
         model: Union[Model, str, None] = None,
         system_prompt: str | None = None,
     ):
@@ -50,8 +50,7 @@ class GoalSuccessRateEvaluator(Evaluator[InputT, OutputT]):
         self.model = model
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
-        session_input = self._parse_trajectory(evaluation_case)
-        prompt = self._format_prompt(session_input)
+        prompt = self._format_prompt(evaluation_case)
         evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
         rating = evaluator_agent.structured_output(GoalSuccessRating, prompt)
         normalized_score = self._score_mapping[rating.score]
@@ -64,8 +63,7 @@ class GoalSuccessRateEvaluator(Evaluator[InputT, OutputT]):
         return [result]
 
     async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
-        session_input = self._parse_trajectory(evaluation_case)
-        prompt = self._format_prompt(session_input)
+        prompt = self._format_prompt(evaluation_case)
         evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
         rating = await evaluator_agent.structured_output_async(GoalSuccessRating, prompt)
         normalized_score = self._score_mapping[rating.score]
@@ -77,9 +75,16 @@ class GoalSuccessRateEvaluator(Evaluator[InputT, OutputT]):
         )
         return [result]
 
-    def _format_prompt(self, session_input: SessionLevelInput) -> str:
-        """Format evaluation prompt from session-level input."""
+    def _format_prompt(self, evaluation_case: EvaluationData[InputT, OutputT]) -> str:
+        """Format evaluation prompt from evaluation case."""
+
+        goal = evaluation_case.metadata.get("goal")
+        session_input = self._parse_trajectory(evaluation_case)
+
         parts = []
+
+        if goal:
+            parts.append(f"# User Goal\n{goal}")
 
         if session_input.available_tools:
             parts.append(f"# Available tools\n{self._format_tools(session_input.available_tools)}")
