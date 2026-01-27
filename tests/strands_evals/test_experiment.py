@@ -2,11 +2,14 @@ import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 from strands.models.model import Model
+from strands.types.exceptions import EventLoopException, ModelThrottledException
 
 from strands_evals import Case, Experiment
 from strands_evals.evaluators import Evaluator, InteractionsEvaluator, OutputEvaluator, TrajectoryEvaluator
 from strands_evals.evaluators.evaluator import DEFAULT_BEDROCK_MODEL_ID
+from strands_evals.experiment import is_throttling_error
 from strands_evals.types import EvaluationData, EvaluationOutput
 
 
@@ -1090,44 +1093,31 @@ def test_experiment_run_evaluations_evaluator_error_isolated():
     assert "Evaluator exploded" in reports[1].reasons[0]
 
 
-def test_is_throttling_error_detects_model_throttled_exception():
+def testis_throttling_error_detects_model_throttled_exception():
     """Test that ModelThrottledException is detected as throttling error"""
-    from strands.types.exceptions import ModelThrottledException
-
-    from strands_evals.experiment import _is_throttling_error
-
     exc = ModelThrottledException("Too many tokens")
-    assert _is_throttling_error(exc) is True
+    assert is_throttling_error(exc) is True
 
 
-def test_is_throttling_error_detects_event_loop_exception():
+def testis_throttling_error_detects_event_loop_exception():
     """Test that EventLoopException is detected as throttling error"""
-    from strands.types.exceptions import EventLoopException
-
-    from strands_evals.experiment import _is_throttling_error
-
     exc = EventLoopException(Exception("Throttling"), {})
-    assert _is_throttling_error(exc) is True
+    assert is_throttling_error(exc) is True
 
 
-def test_is_throttling_error_detects_botocore_throttling():
+def testis_throttling_error_detects_botocore_throttling():
     """Test that botocore ThrottlingException is detected"""
-    from strands_evals.experiment import _is_throttling_error
 
     # Create a mock exception with ThrottlingException class name
     class ThrottlingException(Exception):
         pass
 
     exc = ThrottlingException("Rate limit exceeded")
-    assert _is_throttling_error(exc) is True
+    assert is_throttling_error(exc) is True
 
 
-def test_is_throttling_error_detects_client_error_with_codes():
+def testis_throttling_error_detects_client_error_with_codes():
     """Test that ClientError with throttling codes is detected"""
-    from botocore.exceptions import ClientError
-
-    from strands_evals.experiment import _is_throttling_error
-
     # Test various throttling error codes
     throttling_codes = [
         "ThrottlingException",
@@ -1139,13 +1129,11 @@ def test_is_throttling_error_detects_client_error_with_codes():
 
     for code in throttling_codes:
         exc = ClientError({"Error": {"Code": code, "Message": "Test"}}, "TestOperation")
-        assert _is_throttling_error(exc) is True, f"Failed to detect {code}"
+        assert is_throttling_error(exc) is True, f"Failed to detect {code}"
 
 
-def test_is_throttling_error_ignores_regular_exceptions():
+def testis_throttling_error_ignores_regular_exceptions():
     """Test that regular exceptions are not detected as throttling"""
-    from strands_evals.experiment import _is_throttling_error
-
     regular_exceptions = [
         ValueError("Invalid input"),
         RuntimeError("Runtime error"),
@@ -1153,23 +1141,17 @@ def test_is_throttling_error_ignores_regular_exceptions():
     ]
 
     for exc in regular_exceptions:
-        assert _is_throttling_error(exc) is False
+        assert is_throttling_error(exc) is False
 
 
-def test_is_throttling_error_ignores_client_error_non_throttling():
+def testis_throttling_error_ignores_client_error_non_throttling():
     """Test that ClientError with non-throttling codes is not detected"""
-    from botocore.exceptions import ClientError
-
-    from strands_evals.experiment import _is_throttling_error
-
     exc = ClientError({"Error": {"Code": "ValidationException", "Message": "Invalid"}}, "TestOperation")
-    assert _is_throttling_error(exc) is False
+    assert is_throttling_error(exc) is False
 
 
 def test_experiment_run_evaluations_retries_on_throttling():
     """Test that run_evaluations retries task execution on throttling errors"""
-    from strands.types.exceptions import ModelThrottledException
-
     call_count = 0
 
     def throttling_task(c):
@@ -1182,8 +1164,8 @@ def test_experiment_run_evaluations_retries_on_throttling():
     case = Case(name="test", input="hello", expected_output="hello")
     experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
 
-    with patch("strands_evals.experiment.INITIAL_RETRY_DELAY", 0.01):
-        with patch("strands_evals.experiment.MAX_RETRY_DELAY", 0.02):
+    with patch("strands_evals.experiment._INITIAL_RETRY_DELAY", 0.01):
+        with patch("strands_evals.experiment._MAX_RETRY_DELAY", 0.02):
             reports = experiment.run_evaluations(throttling_task)
 
     # Task should have been retried
@@ -1195,8 +1177,6 @@ def test_experiment_run_evaluations_retries_on_throttling():
 
 def test_experiment_run_evaluations_fails_after_max_retries():
     """Test that run_evaluations fails after max retries on throttling"""
-    from strands.types.exceptions import ModelThrottledException
-
     call_count = 0
 
     def always_throttling_task(c):
@@ -1207,9 +1187,9 @@ def test_experiment_run_evaluations_fails_after_max_retries():
     case = Case(name="test", input="hello", expected_output="hello")
     experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
 
-    with patch("strands_evals.experiment.MAX_RETRY_ATTEMPTS", 3):
-        with patch("strands_evals.experiment.INITIAL_RETRY_DELAY", 0.01):
-            with patch("strands_evals.experiment.MAX_RETRY_DELAY", 0.02):
+    with patch("strands_evals.experiment._MAX_RETRY_ATTEMPTS", 3):
+        with patch("strands_evals.experiment._INITIAL_RETRY_DELAY", 0.01):
+            with patch("strands_evals.experiment._MAX_RETRY_DELAY", 0.02):
                 reports = experiment.run_evaluations(always_throttling_task)
 
     # Should have retried max times
@@ -1243,8 +1223,6 @@ def test_experiment_run_evaluations_no_retry_on_non_throttling():
 
 def test_experiment_run_evaluations_exponential_backoff():
     """Test that run_evaluations uses exponential backoff for retries"""
-    from strands.types.exceptions import ModelThrottledException
-
     sleep_delays = []
 
     def mock_sleep(delay):
@@ -1263,8 +1241,8 @@ def test_experiment_run_evaluations_exponential_backoff():
     experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
 
     with patch("time.sleep", mock_sleep):
-        with patch("strands_evals.experiment.INITIAL_RETRY_DELAY", 1):
-            with patch("strands_evals.experiment.MAX_RETRY_DELAY", 10):
+        with patch("strands_evals.experiment._INITIAL_RETRY_DELAY", 1):
+            with patch("strands_evals.experiment._MAX_RETRY_DELAY", 10):
                 experiment.run_evaluations(throttling_task)
 
     # Verify exponential backoff: 1, 2, 4
@@ -1276,7 +1254,6 @@ def test_experiment_run_evaluations_exponential_backoff():
 
 def test_experiment_run_evaluations_evaluator_retries_on_throttling():
     """Test that evaluator execution retries on throttling errors"""
-    from strands.types.exceptions import ModelThrottledException
 
     class ThrottlingEvaluator(Evaluator[str, str]):
         def __init__(self):
@@ -1296,8 +1273,8 @@ def test_experiment_run_evaluations_evaluator_retries_on_throttling():
     evaluator = ThrottlingEvaluator()
     experiment = Experiment(cases=[case], evaluators=[evaluator])
 
-    with patch("strands_evals.experiment.INITIAL_RETRY_DELAY", 0.01):
-        with patch("strands_evals.experiment.MAX_RETRY_DELAY", 0.02):
+    with patch("strands_evals.experiment._INITIAL_RETRY_DELAY", 0.01):
+        with patch("strands_evals.experiment._MAX_RETRY_DELAY", 0.02):
             reports = experiment.run_evaluations(simple_task)
 
     # Evaluator should have been retried
@@ -1310,8 +1287,6 @@ def test_experiment_run_evaluations_evaluator_retries_on_throttling():
 @pytest.mark.asyncio
 async def test_experiment_run_evaluations_async_retries_on_throttling():
     """Test that run_evaluations_async retries task execution on throttling"""
-    from strands.types.exceptions import ModelThrottledException
-
     call_count = 0
 
     async def throttling_task(c):
@@ -1324,8 +1299,8 @@ async def test_experiment_run_evaluations_async_retries_on_throttling():
     case = Case(name="test", input="hello", expected_output="hello")
     experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
 
-    with patch("strands_evals.experiment.INITIAL_RETRY_DELAY", 0.01):
-        with patch("strands_evals.experiment.MAX_RETRY_DELAY", 0.02):
+    with patch("strands_evals.experiment._INITIAL_RETRY_DELAY", 0.01):
+        with patch("strands_evals.experiment._MAX_RETRY_DELAY", 0.02):
             reports = await experiment.run_evaluations_async(throttling_task, max_workers=1)
 
     # Task should have been retried
@@ -1338,8 +1313,6 @@ async def test_experiment_run_evaluations_async_retries_on_throttling():
 @pytest.mark.asyncio
 async def test_experiment_run_evaluations_async_fails_after_max_retries():
     """Test that run_evaluations_async fails after max retries"""
-    from strands.types.exceptions import ModelThrottledException
-
     call_count = 0
 
     async def always_throttling_task(c):
@@ -1350,9 +1323,9 @@ async def test_experiment_run_evaluations_async_fails_after_max_retries():
     case = Case(name="test", input="hello", expected_output="hello")
     experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
 
-    with patch("strands_evals.experiment.MAX_RETRY_ATTEMPTS", 3):
-        with patch("strands_evals.experiment.INITIAL_RETRY_DELAY", 0.01):
-            with patch("strands_evals.experiment.MAX_RETRY_DELAY", 0.02):
+    with patch("strands_evals.experiment._MAX_RETRY_ATTEMPTS", 3):
+        with patch("strands_evals.experiment._INITIAL_RETRY_DELAY", 0.01):
+            with patch("strands_evals.experiment._MAX_RETRY_DELAY", 0.02):
                 reports = await experiment.run_evaluations_async(always_throttling_task, max_workers=1)
 
     # Should have retried max times
@@ -1388,8 +1361,6 @@ async def test_experiment_run_evaluations_async_no_retry_on_non_throttling():
 @pytest.mark.asyncio
 async def test_experiment_run_evaluations_async_exponential_backoff():
     """Test that run_evaluations_async uses exponential backoff"""
-    from strands.types.exceptions import ModelThrottledException
-
     sleep_delays = []
 
     async def mock_async_sleep(delay):
@@ -1408,8 +1379,8 @@ async def test_experiment_run_evaluations_async_exponential_backoff():
     experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
 
     with patch("asyncio.sleep", mock_async_sleep):
-        with patch("strands_evals.experiment.INITIAL_RETRY_DELAY", 1):
-            with patch("strands_evals.experiment.MAX_RETRY_DELAY", 10):
+        with patch("strands_evals.experiment._INITIAL_RETRY_DELAY", 1):
+            with patch("strands_evals.experiment._MAX_RETRY_DELAY", 10):
                 await experiment.run_evaluations_async(throttling_task, max_workers=1)
 
     # Filter out MockEvaluator's sleep calls (0.01) and verify exponential backoff: 1, 2, 4
@@ -1423,7 +1394,6 @@ async def test_experiment_run_evaluations_async_exponential_backoff():
 @pytest.mark.asyncio
 async def test_experiment_run_evaluations_async_evaluator_retries():
     """Test that async evaluator execution retries on throttling"""
-    from strands.types.exceptions import ModelThrottledException
 
     class AsyncThrottlingEvaluator(Evaluator[str, str]):
         def __init__(self):
@@ -1443,8 +1413,8 @@ async def test_experiment_run_evaluations_async_evaluator_retries():
     evaluator = AsyncThrottlingEvaluator()
     experiment = Experiment(cases=[case], evaluators=[evaluator])
 
-    with patch("strands_evals.experiment.INITIAL_RETRY_DELAY", 0.01):
-        with patch("strands_evals.experiment.MAX_RETRY_DELAY", 0.02):
+    with patch("strands_evals.experiment._INITIAL_RETRY_DELAY", 0.01):
+        with patch("strands_evals.experiment._MAX_RETRY_DELAY", 0.02):
             reports = await experiment.run_evaluations_async(simple_task, max_workers=1)
 
     # Evaluator should have been retried
