@@ -5,26 +5,6 @@ This module contains prompt templates used to generate realistic tool responses 
 agent evaluation scenarios. These templates enable LLM-powered simulation of tool
 behavior when actual tools are not available or when consistent, controllable responses
 are needed for evaluation purposes.
-
-The module provides specialized templates for different tool types:
-1. Function tools - Traditional Python function calls with parameters and return values
-2. MCP tools - Model Context Protocol tools with structured input/output formats
-3. API tools - REST API endpoints with HTTP request/response patterns
-
-Each template guides an LLM to:
-- Analyze the tool name, parameters, and context to understand expected behavior
-- Generate realistic responses that maintain consistency across the conversation
-- Follow appropriate response formats for each tool type
-- Consider previous tool responses to maintain state consistency in simulations
-
-Key Components:
-- FUNCTION_TOOL_RESPONSE_GENERATION_PROMPT: Template for Python function tool simulation
-- MCP_TOOL_RESPONSE_GENERATION_PROMPT: Template for MCP tool response generation
-- API_TOOL_RESPONSE_GENERATION_PROMPT: Template for REST API endpoint simulation
-
-These templates ensure that simulated tool responses are contextually appropriate,
-format-compliant, and maintain the illusion of real tool execution for effective
-agent evaluation and testing scenarios.
 """
 
 from textwrap import dedent

@@ -1,41 +1,14 @@
 """Tests for ToolSimulator class."""
 
-import json
 from typing import Any, Dict
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
-from strands import Agent, tool
+from strands import tool
 
 from strands_evals.case import Case
-from strands_evals.simulation.tool_simulator import ToolSimulator
-from strands_evals.types.simulation.tool import (
-    FailureConditions,
-    RegisteredTool,
-    StateRegistry,
-    ToolOverrideConfig,
-    ToolType,
-)
-
-
-@pytest.fixture
-def sample_failure_conditions():
-    """Fixture providing sample failure conditions."""
-    return FailureConditions(
-        enabled=True,
-        error_rate=0.5,
-        error_type="timeout_error",
-        error_message="Operation timed out",
-    )
-
-
-@pytest.fixture
-def sample_tool_override_config(sample_failure_conditions):
-    """Fixture providing sample tool override configuration."""
-    return ToolOverrideConfig(
-        failure_conditions=sample_failure_conditions,
-        scenario_config={"test_key": "test_value"},
-    )
+from strands_evals.simulation.tool_simulator import ToolSimulator, StateRegistry
+from strands_evals.types.simulation.tool import ToolType
 
 
 @pytest.fixture
@@ -73,20 +46,17 @@ def clear_registry():
     ToolSimulator.clear_registry()
 
 
-def test_tool_simulator_init(sample_tool_override_config):
+def test_tool_simulator_init():
     """Test ToolSimulator initialization with all parameters."""
     custom_registry = StateRegistry()
-    tool_overrides = {"test_tool": sample_tool_override_config}
     template = "You are a helpful assistant simulating tools."
     
     simulator = ToolSimulator(
-        tool_overrides=tool_overrides,
         state_registry=custom_registry,
         system_prompt_template=template,
         model=None,
     )
     
-    assert simulator.tool_overrides == tool_overrides
     assert simulator._state_registry is custom_registry
     assert simulator.system_prompt_template == template
     assert simulator.model is not None
@@ -205,34 +175,6 @@ def test_api_tool_simulation(mock_model):
     assert result == {"status": 200, "data": {"key": "value"}}
 
 
-def test_failure_conditions_trigger_error():
-    """Test that failure conditions trigger errors as expected."""
-    # Register tool
-    @ToolSimulator.function_tool("failing_function")
-    def test_func():
-        pass
-    
-    # Create failure conditions with 100% error rate
-    failure_conditions = FailureConditions(
-        enabled=True,
-        error_rate=1.0,
-        error_type="timeout_error",
-        error_message="Simulated timeout"
-    )
-    tool_overrides = {
-        "failing_function": ToolOverrideConfig(failure_conditions=failure_conditions)
-    }
-    
-    simulator = ToolSimulator(tool_overrides=tool_overrides)
-    
-    # Function should return error due to failure conditions
-    result = simulator.failing_function()
-    
-    assert result["status"] == "error"
-    assert result["error_type"] == "timeout_error"
-    assert result["message"] == "Simulated timeout"
-
-
 def test_list_tools():
     """Test listing registered tools."""
     @ToolSimulator.function_tool("func1")
@@ -247,75 +189,6 @@ def test_list_tools():
     tools = simulator.list_tools()
     
     assert set(tools) == {"func1", "func2"}
-
-
-@patch("strands_evals.simulation.tool_simulator.Agent")
-def test_from_case_for_tool_simulator(mock_agent_class, sample_case):
-    """Test factory method creates simulator from case."""
-    # Register a test tool first
-    @ToolSimulator.function_tool("account_balance_check")
-    def check_balance(account_id: str) -> dict:
-        """Check account balance."""
-        pass
-    
-    # Mock agent response for override generation
-    mock_agent = MagicMock()
-    mock_override_response = {
-        "tool_overrides": [{
-            "tool_name": "account_balance_check",
-            "should_simulate": True,
-            "failure_conditions": {
-                "enabled": False,
-                "error_rate": 0.0
-            }
-        }]
-    }
-    mock_agent.return_value = json.dumps(mock_override_response)
-    mock_agent_class.return_value = mock_agent
-    
-    simulator = ToolSimulator.from_case_for_tool_simulator(
-        case=sample_case,
-        system_prompt_template="Test template",
-        model="test-model"
-    )
-    
-    assert simulator is not None
-    assert simulator.system_prompt_template == "Test template"
-
-
-@patch("strands_evals.simulation.tool_simulator.Agent")
-def test_generate_override_from_case(mock_agent_class, sample_case):
-    """Test override generation from case."""
-    # Register test tools
-    @ToolSimulator.function_tool("test_function")
-    def test_func(param: str) -> dict:
-        """Test function."""
-        pass
-    
-    # Mock agent response
-    mock_agent = MagicMock()
-    mock_response = {
-        "tool_overrides": [{
-            "tool_name": "test_function",
-            "should_simulate": True,
-            "failure_conditions": {
-                "enabled": True,
-                "error_rate": 0.1,
-                "error_type": "network_error",
-                "error_message": "Network timeout"
-            }
-        }]
-    }
-    mock_agent.return_value = json.dumps(mock_response)
-    mock_agent_class.return_value = mock_agent
-    
-    overrides = ToolSimulator._generate_override_from_case(sample_case)
-    
-    assert "test_function" in overrides
-    override = overrides["test_function"]
-    assert override.failure_conditions.enabled is True
-    assert override.failure_conditions.error_rate == 0.1
-    assert override.failure_conditions.error_type == "network_error"
 
 
 def test_shared_state_registry(mock_model):
@@ -528,21 +401,6 @@ def test_clear_registry():
     
     assert len(ToolSimulator._registered_tools) == 0
     assert ToolSimulator._state_registry is None
-
-
-def test_function_has_implementation_detection():
-    """Test detection of function implementation."""
-    simulator = ToolSimulator()
-    
-    # Empty function should be detected as not implemented
-    def empty_func():
-        pass
-    
-    def implemented_func():
-        return {"result": "value"}
-    
-    assert not simulator._function_has_implementation(empty_func)
-    assert simulator._function_has_implementation(implemented_func)
 
 
 def test_function_tool_decorator_stacking_with_strands_tool():
