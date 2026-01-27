@@ -49,17 +49,17 @@ def clear_registry():
 def test_tool_simulator_init():
     """Test ToolSimulator initialization with all parameters."""
     custom_registry = StateRegistry()
-    template = "You are a helpful assistant simulating tools."
     
     simulator = ToolSimulator(
         state_registry=custom_registry,
-        system_prompt_template=template,
         model=None,
     )
     
     assert simulator._state_registry is custom_registry
-    assert simulator.system_prompt_template == template
-    assert simulator.model is not None
+    assert simulator.model_id is None  # model_id is now used instead of system_prompt_template
+    assert simulator.function_tool_prompt is not None  # Check that prompt templates are loaded
+    assert simulator.mcp_tool_prompt is not None
+    assert simulator.api_tool_prompt is not None
 
 
 def test_function_tool_decorator_registration():
@@ -119,17 +119,24 @@ def test_function_tool_simulation(mock_model):
         """Test function that should be simulated."""
         pass
     
-    # Mock the structured_output method to return expected JSON
-    def mock_structured_output(output_type, messages, system_prompt=None):
-        yield {"output": '{"result": "simulated response"}'}
-    
-    mock_model.structured_output = mock_structured_output
     simulator = ToolSimulator(model=mock_model)
     
-    # Execute simulated function
-    result = simulator.test_function("Hello, world!")
+    # Mock the Agent constructor and its result to avoid real LLM calls
+    mock_agent_instance = MagicMock()
+    mock_result = MagicMock()
+    mock_result.structured_output = {"result": "simulated response"}
+    mock_agent_instance.return_value = mock_result
     
-    assert result == {"result": "simulated response"}
+    with pytest.MonkeyPatch().context() as m:
+        # Mock the Agent class constructor
+        from strands_evals.simulation.tool_simulator import Agent
+        m.setattr('strands_evals.simulation.tool_simulator.Agent', lambda **kwargs: mock_agent_instance)
+        
+        # Execute simulated function
+        result = simulator.test_function("Hello, world!")
+        
+        assert result == {"result": "simulated response"}
+        assert mock_agent_instance.called
 
 
 def test_mcp_tool_simulation(mock_model):
@@ -141,17 +148,24 @@ def test_mcp_tool_simulation(mock_model):
         """Test MCP tool that should be simulated."""
         pass
     
-    # Mock the structured_output method to return expected JSON
-    def mock_structured_output(output_type, messages, system_prompt=None):
-        yield {"output": '{"content": [{"type": "text", "text": "MCP response"}]}'}
-    
-    mock_model.structured_output = mock_structured_output
     simulator = ToolSimulator(model=mock_model)
     
-    # Execute simulated MCP tool
-    result = simulator.test_mcp(param="test_value")
+    # Mock the Agent constructor and its result to avoid real LLM calls
+    mock_agent_instance = MagicMock()
+    mock_result = MagicMock()
+    mock_result.structured_output.model_dump.return_value = {"content": [{"type": "text", "text": "MCP response"}]}
+    mock_agent_instance.return_value = mock_result
     
-    assert result == {"content": [{"type": "text", "text": "MCP response"}]}
+    with pytest.MonkeyPatch().context() as m:
+        # Mock the Agent class constructor
+        from strands_evals.simulation.tool_simulator import Agent
+        m.setattr('strands_evals.simulation.tool_simulator.Agent', lambda **kwargs: mock_agent_instance)
+        
+        # Execute simulated MCP tool
+        result = simulator.test_mcp(param="test_value")
+        
+        assert result == {"content": [{"type": "text", "text": "MCP response"}]}
+        assert mock_agent_instance.called
 
 
 def test_api_tool_simulation(mock_model):
@@ -162,17 +176,24 @@ def test_api_tool_simulation(mock_model):
         """Test API tool that should be simulated."""
         pass
     
-    # Mock the structured_output method to return expected JSON
-    def mock_structured_output(output_type, messages, system_prompt=None):
-        yield {"output": '{"status": 200, "data": {"key": "value"}}'}
-    
-    mock_model.structured_output = mock_structured_output
     simulator = ToolSimulator(model=mock_model)
     
-    # Execute simulated API tool
-    result = simulator.test_api(key="value")
+    # Mock the Agent constructor and its result to avoid real LLM calls
+    mock_agent_instance = MagicMock()
+    mock_result = MagicMock()
+    mock_result.structured_output.model_dump.return_value = {"status": 200, "data": {"key": "value"}}
+    mock_agent_instance.return_value = mock_result
     
-    assert result == {"status": 200, "data": {"key": "value"}}
+    with pytest.MonkeyPatch().context() as m:
+        # Mock the Agent class constructor
+        from strands_evals.simulation.tool_simulator import Agent
+        m.setattr('strands_evals.simulation.tool_simulator.Agent', lambda **kwargs: mock_agent_instance)
+        
+        # Execute simulated API tool
+        result = simulator.test_api(key="value")
+        
+        assert result == {"status": 200, "data": {"key": "value"}}
+        assert mock_agent_instance.called
 
 
 def test_list_tools():
@@ -227,30 +248,57 @@ def test_shared_state_registry(mock_model):
         """Get transaction history."""
         pass
     
-    # Mock responses for each tool type based on call count
-    call_count = 0
-    def mock_structured_output(output_type, messages, system_prompt=None):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:  # First call (check_balance)
-            yield {"output": '{"balance": 1000, "currency": "USD"}'}
-        elif call_count == 2:  # Second call (transfer_funds)
-            yield {"output": '{"content": [{"type": "text", "text": "Transfer completed"}]}'}
-        elif call_count == 3:  # Third call (get_transactions)
-            yield {"output": '{"status": 200, "data": {"transactions": []}}'}
-    
-    mock_model.structured_output = mock_structured_output
     simulator = ToolSimulator(model=mock_model)
     
-    # Execute each tool in order
-    balance_result = simulator.check_balance("12345")
-    transfer_result = simulator.transfer_funds(from_account="12345", to_account="67890")
-    transactions_result = simulator.get_transactions(account_id="12345")
+    # Mock the Agent constructor to avoid real LLM calls
+    mock_agent_instances = []
+    expected_responses = [
+        {"balance": 1000, "currency": "USD"},  # Function response
+        {"content": [{"type": "text", "text": "Transfer completed"}]},  # MCP response
+        {"status": 200, "data": {"transactions": []}}  # API response
+    ]
     
-    # Verify results
-    assert balance_result == {"balance": 1000, "currency": "USD"}
-    assert transfer_result == {"content": [{"type": "text", "text": "Transfer completed"}]}
-    assert transactions_result == {"status": 200, "data": {"transactions": []}}
+    def create_mock_agent(**kwargs):
+        mock_agent = MagicMock()
+        mock_result = MagicMock()
+        
+        if len(mock_agent_instances) < len(expected_responses):
+            response = expected_responses[len(mock_agent_instances)]
+            if 'content' in response:
+                # MCP response needs .model_dump()
+                mock_result.structured_output.model_dump.return_value = response
+            else:
+                # Function and API responses - function uses dict directly, API uses .model_dump()
+                if 'balance' in response:
+                    # Function response - use direct structured_output
+                    mock_result.structured_output = response
+                else:
+                    # API response - use .model_dump()
+                    mock_result.structured_output.model_dump.return_value = response
+        
+        mock_agent.return_value = mock_result
+        mock_agent_instances.append(mock_agent)
+        return mock_agent
+    
+    with pytest.MonkeyPatch().context() as m:
+        # Mock the Agent class constructor
+        from strands_evals.simulation.tool_simulator import Agent
+        m.setattr('strands_evals.simulation.tool_simulator.Agent', create_mock_agent)
+        
+        # Execute each tool in order
+        balance_result = simulator.check_balance("12345")
+        transfer_result = simulator.transfer_funds(from_account="12345", to_account="67890")
+        transactions_result = simulator.get_transactions(account_id="12345")
+        
+        # Verify results
+        assert balance_result == {"balance": 1000, "currency": "USD"}
+        assert transfer_result == {"content": [{"type": "text", "text": "Transfer completed"}]}
+        assert transactions_result == {"status": 200, "data": {"transactions": []}}
+        
+        # Verify all agents were called
+        assert len(mock_agent_instances) == 3
+        for agent in mock_agent_instances:
+            assert agent.called
     
     # Verify all tools accessed the same shared state
     shared_state = simulator._state_registry.get_state(shared_state_id)
@@ -277,15 +325,16 @@ def test_shared_state_registry(mock_model):
     assert "method" in api_call
 
 
-def test_record_function_call():
-    """Test recording function call in state registry."""
+def test_record_tool_call_function():
+    """Test recording function call in state registry using unified method."""
     registry = StateRegistry()
     
-    registry.record_function_call(
+    registry.record_tool_call(
         tool_name="test_tool",
         state_key="test_state",
-        parameters={"param": "value"},
-        response_data={"result": "success"}
+        tool_type=ToolType.FUNCTION,
+        response_data={"result": "success"},
+        parameters={"param": "value"}
     )
     
     state = registry.get_state("test_state")
@@ -293,19 +342,21 @@ def test_record_function_call():
     assert len(state["previous_calls"]) == 1
     call = state["previous_calls"][0]
     assert call["tool_name"] == "test_tool"
+    assert call["tool_type"] == "function"
     assert call["parameters"] == {"param": "value"}
     assert call["response"] == {"result": "success"}
 
 
-def test_record_mcp_tool_call():
-    """Test recording MCP tool call in state registry."""
+def test_record_tool_call_mcp():
+    """Test recording MCP tool call in state registry using unified method."""
     registry = StateRegistry()
     
-    registry.record_mcp_tool_call(
+    registry.record_tool_call(
         tool_name="mcp_tool",
         state_key="mcp_state",
-        input_mcp_payload={"input": "data"},
-        response_data={"content": [{"type": "text", "text": "result"}]}
+        tool_type=ToolType.MCP,
+        response_data={"content": [{"type": "text", "text": "result"}]},
+        input_mcp_payload={"input": "data"}
     )
     
     state = registry.get_state("mcp_state")
@@ -313,20 +364,23 @@ def test_record_mcp_tool_call():
     assert len(state["previous_calls"]) == 1
     call = state["previous_calls"][0]
     assert call["tool_name"] == "mcp_tool"
+    assert call["tool_type"] == "mcp"
     assert call["input_mcp_payload"] == {"input": "data"}
+    assert call["response"] == {"content": [{"type": "text", "text": "result"}]}
 
 
-def test_record_api_call():
-    """Test recording API call in state registry."""
+def test_record_tool_call_api():
+    """Test recording API call in state registry using unified method."""
     registry = StateRegistry()
     
-    registry.record_api_call(
+    registry.record_tool_call(
         tool_name="api_tool",
         state_key="api_state",
+        tool_type=ToolType.API,
+        response_data={"status": 200},
         path="/test",
         method="POST",
-        input_data={"data": "test"},
-        response={"status": 200}
+        input_data={"data": "test"}
     )
     
     state = registry.get_state("api_state")
@@ -334,59 +388,60 @@ def test_record_api_call():
     assert len(state["previous_calls"]) == 1
     call = state["previous_calls"][0]
     assert call["tool_name"] == "api_tool"
+    assert call["tool_type"] == "api"
     assert call["path"] == "/test"
     assert call["method"] == "POST"
     assert call["input"] == {"data": "test"}
+    assert call["response"] == {"status": 200}
 
 
-def test_parse_llm_response_valid_json():
-    """Test parsing valid JSON response."""
+def test_tool_not_found_raises_error():
+    """Test that accessing non-existent tools raises ValueError."""
     simulator = ToolSimulator()
     
-    response = simulator._parse_llm_response('{"key": "value"}')
+    # Test that accessing a non-existent tool via _simulate_tool_call raises ValueError
+    with pytest.raises(ValueError) as excinfo:
+        simulator._simulate_tool_call(
+            tool_type=ToolType.FUNCTION,
+            state_key="test",
+            input_data={"tool_name": "nonexistent_tool"}
+        )
     
-    assert response == {"key": "value"}
+    assert "not registered" in str(excinfo.value)
 
 
-def test_parse_llm_response_json_in_code_block():
-    """Test parsing JSON from code blocks."""
+def test_api_tool_missing_name_raises_error():
+    """Test that API tool simulation raises ValueError when tool_name is missing."""
     simulator = ToolSimulator()
     
-    llm_text = '```json\n{"key": "value"}\n```'
-    response = simulator._parse_llm_response(llm_text)
+    with pytest.raises(ValueError) as excinfo:
+        simulator._handle_api_tool(
+            input_data={"tool_name": ""},  # Empty tool name
+            state_key="test"
+        )
     
-    assert response == {"key": "value"}
+    assert "tool_name is required for API tool simulation" in str(excinfo.value)
 
 
-def test_parse_llm_response_invalid_json_fallback():
-    """Test fallback for invalid JSON."""
+def test_mock_mode_missing_function_raises_error():
+    """Test that mock mode raises ValueError when mock_function is missing."""
+    # Register a tool without mock_function but with mock mode
+    @ToolSimulator.function_tool("test_mock_tool", mode="mock")
+    def test_mock_tool():
+        pass
+    
     simulator = ToolSimulator()
+    registered_tool = ToolSimulator._registered_tools["test_mock_tool"]
     
-    response = simulator._parse_llm_response("This is not JSON")
+    with pytest.raises(ValueError) as excinfo:
+        simulator._handle_mock_mode(
+            registered_tool=registered_tool,
+            input_data={"tool_name": "test_mock_tool", "parameters": {}},
+            state_key="test",
+            tool_type=ToolType.FUNCTION
+        )
     
-    assert response == {"result": "This is not JSON"}
-
-
-def test_create_error_response():
-    """Test error response creation."""
-    simulator = ToolSimulator()
-    
-    error = simulator._create_error_response("test_error", "Test message", 400)
-    
-    assert error["status"] == 400
-    assert error["error"]["type"] == "test_error"
-    assert error["error"]["detail"] == "Test message"
-    assert error["error"]["title"] == "Bad Request"
-
-
-def test_get_error_title():
-    """Test error title mapping."""
-    simulator = ToolSimulator()
-    
-    assert simulator._get_error_title(400) == "Bad Request"
-    assert simulator._get_error_title(404) == "Not Found"
-    assert simulator._get_error_title(500) == "Internal Server Error"
-    assert simulator._get_error_title(999) == "Error"  # Unknown status code
+    assert "mock_function is required for tool simulator mock mode" in str(excinfo.value)
 
 
 def test_clear_registry():
