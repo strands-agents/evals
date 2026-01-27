@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -44,5 +44,44 @@ class RegisteredTool(BaseModel):
     static_response: Optional[Dict[str, Any]] = Field(default=None, description="Static response for static mode")
     mock_function: Optional[Callable] = Field(default=None, description="Mock function for mock mode", exclude=True)
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = {"arbitrary_types_allowed": True}
+
+
+# Tool Response Models for Structured Output
+
+class MCPContentItem(BaseModel):
+    """Individual content item in MCP response."""
+    type: str = Field(..., description="Type of content (text, resource, etc.)")
+    text: Optional[str] = Field(default=None, description="Text content")
+    resource: Optional[Dict[str, Any]] = Field(default=None, description="Resource information")
+
+
+class MCPToolResponse(BaseModel):
+    """
+    Response model for MCP tool simulation using structured output.
+    
+    Follows the MCP response format with content array and optional error flag.
+    """
+    content: List[MCPContentItem] = Field(..., description="Array of content items")
+    isError: Optional[bool] = Field(default=False, description="Whether this response represents an error")
+
+
+class APIErrorDetail(BaseModel):
+    """Error detail structure for API responses."""
+    type: str = Field(..., description="Error type identifier")
+    title: str = Field(..., description="Human-readable error title")
+    detail: str = Field(..., description="Detailed error description")
+
+
+class APIToolResponse(BaseModel):
+    """
+    Response model for API tool simulation using structured output.
+    
+    Follows HTTP response format with status code and optional data or error.
+    """
+    status: int = Field(..., description="HTTP status code")
+    data: Optional[Any] = Field(default=None, description="Response data for successful requests")
+    error: Optional[APIErrorDetail] = Field(default=None, description="Error details for failed requests")
+    
+    # Allow additional fields for flexibility
+    model_config = {"extra": "allow"}
