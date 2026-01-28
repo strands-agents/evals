@@ -63,6 +63,10 @@ class Evaluator(Generic[InputT, OutputT]):
 
     @staticmethod
     def _default_aggregator(outputs: list[EvaluationOutput]) -> tuple[float, bool, str]:
+        # Handle empty outputs list to avoid division by zero
+        if not outputs:
+            return (0.0, False, "No evaluation outputs produced")
+
         avg_score = sum(o.score for o in outputs) / len(outputs)
         all_pass = all(o.test_pass for o in outputs)
         combined_reason = " | ".join(o.reason for o in outputs if o.reason)
