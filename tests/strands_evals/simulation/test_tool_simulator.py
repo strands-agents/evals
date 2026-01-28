@@ -7,7 +7,7 @@ import pytest
 from strands import tool
 
 from strands_evals.case import Case
-from strands_evals.simulation.tool_simulator import ToolSimulator, StateRegistry
+from strands_evals.simulation.tool_simulator import StateRegistry, ToolSimulator
 from strands_evals.types.simulation.tool import ToolType
 
 
@@ -24,16 +24,12 @@ def sample_case():
 def mock_model():
     """Fixture providing a mock model for testing."""
     mock = MagicMock()
-    
+
     # Mock the structured_output method
     def mock_structured_output(output_type, messages, system_prompt=None):
         # Simulate streaming response
-        yield {
-            "contentBlockDelta": {
-                "text": '{"result": "mocked response"}'
-            }
-        }
-    
+        yield {"contentBlockDelta": {"text": '{"result": "mocked response"}'}}
+
     mock.structured_output = mock_structured_output
     return mock
 
@@ -49,12 +45,12 @@ def clear_registry():
 def test_tool_simulator_init():
     """Test ToolSimulator initialization with all parameters."""
     custom_registry = StateRegistry()
-    
+
     simulator = ToolSimulator(
         state_registry=custom_registry,
         model=None,
     )
-    
+
     assert simulator._state_registry is custom_registry
     assert simulator.model_id is None  # model_id is now used instead of system_prompt_template
     assert simulator.function_tool_prompt is not None  # Check that prompt templates are loaded
@@ -64,6 +60,7 @@ def test_tool_simulator_init():
 
 def test_function_tool_decorator_registration():
     """Test function tool decorator registration."""
+
     @ToolSimulator.function_tool()
     def test_function(x: int, y: str) -> dict:
         """A sample function for testing."""
@@ -78,11 +75,7 @@ def test_function_tool_decorator_registration():
 
 def test_mcp_tool_decorator_registration():
     """Test MCP tool decorator registration."""
-    schema = {
-        "type": "object",
-        "properties": {"param": {"type": "string"}},
-        "required": ["param"]
-    }
+    schema = {"type": "object", "properties": {"param": {"type": "string"}}, "required": ["param"]}
 
     @ToolSimulator.mcp_tool("test_mcp", schema=schema)
     def sample_mcp_tool(**params):
@@ -98,6 +91,7 @@ def test_mcp_tool_decorator_registration():
 
 def test_api_tool_decorator_registration():
     """Test API tool decorator registration."""
+
     @ToolSimulator.api_tool("test_api", path="/test", method="POST")
     def sample_api_tool(**kwargs):
         """A sample API tool for testing."""
@@ -113,28 +107,28 @@ def test_api_tool_decorator_registration():
 
 def test_function_tool_simulation(mock_model):
     """Test function tool simulation."""
+
     # Register and create simulator with mock model
     @ToolSimulator.function_tool("test_function")
     def test_func(message: str) -> dict:
         """Test function that should be simulated."""
         pass
-    
+
     simulator = ToolSimulator(model=mock_model)
-    
+
     # Mock the Agent constructor and its result to avoid real LLM calls
     mock_agent_instance = MagicMock()
     mock_result = MagicMock()
     mock_result.structured_output = {"result": "simulated response"}
     mock_agent_instance.return_value = mock_result
-    
+
     with pytest.MonkeyPatch().context() as m:
         # Mock the Agent class constructor
-        from strands_evals.simulation.tool_simulator import Agent
-        m.setattr('strands_evals.simulation.tool_simulator.Agent', lambda **kwargs: mock_agent_instance)
-        
+        m.setattr("strands_evals.simulation.tool_simulator.Agent", lambda **kwargs: mock_agent_instance)
+
         # Execute simulated function
         result = simulator.test_function("Hello, world!")
-        
+
         assert result == {"result": "simulated response"}
         assert mock_agent_instance.called
 
@@ -143,72 +137,73 @@ def test_mcp_tool_simulation(mock_model):
     """Test MCP tool simulation."""
     # Register and create simulator with mock model
     schema = {"type": "object", "properties": {"param": {"type": "string"}}}
+
     @ToolSimulator.mcp_tool("test_mcp", schema=schema)
     def test_mcp(**params):
         """Test MCP tool that should be simulated."""
         pass
-    
+
     simulator = ToolSimulator(model=mock_model)
-    
+
     # Mock the Agent constructor and its result to avoid real LLM calls
     mock_agent_instance = MagicMock()
     mock_result = MagicMock()
     mock_result.structured_output.model_dump.return_value = {"content": [{"type": "text", "text": "MCP response"}]}
     mock_agent_instance.return_value = mock_result
-    
+
     with pytest.MonkeyPatch().context() as m:
         # Mock the Agent class constructor
-        from strands_evals.simulation.tool_simulator import Agent
-        m.setattr('strands_evals.simulation.tool_simulator.Agent', lambda **kwargs: mock_agent_instance)
-        
+        m.setattr("strands_evals.simulation.tool_simulator.Agent", lambda **kwargs: mock_agent_instance)
+
         # Execute simulated MCP tool
         result = simulator.test_mcp(param="test_value")
-        
+
         assert result == {"content": [{"type": "text", "text": "MCP response"}]}
         assert mock_agent_instance.called
 
 
 def test_api_tool_simulation(mock_model):
     """Test API tool simulation."""
+
     # Register and create simulator with mock model
     @ToolSimulator.api_tool("test_api", path="/test", method="POST")
     def test_api(**kwargs):
         """Test API tool that should be simulated."""
         pass
-    
+
     simulator = ToolSimulator(model=mock_model)
-    
+
     # Mock the Agent constructor and its result to avoid real LLM calls
     mock_agent_instance = MagicMock()
     mock_result = MagicMock()
     mock_result.structured_output.model_dump.return_value = {"status": 200, "data": {"key": "value"}}
     mock_agent_instance.return_value = mock_result
-    
+
     with pytest.MonkeyPatch().context() as m:
         # Mock the Agent class constructor
-        from strands_evals.simulation.tool_simulator import Agent
-        m.setattr('strands_evals.simulation.tool_simulator.Agent', lambda **kwargs: mock_agent_instance)
-        
+        m.setattr("strands_evals.simulation.tool_simulator.Agent", lambda **kwargs: mock_agent_instance)
+
         # Execute simulated API tool
         result = simulator.test_api(key="value")
-        
+
         assert result == {"status": 200, "data": {"key": "value"}}
         assert mock_agent_instance.called
 
 
 def test_list_tools():
     """Test listing registered tools."""
+
     @ToolSimulator.function_tool("func1")
     def func1():
         pass
 
-    @ToolSimulator.function_tool("func2")  
+    @ToolSimulator.function_tool("func2")
     def func2():
         pass
 
     simulator = ToolSimulator()
     tools = simulator.list_tools()
-    
+
     assert set(tools) == {"func1", "func2"}
 
 
@@ -216,110 +211,107 @@ def test_shared_state_registry(mock_model):
     """Test that function, MCP, and API tools can share the same state registry."""
     shared_state_id = "shared_banking_state"
     initial_state = "Initial banking system state with account balances"
-    
+
     # Register three different tools that share the same state
     @ToolSimulator.function_tool(
-        "check_balance", 
-        initial_state_description=initial_state,
-        share_state_id=shared_state_id
+        "check_balance", initial_state_description=initial_state, share_state_id=shared_state_id
     )
     def check_balance(account_id: str):
         """Check account balance."""
         pass
-    
+
     @ToolSimulator.mcp_tool(
-        "transfer_funds", 
+        "transfer_funds",
         schema={"type": "object", "properties": {"from_account": {"type": "string"}, "to_account": {"type": "string"}}},
         initial_state_description=initial_state,
-        share_state_id=shared_state_id
+        share_state_id=shared_state_id,
     )
     def transfer_funds(**params):
         """Transfer funds between accounts."""
         pass
-    
+
     @ToolSimulator.api_tool(
         "get_transactions",
-        path="/transactions", 
+        path="/transactions",
         method="GET",
         initial_state_description=initial_state,
-        share_state_id=shared_state_id
+        share_state_id=shared_state_id,
     )
     def get_transactions(**kwargs):
         """Get transaction history."""
         pass
-    
+
     simulator = ToolSimulator(model=mock_model)
-    
+
     # Mock the Agent constructor to avoid real LLM calls
     mock_agent_instances = []
     expected_responses = [
         {"balance": 1000, "currency": "USD"},  # Function response
         {"content": [{"type": "text", "text": "Transfer completed"}]},  # MCP response
-        {"status": 200, "data": {"transactions": []}}  # API response
+        {"status": 200, "data": {"transactions": []}},  # API response
     ]
-    
+
     def create_mock_agent(**kwargs):
         mock_agent = MagicMock()
         mock_result = MagicMock()
-        
+
         if len(mock_agent_instances) < len(expected_responses):
             response = expected_responses[len(mock_agent_instances)]
-            if 'content' in response:
+            if "content" in response:
                 # MCP response needs .model_dump()
                 mock_result.structured_output.model_dump.return_value = response
             else:
                 # Function and API responses - function uses dict directly, API uses .model_dump()
-                if 'balance' in response:
+                if "balance" in response:
                     # Function response - use direct structured_output
                     mock_result.structured_output = response
                 else:
                     # API response - use .model_dump()
                     mock_result.structured_output.model_dump.return_value = response
-        
+
         mock_agent.return_value = mock_result
         mock_agent_instances.append(mock_agent)
         return mock_agent
-    
+
     with pytest.MonkeyPatch().context() as m:
         # Mock the Agent class constructor
-        from strands_evals.simulation.tool_simulator import Agent
-        m.setattr('strands_evals.simulation.tool_simulator.Agent', create_mock_agent)
-        
+        m.setattr("strands_evals.simulation.tool_simulator.Agent", create_mock_agent)
+
         # Execute each tool in order
         balance_result = simulator.check_balance("12345")
         transfer_result = simulator.transfer_funds(from_account="12345", to_account="67890")
         transactions_result = simulator.get_transactions(account_id="12345")
-        
+
         # Verify results
         assert balance_result == {"balance": 1000, "currency": "USD"}
         assert transfer_result == {"content": [{"type": "text", "text": "Transfer completed"}]}
         assert transactions_result == {"status": 200, "data": {"transactions": []}}
-        
+
         # Verify all agents were called
         assert len(mock_agent_instances) == 3
         for agent in mock_agent_instances:
             assert agent.called
-    
+
     # Verify all tools accessed the same shared state
     shared_state = simulator._state_registry.get_state(shared_state_id)
     assert "initial_state" in shared_state
     assert shared_state["initial_state"] == initial_state
     assert "previous_calls" in shared_state
     assert len(shared_state["previous_calls"]) == 3
-    
+
     # Check that all three tool calls are recorded in the shared state
     tool_names = [call["tool_name"] for call in shared_state["previous_calls"]]
     assert "check_balance" in tool_names
-    assert "transfer_funds" in tool_names  
+    assert "transfer_funds" in tool_names
     assert "get_transactions" in tool_names
-    
+
     # Verify each tool type recorded its specific data correctly
     function_call = next(call for call in shared_state["previous_calls"] if call["tool_name"] == "check_balance")
     assert "parameters" in function_call
-    
+
     mcp_call = next(call for call in shared_state["previous_calls"] if call["tool_name"] == "transfer_funds")
     assert "input_mcp_payload" in mcp_call
-    
+
     api_call = next(call for call in shared_state["previous_calls"] if call["tool_name"] == "get_transactions")
     assert "path" in api_call
     assert "method" in api_call
@@ -328,15 +320,15 @@ def test_shared_state_registry(mock_model):
 def test_record_tool_call_function():
     """Test recording function call in state registry using unified method."""
     registry = StateRegistry()
-    
+
     registry.record_tool_call(
         tool_name="test_tool",
         state_key="test_state",
         tool_type=ToolType.FUNCTION,
         response_data={"result": "success"},
-        parameters={"param": "value"}
+        parameters={"param": "value"},
     )
-    
+
     state = registry.get_state("test_state")
     assert "previous_calls" in state
     assert len(state["previous_calls"]) == 1
@@ -350,15 +342,15 @@ def test_record_tool_call_function():
 def test_record_tool_call_mcp():
     """Test recording MCP tool call in state registry using unified method."""
     registry = StateRegistry()
-    
+
     registry.record_tool_call(
         tool_name="mcp_tool",
         state_key="mcp_state",
         tool_type=ToolType.MCP,
         response_data={"content": [{"type": "text", "text": "result"}]},
-        input_mcp_payload={"input": "data"}
+        input_mcp_payload={"input": "data"},
     )
-    
+
     state = registry.get_state("mcp_state")
     assert "previous_calls" in state
     assert len(state["previous_calls"]) == 1
@@ -372,7 +364,7 @@ def test_record_tool_call_mcp():
 def test_record_tool_call_api():
     """Test recording API call in state registry using unified method."""
     registry = StateRegistry()
-    
+
     registry.record_tool_call(
         tool_name="api_tool",
         state_key="api_state",
@@ -380,9 +372,9 @@ def test_record_tool_call_api():
         response_data={"status": 200},
         path="/test",
         method="POST",
-        input_data={"data": "test"}
+        input_data={"data": "test"},
     )
-    
+
     state = registry.get_state("api_state")
     assert "previous_calls" in state
     assert len(state["previous_calls"]) == 1
@@ -398,116 +390,116 @@ def test_record_tool_call_api():
 def test_tool_not_found_raises_error():
     """Test that accessing non-existent tools raises ValueError."""
     simulator = ToolSimulator()
-    
+
     # Test that accessing a non-existent tool via _simulate_tool_call raises ValueError
     with pytest.raises(ValueError) as excinfo:
         simulator._simulate_tool_call(
-            tool_type=ToolType.FUNCTION,
-            state_key="test",
-            input_data={"tool_name": "nonexistent_tool"}
+            tool_type=ToolType.FUNCTION, state_key="test", input_data={"tool_name": "nonexistent_tool"}
         )
-    
+
     assert "not registered" in str(excinfo.value)
 
 
 def test_api_tool_missing_name_raises_error():
     """Test that API tool simulation raises ValueError when tool_name is missing."""
     simulator = ToolSimulator()
-    
+
     with pytest.raises(ValueError) as excinfo:
         simulator._handle_api_tool(
             input_data={"tool_name": ""},  # Empty tool name
-            state_key="test"
+            state_key="test",
         )
-    
+
     assert "tool_name is required for API tool simulation" in str(excinfo.value)
 
 
 def test_mock_mode_missing_function_raises_error():
     """Test that mock mode raises ValueError when mock_function is missing."""
+
     # Register a tool without mock_function but with mock mode
     @ToolSimulator.function_tool("test_mock_tool", mode="mock")
     def test_mock_tool():
         pass
-    
+
     simulator = ToolSimulator()
     registered_tool = ToolSimulator._registered_tools["test_mock_tool"]
-    
+
     with pytest.raises(ValueError) as excinfo:
         simulator._handle_mock_mode(
             registered_tool=registered_tool,
             input_data={"tool_name": "test_mock_tool", "parameters": {}},
             state_key="test",
-            tool_type=ToolType.FUNCTION
+            tool_type=ToolType.FUNCTION,
         )
-    
+
     assert "mock_function is required for tool simulator mock mode" in str(excinfo.value)
 
 
 def test_clear_registry():
     """Test clearing tool registry."""
+
     @ToolSimulator.function_tool("test_function")
     def test_func():
         pass
-    
+
     assert len(ToolSimulator._registered_tools) == 1
-    
+
     ToolSimulator.clear_registry()
-    
+
     assert len(ToolSimulator._registered_tools) == 0
     assert ToolSimulator._state_registry is None
 
 
 def test_function_tool_decorator_stacking_with_strands_tool():
     """Test function tool decorator stacking with Strands @tool decorator."""
+
     # Mock function that handles parameters with **kwargs
     def mock_function(**kwargs):
         input_value = kwargs.get("input_value", "")
         return {"result": f"processed {input_value}"}
-    
+
     # Define tool with stacked decorators
     @tool
-    @ToolSimulator.function_tool("stacked_function_tool", mode="mock", 
-                                 mock_function=mock_function)
+    @ToolSimulator.function_tool("stacked_function_tool", mode="mock", mock_function=mock_function)
     def stacked_function_tool(input_value: str) -> Dict[str, Any]:
         """Test function tool with stacked decorators.
-        
+
         Args:
             input_value: Input parameter for processing
         """
         pass
-    
+
     # Create simulator
     simulator = ToolSimulator()
-    
+
     # Test that the tool is callable and returns expected result
     result = simulator.stacked_function_tool(input_value="test_input")
     assert result == {"result": "processed test_input"}
-    
+
     # Verify the tool is registered in ToolSimulator
     assert "stacked_function_tool" in ToolSimulator._registered_tools
     registered_tool = ToolSimulator._registered_tools["stacked_function_tool"]
     assert registered_tool.tool_type == ToolType.FUNCTION
     assert registered_tool.mode == "mock"
     assert registered_tool.mock_function == mock_function
-    
+
     # Validate Strands tool creation
     assert stacked_function_tool.tool_spec is not None
     spec = stacked_function_tool.tool_spec
-    
+
     # Check basic spec properties
     assert spec["name"] == "stacked_function_tool"
     assert spec["description"] == "Test function tool with stacked decorators."
-    
+
     # Check input schema
     schema = spec["inputSchema"]["json"]
     assert schema["type"] == "object"
     assert set(schema["required"]) == {"input_value"}
-    
+
     # Check parameter properties
     assert schema["properties"]["input_value"]["type"] == "string"
     assert schema["properties"]["input_value"]["description"] == "Input parameter for processing"
-    
+
     # Make sure these are set properly
     assert stacked_function_tool.__wrapped__ is not None
     assert stacked_function_tool.__doc__ == stacked_function_tool._tool_func.__doc__
@@ -515,74 +507,63 @@ def test_function_tool_decorator_stacking_with_strands_tool():
 
 def test_mcp_tool_decorator_stacking_with_strands_tool():
     """Test MCP tool decorator stacking with Strands @tool decorator."""
+
     # Mock function for MCP tool
     def mock_mcp_processor(param1, param2=42):
-        return {
-            "content": [
-                {"type": "text", "text": f"MCP processed: {param1} with value {param2}"}
-            ],
-            "isError": False
-        }
-    
+        return {"content": [{"type": "text", "text": f"MCP processed: {param1} with value {param2}"}], "isError": False}
+
     schema = {
         "type": "object",
-        "properties": {
-            "param1": {"type": "string"},
-            "param2": {"type": "integer", "default": 42}
-        },
-        "required": ["param1"]
+        "properties": {"param1": {"type": "string"}, "param2": {"type": "integer", "default": 42}},
+        "required": ["param1"],
     }
-    
+
     # Define tool with stacked decorators
     @tool
-    @ToolSimulator.mcp_tool("stacked_mcp_tool", schema=schema, mode="mock",
-                           mock_function=mock_mcp_processor)
+    @ToolSimulator.mcp_tool("stacked_mcp_tool", schema=schema, mode="mock", mock_function=mock_mcp_processor)
     def stacked_mcp_tool(param1: str, param2: int = 42) -> Dict[str, Any]:
         """Test MCP tool with stacked decorators.
-        
+
         Args:
             param1: First parameter for MCP processing
             param2: Second parameter with default value
         """
         pass
-    
+
     # Create simulator
     simulator = ToolSimulator()
-    
+
     # Test that the tool is callable and returns expected result
     result = simulator.stacked_mcp_tool(param1="test", param2=100)
-    expected = {
-        "content": [{"type": "text", "text": "MCP processed: test with value 100"}],
-        "isError": False
-    }
+    expected = {"content": [{"type": "text", "text": "MCP processed: test with value 100"}], "isError": False}
     assert result == expected
-    
+
     # Verify the tool is registered in ToolSimulator
     assert "stacked_mcp_tool" in ToolSimulator._registered_tools
     registered_tool = ToolSimulator._registered_tools["stacked_mcp_tool"]
     assert registered_tool.tool_type == ToolType.MCP
     assert registered_tool.mode == "mock"
     assert registered_tool.mock_function == mock_mcp_processor
-    
+
     # Validate Strands tool creation
     assert stacked_mcp_tool.tool_spec is not None
     spec = stacked_mcp_tool.tool_spec
-    
+
     # Check basic spec properties
     assert spec["name"] == "stacked_mcp_tool"
     assert spec["description"] == "Test MCP tool with stacked decorators."
-    
+
     # Check input schema
     schema = spec["inputSchema"]["json"]
     assert schema["type"] == "object"
     assert set(schema["required"]) == {"param1"}
-    
+
     # Check parameter properties
     assert schema["properties"]["param1"]["type"] == "string"
     assert schema["properties"]["param2"]["type"] == "integer"
     assert schema["properties"]["param1"]["description"] == "First parameter for MCP processing"
     assert schema["properties"]["param2"]["description"] == "Second parameter with default value"
-    
+
     # Make sure these are set properly
     assert stacked_mcp_tool.__wrapped__ is not None
     assert stacked_mcp_tool.__doc__ == stacked_mcp_tool._tool_func.__doc__
@@ -593,32 +574,29 @@ def test_api_tool_decorator_stacking_with_strands_tool():
     # Static response for API tool
     static_response = {
         "status": 200,
-        "data": {
-            "message": "API tool working",
-            "timestamp": "2024-01-01T12:00:00Z",
-            "endpoint": "/test/api"
-        }
+        "data": {"message": "API tool working", "timestamp": "2024-01-01T12:00:00Z", "endpoint": "/test/api"},
     }
-    
+
     # Define tool with stacked decorators
     @tool
-    @ToolSimulator.api_tool("stacked_api_tool", path="/test/api", method="GET",
-                           mode="static", static_response=static_response)
+    @ToolSimulator.api_tool(
+        "stacked_api_tool", path="/test/api", method="GET", mode="static", static_response=static_response
+    )
     def stacked_api_tool(query: str = "") -> Dict[str, Any]:
         """Test API tool with stacked decorators.
-        
+
         Args:
             query: Query parameter for API call
         """
         pass
-    
+
     # Create simulator
     simulator = ToolSimulator()
-    
+
     # Test that the tool is callable and returns expected result
     result = simulator.stacked_api_tool(query="test_query")
     assert result == static_response
-    
+
     # Verify the tool is registered in ToolSimulator
     assert "stacked_api_tool" in ToolSimulator._registered_tools
     registered_tool = ToolSimulator._registered_tools["stacked_api_tool"]
@@ -627,26 +605,26 @@ def test_api_tool_decorator_stacking_with_strands_tool():
     assert registered_tool.api_path == "/test/api"
     assert registered_tool.api_method == "GET"
     assert registered_tool.static_response == static_response
-    
+
     # Validate Strands tool creation
     assert stacked_api_tool.tool_spec is not None
     spec = stacked_api_tool.tool_spec
-    
+
     # Check basic spec properties
     assert spec["name"] == "stacked_api_tool"
     assert spec["description"] == "Test API tool with stacked decorators."
-    
+
     # Check input schema
     schema = spec["inputSchema"]["json"]
     assert schema["type"] == "object"
     # query parameter is optional, so required list may be empty or missing
     required_fields = set(schema.get("required", []))
     assert required_fields == set()
-    
+
     # Check parameter properties
     assert schema["properties"]["query"]["type"] == "string"
     assert schema["properties"]["query"]["description"] == "Query parameter for API call"
-    
+
     # Make sure these are set properly
     assert stacked_api_tool.__wrapped__ is not None
     assert stacked_api_tool.__doc__ == stacked_api_tool._tool_func.__doc__
