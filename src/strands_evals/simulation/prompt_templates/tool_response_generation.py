@@ -11,7 +11,8 @@ from textwrap import dedent
 
 FUNCTION_TOOL_RESPONSE_GENERATION_PROMPT = dedent(
     """
-You are simulating a function tool call for agent evaluation. Generate a realistic response based on the function name, parameters, and context.
+You are simulating a function tool call for agent evaluation. Generate a realistic response based on the function name, 
+parameters, and context.
 
 ## Function Tool Information
 Tool Name: {tool_name}
@@ -66,7 +67,8 @@ Generate only valid JSON with no markdown code blocks or additional explanation.
 )
 
 MCP_TOOL_RESPONSE_GENERATION_PROMPT = dedent(
-    """You are simulating an MCP (Model Context Protocol) tool call for agent evaluation. Generate a realistic response based on the tool name, input payload, and context.
+    """You are simulating an MCP (Model Context Protocol) tool call for agent evaluation. Generate a realistic response 
+based on the tool name, input payload, and context.
 
 ## MCP Tool Information  
 Tool Name: {tool_name}
@@ -138,7 +140,8 @@ Generate only valid JSON with no markdown code blocks or additional explanation.
 )
 
 API_TOOL_RESPONSE_GENERATION_PROMPT = dedent(
-    """You are simulating an API tool call for agent evaluation. Generate a realistic HTTP response based on the API endpoint, method, payload, and context.
+    """You are simulating an API tool call for agent evaluation. Generate a realistic HTTP response based on the API 
+endpoint, method, payload, and context.
 
 ## API Tool Information
 Tool Name: {tool_name}  
