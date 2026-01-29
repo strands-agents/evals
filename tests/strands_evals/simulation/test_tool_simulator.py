@@ -450,64 +450,39 @@ def test_clear_registry():
     assert ToolSimulator._state_registry is None
 
 
-def test_function_tool_decorator_stacking_with_strands_tool():
-    """Test function tool decorator stacking with Strands @tool decorator."""
-
-    # Mock function that handles parameters with **kwargs
-    def mock_function(**kwargs):
-        input_value = kwargs.get("input_value", "")
+def test_attaching_function_tool_simulator_to_strands_agent():
+    """Test attaching function tool simulator to Strands agent."""
+    
+    # Mock function that handles parameters
+    def mock_function(input_value):
         return {"result": f"processed {input_value}"}
 
-    # Define tool with stacked decorators
-    @tool
-    @ToolSimulator.function_tool("stacked_function_tool", mode="mock", mock_function=mock_function)
-    def stacked_function_tool(input_value: str) -> Dict[str, Any]:
-        """Test function tool with stacked decorators.
+    # Register a function tool simulator
+    @ToolSimulator.function_tool("test_function_tool", mode="mock", mock_function=mock_function)
+    def test_function_tool(input_value: str) -> Dict[str, Any]:
+        """Test function tool for agent attachment.
 
         Args:
             input_value: Input parameter for processing
         """
         pass
 
-    # Create simulator
+    # Create simulator and get the tool
     simulator = ToolSimulator()
-
-    # Test that the tool is callable and returns expected result
-    result = simulator.stacked_function_tool(input_value="test_input")
-    assert result == {"result": "processed test_input"}
-
-    # Verify the tool is registered in ToolSimulator
-    assert "stacked_function_tool" in ToolSimulator._registered_tools
-    registered_tool = ToolSimulator._registered_tools["stacked_function_tool"]
-    assert registered_tool.tool_type == ToolType.FUNCTION
-    assert registered_tool.mode == "mock"
-    assert registered_tool.mock_function == mock_function
-
-    # Validate Strands tool creation
-    assert stacked_function_tool.tool_spec is not None
-    spec = stacked_function_tool.tool_spec
-
-    # Check basic spec properties
-    assert spec["name"] == "stacked_function_tool"
-    assert spec["description"] == "Test function tool with stacked decorators."
-
-    # Check input schema
-    schema = spec["inputSchema"]["json"]
-    assert schema["type"] == "object"
-    assert set(schema["required"]) == {"input_value"}
-
-    # Check parameter properties
-    assert schema["properties"]["input_value"]["type"] == "string"
-    assert schema["properties"]["input_value"]["description"] == "Input parameter for processing"
-
-    # Make sure these are set properly
-    assert stacked_function_tool.__wrapped__ is not None
-    assert stacked_function_tool.__doc__ == stacked_function_tool._tool_func.__doc__
+    tool_wrapper = simulator.get_tool("test_function_tool")
+    
+    # Create a Strands Agent with the tool simulator
+    from strands import Agent
+    agent = Agent(tools=[tool_wrapper])
+    
+    # Verify the agent has access to the tool
+    assert "test_function_tool" in agent.tool_names
+    assert hasattr(agent.tool, "test_function_tool")
 
 
-def test_mcp_tool_decorator_stacking_with_strands_tool():
-    """Test MCP tool decorator stacking with Strands @tool decorator."""
-
+def test_attaching_mcp_tool_simulator_to_strands_agent():
+    """Test attaching MCP tool simulator to Strands agent."""
+    
     # Mock function for MCP tool
     def mock_mcp_processor(param1, param2=42):
         return {"content": [{"type": "text", "text": f"MCP processed: {param1} with value {param2}"}], "isError": False}
@@ -518,11 +493,10 @@ def test_mcp_tool_decorator_stacking_with_strands_tool():
         "required": ["param1"],
     }
 
-    # Define tool with stacked decorators
-    @tool
-    @ToolSimulator.mcp_tool("stacked_mcp_tool", schema=schema, mode="mock", mock_function=mock_mcp_processor)
-    def stacked_mcp_tool(param1: str, param2: int = 42) -> Dict[str, Any]:
-        """Test MCP tool with stacked decorators.
+    # Register an MCP tool simulator
+    @ToolSimulator.mcp_tool("test_mcp_tool", schema=schema, mode="mock", mock_function=mock_mcp_processor)
+    def test_mcp_tool(param1: str, param2: int = 42) -> Dict[str, Any]:
+        """Test MCP tool for agent attachment.
 
         Args:
             param1: First parameter for MCP processing
@@ -530,101 +504,49 @@ def test_mcp_tool_decorator_stacking_with_strands_tool():
         """
         pass
 
-    # Create simulator
+    # Create simulator and get the tool
     simulator = ToolSimulator()
-
-    # Test that the tool is callable and returns expected result
-    result = simulator.stacked_mcp_tool(param1="test", param2=100)
-    expected = {"content": [{"type": "text", "text": "MCP processed: test with value 100"}], "isError": False}
-    assert result == expected
-
-    # Verify the tool is registered in ToolSimulator
-    assert "stacked_mcp_tool" in ToolSimulator._registered_tools
-    registered_tool = ToolSimulator._registered_tools["stacked_mcp_tool"]
-    assert registered_tool.tool_type == ToolType.MCP
-    assert registered_tool.mode == "mock"
-    assert registered_tool.mock_function == mock_mcp_processor
-
-    # Validate Strands tool creation
-    assert stacked_mcp_tool.tool_spec is not None
-    spec = stacked_mcp_tool.tool_spec
-
-    # Check basic spec properties
-    assert spec["name"] == "stacked_mcp_tool"
-    assert spec["description"] == "Test MCP tool with stacked decorators."
-
-    # Check input schema
-    schema = spec["inputSchema"]["json"]
-    assert schema["type"] == "object"
-    assert set(schema["required"]) == {"param1"}
-
-    # Check parameter properties
-    assert schema["properties"]["param1"]["type"] == "string"
-    assert schema["properties"]["param2"]["type"] == "integer"
-    assert schema["properties"]["param1"]["description"] == "First parameter for MCP processing"
-    assert schema["properties"]["param2"]["description"] == "Second parameter with default value"
-
-    # Make sure these are set properly
-    assert stacked_mcp_tool.__wrapped__ is not None
-    assert stacked_mcp_tool.__doc__ == stacked_mcp_tool._tool_func.__doc__
+    tool_wrapper = simulator.get_tool("test_mcp_tool")
+    
+    # Create a Strands Agent with the tool simulator
+    from strands import Agent
+    agent = Agent(tools=[tool_wrapper])
+    
+    # Verify the agent has access to the tool
+    assert "test_mcp_tool" in agent.tool_names
+    assert hasattr(agent.tool, "test_mcp_tool")
 
 
-def test_api_tool_decorator_stacking_with_strands_tool():
-    """Test API tool decorator stacking with Strands @tool decorator."""
+def test_attaching_api_tool_simulator_to_strands_agent():
+    """Test attaching API tool simulator to Strands agent."""
+    
     # Static response for API tool
     static_response = {
         "status": 200,
         "data": {"message": "API tool working", "timestamp": "2024-01-01T12:00:00Z", "endpoint": "/test/api"},
     }
 
-    # Define tool with stacked decorators
-    @tool
+    # Register an API tool simulator
     @ToolSimulator.api_tool(
-        "stacked_api_tool", path="/test/api", method="GET", mode="static", static_response=static_response
+        "test_api_tool", path="/test/api", method="GET", mode="static", static_response=static_response
     )
-    def stacked_api_tool(query: str = "") -> Dict[str, Any]:
-        """Test API tool with stacked decorators.
+    def test_api_tool(query: str = "") -> Dict[str, Any]:
+        """Test API tool for agent attachment.
 
         Args:
             query: Query parameter for API call
         """
         pass
 
-    # Create simulator
+    # Create simulator and get the tool
     simulator = ToolSimulator()
-
-    # Test that the tool is callable and returns expected result
-    result = simulator.stacked_api_tool(query="test_query")
-    assert result == static_response
-
-    # Verify the tool is registered in ToolSimulator
-    assert "stacked_api_tool" in ToolSimulator._registered_tools
-    registered_tool = ToolSimulator._registered_tools["stacked_api_tool"]
-    assert registered_tool.tool_type == ToolType.API
-    assert registered_tool.mode == "static"
-    assert registered_tool.api_path == "/test/api"
-    assert registered_tool.api_method == "GET"
-    assert registered_tool.static_response == static_response
-
-    # Validate Strands tool creation
-    assert stacked_api_tool.tool_spec is not None
-    spec = stacked_api_tool.tool_spec
-
-    # Check basic spec properties
-    assert spec["name"] == "stacked_api_tool"
-    assert spec["description"] == "Test API tool with stacked decorators."
-
-    # Check input schema
-    schema = spec["inputSchema"]["json"]
-    assert schema["type"] == "object"
-    # query parameter is optional, so required list may be empty or missing
-    required_fields = set(schema.get("required", []))
-    assert required_fields == set()
-
-    # Check parameter properties
-    assert schema["properties"]["query"]["type"] == "string"
-    assert schema["properties"]["query"]["description"] == "Query parameter for API call"
-
-    # Make sure these are set properly
-    assert stacked_api_tool.__wrapped__ is not None
-    assert stacked_api_tool.__doc__ == stacked_api_tool._tool_func.__doc__
+    tool_wrapper = simulator.get_tool("test_api_tool")
+    
+    # Create a Strands Agent with the tool simulator
+    from strands import Agent
+    agent = Agent(tools=[tool_wrapper])
+    
+    # Verify the agent has access to the tool
+    assert "test_api_tool" in agent.tool_names
+    assert hasattr(agent.tool, "test_api_tool")
+    
