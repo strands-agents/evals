@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -52,17 +52,27 @@ mock_score = 0.8
 
 @pytest.fixture
 def mock_agent():
+    """Mock agent for evaluators using agent() call with structured_output_model"""
     agent = Mock()
-    agent.structured_output.return_value = EvaluationOutput(score=mock_score, test_pass=True, reason="LLM evaluation")
+    mock_result = Mock()
+    mock_result.structured_output = EvaluationOutput(score=mock_score, test_pass=True, reason="LLM evaluation")
+    agent.return_value = mock_result
     return agent
 
 
 @pytest.fixture
 def mock_async_agent():
+    """Mock agent for async evaluators"""
     agent = Mock()
-    agent.structured_output_async = AsyncMock(
-        return_value=EvaluationOutput(score=mock_score, test_pass=True, reason="Async LLM evaluation")
-    )
+
+    async def mock_invoke_async(*args, **kwargs):
+        mock_result = Mock()
+        mock_result.structured_output = EvaluationOutput(
+            score=mock_score, test_pass=True, reason="Async LLM evaluation"
+        )
+        return mock_result
+
+    agent.invoke_async = mock_invoke_async
     return agent
 
 
@@ -125,7 +135,7 @@ def test_integration_dataset_with_output_evaluator(mock_agent_class, cases, mock
     reports = experiment.run_evaluations(simple_task)
 
     # Verify LLM evaluator was called for each test case
-    assert mock_agent.structured_output.call_count == 3
+    assert mock_agent.call_count == 3
     assert len(reports) == 1
     report = reports[0]
     assert len(report.scores) == 3
@@ -317,7 +327,7 @@ def test_experiment_with_interactions_evaluator(mock_agent_class, interaction_ca
     reports = experiment.run_evaluations(task_with_interactions)
 
     # Verify the evaluator was called (once per interaction, so 2 times)
-    assert mock_agent.structured_output.call_count == 2
+    assert mock_agent.call_count == 2
     assert len(reports) == 1
     report = reports[0]
     assert len(report.scores) == 1

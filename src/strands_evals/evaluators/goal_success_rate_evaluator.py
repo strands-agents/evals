@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import cast
 
 from pydantic import BaseModel, Field
 from strands import Agent
@@ -53,29 +54,33 @@ class GoalSuccessRateEvaluator(Evaluator[InputT, OutputT]):
         session_input = self._parse_trajectory(evaluation_case)
         prompt = self._format_prompt(session_input)
         evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
-        rating = evaluator_agent.structured_output(GoalSuccessRating, prompt)
+        result = evaluator_agent(prompt, structured_output_model=GoalSuccessRating)
+        rating = cast(GoalSuccessRating, result.structured_output)
         normalized_score = self._score_mapping[rating.score]
-        result = EvaluationOutput(
-            score=normalized_score,
-            test_pass=normalized_score >= 1.0,
-            reason=rating.reasoning,
-            label=rating.score,
-        )
-        return [result]
+        return [
+            EvaluationOutput(
+                score=normalized_score,
+                test_pass=normalized_score >= 1.0,
+                reason=rating.reasoning,
+                label=rating.score,
+            )
+        ]
 
     async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         session_input = self._parse_trajectory(evaluation_case)
         prompt = self._format_prompt(session_input)
         evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
-        rating = await evaluator_agent.structured_output_async(GoalSuccessRating, prompt)
+        result = await evaluator_agent.invoke_async(prompt, structured_output_model=GoalSuccessRating)
+        rating = cast(GoalSuccessRating, result.structured_output)
         normalized_score = self._score_mapping[rating.score]
-        result = EvaluationOutput(
-            score=normalized_score,
-            test_pass=normalized_score >= 1.0,
-            reason=rating.reasoning,
-            label=rating.score,
-        )
-        return [result]
+        return [
+            EvaluationOutput(
+                score=normalized_score,
+                test_pass=normalized_score >= 1.0,
+                reason=rating.reasoning,
+                label=rating.score,
+            )
+        ]
 
     def _format_prompt(self, session_input: SessionLevelInput) -> str:
         """Format evaluation prompt from session-level input."""

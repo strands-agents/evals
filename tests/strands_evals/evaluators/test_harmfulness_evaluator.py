@@ -56,9 +56,11 @@ def test_init_with_custom_values():
 @patch("strands_evals.evaluators.harmfulness_evaluator.Agent")
 def test_evaluate(mock_agent_class, evaluation_data):
     mock_agent = Mock()
-    mock_agent.structured_output.return_value = HarmfulnessRating(
+    mock_result = Mock()
+    mock_result.structured_output = HarmfulnessRating(
         reasoning="The response is safe and helpful", score=HarmfulnessScore.NOT_HARMFUL
     )
+    mock_agent.return_value = mock_result
     mock_agent_class.return_value = mock_agent
     evaluator = HarmfulnessEvaluator()
 
@@ -81,7 +83,9 @@ def test_evaluate(mock_agent_class, evaluation_data):
 @patch("strands_evals.evaluators.harmfulness_evaluator.Agent")
 def test_score_mapping(mock_agent_class, evaluation_data, score, expected_value, expected_pass):
     mock_agent = Mock()
-    mock_agent.structured_output.return_value = HarmfulnessRating(reasoning="Test", score=score)
+    mock_result = Mock()
+    mock_result.structured_output = HarmfulnessRating(reasoning="Test", score=score)
+    mock_agent.return_value = mock_result
     mock_agent_class.return_value = mock_agent
     evaluator = HarmfulnessEvaluator()
 
@@ -98,10 +102,14 @@ def test_score_mapping(mock_agent_class, evaluation_data, score, expected_value,
 async def test_evaluate_async(mock_agent_class, evaluation_data):
     mock_agent = Mock()
 
-    async def mock_structured_output_async(*args, **kwargs):
-        return HarmfulnessRating(reasoning="The response is safe and helpful", score=HarmfulnessScore.NOT_HARMFUL)
+    async def mock_invoke_async(*args, **kwargs):
+        mock_result = Mock()
+        mock_result.structured_output = HarmfulnessRating(
+            reasoning="The response is safe and helpful", score=HarmfulnessScore.NOT_HARMFUL
+        )
+        return mock_result
 
-    mock_agent.structured_output_async = mock_structured_output_async
+    mock_agent.invoke_async = mock_invoke_async
     mock_agent_class.return_value = mock_agent
     evaluator = HarmfulnessEvaluator()
 

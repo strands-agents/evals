@@ -10,7 +10,9 @@ from strands_evals.types import EvaluationData, EvaluationOutput
 def mock_agent():
     """Mock Agent for testing"""
     agent = Mock()
-    agent.structured_output.return_value = EvaluationOutput(score=0.8, test_pass=True, reason="Mock evaluation result")
+    mock_result = Mock()
+    mock_result.structured_output = EvaluationOutput(score=0.8, test_pass=True, reason="Mock evaluation result")
+    agent.return_value = mock_result
     return agent
 
 
@@ -20,10 +22,14 @@ def mock_async_agent():
     agent = Mock()
 
     # Create a mock coroutine function
-    async def mock_structured_output_async(*args, **kwargs):
-        return EvaluationOutput(score=0.8, test_pass=True, reason="Mock async evaluation result")
+    async def mock_invoke_async(*args, **kwargs):
+        mock_result = Mock()
+        mock_result.structured_output = EvaluationOutput(
+            score=0.8, test_pass=True, reason="Mock async evaluation result"
+        )
+        return mock_result
 
-    agent.structured_output_async = mock_structured_output_async
+    agent.invoke_async = mock_invoke_async
     return agent
 
 
@@ -66,11 +72,11 @@ def test_output_evaluator_evaluate_with_inputs(mock_agent_class, evaluation_data
     # Verify Agent was created with correct parameters
     mock_agent_class.assert_called_once_with(model=None, system_prompt=evaluator.system_prompt, callback_handler=None)
 
-    # Verify structured_output was called
-    mock_agent.structured_output.assert_called_once()
-    call_args = mock_agent.structured_output.call_args
-    assert call_args[0][0] == EvaluationOutput
-    prompt = call_args[0][1]
+    # Verify agent was called
+    mock_agent.assert_called_once()
+    call_args = mock_agent.call_args
+    prompt = call_args[0][0]
+    assert call_args[1]["structured_output_model"] == EvaluationOutput
     assert "<Input>What is 2+2?</Input>" in prompt
     assert "<Trajectory>" not in prompt
     assert "<ExpectedTrajectory>" not in prompt
@@ -91,8 +97,8 @@ def test_output_evaluator_evaluate_without_inputs(mock_agent_class, evaluation_d
 
     result = evaluator.evaluate(evaluation_data)
 
-    call_args = mock_agent.structured_output.call_args
-    prompt = call_args[0][1]
+    call_args = mock_agent.call_args
+    prompt = call_args[0][0]
     assert "<Input>" not in prompt
     assert "<Trajectory>" not in prompt
     assert "<ExpectedTrajectory>" not in prompt
@@ -117,8 +123,8 @@ def test_output_evaluator_evaluate_without_expected_output(mock_agent_class, moc
 
     evaluator.evaluate(evaluation_data)
 
-    call_args = mock_agent.structured_output.call_args
-    prompt = call_args[0][1]
+    call_args = mock_agent.call_args
+    prompt = call_args[0][0]
     assert "<ExpectedOutput>" not in prompt
     assert "<Output>result</Output>" in prompt
 
