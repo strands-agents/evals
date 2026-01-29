@@ -12,6 +12,7 @@ def test_create_minimal_case():
     assert case.expected_output is None
     assert case.expected_trajectory is None
     assert case.expected_interactions is None
+    assert case.retrieval_context is None
     assert case.metadata is None
 
 
@@ -63,6 +64,21 @@ def test_case_with_interactions_error():
     case = Case[str, str](input="Complex task", expected_interactions=interactions)
 
     assert case.expected_interactions == [{}, interactions[1]]
+
+
+def test_case_with_retrieval_context():
+    """Test Case with retrieval_context for RAG evaluation"""
+    retrieval_context = [
+        "Returns are accepted within 30 days of purchase.",
+        "Items must be unopened for a full refund.",
+    ]
+    case = Case[str, str](
+        input="What is the return policy?",
+        retrieval_context=retrieval_context,
+    )
+
+    assert case.retrieval_context == retrieval_context
+    assert len(case.retrieval_context) == 2
 
 
 def test_case_required_input():

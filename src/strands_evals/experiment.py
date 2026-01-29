@@ -162,6 +162,7 @@ class Experiment(Generic[InputT, OutputT]):
             expected_output=case.expected_output,
             expected_trajectory=case.expected_trajectory,
             expected_interactions=case.expected_interactions,
+            retrieval_context=case.retrieval_context,
             metadata=case.metadata,
         )
         task_output = task(case)
@@ -198,6 +199,7 @@ class Experiment(Generic[InputT, OutputT]):
             expected_output=case.expected_output,
             expected_trajectory=case.expected_trajectory,
             expected_interactions=case.expected_interactions,
+            retrieval_context=case.retrieval_context,
             metadata=case.metadata,
         )
 

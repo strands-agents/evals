@@ -1,3 +1,4 @@
+from .contextual_faithfulness_evaluator import ContextualFaithfulnessEvaluator
 from .evaluator import Evaluator
 from .faithfulness_evaluator import FaithfulnessEvaluator
 from .goal_success_rate_evaluator import GoalSuccessRateEvaluator
@@ -10,6 +11,7 @@ from .tool_selection_accuracy_evaluator import ToolSelectionAccuracyEvaluator
 from .trajectory_evaluator import TrajectoryEvaluator
 
 __all__ = [
+    "ContextualFaithfulnessEvaluator",
     "Evaluator",
     "OutputEvaluator",
     "TrajectoryEvaluator",

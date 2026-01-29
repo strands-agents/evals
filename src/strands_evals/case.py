@@ -24,6 +24,7 @@ class Case(BaseModel, Generic[InputT, OutputT]):
         expected_output: The expected response given the input. eg. the agent's response
         expected_trajectory: The expected trajectory of a task given the input. eg. sequence of tools
         expected_interactions: The expected interaction sequence given the input (ideal for multi-agent systems).
+        retrieval_context: The retrieved context for RAG evaluation. Used by ContextualFaithfulnessEvaluator.
         metadata: Additional information about the test case.
 
     Example:
@@ -42,6 +43,11 @@ class Case(BaseModel, Generic[InputT, OutputT]):
                         {"agent_2":"What is 2x2?"}
                     ]
                 )
+
+        rag_case = Case(
+                    input="What is the company's return policy?",
+                    retrieval_context=["Returns accepted within 30 days.", "Full refund for unopened items."]
+                )
     """
 
     name: str | None = None
@@ -50,4 +56,5 @@ class Case(BaseModel, Generic[InputT, OutputT]):
     expected_output: OutputT | None = None
     expected_trajectory: list[Any] | None = None
     expected_interactions: list[Interaction] | None = None
+    retrieval_context: list[str] | None = None
     metadata: dict[str, Any] | None = None
