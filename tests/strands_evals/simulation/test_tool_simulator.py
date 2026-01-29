@@ -4,7 +4,6 @@ from typing import Any, Dict
 from unittest.mock import MagicMock
 
 import pytest
-from strands import tool
 
 from strands_evals.case import Case
 from strands_evals.simulation.tool_simulator import StateRegistry, ToolSimulator
@@ -119,7 +118,10 @@ def test_function_tool_simulation(mock_model):
     # Mock the Agent constructor and its result to avoid real LLM calls
     mock_agent_instance = MagicMock()
     mock_result = MagicMock()
-    mock_result.structured_output = {"result": "simulated response"}
+    # For function tools, set structured_output to None so it falls back to parsing response text
+    mock_result.structured_output = None
+    # Mock the response attribute to return parsable JSON string
+    mock_result.response = '{"result": "simulated response"}'
     mock_agent_instance.return_value = mock_result
 
     with pytest.MonkeyPatch().context() as m:
@@ -260,14 +262,15 @@ def test_shared_state_registry(mock_model):
             if "content" in response:
                 # MCP response needs .model_dump()
                 mock_result.structured_output.model_dump.return_value = response
+            elif "balance" in response:
+                # Function response - set structured_output to None and provide JSON string in response
+                mock_result.structured_output = None
+                import json
+
+                mock_result.response = json.dumps(response)
             else:
-                # Function and API responses - function uses dict directly, API uses .model_dump()
-                if "balance" in response:
-                    # Function response - use direct structured_output
-                    mock_result.structured_output = response
-                else:
-                    # API response - use .model_dump()
-                    mock_result.structured_output.model_dump.return_value = response
+                # API response - use .model_dump()
+                mock_result.structured_output.model_dump.return_value = response
 
         mock_agent.return_value = mock_result
         mock_agent_instances.append(mock_agent)
@@ -452,7 +455,7 @@ def test_clear_registry():
 
 def test_attaching_function_tool_simulator_to_strands_agent():
     """Test attaching function tool simulator to Strands agent."""
-    
+
     # Mock function that handles parameters
     def mock_function(input_value):
         return {"result": f"processed {input_value}"}
@@ -470,11 +473,12 @@ def test_attaching_function_tool_simulator_to_strands_agent():
     # Create simulator and get the tool
     simulator = ToolSimulator()
     tool_wrapper = simulator.get_tool("test_function_tool")
-    
+
     # Create a Strands Agent with the tool simulator
     from strands import Agent
+
     agent = Agent(tools=[tool_wrapper])
-    
+
     # Verify the agent has access to the tool
     assert "test_function_tool" in agent.tool_names
     assert hasattr(agent.tool, "test_function_tool")
@@ -482,7 +486,7 @@ def test_attaching_function_tool_simulator_to_strands_agent():
 
 def test_attaching_mcp_tool_simulator_to_strands_agent():
     """Test attaching MCP tool simulator to Strands agent."""
-    
+
     # Mock function for MCP tool
     def mock_mcp_processor(param1, param2=42):
         return {"content": [{"type": "text", "text": f"MCP processed: {param1} with value {param2}"}], "isError": False}
@@ -507,11 +511,12 @@ def test_attaching_mcp_tool_simulator_to_strands_agent():
     # Create simulator and get the tool
     simulator = ToolSimulator()
     tool_wrapper = simulator.get_tool("test_mcp_tool")
-    
+
     # Create a Strands Agent with the tool simulator
     from strands import Agent
+
     agent = Agent(tools=[tool_wrapper])
-    
+
     # Verify the agent has access to the tool
     assert "test_mcp_tool" in agent.tool_names
     assert hasattr(agent.tool, "test_mcp_tool")
@@ -519,7 +524,7 @@ def test_attaching_mcp_tool_simulator_to_strands_agent():
 
 def test_attaching_api_tool_simulator_to_strands_agent():
     """Test attaching API tool simulator to Strands agent."""
-    
+
     # Static response for API tool
     static_response = {
         "status": 200,
@@ -541,12 +546,12 @@ def test_attaching_api_tool_simulator_to_strands_agent():
     # Create simulator and get the tool
     simulator = ToolSimulator()
     tool_wrapper = simulator.get_tool("test_api_tool")
-    
+
     # Create a Strands Agent with the tool simulator
     from strands import Agent
+
     agent = Agent(tools=[tool_wrapper])
-    
+
     # Verify the agent has access to the tool
     assert "test_api_tool" in agent.tool_names
     assert hasattr(agent.tool, "test_api_tool")
-    
