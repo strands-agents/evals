@@ -358,6 +358,7 @@ def test_experiment_to_dict_non_empty(mock_evaluator):
                 "expected_output": "world",
                 "expected_trajectory": None,
                 "expected_interactions": None,
+                "retrieval_context": None,
                 "metadata": None,
             }
         ],
@@ -388,6 +389,7 @@ def test_experiment_to_dict_OutputEvaluator_full():
                 "expected_output": "world",
                 "expected_trajectory": None,
                 "expected_interactions": None,
+                "retrieval_context": None,
                 "metadata": None,
             }
         ],
@@ -420,6 +422,7 @@ def test_experiment_to_dict_OutputEvaluator_default():
                 "expected_output": "world",
                 "expected_trajectory": None,
                 "expected_interactions": None,
+                "retrieval_context": None,
                 "metadata": None,
             }
         ],
@@ -443,6 +446,7 @@ def test_experiment_to_dict_TrajectoryEvaluator_default():
                 "expected_output": "world",
                 "expected_trajectory": ["step1", "step2"],
                 "expected_interactions": None,
+                "retrieval_context": None,
                 "metadata": None,
             }
         ],
@@ -471,6 +475,7 @@ def test_experiment_to_dict_TrajectoryEvaluator_full():
                 "expected_output": "world",
                 "expected_trajectory": ["step1", "step2"],
                 "expected_interactions": None,
+                "retrieval_context": None,
                 "metadata": None,
             }
         ],
@@ -502,6 +507,7 @@ def test_experiment_to_dict_InteractionsEvaluator_default():
                 "expected_output": "world",
                 "expected_trajectory": None,
                 "expected_interactions": interactions,
+                "retrieval_context": None,
                 "metadata": None,
             }
         ],
@@ -533,6 +539,7 @@ def test_experiment_to_dict_InteractionsEvaluator_full():
                 "expected_output": "world",
                 "expected_trajectory": None,
                 "expected_interactions": interactions,
+                "retrieval_context": None,
                 "metadata": None,
             }
         ],
@@ -563,6 +570,7 @@ def test_experiment_to_dict_case_dict():
                 "expected_output": {"field2": "world"},
                 "expected_trajectory": None,
                 "expected_interactions": None,
+                "retrieval_context": None,
                 "metadata": {},
             }
         ],
@@ -589,6 +597,7 @@ def test_experiment_to_dict_case_function():
                 "expected_output": None,
                 "expected_trajectory": None,
                 "expected_interactions": None,
+                "retrieval_context": None,
                 "metadata": None,
             }
         ],
