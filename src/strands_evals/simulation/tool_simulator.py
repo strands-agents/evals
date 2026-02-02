@@ -2,6 +2,7 @@ import inspect
 import json
 import logging
 import warnings
+from collections import defaultdict, deque
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
@@ -22,16 +23,28 @@ class StateRegistry:
     """
     State registry for managing shared state between tool simulators.
     Organized by state_key to isolate state between different tools or shared state groups.
+
+    The registry automatically maintains a bounded cache of tool calls per state key.
+    The maximum number of tool calls stored is configurable via max_tool_call_cache_size parameter.
     """
 
-    def __init__(self):
+    def __init__(self, max_tool_call_cache_size: int = 20):
         """
         Initialize state registry.
 
         Creates an empty state dictionary to track tool calls and responses
-        across different simulation sessions.
+        across different simulation sessions. Tool call cache is automatically
+        bounded to prevent excessive memory usage.
+
+        Args:
+            max_tool_call_cache_size: Maximum number of tool calls to store per state key.
+                                      Older calls are automatically evicted when limit is exceeded.
+                                      Default is 20.
         """
-        self._states: Dict[str, Dict[str, Any]] = {}
+        self._max_tool_call_cache_size = max_tool_call_cache_size
+        self._states: defaultdict[str, Dict[str, Any]] = defaultdict(
+            lambda: {"previous_calls": deque(maxlen=self._max_tool_call_cache_size)}
+        )
 
     def initialize_state_via_description(self, initial_state_description: str, state_key: str) -> None:
         """
@@ -49,7 +62,7 @@ class StateRegistry:
         if state_key not in self._states:
             self._states[state_key] = {
                 "initial_state": initial_state_description,
-                "previous_calls": [],
+                "previous_calls": deque(maxlen=self._max_tool_call_cache_size),
             }
         else:
             warnings.warn(
@@ -69,12 +82,13 @@ class StateRegistry:
         if state_key is None:
             raise ValueError("Value of state_key is required.")
 
-        if state_key not in self._states:
-            self._states[state_key] = {"previous_calls": []}
+        # Access will create the default state automatically due to defaultdict
+        state = self._states[state_key]
 
-        return dict(self._states[state_key])
+        # Convert deque to list for JSON serialization compatibility
+        return {key: list(value) if isinstance(value, deque) else value for key, value in state.items()}
 
-    def record_tool_call(
+    def cache_tool_call(
         self,
         tool_name: str,
         state_key: str,
@@ -83,7 +97,7 @@ class StateRegistry:
         **call_data: Any,
     ) -> Dict[str, Any]:
         """
-        Record a tool call in the tool's state history.
+        Cache a tool call in the tool's state key.
 
         Args:
             tool_name: Name of the tool being called.
@@ -95,7 +109,8 @@ class StateRegistry:
         Returns:
             Updated state dictionary.
         """
-        state = self.get_state(state_key)
+        # Access the actual state storage (not converted copy)
+        state = self._states[state_key]
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
 
         # Build call record based on tool type
@@ -120,16 +135,11 @@ class StateRegistry:
                 }
             )
 
+        # Append to deque with automatic FIFO eviction when cache is full
         state["previous_calls"].append(call_record)
 
-        # Keep history manageable
-        if len(state["previous_calls"]) > 20:
-            state["previous_calls"] = state["previous_calls"][-20:]
-
-        # Update the stored state
-        self._states[state_key] = state
-
-        return state
+        # Return converted state for external use
+        return self.get_state(state_key)
 
     def clear_state(self, state_key: str) -> None:
         """
@@ -150,6 +160,10 @@ class ToolSimulator:
     a registry of all registered tools. It can be configured to override tool
     behavior for simulation purposes, enabling controlled testing scenarios.
 
+    The simulator automatically maintains a bounded cache of tool calls for context.
+    The maximum number of tool calls stored per state key is configurable via
+    max_tool_call_cache_size parameter (default: 20).
+
     Attributes:
         model: Provider for running inference or model identifier for Bedrock.
         _registered_tools: Class-level registry for all registered tools.
@@ -169,17 +183,23 @@ class ToolSimulator:
         api_tool_prompt: Optional[str] = None,
         model: Model | str | None = None,
         framework: str = "strands",
+        max_tool_call_cache_size: int = 20,
     ):
         """
         Initialize a ToolSimulator instance.
 
         Args:
-            state_registry: Registry for maintaining tool state
+            state_registry: Registry for maintaining tool state. If not provided,
+                           a new StateRegistry will be created with max_tool_call_cache_size.
             function_tool_prompt: Optional custom prompt for function tool response generation
             mcp_tool_prompt: Optional custom prompt for MCP tool response generation
             api_tool_prompt: Optional custom prompt for API tool response generation
             model: Provider for running inference or a string representing the model-id for Bedrock to use
             framework: Agent framework to use (default: "strands")
+            max_tool_call_cache_size: Maximum number of tool calls to store per state key.
+                                     Only used when creating a new StateRegistry (ignored if state_registry
+                                     is provided). Older calls are automatically evicted when limit is exceeded.
+                                     Default is 20.
         """
         # Store framework selection
         self.framework = framework
@@ -212,7 +232,7 @@ class ToolSimulator:
         if state_registry:
             self._state_registry = state_registry
         elif self._state_registry is None:
-            self._state_registry = StateRegistry()
+            self._state_registry = StateRegistry(max_tool_call_cache_size=max_tool_call_cache_size)
 
         # Initialize shared states from registered tools
         self._initialize_shared_states()
@@ -432,8 +452,8 @@ class ToolSimulator:
             else:
                 response_data = {"result": response_text or "No response"}
 
-            # Record the call
-            self._state_registry.record_tool_call(
+            # Cache the call
+            self._state_registry.cache_tool_call(
                 tool_name, state_key, ToolType.FUNCTION, response_data, parameters=parameters
             )
 
@@ -482,8 +502,8 @@ class ToolSimulator:
                     "content": [{"type": "text", "text": "No structured output received"}],
                 }
 
-            # Record the call
-            self._state_registry.record_tool_call(
+            # Cache the call
+            self._state_registry.cache_tool_call(
                 tool_name, state_key, ToolType.MCP, response_data, input_mcp_payload=input_mcp_payload
             )
 
@@ -540,8 +560,8 @@ class ToolSimulator:
                     },
                 }
 
-            # Record the call
-            self._state_registry.record_tool_call(
+            # Cache the call
+            self._state_registry.cache_tool_call(
                 tool_name,
                 state_key,
                 ToolType.API,
@@ -602,17 +622,17 @@ class ToolSimulator:
 
             tool_name = registered_tool.name
             if tool_type == ToolType.FUNCTION:
-                self._state_registry.record_tool_call(
+                self._state_registry.cache_tool_call(
                     tool_name, state_key, ToolType.FUNCTION, result, parameters=parameters
                 )
             elif tool_type == ToolType.MCP:
-                self._state_registry.record_tool_call(
+                self._state_registry.cache_tool_call(
                     tool_name, state_key, ToolType.MCP, result, input_mcp_payload=input_mcp_payload
                 )
             elif tool_type == ToolType.API:
                 path = input_data.get("path", "")
                 method = input_data.get("method", "GET")
-                self._state_registry.record_tool_call(
+                self._state_registry.cache_tool_call(
                     tool_name,
                     state_key,
                     ToolType.API,
