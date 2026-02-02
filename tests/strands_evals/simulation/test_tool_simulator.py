@@ -320,11 +320,11 @@ def test_shared_state_registry(mock_model):
     assert "method" in api_call
 
 
-def test_record_tool_call_function():
+def test_cache_tool_call_function():
     """Test recording function call in state registry using unified method."""
     registry = StateRegistry()
 
-    registry.record_tool_call(
+    registry.cache_tool_call(
         tool_name="test_tool",
         state_key="test_state",
         tool_type=ToolType.FUNCTION,
@@ -342,11 +342,11 @@ def test_record_tool_call_function():
     assert call["response"] == {"result": "success"}
 
 
-def test_record_tool_call_mcp():
+def test_cache_tool_call_mcp():
     """Test recording MCP tool call in state registry using unified method."""
     registry = StateRegistry()
 
-    registry.record_tool_call(
+    registry.cache_tool_call(
         tool_name="mcp_tool",
         state_key="mcp_state",
         tool_type=ToolType.MCP,
@@ -364,11 +364,11 @@ def test_record_tool_call_mcp():
     assert call["response"] == {"content": [{"type": "text", "text": "result"}]}
 
 
-def test_record_tool_call_api():
+def test_cache_tool_call_api():
     """Test recording API call in state registry using unified method."""
     registry = StateRegistry()
 
-    registry.record_tool_call(
+    registry.cache_tool_call(
         tool_name="api_tool",
         state_key="api_state",
         tool_type=ToolType.API,
