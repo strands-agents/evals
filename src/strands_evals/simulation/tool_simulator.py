@@ -4,7 +4,7 @@ import logging
 import warnings
 from collections import defaultdict, deque
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable
 
 from strands import Agent
 from strands.models.model import Model
@@ -48,7 +48,7 @@ class StateRegistry:
                                       Default is 20.
         """
         self._max_tool_call_cache_size = max_tool_call_cache_size
-        self._states: defaultdict[str, Dict[str, Any]] = defaultdict(
+        self._states: defaultdict[str, dict[str, Any]] = defaultdict(
             lambda: {"previous_calls": deque(maxlen=self._max_tool_call_cache_size)}
         )
 
@@ -75,7 +75,7 @@ class StateRegistry:
                 f"State with key '{state_key}' already initialized. Skipping re-initialization.", stacklevel=2
             )
 
-    def get_state(self, state_key: str) -> Dict[str, Any]:
+    def get_state(self, state_key: str) -> dict[str, Any]:
         """
         Get state for a specific tool or shared state group.
 
@@ -101,7 +101,7 @@ class StateRegistry:
         tool_type: ToolType,
         response_data: Any,
         **call_data: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Cache a tool call in the tool's state key.
 
@@ -177,16 +177,16 @@ class ToolSimulator:
     """
 
     # Class-level registry for all registered tools
-    _registered_tools: Dict[str, RegisteredTool] = {}
-    _state_registry: Optional[StateRegistry] = None
-    _global_instance: Optional["ToolSimulator"] = None
+    _registered_tools: dict[str, RegisteredTool] = {}
+    _state_registry: StateRegistry | None = None
+    _global_instance: "ToolSimulator" | None = None
 
     def __init__(
         self,
-        state_registry: Optional[StateRegistry] = None,
-        function_tool_prompt: Optional[str] = None,
-        mcp_tool_prompt: Optional[str] = None,
-        api_tool_prompt: Optional[str] = None,
+        state_registry: StateRegistry | None = None,
+        function_tool_prompt: str | None = None,
+        mcp_tool_prompt: str | None = None,
+        api_tool_prompt: str | None = None,
         model: Model | str | None = None,
         framework: str = "strands",
         max_tool_call_cache_size: int = 20,
@@ -326,7 +326,7 @@ class ToolSimulator:
         tool_description = wrapper.__doc__ or f"Simulated {registered_tool.name} tool"
 
         # Build input schema from function signature
-        input_schema: Dict[str, Any] = {"type": "object", "properties": {}}
+        input_schema: dict[str, Any] = {"type": "object", "properties": {}}
         if registered_tool.function:
             try:
                 sig = inspect.signature(registered_tool.function)
@@ -368,7 +368,7 @@ class ToolSimulator:
 
         return decorated_tool
 
-    def _simulate_tool_call(self, tool_type: ToolType, state_key: str, input_data: Dict[str, Any]) -> Any:
+    def _simulate_tool_call(self, tool_type: ToolType, state_key: str, input_data: dict[str, Any]) -> Any:
         """Simulate a tool invocation and return the response."""
         tool_name = input_data.get("tool_name", "")
         registered_tool = self._registered_tools.get(tool_name)
@@ -376,24 +376,26 @@ class ToolSimulator:
             raise ValueError(f"Tool '{tool_name}' not registered")
 
         # Handle different simulation modes
-        if registered_tool.mode == "static":
-            return self._handle_static_mode(registered_tool, tool_type)
-        elif registered_tool.mode == "mock":
-            return self._handle_mock_mode(registered_tool, input_data, state_key, tool_type)
-        elif registered_tool.mode == "dynamic":
-            # Route to appropriate handler based on tool type
-            if tool_type == ToolType.FUNCTION:
-                return self._handle_function_tool(input_data, state_key)
-            elif tool_type == ToolType.MCP:
-                return self._handle_mcp_tool(input_data, state_key)
-            elif tool_type == ToolType.API:
-                return self._handle_api_tool(input_data, state_key)
-            else:
-                raise ValueError(f"Tool type '{tool_type}' not supported")
-        else:
-            raise ValueError(f"Tool simulation mode '{registered_tool.mode}' not supported")
+        match registered_tool.mode:
+            case "static":
+                return self._handle_static_mode(registered_tool, tool_type)
+            case "mock":
+                return self._handle_mock_mode(registered_tool, input_data, state_key, tool_type)
+            case "dynamic":
+                # Route to appropriate handler based on tool type
+                match tool_type:
+                    case ToolType.FUNCTION:
+                        return self._handle_function_tool(input_data, state_key)
+                    case ToolType.MCP:
+                        return self._handle_mcp_tool(input_data, state_key)
+                    case ToolType.API:
+                        return self._handle_api_tool(input_data, state_key)
+                    case _:
+                        raise ValueError(f"Tool type '{tool_type}' not supported")
+            case _:
+                raise ValueError(f"Tool simulation mode '{registered_tool.mode}' not supported")
 
-    def _handle_function_tool(self, input_data: Dict[str, Any], state_key: str) -> Dict[str, Any]:
+    def _handle_function_tool(self, input_data: dict[str, Any], state_key: str) -> dict[str, Any]:
         """Handle function tool simulation."""
         tool_name = input_data.get("tool_name", "")
         parameters = input_data.get("parameters", {})
@@ -411,9 +413,9 @@ class ToolSimulator:
 
             prompt = self.function_tool_prompt.format(
                 tool_name=tool_name,
-                parameters=json.dumps(parameters, indent=2) if parameters else "{}",
+                parameters=json.dumps(parameters, indent=2),
                 initial_state_description=initial_state_description,
-                previous_responses=json.dumps(current_state, indent=2) or "{}",
+                previous_responses=json.dumps(current_state, indent=2),
             )
 
             # Create agent and generate response with structured output
@@ -426,17 +428,11 @@ class ToolSimulator:
             result = agent(prompt, structured_output_model=None)
 
             # Parse JSON response for function tools since they vary based on function signature
-            response_text = (
-                getattr(result, "response", None) or str(result.content) if hasattr(result, "content") else str(result)
-            )
-
-            if response_text and isinstance(response_text, str):
-                try:
-                    response_data = json.loads(response_text)
-                except json.JSONDecodeError:
-                    response_data = {"result": response_text}
-            else:
-                response_data = {"result": response_text or "No response"}
+            response_text = str(result) or "No response"
+            try:
+                response_data = json.loads(response_text)
+            except json.JSONDecodeError:
+                response_data = {"result": response_text}
 
             # Cache the call
             self._state_registry.cache_tool_call(
@@ -449,7 +445,7 @@ class ToolSimulator:
             logger.error(f"Error generating function response: {e}")
             raise RuntimeError(f"Error generating function response: {e}") from e
 
-    def _handle_mcp_tool(self, input_data: Dict[str, Any], state_key: str) -> Dict[str, Any]:
+    def _handle_mcp_tool(self, input_data: dict[str, Any], state_key: str) -> dict[str, Any]:
         """Handle MCP tool simulation."""
         tool_name = input_data.get("tool_name", "")
         input_mcp_payload = input_data.get("input_mcp_payload", {})
@@ -467,9 +463,9 @@ class ToolSimulator:
 
             prompt = self.mcp_tool_prompt.format(
                 tool_name=tool_name,
-                mcp_payload=json.dumps(input_mcp_payload, indent=2) if input_mcp_payload else "{}",
+                mcp_payload=json.dumps(input_mcp_payload, indent=2),
                 initial_state_description=initial_state_description,
-                previous_responses=json.dumps(current_state, indent=2) or "{}",
+                previous_responses=json.dumps(current_state, indent=2),
             )
 
             # Create agent and generate response with structured output
@@ -480,9 +476,11 @@ class ToolSimulator:
                 callback_handler=None,
             )
             result = agent(prompt, structured_output_model=MCPToolResponse)
-            if result.structured_output:
-                response_data = result.structured_output.model_dump()
-            else:
+
+            response_text = str(result) or "No response"
+            try:
+                response_data = json.loads(response_text)
+            except json.JSONDecodeError:
                 response_data = {
                     "isError": True,
                     "content": [{"type": "text", "text": "No structured output received"}],
@@ -499,7 +497,7 @@ class ToolSimulator:
             logger.error(f"Error generating MCP response: {e}")
             return {"isError": True, "content": [{"type": "text", "text": f"Error generating response: {str(e)}"}]}
 
-    def _handle_api_tool(self, input_data: Dict[str, Any], state_key: str) -> Dict[str, Any]:
+    def _handle_api_tool(self, input_data: dict[str, Any], state_key: str) -> dict[str, Any]:
         """Handle API tool simulation."""
         tool_name = input_data.get("tool_name", "")
         user_input_api_payload = input_data.get("user_input_api_payload", {})
@@ -523,7 +521,7 @@ class ToolSimulator:
                 method=method,
                 api_payload=json.dumps(user_input_api_payload, indent=2) if user_input_api_payload else "{}",
                 initial_state_description=initial_state_description,
-                previous_responses=json.dumps(current_state, indent=2) or "{}",
+                previous_responses=json.dumps(current_state, indent=2),
             )
 
             # Create agent and generate response with structured output
@@ -534,9 +532,11 @@ class ToolSimulator:
                 callback_handler=None,
             )
             result = agent(prompt, structured_output_model=APIToolResponse)
-            if result.structured_output:
-                response_data = result.structured_output.model_dump()
-            else:
+
+            response_text = str(result) or "No response"
+            try:
+                response_data = json.loads(response_text)
+            except json.JSONDecodeError:
                 response_data = {
                     "status": 500,
                     "error": {
@@ -562,7 +562,7 @@ class ToolSimulator:
         except Exception as e:
             raise RuntimeError(f"Error generating simulated API response: {e}") from e
 
-    def _handle_static_mode(self, registered_tool: RegisteredTool, tool_type: ToolType) -> Dict[str, Any]:
+    def _handle_static_mode(self, registered_tool: RegisteredTool, tool_type: ToolType) -> dict[str, Any]:
         """Handle static mode simulation - returns predefined static response."""
         if registered_tool.static_response is None:
             raise ValueError(f"Static response is required for tool '{registered_tool.name}' in static mode")
@@ -570,8 +570,8 @@ class ToolSimulator:
         return registered_tool.static_response
 
     def _handle_mock_mode(
-        self, registered_tool: RegisteredTool, input_data: Dict[str, Any], state_key: str, tool_type: ToolType
-    ) -> Dict[str, Any]:
+        self, registered_tool: RegisteredTool, input_data: dict[str, Any], state_key: str, tool_type: ToolType
+    ) -> dict[str, Any]:
         """Handle mock mode simulation - calls custom mock function."""
         if registered_tool.mock_function is None:
             raise ValueError("mock_function is required for tool simulator mock mode")
@@ -653,11 +653,11 @@ class ToolSimulator:
     @classmethod
     def function_tool(
         cls,
-        name: Optional[str] = None,
-        initial_state_description: Optional[str] = None,
+        name: str | None = None,
+        initial_state_description: str | None = None,
         mode: str = "dynamic",
-        static_response: Optional[Dict[str, Any]] = None,
-        mock_function: Optional[Callable] = None,
+        static_response: dict[str, Any] | None = None,
+        mock_function: Callable | None = None,
         **simulator_kwargs,
     ) -> Callable:
         """
@@ -704,12 +704,12 @@ class ToolSimulator:
     @classmethod
     def mcp_tool(
         cls,
-        name: Optional[str] = None,
-        schema: Optional[Dict[str, Any]] = None,
-        initial_state_description: Optional[str] = None,
+        name: str | None = None,
+        schema: dict[str, Any] | None = None,
+        initial_state_description: str | None = None,
         mode: str = "dynamic",
-        static_response: Optional[Dict[str, Any]] = None,
-        mock_function: Optional[Callable] = None,
+        static_response: dict[str, Any] | None = None,
+        mock_function: Callable | None = None,
         **simulator_kwargs,
     ) -> Callable:
         """
@@ -756,14 +756,14 @@ class ToolSimulator:
     @classmethod
     def api_tool(
         cls,
-        name: Optional[str] = None,
-        path: Optional[str] = None,
-        method: Optional[str] = None,
-        schema: Optional[Dict[str, Any]] = None,
-        initial_state_description: Optional[str] = None,
+        name: str | None = None,
+        path: str | None = None,
+        method: str | None = None,
+        schema: dict[str, Any] | None = None,
+        initial_state_description: str | None = None,
         mode: str = "dynamic",
-        static_response: Optional[Dict[str, Any]] = None,
-        mock_function: Optional[Callable] = None,
+        static_response: dict[str, Any] | None = None,
+        mock_function: Callable | None = None,
         **simulator_kwargs,
     ) -> Callable:
         """
@@ -812,7 +812,7 @@ class ToolSimulator:
 
         return decorator
 
-    def get_tool(self, tool_name: str) -> Optional[Callable]:
+    def get_tool(self, tool_name: str) -> Callable | None:
         """
         Get a tool by name and create a simulation wrapper.
 
@@ -828,7 +828,7 @@ class ToolSimulator:
 
         return self._create_tool_wrapper(registered_tool)
 
-    def list_tools(self) -> List[str]:
+    def list_tools(self) -> list[str]:
         """
         List all registered tool names.
 
