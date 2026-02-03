@@ -118,10 +118,8 @@ def test_function_tool_simulation(mock_model):
     # Mock the Agent constructor and its result to avoid real LLM calls
     mock_agent_instance = MagicMock()
     mock_result = MagicMock()
-    # For function tools, set structured_output to None so it falls back to parsing response text
-    mock_result.structured_output = None
-    # Mock the response attribute to return parsable JSON string
-    mock_result.response = '{"result": "simulated response"}'
+    # Mock __str__ method to return expected JSON string
+    mock_result.__str__ = MagicMock(return_value='{"result": "simulated response"}')
     mock_agent_instance.return_value = mock_result
 
     with pytest.MonkeyPatch().context() as m:
@@ -150,7 +148,8 @@ def test_mcp_tool_simulation(mock_model):
     # Mock the Agent constructor and its result to avoid real LLM calls
     mock_agent_instance = MagicMock()
     mock_result = MagicMock()
-    mock_result.structured_output.model_dump.return_value = {"content": [{"type": "text", "text": "MCP response"}]}
+    # Mock __str__ method to return expected JSON string
+    mock_result.__str__ = MagicMock(return_value='{"content": [{"type": "text", "text": "MCP response"}]}')
     mock_agent_instance.return_value = mock_result
 
     with pytest.MonkeyPatch().context() as m:
@@ -178,7 +177,8 @@ def test_api_tool_simulation(mock_model):
     # Mock the Agent constructor and its result to avoid real LLM calls
     mock_agent_instance = MagicMock()
     mock_result = MagicMock()
-    mock_result.structured_output.model_dump.return_value = {"status": 200, "data": {"key": "value"}}
+    # Mock __str__ method to return expected JSON string
+    mock_result.__str__ = MagicMock(return_value='{"status": 200, "data": {"key": "value"}}')
     mock_agent_instance.return_value = mock_result
 
     with pytest.MonkeyPatch().context() as m:
@@ -259,18 +259,10 @@ def test_shared_state_registry(mock_model):
 
         if len(mock_agent_instances) < len(expected_responses):
             response = expected_responses[len(mock_agent_instances)]
-            if "content" in response:
-                # MCP response needs .model_dump()
-                mock_result.structured_output.model_dump.return_value = response
-            elif "balance" in response:
-                # Function response - set structured_output to None and provide JSON string in response
-                mock_result.structured_output = None
-                import json
+            import json
 
-                mock_result.response = json.dumps(response)
-            else:
-                # API response - use .model_dump()
-                mock_result.structured_output.model_dump.return_value = response
+            # Simplified approach: Mock __str__ method to return JSON string for all tool types
+            mock_result.__str__ = MagicMock(return_value=json.dumps(response))
 
         mock_agent.return_value = mock_result
         mock_agent_instances.append(mock_agent)
