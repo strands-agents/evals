@@ -4,7 +4,7 @@ import logging
 import warnings
 from collections import defaultdict, deque
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any, Callable, Union
 
 from strands import Agent
 from strands.models.model import Model
@@ -179,7 +179,7 @@ class ToolSimulator:
     # Class-level registry for all registered tools
     _registered_tools: dict[str, RegisteredTool] = {}
     _state_registry: StateRegistry | None = None
-    _global_instance: "ToolSimulator" | None = None
+    _global_instance: Union["ToolSimulator", None] = None
 
     def __init__(
         self,
