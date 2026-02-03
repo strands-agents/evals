@@ -51,7 +51,7 @@ def test_tool_simulator_init():
     )
 
     assert simulator._state_registry is custom_registry
-    assert simulator.model_id is None  # model_id is now used instead of system_prompt_template
+    assert simulator.model is None  # model is now used for LLM inference
     assert simulator.function_tool_prompt is not None  # Check that prompt templates are loaded
     assert simulator.mcp_tool_prompt is not None
     assert simulator.api_tool_prompt is not None

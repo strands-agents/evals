@@ -16,6 +16,12 @@ from strands_evals.types.simulation.tool import (
     ToolType,
 )
 
+from .prompt_templates.tool_response_generation import (
+    API_TOOL_RESPONSE_GENERATION_PROMPT,
+    FUNCTION_TOOL_RESPONSE_GENERATION_PROMPT,
+    MCP_TOOL_RESPONSE_GENERATION_PROMPT,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -204,35 +210,15 @@ class ToolSimulator:
         # Store framework selection
         self.framework = framework
         # Store model configuration for creating internal agents
-        self.model_id = model
+        self.model = model
 
         # Set custom prompts or use defaults
-        if function_tool_prompt is None:
-            from .prompt_templates.tool_response_generation import FUNCTION_TOOL_RESPONSE_GENERATION_PROMPT
-
-            self.function_tool_prompt = FUNCTION_TOOL_RESPONSE_GENERATION_PROMPT
-        else:
-            self.function_tool_prompt = function_tool_prompt
-
-        if mcp_tool_prompt is None:
-            from .prompt_templates.tool_response_generation import MCP_TOOL_RESPONSE_GENERATION_PROMPT
-
-            self.mcp_tool_prompt = MCP_TOOL_RESPONSE_GENERATION_PROMPT
-        else:
-            self.mcp_tool_prompt = mcp_tool_prompt
-
-        if api_tool_prompt is None:
-            from .prompt_templates.tool_response_generation import API_TOOL_RESPONSE_GENERATION_PROMPT
-
-            self.api_tool_prompt = API_TOOL_RESPONSE_GENERATION_PROMPT
-        else:
-            self.api_tool_prompt = api_tool_prompt
+        self.function_tool_prompt = function_tool_prompt or FUNCTION_TOOL_RESPONSE_GENERATION_PROMPT
+        self.mcp_tool_prompt = mcp_tool_prompt or MCP_TOOL_RESPONSE_GENERATION_PROMPT
+        self.api_tool_prompt = api_tool_prompt or API_TOOL_RESPONSE_GENERATION_PROMPT
 
         # Set up state registry
-        if state_registry:
-            self._state_registry = state_registry
-        elif self._state_registry is None:
-            self._state_registry = StateRegistry(max_tool_call_cache_size=max_tool_call_cache_size)
+        self._state_registry = state_registry or StateRegistry(max_tool_call_cache_size=max_tool_call_cache_size)
 
         # Initialize shared states from registered tools
         self._initialize_shared_states()
@@ -434,7 +420,7 @@ class ToolSimulator:
             agent = Agent(
                 system_prompt=self.function_tool_prompt,
                 tools=[],
-                model=self.model_id,
+                model=self.model,
                 callback_handler=None,
             )
             result = agent(prompt, structured_output_model=None)
@@ -490,7 +476,7 @@ class ToolSimulator:
             agent = Agent(
                 system_prompt=self.mcp_tool_prompt,
                 tools=[],
-                model=self.model_id,
+                model=self.model,
                 callback_handler=None,
             )
             result = agent(prompt, structured_output_model=MCPToolResponse)
@@ -544,7 +530,7 @@ class ToolSimulator:
             agent = Agent(
                 system_prompt=self.api_tool_prompt,
                 tools=[],
-                model=self.model_id,
+                model=self.model,
                 callback_handler=None,
             )
             result = agent(prompt, structured_output_model=APIToolResponse)
