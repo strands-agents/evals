@@ -65,8 +65,7 @@ class TraceExtractor:
                 if tool_spans:
                     try:
                         tool_executions = [
-                            ToolExecution(tool_call=ts.tool_call, tool_result=ts.tool_result)
-                            for ts in tool_spans
+                            ToolExecution(tool_call=ts.tool_call, tool_result=ts.tool_result) for ts in tool_spans
                         ]
                         previous_turns.append(tool_executions)
                     except (AttributeError, TypeError, ValueError) as e:
