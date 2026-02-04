@@ -386,26 +386,11 @@ def test_tool_not_found_raises_error():
     """Test that accessing non-existent tools raises ValueError."""
     simulator = ToolSimulator()
 
-    # Test that accessing a non-existent tool via _simulate_tool_call raises ValueError
-    with pytest.raises(ValueError) as excinfo:
-        simulator._simulate_tool_call(
-            tool_type=ToolType.FUNCTION, state_key="test", input_data={"tool_name": "nonexistent_tool"}
-        )
+    # Test that accessing a non-existent tool via __getattr__ raises AttributeError
+    with pytest.raises(AttributeError) as excinfo:
+        _ = simulator.nonexistent_tool
 
-    assert "not registered" in str(excinfo.value)
-
-
-def test_api_tool_missing_name_raises_error():
-    """Test that API tool simulation raises ValueError when tool_name is missing."""
-    simulator = ToolSimulator()
-
-    with pytest.raises(ValueError) as excinfo:
-        simulator._handle_api_tool(
-            input_data={"tool_name": ""},  # Empty tool name
-            state_key="test",
-        )
-
-    assert "tool_name is required for API tool simulation" in str(excinfo.value)
+    assert "not found in registered tools" in str(excinfo.value)
 
 
 def test_mock_mode_missing_function_raises_error():
@@ -424,7 +409,6 @@ def test_mock_mode_missing_function_raises_error():
             registered_tool=registered_tool,
             input_data={"tool_name": "test_mock_tool", "parameters": {}},
             state_key="test",
-            tool_type=ToolType.FUNCTION,
         )
 
     assert "mock_function is required for tool simulator mock mode" in str(excinfo.value)
