@@ -19,6 +19,21 @@ class ToolType(Enum):
     API = "api"
 
 
+class ToolSimulationMode(Enum):
+    """
+    Enumeration of supported simulation modes.
+
+    Attributes:
+        DYNAMIC: Generate responses using LLM based on tool context and history.
+        STATIC: Return predefined static responses.
+        MOCK: Call custom mock functions for controlled behavior.
+    """
+
+    DYNAMIC = "dynamic"
+    STATIC = "static"
+    MOCK = "mock"
+
+
 class RegisteredTool(BaseModel):
     """
     Represents a registered tool in the simulator.
@@ -46,7 +61,9 @@ class RegisteredTool(BaseModel):
     simulator_kwargs: dict[str, Any] | None = Field(
         default_factory=dict, description="Additional simulator configuration"
     )
-    mode: str = Field(default="dynamic", description="Simulation mode: dynamic, static, mock")
+    mode: ToolSimulationMode = Field(
+        default=ToolSimulationMode.DYNAMIC, description="Simulation mode: dynamic, static, mock"
+    )
     static_response: dict[str, Any] | None = Field(default=None, description="Static response for static mode")
     mock_function: Callable | None = Field(default=None, description="Mock function for mock mode", exclude=True)
 

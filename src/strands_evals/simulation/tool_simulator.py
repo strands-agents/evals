@@ -4,15 +4,17 @@ import logging
 import warnings
 from collections import defaultdict, deque
 from datetime import datetime
-from typing import Any, Callable, Union
+from typing import Any, Callable
 
 from strands import Agent
+from strands.agent import AgentResult
 from strands.models.model import Model
 
 from strands_evals.types.simulation.tool import (
     APIToolResponse,
     MCPToolResponse,
     RegisteredTool,
+    ToolSimulationMode,
     ToolType,
 )
 
@@ -178,8 +180,8 @@ class ToolSimulator:
 
     # Class-level registry for all registered tools
     _registered_tools: dict[str, RegisteredTool] = {}
-    _state_registry: StateRegistry | None = None
-    _global_instance: Union["ToolSimulator", None] = None
+    _state_registry: StateRegistry
+    _global_instance: "ToolSimulator | None" = None
 
     def __init__(
         self,
@@ -302,7 +304,7 @@ class ToolSimulator:
             else:
                 raise ValueError(f"Unsupported tool type: {registered_tool.tool_type}")
 
-            return self._simulate_tool_call(registered_tool.tool_type, state_key, input_data)
+            return self._call(registered_tool, input_data, state_key)
 
         # Copy function metadata
         if registered_tool.function:
@@ -368,201 +370,123 @@ class ToolSimulator:
 
         return decorated_tool
 
-    def _simulate_tool_call(self, tool_type: ToolType, state_key: str, input_data: dict[str, Any]) -> Any:
-        """Simulate a tool invocation and return the response."""
-        tool_name = input_data.get("tool_name", "")
-        registered_tool = self._registered_tools.get(tool_name)
-        if not registered_tool:
-            raise ValueError(f"Tool '{tool_name}' not registered")
+    def _simulate_tool_call(self, prompt: str, structured_output_model=None) -> Any:
+        """Tool simulation agent creation and response generation."""
+        agent = Agent(
+            system_prompt=prompt,
+            tools=[],
+            model=self.model,
+            callback_handler=None,
+        )
+        return agent(prompt, structured_output_model=structured_output_model)
 
+    def _parse_simulated_response(self, result: AgentResult) -> dict[str, Any]:
+        """Parse tool simulation agent response, trying to extract JSON first, falling back to wrapping in result."""
+        response_text = str(result) or "No response"
+        try:
+            response_data = json.loads(response_text)
+        except json.JSONDecodeError:
+            response_data = {"result": response_text}
+        return response_data
+
+    def _call(self, registered_tool: RegisteredTool, input_data: dict[str, Any], state_key: str) -> Any:
+        """Simulate a tool invocation and return the response."""
         # Handle different simulation modes
         match registered_tool.mode:
-            case "static":
-                return self._handle_static_mode(registered_tool, tool_type)
-            case "mock":
-                return self._handle_mock_mode(registered_tool, input_data, state_key, tool_type)
-            case "dynamic":
+            case ToolSimulationMode.STATIC:
+                return self._handle_static_mode(registered_tool)
+            case ToolSimulationMode.MOCK:
+                return self._handle_mock_mode(registered_tool, input_data, state_key)
+            case ToolSimulationMode.DYNAMIC:
                 # Route to appropriate handler based on tool type
-                match tool_type:
+                match registered_tool.tool_type:
                     case ToolType.FUNCTION:
-                        return self._handle_function_tool(input_data, state_key)
+                        return self._handle_function_tool(registered_tool.name, input_data, state_key)
                     case ToolType.MCP:
-                        return self._handle_mcp_tool(input_data, state_key)
+                        return self._handle_mcp_tool(registered_tool.name, input_data, state_key)
                     case ToolType.API:
-                        return self._handle_api_tool(input_data, state_key)
-                    case _:
-                        raise ValueError(f"Tool type '{tool_type}' not supported")
-            case _:
-                raise ValueError(f"Tool simulation mode '{registered_tool.mode}' not supported")
+                        return self._handle_api_tool(registered_tool.name, input_data, state_key)
 
-    def _handle_function_tool(self, input_data: dict[str, Any], state_key: str) -> dict[str, Any]:
+    def _handle_function_tool(self, tool_name: str, input_data: dict[str, Any], state_key: str) -> dict[str, Any]:
         """Handle function tool simulation."""
-        tool_name = input_data.get("tool_name", "")
         parameters = input_data.get("parameters", {})
 
-        if not tool_name:
-            raise ValueError("Tool name is required")
+        current_state = self._state_registry.get_state(state_key)
 
-        if not self._state_registry:
-            raise RuntimeError("State registry is not initialized")
+        prompt = self.function_tool_prompt.format(
+            tool_name=tool_name,
+            parameters=json.dumps(parameters, indent=2),
+            initial_state_description=current_state.get("initial_state", "No initial state provided."),
+            previous_responses=json.dumps(current_state.get("previous_calls", []), indent=2),
+        )
 
-        try:
-            # Get initial state description from state registry
-            current_state = self._state_registry.get_state(state_key)
-            initial_state_description = current_state.get("initial_state", "No initial state provided.")
+        result = self._simulate_tool_call(prompt, structured_output_model=None)
 
-            prompt = self.function_tool_prompt.format(
-                tool_name=tool_name,
-                parameters=json.dumps(parameters, indent=2),
-                initial_state_description=initial_state_description,
-                previous_responses=json.dumps(current_state, indent=2),
-            )
+        response_data = self._parse_simulated_response(result)
 
-            # Create agent and generate response with structured output
-            agent = Agent(
-                system_prompt=self.function_tool_prompt,
-                tools=[],
-                model=self.model,
-                callback_handler=None,
-            )
-            result = agent(prompt, structured_output_model=None)
+        self._state_registry.cache_tool_call(
+            tool_name, state_key, ToolType.FUNCTION, response_data, parameters=parameters
+        )
 
-            # Parse JSON response for function tools since they vary based on function signature
-            response_text = str(result) or "No response"
-            try:
-                response_data = json.loads(response_text)
-            except json.JSONDecodeError:
-                response_data = {"result": response_text}
+        return response_data
 
-            # Cache the call
-            self._state_registry.cache_tool_call(
-                tool_name, state_key, ToolType.FUNCTION, response_data, parameters=parameters
-            )
-
-            return response_data
-
-        except Exception as e:
-            logger.error(f"Error generating function response: {e}")
-            raise RuntimeError(f"Error generating function response: {e}") from e
-
-    def _handle_mcp_tool(self, input_data: dict[str, Any], state_key: str) -> dict[str, Any]:
+    def _handle_mcp_tool(self, tool_name: str, input_data: dict[str, Any], state_key: str) -> dict[str, Any]:
         """Handle MCP tool simulation."""
-        tool_name = input_data.get("tool_name", "")
         input_mcp_payload = input_data.get("input_mcp_payload", {})
 
-        if not tool_name:
-            return {"isError": True, "content": [{"type": "text", "text": "Tool name is required"}]}
+        current_state = self._state_registry.get_state(state_key)
 
-        if not self._state_registry:
-            raise RuntimeError("State registry is not initialized")
+        prompt = self.mcp_tool_prompt.format(
+            tool_name=tool_name,
+            mcp_payload=json.dumps(input_mcp_payload, indent=2),
+            initial_state_description=current_state.get("initial_state", "No initial state provided."),
+            previous_responses=json.dumps(current_state.get("previous_calls", []), indent=2),
+        )
 
-        try:
-            # Get initial state description from state registry
-            current_state = self._state_registry.get_state(state_key)
-            initial_state_description = current_state.get("initial_state", "No initial state provided.")
+        result = self._simulate_tool_call(prompt, structured_output_model=MCPToolResponse)
 
-            prompt = self.mcp_tool_prompt.format(
-                tool_name=tool_name,
-                mcp_payload=json.dumps(input_mcp_payload, indent=2),
-                initial_state_description=initial_state_description,
-                previous_responses=json.dumps(current_state, indent=2),
-            )
+        response_data = self._parse_simulated_response(result)
 
-            # Create agent and generate response with structured output
-            agent = Agent(
-                system_prompt=self.mcp_tool_prompt,
-                tools=[],
-                model=self.model,
-                callback_handler=None,
-            )
-            result = agent(prompt, structured_output_model=MCPToolResponse)
+        self._state_registry.cache_tool_call(
+            tool_name, state_key, ToolType.MCP, response_data, input_mcp_payload=input_mcp_payload
+        )
 
-            response_text = str(result) or "No response"
-            try:
-                response_data = json.loads(response_text)
-            except json.JSONDecodeError:
-                response_data = {
-                    "isError": True,
-                    "content": [{"type": "text", "text": "No structured output received"}],
-                }
+        return response_data
 
-            # Cache the call
-            self._state_registry.cache_tool_call(
-                tool_name, state_key, ToolType.MCP, response_data, input_mcp_payload=input_mcp_payload
-            )
-
-            return response_data
-
-        except Exception as e:
-            logger.error(f"Error generating MCP response: {e}")
-            return {"isError": True, "content": [{"type": "text", "text": f"Error generating response: {str(e)}"}]}
-
-    def _handle_api_tool(self, input_data: dict[str, Any], state_key: str) -> dict[str, Any]:
+    def _handle_api_tool(self, tool_name: str, input_data: dict[str, Any], state_key: str) -> dict[str, Any]:
         """Handle API tool simulation."""
-        tool_name = input_data.get("tool_name", "")
         user_input_api_payload = input_data.get("user_input_api_payload", {})
         path = input_data.get("path", "")
-        method = input_data.get("method", "GET")
+        method = input_data.get("method", "GET").upper()  # Normalize HTTP method to uppercase
 
-        if not tool_name:
-            raise ValueError("tool_name is required for API tool simulation")
+        current_state = self._state_registry.get_state(state_key)
 
-        if not self._state_registry:
-            raise RuntimeError("State registry is not initialized")
+        prompt = self.api_tool_prompt.format(
+            tool_name=tool_name,
+            path=path,
+            method=method,
+            api_payload=json.dumps(user_input_api_payload, indent=2) if user_input_api_payload else "{}",
+            initial_state_description=current_state.get("initial_state", "No initial state provided."),
+            previous_responses=json.dumps(current_state.get("previous_calls", []), indent=2),
+        )
 
-        try:
-            # Get initial state description from state registry
-            current_state = self._state_registry.get_state(state_key)
-            initial_state_description = current_state.get("initial_state", "No initial state provided.")
+        result = self._simulate_tool_call(prompt, structured_output_model=APIToolResponse)
 
-            prompt = self.api_tool_prompt.format(
-                tool_name=tool_name,
-                path=path,
-                method=method,
-                api_payload=json.dumps(user_input_api_payload, indent=2) if user_input_api_payload else "{}",
-                initial_state_description=initial_state_description,
-                previous_responses=json.dumps(current_state, indent=2),
-            )
+        response_data = self._parse_simulated_response(result)
 
-            # Create agent and generate response with structured output
-            agent = Agent(
-                system_prompt=self.api_tool_prompt,
-                tools=[],
-                model=self.model,
-                callback_handler=None,
-            )
-            result = agent(prompt, structured_output_model=APIToolResponse)
+        self._state_registry.cache_tool_call(
+            tool_name,
+            state_key,
+            ToolType.API,
+            response_data,
+            path=path,
+            method=method,
+            input_data=user_input_api_payload,
+        )
 
-            response_text = str(result) or "No response"
-            try:
-                response_data = json.loads(response_text)
-            except json.JSONDecodeError:
-                response_data = {
-                    "status": 500,
-                    "error": {
-                        "type": "internal_error",
-                        "title": "Internal Error",
-                        "detail": "No structured output received",
-                    },
-                }
+        return response_data
 
-            # Cache the call
-            self._state_registry.cache_tool_call(
-                tool_name,
-                state_key,
-                ToolType.API,
-                response_data,
-                path=path,
-                method=method,
-                input_data=user_input_api_payload,
-            )
-
-            return response_data
-
-        except Exception as e:
-            raise RuntimeError(f"Error generating simulated API response: {e}") from e
-
-    def _handle_static_mode(self, registered_tool: RegisteredTool, tool_type: ToolType) -> dict[str, Any]:
+    def _handle_static_mode(self, registered_tool: RegisteredTool) -> dict[str, Any]:
         """Handle static mode simulation - returns predefined static response."""
         if registered_tool.static_response is None:
             raise ValueError(f"Static response is required for tool '{registered_tool.name}' in static mode")
@@ -570,7 +494,7 @@ class ToolSimulator:
         return registered_tool.static_response
 
     def _handle_mock_mode(
-        self, registered_tool: RegisteredTool, input_data: dict[str, Any], state_key: str, tool_type: ToolType
+        self, registered_tool: RegisteredTool, input_data: dict[str, Any], state_key: str
     ) -> dict[str, Any]:
         """Handle mock mode simulation - calls custom mock function."""
         if registered_tool.mock_function is None:
@@ -578,7 +502,7 @@ class ToolSimulator:
 
         try:
             # Extract parameters based on tool type
-            if tool_type == ToolType.FUNCTION:
+            if registered_tool.tool_type == ToolType.FUNCTION:
                 parameters = input_data.get("parameters", {})
                 if isinstance(parameters, str):
                     parameters = json.loads(parameters)
@@ -591,31 +515,28 @@ class ToolSimulator:
                 else:
                     result = registered_tool.mock_function(**parameters)
 
-            elif tool_type == ToolType.MCP:
+            elif registered_tool.tool_type == ToolType.MCP:
                 input_mcp_payload = input_data.get("input_mcp_payload", {})
                 result = registered_tool.mock_function(**input_mcp_payload)
 
-            elif tool_type == ToolType.API:
+            elif registered_tool.tool_type == ToolType.API:
                 user_input_api_payload = input_data.get("user_input_api_payload", {})
                 result = registered_tool.mock_function(**user_input_api_payload)
 
             else:
-                raise ValueError(f"Unsupported tool type '{tool_type}' for mock mode")
+                raise ValueError(f"Unsupported tool type '{registered_tool.tool_type}' for mock mode")
 
             # Record the call in state registry
-            if not self._state_registry:
-                raise RuntimeError("State registry is not initialized")
-
             tool_name = registered_tool.name
-            if tool_type == ToolType.FUNCTION:
+            if registered_tool.tool_type == ToolType.FUNCTION:
                 self._state_registry.cache_tool_call(
                     tool_name, state_key, ToolType.FUNCTION, result, parameters=parameters
                 )
-            elif tool_type == ToolType.MCP:
+            elif registered_tool.tool_type == ToolType.MCP:
                 self._state_registry.cache_tool_call(
                     tool_name, state_key, ToolType.MCP, result, input_mcp_payload=input_mcp_payload
                 )
-            elif tool_type == ToolType.API:
+            elif registered_tool.tool_type == ToolType.API:
                 path = input_data.get("path", "")
                 method = input_data.get("method", "GET")
                 self._state_registry.cache_tool_call(
@@ -632,7 +553,7 @@ class ToolSimulator:
 
         except Exception as e:
             raise RuntimeError(
-                f"Tool simulator mock mode error for {tool_type} tool {registered_tool.name}: {e}"
+                f"Tool simulator mock mode error for {registered_tool.tool_type} tool {registered_tool.name}: {e}"
             ) from e
 
     @classmethod
@@ -655,7 +576,7 @@ class ToolSimulator:
         cls,
         name: str | None = None,
         initial_state_description: str | None = None,
-        mode: str = "dynamic",
+        mode: ToolSimulationMode | str = ToolSimulationMode.DYNAMIC,
         static_response: dict[str, Any] | None = None,
         mock_function: Callable | None = None,
         **simulator_kwargs,
@@ -666,7 +587,7 @@ class ToolSimulator:
         Args:
             name: Optional name for the tool. If None, uses function.__name__
             initial_state_description: Optional initial state description for the tool's context
-            mode: Simulation mode - "dynamic", "static", or "mock"
+            mode: Simulation mode - ToolSimulationMode enum or "dynamic", "static", "mock" string
             static_response: Static response dict for static mode
             mock_function: Custom callable for mock mode
             **simulator_kwargs: Additional simulator configuration
@@ -679,6 +600,12 @@ class ToolSimulator:
             try:
                 tool_name = name or func.__name__
 
+                # Convert string mode to enum for backward compatibility
+                if isinstance(mode, str):
+                    mode_enum = ToolSimulationMode(mode)
+                else:
+                    mode_enum = mode
+
                 # Register tool
                 registered_tool = RegisteredTool(
                     name=tool_name,
@@ -686,7 +613,7 @@ class ToolSimulator:
                     function=func,
                     initial_state_description=initial_state_description,
                     simulator_kwargs=simulator_kwargs,
-                    mode=mode,
+                    mode=mode_enum,
                     static_response=static_response,
                     mock_function=mock_function,
                 )
@@ -707,7 +634,7 @@ class ToolSimulator:
         name: str | None = None,
         schema: dict[str, Any] | None = None,
         initial_state_description: str | None = None,
-        mode: str = "dynamic",
+        mode: ToolSimulationMode | str = ToolSimulationMode.DYNAMIC,
         static_response: dict[str, Any] | None = None,
         mock_function: Callable | None = None,
         **simulator_kwargs,
@@ -719,7 +646,7 @@ class ToolSimulator:
             name: Optional name for the tool. If None, uses function.__name__
             schema: MCP tool schema dictionary
             initial_state_description: Optional initial state description for the tool's context
-            mode: Simulation mode - "dynamic", "static", or "mock"
+            mode: Simulation mode - ToolSimulationMode enum or "dynamic", "static", "mock" string
             static_response: Static response dict for static mode
             mock_function: Custom callable for mock mode
             **simulator_kwargs: Additional simulator configuration
@@ -734,6 +661,12 @@ class ToolSimulator:
             if schema is None:
                 raise ValueError(f"MCP schema is required for tool {tool_name}")
 
+            # Convert string mode to enum for backward compatibility
+            if isinstance(mode, str):
+                mode_enum = ToolSimulationMode(mode)
+            else:
+                mode_enum = mode
+
             # Register tool
             registered_tool = RegisteredTool(
                 name=tool_name,
@@ -742,7 +675,7 @@ class ToolSimulator:
                 mcp_schema=schema,
                 initial_state_description=initial_state_description,
                 simulator_kwargs=simulator_kwargs,
-                mode=mode,
+                mode=mode_enum,
                 static_response=static_response,
                 mock_function=mock_function,
             )
@@ -761,7 +694,7 @@ class ToolSimulator:
         method: str | None = None,
         schema: dict[str, Any] | None = None,
         initial_state_description: str | None = None,
-        mode: str = "dynamic",
+        mode: ToolSimulationMode | str = ToolSimulationMode.DYNAMIC,
         static_response: dict[str, Any] | None = None,
         mock_function: Callable | None = None,
         **simulator_kwargs,
@@ -775,7 +708,7 @@ class ToolSimulator:
             method: HTTP method (GET, POST, etc.)
             schema: API tool schema dictionary
             initial_state_description: Optional initial state description for the tool's context
-            mode: Simulation mode - "dynamic", "static", or "mock"
+            mode: Simulation mode - ToolSimulationMode enum or "dynamic", "static", "mock" string
             static_response: Static response dict for static mode
             mock_function: Custom callable for mock mode
             **simulator_kwargs: Additional simulator configuration
@@ -792,6 +725,12 @@ class ToolSimulator:
             if method is None:
                 raise ValueError("HTTP method is required")
 
+            # Convert string mode to enum for backward compatibility
+            if isinstance(mode, str):
+                mode_enum = ToolSimulationMode(mode)
+            else:
+                mode_enum = mode
+
             # Register tool
             registered_tool = RegisteredTool(
                 name=tool_name,
@@ -801,7 +740,7 @@ class ToolSimulator:
                 api_method=method,
                 initial_state_description=initial_state_description,
                 simulator_kwargs=simulator_kwargs,
-                mode=mode,
+                mode=mode_enum,
                 static_response=static_response,
                 mock_function=mock_function,
             )
