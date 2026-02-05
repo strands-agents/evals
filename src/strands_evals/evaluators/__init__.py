@@ -1,3 +1,4 @@
+from .conciseness_evaluator import ConcisenessEvaluator
 from .evaluator import Evaluator
 from .faithfulness_evaluator import FaithfulnessEvaluator
 from .goal_success_rate_evaluator import GoalSuccessRateEvaluator
@@ -22,4 +23,5 @@ __all__ = [
     "ResponseRelevanceEvaluator",
     "ToolSelectionAccuracyEvaluator",
     "ToolParameterAccuracyEvaluator",
+    "ConcisenessEvaluator",
 ]
