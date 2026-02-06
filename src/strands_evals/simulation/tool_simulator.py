@@ -6,6 +6,7 @@ from collections import defaultdict, deque
 from datetime import datetime
 from typing import Any, Callable
 
+from pydantic import BaseModel
 from strands import Agent
 from strands.agent import AgentResult
 from strands.models.model import Model
@@ -492,18 +493,32 @@ class ToolSimulator:
         return self._state_registry.get_state(state_key)
 
     @classmethod
-    def function_tool(
+    def tool(
         cls,
         name: str | None = None,
+        tool_type: str = "function",
+        output_schema: type[BaseModel] | None = None,
+        prompt_template: str | None = None,
         initial_state_description: str | None = None,
+        # MCP specific parameters
+        schema: dict[str, Any] | None = None,
+        # API specific parameters
+        path: str | None = None,
+        method: str | None = None,
         **simulator_kwargs,
     ) -> Callable:
         """
-        Decorator for registering Python function tools.
+        Unified decorator for registering tools with flexible output schemas.
 
         Args:
             name: Optional name for the tool. If None, uses function.__name__
+            tool_type: Type of tool - "function", "mcp", or "api" (default: "function")
+            output_schema: Optional Pydantic BaseModel for output schema
+            prompt_template: Optional custom prompt template override
             initial_state_description: Optional initial state description for the tool's context
+            schema: MCP tool schema dictionary (for MCP tools)
+            path: API endpoint path (for API tools)
+            method: HTTP method (for API tools)
             **simulator_kwargs: Additional simulator configuration
 
         Returns:
@@ -514,117 +529,75 @@ class ToolSimulator:
             try:
                 tool_name = name or func.__name__
 
+                # Convert string tool_type to enum
+                if tool_type == "function":
+                    tool_type_enum = ToolType.FUNCTION
+                elif tool_type == "mcp":
+                    tool_type_enum = ToolType.MCP
+                elif tool_type == "api":
+                    tool_type_enum = ToolType.API
+                else:
+                    raise ValueError(f"Unsupported tool_type: {tool_type}. Must be 'function', 'mcp', or 'api'")
+
+                # Set default output schemas and validate tool-specific requirements
+                effective_output_schema = output_schema
+                effective_prompt_template = prompt_template
+
+                if tool_type_enum == ToolType.MCP:
+                    if effective_output_schema is None:
+                        effective_output_schema = MCPToolResponse
+                    if schema is None:
+                        raise ValueError(f"MCP schema is required for tool {tool_name}")
+                elif tool_type_enum == ToolType.API:
+                    if effective_output_schema is None:
+                        effective_output_schema = APIToolResponse
+                    if path is None:
+                        raise ValueError(f"API path is required for tool {tool_name}")
+                    if method is None:
+                        raise ValueError(f"HTTP method is required for tool {tool_name}")
+
                 # Register tool
                 registered_tool = RegisteredTool(
                     name=tool_name,
-                    tool_type=ToolType.FUNCTION,
+                    tool_type=tool_type_enum,
                     function=func,
+                    output_schema=effective_output_schema,
+                    prompt_template=effective_prompt_template,
+                    mcp_schema=schema,
+                    api_path=path,
+                    api_method=method,
                     initial_state_description=initial_state_description,
                     simulator_kwargs=simulator_kwargs,
                 )
                 cls._registered_tools[tool_name] = registered_tool
 
-                logger.info(f"Registered function tool: {tool_name}")
+                logger.info(f"Registered {tool_type} tool: {tool_name}")
 
             except Exception as e:
-                raise RuntimeError(f"Error registering function tool {name or func.__name__}: {e}") from e
+                raise RuntimeError(f"Error registering {tool_type} tool {name or func.__name__}: {e}") from e
 
             return func
 
         return decorator
+
+    # Backward compatibility aliases
+    @classmethod
+    def function_tool(cls, *args, **kwargs) -> Callable:
+        """Backward compatibility alias for tool(tool_type='function')."""
+        kwargs.setdefault("tool_type", "function")
+        return cls.tool(*args, **kwargs)
 
     @classmethod
-    def mcp_tool(
-        cls,
-        name: str | None = None,
-        schema: dict[str, Any] | None = None,
-        initial_state_description: str | None = None,
-        **simulator_kwargs,
-    ) -> Callable:
-        """
-        Decorator for registering MCP (Model Context Protocol) tools.
-
-        Args:
-            name: Optional name for the tool. If None, uses function.__name__
-            schema: MCP tool schema dictionary
-            initial_state_description: Optional initial state description for the tool's context
-            **simulator_kwargs: Additional simulator configuration
-
-        Returns:
-            Decorator function
-        """
-
-        def decorator(func: Callable) -> Callable:
-            tool_name = name or func.__name__
-
-            if schema is None:
-                raise ValueError(f"MCP schema is required for tool {tool_name}")
-
-            # Register tool
-            registered_tool = RegisteredTool(
-                name=tool_name,
-                tool_type=ToolType.MCP,
-                function=func,
-                mcp_schema=schema,
-                initial_state_description=initial_state_description,
-                simulator_kwargs=simulator_kwargs,
-            )
-            cls._registered_tools[tool_name] = registered_tool
-
-            logger.info(f"Registered MCP tool: {tool_name}")
-            return func
-
-        return decorator
+    def mcp_tool(cls, *args, **kwargs) -> Callable:
+        """Backward compatibility alias for tool(tool_type='mcp')."""
+        kwargs.setdefault("tool_type", "mcp")
+        return cls.tool(*args, **kwargs)
 
     @classmethod
-    def api_tool(
-        cls,
-        name: str | None = None,
-        path: str | None = None,
-        method: str | None = None,
-        schema: dict[str, Any] | None = None,
-        initial_state_description: str | None = None,
-        **simulator_kwargs,
-    ) -> Callable:
-        """
-        Decorator for registering API tools.
-
-        Args:
-            name: Optional name for the tool. If None, uses function.__name__
-            path: API endpoint path
-            method: HTTP method (GET, POST, etc.)
-            schema: API tool schema dictionary
-            initial_state_description: Optional initial state description for the tool's context
-            **simulator_kwargs: Additional simulator configuration
-
-        Returns:
-            Decorator function
-        """
-
-        def decorator(func: Callable) -> Callable:
-            tool_name = name or func.__name__
-
-            if path is None:
-                raise ValueError("API path is required")
-            if method is None:
-                raise ValueError("HTTP method is required")
-
-            # Register tool
-            registered_tool = RegisteredTool(
-                name=tool_name,
-                tool_type=ToolType.API,
-                function=func,
-                api_path=path,
-                api_method=method,
-                initial_state_description=initial_state_description,
-                simulator_kwargs=simulator_kwargs,
-            )
-            cls._registered_tools[tool_name] = registered_tool
-
-            logger.info(f"Registered API tool: {tool_name}")
-            return func
-
-        return decorator
+    def api_tool(cls, *args, **kwargs) -> Callable:
+        """Backward compatibility alias for tool(tool_type='api')."""
+        kwargs.setdefault("tool_type", "api")
+        return cls.tool(*args, **kwargs)
 
     def get_tool(self, tool_name: str) -> Callable | None:
         """

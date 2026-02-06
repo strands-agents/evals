@@ -89,26 +89,29 @@ Input Payload: {mcp_payload}
 6. Return valid JSON in MCP response format
 
 ## MCP Response Format
-MCP tools return responses in this format:
+MCP tools return responses in the official MCP ToolResultContent format:
 
 For successful operations:
 ```json
 {{
+  "tool_use_id": "tool_call_123",
   "content": [
     {{
       "type": "text",
       "text": "Operation completed successfully. Retrieved 5 items."
     }}
-  ]
+  ],
+  "is_error": false
 }}
 ```
 
-For data operations:
+For data operations with structured content:
 ```json
 {{
+  "tool_use_id": "tool_call_456", 
   "content": [
     {{
-      "type": "text", 
+      "type": "text",
       "text": "Found user profile for john.doe"
     }},
     {{
@@ -119,20 +122,26 @@ For data operations:
         "mimeType": "application/json"
       }}
     }}
-  ]
+  ],
+  "structured_content": {{
+    "user_id": "john.doe",
+    "profile_data": {{}}
+  }},
+  "is_error": false
 }}
 ```
 
 For errors:
 ```json
 {{
-  "isError": true,
+  "tool_use_id": "tool_call_789",
   "content": [
     {{
       "type": "text",
       "text": "Error: User not found"
     }}
-  ]
+  ],
+  "is_error": true
 }}
 ```
 
