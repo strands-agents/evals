@@ -27,6 +27,8 @@ class RegisteredTool(BaseModel):
         name: Name of the tool for identification and registration.
         tool_type: Type of the tool (FUNCTION, MCP, or API).
         function: Function callable for FUNCTION type tools (excluded from serialization).
+        output_schema: Pydantic BaseModel for output schema (excluded from serialization).
+        prompt_template: Custom prompt template override.
         mcp_schema: MCP tool schema dictionary for MCP type tools.
         api_path: API endpoint path for API type tools.
         api_method: HTTP method for API type tools (GET, POST, etc.).
@@ -37,6 +39,10 @@ class RegisteredTool(BaseModel):
     name: str = Field(..., description="Name of the tool")
     tool_type: ToolType = Field(..., description="Type of the tool")
     function: Callable | None = Field(default=None, description="Function callable", exclude=True)
+    output_schema: type[BaseModel] | None = Field(
+        default=None, description="Pydantic BaseModel for output schema", exclude=True
+    )
+    prompt_template: str | None = Field(default=None, description="Custom prompt template override")
     mcp_schema: dict[str, Any] | None = Field(default=None, description="MCP tool schema")
     api_path: str | None = Field(default=None, description="API endpoint path")
     api_method: str | None = Field(default=None, description="HTTP method")
@@ -50,8 +56,8 @@ class RegisteredTool(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
 
-class MCPContentItem(BaseModel):
-    """Individual content item in MCP response."""
+class ContentBlock(BaseModel):
+    """Individual content item in MCP response following official MCP specification."""
 
     type: str = Field(..., description="Type of content (text, resource, etc.)")
     text: str | None = Field(default=None, description="Text content")
@@ -60,13 +66,20 @@ class MCPContentItem(BaseModel):
 
 class MCPToolResponse(BaseModel):
     """
-    Response model for MCP tool simulation using structured output.
+    Response model for MCP tool simulation following official MCP specification.
 
-    Follows the MCP response format with content array and optional error flag.
+    Matches the official MCP ToolResultContent format for consistency with MCP ecosystem.
     """
 
-    content: list[MCPContentItem] = Field(..., description="Array of content items")
-    isError: bool | None = Field(default=False, description="Whether this response represents an error")
+    tool_use_id: str = Field(..., description="Unique identifier corresponding to tool call's id")
+    content: list[ContentBlock] = Field(
+        default_factory=list, description="List of content objects representing tool result"
+    )
+    structured_content: dict[str, Any] | None = Field(
+        default=None, description="Structured tool output matching outputSchema"
+    )
+    is_error: bool | None = Field(default=False, description="Whether tool execution resulted in error")
+    meta: dict[str, Any] | None = Field(default=None, description="Metadata following MCP specification")
 
 
 class APIErrorDetail(BaseModel):
