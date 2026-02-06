@@ -348,18 +348,34 @@ tool_parameter_evaluator = ToolParameterAccuracyEvaluator(
 
 ## Available Evaluators
 
-### Core Evaluators
-- **OutputEvaluator**: Flexible LLM-based evaluation with custom rubrics
-- **TrajectoryEvaluator**: Action sequence evaluation with built-in scoring tools
-- **HelpfulnessEvaluator**: Seven-level helpfulness assessment from user perspective
-- **FaithfulnessEvaluator**: Evaluates if responses are grounded in conversation history
-- **GoalSuccessRateEvaluator**: Measures if user goals were achieved
+### Output-Based Evaluators
+These evaluators work directly with inputs and outputs without requiring OpenTelemetry traces:
 
-### Specialized Evaluators
-- **ToolSelectionAccuracyEvaluator**: Evaluates appropriateness of tool choices
-- **ToolParameterAccuracyEvaluator**: Evaluates correctness of tool parameters
+- **OutputEvaluator**: Flexible LLM-based evaluation with custom rubrics
+- **TrajectoryEvaluator**: Action sequence evaluation with built-in scoring tools (supports both list-based trajectories and Session traces via extractors)
 - **InteractionsEvaluator**: Multi-agent interaction and handoff evaluation
 - **Custom Evaluators**: Extensible base class for domain-specific logic
+
+### Trace-Based Evaluators
+These evaluators require OpenTelemetry traces (Session objects) to analyze agent behavior:
+
+#### Tool-Level Evaluators
+Evaluate individual tool calls within a conversation:
+- **ToolSelectionAccuracyEvaluator**: Evaluates appropriateness of tool choices at specific points
+- **ToolParameterAccuracyEvaluator**: Evaluates correctness of tool parameters based on context
+
+#### Trace-Level Evaluators
+Evaluate the most recent turn in a conversation:
+- **HelpfulnessEvaluator**: Seven-level helpfulness assessment from user perspective
+- **FaithfulnessEvaluator**: Evaluates if responses are grounded in conversation history
+- **CoherenceEvaluator**: Assesses logical cohesion and reasoning quality with five-level scoring
+- **ConcisenessEvaluator**: Evaluates response brevity with three-level scoring
+- **ResponseRelevanceEvaluator**: Evaluates relevance of responses to user questions
+- **HarmfulnessEvaluator**: Binary evaluation for harmful content detection
+
+#### Session-Level Evaluators
+Evaluate entire conversation sessions:
+- **GoalSuccessRateEvaluator**: Measures if user goals were achieved across the full conversation
 
 ## Experiment Management and Serialization
 
