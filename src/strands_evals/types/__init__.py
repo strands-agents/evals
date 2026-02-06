@@ -1,4 +1,4 @@
-from .evaluation import EvaluationData, EvaluationOutput, Interaction, TaskOutput
+from .evaluation import EvaluationData, EvaluationOutput, InputT, Interaction, OutputT, TaskOutput
 from .simulation import ActorProfile, ActorResponse
 
 __all__ = [
@@ -8,4 +8,6 @@ __all__ = [
     "EvaluationOutput",
     "ActorProfile",
     "ActorResponse",
+    "InputT",
+    "OutputT",
 ]

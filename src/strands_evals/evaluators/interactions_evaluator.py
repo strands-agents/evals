@@ -3,14 +3,11 @@ from typing import cast
 from strands import Agent
 from strands.agent.conversation_manager import SlidingWindowConversationManager
 from strands.models.model import Model
-from typing_extensions import TypeVar, Union
+from typing_extensions import Union
 
-from ..types.evaluation import EvaluationData, EvaluationOutput
+from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from .evaluator import Evaluator
 from .prompt_templates.prompt_templates import judge_interactions_template as SYSTEM_PROMPT
-
-InputT = TypeVar("InputT")
-OutputT = TypeVar("OutputT")
 
 
 class InteractionsEvaluator(Evaluator[InputT, OutputT]):

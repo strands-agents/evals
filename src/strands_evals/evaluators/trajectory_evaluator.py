@@ -2,16 +2,13 @@ from typing import cast
 
 from strands import Agent
 from strands.models.model import Model
-from typing_extensions import Any, TypeVar, Union
+from typing_extensions import Any, Union
 
 from ..tools.evaluation_tools import any_order_match_scorer, exact_match_scorer, in_order_match_scorer
-from ..types.evaluation import EvaluationData, EvaluationOutput
+from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from .evaluator import Evaluator
 from .prompt_templates.case_prompt_template import compose_test_prompt
 from .prompt_templates.prompt_templates import judge_trajectory_template_tools as SYSTEM_PROMPT
-
-InputT = TypeVar("InputT")
-OutputT = TypeVar("OutputT")
 
 
 class TrajectoryEvaluator(Evaluator[InputT, OutputT]):

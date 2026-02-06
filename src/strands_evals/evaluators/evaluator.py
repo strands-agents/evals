@@ -2,16 +2,13 @@ import inspect
 import logging
 
 from strands.models.model import Model
-from typing_extensions import Any, Generic, TypeGuard, TypeVar, Union
+from typing_extensions import Any, Generic, TypeGuard, Union
 
 from ..extractors import TraceExtractor
-from ..types.evaluation import EvaluationData, EvaluationOutput
+from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from ..types.trace import AssistantMessage, Context, EvaluationLevel, Session, TextContent, ToolConfig, UserMessage
 
 logger = logging.getLogger(__name__)
-
-InputT = TypeVar("InputT")
-OutputT = TypeVar("OutputT")
 
 DEFAULT_BEDROCK_MODEL_ID = "us.anthropic.claude-sonnet-4-20250514-v1:0"
 

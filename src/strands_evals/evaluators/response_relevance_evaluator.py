@@ -5,15 +5,12 @@ from pydantic import BaseModel, Field
 from strands import Agent
 from strands.agent.agent_result import AgentResult
 from strands.models.model import Model
-from typing_extensions import TypeVar, Union
+from typing_extensions import Union
 
-from ..types.evaluation import EvaluationData, EvaluationOutput
+from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from ..types.trace import EvaluationLevel, TextContent, ToolExecution, TraceLevelInput
 from .evaluator import Evaluator
 from .prompt_templates.response_relevance import get_template
-
-InputT = TypeVar("InputT")
-OutputT = TypeVar("OutputT")
 
 
 class ResponseRelevanceScore(str, Enum):
