@@ -14,7 +14,6 @@ from strands_evals.types.simulation.tool import (
     APIToolResponse,
     MCPToolResponse,
     RegisteredTool,
-    ToolSimulationMode,
     ToolType,
 )
 
@@ -181,7 +180,6 @@ class ToolSimulator:
     # Class-level registry for all registered tools
     _registered_tools: dict[str, RegisteredTool] = {}
     _state_registry: StateRegistry
-    _global_instance: "ToolSimulator | None" = None
 
     def __init__(
         self,
@@ -224,10 +222,6 @@ class ToolSimulator:
 
         # Initialize shared states from registered tools
         self._initialize_shared_states()
-
-        # Set as global instance if none exists
-        if ToolSimulator._global_instance is None:
-            ToolSimulator._global_instance = self
 
     def _initialize_shared_states(self):
         """Initialize shared states from registered tools' initial descriptions."""
@@ -391,21 +385,14 @@ class ToolSimulator:
 
     def _call(self, registered_tool: RegisteredTool, input_data: dict[str, Any], state_key: str) -> Any:
         """Simulate a tool invocation and return the response."""
-        # Handle different simulation modes
-        match registered_tool.mode:
-            case ToolSimulationMode.STATIC:
-                return self._handle_static_mode(registered_tool)
-            case ToolSimulationMode.MOCK:
-                return self._handle_mock_mode(registered_tool, input_data, state_key)
-            case ToolSimulationMode.DYNAMIC:
-                # Route to appropriate handler based on tool type
-                match registered_tool.tool_type:
-                    case ToolType.FUNCTION:
-                        return self._handle_function_tool(registered_tool.name, input_data, state_key)
-                    case ToolType.MCP:
-                        return self._handle_mcp_tool(registered_tool.name, input_data, state_key)
-                    case ToolType.API:
-                        return self._handle_api_tool(registered_tool.name, input_data, state_key)
+        if registered_tool.tool_type == ToolType.FUNCTION:
+            return self._handle_function_tool(registered_tool.name, input_data, state_key)
+        elif registered_tool.tool_type == ToolType.MCP:
+            return self._handle_mcp_tool(registered_tool.name, input_data, state_key)
+        elif registered_tool.tool_type == ToolType.API:
+            return self._handle_api_tool(registered_tool.name, input_data, state_key)
+        else:
+            raise ValueError(f"Unsupported tool type: {registered_tool.tool_type}")
 
     def _handle_function_tool(self, tool_name: str, input_data: dict[str, Any], state_key: str) -> dict[str, Any]:
         """Handle function tool simulation."""
@@ -486,99 +473,29 @@ class ToolSimulator:
 
         return response_data
 
-    def _handle_static_mode(self, registered_tool: RegisteredTool) -> dict[str, Any]:
-        """Handle static mode simulation - returns predefined static response."""
-        if registered_tool.static_response is None:
-            raise ValueError(f"Static response is required for tool '{registered_tool.name}' in static mode")
-
-        return registered_tool.static_response
-
-    def _handle_mock_mode(
-        self, registered_tool: RegisteredTool, input_data: dict[str, Any], state_key: str
-    ) -> dict[str, Any]:
-        """Handle mock mode simulation - calls custom mock function."""
-        if registered_tool.mock_function is None:
-            raise ValueError("mock_function is required for tool simulator mock mode")
-
-        try:
-            # Extract parameters based on tool type
-            if registered_tool.tool_type == ToolType.FUNCTION:
-                parameters = input_data.get("parameters", {})
-                if isinstance(parameters, str):
-                    parameters = json.loads(parameters)
-
-                # Call mock function with extracted parameters
-                if "kwargs" in parameters:
-                    result = registered_tool.mock_function(**parameters["kwargs"])
-                elif "args" in parameters:
-                    result = registered_tool.mock_function(*parameters["args"])
-                else:
-                    result = registered_tool.mock_function(**parameters)
-
-            elif registered_tool.tool_type == ToolType.MCP:
-                input_mcp_payload = input_data.get("input_mcp_payload", {})
-                result = registered_tool.mock_function(**input_mcp_payload)
-
-            elif registered_tool.tool_type == ToolType.API:
-                user_input_api_payload = input_data.get("user_input_api_payload", {})
-                result = registered_tool.mock_function(**user_input_api_payload)
-
-            else:
-                raise ValueError(f"Unsupported tool type '{registered_tool.tool_type}' for mock mode")
-
-            # Record the call in state registry
-            tool_name = registered_tool.name
-            if registered_tool.tool_type == ToolType.FUNCTION:
-                self._state_registry.cache_tool_call(
-                    tool_name, state_key, ToolType.FUNCTION, result, parameters=parameters
-                )
-            elif registered_tool.tool_type == ToolType.MCP:
-                self._state_registry.cache_tool_call(
-                    tool_name, state_key, ToolType.MCP, result, input_mcp_payload=input_mcp_payload
-                )
-            elif registered_tool.tool_type == ToolType.API:
-                path = input_data.get("path", "")
-                method = input_data.get("method", "GET")
-                self._state_registry.cache_tool_call(
-                    tool_name,
-                    state_key,
-                    ToolType.API,
-                    result,
-                    path=path,
-                    method=method,
-                    input_data=user_input_api_payload,
-                )
-
-            return result
-
-        except Exception as e:
-            raise RuntimeError(
-                f"Tool simulator mock mode error for {registered_tool.tool_type} tool {registered_tool.name}: {e}"
-            ) from e
-
     @classmethod
     def clear_registry(cls):
         """Clear all registered tools. Useful for testing."""
         cls._registered_tools.clear()
-        cls._state_registry = None
-        cls._global_instance = None
         logger.info("Cleared tool registry")
 
-    @classmethod
-    def _get_instance(cls) -> "ToolSimulator":
-        """Get the global ToolSimulator instance."""
-        if cls._global_instance is None:
-            cls._global_instance = cls()
-        return cls._global_instance
+    def get_state(self, state_key: str) -> dict[str, Any]:
+        """
+        Get state for a specific tool or shared state group.
+
+        Args:
+            state_key: Key for the state (tool_name or share_state_id).
+
+        Returns:
+            State dictionary containing previous_calls.
+        """
+        return self._state_registry.get_state(state_key)
 
     @classmethod
     def function_tool(
         cls,
         name: str | None = None,
         initial_state_description: str | None = None,
-        mode: ToolSimulationMode | str = ToolSimulationMode.DYNAMIC,
-        static_response: dict[str, Any] | None = None,
-        mock_function: Callable | None = None,
         **simulator_kwargs,
     ) -> Callable:
         """
@@ -587,9 +504,6 @@ class ToolSimulator:
         Args:
             name: Optional name for the tool. If None, uses function.__name__
             initial_state_description: Optional initial state description for the tool's context
-            mode: Simulation mode - ToolSimulationMode enum or "dynamic", "static", "mock" string
-            static_response: Static response dict for static mode
-            mock_function: Custom callable for mock mode
             **simulator_kwargs: Additional simulator configuration
 
         Returns:
@@ -600,12 +514,6 @@ class ToolSimulator:
             try:
                 tool_name = name or func.__name__
 
-                # Convert string mode to enum for backward compatibility
-                if isinstance(mode, str):
-                    mode_enum = ToolSimulationMode(mode)
-                else:
-                    mode_enum = mode
-
                 # Register tool
                 registered_tool = RegisteredTool(
                     name=tool_name,
@@ -613,9 +521,6 @@ class ToolSimulator:
                     function=func,
                     initial_state_description=initial_state_description,
                     simulator_kwargs=simulator_kwargs,
-                    mode=mode_enum,
-                    static_response=static_response,
-                    mock_function=mock_function,
                 )
                 cls._registered_tools[tool_name] = registered_tool
 
@@ -634,9 +539,6 @@ class ToolSimulator:
         name: str | None = None,
         schema: dict[str, Any] | None = None,
         initial_state_description: str | None = None,
-        mode: ToolSimulationMode | str = ToolSimulationMode.DYNAMIC,
-        static_response: dict[str, Any] | None = None,
-        mock_function: Callable | None = None,
         **simulator_kwargs,
     ) -> Callable:
         """
@@ -646,9 +548,6 @@ class ToolSimulator:
             name: Optional name for the tool. If None, uses function.__name__
             schema: MCP tool schema dictionary
             initial_state_description: Optional initial state description for the tool's context
-            mode: Simulation mode - ToolSimulationMode enum or "dynamic", "static", "mock" string
-            static_response: Static response dict for static mode
-            mock_function: Custom callable for mock mode
             **simulator_kwargs: Additional simulator configuration
 
         Returns:
@@ -661,12 +560,6 @@ class ToolSimulator:
             if schema is None:
                 raise ValueError(f"MCP schema is required for tool {tool_name}")
 
-            # Convert string mode to enum for backward compatibility
-            if isinstance(mode, str):
-                mode_enum = ToolSimulationMode(mode)
-            else:
-                mode_enum = mode
-
             # Register tool
             registered_tool = RegisteredTool(
                 name=tool_name,
@@ -675,9 +568,6 @@ class ToolSimulator:
                 mcp_schema=schema,
                 initial_state_description=initial_state_description,
                 simulator_kwargs=simulator_kwargs,
-                mode=mode_enum,
-                static_response=static_response,
-                mock_function=mock_function,
             )
             cls._registered_tools[tool_name] = registered_tool
 
@@ -694,9 +584,6 @@ class ToolSimulator:
         method: str | None = None,
         schema: dict[str, Any] | None = None,
         initial_state_description: str | None = None,
-        mode: ToolSimulationMode | str = ToolSimulationMode.DYNAMIC,
-        static_response: dict[str, Any] | None = None,
-        mock_function: Callable | None = None,
         **simulator_kwargs,
     ) -> Callable:
         """
@@ -708,9 +595,6 @@ class ToolSimulator:
             method: HTTP method (GET, POST, etc.)
             schema: API tool schema dictionary
             initial_state_description: Optional initial state description for the tool's context
-            mode: Simulation mode - ToolSimulationMode enum or "dynamic", "static", "mock" string
-            static_response: Static response dict for static mode
-            mock_function: Custom callable for mock mode
             **simulator_kwargs: Additional simulator configuration
 
         Returns:
@@ -725,12 +609,6 @@ class ToolSimulator:
             if method is None:
                 raise ValueError("HTTP method is required")
 
-            # Convert string mode to enum for backward compatibility
-            if isinstance(mode, str):
-                mode_enum = ToolSimulationMode(mode)
-            else:
-                mode_enum = mode
-
             # Register tool
             registered_tool = RegisteredTool(
                 name=tool_name,
@@ -740,9 +618,6 @@ class ToolSimulator:
                 api_method=method,
                 initial_state_description=initial_state_description,
                 simulator_kwargs=simulator_kwargs,
-                mode=mode_enum,
-                static_response=static_response,
-                mock_function=mock_function,
             )
             cls._registered_tools[tool_name] = registered_tool
 

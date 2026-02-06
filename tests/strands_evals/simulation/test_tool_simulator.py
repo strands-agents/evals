@@ -393,27 +393,6 @@ def test_tool_not_found_raises_error():
     assert "not found in registered tools" in str(excinfo.value)
 
 
-def test_mock_mode_missing_function_raises_error():
-    """Test that mock mode raises ValueError when mock_function is missing."""
-
-    # Register a tool without mock_function but with mock mode
-    @ToolSimulator.function_tool("test_mock_tool", mode="mock")
-    def test_mock_tool():
-        pass
-
-    simulator = ToolSimulator()
-    registered_tool = ToolSimulator._registered_tools["test_mock_tool"]
-
-    with pytest.raises(ValueError) as excinfo:
-        simulator._handle_mock_mode(
-            registered_tool=registered_tool,
-            input_data={"tool_name": "test_mock_tool", "parameters": {}},
-            state_key="test",
-        )
-
-    assert "mock_function is required for tool simulator mock mode" in str(excinfo.value)
-
-
 def test_clear_registry():
     """Test clearing tool registry."""
 
@@ -426,18 +405,13 @@ def test_clear_registry():
     ToolSimulator.clear_registry()
 
     assert len(ToolSimulator._registered_tools) == 0
-    assert ToolSimulator._state_registry is None
 
 
 def test_attaching_function_tool_simulator_to_strands_agent():
     """Test attaching function tool simulator to Strands agent."""
 
-    # Mock function that handles parameters
-    def mock_function(input_value):
-        return {"result": f"processed {input_value}"}
-
     # Register a function tool simulator
-    @ToolSimulator.function_tool("test_function_tool", mode="mock", mock_function=mock_function)
+    @ToolSimulator.function_tool("test_function_tool")
     def test_function_tool(input_value: str) -> Dict[str, Any]:
         """Test function tool for agent attachment.
 
@@ -463,10 +437,6 @@ def test_attaching_function_tool_simulator_to_strands_agent():
 def test_attaching_mcp_tool_simulator_to_strands_agent():
     """Test attaching MCP tool simulator to Strands agent."""
 
-    # Mock function for MCP tool
-    def mock_mcp_processor(param1, param2=42):
-        return {"content": [{"type": "text", "text": f"MCP processed: {param1} with value {param2}"}], "isError": False}
-
     schema = {
         "type": "object",
         "properties": {"param1": {"type": "string"}, "param2": {"type": "integer", "default": 42}},
@@ -474,7 +444,7 @@ def test_attaching_mcp_tool_simulator_to_strands_agent():
     }
 
     # Register an MCP tool simulator
-    @ToolSimulator.mcp_tool("test_mcp_tool", schema=schema, mode="mock", mock_function=mock_mcp_processor)
+    @ToolSimulator.mcp_tool("test_mcp_tool", schema=schema)
     def test_mcp_tool(param1: str, param2: int = 42) -> Dict[str, Any]:
         """Test MCP tool for agent attachment.
 
@@ -501,16 +471,8 @@ def test_attaching_mcp_tool_simulator_to_strands_agent():
 def test_attaching_api_tool_simulator_to_strands_agent():
     """Test attaching API tool simulator to Strands agent."""
 
-    # Static response for API tool
-    static_response = {
-        "status": 200,
-        "data": {"message": "API tool working", "timestamp": "2024-01-01T12:00:00Z", "endpoint": "/test/api"},
-    }
-
     # Register an API tool simulator
-    @ToolSimulator.api_tool(
-        "test_api_tool", path="/test/api", method="GET", mode="static", static_response=static_response
-    )
+    @ToolSimulator.api_tool("test_api_tool", path="/test/api", method="GET")
     def test_api_tool(query: str = "") -> Dict[str, Any]:
         """Test API tool for agent attachment.
 
