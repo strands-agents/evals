@@ -2,13 +2,9 @@ import json
 from pathlib import Path
 
 from pydantic import BaseModel
-from typing_extensions import TypeVar
 
 from ..display.display_console import CollapsibleTableReportDisplay
 from ..types.evaluation import EvaluationOutput
-
-InputT = TypeVar("InputT")
-OutputT = TypeVar("OutputT")
 
 
 class EvaluationReport(BaseModel):

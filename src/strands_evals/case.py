@@ -1,12 +1,9 @@
 import uuid
 
 from pydantic import BaseModel, Field
-from typing_extensions import Any, Generic, TypeVar
+from typing_extensions import Any, Generic
 
-from .types.evaluation import Interaction
-
-InputT = TypeVar("InputT")
-OutputT = TypeVar("OutputT")
+from .types.evaluation import InputT, Interaction, OutputT
 
 
 class Case(BaseModel, Generic[InputT, OutputT]):

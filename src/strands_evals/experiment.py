@@ -14,7 +14,7 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
-from typing_extensions import Any, Generic, TypeVar
+from typing_extensions import Any, Generic
 
 from .case import Case
 from .evaluators.evaluator import Evaluator
@@ -23,12 +23,9 @@ from .evaluators.output_evaluator import OutputEvaluator
 from .evaluators.trajectory_evaluator import TrajectoryEvaluator
 from .telemetry import get_tracer, serialize
 from .telemetry._cloudwatch_logger import _send_to_cloudwatch
-from .types.evaluation import EvaluationData
+from .types.evaluation import EvaluationData, InputT, OutputT
 from .types.evaluation_report import EvaluationReport
 from .utils import is_throttling_error
-
-InputT = TypeVar("InputT")
-OutputT = TypeVar("OutputT")
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)

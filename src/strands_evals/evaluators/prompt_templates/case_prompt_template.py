@@ -1,9 +1,4 @@
-from typing_extensions import TypeVar
-
-from ...types.evaluation import EvaluationData
-
-InputT = TypeVar("InputT")
-OutputT = TypeVar("OutputT")
+from ...types.evaluation import EvaluationData, InputT, OutputT
 
 
 def compose_test_prompt(
