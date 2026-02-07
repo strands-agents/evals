@@ -7,7 +7,6 @@ import pytest
 
 from strands_evals.case import Case
 from strands_evals.simulation.tool_simulator import StateRegistry, ToolSimulator
-from strands_evals.types.simulation.tool import ToolType
 
 
 @pytest.fixture
@@ -52,15 +51,14 @@ def test_tool_simulator_init():
 
     assert simulator._state_registry is custom_registry
     assert simulator.model is None  # model is now used for LLM inference
-    assert simulator.function_tool_prompt is not None  # Check that prompt templates are loaded
-    assert simulator.mcp_tool_prompt is not None
-    assert simulator.api_tool_prompt is not None
+    assert simulator.function_tool_prompt is not None  # Check that prompt template is loaded
 
 
-def test_function_tool_decorator_registration():
-    """Test function tool decorator registration."""
+def test_tool_decorator_registration():
+    """Test tool decorator registration."""
+    simulator = ToolSimulator()
 
-    @ToolSimulator.function_tool()
+    @simulator()
     def test_function(x: int, y: str) -> dict:
         """A sample function for testing."""
         return {"x": x, "y": y}
@@ -68,52 +66,33 @@ def test_function_tool_decorator_registration():
     assert "test_function" in ToolSimulator._registered_tools
     registered_tool = ToolSimulator._registered_tools["test_function"]
     assert registered_tool.name == "test_function"
-    assert registered_tool.tool_type == ToolType.FUNCTION
     assert registered_tool.function == test_function
 
 
-def test_mcp_tool_decorator_registration():
-    """Test MCP tool decorator registration."""
-    schema = {"type": "object", "properties": {"param": {"type": "string"}}, "required": ["param"]}
+def test_tool_decorator_with_name():
+    """Test tool decorator with custom name."""
+    simulator = ToolSimulator()
 
-    @ToolSimulator.mcp_tool("test_mcp", schema=schema)
-    def sample_mcp_tool(**params):
-        """A sample MCP tool for testing."""
-        return {"content": [{"type": "text", "text": f"Result: {params}"}]}
+    @simulator(name="custom_name")
+    def test_function(x: int) -> dict:
+        """A sample function for testing."""
+        return {"x": x}
 
-    assert "test_mcp" in ToolSimulator._registered_tools
-    registered_tool = ToolSimulator._registered_tools["test_mcp"]
-    assert registered_tool.name == "test_mcp"
-    assert registered_tool.tool_type == ToolType.MCP
-    assert registered_tool.mcp_schema == schema
-
-
-def test_api_tool_decorator_registration():
-    """Test API tool decorator registration."""
-
-    @ToolSimulator.api_tool("test_api", path="/test", method="POST")
-    def sample_api_tool(**kwargs):
-        """A sample API tool for testing."""
-        return {"status": 200, "data": kwargs}
-
-    assert "test_api" in ToolSimulator._registered_tools
-    registered_tool = ToolSimulator._registered_tools["test_api"]
-    assert registered_tool.name == "test_api"
-    assert registered_tool.tool_type == ToolType.API
-    assert registered_tool.api_path == "/test"
-    assert registered_tool.api_method == "POST"
+    assert "custom_name" in ToolSimulator._registered_tools
+    registered_tool = ToolSimulator._registered_tools["custom_name"]
+    assert registered_tool.name == "custom_name"
+    assert registered_tool.function == test_function
 
 
-def test_function_tool_simulation(mock_model):
-    """Test function tool simulation."""
+def test_tool_simulation(mock_model):
+    """Test tool simulation."""
+    simulator = ToolSimulator(model=mock_model)
 
-    # Register and create simulator with mock model
-    @ToolSimulator.function_tool("test_function")
+    # Register tool
+    @simulator()
     def test_func(message: str) -> dict:
         """Test function that should be simulated."""
         pass
-
-    simulator = ToolSimulator(model=mock_model)
 
     # Mock the Agent constructor and its result to avoid real LLM calls
     mock_agent_instance = MagicMock()
@@ -127,130 +106,58 @@ def test_function_tool_simulation(mock_model):
         m.setattr("strands_evals.simulation.tool_simulator.Agent", lambda **kwargs: mock_agent_instance)
 
         # Execute simulated function
-        result = simulator.test_function("Hello, world!")
+        result = simulator.test_func("Hello, world!")
 
         assert result == {"result": "simulated response"}
         assert mock_agent_instance.called
 
 
-def test_mcp_tool_simulation(mock_model):
-    """Test MCP tool simulation."""
-    # Register and create simulator with mock model
-    schema = {"type": "object", "properties": {"param": {"type": "string"}}}
-
-    @ToolSimulator.mcp_tool("test_mcp", schema=schema)
-    def test_mcp(**params):
-        """Test MCP tool that should be simulated."""
-        pass
-
-    simulator = ToolSimulator(model=mock_model)
-
-    # Mock the Agent constructor and its result to avoid real LLM calls
-    mock_agent_instance = MagicMock()
-    mock_result = MagicMock()
-    # Mock __str__ method to return expected JSON string
-    mock_result.__str__ = MagicMock(return_value='{"content": [{"type": "text", "text": "MCP response"}]}')
-    mock_agent_instance.return_value = mock_result
-
-    with pytest.MonkeyPatch().context() as m:
-        # Mock the Agent class constructor
-        m.setattr("strands_evals.simulation.tool_simulator.Agent", lambda **kwargs: mock_agent_instance)
-
-        # Execute simulated MCP tool
-        result = simulator.test_mcp(param="test_value")
-
-        assert result == {"content": [{"type": "text", "text": "MCP response"}]}
-        assert mock_agent_instance.called
-
-
-def test_api_tool_simulation(mock_model):
-    """Test API tool simulation."""
-
-    # Register and create simulator with mock model
-    @ToolSimulator.api_tool("test_api", path="/test", method="POST")
-    def test_api(**kwargs):
-        """Test API tool that should be simulated."""
-        pass
-
-    simulator = ToolSimulator(model=mock_model)
-
-    # Mock the Agent constructor and its result to avoid real LLM calls
-    mock_agent_instance = MagicMock()
-    mock_result = MagicMock()
-    # Mock __str__ method to return expected JSON string
-    mock_result.__str__ = MagicMock(return_value='{"status": 200, "data": {"key": "value"}}')
-    mock_agent_instance.return_value = mock_result
-
-    with pytest.MonkeyPatch().context() as m:
-        # Mock the Agent class constructor
-        m.setattr("strands_evals.simulation.tool_simulator.Agent", lambda **kwargs: mock_agent_instance)
-
-        # Execute simulated API tool
-        result = simulator.test_api(key="value")
-
-        assert result == {"status": 200, "data": {"key": "value"}}
-        assert mock_agent_instance.called
-
-
 def test_list_tools():
     """Test listing registered tools."""
+    simulator = ToolSimulator()
 
-    @ToolSimulator.function_tool("func1")
+    @simulator()
     def func1():
         pass
 
-    @ToolSimulator.function_tool("func2")
+    @simulator()
     def func2():
         pass
 
-    simulator = ToolSimulator()
     tools = simulator.list_tools()
 
     assert set(tools) == {"func1", "func2"}
 
 
 def test_shared_state_registry(mock_model):
-    """Test that function, MCP, and API tools can share the same state registry."""
+    """Test that tools can share the same state registry."""
     shared_state_id = "shared_banking_state"
     initial_state = "Initial banking system state with account balances"
 
-    # Register three different tools that share the same state
-    @ToolSimulator.function_tool(
-        "check_balance", initial_state_description=initial_state, share_state_id=shared_state_id
-    )
+    simulator = ToolSimulator(model=mock_model)
+
+    # Register tools that share the same state
+    @simulator(initial_state_description=initial_state, share_state_id=shared_state_id)
     def check_balance(account_id: str):
         """Check account balance."""
         pass
 
-    @ToolSimulator.mcp_tool(
-        "transfer_funds",
-        schema={"type": "object", "properties": {"from_account": {"type": "string"}, "to_account": {"type": "string"}}},
-        initial_state_description=initial_state,
-        share_state_id=shared_state_id,
-    )
-    def transfer_funds(**params):
+    @simulator(initial_state_description=initial_state, share_state_id=shared_state_id)
+    def transfer_funds(from_account: str, to_account: str):
         """Transfer funds between accounts."""
         pass
 
-    @ToolSimulator.api_tool(
-        "get_transactions",
-        path="/transactions",
-        method="GET",
-        initial_state_description=initial_state,
-        share_state_id=shared_state_id,
-    )
-    def get_transactions(**kwargs):
+    @simulator(initial_state_description=initial_state, share_state_id=shared_state_id)
+    def get_transactions(account_id: str):
         """Get transaction history."""
         pass
-
-    simulator = ToolSimulator(model=mock_model)
 
     # Mock the Agent constructor to avoid real LLM calls
     mock_agent_instances = []
     expected_responses = [
         {"balance": 1000, "currency": "USD"},  # Function response
-        {"content": [{"type": "text", "text": "Transfer completed"}]},  # MCP response
-        {"status": 200, "data": {"transactions": []}},  # API response
+        {"status": "success", "message": "Transfer completed"},  # Function response
+        {"transactions": []},  # Function response
     ]
 
     def create_mock_agent(**kwargs):
@@ -261,7 +168,7 @@ def test_shared_state_registry(mock_model):
             response = expected_responses[len(mock_agent_instances)]
             import json
 
-            # Simplified approach: Mock __str__ method to return JSON string for all tool types
+            # Mock __str__ method to return JSON string
             mock_result.__str__ = MagicMock(return_value=json.dumps(response))
 
         mock_agent.return_value = mock_result
@@ -274,13 +181,13 @@ def test_shared_state_registry(mock_model):
 
         # Execute each tool in order
         balance_result = simulator.check_balance("12345")
-        transfer_result = simulator.transfer_funds(from_account="12345", to_account="67890")
-        transactions_result = simulator.get_transactions(account_id="12345")
+        transfer_result = simulator.transfer_funds("12345", "67890")
+        transactions_result = simulator.get_transactions("12345")
 
         # Verify results
         assert balance_result == {"balance": 1000, "currency": "USD"}
-        assert transfer_result == {"content": [{"type": "text", "text": "Transfer completed"}]}
-        assert transactions_result == {"status": 200, "data": {"transactions": []}}
+        assert transfer_result == {"status": "success", "message": "Transfer completed"}
+        assert transactions_result == {"transactions": []}
 
         # Verify all agents were called
         assert len(mock_agent_instances) == 3
@@ -300,26 +207,18 @@ def test_shared_state_registry(mock_model):
     assert "transfer_funds" in tool_names
     assert "get_transactions" in tool_names
 
-    # Verify each tool type recorded its specific data correctly
-    function_call = next(call for call in shared_state["previous_calls"] if call["tool_name"] == "check_balance")
-    assert "parameters" in function_call
-
-    mcp_call = next(call for call in shared_state["previous_calls"] if call["tool_name"] == "transfer_funds")
-    assert "input_mcp_payload" in mcp_call
-
-    api_call = next(call for call in shared_state["previous_calls"] if call["tool_name"] == "get_transactions")
-    assert "path" in api_call
-    assert "method" in api_call
+    # Verify each tool call recorded its parameters correctly
+    for call in shared_state["previous_calls"]:
+        assert "parameters" in call
 
 
 def test_cache_tool_call_function():
-    """Test recording function call in state registry using unified method."""
+    """Test recording function call in state registry."""
     registry = StateRegistry()
 
     registry.cache_tool_call(
         tool_name="test_tool",
         state_key="test_state",
-        tool_type=ToolType.FUNCTION,
         response_data={"result": "success"},
         parameters={"param": "value"},
     )
@@ -329,57 +228,8 @@ def test_cache_tool_call_function():
     assert len(state["previous_calls"]) == 1
     call = state["previous_calls"][0]
     assert call["tool_name"] == "test_tool"
-    assert call["tool_type"] == "function"
     assert call["parameters"] == {"param": "value"}
     assert call["response"] == {"result": "success"}
-
-
-def test_cache_tool_call_mcp():
-    """Test recording MCP tool call in state registry using unified method."""
-    registry = StateRegistry()
-
-    registry.cache_tool_call(
-        tool_name="mcp_tool",
-        state_key="mcp_state",
-        tool_type=ToolType.MCP,
-        response_data={"content": [{"type": "text", "text": "result"}]},
-        input_mcp_payload={"input": "data"},
-    )
-
-    state = registry.get_state("mcp_state")
-    assert "previous_calls" in state
-    assert len(state["previous_calls"]) == 1
-    call = state["previous_calls"][0]
-    assert call["tool_name"] == "mcp_tool"
-    assert call["tool_type"] == "mcp"
-    assert call["input_mcp_payload"] == {"input": "data"}
-    assert call["response"] == {"content": [{"type": "text", "text": "result"}]}
-
-
-def test_cache_tool_call_api():
-    """Test recording API call in state registry using unified method."""
-    registry = StateRegistry()
-
-    registry.cache_tool_call(
-        tool_name="api_tool",
-        state_key="api_state",
-        tool_type=ToolType.API,
-        response_data={"status": 200},
-        path="/test",
-        method="POST",
-        input_data={"data": "test"},
-    )
-
-    state = registry.get_state("api_state")
-    assert "previous_calls" in state
-    assert len(state["previous_calls"]) == 1
-    call = state["previous_calls"][0]
-    assert call["tool_name"] == "api_tool"
-    assert call["tool_type"] == "api"
-    assert call["path"] == "/test"
-    assert call["method"] == "POST"
-    assert call["input"] == {"data": "test"}
-    assert call["response"] == {"status": 200}
 
 
 def test_tool_not_found_raises_error():
@@ -395,8 +245,9 @@ def test_tool_not_found_raises_error():
 
 def test_clear_registry():
     """Test clearing tool registry."""
+    simulator = ToolSimulator()
 
-    @ToolSimulator.function_tool("test_function")
+    @simulator()
     def test_func():
         pass
 
@@ -407,22 +258,22 @@ def test_clear_registry():
     assert len(ToolSimulator._registered_tools) == 0
 
 
-def test_attaching_function_tool_simulator_to_strands_agent():
-    """Test attaching function tool simulator to Strands agent."""
+def test_attaching_tool_simulator_to_strands_agent():
+    """Test attaching tool simulator to Strands agent."""
+    simulator = ToolSimulator()
 
-    # Register a function tool simulator
-    @ToolSimulator.function_tool("test_function_tool")
-    def test_function_tool(input_value: str) -> Dict[str, Any]:
-        """Test function tool for agent attachment.
+    # Register a tool simulator
+    @simulator()
+    def test_tool(input_value: str) -> Dict[str, Any]:
+        """Test tool for agent attachment.
 
         Args:
             input_value: Input parameter for processing
         """
         pass
 
-    # Create simulator and get the tool
-    simulator = ToolSimulator()
-    tool_wrapper = simulator.get_tool("test_function_tool")
+    # Get the tool wrapper
+    tool_wrapper = simulator.get_tool("test_tool")
 
     # Create a Strands Agent with the tool simulator
     from strands import Agent
@@ -430,66 +281,38 @@ def test_attaching_function_tool_simulator_to_strands_agent():
     agent = Agent(tools=[tool_wrapper])
 
     # Verify the agent has access to the tool
-    assert "test_function_tool" in agent.tool_names
-    assert hasattr(agent.tool, "test_function_tool")
+    assert "test_tool" in agent.tool_names
+    assert hasattr(agent.tool, "test_tool")
 
 
-def test_attaching_mcp_tool_simulator_to_strands_agent():
-    """Test attaching MCP tool simulator to Strands agent."""
+def test_get_state_method():
+    """Test the get_state method for direct state access."""
+    simulator = ToolSimulator()
 
-    schema = {
-        "type": "object",
-        "properties": {"param1": {"type": "string"}, "param2": {"type": "integer", "default": 42}},
-        "required": ["param1"],
-    }
-
-    # Register an MCP tool simulator
-    @ToolSimulator.mcp_tool("test_mcp_tool", schema=schema)
-    def test_mcp_tool(param1: str, param2: int = 42) -> Dict[str, Any]:
-        """Test MCP tool for agent attachment.
-
-        Args:
-            param1: First parameter for MCP processing
-            param2: Second parameter with default value
-        """
+    @simulator(initial_state_description="Test initial state", share_state_id="test_state")
+    def test_tool():
         pass
 
-    # Create simulator and get the tool
+    # Test get_state method
+    state = simulator.get_state("test_state")
+    assert "initial_state" in state
+    assert state["initial_state"] == "Test initial state"
+    assert "previous_calls" in state
+
+
+def test_output_schema_parameter():
+    """Test that output_schema parameter is accepted and stored."""
+    from pydantic import BaseModel
+
+    class CustomOutput(BaseModel):
+        result: str
+        count: int
+
     simulator = ToolSimulator()
-    tool_wrapper = simulator.get_tool("test_mcp_tool")
 
-    # Create a Strands Agent with the tool simulator
-    from strands import Agent
-
-    agent = Agent(tools=[tool_wrapper])
-
-    # Verify the agent has access to the tool
-    assert "test_mcp_tool" in agent.tool_names
-    assert hasattr(agent.tool, "test_mcp_tool")
-
-
-def test_attaching_api_tool_simulator_to_strands_agent():
-    """Test attaching API tool simulator to Strands agent."""
-
-    # Register an API tool simulator
-    @ToolSimulator.api_tool("test_api_tool", path="/test/api", method="GET")
-    def test_api_tool(query: str = "") -> Dict[str, Any]:
-        """Test API tool for agent attachment.
-
-        Args:
-            query: Query parameter for API call
-        """
+    @simulator(output_schema=CustomOutput)
+    def test_tool_with_schema():
         pass
 
-    # Create simulator and get the tool
-    simulator = ToolSimulator()
-    tool_wrapper = simulator.get_tool("test_api_tool")
-
-    # Create a Strands Agent with the tool simulator
-    from strands import Agent
-
-    agent = Agent(tools=[tool_wrapper])
-
-    # Verify the agent has access to the tool
-    assert "test_api_tool" in agent.tool_names
-    assert hasattr(agent.tool, "test_api_tool")
+    registered_tool = ToolSimulator._registered_tools["test_tool_with_schema"]
+    assert registered_tool.output_schema == CustomOutput
