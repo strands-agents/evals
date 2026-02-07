@@ -11,18 +11,9 @@ from strands import Agent
 from strands.agent import AgentResult
 from strands.models.model import Model
 
-from strands_evals.types.simulation.tool import (
-    APIToolResponse,
-    MCPToolResponse,
-    RegisteredTool,
-    ToolType,
-)
+from strands_evals.types.simulation.tool import RegisteredTool
 
-from .prompt_templates.tool_response_generation import (
-    API_TOOL_RESPONSE_GENERATION_PROMPT,
-    FUNCTION_TOOL_RESPONSE_GENERATION_PROMPT,
-    MCP_TOOL_RESPONSE_GENERATION_PROMPT,
-)
+from .prompt_templates.tool_response_generation import FUNCTION_TOOL_RESPONSE_GENERATION_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -100,9 +91,8 @@ class StateRegistry:
         self,
         tool_name: str,
         state_key: str,
-        tool_type: ToolType,
         response_data: Any,
-        **call_data: Any,
+        parameters: dict[str, Any],
     ) -> dict[str, Any]:
         """
         Cache a tool call in the tool's state key.
@@ -110,9 +100,8 @@ class StateRegistry:
         Args:
             tool_name: Name of the tool being called.
             state_key: Key for the state (tool_name or share_state_id).
-            tool_type: Type of the tool (FUNCTION, MCP, or API).
             response_data: Response from the tool call.
-            **call_data: Tool-specific call data (parameters, input_mcp_payload, path, method, input_data, etc.).
+            parameters: Function parameters.
 
         Returns:
             Updated state dictionary.
@@ -121,27 +110,12 @@ class StateRegistry:
         state = self._states[state_key]
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
 
-        # Build call record based on tool type
         call_record = {
             "tool_name": tool_name,
-            "tool_type": tool_type.value,
             "response": response_data,
             "timestamp": timestamp,
+            "parameters": parameters,
         }
-
-        # Add tool-specific fields
-        if tool_type == ToolType.FUNCTION:
-            call_record["parameters"] = call_data.get("parameters", {})
-        elif tool_type == ToolType.MCP:
-            call_record["input_mcp_payload"] = call_data.get("input_mcp_payload", {})
-        elif tool_type == ToolType.API:
-            call_record.update(
-                {
-                    "path": call_data.get("path", ""),
-                    "method": call_data.get("method", "GET"),
-                    "input": call_data.get("input_data", {}),
-                }
-            )
 
         # Append to deque with automatic FIFO eviction when cache is full
         state["previous_calls"].append(call_record)
@@ -164,9 +138,9 @@ class ToolSimulator:
     """
     Simulates tool behavior with decorator-based registration system for agent evaluation.
 
-    ToolSimulator provides decorator functions for different tool types and maintains
-    a registry of all registered tools. It can be configured to override tool
-    behavior for simulation purposes, enabling controlled testing scenarios.
+    ToolSimulator provides a decorator for tools and maintains a registry of all
+    registered tools. It can be configured to override tool behavior for simulation purposes,
+    enabling controlled testing scenarios.
 
     The simulator automatically maintains a bounded cache of tool calls for context.
     The maximum number of tool calls stored per state key is configurable via
@@ -186,8 +160,6 @@ class ToolSimulator:
         self,
         state_registry: StateRegistry | None = None,
         function_tool_prompt: str | None = None,
-        mcp_tool_prompt: str | None = None,
-        api_tool_prompt: str | None = None,
         model: Model | str | None = None,
         framework: str = "strands",
         max_tool_call_cache_size: int = 20,
@@ -198,9 +170,7 @@ class ToolSimulator:
         Args:
             state_registry: Registry for maintaining tool state. If not provided,
                            a new StateRegistry will be created with max_tool_call_cache_size.
-            function_tool_prompt: Optional custom prompt for function tool response generation
-            mcp_tool_prompt: Optional custom prompt for MCP tool response generation
-            api_tool_prompt: Optional custom prompt for API tool response generation
+            function_tool_prompt: Optional custom prompt for tool response generation
             model: Provider for running inference or a string representing the model-id for Bedrock to use
             framework: Agent framework to use (default: "strands")
             max_tool_call_cache_size: Maximum number of tool calls to store per state key.
@@ -213,10 +183,8 @@ class ToolSimulator:
         # Store model configuration for creating internal agents
         self.model = model
 
-        # Set custom prompts or use defaults
+        # Set custom prompt or use default
         self.function_tool_prompt = function_tool_prompt or FUNCTION_TOOL_RESPONSE_GENERATION_PROMPT
-        self.mcp_tool_prompt = mcp_tool_prompt or MCP_TOOL_RESPONSE_GENERATION_PROMPT
-        self.api_tool_prompt = api_tool_prompt or API_TOOL_RESPONSE_GENERATION_PROMPT
 
         # Set up state registry
         self._state_registry = state_registry or StateRegistry(max_tool_call_cache_size=max_tool_call_cache_size)
@@ -241,25 +209,6 @@ class ToolSimulator:
                 )
                 logger.info(f"Initialized state for tool '{tool_name}' with key '{state_key}'")
 
-    def __getattr__(self, name: str) -> Any:
-        """
-        Allow direct access to registered tools as attributes.
-
-        Args:
-            name: Tool name
-
-        Returns:
-            Tool callable
-
-        Raises:
-            AttributeError: If tool not found
-        """
-        registered_tool = self._registered_tools.get(name)
-        if registered_tool:
-            return self._create_tool_wrapper(registered_tool)
-
-        raise AttributeError(f"Tool '{name}' not found in registered tools")
-
     def _create_tool_wrapper(self, registered_tool: RegisteredTool):
         """Create a framework-compatible tool wrapper."""
 
@@ -271,35 +220,17 @@ class ToolSimulator:
                 else registered_tool.name
             )
 
-            # Build input data based on tool type
-            if registered_tool.tool_type == ToolType.FUNCTION:
-                parameters_string = (
-                    json.dumps({"args": args, "kwargs": kwargs}, indent=2) if args else json.dumps(kwargs, indent=2)
-                )
+            # Build parameters string for tool
+            parameters_string = (
+                json.dumps({"args": args, "kwargs": kwargs}, indent=2) if args else json.dumps(kwargs, indent=2)
+            )
 
-                input_data = {
-                    "tool_name": registered_tool.name,
-                    "parameters": parameters_string,
-                }
+            input_data = {
+                "tool_name": registered_tool.name,
+                "parameters": parameters_string,
+            }
 
-            elif registered_tool.tool_type == ToolType.MCP:
-                input_data = {
-                    "tool_name": registered_tool.name,
-                    "input_mcp_payload": kwargs,
-                }
-
-            elif registered_tool.tool_type == ToolType.API:
-                input_data = {
-                    "tool_name": registered_tool.name,
-                    "user_input_api_payload": kwargs,
-                    "path": registered_tool.api_path or "",
-                    "method": registered_tool.api_method or "GET",
-                }
-
-            else:
-                raise ValueError(f"Unsupported tool type: {registered_tool.tool_type}")
-
-            return self._call(registered_tool, input_data, state_key)
+            return self._call_tool(registered_tool, input_data, state_key)
 
         # Copy function metadata
         if registered_tool.function:
@@ -384,93 +315,27 @@ class ToolSimulator:
             response_data = {"result": response_text}
         return response_data
 
-    def _call(self, registered_tool: RegisteredTool, input_data: dict[str, Any], state_key: str) -> Any:
+    def _call_tool(self, registered_tool: RegisteredTool, input_data: dict[str, Any], state_key: str) -> dict[str, Any]:
         """Simulate a tool invocation and return the response."""
-        if registered_tool.tool_type == ToolType.FUNCTION:
-            return self._handle_function_tool(registered_tool.name, input_data, state_key)
-        elif registered_tool.tool_type == ToolType.MCP:
-            return self._handle_mcp_tool(registered_tool.name, input_data, state_key)
-        elif registered_tool.tool_type == ToolType.API:
-            return self._handle_api_tool(registered_tool.name, input_data, state_key)
-        else:
-            raise ValueError(f"Unsupported tool type: {registered_tool.tool_type}")
-
-    def _handle_function_tool(self, tool_name: str, input_data: dict[str, Any], state_key: str) -> dict[str, Any]:
-        """Handle function tool simulation."""
         parameters = input_data.get("parameters", {})
 
         current_state = self._state_registry.get_state(state_key)
 
         prompt = self.function_tool_prompt.format(
-            tool_name=tool_name,
+            tool_name=registered_tool.name,
             parameters=json.dumps(parameters, indent=2),
             initial_state_description=current_state.get("initial_state", "No initial state provided."),
             previous_responses=json.dumps(current_state.get("previous_calls", []), indent=2),
         )
 
-        result = self._simulate_tool_call(prompt, structured_output_model=None)
+        # Use the registered tool's output schema directly (no duplicate lookup needed)
+        structured_output_model = registered_tool.output_schema
+
+        result = self._simulate_tool_call(prompt, structured_output_model=structured_output_model)
 
         response_data = self._parse_simulated_response(result)
 
-        self._state_registry.cache_tool_call(
-            tool_name, state_key, ToolType.FUNCTION, response_data, parameters=parameters
-        )
-
-        return response_data
-
-    def _handle_mcp_tool(self, tool_name: str, input_data: dict[str, Any], state_key: str) -> dict[str, Any]:
-        """Handle MCP tool simulation."""
-        input_mcp_payload = input_data.get("input_mcp_payload", {})
-
-        current_state = self._state_registry.get_state(state_key)
-
-        prompt = self.mcp_tool_prompt.format(
-            tool_name=tool_name,
-            mcp_payload=json.dumps(input_mcp_payload, indent=2),
-            initial_state_description=current_state.get("initial_state", "No initial state provided."),
-            previous_responses=json.dumps(current_state.get("previous_calls", []), indent=2),
-        )
-
-        result = self._simulate_tool_call(prompt, structured_output_model=MCPToolResponse)
-
-        response_data = self._parse_simulated_response(result)
-
-        self._state_registry.cache_tool_call(
-            tool_name, state_key, ToolType.MCP, response_data, input_mcp_payload=input_mcp_payload
-        )
-
-        return response_data
-
-    def _handle_api_tool(self, tool_name: str, input_data: dict[str, Any], state_key: str) -> dict[str, Any]:
-        """Handle API tool simulation."""
-        user_input_api_payload = input_data.get("user_input_api_payload", {})
-        path = input_data.get("path", "")
-        method = input_data.get("method", "GET").upper()  # Normalize HTTP method to uppercase
-
-        current_state = self._state_registry.get_state(state_key)
-
-        prompt = self.api_tool_prompt.format(
-            tool_name=tool_name,
-            path=path,
-            method=method,
-            api_payload=json.dumps(user_input_api_payload, indent=2) if user_input_api_payload else "{}",
-            initial_state_description=current_state.get("initial_state", "No initial state provided."),
-            previous_responses=json.dumps(current_state.get("previous_calls", []), indent=2),
-        )
-
-        result = self._simulate_tool_call(prompt, structured_output_model=APIToolResponse)
-
-        response_data = self._parse_simulated_response(result)
-
-        self._state_registry.cache_tool_call(
-            tool_name,
-            state_key,
-            ToolType.API,
-            response_data,
-            path=path,
-            method=method,
-            input_data=user_input_api_payload,
-        )
+        self._state_registry.cache_tool_call(registered_tool.name, state_key, response_data, parameters=parameters)
 
         return response_data
 
@@ -480,46 +345,21 @@ class ToolSimulator:
         cls._registered_tools.clear()
         logger.info("Cleared tool registry")
 
-    def get_state(self, state_key: str) -> dict[str, Any]:
-        """
-        Get state for a specific tool or shared state group.
-
-        Args:
-            state_key: Key for the state (tool_name or share_state_id).
-
-        Returns:
-            State dictionary containing previous_calls.
-        """
-        return self._state_registry.get_state(state_key)
-
-    @classmethod
-    def tool(
-        cls,
+    def __call__(
+        self,
         name: str | None = None,
-        tool_type: str = "function",
         output_schema: type[BaseModel] | None = None,
-        prompt_template: str | None = None,
         initial_state_description: str | None = None,
-        # MCP specific parameters
-        schema: dict[str, Any] | None = None,
-        # API specific parameters
-        path: str | None = None,
-        method: str | None = None,
         **simulator_kwargs,
     ) -> Callable:
         """
-        Unified decorator for registering tools with flexible output schemas.
+        Decorator for registering tools with flexible output schemas.
 
         Args:
             name: Optional name for the tool. If None, uses function.__name__
-            tool_type: Type of tool - "function", "mcp", or "api" (default: "function")
             output_schema: Optional Pydantic BaseModel for output schema
-            prompt_template: Optional custom prompt template override
             initial_state_description: Optional initial state description for the tool's context
-            schema: MCP tool schema dictionary (for MCP tools)
-            path: API endpoint path (for API tools)
-            method: HTTP method (for API tools)
-            **simulator_kwargs: Additional simulator configuration
+            **simulator_kwargs: Additional simulator configuration (e.g., share_state_id)
 
         Returns:
             Decorator function
@@ -529,75 +369,49 @@ class ToolSimulator:
             try:
                 tool_name = name or func.__name__
 
-                # Convert string tool_type to enum
-                if tool_type == "function":
-                    tool_type_enum = ToolType.FUNCTION
-                elif tool_type == "mcp":
-                    tool_type_enum = ToolType.MCP
-                elif tool_type == "api":
-                    tool_type_enum = ToolType.API
-                else:
-                    raise ValueError(f"Unsupported tool_type: {tool_type}. Must be 'function', 'mcp', or 'api'")
-
-                # Set default output schemas and validate tool-specific requirements
-                effective_output_schema = output_schema
-                effective_prompt_template = prompt_template
-
-                if tool_type_enum == ToolType.MCP:
-                    if effective_output_schema is None:
-                        effective_output_schema = MCPToolResponse
-                    if schema is None:
-                        raise ValueError(f"MCP schema is required for tool {tool_name}")
-                elif tool_type_enum == ToolType.API:
-                    if effective_output_schema is None:
-                        effective_output_schema = APIToolResponse
-                    if path is None:
-                        raise ValueError(f"API path is required for tool {tool_name}")
-                    if method is None:
-                        raise ValueError(f"HTTP method is required for tool {tool_name}")
-
                 # Register tool
                 registered_tool = RegisteredTool(
                     name=tool_name,
-                    tool_type=tool_type_enum,
                     function=func,
-                    output_schema=effective_output_schema,
-                    prompt_template=effective_prompt_template,
-                    mcp_schema=schema,
-                    api_path=path,
-                    api_method=method,
+                    output_schema=output_schema,
                     initial_state_description=initial_state_description,
                     simulator_kwargs=simulator_kwargs,
                 )
-                cls._registered_tools[tool_name] = registered_tool
+                self._registered_tools[tool_name] = registered_tool
 
-                logger.info(f"Registered {tool_type} tool: {tool_name}")
+                # Initialize state if initial_state_description is provided
+                if initial_state_description:
+                    state_key = simulator_kwargs.get("share_state_id", tool_name)
+                    self._state_registry.initialize_state_via_description(initial_state_description, state_key)
+                    logger.info(f"Initialized state for tool '{tool_name}' with key '{state_key}'")
+
+                logger.info(f"Registered tool: {tool_name}")
 
             except Exception as e:
-                raise RuntimeError(f"Error registering {tool_type} tool {name or func.__name__}: {e}") from e
+                raise RuntimeError(f"Error registering tool {name or func.__name__}: {e}") from e
 
             return func
 
         return decorator
 
-    # Backward compatibility aliases
-    @classmethod
-    def function_tool(cls, *args, **kwargs) -> Callable:
-        """Backward compatibility alias for tool(tool_type='function')."""
-        kwargs.setdefault("tool_type", "function")
-        return cls.tool(*args, **kwargs)
+    def __getattr__(self, name: str) -> Any:
+        """
+        Allow direct access to registered tools as attributes.
 
-    @classmethod
-    def mcp_tool(cls, *args, **kwargs) -> Callable:
-        """Backward compatibility alias for tool(tool_type='mcp')."""
-        kwargs.setdefault("tool_type", "mcp")
-        return cls.tool(*args, **kwargs)
+        Args:
+            name: Tool name
 
-    @classmethod
-    def api_tool(cls, *args, **kwargs) -> Callable:
-        """Backward compatibility alias for tool(tool_type='api')."""
-        kwargs.setdefault("tool_type", "api")
-        return cls.tool(*args, **kwargs)
+        Returns:
+            Tool callable wrapper
+
+        Raises:
+            AttributeError: If tool not found
+        """
+        registered_tool = self._registered_tools.get(name)
+        if registered_tool:
+            return self._create_tool_wrapper(registered_tool)
+
+        raise AttributeError(f"Tool '{name}' not found in registered tools")
 
     def get_tool(self, tool_name: str) -> Callable | None:
         """
@@ -623,3 +437,15 @@ class ToolSimulator:
             List of tool names
         """
         return list(self._registered_tools.keys())
+
+    def get_state(self, state_key: str) -> dict[str, Any]:
+        """
+        Get state for a specific tool or shared state group.
+
+        Args:
+            state_key: Key for the state (tool_name or share_state_id).
+
+        Returns:
+            State dictionary containing previous_calls.
+        """
+        return self._state_registry.get_state(state_key)
