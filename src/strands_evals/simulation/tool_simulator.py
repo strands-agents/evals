@@ -25,6 +25,9 @@ class StateRegistry:
 
     The registry automatically maintains a bounded cache of tool calls per state key.
     The maximum number of tool calls stored is configurable via max_tool_call_cache_size parameter.
+
+    Attributes:
+        max_tool_call_cache_size: Maximum number of tool calls to store per state key.
     """
 
     def __init__(self, max_tool_call_cache_size: int = 20):
@@ -40,9 +43,9 @@ class StateRegistry:
                                       Older calls are automatically evicted when limit is exceeded.
                                       Default is 20.
         """
-        self._max_tool_call_cache_size = max_tool_call_cache_size
+        self.max_tool_call_cache_size = max_tool_call_cache_size
         self._states: defaultdict[str, dict[str, Any]] = defaultdict(
-            lambda: {"previous_calls": deque(maxlen=self._max_tool_call_cache_size)}
+            lambda: {"previous_calls": deque(maxlen=self.max_tool_call_cache_size)}
         )
 
     def initialize_state_via_description(self, initial_state_description: str, state_key: str) -> None:
@@ -61,7 +64,7 @@ class StateRegistry:
         if state_key not in self._states:
             self._states[state_key] = {
                 "initial_state": initial_state_description,
-                "previous_calls": deque(maxlen=self._max_tool_call_cache_size),
+                "previous_calls": deque(maxlen=self.max_tool_call_cache_size),
             }
         else:
             warnings.warn(
@@ -147,14 +150,15 @@ class ToolSimulator:
     max_tool_call_cache_size parameter (default: 20).
 
     Attributes:
+        state_registry: Registry for maintaining tool state across calls.
+        function_tool_prompt: Custom prompt template for tool response generation.
         model: Provider for running inference or model identifier for Bedrock.
-        _registered_tools: Class-level registry for all registered tools.
-        _state_registry: Registry for maintaining tool state across calls.
+        framework: Agent framework to use (default: "strands").
+        max_tool_call_cache_size: Maximum number of tool calls to store per state key.
     """
 
     # Class-level registry for all registered tools
     _registered_tools: dict[str, RegisteredTool] = {}
-    _state_registry: StateRegistry
 
     def __init__(
         self,
@@ -187,7 +191,7 @@ class ToolSimulator:
         self.function_tool_prompt = function_tool_prompt or FUNCTION_TOOL_RESPONSE_GENERATION_PROMPT
 
         # Set up state registry
-        self._state_registry = state_registry or StateRegistry(max_tool_call_cache_size=max_tool_call_cache_size)
+        self.state_registry = state_registry or StateRegistry(max_tool_call_cache_size=max_tool_call_cache_size)
 
         # Initialize shared states from registered tools
         self._initialize_shared_states()
@@ -196,15 +200,11 @@ class ToolSimulator:
         """Initialize shared states from registered tools' initial descriptions."""
         for tool_name, registered_tool in self._registered_tools.items():
             if registered_tool.initial_state_description:
-                # Determine state key from tool name or simulator kwargs
-                state_key = (
-                    registered_tool.simulator_kwargs.get("share_state_id", registered_tool.name)
-                    if registered_tool.simulator_kwargs
-                    else registered_tool.name
-                )
+                # Determine state key from share_state_id or tool name
+                state_key = registered_tool.share_state_id or registered_tool.name
 
                 # Initialize state with description
-                self._state_registry.initialize_state_via_description(
+                self.state_registry.initialize_state_via_description(
                     registered_tool.initial_state_description, state_key
                 )
                 logger.info(f"Initialized state for tool '{tool_name}' with key '{state_key}'")
@@ -214,11 +214,7 @@ class ToolSimulator:
 
         def wrapper(*args, **kwargs):
             # Determine state key
-            state_key = (
-                registered_tool.simulator_kwargs.get("share_state_id", registered_tool.name)
-                if registered_tool.simulator_kwargs
-                else registered_tool.name
-            )
+            state_key = registered_tool.share_state_id or registered_tool.name
 
             # Build parameters string for tool
             parameters_string = (
@@ -319,7 +315,7 @@ class ToolSimulator:
         """Simulate a tool invocation and return the response."""
         parameters = input_data.get("parameters", {})
 
-        current_state = self._state_registry.get_state(state_key)
+        current_state = self.state_registry.get_state(state_key)
 
         prompt = self.function_tool_prompt.format(
             tool_name=registered_tool.name,
@@ -328,29 +324,26 @@ class ToolSimulator:
             previous_responses=json.dumps(current_state.get("previous_calls", []), indent=2),
         )
 
-        # Use the registered tool's output schema directly (no duplicate lookup needed)
-        structured_output_model = registered_tool.output_schema
-
-        result = self._simulate_tool_call(prompt, structured_output_model=structured_output_model)
+        result = self._simulate_tool_call(prompt, structured_output_model=registered_tool.output_schema)
 
         response_data = self._parse_simulated_response(result)
 
-        self._state_registry.cache_tool_call(registered_tool.name, state_key, response_data, parameters=parameters)
+        self.state_registry.cache_tool_call(registered_tool.name, state_key, response_data, parameters=parameters)
 
         return response_data
 
     @classmethod
     def clear_registry(cls):
-        """Clear all registered tools. Useful for testing."""
+        """Clear all registered tools."""
         cls._registered_tools.clear()
         logger.info("Cleared tool registry")
 
-    def __call__(
+    def tool(
         self,
         name: str | None = None,
         output_schema: type[BaseModel] | None = None,
+        share_state_id: str | None = None,
         initial_state_description: str | None = None,
-        **simulator_kwargs,
     ) -> Callable:
         """
         Decorator for registering tools with flexible output schemas.
@@ -358,8 +351,8 @@ class ToolSimulator:
         Args:
             name: Optional name for the tool. If None, uses function.__name__
             output_schema: Optional Pydantic BaseModel for output schema
+            share_state_id: Optional shared state ID for sharing state between tools
             initial_state_description: Optional initial state description for the tool's context
-            **simulator_kwargs: Additional simulator configuration (e.g., share_state_id)
 
         Returns:
             Decorator function
@@ -375,14 +368,14 @@ class ToolSimulator:
                     function=func,
                     output_schema=output_schema,
                     initial_state_description=initial_state_description,
-                    simulator_kwargs=simulator_kwargs,
+                    share_state_id=share_state_id,
                 )
                 self._registered_tools[tool_name] = registered_tool
 
                 # Initialize state if initial_state_description is provided
                 if initial_state_description:
-                    state_key = simulator_kwargs.get("share_state_id", tool_name)
-                    self._state_registry.initialize_state_via_description(initial_state_description, state_key)
+                    state_key = share_state_id or tool_name
+                    self.state_registry.initialize_state_via_description(initial_state_description, state_key)
                     logger.info(f"Initialized state for tool '{tool_name}' with key '{state_key}'")
 
                 logger.info(f"Registered tool: {tool_name}")
@@ -448,4 +441,4 @@ class ToolSimulator:
         Returns:
             State dictionary containing previous_calls.
         """
-        return self._state_registry.get_state(state_key)
+        return self.state_registry.get_state(state_key)

@@ -49,7 +49,7 @@ def test_tool_simulator_init():
         model=None,
     )
 
-    assert simulator._state_registry is custom_registry
+    assert simulator.state_registry is custom_registry
     assert simulator.model is None  # model is now used for LLM inference
     assert simulator.function_tool_prompt is not None  # Check that prompt template is loaded
 
@@ -58,7 +58,7 @@ def test_tool_decorator_registration():
     """Test tool decorator registration."""
     simulator = ToolSimulator()
 
-    @simulator()
+    @simulator.tool()
     def test_function(x: int, y: str) -> dict:
         """A sample function for testing."""
         return {"x": x, "y": y}
@@ -73,7 +73,7 @@ def test_tool_decorator_with_name():
     """Test tool decorator with custom name."""
     simulator = ToolSimulator()
 
-    @simulator(name="custom_name")
+    @simulator.tool(name="custom_name")
     def test_function(x: int) -> dict:
         """A sample function for testing."""
         return {"x": x}
@@ -89,7 +89,7 @@ def test_tool_simulation(mock_model):
     simulator = ToolSimulator(model=mock_model)
 
     # Register tool
-    @simulator()
+    @simulator.tool()
     def test_func(message: str) -> dict:
         """Test function that should be simulated."""
         pass
@@ -116,11 +116,11 @@ def test_list_tools():
     """Test listing registered tools."""
     simulator = ToolSimulator()
 
-    @simulator()
+    @simulator.tool()
     def func1():
         pass
 
-    @simulator()
+    @simulator.tool()
     def func2():
         pass
 
@@ -129,7 +129,7 @@ def test_list_tools():
     assert set(tools) == {"func1", "func2"}
 
 
-def test_shared_state_registry(mock_model):
+def test_sharedstate_registry(mock_model):
     """Test that tools can share the same state registry."""
     shared_state_id = "shared_banking_state"
     initial_state = "Initial banking system state with account balances"
@@ -137,17 +137,17 @@ def test_shared_state_registry(mock_model):
     simulator = ToolSimulator(model=mock_model)
 
     # Register tools that share the same state
-    @simulator(initial_state_description=initial_state, share_state_id=shared_state_id)
+    @simulator.tool(share_state_id=shared_state_id, initial_state_description=initial_state)
     def check_balance(account_id: str):
         """Check account balance."""
         pass
 
-    @simulator(initial_state_description=initial_state, share_state_id=shared_state_id)
+    @simulator.tool(share_state_id=shared_state_id, initial_state_description=initial_state)
     def transfer_funds(from_account: str, to_account: str):
         """Transfer funds between accounts."""
         pass
 
-    @simulator(initial_state_description=initial_state, share_state_id=shared_state_id)
+    @simulator.tool(share_state_id=shared_state_id, initial_state_description=initial_state)
     def get_transactions(account_id: str):
         """Get transaction history."""
         pass
@@ -195,7 +195,7 @@ def test_shared_state_registry(mock_model):
             assert agent.called
 
     # Verify all tools accessed the same shared state
-    shared_state = simulator._state_registry.get_state(shared_state_id)
+    shared_state = simulator.state_registry.get_state(shared_state_id)
     assert "initial_state" in shared_state
     assert shared_state["initial_state"] == initial_state
     assert "previous_calls" in shared_state
@@ -247,7 +247,7 @@ def test_clear_registry():
     """Test clearing tool registry."""
     simulator = ToolSimulator()
 
-    @simulator()
+    @simulator.tool()
     def test_func():
         pass
 
@@ -263,7 +263,7 @@ def test_attaching_tool_simulator_to_strands_agent():
     simulator = ToolSimulator()
 
     # Register a tool simulator
-    @simulator()
+    @simulator.tool()
     def test_tool(input_value: str) -> Dict[str, Any]:
         """Test tool for agent attachment.
 
@@ -289,7 +289,7 @@ def test_get_state_method():
     """Test the get_state method for direct state access."""
     simulator = ToolSimulator()
 
-    @simulator(initial_state_description="Test initial state", share_state_id="test_state")
+    @simulator.tool(share_state_id="test_state", initial_state_description="Test initial state")
     def test_tool():
         pass
 
@@ -310,7 +310,7 @@ def test_output_schema_parameter():
 
     simulator = ToolSimulator()
 
-    @simulator(output_schema=CustomOutput)
+    @simulator.tool(output_schema=CustomOutput)
     def test_tool_with_schema():
         pass
 
