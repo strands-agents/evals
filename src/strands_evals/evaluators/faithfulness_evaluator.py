@@ -85,16 +85,6 @@ class FaithfulnessEvaluator(Evaluator[InputT, OutputT]):
             )
         ]
 
-    def _get_last_turn(self, evaluation_case: EvaluationData[InputT, OutputT]) -> TraceLevelInput:
-        """Extract the most recent turn from the conversation for evaluation."""
-        parsed_inputs = self._parse_trajectory(evaluation_case)
-        if not parsed_inputs:
-            raise ValueError(
-                "No turn-level inputs could be parsed from the trajectory. "
-                "Ensure actual_trajectory is a Session with at least one AgentInvocationSpan."
-            )
-        return parsed_inputs[-1]
-
     def _format_prompt(self, parsed_input: TraceLevelInput) -> str:
         """Format evaluation prompt from parsed turn data."""
         parts = []

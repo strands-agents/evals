@@ -6,7 +6,16 @@ from typing_extensions import Any, Generic, TypeGuard, Union
 
 from ..extractors import TraceExtractor
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
-from ..types.trace import AssistantMessage, Context, EvaluationLevel, Session, TextContent, ToolConfig, UserMessage
+from ..types.trace import (
+    AssistantMessage,
+    Context,
+    EvaluationLevel,
+    Session,
+    TextContent,
+    ToolConfig,
+    TraceLevelInput,
+    UserMessage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +116,16 @@ class Evaluator(Generic[InputT, OutputT]):
             )
 
         return self._trace_extractor.extract(trajectory)
+
+    def _get_last_turn(self, evaluation_case: EvaluationData[InputT, OutputT]) -> TraceLevelInput:
+        """Extract the most recent turn from the conversation for evaluation."""
+        parsed_inputs = self._parse_trajectory(evaluation_case)
+        if not parsed_inputs:
+            raise ValueError(
+                "No turn-level inputs could be parsed from the trajectory. "
+                "Ensure actual_trajectory is a Session with at least one AgentInvocationSpan."
+            )
+        return parsed_inputs[-1]
 
     def _format_tools(self, tools: list[ToolConfig]) -> str:
         """Format available tools for prompt display."""

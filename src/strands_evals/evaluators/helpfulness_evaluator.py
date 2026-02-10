@@ -7,7 +7,7 @@ from strands.models.model import Model
 from typing_extensions import Union
 
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
-from ..types.trace import EvaluationLevel, TextContent, ToolExecution, TraceLevelInput
+from ..types.trace import EvaluationLevel, TraceLevelInput
 from .evaluator import Evaluator
 from .prompt_templates.helpfulness import get_template
 
@@ -91,60 +91,24 @@ class HelpfulnessEvaluator(Evaluator[InputT, OutputT]):
             )
         ]
 
-    def _get_last_turn(self, evaluation_case: EvaluationData[InputT, OutputT]) -> TraceLevelInput:
-        """Extract the most recent turn from the conversation for evaluation."""
-        parsed_inputs = self._parse_trajectory(evaluation_case)
-        if not parsed_inputs:
-            raise ValueError(
-                "No turn-level inputs could be parsed from the trajectory. "
-                "Ensure actual_trajectory is a Session with at least one AgentInvocationSpan."
-            )
-        return parsed_inputs[-1]
-
-    def _extract_user_prompt(self, parsed_input: TraceLevelInput) -> str:
-        """Extract user prompt from last message in session history.
-
-        Args:
-            parsed_input: Trace-level input containing session history
-
-        Returns:
-            User prompt text, or empty string if not available
-        """
-        if not parsed_input.session_history:
-            return ""
-
-        last_msg = parsed_input.session_history[-1]
-        if not isinstance(last_msg, list) and self._has_text_content(last_msg):
-            first_content = last_msg.content[0]
-            if isinstance(first_content, TextContent):
-                return first_content.text
-
-        return ""
-
     def _format_prompt(self, parsed_input: TraceLevelInput) -> str:
-        """Format evaluation prompt from parsed trace data.
-
-        Args:
-            parsed_input: Trace-level input containing agent response and session history
-
-        Returns:
-            Formatted prompt string with conversation history and target turn
-        """
+        """Format evaluation prompt from parsed turn data."""
         parts = []
 
         if parsed_input.session_history:
             history_lines = []
             for msg in parsed_input.session_history:
-                if isinstance(msg, list) and msg and isinstance(msg[0], ToolExecution):
-                    continue  # Skip tool execution lists
-                if not isinstance(msg, list) and self._has_text_content(msg):
-                    first_content = msg.content[0]
-                    if isinstance(first_content, TextContent):
-                        history_lines.append(f"{msg.role.value.capitalize()}: {first_content.text}")
+                if isinstance(msg, list):
+                    # Handle tool execution lists
+                    for tool_exec in msg:
+                        history_lines.append(f"Action: {tool_exec.tool_call.name}({tool_exec.tool_call.arguments})")
+                        history_lines.append(f"Tool: {tool_exec.tool_result.content}")
+                else:
+                    text = msg.content[0].text if msg.content and hasattr(msg.content[0], "text") else ""
+                    history_lines.append(f"{msg.role.value.capitalize()}: {text}")
             history_str = "\n".join(history_lines)
-            parts.append(f"# Previous turns:\n{history_str}")
+            parts.append(f"# Conversation History:\n{history_str}")
 
-        user_prompt = self._extract_user_prompt(parsed_input)
-        parts.append(f"# Target turn to evaluate:\nUser: {user_prompt}\nAssistant: {parsed_input.agent_response.text}")
+        parts.append(f"# Assistant's Response:\n{parsed_input.agent_response.text}")
 
         return "\n\n".join(parts)
