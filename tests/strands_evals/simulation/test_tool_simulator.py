@@ -4,6 +4,7 @@ from typing import Any, Dict
 from unittest.mock import MagicMock
 
 import pytest
+from strands import tool
 
 from strands_evals.case import Case
 from strands_evals.simulation.tool_simulator import StateRegistry, ToolSimulator
@@ -32,14 +33,6 @@ def mock_model():
     return mock
 
 
-@pytest.fixture(autouse=True)
-def clear_registry():
-    """Clear tool registry before each test."""
-    ToolSimulator.clear_registry()
-    yield
-    ToolSimulator.clear_registry()
-
-
 def test_tool_simulator_init():
     """Test ToolSimulator initialization with all parameters."""
     custom_registry = StateRegistry()
@@ -59,12 +52,13 @@ def test_tool_decorator_registration():
     simulator = ToolSimulator()
 
     @simulator.tool()
+    @tool
     def test_function(x: int, y: str) -> dict:
         """A sample function for testing."""
         return {"x": x, "y": y}
 
-    assert "test_function" in ToolSimulator._registered_tools
-    registered_tool = ToolSimulator._registered_tools["test_function"]
+    assert "test_function" in simulator._registered_tools
+    registered_tool = simulator._registered_tools["test_function"]
     assert registered_tool.name == "test_function"
     assert registered_tool.function == test_function
 
@@ -74,12 +68,13 @@ def test_tool_decorator_with_name():
     simulator = ToolSimulator()
 
     @simulator.tool(name="custom_name")
+    @tool
     def test_function(x: int) -> dict:
         """A sample function for testing."""
         return {"x": x}
 
-    assert "custom_name" in ToolSimulator._registered_tools
-    registered_tool = ToolSimulator._registered_tools["custom_name"]
+    assert "custom_name" in simulator._registered_tools
+    registered_tool = simulator._registered_tools["custom_name"]
     assert registered_tool.name == "custom_name"
     assert registered_tool.function == test_function
 
@@ -90,6 +85,7 @@ def test_tool_simulation(mock_model):
 
     # Register tool
     @simulator.tool()
+    @tool
     def test_func(message: str) -> dict:
         """Test function that should be simulated."""
         pass
@@ -117,10 +113,12 @@ def test_list_tools():
     simulator = ToolSimulator()
 
     @simulator.tool()
+    @tool
     def func1():
         pass
 
     @simulator.tool()
+    @tool
     def func2():
         pass
 
@@ -138,16 +136,19 @@ def test_sharedstate_registry(mock_model):
 
     # Register tools that share the same state
     @simulator.tool(share_state_id=shared_state_id, initial_state_description=initial_state)
+    @tool
     def check_balance(account_id: str):
         """Check account balance."""
         pass
 
     @simulator.tool(share_state_id=shared_state_id, initial_state_description=initial_state)
+    @tool
     def transfer_funds(from_account: str, to_account: str):
         """Transfer funds between accounts."""
         pass
 
     @simulator.tool(share_state_id=shared_state_id, initial_state_description=initial_state)
+    @tool
     def get_transactions(account_id: str):
         """Get transaction history."""
         pass
@@ -243,19 +244,20 @@ def test_tool_not_found_raises_error():
     assert "not found in registered tools" in str(excinfo.value)
 
 
-def test_clear_registry():
-    """Test clearing tool registry."""
+def test_clear_tools():
+    """Test clearing tool registry for a specific simulator instance."""
     simulator = ToolSimulator()
 
     @simulator.tool()
+    @tool
     def test_func():
         pass
 
-    assert len(ToolSimulator._registered_tools) == 1
+    assert len(simulator._registered_tools) == 1
 
-    ToolSimulator.clear_registry()
+    simulator.clear_tools()
 
-    assert len(ToolSimulator._registered_tools) == 0
+    assert len(simulator._registered_tools) == 0
 
 
 def test_attaching_tool_simulator_to_strands_agent():
@@ -264,6 +266,7 @@ def test_attaching_tool_simulator_to_strands_agent():
 
     # Register a tool simulator
     @simulator.tool()
+    @tool
     def test_tool(input_value: str) -> Dict[str, Any]:
         """Test tool for agent attachment.
 
@@ -290,6 +293,7 @@ def test_get_state_method():
     simulator = ToolSimulator()
 
     @simulator.tool(share_state_id="test_state", initial_state_description="Test initial state")
+    @tool
     def test_tool():
         pass
 
@@ -311,8 +315,105 @@ def test_output_schema_parameter():
     simulator = ToolSimulator()
 
     @simulator.tool(output_schema=CustomOutput)
+    @tool
     def test_tool_with_schema():
         pass
 
-    registered_tool = ToolSimulator._registered_tools["test_tool_with_schema"]
+    registered_tool = simulator._registered_tools["test_tool_with_schema"]
     assert registered_tool.output_schema == CustomOutput
+
+
+def test_automatic_input_model_as_output_schema():
+    """Test that input_model is automatically used as output_schema when no explicit schema is provided."""
+    from pydantic import BaseModel
+
+    simulator = ToolSimulator()
+
+    # Create a tool with typed parameters - this should generate an input_model
+    @simulator.tool()
+    @tool
+    def test_tool_with_parameters(name: str, age: int, active: bool = True) -> dict:
+        """A test tool with typed parameters.
+
+        Args:
+            name: The person's name
+            age: The person's age
+            active: Whether the person is active
+        """
+        pass
+
+    # Check that the tool was registered
+    assert "test_tool_with_parameters" in simulator._registered_tools
+    registered_tool = simulator._registered_tools["test_tool_with_parameters"]
+
+    # Verify that output_schema was automatically set from input_model
+    assert registered_tool.output_schema is not None, "output_schema should be automatically set from input_model"
+
+    # Verify it's a Pydantic BaseModel class
+    assert issubclass(registered_tool.output_schema, BaseModel), "output_schema should be a Pydantic BaseModel"
+
+    # Check the schema has the expected fields
+    schema = registered_tool.output_schema.model_json_schema()
+    properties = schema.get("properties", {})
+    assert "name" in properties, "Schema should have 'name' field"
+    assert "age" in properties, "Schema should have 'age' field"
+    assert "active" in properties, "Schema should have 'active' field"
+
+
+def test_explicit_output_schema_override():
+    """Test that explicit output_schema takes precedence over automatic input_model."""
+    from pydantic import BaseModel
+
+    simulator = ToolSimulator()
+
+    class CustomOutput(BaseModel):
+        result: str
+        count: int
+
+    # Create a tool with explicit output_schema
+    @simulator.tool(output_schema=CustomOutput)
+    @tool
+    def test_tool_with_explicit_schema(name: str, age: int) -> dict:
+        """A test tool with explicit output_schema.
+
+        Args:
+            name: The person's name
+            age: The person's age
+        """
+        pass
+
+    # Check that the tool was registered
+    assert "test_tool_with_explicit_schema" in simulator._registered_tools
+    registered_tool = simulator._registered_tools["test_tool_with_explicit_schema"]
+
+    # Verify that the explicit output_schema is used, not the input_model
+    assert registered_tool.output_schema is CustomOutput, "Explicit output_schema should be used"
+
+
+def test_no_parameters_tool_input_model():
+    """Test tool with no parameters uses empty input_model as output_schema."""
+    from pydantic import BaseModel
+
+    simulator = ToolSimulator()
+
+    # Create a tool with no parameters
+    @simulator.tool()
+    @tool
+    def test_tool_no_params() -> dict:
+        """A test tool with no parameters."""
+        pass
+
+    # Check that the tool was registered
+    assert "test_tool_no_params" in simulator._registered_tools
+    registered_tool = simulator._registered_tools["test_tool_no_params"]
+
+    # The output_schema should be the input_model (which should be an empty model for no-param tools)
+    if registered_tool.output_schema is not None:
+        # If there's an output_schema, it should be a BaseModel
+        assert issubclass(registered_tool.output_schema, BaseModel), "output_schema should be a Pydantic BaseModel"
+
+        # Check that it has no required properties (since no parameters)
+        schema = registered_tool.output_schema.model_json_schema()
+        properties = schema.get("properties", {})
+        # No parameters should mean no properties or empty properties
+        assert len(properties) == 0, "Tool with no parameters should have empty schema properties"

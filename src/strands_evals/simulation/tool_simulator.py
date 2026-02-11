@@ -1,4 +1,3 @@
-import inspect
 import json
 import logging
 import warnings
@@ -10,6 +9,7 @@ from pydantic import BaseModel
 from strands import Agent
 from strands.agent import AgentResult
 from strands.models.model import Model
+from strands.tools.decorator import DecoratedFunctionTool
 
 from strands_evals.types.simulation.tool import RegisteredTool
 
@@ -122,8 +122,6 @@ class StateRegistry:
 
         # Append to deque with automatic FIFO eviction when cache is full
         state["previous_calls"].append(call_record)
-
-        # Return converted state for external use
         return self.get_state(state_key)
 
     def clear_state(self, state_key: str) -> None:
@@ -145,6 +143,17 @@ class ToolSimulator:
     registered tools. It can be configured to override tool behavior for simulation purposes,
     enabling controlled testing scenarios.
 
+    IMPORTANT: This simulator expects functions to be decorated with Strands' @tool decorator first.
+
+    Example usage:
+        simulator = ToolSimulator()
+
+        @simulator.tool()
+        @tool
+        def my_tool(param: str) -> dict:
+            '''Tool description'''
+            pass
+
     The simulator automatically maintains a bounded cache of tool calls for context.
     The maximum number of tool calls stored per state key is configurable via
     max_tool_call_cache_size parameter (default: 20).
@@ -153,19 +162,14 @@ class ToolSimulator:
         state_registry: Registry for maintaining tool state across calls.
         function_tool_prompt: Custom prompt template for tool response generation.
         model: Provider for running inference or model identifier for Bedrock.
-        framework: Agent framework to use (default: "strands").
         max_tool_call_cache_size: Maximum number of tool calls to store per state key.
     """
-
-    # Class-level registry for all registered tools
-    _registered_tools: dict[str, RegisteredTool] = {}
 
     def __init__(
         self,
         state_registry: StateRegistry | None = None,
         function_tool_prompt: str | None = None,
         model: Model | str | None = None,
-        framework: str = "strands",
         max_tool_call_cache_size: int = 20,
     ):
         """
@@ -176,47 +180,45 @@ class ToolSimulator:
                            a new StateRegistry will be created with max_tool_call_cache_size.
             function_tool_prompt: Optional custom prompt for tool response generation
             model: Provider for running inference or a string representing the model-id for Bedrock to use
-            framework: Agent framework to use (default: "strands")
             max_tool_call_cache_size: Maximum number of tool calls to store per state key.
                                      Only used when creating a new StateRegistry (ignored if state_registry
                                      is provided). Older calls are automatically evicted when limit is exceeded.
                                      Default is 20.
         """
-        # Store framework selection
-        self.framework = framework
-        # Store model configuration for creating internal agents
         self.model = model
-
-        # Set custom prompt or use default
         self.function_tool_prompt = function_tool_prompt or FUNCTION_TOOL_RESPONSE_GENERATION_PROMPT
-
-        # Set up state registry
         self.state_registry = state_registry or StateRegistry(max_tool_call_cache_size=max_tool_call_cache_size)
-
-        # Initialize shared states from registered tools
+        self._registered_tools: dict[str, RegisteredTool] = {}
         self._initialize_shared_states()
 
     def _initialize_shared_states(self):
         """Initialize shared states from registered tools' initial descriptions."""
         for tool_name, registered_tool in self._registered_tools.items():
             if registered_tool.initial_state_description:
-                # Determine state key from share_state_id or tool name
                 state_key = registered_tool.share_state_id or registered_tool.name
-
-                # Initialize state with description
                 self.state_registry.initialize_state_via_description(
                     registered_tool.initial_state_description, state_key
                 )
                 logger.info(f"Initialized state for tool '{tool_name}' with key '{state_key}'")
 
     def _create_tool_wrapper(self, registered_tool: RegisteredTool):
-        """Create a framework-compatible tool wrapper."""
+        """
+        Create a Strands tool wrapper for simulation.
+
+        Since the registered function is already a DecoratedFunctionTool (from @tool decorator),
+        we reuse its existing metadata and spec, but replace the tool_func with our simulation wrapper.
+        """
+        original_tool = registered_tool.function
+
+        if not isinstance(original_tool, DecoratedFunctionTool):
+            raise TypeError(
+                f"Expected DecoratedFunctionTool, got {type(original_tool).__name__}. "
+                f"Ensure your function is decorated with @tool first."
+            )
 
         def wrapper(*args, **kwargs):
-            # Determine state key
             state_key = registered_tool.share_state_id or registered_tool.name
 
-            # Build parameters string for tool
             parameters_string = (
                 json.dumps({"args": args, "kwargs": kwargs}, indent=2) if args else json.dumps(kwargs, indent=2)
             )
@@ -228,7 +230,6 @@ class ToolSimulator:
 
             return self._call_tool(registered_tool, input_data, state_key)
 
-        # Copy function metadata
         if registered_tool.function:
             wrapper.__name__ = registered_tool.function.__name__
             wrapper.__doc__ = registered_tool.function.__doc__
@@ -236,61 +237,17 @@ class ToolSimulator:
             wrapper.__name__ = registered_tool.name
             wrapper.__doc__ = f"Simulated {registered_tool.name} tool"
 
-        # Use framework-specific method to create the tool wrapper
-        if self.framework == "strands":
-            return self._create_strands_tool_wrapper(registered_tool, wrapper)
-        else:
-            raise ValueError(f"Framework '{self.framework}' is not supported. Only 'strands' is currently supported.")
+        tool_spec = original_tool.tool_spec.copy()
+        tool_spec["name"] = registered_tool.name
 
-    def _create_strands_tool_wrapper(self, registered_tool: RegisteredTool, wrapper: Callable):
-        """Create a Strands-specific DecoratedFunctionTool wrapper."""
-        from strands.tools.decorator import DecoratedFunctionTool, FunctionToolMetadata
-
-        # Create tool spec based on function signature and docstring
-        tool_description = wrapper.__doc__ or f"Simulated {registered_tool.name} tool"
-
-        # Build input schema from function signature
-        input_schema: dict[str, Any] = {"type": "object", "properties": {}}
-        if registered_tool.function:
-            try:
-                sig = inspect.signature(registered_tool.function)
-                for param_name, param in sig.parameters.items():
-                    if param.annotation != inspect.Parameter.empty:
-                        param_type = (
-                            str(param.annotation).replace("<class '", "").replace("'>", "").replace("typing.", "")
-                        )
-                        if "str" in param_type.lower():
-                            input_schema["properties"][param_name] = {"type": "string"}
-                        elif "int" in param_type.lower():
-                            input_schema["properties"][param_name] = {"type": "integer"}
-                        elif "float" in param_type.lower():
-                            input_schema["properties"][param_name] = {"type": "number"}
-                        elif "bool" in param_type.lower():
-                            input_schema["properties"][param_name] = {"type": "boolean"}
-                        else:
-                            input_schema["properties"][param_name] = {"type": "object"}
-                    else:
-                        input_schema["properties"][param_name] = {"type": "string"}  # default
-            except Exception:
-                pass  # fallback to empty schema
-
-        # Create Strands tool's FunctionToolMetadata object and DecoratedFunctionTool instance
-        metadata = FunctionToolMetadata(registered_tool.function or wrapper)
-
-        # Extract tool_spec from metadata; override with our custom description if needed
-        extracted_tool_spec = metadata.extract_metadata()
-        if tool_description != extracted_tool_spec.get("description"):
-            extracted_tool_spec["description"] = tool_description
-        extracted_tool_spec["name"] = registered_tool.name
-
-        decorated_tool = DecoratedFunctionTool(
+        simulated_tool = DecoratedFunctionTool(
             tool_name=registered_tool.name,
-            tool_spec=extracted_tool_spec,
-            tool_func=wrapper,  # Always use wrapper to ensure simulation logic is executed
-            metadata=metadata,
+            tool_spec=tool_spec,
+            tool_func=wrapper,  # Use our simulation wrapper instead of original function
+            metadata=original_tool._metadata,  # Reuse existing metadata
         )
 
-        return decorated_tool
+        return simulated_tool
 
     def _simulate_tool_call(self, prompt: str, structured_output_model=None) -> Any:
         """Tool simulation agent creation and response generation."""
@@ -332,12 +289,6 @@ class ToolSimulator:
 
         return response_data
 
-    @classmethod
-    def clear_registry(cls):
-        """Clear all registered tools."""
-        cls._registered_tools.clear()
-        logger.info("Cleared tool registry")
-
     def tool(
         self,
         name: str | None = None,
@@ -348,9 +299,14 @@ class ToolSimulator:
         """
         Decorator for registering tools with flexible output schemas.
 
+        IMPORTANT: This decorator expects the function to already be decorated with @tool
+        from strands.tools.decorator. When output_schema is not provided, the input_model
+        from the DecoratedFunctionTool's metadata will be automatically used as the output_schema.
+
         Args:
-            name: Optional name for the tool. If None, uses function.__name__
-            output_schema: Optional Pydantic BaseModel for output schema
+            name: Optional name for the tool. If None, uses DecoratedFunctionTool.tool_name
+            output_schema: Optional Pydantic BaseModel for output schema. If None, uses the
+                          input_model from the DecoratedFunctionTool's metadata.
             share_state_id: Optional shared state ID for sharing state between tools
             initial_state_description: Optional initial state description for the tool's context
 
@@ -360,19 +316,34 @@ class ToolSimulator:
 
         def decorator(func: Callable) -> Callable:
             try:
-                tool_name = name or func.__name__
+                if not isinstance(func, DecoratedFunctionTool):
+                    raise TypeError(
+                        f"Expected DecoratedFunctionTool (from @tool decorator), got {type(func).__name__}. "
+                        f"Please ensure your function is decorated with @tool first, then @simulator.tool()."
+                    )
 
-                # Register tool
+                tool_name = name or func.tool_name
+
+                final_output_schema = output_schema
+                if (
+                    final_output_schema is None
+                    and hasattr(func, "_metadata")
+                    and hasattr(func._metadata, "input_model")
+                ):
+                    final_output_schema = func._metadata.input_model
+                    logger.info(
+                        f"Using input_model from DecoratedFunctionTool metadata as output_schema for tool '{tool_name}'"
+                    )
+
                 registered_tool = RegisteredTool(
                     name=tool_name,
                     function=func,
-                    output_schema=output_schema,
+                    output_schema=final_output_schema,
                     initial_state_description=initial_state_description,
                     share_state_id=share_state_id,
                 )
                 self._registered_tools[tool_name] = registered_tool
 
-                # Initialize state if initial_state_description is provided
                 if initial_state_description:
                     state_key = share_state_id or tool_name
                     self.state_registry.initialize_state_via_description(initial_state_description, state_key)
@@ -381,7 +352,7 @@ class ToolSimulator:
                 logger.info(f"Registered tool: {tool_name}")
 
             except Exception as e:
-                raise RuntimeError(f"Error registering tool {name or func.__name__}: {e}") from e
+                raise RuntimeError(f"Error registering tool {name or getattr(func, '__name__', 'unknown')}: {e}") from e
 
             return func
 
@@ -430,6 +401,11 @@ class ToolSimulator:
             List of tool names
         """
         return list(self._registered_tools.keys())
+
+    def clear_tools(self):
+        """Clear all registered tools for this simulator instance."""
+        self._registered_tools.clear()
+        logger.info("Cleared tool registry for this simulator instance")
 
     def get_state(self, state_key: str) -> dict[str, Any]:
         """
