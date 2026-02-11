@@ -106,8 +106,8 @@ def test_evaluate(mock_agent_class, evaluation_data):
     mock_agent.assert_called_once()
     call_args = mock_agent.call_args[0]
     prompt = call_args[0]
-    assert "Action: get_weather(" in prompt
-    assert "Tool: The weather is sunny and warm" in prompt
+    assert "Tool call: get_weather(" in prompt
+    assert "Tool result: The weather is sunny and warm" in prompt
 
 
 @pytest.mark.parametrize(
@@ -160,5 +160,5 @@ async def test_evaluate_async(mock_agent_class, evaluation_data):
     mock_agent.invoke_async.assert_called_once()
     call_args = mock_agent.invoke_async.call_args[0]
     prompt = call_args[0]
-    assert "Action: get_weather(" in prompt
-    assert "Tool: The weather is sunny and warm" in prompt
+    assert "Tool call: get_weather(" in prompt
+    assert "Tool result: The weather is sunny and warm" in prompt

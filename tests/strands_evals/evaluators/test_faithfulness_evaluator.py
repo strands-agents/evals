@@ -103,8 +103,8 @@ def test_evaluate(mock_agent_class, evaluation_data):
     mock_agent.assert_called_once()
     call_args = mock_agent.call_args[0]
     prompt = call_args[0]
-    assert "Action: search_web(" in prompt
-    assert "Tool: Paris is the capital and most populous city of France" in prompt
+    assert "Tool call: search_web(" in prompt
+    assert "Tool result: Paris is the capital and most populous city of France" in prompt
 
 
 @pytest.mark.parametrize(
@@ -160,5 +160,5 @@ async def test_evaluate_async(mock_agent_class, evaluation_data):
     mock_agent.invoke_async.assert_called_once()
     call_args = mock_agent.invoke_async.call_args[0]
     prompt = call_args[0]
-    assert "Action: search_web(" in prompt
-    assert "Tool: Paris is the capital and most populous city of France" in prompt
+    assert "Tool call: search_web(" in prompt
+    assert "Tool result: Paris is the capital and most populous city of France" in prompt

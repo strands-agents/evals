@@ -13,6 +13,7 @@ from ..types.trace import (
     Session,
     TextContent,
     ToolConfig,
+    ToolLevelInput,
     TraceLevelInput,
     UserMessage,
 )
@@ -142,6 +143,58 @@ class Evaluator(Generic[InputT, OutputT]):
                     lines.append(f"Tool: {tool_exec.tool_result.content}")
             lines.append(f"Assistant: {ctx.agent_response.text}")
         return "\n".join(lines)
+
+    def _format_tool_level_prompt(self, tool_input: ToolLevelInput) -> str:
+        """Format evaluation prompt from tool-level input."""
+        parts = []
+
+        # Format available tools
+        if tool_input.available_tools:
+            parts.append(f"## Available tool-calls\n{self._format_tools(tool_input.available_tools)}")
+
+        # Format previous conversation history
+        if tool_input.session_history:
+            history_lines = []
+            for msg in tool_input.session_history:
+                if isinstance(msg, list):
+                    # Handle tool execution lists
+                    for tool_exec in msg:
+                        history_lines.append(f"Tool call: {tool_exec.tool_call.name}({tool_exec.tool_call.arguments})")
+                        history_lines.append(f"Tool result: {tool_exec.tool_result.content}")
+                else:
+                    text = msg.content[0].text if msg.content and hasattr(msg.content[0], "text") else ""
+                    history_lines.append(f"{msg.role.value.capitalize()}: {text}")
+            history_str = "\n".join(history_lines)
+            parts.append(f"## Previous conversation history\n{history_str}")
+
+        # Format target tool call to evaluate
+        tool_details = tool_input.tool_execution_details
+        tool_call_str = f"Tool call: {tool_details.tool_call.name}({tool_details.tool_call.arguments})"
+        parts.append(f"## Target tool-call to evaluate\n{tool_call_str}")
+
+        return "\n\n".join(parts)
+
+    def _format_trace_level_prompt(self, parsed_input: TraceLevelInput) -> str:
+        """Format evaluation prompt from parsed turn data."""
+        parts = []
+
+        if parsed_input.session_history:
+            history_lines = []
+            for msg in parsed_input.session_history:
+                if isinstance(msg, list):
+                    # Handle tool execution lists
+                    for tool_exec in msg:
+                        history_lines.append(f"Tool call: {tool_exec.tool_call.name}({tool_exec.tool_call.arguments})")
+                        history_lines.append(f"Tool result: {tool_exec.tool_result.content}")
+                else:
+                    text = msg.content[0].text if msg.content and hasattr(msg.content[0], "text") else ""
+                    history_lines.append(f"{msg.role.value.capitalize()}: {text}")
+            history_str = "\n".join(history_lines)
+            parts.append(f"# Conversation History:\n{history_str}")
+
+        parts.append(f"# Assistant's Response:\n{parsed_input.agent_response.text}")
+
+        return "\n\n".join(parts)
 
     def _has_text_content(self, msg: UserMessage | AssistantMessage) -> TypeGuard[UserMessage | AssistantMessage]:
         """Check if a message object has accessible text content.
