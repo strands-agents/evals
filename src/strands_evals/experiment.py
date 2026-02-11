@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
@@ -99,13 +100,23 @@ class Experiment(Generic[InputT, OutputT]):
         self,
         cases: list[Case[InputT, OutputT]] | None = None,
         evaluators: list[Evaluator[InputT, OutputT]] | None = None,
+        name: str = "unnamed_experiment",
     ):
+        self._name = name
         self._cases = cases or []
         self._evaluators = evaluators or [Evaluator()]
         self._tracer = get_tracer()
         # self._logger = get_logger(__name__)
 
         self._config_id = os.environ.get("EVALUATION_RESULTS_LOG_GROUP", "default-strands-evals")
+    @property
+    def name(self) -> str:
+        """Get the experiment name.
+
+        Returns:
+            The name of the experiment.
+        """
+        return self._name
 
     @property
     def cases(self) -> list[Case[InputT, OutputT]]:
@@ -260,7 +271,7 @@ class Experiment(Generic[InputT, OutputT]):
 
         return evaluation_context
 
-    async def _worker(self, queue: asyncio.Queue, task: Callable, results: list):
+    async def _worker(self, queue: asyncio.Queue, task: Callable, results: list, run_id: str):
         """
         Worker that processes cases from the queue. Run evaluation on the task.
 
@@ -268,6 +279,7 @@ class Experiment(Generic[InputT, OutputT]):
             queue: Queue containing cases to process
             task: Task function to run on each case
             results: List to store results
+            run_id: Unique identifier for this evaluation run
         """
         while True:
             try:
@@ -305,6 +317,10 @@ class Experiment(Generic[InputT, OutputT]):
                                 "gen_ai.evaluation.data.has_interactions": (
                                     evaluation_context.actual_interactions is not None
                                 ),
+                                "test.suite.name": self._name,
+                                "test.suite.run.id": run_id,
+                                "test.case.name": case_name,
+                                "test.case.id": case.session_id,
                             }
                         )
                         trace_id = format_trace_id(case_span.get_span_context().trace_id)
@@ -356,6 +372,7 @@ class Experiment(Generic[InputT, OutputT]):
                                     "gen_ai.evaluation.score.value": str(aggregate_score),
                                     "gen_ai.evaluation.test_pass": aggregate_pass,
                                     "gen_ai.evaluation.explanation": aggregate_reason or "",
+                                    "test.case.result.status": "pass" if aggregate_pass else "fail",
                                 }
                             )
 
@@ -483,6 +500,8 @@ class Experiment(Generic[InputT, OutputT]):
             A list of EvaluationReport objects, one for each evaluator, containing the overall score,
             individual case results, and basic feedback for each test case.
         """
+        run_id = str(uuid.uuid4())
+
         evaluator_data: dict[str, dict[str, list]] = {
             evaluator.get_type_name(): {
                 "scores": [],
@@ -502,6 +521,10 @@ class Experiment(Generic[InputT, OutputT]):
                 attributes={
                     "gen_ai.evaluation.case.name": case_name,
                     "gen_ai.evaluation.case.input": serialize(case.input),
+                    "test.suite.name": self._name,
+                    "test.suite.run.id": run_id,
+                    "test.case.name": case_name,
+                    "test.case.id": case.session_id,
                 },
             ) as case_span:
                 # Task execution with retry logic
@@ -605,6 +628,7 @@ class Experiment(Generic[InputT, OutputT]):
                                     "gen_ai.evaluation.score.value": aggregate_score,
                                     "gen_ai.evaluation.test_pass": aggregate_pass,
                                     "gen_ai.evaluation.explanation": aggregate_reason or "",
+                                    "test.case.result.status": "pass" if aggregate_pass else "fail",
                                 }
                             )
 
@@ -679,13 +703,14 @@ class Experiment(Generic[InputT, OutputT]):
         """
         queue: asyncio.Queue[Case[InputT, OutputT]] = asyncio.Queue()
         results: list[Any] = []
+        run_id = str(uuid.uuid4())
 
         for case in self._cases:
             queue.put_nowait(case)
 
         num_workers = min(max_workers, len(self._cases))
 
-        workers = [asyncio.create_task(self._worker(queue, task, results)) for _ in range(num_workers)]
+        workers = [asyncio.create_task(self._worker(queue, task, results, run_id)) for _ in range(num_workers)]
 
         await queue.join()
         for worker in workers:
@@ -739,6 +764,7 @@ class Experiment(Generic[InputT, OutputT]):
             A dictionary representation of the experiment.
         """
         return {
+            "name": self._name,
             "cases": [case.model_dump() for case in self._cases],
             "evaluators": [evaluator.to_dict() for evaluator in self._evaluators],
         }
@@ -787,6 +813,7 @@ class Experiment(Generic[InputT, OutputT]):
         Return:
             An Experiment object.
         """
+        name = data.get("name", "unnamed_experiment")
         custom_evaluators = custom_evaluators or []
         cases: list[Case] = [Case.model_validate(case_data) for case_data in data["cases"]]
         default_evaluators: dict[str, type[Evaluator]] = {
@@ -817,7 +844,7 @@ class Experiment(Generic[InputT, OutputT]):
                     f"all relevant custom evaluators are passed in."
                 )
 
-        return cls(cases=cases, evaluators=evaluators)
+        return cls(cases=cases, evaluators=evaluators, name=name)
 
     @classmethod
     def from_file(cls, path: str, custom_evaluators: list[type[Evaluator]] | None = None):

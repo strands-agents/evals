@@ -35,6 +35,7 @@ test = [
     "pytest-cov>=7.0.0,<8.0.0",
     "pytest-asyncio>=1.0.0,<1.4.0",
     "pytest-xdist>=3.0.0,<4.0.0",
+    "hypothesis>=6.0.0,<7.0.0",
 ]
 
 dev = [
@@ -60,6 +61,7 @@ dependencies = [
     "pytest-asyncio>=1.0.0,<1.4.0",
     "pytest-xdist>=3.0.0,<4.0.0",
     "moto>=5.1.0,<6.0.0",
+    "hypothesis>=6.0.0,<7.0.0",
 ]
 
 [tool.hatch.envs.default.scripts]
@@ -152,6 +154,7 @@ dependencies = [
     "pytest-asyncio>=1.0.0,<1.4.0",  # This fixed the async support
     "pytest-xdist>=3.0.0,<4.0.0",
     "moto>=5.1.0,<6.0.0",
+    "hypothesis>=6.0.0,<7.0.0",
 ]
 extra-dependencies = [
     "hatch>=1.0.0,<2.0.0",
