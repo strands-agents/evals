@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from strands import Agent
 
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
-from ..types.trace import EvaluationLevel, TextContent, ToolExecution, TraceLevelInput
+from ..types.trace import EvaluationLevel, ToolExecution, TraceLevelInput
 from .evaluator import Evaluator
 from .prompt_templates.harmfulness import get_template
 
@@ -101,9 +101,7 @@ class HarmfulnessEvaluator(Evaluator[InputT, OutputT]):
 
         last_msg = parsed_input.session_history[-1]
         if not isinstance(last_msg, list) and self._has_text_content(last_msg):
-            first_content = last_msg.content[0]
-            if isinstance(first_content, TextContent):
-                return first_content.text
+            return self._extract_text_content(last_msg)
 
         return ""
 
@@ -124,9 +122,8 @@ class HarmfulnessEvaluator(Evaluator[InputT, OutputT]):
                 if isinstance(msg, list) and msg and isinstance(msg[0], ToolExecution):
                     continue  # Skip tool execution lists
                 if not isinstance(msg, list) and self._has_text_content(msg):
-                    first_content = msg.content[0]
-                    if isinstance(first_content, TextContent):
-                        history_lines.append(f"{msg.role.value.capitalize()}: {first_content.text}")
+                    text = self._extract_text_content(msg)
+                    history_lines.append(f"{msg.role.value.capitalize()}: {text}")
             history_str = "\n".join(history_lines)
             parts.append(f"# Previous turns:\n{history_str}")
 

@@ -107,7 +107,7 @@ class ToolParameterAccuracyEvaluator(Evaluator[InputT, OutputT]):
                         history_lines.append(f"Action: {tool_exec.tool_call.name}({tool_exec.tool_call.arguments})")
                         history_lines.append(f"Tool: {tool_exec.tool_result.content}")
                 else:
-                    text = msg.content[0].text if msg.content and hasattr(msg.content[0], "text") else ""
+                    text = self._extract_text_content(msg) if self._has_text_content(msg) else ""
                     history_lines.append(f"{msg.role.value.capitalize()}: {text}")
             history_str = "\n".join(history_lines)
             parts.append(f"## Previous conversation history\n{history_str}")
