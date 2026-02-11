@@ -203,14 +203,37 @@ class Evaluator(Generic[InputT, OutputT]):
             msg: Message object to check (UserMessage or AssistantMessage)
 
         Returns:
-            True if msg has content attribute with at least one item that is TextContent
+            True if msg has content attribute with at least one TextContent block.
+            Note: TextContent may not be at index 0 due to tool calls or other content types.
         """
-        return (
-            hasattr(msg, "content")
-            and bool(msg.content)
-            and len(msg.content) > 0
-            and isinstance(msg.content[0], TextContent)
-        )
+        if not hasattr(msg, "content") or not msg.content:
+            return False
+
+        # Check if ANY content block is TextContent, not just the first
+        return any(isinstance(content_block, TextContent) for content_block in msg.content)
+
+    def _extract_text_content(self, msg: UserMessage | AssistantMessage) -> str:
+        """Extract and concatenate text from all TextContent blocks in a message.
+
+        Args:
+            msg: Message object containing content blocks
+
+        Returns:
+            Concatenated text from all TextContent blocks, or empty string if none found.
+            Multiple text blocks are joined with a space.
+            Note: Iterates through all content blocks since TextContent may not be first.
+        """
+        if not hasattr(msg, "content") or not msg.content:
+            return ""
+
+        # Collect all TextContent blocks - there could be multiple
+        text_blocks = []
+        for content_block in msg.content:
+            if isinstance(content_block, TextContent):
+                text_blocks.append(content_block.text)
+
+        # Join multiple text blocks with space
+        return " ".join(text_blocks) if text_blocks else ""
 
     @classmethod
     def get_type_name(cls) -> str:

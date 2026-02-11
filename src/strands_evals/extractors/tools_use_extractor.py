@@ -43,13 +43,24 @@ def extract_agent_tools_used_from_messages(agent_messages):
                             if next_message.get("role") == "user":
                                 content = next_message.get("content")
                                 if content:
-                                    tool_result_dict = content[0].get("toolResult")
+                                    # Find toolResult in content blocks - may not be at index 0
+                                    tool_result_dict = None
+                                    for content_block in content:
+                                        if "toolResult" in content_block:
+                                            tool_result_dict = content_block.get("toolResult")
+                                            break
+
                                     if tool_result_dict and tool_result_dict.get("toolUseId") == tool_id:
                                         tool_result_content = tool_result_dict.get("content", [])
-                                        if len(tool_result_content) > 0:
-                                            tool_result = tool_result_content[0].get("text")
-                                            is_error = tool_result_dict.get("status") == "error"
-                                            break
+                                        # Find first text in tool result content - may not be at index 0
+                                        tool_result = None
+                                        if tool_result_content:
+                                            for result_item in tool_result_content:
+                                                if isinstance(result_item, dict) and "text" in result_item:
+                                                    tool_result = result_item.get("text")
+                                                    break
+                                        is_error = tool_result_dict.get("status") == "error"
+                                        break
 
                         tools_used.append(
                             {"name": tool_name, "input": tool_input, "tool_result": tool_result, "is_error": is_error}
