@@ -2,16 +2,23 @@ import inspect
 import logging
 
 from strands.models.model import Model
-from typing_extensions import Any, Generic, TypeGuard, TypeVar, Union
+from typing_extensions import Any, Generic, TypeGuard, Union
 
 from ..extractors import TraceExtractor
-from ..types.evaluation import EvaluationData, EvaluationOutput
-from ..types.trace import AssistantMessage, Context, EvaluationLevel, Session, TextContent, ToolConfig, UserMessage
+from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
+from ..types.trace import (
+    AssistantMessage,
+    Context,
+    EvaluationLevel,
+    Session,
+    TextContent,
+    ToolConfig,
+    ToolLevelInput,
+    TraceLevelInput,
+    UserMessage,
+)
 
 logger = logging.getLogger(__name__)
-
-InputT = TypeVar("InputT")
-OutputT = TypeVar("OutputT")
 
 DEFAULT_BEDROCK_MODEL_ID = "us.anthropic.claude-sonnet-4-20250514-v1:0"
 
@@ -111,6 +118,16 @@ class Evaluator(Generic[InputT, OutputT]):
 
         return self._trace_extractor.extract(trajectory)
 
+    def _get_last_turn(self, evaluation_case: EvaluationData[InputT, OutputT]) -> TraceLevelInput:
+        """Extract the most recent turn from the conversation for evaluation."""
+        parsed_inputs = self._parse_trajectory(evaluation_case)
+        if not parsed_inputs:
+            raise ValueError(
+                "No turn-level inputs could be parsed from the trajectory. "
+                "Ensure actual_trajectory is a Session with at least one AgentInvocationSpan."
+            )
+        return parsed_inputs[-1]
+
     def _format_tools(self, tools: list[ToolConfig]) -> str:
         """Format available tools for prompt display."""
         return "\n".join([f"- {tool.name}: {tool.description or 'No description'}" for tool in tools])
@@ -127,6 +144,58 @@ class Evaluator(Generic[InputT, OutputT]):
             lines.append(f"Assistant: {ctx.agent_response.text}")
         return "\n".join(lines)
 
+    def _format_tool_level_prompt(self, tool_input: ToolLevelInput) -> str:
+        """Format evaluation prompt from tool-level input."""
+        parts = []
+
+        # Format available tools
+        if tool_input.available_tools:
+            parts.append(f"## Available tool-calls\n{self._format_tools(tool_input.available_tools)}")
+
+        # Format previous conversation history
+        if tool_input.session_history:
+            history_lines = []
+            for msg in tool_input.session_history:
+                if isinstance(msg, list):
+                    # Handle tool execution lists
+                    for tool_exec in msg:
+                        history_lines.append(f"Tool call: {tool_exec.tool_call.name}({tool_exec.tool_call.arguments})")
+                        history_lines.append(f"Tool result: {tool_exec.tool_result.content}")
+                else:
+                    text = msg.content[0].text if msg.content and hasattr(msg.content[0], "text") else ""
+                    history_lines.append(f"{msg.role.value.capitalize()}: {text}")
+            history_str = "\n".join(history_lines)
+            parts.append(f"## Previous conversation history\n{history_str}")
+
+        # Format target tool call to evaluate
+        tool_details = tool_input.tool_execution_details
+        tool_call_str = f"Tool call: {tool_details.tool_call.name}({tool_details.tool_call.arguments})"
+        parts.append(f"## Target tool-call to evaluate\n{tool_call_str}")
+
+        return "\n\n".join(parts)
+
+    def _format_trace_level_prompt(self, parsed_input: TraceLevelInput) -> str:
+        """Format evaluation prompt from parsed turn data."""
+        parts = []
+
+        if parsed_input.session_history:
+            history_lines = []
+            for msg in parsed_input.session_history:
+                if isinstance(msg, list):
+                    # Handle tool execution lists
+                    for tool_exec in msg:
+                        history_lines.append(f"Tool call: {tool_exec.tool_call.name}({tool_exec.tool_call.arguments})")
+                        history_lines.append(f"Tool result: {tool_exec.tool_result.content}")
+                else:
+                    text = msg.content[0].text if msg.content and hasattr(msg.content[0], "text") else ""
+                    history_lines.append(f"{msg.role.value.capitalize()}: {text}")
+            history_str = "\n".join(history_lines)
+            parts.append(f"# Conversation History:\n{history_str}")
+
+        parts.append(f"# Assistant's Response:\n{parsed_input.agent_response.text}")
+
+        return "\n\n".join(parts)
+
     def _has_text_content(self, msg: UserMessage | AssistantMessage) -> TypeGuard[UserMessage | AssistantMessage]:
         """Check if a message object has accessible text content.
 
@@ -134,14 +203,37 @@ class Evaluator(Generic[InputT, OutputT]):
             msg: Message object to check (UserMessage or AssistantMessage)
 
         Returns:
-            True if msg has content attribute with at least one item that is TextContent
+            True if msg has content attribute with at least one TextContent block.
+            Note: TextContent may not be at index 0 due to tool calls or other content types.
         """
-        return (
-            hasattr(msg, "content")
-            and bool(msg.content)
-            and len(msg.content) > 0
-            and isinstance(msg.content[0], TextContent)
-        )
+        if not hasattr(msg, "content") or not msg.content:
+            return False
+
+        # Check if ANY content block is TextContent, not just the first
+        return any(isinstance(content_block, TextContent) for content_block in msg.content)
+
+    def _extract_text_content(self, msg: UserMessage | AssistantMessage) -> str:
+        """Extract and concatenate text from all TextContent blocks in a message.
+
+        Args:
+            msg: Message object containing content blocks
+
+        Returns:
+            Concatenated text from all TextContent blocks, or empty string if none found.
+            Multiple text blocks are joined with a space.
+            Note: Iterates through all content blocks since TextContent may not be first.
+        """
+        if not hasattr(msg, "content") or not msg.content:
+            return ""
+
+        # Collect all TextContent blocks - there could be multiple
+        text_blocks = []
+        for content_block in msg.content:
+            if isinstance(content_block, TextContent):
+                text_blocks.append(content_block.text)
+
+        # Join multiple text blocks with space
+        return " ".join(text_blocks) if text_blocks else ""
 
     @classmethod
     def get_type_name(cls) -> str:

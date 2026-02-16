@@ -6,6 +6,13 @@ from strands.models.model import Model
 from strands_evals.evaluators import Evaluator, OutputEvaluator
 from strands_evals.evaluators.evaluator import DEFAULT_BEDROCK_MODEL_ID
 from strands_evals.types import EvaluationData, EvaluationOutput
+from strands_evals.types.trace import (
+    AssistantMessage,
+    TextContent,
+    ToolCallContent,
+    ToolResultContent,
+    UserMessage,
+)
 
 
 class SimpleEvaluator(Evaluator[str, str]):
@@ -149,3 +156,127 @@ def test_to_dict_with_none_model():
     assert evaluator_dict["rubric"] == "test rubric"
     assert "model" not in evaluator_dict
     assert evaluator_dict["model_id"] == DEFAULT_BEDROCK_MODEL_ID
+
+
+def test_has_text_content_with_single_text_at_start():
+    """Test _has_text_content with TextContent at index 0"""
+    evaluator = SimpleEvaluator()
+    msg = AssistantMessage(content=[TextContent(text="Hello")])
+
+    assert evaluator._has_text_content(msg) is True
+
+
+def test_has_text_content_with_text_after_tool_call():
+    """Test _has_text_content with TextContent not at index 0"""
+    evaluator = SimpleEvaluator()
+    msg = AssistantMessage(
+        content=[
+            ToolCallContent(name="calculator", arguments={"x": 1}, tool_call_id="t1"),
+            TextContent(text="Let me calculate that"),
+        ]
+    )
+
+    assert evaluator._has_text_content(msg) is True
+
+
+def test_has_text_content_with_no_text():
+    """Test _has_text_content with no TextContent blocks"""
+    evaluator = SimpleEvaluator()
+    msg = AssistantMessage(content=[ToolCallContent(name="calculator", arguments={"x": 1}, tool_call_id="t1")])
+
+    assert evaluator._has_text_content(msg) is False
+
+
+def test_has_text_content_with_multiple_text_blocks():
+    """Test _has_text_content with multiple TextContent blocks"""
+    evaluator = SimpleEvaluator()
+    msg = AssistantMessage(content=[TextContent(text="Hello"), TextContent(text="World")])
+
+    assert evaluator._has_text_content(msg) is True
+
+
+def test_has_text_content_with_empty_content():
+    """Test _has_text_content with empty content list"""
+    evaluator = SimpleEvaluator()
+    msg = AssistantMessage(content=[])
+
+    assert evaluator._has_text_content(msg) is False
+
+
+def test_extract_text_content_single_block():
+    """Test _extract_text_content with single TextContent block"""
+    evaluator = SimpleEvaluator()
+    msg = UserMessage(content=[TextContent(text="Hello world")])
+
+    result = evaluator._extract_text_content(msg)
+    assert result == "Hello world"
+
+
+def test_extract_text_content_multiple_blocks():
+    """Test _extract_text_content with multiple TextContent blocks"""
+    evaluator = SimpleEvaluator()
+    msg = AssistantMessage(content=[TextContent(text="Hello"), TextContent(text="world")])
+
+    result = evaluator._extract_text_content(msg)
+    assert result == "Hello world"
+
+
+def test_extract_text_content_text_not_at_start():
+    """Test _extract_text_content with TextContent not at index 0"""
+    evaluator = SimpleEvaluator()
+    msg = AssistantMessage(
+        content=[
+            ToolCallContent(name="calculator", arguments={"x": 1}, tool_call_id="t1"),
+            TextContent(text="Let me calculate"),
+        ]
+    )
+
+    result = evaluator._extract_text_content(msg)
+    assert result == "Let me calculate"
+
+
+def test_extract_text_content_mixed_content():
+    """Test _extract_text_content with mixed content types"""
+    evaluator = SimpleEvaluator()
+    msg = AssistantMessage(
+        content=[
+            TextContent(text="First text"),
+            ToolCallContent(name="calculator", arguments={"x": 1}, tool_call_id="t1"),
+            TextContent(text="Second text"),
+        ]
+    )
+
+    result = evaluator._extract_text_content(msg)
+    assert result == "First text Second text"
+
+
+def test_extract_text_content_no_text():
+    """Test _extract_text_content with no TextContent blocks"""
+    evaluator = SimpleEvaluator()
+    msg = AssistantMessage(content=[ToolCallContent(name="calculator", arguments={"x": 1}, tool_call_id="t1")])
+
+    result = evaluator._extract_text_content(msg)
+    assert result == ""
+
+
+def test_extract_text_content_empty_content():
+    """Test _extract_text_content with empty content list"""
+    evaluator = SimpleEvaluator()
+    msg = UserMessage(content=[])
+
+    result = evaluator._extract_text_content(msg)
+    assert result == ""
+
+
+def test_extract_text_content_user_message_with_tool_result():
+    """Test _extract_text_content with UserMessage containing tool results and text"""
+    evaluator = SimpleEvaluator()
+    msg = UserMessage(
+        content=[
+            ToolResultContent(content="Result: 42", tool_call_id="t1"),
+            TextContent(text="Here's the result"),
+        ]
+    )
+
+    result = evaluator._extract_text_content(msg)
+    assert result == "Here's the result"

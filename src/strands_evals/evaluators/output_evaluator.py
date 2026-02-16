@@ -2,15 +2,12 @@ from typing import cast
 
 from strands import Agent
 from strands.models.model import Model
-from typing_extensions import TypeVar, Union
+from typing_extensions import Union
 
-from ..types.evaluation import EvaluationData, EvaluationOutput
+from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from .evaluator import Evaluator
 from .prompt_templates.case_prompt_template import compose_test_prompt
 from .prompt_templates.prompt_templates import judge_output_template as SYSTEM_PROMPT
-
-InputT = TypeVar("InputT")
-OutputT = TypeVar("OutputT")
 
 
 class OutputEvaluator(Evaluator[InputT, OutputT]):

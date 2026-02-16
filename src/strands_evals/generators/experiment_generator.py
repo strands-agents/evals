@@ -5,21 +5,18 @@ from textwrap import dedent
 
 from pydantic import create_model
 from strands import Agent
-from typing_extensions import Any, Generic, TypeVar
+from typing_extensions import Any, Generic
 
 from strands_evals.evaluators import Evaluator, InteractionsEvaluator, OutputEvaluator, TrajectoryEvaluator
 
 from ..case import Case
 from ..experiment import Experiment
-from ..types.evaluation import Interaction
+from ..types.evaluation import InputT, Interaction, OutputT
 from .prompt_template.prompt_templates import generate_case_template as CASE_SYSTEM_PROMPT
 from .prompt_template.prompt_templates import generate_rubric_template as RUBRIC_SYSTEM_PROMPT
 from .topic_planner import TopicPlanner
 
 logger = logging.getLogger(__name__)
-
-InputT = TypeVar("InputT")
-OutputT = TypeVar("OutputT")
 
 
 class ExperimentGenerator(Generic[InputT, OutputT]):
