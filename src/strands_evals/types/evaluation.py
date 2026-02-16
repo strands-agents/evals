@@ -3,13 +3,12 @@ from typing_extensions import Any, Generic, TypedDict, TypeVar, Union
 
 from .trace import Session
 
-
 InputT = TypeVar("InputT")
 OutputT = TypeVar("OutputT")
 
 
 class Interaction(TypedDict, total=False):
-    """    Represents a single interaction in a multi-agent or multi-step system.
+    """Represents a single interaction in a multi-agent or multi-step system.
 
 
     Used to capture the communication flow and dependencies between different

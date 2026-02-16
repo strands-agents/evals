@@ -94,6 +94,5 @@ class TraceProvider(ABC):
             ProviderError: If the provider is unreachable or returns an error
         """
         raise NotImplementedError(
-            "This provider does not support trace-level retrieval. "
-            "Use get_evaluation_data() with a session_id instead."
+            "This provider does not support trace-level retrieval. Use get_evaluation_data() with a session_id instead."
         )
