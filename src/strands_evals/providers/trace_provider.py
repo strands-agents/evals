@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from ..types.trace import Session
+from ..types.evaluation import TaskOutput
 
 
 @dataclass
@@ -27,18 +27,23 @@ class TraceProvider(ABC):
     """Retrieves agent trace data from observability backends for evaluation.
 
     Implementations handle authentication, pagination, and conversion from
-    provider-native formats to the Session/Trace types the evals system consumes.
+    provider-native formats to the types the evals system consumes.
     """
 
     @abstractmethod
-    def get_session(self, session_id: str) -> Session:
-        """Retrieve all traces for a session.
+    def get_evaluation_data(self, session_id: str) -> TaskOutput:
+        """Retrieve all data needed to evaluate a session.
+
+        This is the primary access pattern — given a session ID, fetch all
+        traces, extract the agent output and trajectory, and return them
+        in a format ready for evaluation.
 
         Args:
             session_id: The session identifier (maps to Strands session_id)
 
         Returns:
-            Session object containing all traces for the session
+            TaskOutput with 'output' (final agent response) and
+            'trajectory' (Session containing all traces/spans)
 
         Raises:
             SessionNotFoundError: If no traces found for session_id
@@ -52,7 +57,7 @@ class TraceProvider(ABC):
     ) -> Iterator[str]:
         """Discover session IDs matching filter criteria.
 
-        Returns session IDs that can be fed to get_session().
+        Returns session IDs that can be fed to get_evaluation_data().
         Not abstract — providers override to enable session discovery.
 
         Args:
@@ -66,21 +71,22 @@ class TraceProvider(ABC):
             ProviderError: If the provider is unreachable or returns an error
         """
         raise NotImplementedError(
-            "This provider does not support session discovery. Use get_session() with a known session_id instead."
+            "This provider does not support session discovery. "
+            "Use get_evaluation_data() with a known session_id instead."
         )
 
-    def get_session_by_trace_id(self, trace_id: str) -> Session:
-        """Fetch a single trace and wrap it in a Session.
+    def get_evaluation_data_by_trace_id(self, trace_id: str) -> TaskOutput:
+        """Fetch a single trace and return its evaluation data.
 
-        Useful when someone has a trace_id but not a session_id, or for
-        single-shot agent runs without sessions.
+        Useful when someone has a trace_id (e.g., from a Langfuse link) but
+        not a session_id, or for single-shot agent runs without sessions.
         Not abstract — providers override to enable trace-level retrieval.
 
         Args:
             trace_id: The unique trace identifier
 
         Returns:
-            Session object containing the single trace
+            TaskOutput with 'output' and 'trajectory' for the single trace
 
         Raises:
             NotImplementedError: If the provider does not support trace-level retrieval
@@ -88,5 +94,6 @@ class TraceProvider(ABC):
             ProviderError: If the provider is unreachable or returns an error
         """
         raise NotImplementedError(
-            "This provider does not support trace-level retrieval. Use get_session() with a session_id instead."
+            "This provider does not support trace-level retrieval. "
+            "Use get_evaluation_data() with a session_id instead."
         )

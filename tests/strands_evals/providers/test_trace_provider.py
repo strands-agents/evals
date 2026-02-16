@@ -15,7 +15,8 @@ from strands_evals.providers.trace_provider import (
     SessionFilter,
     TraceProvider,
 )
-from strands_evals.types.trace import Session
+from strands_evals.types.evaluation import TaskOutput
+from strands_evals.types.trace import Session, Trace
 
 
 class ConcreteProvider(TraceProvider):
@@ -24,10 +25,13 @@ class ConcreteProvider(TraceProvider):
     def __init__(self, session: Session | None = None):
         self._session = session
 
-    def get_session(self, session_id: str) -> Session:
+    def get_evaluation_data(self, session_id: str) -> TaskOutput:
         if self._session is None:
             raise SessionNotFoundError(f"No session found: {session_id}")
-        return self._session
+        return TaskOutput(
+            output="test response",
+            trajectory=self._session,
+        )
 
 
 class FullProvider(TraceProvider):
@@ -37,19 +41,25 @@ class FullProvider(TraceProvider):
         self._sessions = sessions or {}
         self._session_ids = session_ids or []
 
-    def get_session(self, session_id: str) -> Session:
+    def get_evaluation_data(self, session_id: str) -> TaskOutput:
         if session_id not in self._sessions:
             raise SessionNotFoundError(f"No session found: {session_id}")
-        return self._sessions[session_id]
+        return TaskOutput(
+            output="test response",
+            trajectory=self._sessions[session_id],
+        )
 
     def list_sessions(self, session_filter: SessionFilter | None = None) -> Iterator[str]:
         yield from self._session_ids
 
-    def get_session_by_trace_id(self, trace_id: str) -> Session:
+    def get_evaluation_data_by_trace_id(self, trace_id: str) -> TaskOutput:
         for session in self._sessions.values():
             for trace in session.traces:
                 if trace.trace_id == trace_id:
-                    return session
+                    return TaskOutput(
+                        output="test response",
+                        trajectory=session,
+                    )
         raise TraceNotFoundError(f"No trace found: {trace_id}")
 
 
@@ -117,7 +127,7 @@ class TestExceptionHierarchy:
 
 
 class TestTraceProviderABC:
-    def test_cannot_instantiate_without_get_session(self):
+    def test_cannot_instantiate_without_get_evaluation_data(self):
         with pytest.raises(TypeError):
             TraceProvider()  # type: ignore[abstract]
 
@@ -125,26 +135,27 @@ class TestTraceProviderABC:
         provider = ConcreteProvider()
         assert isinstance(provider, TraceProvider)
 
-    def test_get_session_returns_session(self):
+    def test_get_evaluation_data_returns_task_output(self):
         session = Session(session_id="s1", traces=[])
         provider = ConcreteProvider(session=session)
-        result = provider.get_session("s1")
-        assert result == session
+        result = provider.get_evaluation_data("s1")
+        assert result["output"] == "test response"
+        assert result["trajectory"] == session
 
-    def test_get_session_raises_session_not_found(self):
+    def test_get_evaluation_data_raises_session_not_found(self):
         provider = ConcreteProvider(session=None)
         with pytest.raises(SessionNotFoundError, match="No session found"):
-            provider.get_session("missing")
+            provider.get_evaluation_data("missing")
 
     def test_list_sessions_default_raises_not_implemented(self):
         provider = ConcreteProvider()
         with pytest.raises(NotImplementedError, match="does not support session discovery"):
             list(provider.list_sessions())
 
-    def test_get_session_by_trace_id_default_raises_not_implemented(self):
+    def test_get_evaluation_data_by_trace_id_default_raises_not_implemented(self):
         provider = ConcreteProvider()
         with pytest.raises(NotImplementedError, match="does not support trace-level retrieval"):
-            provider.get_session_by_trace_id("trace-123")
+            provider.get_evaluation_data_by_trace_id("trace-123")
 
 
 class TestFullProvider:
@@ -159,18 +170,17 @@ class TestFullProvider:
         result = list(provider.list_sessions(session_filter=f))
         assert result == ["s1"]
 
-    def test_get_session_by_trace_id(self):
-        from strands_evals.types.trace import Trace
-
+    def test_get_evaluation_data_by_trace_id(self):
         session = Session(
             session_id="s1",
             traces=[Trace(trace_id="t1", session_id="s1", spans=[])],
         )
         provider = FullProvider(sessions={"s1": session})
-        result = provider.get_session_by_trace_id("t1")
-        assert result == session
+        result = provider.get_evaluation_data_by_trace_id("t1")
+        assert result["output"] == "test response"
+        assert result["trajectory"] == session
 
-    def test_get_session_by_trace_id_not_found(self):
+    def test_get_evaluation_data_by_trace_id_not_found(self):
         provider = FullProvider(sessions={})
         with pytest.raises(TraceNotFoundError, match="No trace found"):
-            provider.get_session_by_trace_id("missing")
+            provider.get_evaluation_data_by_trace_id("missing")
