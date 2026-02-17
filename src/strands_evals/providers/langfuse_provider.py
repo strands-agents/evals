@@ -102,6 +102,8 @@ class LangfuseProvider(TraceProvider):
         """Yield session IDs from Langfuse, with optional time filtering."""
         try:
             page = 1
+            count = 0
+            limit = session_filter.limit if session_filter and session_filter.limit else None
             while True:
                 kwargs: dict[str, Any] = {"page": page, "limit": _PAGE_SIZE}
                 if session_filter:
@@ -114,6 +116,9 @@ class LangfuseProvider(TraceProvider):
 
                 for s in response.data:
                     yield s.id
+                    count += 1
+                    if limit is not None and count >= limit:
+                        return
 
                 if page >= response.meta.total_pages:
                     break
@@ -142,7 +147,7 @@ class LangfuseProvider(TraceProvider):
 
     # --- Internal: fetching ---
 
-    def _fetch_traces_for_session(self, session_id: str) -> list:
+    def _fetch_traces_for_session(self, session_id: str) -> list[Any]:
         """Fetch all trace metadata for a session, handling pagination."""
         all_traces = []
         page = 1
@@ -156,7 +161,7 @@ class LangfuseProvider(TraceProvider):
             page += 1
         return all_traces
 
-    def _fetch_observations(self, trace_id: str) -> list:
+    def _fetch_observations(self, trace_id: str) -> list[Any]:
         """Fetch all observations for a trace, handling pagination."""
         all_observations = []
         page = 1
@@ -172,7 +177,7 @@ class LangfuseProvider(TraceProvider):
 
     # --- Internal: building Session ---
 
-    def _build_session(self, session_id: str, langfuse_traces: list) -> Session:
+    def _build_session(self, session_id: str, langfuse_traces: list[Any]) -> Session:
         """Convert Langfuse traces + observations into an evals Session."""
         traces = []
         for lf_trace in langfuse_traces:
@@ -182,7 +187,7 @@ class LangfuseProvider(TraceProvider):
                 traces.append(Trace(trace_id=lf_trace.id, session_id=session_id, spans=spans))
         return Session(session_id=session_id, traces=traces)
 
-    def _convert_observations(self, observations: list, session_id: str) -> list:
+    def _convert_observations(self, observations: list[Any], session_id: str) -> list[Any]:
         """Convert a list of Langfuse observations to typed evals spans."""
         spans = []
         for obs in observations:
@@ -191,7 +196,7 @@ class LangfuseProvider(TraceProvider):
                 if span is not None:
                     spans.append(span)
             except Exception as e:
-                logger.warning("Failed to convert observation %s: %s", obs.id, e)
+                logger.warning("observation_id=<%s>, error=<%s> | failed to convert observation", obs.id, e)
         return spans
 
     def _convert_observation(self, obs: Any, session_id: str) -> Any:
@@ -207,10 +212,10 @@ class LangfuseProvider(TraceProvider):
             elif obs_name.startswith("invoke_agent"):
                 return self._convert_agent_invocation(obs, session_id)
             else:
-                logger.debug("Skipping SPAN with unrecognized name: %s", obs_name)
+                logger.debug("span_name=<%s> | skipping span with unrecognized name", obs_name)
                 return None
         else:
-            logger.debug("Skipping observation with type: %s", obs_type)
+            logger.debug("observation_type=<%s> | skipping observation with unrecognized type", obs_type)
             return None
 
     def _create_span_info(self, obs: Any, session_id: str) -> SpanInfo:
