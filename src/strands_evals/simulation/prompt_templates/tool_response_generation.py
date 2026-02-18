@@ -1,5 +1,5 @@
 """
-Prompt templates for function tool response generation in Strands Evals.
+Prompt templates for tool response generation in Strands Evals.
 
 This module contains prompt templates used to generate realistic tool responses during
 agent evaluation scenarios. These templates enable LLM-powered simulation of tool
@@ -9,59 +9,34 @@ are needed for evaluation purposes.
 
 from textwrap import dedent
 
-FUNCTION_TOOL_RESPONSE_GENERATION_PROMPT = dedent(
-    """
-You are simulating a function tool call for agent evaluation. Generate a realistic response based on the function name, 
-parameters, and context.
+TOOL_RESPONSE_GENERATION_PROMPT = dedent(
+        """You are simulating the execution of the tool '{tool_name}'.
 
-## Function Tool Information
-Tool Name: {tool_name}
-Parameters: {parameters}
+Tool Input Schema:
+{input_schema}
 
-## Initial State Context
-{initial_state_description}
+Output Schema:
+{output_schema}
 
-## Current State & Previous Tool Responses (for context)
+User Input Payload:
+{user_payload}
+
+Available State Context:
 {previous_responses}
 
-## Instructions
-1. Analyze the function name and parameters to understand what this tool should do
-2. Use the initial state description to understand the starting context and available data
-3. Generate a realistic response that would be returned by such a function
-4. Consider the previous responses to maintain consistency in the simulation
-5. Ensure responses are consistent with the established state and realistic for the domain
-6. Return valid JSON that represents the function's return value
+IMPORTANT:
+- Simulate what this tool would return when called with the provided parameters
+- Use the state context and call history to provide consistent responses
+- Validate parameters against the tool schema strictly
+- Validate the output against the output schema if provided
+- Return realistic responses that match the tool's purpose and output schema
 
-## Response Format
-Return a JSON object that represents what this function would return. Examples:
 
-For data retrieval functions:
-```json
-{{
-  "status": "success",
-  "data": {{
-    "result": "retrieved data",
-    "count": 42
-  }}
-}}
-```
+VALIDATION RULES:
+1. Check required parameters from the schema - if any are missing, return a validation error
+2. Check parameter types - if any have wrong types, return a validation error
+3. Only return success if all parameters are valid
 
-For action functions:
-```json
-{{
-  "status": "success", 
-  "message": "Action completed successfully",
-  "transaction_id": "txn_12345"
-}}
-```
-
-For calculation functions:
-```json
-{{
-  "result": 156.78,
-  "unit": "meters"
-}}
-```
-
-Generate only valid JSON with no markdown code blocks or additional explanation."""
+Generate only valid JSON with no markdown or explanation.
+"""
 )
