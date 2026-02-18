@@ -31,11 +31,11 @@ class CoherenceRating(BaseModel):
 
 class CoherenceEvaluator(Evaluator[InputT, OutputT]):
     """Evaluates the logical cohesion of the assistant's response.
-    
+
     This evaluator assesses whether the assistant's response maintains logical consistency,
     flows naturally, and presents ideas in a well-organized manner. It uses an LLM-as-judge
     approach to provide categorical ratings that are then normalized to numeric scores.
-    
+
     Scores:
     - NOT_AT_ALL (0.0): Response is completely incoherent or contradictory
     - NOT_GENERALLY (0.25): Response has significant logical gaps or inconsistencies

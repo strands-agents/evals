@@ -1,9 +1,11 @@
-"""Integration tests for LangfuseProvider against a real Langfuse instance.
+"""Integration tests for CloudWatchProvider against real CloudWatch Logs data.
 
-Requires LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY environment variables.
-Run with: pytest tests_integ/test_langfuse_provider.py -v
+Requires AWS credentials with CloudWatch Logs read access. Uses the
+'strands_github_bot' AWS profile if available, otherwise falls back to default credentials.
+Run with: pytest tests_integ/test_cloudwatch_provider.py -v
 """
 
+import boto3
 import pytest
 
 from strands_evals import Case, Experiment
@@ -12,12 +14,12 @@ from strands_evals.evaluators import (
     HelpfulnessEvaluator,
     OutputEvaluator,
 )
+from strands_evals.providers.cloudwatch_provider import CloudWatchProvider
 from strands_evals.providers.exceptions import (
     ProviderError,
     SessionNotFoundError,
     TraceNotFoundError,
 )
-from strands_evals.providers.langfuse_provider import LangfuseProvider
 from strands_evals.types.trace import (
     AgentInvocationSpan,
     InferenceSpan,
@@ -26,39 +28,71 @@ from strands_evals.types.trace import (
     Trace,
 )
 
+LOG_GROUP = "/aws/bedrock-agentcore/runtimes/github_issue_handler-zf6fZR2saQ-DEFAULT"
+
+KNOWN_SESSION_IDS = [
+    "github_issue_68_20260218_172558_d27beb07",
+    "github-issue-68-1771435544179-d5gc8kk4xan",
+]
+
+EXPECTED_ACCOUNT_ID = "249746592913"
+AWS_PROFILE = "strands_github_bot"
+AWS_REGION = "us-east-1"
+
+
+def _create_logs_client() -> boto3.client | None:
+    """Try the named profile first, then fall back to default credentials."""
+    for profile in [AWS_PROFILE, None]:
+        try:
+            session = boto3.Session(profile_name=profile, region_name=AWS_REGION)
+            sts = session.client("sts")
+            identity = sts.get_caller_identity()
+            if identity["Account"] == EXPECTED_ACCOUNT_ID:
+                return session.client("logs")
+        except Exception:
+            continue
+    return None
+
 
 @pytest.fixture(scope="module")
 def provider():
-    """Create a LangfuseProvider using env var credentials."""
+    """Create a CloudWatchProvider targeting the correct AWS account."""
+    client = _create_logs_client()
+    if client is None:
+        pytest.skip(f"No AWS credentials found for account {EXPECTED_ACCOUNT_ID}")
+
     try:
-        return LangfuseProvider()
+        cw = CloudWatchProvider(log_group=LOG_GROUP, region=AWS_REGION)
     except ProviderError as e:
-        pytest.skip(f"Langfuse credentials not available: {e}")
+        pytest.skip(f"CloudWatch provider creation failed: {e}")
+
+    # Inject the verified client
+    cw._client = client
+    return cw
 
 
 @pytest.fixture(scope="module")
-def discovered_session_id(provider):
-    """Discover a session ID from Langfuse that has convertible observations."""
-    for session_id in provider.list_sessions():
+def session_id(provider):
+    """Try known session IDs; skip if none found."""
+    for sid in KNOWN_SESSION_IDS:
         try:
-            provider.get_evaluation_data(session_id)
-            return session_id
-        except SessionNotFoundError:
-            # Session exists but has no convertible observations, try next
+            provider.get_evaluation_data(sid)
+            return sid
+        except (SessionNotFoundError, ProviderError):
             continue
-    pytest.skip("No sessions with convertible observations found in Langfuse")
+    pytest.skip("No known sessions found in CloudWatch")
 
 
 @pytest.fixture(scope="module")
-def evaluation_data(provider, discovered_session_id):
+def evaluation_data(provider, session_id):
     """Fetch evaluation data for the discovered session."""
-    return provider.get_evaluation_data(discovered_session_id)
+    return provider.get_evaluation_data(session_id)
 
 
 class TestListSessions:
     def test_returns_at_least_one_session(self, provider):
         sessions = list(provider.list_sessions())
-        assert len(sessions) > 0, "Expected at least one session in Langfuse"
+        assert len(sessions) > 0, "Expected at least one session in CloudWatch"
 
     def test_session_ids_are_strings(self, provider):
         for session_id in provider.list_sessions():
@@ -68,10 +102,10 @@ class TestListSessions:
 
 
 class TestGetEvaluationData:
-    def test_returns_session_with_traces(self, evaluation_data, discovered_session_id):
+    def test_returns_session_with_traces(self, evaluation_data, session_id):
         session = evaluation_data["trajectory"]
         assert isinstance(session, Session)
-        assert session.session_id == discovered_session_id
+        assert session.session_id == session_id
         assert len(session.traces) > 0
 
     def test_traces_have_spans(self, evaluation_data):
@@ -99,20 +133,23 @@ class TestGetEvaluationData:
         assert len(agent_spans) > 0, "Expected at least one AgentInvocationSpan"
 
     def test_agent_invocation_has_prompt_and_response(self, evaluation_data):
+        """AgentInvocationSpan should have user prompt, agent response, and tools list."""
         session = evaluation_data["trajectory"]
         for trace in session.traces:
             for span in trace.spans:
                 if isinstance(span, AgentInvocationSpan):
                     assert isinstance(span.user_prompt, str)
-                    assert isinstance(span.agent_response, str)
                     assert len(span.user_prompt) > 0
+                    assert isinstance(span.agent_response, str)
                     assert len(span.agent_response) > 0
+                    assert isinstance(span.available_tools, list)
                     return
         pytest.fail("No AgentInvocationSpan found")
 
     def test_output_is_nonempty_string(self, evaluation_data):
-        assert isinstance(evaluation_data["output"], str)
-        assert len(evaluation_data["output"]) > 0
+        output = evaluation_data["output"]
+        assert isinstance(output, str)
+        assert len(output) > 0, "Expected non-empty output from agent response"
 
     def test_span_info_populated(self, evaluation_data):
         session = evaluation_data["trajectory"]
@@ -149,22 +186,22 @@ class TestGetEvaluationDataByTraceId:
             provider.get_evaluation_data_by_trace_id("nonexistent-trace-id-12345")
 
 
-# --- End-to-end: Langfuse → Evaluator pipeline ---
+# --- End-to-end: CloudWatch → Evaluator pipeline ---
 
 
 class TestEndToEnd:
-    """Fetch traces from Langfuse and run real evaluators on them."""
+    """Fetch traces from CloudWatch and run real evaluators on them."""
 
-    def test_output_evaluator_on_remote_trace(self, provider, discovered_session_id):
-        """OutputEvaluator produces a valid score from a Langfuse session."""
+    def test_output_evaluator_on_remote_trace(self, provider, session_id):
+        """OutputEvaluator produces a valid score from a CloudWatch session."""
 
         def task(case: Case) -> dict:
             return provider.get_evaluation_data(case.input)
 
         cases = [
             Case(
-                name="langfuse_session",
-                input=discovered_session_id,
+                name="cloudwatch_session",
+                input=session_id,
                 expected_output="any agent response",
             ),
         ]
@@ -182,16 +219,16 @@ class TestEndToEnd:
         assert 0.0 <= report.overall_score <= 1.0
         assert len(report.scores) == 1
 
-    def test_coherence_evaluator_on_remote_trace(self, provider, discovered_session_id):
-        """CoherenceEvaluator produces a valid score from a Langfuse session."""
+    def test_coherence_evaluator_on_remote_trace(self, provider, session_id):
+        """CoherenceEvaluator produces a valid score from a CloudWatch session."""
 
         def task(case: Case) -> dict:
             return provider.get_evaluation_data(case.input)
 
         cases = [
             Case(
-                name="langfuse_session",
-                input=discovered_session_id,
+                name="cloudwatch_session",
+                input=session_id,
                 expected_output="any agent response",
             ),
         ]
@@ -205,16 +242,16 @@ class TestEndToEnd:
         report = reports[0]
         assert 0.0 <= report.overall_score <= 1.0
 
-    def test_multiple_evaluators_on_remote_trace(self, provider, discovered_session_id):
-        """Multiple evaluators can all run on the same Langfuse session data."""
+    def test_multiple_evaluators_on_remote_trace(self, provider, session_id):
+        """Multiple evaluators can all run on the same CloudWatch session data."""
 
         def task(case: Case) -> dict:
             return provider.get_evaluation_data(case.input)
 
         cases = [
             Case(
-                name="langfuse_session",
-                input=discovered_session_id,
+                name="cloudwatch_session",
+                input=session_id,
                 expected_output="any agent response",
             ),
         ]

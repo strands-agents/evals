@@ -55,9 +55,7 @@ class LangfuseProvider(TraceProvider):
         host: str | None = None,
     ):
         if Langfuse is None:
-            raise ProviderError(
-                "Langfuse SDK is not installed. Install it with: pip install 'strands-evals[langfuse]'"
-            )
+            raise ProviderError("Langfuse SDK is not installed. Install it with: pip install 'strands-evals[langfuse]'")
 
         resolved_public_key = public_key or os.environ.get("LANGFUSE_PUBLIC_KEY")
         resolved_secret_key = secret_key or os.environ.get("LANGFUSE_SECRET_KEY")
@@ -147,9 +145,7 @@ class LangfuseProvider(TraceProvider):
         all_traces = []
         page = 1
         while True:
-            response = self._client.api.trace.list(
-                session_id=session_id, page=page, limit=_PAGE_SIZE
-            )
+            response = self._client.api.trace.list(session_id=session_id, page=page, limit=_PAGE_SIZE)
             all_traces.extend(response.data)
             if page >= response.meta.total_pages:
                 break
@@ -161,9 +157,7 @@ class LangfuseProvider(TraceProvider):
         all_observations = []
         page = 1
         while True:
-            response = self._client.api.observations.get_many(
-                trace_id=trace_id, page=page, limit=_PAGE_SIZE
-            )
+            response = self._client.api.observations.get_many(trace_id=trace_id, page=page, limit=_PAGE_SIZE)
             all_observations.extend(response.data)
             if page >= response.meta.total_pages:
                 break
@@ -293,11 +287,13 @@ class LangfuseProvider(TraceProvider):
                         result.append(TextContent(text=item["text"]))
                     elif "toolUse" in item:
                         tu = item["toolUse"]
-                        result.append(ToolCallContent(
-                            name=tu["name"],
-                            arguments=tu.get("input", {}),
-                            tool_call_id=tu.get("toolUseId"),
-                        ))
+                        result.append(
+                            ToolCallContent(
+                                name=tu["name"],
+                                arguments=tu.get("input", {}),
+                                tool_call_id=tu.get("toolUseId"),
+                            )
+                        )
         elif isinstance(content_data, str):
             result.append(TextContent(text=content_data))
         return result
@@ -312,11 +308,13 @@ class LangfuseProvider(TraceProvider):
                 if "content" in tr and tr["content"]:
                     c = tr["content"]
                     text = c[0].get("text", "") if isinstance(c, list) else str(c)
-                result.append(ToolResultContent(
-                    content=text,
-                    error=tr.get("error"),
-                    tool_call_id=tr.get("toolUseId"),
-                ))
+                result.append(
+                    ToolResultContent(
+                        content=text,
+                        error=tr.get("error"),
+                        tool_call_id=tr.get("toolUseId"),
+                    )
+                )
         return result
 
     def _convert_tool_execution(self, obs: Any, session_id: str) -> ToolExecutionSpan:

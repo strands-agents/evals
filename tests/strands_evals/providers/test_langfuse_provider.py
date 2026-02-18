@@ -18,7 +18,6 @@ from strands_evals.types.trace import (
     ToolExecutionSpan,
 )
 
-
 # --- Helpers ---
 
 
@@ -36,8 +35,19 @@ def _trace(trace_id, session_id, output=None):
     return t
 
 
-def _obs(obs_id, trace_id, obs_type, name=None, obs_input=None, obs_output=None,
-         start_time=None, end_time=None, parent_observation_id=None, metadata=None, model=None):
+def _obs(
+    obs_id,
+    trace_id,
+    obs_type,
+    name=None,
+    obs_input=None,
+    obs_output=None,
+    start_time=None,
+    end_time=None,
+    parent_observation_id=None,
+    metadata=None,
+    model=None,
+):
     o = MagicMock()
     o.id, o.trace_id, o.type, o.name = obs_id, trace_id, obs_type, name
     o.start_time = start_time or datetime(2025, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
@@ -70,6 +80,7 @@ def mock_client():
 def provider(mock_client):
     with patch("strands_evals.providers.langfuse_provider.Langfuse", return_value=mock_client):
         from strands_evals.providers.langfuse_provider import LangfuseProvider
+
         return LangfuseProvider(public_key="pk-test", secret_key="sk-test")
 
 
@@ -80,6 +91,7 @@ class TestConstructor:
     def test_explicit_credentials(self, mock_client):
         with patch("strands_evals.providers.langfuse_provider.Langfuse", return_value=mock_client) as cls:
             from strands_evals.providers.langfuse_provider import LangfuseProvider
+
             LangfuseProvider(public_key="pk-1", secret_key="sk-2", host="https://custom.langfuse.com")
             cls.assert_called_once_with(public_key="pk-1", secret_key="sk-2", host="https://custom.langfuse.com")
 
@@ -94,6 +106,7 @@ class TestConstructor:
             patch("strands_evals.providers.langfuse_provider.Langfuse", return_value=mock_client) as cls,
         ):
             from strands_evals.providers.langfuse_provider import LangfuseProvider
+
             LangfuseProvider()
             cls.assert_called_once_with(public_key="pk-env", secret_key="sk-env", host="https://us.cloud.langfuse.com")
 
@@ -108,6 +121,7 @@ class TestConstructor:
             patch("strands_evals.providers.langfuse_provider.Langfuse", return_value=mock_client) as cls,
         ):
             from strands_evals.providers.langfuse_provider import LangfuseProvider
+
             LangfuseProvider()
             cls.assert_called_once_with(
                 public_key="pk-env", secret_key="sk-env", host="https://my-langfuse.example.com"
@@ -117,8 +131,13 @@ class TestConstructor:
         env = os.environ.copy()
         env.pop("LANGFUSE_PUBLIC_KEY", None)
         env.pop("LANGFUSE_SECRET_KEY", None)
-        with patch.dict(os.environ, env, clear=True), pytest.raises(ProviderError, match="Langfuse credentials"):
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("strands_evals.providers.langfuse_provider.Langfuse", return_value=MagicMock()),
+            pytest.raises(ProviderError, match="Langfuse credentials"),
+        ):
             from strands_evals.providers.langfuse_provider import LangfuseProvider
+
             LangfuseProvider()
 
     def test_default_host(self, mock_client):
@@ -130,6 +149,7 @@ class TestConstructor:
             patch("strands_evals.providers.langfuse_provider.Langfuse", return_value=mock_client) as cls,
         ):
             from strands_evals.providers.langfuse_provider import LangfuseProvider
+
             LangfuseProvider(public_key="pk", secret_key="sk")
             assert cls.call_args[1]["host"] == "https://us.cloud.langfuse.com"
 
@@ -140,6 +160,7 @@ class TestConstructor:
             patch("strands_evals.providers.langfuse_provider.Langfuse", return_value=mock_client) as cls,
         ):
             from strands_evals.providers.langfuse_provider import LangfuseProvider
+
             LangfuseProvider(public_key="pk", secret_key="sk", host="https://explicit.example.com")
             assert cls.call_args[1]["host"] == "https://explicit.example.com"
 
@@ -150,9 +171,11 @@ class TestConstructor:
 class TestGetEvaluationData:
     def test_happy_path(self, provider, mock_client):
         mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
-        mock_client.api.observations.get_many.return_value = _paginated([
-            _obs("o1", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a"),
-        ])
+        mock_client.api.observations.get_many.return_value = _paginated(
+            [
+                _obs("o1", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a"),
+            ]
+        )
         result = provider.get_evaluation_data("s1")
         assert isinstance(result["trajectory"], Session)
         assert result["trajectory"].session_id == "s1"
@@ -165,12 +188,28 @@ class TestGetEvaluationData:
 
     def test_output_from_last_agent_invocation(self, provider, mock_client):
         mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
-        mock_client.api.observations.get_many.return_value = _paginated([
-            _obs("o1", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q1"}], obs_output="first",
-                 start_time=datetime(2025, 1, 15, 10, 0, 0, tzinfo=timezone.utc)),
-            _obs("o2", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q2"}], obs_output="second",
-                 start_time=datetime(2025, 1, 15, 10, 1, 0, tzinfo=timezone.utc)),
-        ])
+        mock_client.api.observations.get_many.return_value = _paginated(
+            [
+                _obs(
+                    "o1",
+                    "t1",
+                    "SPAN",
+                    name="invoke_agent a",
+                    obs_input=[{"text": "q1"}],
+                    obs_output="first",
+                    start_time=datetime(2025, 1, 15, 10, 0, 0, tzinfo=timezone.utc),
+                ),
+                _obs(
+                    "o2",
+                    "t1",
+                    "SPAN",
+                    name="invoke_agent a",
+                    obs_input=[{"text": "q2"}],
+                    obs_output="second",
+                    start_time=datetime(2025, 1, 15, 10, 1, 0, tzinfo=timezone.utc),
+                ),
+            ]
+        )
         assert provider.get_evaluation_data("s1")["output"] == "second"
 
     def test_paginates_traces(self, provider, mock_client):
@@ -187,12 +226,25 @@ class TestGetEvaluationData:
     def test_paginates_observations(self, provider, mock_client):
         mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
         mock_client.api.observations.get_many.side_effect = [
-            _paginated([_obs("o1", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a")],
-                       page=1, total_pages=2),
-            _paginated([_obs("o2", "t1", "GENERATION", name="chat",
-                            obs_input=[{"role": "user", "content": [{"text": "q"}]}],
-                            obs_output={"role": "assistant", "content": [{"text": "a"}]})],
-                       page=2, total_pages=2),
+            _paginated(
+                [_obs("o1", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a")],
+                page=1,
+                total_pages=2,
+            ),
+            _paginated(
+                [
+                    _obs(
+                        "o2",
+                        "t1",
+                        "GENERATION",
+                        name="chat",
+                        obs_input=[{"role": "user", "content": [{"text": "q"}]}],
+                        obs_output={"role": "assistant", "content": [{"text": "a"}]},
+                    )
+                ],
+                page=2,
+                total_pages=2,
+            ),
         ]
         assert len(provider.get_evaluation_data("s1")["trajectory"].traces[0].spans) == 2
 
@@ -203,9 +255,11 @@ class TestGetEvaluationData:
 
     def test_unconvertible_observations_excluded(self, provider, mock_client):
         mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
-        mock_client.api.observations.get_many.return_value = _paginated([
-            _obs("o1", "t1", "EVENT", name="some_event"),
-        ])
+        mock_client.api.observations.get_many.return_value = _paginated(
+            [
+                _obs("o1", "t1", "EVENT", name="some_event"),
+            ]
+        )
         with pytest.raises(SessionNotFoundError):
             provider.get_evaluation_data("s1")
 
@@ -220,65 +274,109 @@ class TestConversion:
         return provider.get_evaluation_data("s1")["trajectory"].traces[0].spans
 
     def test_generation_to_inference_span(self, provider, mock_client):
-        spans = self._get_spans(provider, mock_client, [
-            _obs("o-gen", "t1", "GENERATION", name="chat",
-                 obs_input=[{"role": "user", "content": [{"text": "q"}]}],
-                 obs_output={"role": "assistant", "content": [{"text": "a"}]}),
-            _obs("o-agent", "t1", "SPAN", name="invoke_agent a",
-                 obs_input=[{"text": "q"}], obs_output="a"),
-        ])
+        spans = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs(
+                    "o-gen",
+                    "t1",
+                    "GENERATION",
+                    name="chat",
+                    obs_input=[{"role": "user", "content": [{"text": "q"}]}],
+                    obs_output={"role": "assistant", "content": [{"text": "a"}]},
+                ),
+                _obs("o-agent", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a"),
+            ],
+        )
         inference = [s for s in spans if isinstance(s, InferenceSpan)]
         assert len(inference) == 1
         assert inference[0].span_info.span_id == "o-gen"
 
     def test_execute_tool_to_tool_execution_span(self, provider, mock_client):
-        spans = self._get_spans(provider, mock_client, [
-            _obs("o-tool", "t1", "SPAN", name="execute_tool calc",
-                 obs_input={"name": "calc", "arguments": {"x": "2+2"}, "toolUseId": "c1"},
-                 obs_output={"result": "4", "status": "success"}),
-            _obs("o-agent", "t1", "SPAN", name="invoke_agent a",
-                 obs_input=[{"text": "q"}], obs_output="a"),
-        ])
+        spans = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs(
+                    "o-tool",
+                    "t1",
+                    "SPAN",
+                    name="execute_tool calc",
+                    obs_input={"name": "calc", "arguments": {"x": "2+2"}, "toolUseId": "c1"},
+                    obs_output={"result": "4", "status": "success"},
+                ),
+                _obs("o-agent", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a"),
+            ],
+        )
         tools = [s for s in spans if isinstance(s, ToolExecutionSpan)]
         assert len(tools) == 1
         assert tools[0].tool_call.name == "calc"
         assert tools[0].tool_call.arguments == {"x": "2+2"}
 
     def test_invoke_agent_to_agent_invocation_span(self, provider, mock_client):
-        spans = self._get_spans(provider, mock_client, [
-            _obs("o-agent", "t1", "SPAN", name="invoke_agent my_agent",
-                 obs_input=[{"text": "Hello"}], obs_output="Hi there!"),
-        ])
+        spans = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs(
+                    "o-agent",
+                    "t1",
+                    "SPAN",
+                    name="invoke_agent my_agent",
+                    obs_input=[{"text": "Hello"}],
+                    obs_output="Hi there!",
+                ),
+            ],
+        )
         agents = [s for s in spans if isinstance(s, AgentInvocationSpan)]
         assert len(agents) == 1
         assert agents[0].user_prompt == "Hello"
         assert agents[0].agent_response == "Hi there!"
 
     def test_unknown_type_skipped(self, provider, mock_client):
-        spans = self._get_spans(provider, mock_client, [
-            _obs("o-event", "t1", "EVENT", name="log"),
-            _obs("o-agent", "t1", "SPAN", name="invoke_agent a",
-                 obs_input=[{"text": "q"}], obs_output="a"),
-        ])
+        spans = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs("o-event", "t1", "EVENT", name="log"),
+                _obs("o-agent", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a"),
+            ],
+        )
         assert len(spans) == 1
         assert isinstance(spans[0], AgentInvocationSpan)
 
     def test_unknown_span_name_skipped(self, provider, mock_client):
-        spans = self._get_spans(provider, mock_client, [
-            _obs("o-unk", "t1", "SPAN", name="some_other_op"),
-            _obs("o-agent", "t1", "SPAN", name="invoke_agent a",
-                 obs_input=[{"text": "q"}], obs_output="a"),
-        ])
+        spans = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs("o-unk", "t1", "SPAN", name="some_other_op"),
+                _obs("o-agent", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a"),
+            ],
+        )
         assert len(spans) == 1
 
     def test_span_info_populated(self, provider, mock_client):
         start = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
         end = datetime(2025, 6, 1, 12, 0, 10, tzinfo=timezone.utc)
-        spans = self._get_spans(provider, mock_client, [
-            _obs("o-agent", "t1", "SPAN", name="invoke_agent a",
-                 obs_input=[{"text": "q"}], obs_output="a",
-                 start_time=start, end_time=end, parent_observation_id="o-parent"),
-        ])
+        spans = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs(
+                    "o-agent",
+                    "t1",
+                    "SPAN",
+                    name="invoke_agent a",
+                    obs_input=[{"text": "q"}],
+                    obs_output="a",
+                    start_time=start,
+                    end_time=end,
+                    parent_observation_id="o-parent",
+                ),
+            ],
+        )
         si = spans[0].span_info
         assert si.trace_id == "t1"
         assert si.span_id == "o-agent"
@@ -288,19 +386,38 @@ class TestConversion:
         assert si.end_time == end
 
     def test_string_input_for_agent(self, provider, mock_client):
-        spans = self._get_spans(provider, mock_client, [
-            _obs("o-agent", "t1", "SPAN", name="invoke_agent a",
-                 obs_input="plain string prompt", obs_output="response"),
-        ])
+        spans = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs(
+                    "o-agent",
+                    "t1",
+                    "SPAN",
+                    name="invoke_agent a",
+                    obs_input="plain string prompt",
+                    obs_output="response",
+                ),
+            ],
+        )
         assert spans[0].user_prompt == "plain string prompt"
 
     def test_string_output_for_tool(self, provider, mock_client):
-        spans = self._get_spans(provider, mock_client, [
-            _obs("o-tool", "t1", "SPAN", name="execute_tool calc",
-                 obs_input={"name": "calc", "arguments": {"x": 1}}, obs_output="42"),
-            _obs("o-agent", "t1", "SPAN", name="invoke_agent a",
-                 obs_input=[{"text": "q"}], obs_output="a"),
-        ])
+        spans = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs(
+                    "o-tool",
+                    "t1",
+                    "SPAN",
+                    name="execute_tool calc",
+                    obs_input={"name": "calc", "arguments": {"x": 1}},
+                    obs_output="42",
+                ),
+                _obs("o-agent", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a"),
+            ],
+        )
         tools = [s for s in spans if isinstance(s, ToolExecutionSpan)]
         assert tools[0].tool_result.content == "42"
 
@@ -311,7 +428,8 @@ class TestConversion:
 class TestListSessions:
     def test_yields_ids(self, provider, mock_client):
         mock_client.api.sessions.list.return_value = _paginated(
-            [_lf_session("s1"), _lf_session("s2"), _lf_session("s3")])
+            [_lf_session("s1"), _lf_session("s2"), _lf_session("s3")]
+        )
         assert list(provider.list_sessions()) == ["s1", "s2", "s3"]
 
     def test_paginates(self, provider, mock_client):
@@ -323,6 +441,7 @@ class TestListSessions:
 
     def test_time_filter(self, provider, mock_client):
         from strands_evals.providers.trace_provider import SessionFilter
+
         start = datetime(2025, 1, 1, tzinfo=timezone.utc)
         end = datetime(2025, 1, 31, tzinfo=timezone.utc)
         mock_client.api.sessions.list.return_value = _paginated([_lf_session("s1")])
@@ -349,8 +468,7 @@ class TestGetEvaluationDataByTraceId:
         td = MagicMock()
         td.id, td.session_id, td.output = trace_id, session_id, output
         td.observations = observations or [
-            _obs("o-agent", trace_id, "SPAN", name="invoke_agent a",
-                 obs_input=[{"text": "q"}], obs_output=output),
+            _obs("o-agent", trace_id, "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output=output),
         ]
         return td
 

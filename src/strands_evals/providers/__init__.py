@@ -1,3 +1,4 @@
+from .cloudwatch_provider import CloudWatchProvider
 from .exceptions import (
     ProviderError,
     SessionNotFoundError,
@@ -11,6 +12,7 @@ from .trace_provider import (
 )
 
 __all__ = [
+    "CloudWatchProvider",
     "LangfuseProvider",
     "ProviderError",
     "SessionFilter",
