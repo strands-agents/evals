@@ -3,15 +3,9 @@
 import json
 import logging
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
-from ..providers.exceptions import (
-    ProviderError,
-    SessionNotFoundError,
-    TraceNotFoundError,
-)
-from ..providers.trace_provider import SessionFilter, TraceProvider
 from ..types.evaluation import TaskOutput
 from ..types.trace import (
     AgentInvocationSpan,
@@ -29,6 +23,13 @@ from ..types.trace import (
     Trace,
     UserMessage,
 )
+from .exceptions import (
+    ProviderError,
+    SessionNotFoundError,
+    TraceNotFoundError,
+    TraceProviderError,
+)
+from .trace_provider import SessionFilter, TraceProvider
 
 try:
     from langfuse import Langfuse
@@ -79,7 +80,7 @@ class LangfuseProvider(TraceProvider):
         """Fetch all traces for a session and return evaluation data."""
         try:
             all_traces = self._fetch_traces_for_session(session_id)
-        except (SessionNotFoundError, ProviderError):
+        except TraceProviderError:
             raise
         except Exception as e:
             raise ProviderError(f"Langfuse: failed to fetch traces for session '{session_id}': {e}") from e
@@ -118,7 +119,7 @@ class LangfuseProvider(TraceProvider):
                 if page >= response.meta.total_pages:
                     break
                 page += 1
-        except ProviderError:
+        except TraceProviderError:
             raise
         except Exception as e:
             raise ProviderError(f"Langfuse: failed to list sessions: {e}") from e
@@ -142,33 +143,25 @@ class LangfuseProvider(TraceProvider):
 
     # --- Internal: fetching ---
 
-    def _fetch_traces_for_session(self, session_id: str) -> list:
-        """Fetch all trace metadata for a session, handling pagination."""
-        all_traces = []
+    def _fetch_all_pages(self, fetch_fn: Callable[..., Any], **kwargs: Any) -> list:
+        """Fetch all pages from a paginated Langfuse API endpoint."""
+        all_items: list = []
         page = 1
         while True:
-            response = self._client.api.trace.list(
-                session_id=session_id, page=page, limit=_PAGE_SIZE
-            )
-            all_traces.extend(response.data)
+            response = fetch_fn(page=page, limit=_PAGE_SIZE, **kwargs)
+            all_items.extend(response.data)
             if page >= response.meta.total_pages:
                 break
             page += 1
-        return all_traces
+        return all_items
+
+    def _fetch_traces_for_session(self, session_id: str) -> list:
+        """Fetch all trace metadata for a session, handling pagination."""
+        return self._fetch_all_pages(self._client.api.trace.list, session_id=session_id)
 
     def _fetch_observations(self, trace_id: str) -> list:
         """Fetch all observations for a trace, handling pagination."""
-        all_observations = []
-        page = 1
-        while True:
-            response = self._client.api.observations.get_many(
-                trace_id=trace_id, page=page, limit=_PAGE_SIZE
-            )
-            all_observations.extend(response.data)
-            if page >= response.meta.total_pages:
-                break
-            page += 1
-        return all_observations
+        return self._fetch_all_pages(self._client.api.observations.get_many, trace_id=trace_id)
 
     # --- Internal: building Session ---
 
@@ -197,21 +190,22 @@ class LangfuseProvider(TraceProvider):
     def _convert_observation(self, obs: Any, session_id: str) -> Any:
         """Convert a single Langfuse observation to a typed span, or None to skip."""
         obs_type = obs.type
-        obs_name = obs.name or ""
 
         if obs_type == "GENERATION":
             return self._convert_generation(obs, session_id)
-        elif obs_type == "SPAN":
-            if obs_name.startswith("execute_tool"):
-                return self._convert_tool_execution(obs, session_id)
-            elif obs_name.startswith("invoke_agent"):
-                return self._convert_agent_invocation(obs, session_id)
-            else:
-                logger.debug("Skipping SPAN with unrecognized name: %s", obs_name)
-                return None
-        else:
+
+        if obs_type != "SPAN":
             logger.debug("Skipping observation with type: %s", obs_type)
             return None
+
+        obs_name = obs.name or ""
+        if obs_name.startswith("execute_tool"):
+            return self._convert_tool_execution(obs, session_id)
+        if obs_name.startswith("invoke_agent"):
+            return self._convert_agent_invocation(obs, session_id)
+
+        logger.debug("Skipping SPAN with unrecognized name: %s", obs_name)
+        return None
 
     def _create_span_info(self, obs: Any, session_id: str) -> SpanInfo:
         return SpanInfo(
@@ -323,9 +317,7 @@ class LangfuseProvider(TraceProvider):
         """Convert an execute_tool SPAN observation to a ToolExecutionSpan."""
         span_info = self._create_span_info(obs, session_id)
         obs_input = obs.input or {}
-        obs_output = obs.output
 
-        # Extract tool call info from input
         if isinstance(obs_input, dict):
             tool_name = obs_input.get("name", "")
             tool_arguments = obs_input.get("arguments", {})
@@ -335,24 +327,27 @@ class LangfuseProvider(TraceProvider):
             tool_arguments = {}
             tool_call_id = None
 
-        # Extract tool result from output
-        if isinstance(obs_output, str):
-            result_content = obs_output
-            result_error = None
-        elif isinstance(obs_output, dict):
-            result_content = obs_output.get("result", str(obs_output))
-            status = obs_output.get("status", "")
-            result_error = None if status == "success" else (str(status) if status else None)
-        else:
-            result_content = str(obs_output) if obs_output is not None else ""
-            result_error = None
-
+        result_content, result_error = self._parse_tool_result(obs.output)
         tool_call = ToolCall(name=tool_name, arguments=tool_arguments, tool_call_id=tool_call_id)
         tool_result = ToolResult(content=result_content, error=result_error, tool_call_id=tool_call_id)
 
         return ToolExecutionSpan(
             span_info=span_info, tool_call=tool_call, tool_result=tool_result, metadata=obs.metadata or {}
         )
+
+    def _parse_tool_result(self, obs_output: Any) -> tuple[str, str | None]:
+        """Parse tool execution output into (content, error)."""
+        if isinstance(obs_output, str):
+            return obs_output, None
+
+        if isinstance(obs_output, dict):
+            content = obs_output.get("result", str(obs_output))
+            status = obs_output.get("status", "")
+            error = None if status == "success" else (str(status) if status else None)
+            return content, error
+
+        content = str(obs_output) if obs_output is not None else ""
+        return content, None
 
     def _convert_agent_invocation(self, obs: Any, session_id: str) -> AgentInvocationSpan:
         """Convert an invoke_agent SPAN observation to an AgentInvocationSpan."""

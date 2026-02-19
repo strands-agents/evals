@@ -18,7 +18,6 @@ from strands_evals.types.trace import (
     ToolExecutionSpan,
 )
 
-
 # --- Helpers ---
 
 
@@ -117,7 +116,11 @@ class TestConstructor:
         env = os.environ.copy()
         env.pop("LANGFUSE_PUBLIC_KEY", None)
         env.pop("LANGFUSE_SECRET_KEY", None)
-        with patch.dict(os.environ, env, clear=True), pytest.raises(ProviderError, match="Langfuse credentials"):
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("strands_evals.providers.langfuse_provider.Langfuse"),
+            pytest.raises(ProviderError, match="Langfuse credentials"),
+        ):
             from strands_evals.providers.langfuse_provider import LangfuseProvider
             LangfuseProvider()
 
