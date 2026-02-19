@@ -9,7 +9,7 @@ are needed for evaluation purposes.
 
 from textwrap import dedent
 
-TOOL_RESPONSE_GENERATION_PROMPT = dedent(
+TOOL_RESPONSE_PROMPT_TEMPLATE = dedent(
     """You are simulating the execution of the tool '{tool_name}'.
 
 Tool Input Schema:

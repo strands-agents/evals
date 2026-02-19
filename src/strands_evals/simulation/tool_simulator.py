@@ -9,11 +9,11 @@ from pydantic import BaseModel
 from strands import Agent
 from strands.agent import AgentResult
 from strands.models.model import Model
-from strands.tools.decorator import DecoratedFunctionTool
+from strands.tools.decorator import DecoratedFunctionTool, FunctionToolMetadata
 
 from strands_evals.types.simulation.tool import RegisteredTool
 
-from .prompt_templates.tool_response_generation import TOOL_RESPONSE_GENERATION_PROMPT
+from .prompt_templates.tool_response_generation import TOOL_RESPONSE_PROMPT_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
@@ -143,13 +143,10 @@ class ToolSimulator:
     registered tools. It can be configured to override tool behavior for simulation purposes,
     enabling controlled testing scenarios.
 
-    IMPORTANT: This simulator expects functions to be decorated with Strands' @tool decorator first.
-
     Example usage:
         simulator = ToolSimulator()
 
-        @simulator.tool()
-        @tool
+        @simulator.tool(output_schema=MyOutputSchema)
         def my_tool(param: str) -> dict:
             '''Tool description'''
             pass
@@ -183,7 +180,6 @@ class ToolSimulator:
                                      Default is 20.
         """
         self.model = model
-        self.tool_prompt = TOOL_RESPONSE_GENERATION_PROMPT
         self.state_registry = state_registry or StateRegistry(max_tool_call_cache_size=max_tool_call_cache_size)
         self._registered_tools: dict[str, RegisteredTool] = {}
         self._initialize_shared_states()
@@ -271,7 +267,7 @@ class ToolSimulator:
 
         current_state = self.state_registry.get_state(state_key)
 
-        prompt = self.tool_prompt.format(
+        prompt = TOOL_RESPONSE_PROMPT_TEMPLATE.format(
             tool_name=registered_tool.name,
             input_schema=input_schema,
             output_schema=output_schema_string,
@@ -298,32 +294,45 @@ class ToolSimulator:
         """
         Decorator for registering tools with flexible output schemas.
 
-        IMPORTANT: This decorator expects the function to already be decorated with @tool
-        from strands.tools.decorator.
+        Example usage:
+            simulator = ToolSimulator()
+
+            @simulator.tool(output_schema=MyOutputSchema)
+            def my_tool(param: str) -> dict:
+                '''Tool description'''
+                pass
 
         Args:
             output_schema: Required pydantic BaseModel for tool's output schema.
-            name: Optional name for the tool. If None, uses DecoratedFunctionTool.tool_name
+            name: Optional name for the tool. If None, uses the function's name
             share_state_id: Optional shared state ID for sharing state between tools
             initial_state_description: Optional initial state description for the tool's context
 
         Returns:
-            Decorator function
+            Decorator function that returns a DecoratedFunctionTool
         """
 
-        def decorator(func: Callable) -> Callable:
+        def decorator(func: Callable) -> DecoratedFunctionTool:
             try:
-                if not isinstance(func, DecoratedFunctionTool):
-                    raise TypeError(
-                        f"Expected DecoratedFunctionTool (from @tool decorator), got {type(func).__name__}. "
-                        f"Please ensure your function is decorated with @tool first, then @simulator.tool()."
-                    )
+                # Use Strands' internal extraction logic to create DecoratedFunctionTool
+                tool_metadata = FunctionToolMetadata(func, context_param=None)
+                tool_spec = tool_metadata.extract_metadata()
 
-                tool_name = name or func.tool_name
+                # Override name if provided
+                tool_name = name or func.__name__
+                tool_spec["name"] = tool_name
+
+                # Create DecoratedFunctionTool using strands' extraction
+                decorated_tool = DecoratedFunctionTool(
+                    tool_name=tool_name,
+                    tool_spec=tool_spec,
+                    tool_func=func,
+                    metadata=tool_metadata,
+                )
 
                 registered_tool = RegisteredTool(
                     name=tool_name,
-                    function=func,
+                    function=decorated_tool,
                     output_schema=output_schema,
                     initial_state_description=initial_state_description,
                     share_state_id=share_state_id,
@@ -340,7 +349,7 @@ class ToolSimulator:
             except Exception as e:
                 raise RuntimeError(f"Error registering tool {name or getattr(func, '__name__', 'unknown')}: {e}") from e
 
-            return func
+            return decorated_tool
 
         return decorator
 

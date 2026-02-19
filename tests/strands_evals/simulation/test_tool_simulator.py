@@ -5,7 +5,6 @@ from unittest.mock import MagicMock
 
 import pytest
 from pydantic import BaseModel
-from strands import tool
 
 from strands_evals.case import Case
 from strands_evals.simulation.tool_simulator import StateRegistry, ToolSimulator
@@ -79,7 +78,6 @@ def test_tool_simulator_init():
 
     assert simulator.state_registry is custom_registry
     assert simulator.model is None  # model is now used for LLM inference
-    assert simulator.tool_prompt is not None  # Check that prompt template is loaded
 
 
 def test_tool_decorator_registration():
@@ -87,7 +85,6 @@ def test_tool_decorator_registration():
     simulator = ToolSimulator()
 
     @simulator.tool(output_schema=DictOutput)
-    @tool
     def test_function(x: int, y: str) -> dict:
         """A sample function for testing."""
         return {"x": x, "y": y}
@@ -106,7 +103,6 @@ def test_tool_decorator_with_name():
         x: int
 
     @simulator.tool(output_schema=SingleIntOutput, name="custom_name")
-    @tool
     def test_function(x: int) -> dict:
         """A sample function for testing."""
         return {"x": x}
@@ -123,7 +119,6 @@ def test_tool_simulation(mock_model):
 
     # Register tool
     @simulator.tool(output_schema=GenericOutput)
-    @tool
     def test_func(message: str) -> dict:
         """Test function that should be simulated."""
         pass
@@ -151,12 +146,10 @@ def test_list_tools():
     simulator = ToolSimulator()
 
     @simulator.tool(output_schema=GenericOutput)
-    @tool
     def func1():
         pass
 
     @simulator.tool(output_schema=GenericOutput)
-    @tool
     def func2():
         pass
 
@@ -178,7 +171,6 @@ def test_sharedstate_registry(mock_model):
         share_state_id=shared_state_id,
         initial_state_description=initial_state,
     )
-    @tool
     def check_balance(account_id: str):
         """Check account balance."""
         pass
@@ -188,7 +180,6 @@ def test_sharedstate_registry(mock_model):
         share_state_id=shared_state_id,
         initial_state_description=initial_state,
     )
-    @tool
     def transfer_funds(from_account: str, to_account: str):
         """Transfer funds between accounts."""
         pass
@@ -198,7 +189,6 @@ def test_sharedstate_registry(mock_model):
         share_state_id=shared_state_id,
         initial_state_description=initial_state,
     )
-    @tool
     def get_transactions(account_id: str):
         """Get transaction history."""
         pass
@@ -299,7 +289,6 @@ def test_clear_tools():
     simulator = ToolSimulator()
 
     @simulator.tool(output_schema=GenericOutput)
-    @tool
     def test_func():
         pass
 
@@ -316,7 +305,6 @@ def test_attaching_tool_simulator_to_strands_agent():
 
     # Register a tool simulator
     @simulator.tool(output_schema=GenericOutput)
-    @tool
     def test_tool(input_value: str) -> Dict[str, Any]:
         """Test tool for agent attachment.
 
@@ -347,7 +335,6 @@ def test_get_state_method():
         share_state_id="test_state",
         initial_state_description="Test initial state",
     )
-    @tool
     def test_tool():
         pass
 
@@ -369,7 +356,6 @@ def test_output_schema_parameter():
     simulator = ToolSimulator()
 
     @simulator.tool(output_schema=CustomOutput)
-    @tool
     def test_tool_with_schema():
         pass
 
@@ -392,7 +378,6 @@ def test_automatic_input_model_as_output_schema():
 
     # Create a tool with typed parameters and explicit output_schema
     @simulator.tool(output_schema=ParametersOutput)
-    @tool
     def test_tool_with_parameters(name: str, age: int, active: bool = True) -> dict:
         """A test tool with typed parameters.
 
@@ -433,7 +418,6 @@ def test_explicit_output_schema_override():
 
     # Create a tool with explicit output_schema
     @simulator.tool(output_schema=CustomOutput)
-    @tool
     def test_tool_with_explicit_schema(name: str, age: int) -> dict:
         """A test tool with explicit output_schema.
 
@@ -464,7 +448,6 @@ def test_no_parameters_tool_input_model():
 
     # Create a tool with no parameters
     @simulator.tool(output_schema=EmptyOutput)
-    @tool
     def test_tool_no_params() -> dict:
         """A test tool with no parameters."""
         pass
