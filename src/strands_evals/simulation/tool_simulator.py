@@ -244,7 +244,6 @@ class ToolSimulator:
     def _simulate_tool_call(self, prompt: str, structured_output_model=None) -> Any:
         """Tool simulation agent creation and response generation."""
         agent = Agent(
-            system_prompt=prompt,
             tools=[],
             model=self.model,
             callback_handler=None,
@@ -277,7 +276,7 @@ class ToolSimulator:
             input_schema=input_schema,
             output_schema=output_schema_string,
             user_payload=parameters_string,
-            previous_responses=json.dumps(current_state.get("previous_calls", []), indent=2),
+            state_context=json.dumps(current_state, indent=2),
         )
 
         result = self._simulate_tool_call(prompt, structured_output_model=registered_tool.output_schema)

@@ -10,7 +10,7 @@ are needed for evaluation purposes.
 from textwrap import dedent
 
 TOOL_RESPONSE_GENERATION_PROMPT = dedent(
-        """You are simulating the execution of the tool '{tool_name}'.
+    """You are simulating the execution of the tool '{tool_name}'.
 
 Tool Input Schema:
 {input_schema}
@@ -22,7 +22,7 @@ User Input Payload:
 {user_payload}
 
 Available State Context:
-{previous_responses}
+{state_context}
 
 IMPORTANT:
 - Simulate what this tool would return when called with the provided parameters
