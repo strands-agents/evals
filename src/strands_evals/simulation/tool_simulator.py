@@ -196,18 +196,22 @@ class ToolSimulator:
 
     def _create_tool_wrapper(self, registered_tool: RegisteredTool):
         """
-        Create a Strands tool wrapper for simulation.
+        Create a simulation wrapper for a registered tool.
 
-        Since the registered function is already a DecoratedFunctionTool (from @tool decorator),
-        we reuse its existing metadata and spec, but replace the tool_func with our simulation wrapper.
+        The registered tool is a DecoratedFunctionTool representing the original function.
+        This method creates a new DecoratedFunctionTool that reuses the original's metadata
+        but replaces the actual execution with simulation logic (LLM-based responses).
+
+        Args:
+            registered_tool: The registered tool to wrap for simulation.
+
+        Returns:
+            A DecoratedFunctionTool that simulates the tool's behavior.
         """
         original_tool = registered_tool.function
 
         if not isinstance(original_tool, DecoratedFunctionTool):
-            raise TypeError(
-                f"Expected DecoratedFunctionTool, got {type(original_tool).__name__}. "
-                f"Ensure your function is decorated with @tool first."
-            )
+            raise TypeError(f"Expected DecoratedFunctionTool, got {type(original_tool).__name__}.")
 
         def wrapper(*args, **kwargs):
             state_key = registered_tool.share_state_id or registered_tool.name
@@ -218,12 +222,8 @@ class ToolSimulator:
 
             return self._call_tool(registered_tool, parameters_string, state_key)
 
-        if registered_tool.function:
-            wrapper.__name__ = registered_tool.function.__name__
-            wrapper.__doc__ = registered_tool.function.__doc__
-        else:
-            wrapper.__name__ = registered_tool.name
-            wrapper.__doc__ = f"Simulated {registered_tool.name} tool"
+        wrapper.__name__ = original_tool.tool_name
+        wrapper.__doc__ = original_tool.tool_spec.get("description", f"Simulated {registered_tool.name} tool")
 
         tool_spec = original_tool.tool_spec.copy()
         tool_spec["name"] = registered_tool.name
@@ -231,8 +231,8 @@ class ToolSimulator:
         simulated_tool = DecoratedFunctionTool(
             tool_name=registered_tool.name,
             tool_spec=tool_spec,
-            tool_func=wrapper,  # Use our simulation wrapper instead of original function
-            metadata=original_tool._metadata,  # Reuse existing metadata
+            tool_func=wrapper,  # Replace actual function with simulation wrapper
+            metadata=original_tool._metadata,  # Reuse extracted metadata
         )
 
         return simulated_tool
@@ -293,6 +293,9 @@ class ToolSimulator:
     ) -> Callable:
         """
         Decorator for registering tools with flexible output schemas.
+
+        This decorator uses Strands' internal extraction logic to automatically extract
+        tool metadata from the function's signature, type hints, and docstring.
 
         Example usage:
             simulator = ToolSimulator()
