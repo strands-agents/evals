@@ -6,6 +6,8 @@ import os
 from collections.abc import Callable, Iterator
 from typing import Any
 
+from tenacity import Retrying, before_sleep_log, retry_if_exception_type, stop_after_attempt, wait_exponential
+
 from ..types.evaluation import TaskOutput
 from ..types.trace import (
     AgentInvocationSpan,
@@ -31,14 +33,15 @@ from .exceptions import (
 )
 from .trace_provider import SessionFilter, TraceProvider
 
-try:
-    from langfuse import Langfuse
-except ImportError:
-    Langfuse = None  # type: ignore[assignment, misc]
+from httpx import ReadTimeout
+from langfuse import Langfuse
 
 logger = logging.getLogger(__name__)
 
 _PAGE_SIZE = 100
+_DEFAULT_TIMEOUT = 120
+_MAX_RETRIES = 3
+_RETRY_BACKOFF_BASE = 2
 
 
 class LangfuseProvider(TraceProvider):
@@ -54,12 +57,8 @@ class LangfuseProvider(TraceProvider):
         public_key: str | None = None,
         secret_key: str | None = None,
         host: str | None = None,
+        timeout: int = _DEFAULT_TIMEOUT,
     ):
-        if Langfuse is None:
-            raise ProviderError(
-                "Langfuse SDK is not installed. Install it with: pip install 'strands-evals[langfuse]'"
-            )
-
         resolved_public_key = public_key or os.environ.get("LANGFUSE_PUBLIC_KEY")
         resolved_secret_key = secret_key or os.environ.get("LANGFUSE_SECRET_KEY")
         resolved_host = host or os.environ.get("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
@@ -75,6 +74,7 @@ class LangfuseProvider(TraceProvider):
             secret_key=resolved_secret_key,
             host=resolved_host,
         )
+        self._request_options = {"timeout_in_seconds": timeout}
 
     def get_evaluation_data(self, session_id: str) -> TaskOutput:
         """Fetch all traces for a session and return evaluation data."""
@@ -106,7 +106,7 @@ class LangfuseProvider(TraceProvider):
             count = 0
             limit = session_filter.limit if session_filter and session_filter.limit else None
             while True:
-                kwargs: dict[str, Any] = {"page": page, "limit": _PAGE_SIZE}
+                kwargs: dict[str, Any] = {"page": page, "limit": _PAGE_SIZE, "request_options": self._request_options}
                 if session_filter:
                     if session_filter.start_time:
                         kwargs["from_timestamp"] = session_filter.start_time
@@ -132,7 +132,7 @@ class LangfuseProvider(TraceProvider):
     def get_evaluation_data_by_trace_id(self, trace_id: str) -> TaskOutput:
         """Fetch a single trace by ID and return evaluation data."""
         try:
-            trace_detail = self._client.api.trace.get(trace_id)
+            trace_detail = self._client.api.trace.get(trace_id, request_options=self._request_options)
         except Exception as e:
             raise TraceNotFoundError(f"Langfuse: trace not found for trace_id='{trace_id}': {e}") from e
 
@@ -153,12 +153,24 @@ class LangfuseProvider(TraceProvider):
         all_items: list = []
         page = 1
         while True:
-            response = fetch_fn(page=page, limit=_PAGE_SIZE, **kwargs)
+            response = self._call_with_retry(fetch_fn, page=page, limit=_PAGE_SIZE, **kwargs)
             all_items.extend(response.data)
             if page >= response.meta.total_pages:
                 break
             page += 1
         return all_items
+
+    def _call_with_retry(self, fn: Callable[..., Any], **kwargs: Any) -> Any:
+        """Call a Langfuse API function with timeout and retry on ReadTimeout."""
+        kwargs.setdefault("request_options", self._request_options)
+        retrier = Retrying(
+            stop=stop_after_attempt(_MAX_RETRIES),
+            wait=wait_exponential(multiplier=_RETRY_BACKOFF_BASE),
+            retry=retry_if_exception_type(ReadTimeout),
+            reraise=True,
+            before_sleep=before_sleep_log(logger, logging.WARNING),
+        )
+        return retrier(fn, **kwargs)
 
     def _fetch_traces_for_session(self, session_id: str) -> list:
         """Fetch all trace metadata for a session, handling pagination."""
@@ -396,6 +408,8 @@ class LangfuseProvider(TraceProvider):
         if isinstance(obs_output, dict):
             if "text" in obs_output:
                 return obs_output["text"]
+            if "message" in obs_output:
+                return obs_output["message"]
             if "content" in obs_output:
                 content = obs_output["content"]
                 if isinstance(content, list):
@@ -423,7 +437,11 @@ class LangfuseProvider(TraceProvider):
             return []
 
     def _extract_output(self, session: Session) -> str:
-        """Extract the final agent response from the session for TaskOutput.output."""
+        """Extract the final agent response from the session for TaskOutput.output.
+
+        Returns the last AgentInvocationSpan.agent_response. May be empty when
+        the agent ended on a tool_use rather than producing a text response.
+        """
         for trace in reversed(session.traces):
             for span in reversed(trace.spans):
                 if isinstance(span, AgentInvocationSpan):
