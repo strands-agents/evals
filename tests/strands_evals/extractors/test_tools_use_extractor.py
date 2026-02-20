@@ -342,3 +342,69 @@ def test_tools_use_extractor_extract_from_messages_user_message_without_tool_res
     assert result[0]["input"] == {"expression": "5+5"}
     assert result[0]["tool_result"] == "Result: 10"
     assert result[0]["is_error"] is False
+
+
+def test_tools_use_extractor_extract_from_messages_parallel_tool_calls():
+    """Test extracting multiple parallel tool calls with results in same user message."""
+    messages = [
+        {"role": "user", "content": [{"text": "Calculate 2+2 and 3+3"}]},
+        {
+            "role": "assistant",
+            "content": [
+                {"toolUse": {"toolUseId": "tool_1", "name": "calculator", "input": {"expression": "2+2"}}},
+                {"toolUse": {"toolUseId": "tool_2", "name": "calculator", "input": {"expression": "3+3"}}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"toolResult": {"status": "success", "content": [{"text": "4"}], "toolUseId": "tool_1"}},
+                {"toolResult": {"status": "success", "content": [{"text": "6"}], "toolUseId": "tool_2"}},
+            ],
+        },
+    ]
+
+    result = extract_agent_tools_used_from_messages(messages)
+
+    assert len(result) == 2
+    assert result[0]["name"] == "calculator"
+    assert result[0]["input"] == {"expression": "2+2"}
+    assert result[0]["tool_result"] == "4"
+    assert result[1]["name"] == "calculator"
+    assert result[1]["input"] == {"expression": "3+3"}
+    assert result[1]["tool_result"] == "6"
+
+
+def test_tools_use_extractor_extract_from_messages_reused_tool_ids():
+    """Test extracting tool calls when tool IDs are reused across the session."""
+    messages = [
+        {"role": "user", "content": [{"text": "Calculate 2+2"}]},
+        {
+            "role": "assistant",
+            "content": [{"toolUse": {"toolUseId": "call_123", "name": "calculator", "input": {"expression": "2+2"}}}],
+        },
+        {
+            "role": "user",
+            "content": [{"toolResult": {"status": "success", "content": [{"text": "4"}], "toolUseId": "call_123"}}],
+        },
+        {"role": "assistant", "content": [{"text": "The answer is 4"}]},
+        {"role": "user", "content": [{"text": "Now calculate 5+5"}]},
+        {
+            "role": "assistant",
+            "content": [{"toolUse": {"toolUseId": "call_123", "name": "calculator", "input": {"expression": "5+5"}}}],
+        },
+        {
+            "role": "user",
+            "content": [{"toolResult": {"status": "success", "content": [{"text": "10"}], "toolUseId": "call_123"}}],
+        },
+    ]
+
+    result = extract_agent_tools_used_from_messages(messages)
+
+    assert len(result) == 2
+    assert result[0]["name"] == "calculator"
+    assert result[0]["input"] == {"expression": "2+2"}
+    assert result[0]["tool_result"] == "4"
+    assert result[1]["name"] == "calculator"
+    assert result[1]["input"] == {"expression": "5+5"}
+    assert result[1]["tool_result"] == "10"
