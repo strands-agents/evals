@@ -2,7 +2,7 @@
 
 import os
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -52,12 +52,6 @@ def _paginated(data, page=1, total_pages=1):
     r = MagicMock()
     r.data, r.meta = data, _meta(page=page, total_pages=total_pages, total_items=len(data))
     return r
-
-
-def _lf_session(sid):
-    s = MagicMock()
-    s.id, s.created_at, s.project_id, s.environment = sid, datetime(2025, 1, 15, tzinfo=timezone.utc), "p1", "prod"
-    return s
 
 
 @pytest.fixture
@@ -308,42 +302,6 @@ class TestConversion:
         assert tools[0].tool_result.content == "42"
 
 
-# --- list_sessions ---
-
-
-class TestListSessions:
-    def test_yields_ids(self, provider, mock_client):
-        mock_client.api.sessions.list.return_value = _paginated(
-            [_lf_session("s1"), _lf_session("s2"), _lf_session("s3")])
-        assert list(provider.list_sessions()) == ["s1", "s2", "s3"]
-
-    def test_paginates(self, provider, mock_client):
-        mock_client.api.sessions.list.side_effect = [
-            _paginated([_lf_session("s1")], page=1, total_pages=2),
-            _paginated([_lf_session("s2")], page=2, total_pages=2),
-        ]
-        assert list(provider.list_sessions()) == ["s1", "s2"]
-
-    def test_time_filter(self, provider, mock_client):
-        from strands_evals.providers.trace_provider import SessionFilter
-        start = datetime(2025, 1, 1, tzinfo=timezone.utc)
-        end = datetime(2025, 1, 31, tzinfo=timezone.utc)
-        mock_client.api.sessions.list.return_value = _paginated([_lf_session("s1")])
-        list(provider.list_sessions(session_filter=SessionFilter(start_time=start, end_time=end)))
-        kw = mock_client.api.sessions.list.call_args[1]
-        assert kw["from_timestamp"] == start
-        assert kw["to_timestamp"] == end
-
-    def test_empty(self, provider, mock_client):
-        mock_client.api.sessions.list.return_value = _paginated([])
-        assert list(provider.list_sessions()) == []
-
-    def test_wraps_error(self, provider, mock_client):
-        mock_client.api.sessions.list.side_effect = Exception("API error")
-        with pytest.raises(ProviderError, match="API error"):
-            list(provider.list_sessions())
-
-
 # --- timeout and retry ---
 
 
@@ -380,12 +338,6 @@ class TestTimeoutAndRetry:
         trace_call_kwargs = mock_client.api.trace.list.call_args[1]
         assert trace_call_kwargs["request_options"] == {"timeout_in_seconds": 300}
 
-    def test_timeout_passed_to_list_sessions(self, provider, mock_client):
-        """list_sessions should also pass request_options with timeout."""
-        mock_client.api.sessions.list.return_value = _paginated([_lf_session("s1")])
-        list(provider.list_sessions())
-        kw = mock_client.api.sessions.list.call_args[1]
-        assert kw["request_options"] == {"timeout_in_seconds": 120}
 
     def test_timeout_passed_to_get_trace(self, provider, mock_client):
         """get_evaluation_data_by_trace_id should pass request_options."""

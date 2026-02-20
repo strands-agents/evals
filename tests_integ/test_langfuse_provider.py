@@ -1,8 +1,13 @@
 """Integration tests for LangfuseProvider against a real Langfuse instance.
 
 Requires LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY environment variables.
+Requires LANGFUSE_TEST_SESSION_ID environment variable pointing to a session
+with convertible observations.
+
 Run with: pytest tests_integ/test_langfuse_provider.py -v
 """
+
+import os
 
 import pytest
 
@@ -37,34 +42,18 @@ def provider():
 
 
 @pytest.fixture(scope="module")
-def discovered_session_id(provider):
-    """Discover a session ID from Langfuse that has convertible observations."""
-    for session_id in provider.list_sessions():
-        try:
-            provider.get_evaluation_data(session_id)
-            return session_id
-        except SessionNotFoundError:
-            # Session exists but has no convertible observations, try next
-            continue
-    pytest.skip("No sessions with convertible observations found in Langfuse")
+def discovered_session_id():
+    """Get a test session ID from environment variable."""
+    session_id = os.environ.get("LANGFUSE_TEST_SESSION_ID")
+    if not session_id:
+        pytest.skip("LANGFUSE_TEST_SESSION_ID not set")
+    return session_id
 
 
 @pytest.fixture(scope="module")
 def evaluation_data(provider, discovered_session_id):
     """Fetch evaluation data for the discovered session."""
     return provider.get_evaluation_data(discovered_session_id)
-
-
-class TestListSessions:
-    def test_returns_at_least_one_session(self, provider):
-        sessions = list(provider.list_sessions())
-        assert len(sessions) > 0, "Expected at least one session in Langfuse"
-
-    def test_session_ids_are_strings(self, provider):
-        for session_id in provider.list_sessions():
-            assert isinstance(session_id, str)
-            assert len(session_id) > 0
-            break  # Only check the first one
 
 
 class TestGetEvaluationData:

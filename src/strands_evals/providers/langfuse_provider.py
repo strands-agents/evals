@@ -3,9 +3,11 @@
 import json
 import logging
 import os
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from typing import Any
 
+from httpx import ReadTimeout
+from langfuse import Langfuse
 from tenacity import Retrying, before_sleep_log, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from ..types.evaluation import TaskOutput
@@ -31,10 +33,7 @@ from .exceptions import (
     TraceNotFoundError,
     TraceProviderError,
 )
-from .trace_provider import SessionFilter, TraceProvider
-
-from httpx import ReadTimeout
-from langfuse import Langfuse
+from .trace_provider import TraceProvider
 
 logger = logging.getLogger(__name__)
 
@@ -98,36 +97,6 @@ class LangfuseProvider(TraceProvider):
         output = self._extract_output(session)
 
         return TaskOutput(output=output, trajectory=session)
-
-    def list_sessions(self, session_filter: SessionFilter | None = None) -> Iterator[str]:
-        """Yield session IDs from Langfuse, with optional time filtering."""
-        try:
-            page = 1
-            count = 0
-            limit = session_filter.limit if session_filter and session_filter.limit else None
-            while True:
-                kwargs: dict[str, Any] = {"page": page, "limit": _PAGE_SIZE, "request_options": self._request_options}
-                if session_filter:
-                    if session_filter.start_time:
-                        kwargs["from_timestamp"] = session_filter.start_time
-                    if session_filter.end_time:
-                        kwargs["to_timestamp"] = session_filter.end_time
-
-                response = self._client.api.sessions.list(**kwargs)
-
-                for s in response.data:
-                    yield s.id
-                    count += 1
-                    if limit is not None and count >= limit:
-                        return
-
-                if page >= response.meta.total_pages:
-                    break
-                page += 1
-        except TraceProviderError:
-            raise
-        except Exception as e:
-            raise ProviderError(f"Langfuse: failed to list sessions: {e}") from e
 
     def get_evaluation_data_by_trace_id(self, trace_id: str) -> TaskOutput:
         """Fetch a single trace by ID and return evaluation data."""
