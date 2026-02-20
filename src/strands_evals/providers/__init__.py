@@ -5,13 +5,11 @@ from .exceptions import (
     TraceProviderError,
 )
 from .trace_provider import (
-    SessionFilter,
     TraceProvider,
 )
 
 __all__ = [
     "ProviderError",
-    "SessionFilter",
     "SessionNotFoundError",
     "TraceNotFoundError",
     "TraceProvider",
