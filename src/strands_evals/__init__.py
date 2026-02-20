@@ -1,4 +1,4 @@
-from . import evaluators, extractors, generators, simulation, telemetry, types
+from . import evaluators, extractors, generators, providers, simulation, telemetry, types
 from .case import Case
 from .experiment import Experiment
 from .simulation import ActorSimulator, UserSimulator
@@ -9,6 +9,7 @@ __all__ = [
     "Case",
     "evaluators",
     "extractors",
+    "providers",
     "types",
     "generators",
     "simulation",

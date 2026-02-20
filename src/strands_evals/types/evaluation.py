@@ -8,8 +8,8 @@ OutputT = TypeVar("OutputT")
 
 
 class Interaction(TypedDict, total=False):
-    """
-    Represents a single interaction in a multi-agent or multi-step system.
+    """Represents a single interaction in a multi-agent or multi-step system.
+
 
     Used to capture the communication flow and dependencies between different
     components (agents, tools, or processing nodes) during task execution.
@@ -56,7 +56,7 @@ class TaskOutput(TypedDict, total=False):
     """
 
     output: Any
-    trajectory: list[Any]
+    trajectory: Union[list[Any], Session, None]
     interactions: list[Interaction]
     input: Any
 
