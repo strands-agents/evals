@@ -30,7 +30,6 @@ from ..types.trace import (
 from .exceptions import (
     ProviderError,
     SessionNotFoundError,
-    TraceNotFoundError,
     TraceProviderError,
 )
 from .trace_provider import TraceProvider
@@ -94,23 +93,6 @@ class LangfuseProvider(TraceProvider):
                 f"Langfuse: traces found for session_id='{session_id}' but none contained convertible observations"
             )
 
-        output = self._extract_output(session)
-
-        return TaskOutput(output=output, trajectory=session)
-
-    def get_evaluation_data_by_trace_id(self, trace_id: str) -> TaskOutput:
-        """Fetch a single trace by ID and return evaluation data."""
-        try:
-            trace_detail = self._client.api.trace.get(trace_id, request_options=self._request_options)
-        except Exception as e:
-            raise TraceNotFoundError(f"Langfuse: trace not found for trace_id='{trace_id}': {e}") from e
-
-        session_id = trace_detail.session_id or trace_id
-        observations = trace_detail.observations or []
-
-        spans = self._convert_observations(observations, session_id)
-        trace = Trace(trace_id=trace_id, session_id=session_id, spans=spans)
-        session = Session(session_id=session_id, traces=[trace] if trace.spans else [])
         output = self._extract_output(session)
 
         return TaskOutput(output=output, trajectory=session)
@@ -239,17 +221,17 @@ class LangfuseProvider(TraceProvider):
         content_data = msg.get("content", [])
 
         if role == "assistant":
-            content = self._parse_assistant_content(content_data)
-            return AssistantMessage(content=content) if content else None
+            assistant_content = self._parse_assistant_content(content_data)
+            return AssistantMessage(content=assistant_content) if assistant_content else None
         elif role == "user":
-            content = self._parse_user_content(content_data)
-            return UserMessage(content=content) if content else None
+            user_content = self._parse_user_content(content_data)
+            return UserMessage(content=user_content) if user_content else None
         else:
             # Tool messages come back as user messages with tool results
             if isinstance(content_data, list):
-                tool_results = self._parse_tool_result_content(content_data)
-                if tool_results:
-                    return UserMessage(content=tool_results)
+                tool_content = self._parse_tool_result_content(content_data)
+                if tool_content:
+                    return UserMessage(content=tool_content)
             return None
 
     def _parse_user_content(self, content_data: Any) -> list[TextContent | ToolResultContent]:
@@ -273,11 +255,13 @@ class LangfuseProvider(TraceProvider):
                         result.append(TextContent(text=item["text"]))
                     elif "toolUse" in item:
                         tu = item["toolUse"]
-                        result.append(ToolCallContent(
-                            name=tu["name"],
-                            arguments=tu.get("input", {}),
-                            tool_call_id=tu.get("toolUseId"),
-                        ))
+                        result.append(
+                            ToolCallContent(
+                                name=tu["name"],
+                                arguments=tu.get("input", {}),
+                                tool_call_id=tu.get("toolUseId"),
+                            )
+                        )
         elif isinstance(content_data, str):
             result.append(TextContent(text=content_data))
         return result
@@ -292,11 +276,13 @@ class LangfuseProvider(TraceProvider):
                 if "content" in tr and tr["content"]:
                     c = tr["content"]
                     text = c[0].get("text", "") if isinstance(c, list) else str(c)
-                result.append(ToolResultContent(
-                    content=text,
-                    error=tr.get("error"),
-                    tool_call_id=tr.get("toolUseId"),
-                ))
+                result.append(
+                    ToolResultContent(
+                        content=text,
+                        error=tr.get("error"),
+                        tool_call_id=tr.get("toolUseId"),
+                    )
+                )
         return result
 
     def _convert_tool_execution(self, obs: Any, session_id: str) -> ToolExecutionSpan:

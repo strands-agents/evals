@@ -20,7 +20,6 @@ from strands_evals.evaluators import (
 from strands_evals.providers.exceptions import (
     ProviderError,
     SessionNotFoundError,
-    TraceNotFoundError,
 )
 from strands_evals.providers.langfuse_provider import LangfuseProvider
 from strands_evals.types.trace import (
@@ -77,18 +76,13 @@ class TestGetEvaluationData:
         session = evaluation_data["trajectory"]
         for trace in session.traces:
             for span in trace.spans:
-                assert isinstance(span, valid_types), (
-                    f"Unexpected span type: {type(span).__name__}"
-                )
+                assert isinstance(span, valid_types), f"Unexpected span type: {type(span).__name__}"
 
     def test_has_agent_invocation_span(self, evaluation_data):
         """At least one trace should have an AgentInvocationSpan."""
         session = evaluation_data["trajectory"]
         agent_spans = [
-            span
-            for trace in session.traces
-            for span in trace.spans
-            if isinstance(span, AgentInvocationSpan)
+            span for trace in session.traces for span in trace.spans if isinstance(span, AgentInvocationSpan)
         ]
         assert len(agent_spans) > 0, "Expected at least one AgentInvocationSpan"
 
@@ -124,23 +118,6 @@ class TestGetEvaluationData:
     def test_nonexistent_session_raises(self, provider):
         with pytest.raises(SessionNotFoundError):
             provider.get_evaluation_data("nonexistent-session-id-that-does-not-exist-12345")
-
-
-class TestGetEvaluationDataByTraceId:
-    def test_fetches_by_trace_id(self, provider, evaluation_data):
-        """Use a trace_id from the discovered session to test trace-level retrieval."""
-        session = evaluation_data["trajectory"]
-        trace_id = session.traces[0].trace_id
-
-        result = provider.get_evaluation_data_by_trace_id(trace_id)
-
-        assert isinstance(result["trajectory"], Session)
-        assert len(result["trajectory"].traces) > 0
-        assert result["trajectory"].traces[0].trace_id == trace_id
-
-    def test_nonexistent_trace_raises(self, provider):
-        with pytest.raises((TraceNotFoundError, ProviderError)):
-            provider.get_evaluation_data_by_trace_id("nonexistent-trace-id-12345")
 
 
 # --- End-to-end: Langfuse → Evaluator pipeline ---
