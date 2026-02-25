@@ -30,8 +30,6 @@ class ConcreteProvider(TraceProvider):
         )
 
 
-
-
 class TestExceptionHierarchy:
     def test_trace_provider_error_is_exception(self):
         assert issubclass(TraceProviderError, Exception)
@@ -54,7 +52,6 @@ class TestExceptionHierarchy:
         for exc_class in (SessionNotFoundError, TraceNotFoundError, ProviderError):
             with pytest.raises(TraceProviderError):
                 raise exc_class("test")
-
 
 
 class TestTraceProviderABC:
