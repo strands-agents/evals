@@ -9,7 +9,6 @@ import pytest
 from strands_evals.providers.exceptions import (
     ProviderError,
     SessionNotFoundError,
-    TraceNotFoundError,
 )
 from strands_evals.types.trace import (
     AgentInvocationSpan,
@@ -63,12 +62,6 @@ def _paginated(data, page=1, total_pages=1):
     r = MagicMock()
     r.data, r.meta = data, _meta(page=page, total_pages=total_pages, total_items=len(data))
     return r
-
-
-def _lf_session(sid):
-    s = MagicMock()
-    s.id, s.created_at, s.project_id, s.environment = sid, datetime(2025, 1, 15, tzinfo=timezone.utc), "p1", "prod"
-    return s
 
 
 @pytest.fixture
@@ -133,7 +126,7 @@ class TestConstructor:
         env.pop("LANGFUSE_SECRET_KEY", None)
         with (
             patch.dict(os.environ, env, clear=True),
-            patch("strands_evals.providers.langfuse_provider.Langfuse", return_value=MagicMock()),
+            patch("strands_evals.providers.langfuse_provider.Langfuse"),
             pytest.raises(ProviderError, match="Langfuse credentials"),
         ):
             from strands_evals.providers.langfuse_provider import LangfuseProvider
@@ -422,73 +415,172 @@ class TestConversion:
         assert tools[0].tool_result.content == "42"
 
 
-# --- list_sessions ---
+# --- timeout and retry ---
 
 
-class TestListSessions:
-    def test_yields_ids(self, provider, mock_client):
-        mock_client.api.sessions.list.return_value = _paginated(
-            [_lf_session("s1"), _lf_session("s2"), _lf_session("s3")]
+class TestTimeoutAndRetry:
+    def test_default_timeout_passed_to_api_calls(self, provider, mock_client):
+        """API calls should pass request_options with default timeout."""
+        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
+        mock_client.api.observations.get_many.return_value = _paginated(
+            [
+                _obs("o-agent", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a"),
+            ]
         )
-        assert list(provider.list_sessions()) == ["s1", "s2", "s3"]
+        provider.get_evaluation_data("s1")
 
-    def test_paginates(self, provider, mock_client):
-        mock_client.api.sessions.list.side_effect = [
-            _paginated([_lf_session("s1")], page=1, total_pages=2),
-            _paginated([_lf_session("s2")], page=2, total_pages=2),
+        # Both trace.list and observations.get_many should receive request_options
+        trace_call_kwargs = mock_client.api.trace.list.call_args[1]
+        assert trace_call_kwargs["request_options"] == {"timeout_in_seconds": 120}
+
+        obs_call_kwargs = mock_client.api.observations.get_many.call_args[1]
+        assert obs_call_kwargs["request_options"] == {"timeout_in_seconds": 120}
+
+    def test_custom_timeout(self, mock_client):
+        """Custom timeout should be passed through to API calls."""
+        with patch("strands_evals.providers.langfuse_provider.Langfuse", return_value=mock_client):
+            from strands_evals.providers.langfuse_provider import LangfuseProvider
+
+            p = LangfuseProvider(public_key="pk", secret_key="sk", timeout=300)
+
+        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
+        mock_client.api.observations.get_many.return_value = _paginated(
+            [
+                _obs("o-agent", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a"),
+            ]
+        )
+        p.get_evaluation_data("s1")
+
+        trace_call_kwargs = mock_client.api.trace.list.call_args[1]
+        assert trace_call_kwargs["request_options"] == {"timeout_in_seconds": 300}
+
+    def test_retries_on_timeout(self, provider, mock_client):
+        """_fetch_all_pages should retry on timeout errors."""
+        from httpx import ReadTimeout
+
+        mock_client.api.trace.list.side_effect = [
+            ReadTimeout("timed out"),
+            _paginated([_trace("t1", "s1")]),
         ]
-        assert list(provider.list_sessions()) == ["s1", "s2"]
+        mock_client.api.observations.get_many.return_value = _paginated(
+            [
+                _obs("o-agent", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a"),
+            ]
+        )
+        result = provider.get_evaluation_data("s1")
+        assert result["trajectory"].session_id == "s1"
+        assert mock_client.api.trace.list.call_count == 2
 
-    def test_time_filter(self, provider, mock_client):
-        from strands_evals.providers.trace_provider import SessionFilter
+    def test_retries_exhaust_raises(self, provider, mock_client):
+        """After max retries, the original error should propagate."""
+        from httpx import ReadTimeout
 
-        start = datetime(2025, 1, 1, tzinfo=timezone.utc)
-        end = datetime(2025, 1, 31, tzinfo=timezone.utc)
-        mock_client.api.sessions.list.return_value = _paginated([_lf_session("s1")])
-        list(provider.list_sessions(session_filter=SessionFilter(start_time=start, end_time=end)))
-        kw = mock_client.api.sessions.list.call_args[1]
-        assert kw["from_timestamp"] == start
-        assert kw["to_timestamp"] == end
-
-    def test_empty(self, provider, mock_client):
-        mock_client.api.sessions.list.return_value = _paginated([])
-        assert list(provider.list_sessions()) == []
-
-    def test_wraps_error(self, provider, mock_client):
-        mock_client.api.sessions.list.side_effect = Exception("API error")
-        with pytest.raises(ProviderError, match="API error"):
-            list(provider.list_sessions())
+        mock_client.api.trace.list.side_effect = ReadTimeout("timed out")
+        with pytest.raises(ProviderError, match="timed out"):
+            provider.get_evaluation_data("s1")
 
 
-# --- get_evaluation_data_by_trace_id ---
+# --- _extract_agent_response edge cases ---
 
 
-class TestGetEvaluationDataByTraceId:
-    def _trace_detail(self, trace_id="t1", session_id="s1", output="answer", observations=None):
-        td = MagicMock()
-        td.id, td.session_id, td.output = trace_id, session_id, output
-        td.observations = observations or [
-            _obs("o-agent", trace_id, "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output=output),
-        ]
-        return td
+class TestExtractAgentResponse:
+    def _get_spans(self, provider, mock_client, observations):
+        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
+        mock_client.api.observations.get_many.return_value = _paginated(observations)
+        return provider.get_evaluation_data("s1")
 
-    def test_happy_path(self, provider, mock_client):
-        mock_client.api.trace.get.return_value = self._trace_detail()
-        result = provider.get_evaluation_data_by_trace_id("t1")
-        assert isinstance(result["trajectory"], Session)
-        assert result["trajectory"].traces[0].trace_id == "t1"
+    def test_message_finish_reason_dict(self, provider, mock_client):
+        """When invoke_agent output is {'message': 'text', 'finish_reason': 'end_turn'}, extract message."""
+        result = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs(
+                    "o-agent",
+                    "t1",
+                    "SPAN",
+                    name="invoke_agent a",
+                    obs_input=[{"text": "q"}],
+                    obs_output={"message": "Here is my response", "finish_reason": "end_turn"},
+                ),
+            ],
+        )
+        assert result["output"] == "Here is my response"
 
-    def test_not_found_raises(self, provider, mock_client):
-        mock_client.api.trace.get.side_effect = Exception("Not found")
-        with pytest.raises(TraceNotFoundError, match="t-missing"):
-            provider.get_evaluation_data_by_trace_id("t-missing")
+    def test_message_finish_reason_empty_message(self, provider, mock_client):
+        """When invoke_agent output is {'message': '', 'finish_reason': 'tool_use'}, message is empty."""
+        result = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs(
+                    "o-agent",
+                    "t1",
+                    "SPAN",
+                    name="invoke_agent a",
+                    obs_input=[{"text": "q"}],
+                    obs_output={"message": "", "finish_reason": "tool_use"},
+                ),
+            ],
+        )
+        # Empty message — output should be empty string from agent_response
+        assert result["output"] == ""
 
-    def test_uses_trace_session_id(self, provider, mock_client):
-        mock_client.api.trace.get.return_value = self._trace_detail(session_id="from-trace")
-        result = provider.get_evaluation_data_by_trace_id("t1")
-        assert result["trajectory"].session_id == "from-trace"
 
-    def test_no_session_id_falls_back_to_trace_id(self, provider, mock_client):
-        mock_client.api.trace.get.return_value = self._trace_detail(session_id=None)
-        result = provider.get_evaluation_data_by_trace_id("t1")
-        assert result["trajectory"].session_id == "t1"
+class TestExtractOutputToolUse:
+    def _get_result(self, provider, mock_client, observations):
+        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
+        mock_client.api.observations.get_many.return_value = _paginated(observations)
+        return provider.get_evaluation_data("s1")
+
+    def test_tool_use_ending_returns_empty(self, provider, mock_client):
+        """When agent ended on tool_use, output is empty string."""
+        result = self._get_result(
+            provider,
+            mock_client,
+            [
+                _obs(
+                    "o-gen",
+                    "t1",
+                    "GENERATION",
+                    name="chat",
+                    obs_input=[{"role": "user", "content": [{"text": "hello"}]}],
+                    obs_output={"role": "assistant", "content": [{"text": "I found the answer"}]},
+                ),
+                _obs(
+                    "o-agent",
+                    "t1",
+                    "SPAN",
+                    name="invoke_agent a",
+                    obs_input=[{"text": "q"}],
+                    obs_output={"message": "", "finish_reason": "tool_use"},
+                ),
+            ],
+        )
+        assert result["output"] == ""
+
+    def test_nonempty_agent_response_used(self, provider, mock_client):
+        """When agent_response has content, use it."""
+        result = self._get_result(
+            provider,
+            mock_client,
+            [
+                _obs(
+                    "o-gen",
+                    "t1",
+                    "GENERATION",
+                    name="chat",
+                    obs_input=[{"role": "user", "content": [{"text": "hello"}]}],
+                    obs_output={"role": "assistant", "content": [{"text": "inference text"}]},
+                ),
+                _obs(
+                    "o-agent",
+                    "t1",
+                    "SPAN",
+                    name="invoke_agent a",
+                    obs_input=[{"text": "q"}],
+                    obs_output="agent says this",
+                ),
+            ],
+        )
+        assert result["output"] == "agent says this"

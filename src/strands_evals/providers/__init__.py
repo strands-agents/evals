@@ -1,23 +1,29 @@
-from .cloudwatch_provider import CloudWatchProvider
+from typing import Any
+
 from .exceptions import (
     ProviderError,
     SessionNotFoundError,
     TraceNotFoundError,
     TraceProviderError,
 )
-from .langfuse_provider import LangfuseProvider
 from .trace_provider import (
-    SessionFilter,
     TraceProvider,
 )
 
 __all__ = [
-    "CloudWatchProvider",
     "LangfuseProvider",
     "ProviderError",
-    "SessionFilter",
     "SessionNotFoundError",
     "TraceNotFoundError",
     "TraceProvider",
     "TraceProviderError",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    """Lazy-load providers that depend on optional packages."""
+    if name == "LangfuseProvider":
+        from .langfuse_provider import LangfuseProvider
+
+        return LangfuseProvider
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

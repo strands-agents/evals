@@ -21,51 +21,46 @@ def extract_agent_tools_used_from_messages(agent_messages):
     for i, message in enumerate(agent_messages):
         if message.get("role") == "assistant":
             message_info = message.get("content")
-            if len(message_info) > 0:
-                tools = []
-                for message in message_info:
-                    if "toolUse" in message:
-                        tools.append(message.get("toolUse"))
+            if message_info:
+                # Collect tool uses from this message
+                tools = [cb.get("toolUse") for cb in message_info if cb.get("toolUse")]
+                if not tools:
+                    continue
+
+                # Build lookup dict of tool results from subsequent user messages
+                tool_ids_needed = {tool.get("toolUseId") for tool in tools}
+                tool_results_by_id: dict[str, dict] = {}
+                for next_message in agent_messages[i + 1 :]:
+                    if next_message.get("role") == "user":
+                        for content_block in next_message.get("content") or []:
+                            tool_result_dict = content_block.get("toolResult")
+                            if tool_result_dict:
+                                tool_id = tool_result_dict.get("toolUseId")
+                                if tool_id in tool_ids_needed and tool_id not in tool_results_by_id:
+                                    tool_results_by_id[tool_id] = tool_result_dict
+                    if len(tool_results_by_id) == len(tool_ids_needed):
+                        break
 
                 for tool in tools:
-                    if tool:
-                        tool_name = tool.get("name")
-                        tool_input = tool.get("input")
-                        tool_id = tool.get("toolUseId")
-                        # get the tool result from the next message
-                        tool_result = None
-                        is_error = False
-                        next_message_i = i + 1
-                        while next_message_i < len(agent_messages):
-                            next_message = agent_messages[next_message_i]
-                            next_message_i += 1
+                    tool_name = tool.get("name")
+                    tool_input = tool.get("input")
+                    tool_id = tool.get("toolUseId")
+                    tool_result = None
+                    is_error = False
 
-                            if next_message.get("role") == "user":
-                                content = next_message.get("content")
-                                if content:
-                                    # Find toolResult in content blocks - may not be at index 0
-                                    tool_result_dict = None
-                                    for content_block in content:
-                                        if "toolResult" in content_block:
-                                            tool_result_dict = content_block.get("toolResult")
-                                            break
+                    # Find the matching tool result block
+                    tool_result_dict = tool_results_by_id.get(tool_id)
+                    if tool_result_dict:
+                        tool_result_content = tool_result_dict.get("content", [])
+                        for result_item in tool_result_content:
+                            if isinstance(result_item, dict) and "text" in result_item:
+                                tool_result = result_item.get("text")
+                                break
+                        is_error = tool_result_dict.get("status") == "error"
 
-                                    if tool_result_dict and tool_result_dict.get("toolUseId") == tool_id:
-                                        tool_result_content = tool_result_dict.get("content", [])
-                                        # Find first text in tool result content - may not be at index 0
-                                        tool_result = None
-                                        if tool_result_content:
-                                            for result_item in tool_result_content:
-                                                if isinstance(result_item, dict) and "text" in result_item:
-                                                    tool_result = result_item.get("text")
-                                                    break
-                                        is_error = tool_result_dict.get("status") == "error"
-                                        break
-
-                        tools_used.append(
-                            {"name": tool_name, "input": tool_input, "tool_result": tool_result, "is_error": is_error}
-                        )
-                        tool = message.get("toolUse")
+                    tools_used.append(
+                        {"name": tool_name, "input": tool_input, "tool_result": tool_result, "is_error": is_error}
+                    )
     return tools_used
 
 
