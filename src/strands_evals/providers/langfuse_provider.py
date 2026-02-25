@@ -134,7 +134,12 @@ class LangfuseProvider(TraceProvider):
     # --- Internal: building Session ---
 
     def _build_session(self, session_id: str, langfuse_traces: list[Any]) -> Session:
-        """Convert Langfuse traces + observations into an evals Session."""
+        """Fetch observations for each Langfuse trace and assemble a Session.
+
+        For each trace, fetches all observations via the Langfuse API,
+        converts them to typed spans, and groups them into Trace objects.
+        Traces with no convertible observations are excluded.
+        """
         traces = []
         for lf_trace in langfuse_traces:
             observations = self._fetch_observations(lf_trace.id)
@@ -144,7 +149,11 @@ class LangfuseProvider(TraceProvider):
         return Session(session_id=session_id, traces=traces)
 
     def _convert_observations(self, observations: list[Any], session_id: str) -> list[Any]:
-        """Convert a list of Langfuse observations to typed evals spans."""
+        """Convert Langfuse observations to typed spans, skipping unconvertible ones.
+
+        Each observation is routed through _convert_observation based on its type
+        and name. Observations that fail conversion are logged and skipped.
+        """
         spans = []
         for obs in observations:
             try:
@@ -156,7 +165,18 @@ class LangfuseProvider(TraceProvider):
         return spans
 
     def _convert_observation(self, obs: Any, session_id: str) -> Any:
-        """Convert a single Langfuse observation to a typed span, or None to skip."""
+        """Route a single Langfuse observation to the appropriate span converter.
+
+        Langfuse observation fields used for routing:
+            obs.type: str  — "GENERATION" | "SPAN" | "EVENT" | ...
+            obs.name: str  — e.g. "execute_tool calc", "invoke_agent my_agent", "chat"
+
+        Routing:
+            obs.type == "GENERATION"                        → InferenceSpan
+            obs.type == "SPAN", name starts "execute_tool"  → ToolExecutionSpan
+            obs.type == "SPAN", name starts "invoke_agent"  → AgentInvocationSpan
+            Otherwise                                       → None (skipped)
+        """
         obs_type = obs.type
 
         if obs_type == "GENERATION":
@@ -176,6 +196,15 @@ class LangfuseProvider(TraceProvider):
         return None
 
     def _create_span_info(self, obs: Any, session_id: str) -> SpanInfo:
+        """Map Langfuse observation metadata to a SpanInfo.
+
+        Langfuse observation fields used:
+            obs.trace_id: str                — Langfuse trace ID
+            obs.id: str                      — Langfuse observation ID (becomes span_id)
+            obs.parent_observation_id: str   — parent observation ID (or None)
+            obs.start_time: datetime
+            obs.end_time: datetime
+        """
         return SpanInfo(
             trace_id=obs.trace_id,
             span_id=obs.id,
@@ -188,13 +217,36 @@ class LangfuseProvider(TraceProvider):
     # --- Internal: conversion methods ---
 
     def _convert_generation(self, obs: Any, session_id: str) -> InferenceSpan:
-        """Convert a GENERATION observation to an InferenceSpan."""
+        """Convert a Langfuse GENERATION observation to an InferenceSpan.
+
+        Langfuse observation (obs.type == "GENERATION"):
+            obs.input: list[dict] — conversation messages, each with "role" and "content" keys
+                [{"role": "user", "content": [{"text": "..."}]},
+                 {"role": "assistant", "content": [{"text": "..."}, {"toolUse": {...}}]},
+                 {"role": "tool", "content": [{"toolResult": {...}}]}]
+            obs.output: dict — single assistant response message
+                {"role": "assistant", "content": [{"text": "..."}, {"toolUse": {...}}]}
+            obs.metadata: dict | None
+
+        Returns:
+            InferenceSpan with messages list containing UserMessage and AssistantMessage objects.
+        """
         span_info = self._create_span_info(obs, session_id)
         messages = self._extract_messages_from_generation(obs)
         return InferenceSpan(span_info=span_info, messages=messages, metadata=obs.metadata or {})
 
     def _extract_messages_from_generation(self, obs: Any) -> list[UserMessage | AssistantMessage]:
-        """Extract messages from a GENERATION observation's input/output."""
+        """Extract typed messages from a GENERATION observation's input and output.
+
+        Reads obs.input (list of message dicts) and obs.output (single message dict),
+        converting each to UserMessage or AssistantMessage via _convert_message.
+
+        Langfuse format:
+            obs.input:  [{"role": "user"|"assistant"|"tool", "content": [...]}, ...]
+            obs.output: {"role": "assistant", "content": [...]}
+
+        Messages with unrecognized roles or empty content are dropped.
+        """
         messages: list[UserMessage | AssistantMessage] = []
 
         # Process input messages
@@ -216,7 +268,19 @@ class LangfuseProvider(TraceProvider):
         return messages
 
     def _convert_message(self, msg: dict) -> UserMessage | AssistantMessage | None:
-        """Convert a Langfuse message dict to a UserMessage or AssistantMessage."""
+        """Convert a single Langfuse message dict to a typed message.
+
+        Input format (msg):
+            {"role": "user",      "content": [{"text": "..."}]}
+            {"role": "assistant", "content": [{"text": "..."}, {"toolUse": {...}}]}
+            {"role": "tool",      "content": [{"toolResult": {"toolUseId": "...", "status": "...", "content": [...]}}]}
+
+        Mapping:
+            role == "assistant" → AssistantMessage (text + tool calls)
+            role == "user"      → UserMessage (text content)
+            role == "tool"      → UserMessage (tool result content)
+            other/empty         → None
+        """
         role = msg.get("role", "")
         content_data = msg.get("content", [])
 
@@ -235,7 +299,12 @@ class LangfuseProvider(TraceProvider):
             return None
 
     def _parse_user_content(self, content_data: Any) -> list[TextContent | ToolResultContent]:
-        """Parse user message content."""
+        """Parse user message content into typed content blocks.
+
+        Input formats:
+            list[dict]: [{"text": "user question"}]     → [TextContent(text="user question")]
+            str:        "user question"                  → [TextContent(text="user question")]
+        """
         result: list[TextContent | ToolResultContent] = []
         if isinstance(content_data, list):
             for item in content_data:
@@ -246,7 +315,22 @@ class LangfuseProvider(TraceProvider):
         return result
 
     def _parse_assistant_content(self, content_data: Any) -> list[TextContent | ToolCallContent]:
-        """Parse assistant message content."""
+        """Parse assistant message content into typed content blocks.
+
+        Input format (list[dict]):
+            [
+                {"text": "I'll help with that."},
+                {"toolUse": {"name": "shell", "input": {"command": "ls"}, "toolUseId": "tooluse_abc123"}},
+                {"reasoningContent": {...}}
+            ]
+
+        Output:
+            [TextContent(text="I'll help with that."),
+             ToolCallContent(name="shell", arguments={"command": "ls"}, tool_call_id="tooluse_abc123")]
+
+        Also accepts a plain string, converted to [TextContent(text=...)].
+        Blocks with unrecognized keys (e.g. "reasoningContent") are skipped.
+        """
         result: list[TextContent | ToolCallContent] = []
         if isinstance(content_data, list):
             for item in content_data:
@@ -267,7 +351,21 @@ class LangfuseProvider(TraceProvider):
         return result
 
     def _parse_tool_result_content(self, content_data: list) -> list[TextContent | ToolResultContent]:
-        """Parse tool result content from a message."""
+        """Parse tool result content blocks from a Langfuse "tool" role message.
+
+        Input format (list[dict]):
+            [{"toolResult": {
+                "toolUseId": "tooluse_abc123",
+                "status": "success" | "error",
+                "content": [{"text": "result text"}]
+            }}]
+
+        Output:
+            [ToolResultContent(content="result text", error=None, tool_call_id="tooluse_abc123")]
+
+        Only the first text item in "content" is extracted. Items without a
+        "toolResult" key are skipped.
+        """
         result: list[TextContent | ToolResultContent] = []
         for item in content_data:
             if isinstance(item, dict) and "toolResult" in item:
@@ -286,7 +384,19 @@ class LangfuseProvider(TraceProvider):
         return result
 
     def _convert_tool_execution(self, obs: Any, session_id: str) -> ToolExecutionSpan:
-        """Convert an execute_tool SPAN observation to a ToolExecutionSpan."""
+        """Convert an execute_tool SPAN observation to a ToolExecutionSpan.
+
+        Langfuse observation (obs.type == "SPAN", obs.name starts with "execute_tool"):
+            obs.input: dict — tool call details
+                {"name": "calc", "arguments": {"x": "2+2"}, "toolUseId": "tooluse_abc123"}
+            obs.output: str | dict — tool execution result
+                str:  "42"
+                dict: {"result": "4", "status": "success"}
+            obs.metadata: dict | None
+
+        Returns:
+            ToolExecutionSpan with tool_call and tool_result populated from the above.
+        """
         span_info = self._create_span_info(obs, session_id)
         obs_input = obs.input or {}
 
@@ -308,7 +418,15 @@ class LangfuseProvider(TraceProvider):
         )
 
     def _parse_tool_result(self, obs_output: Any) -> tuple[str, str | None]:
-        """Parse tool execution output into (content, error)."""
+        """Parse tool execution output into (content, error).
+
+        Input formats:
+            str:  "42"                                      → ("42", None)
+            dict: {"result": "4", "status": "success"}      → ("4", None)
+            dict: {"result": "...", "status": "error"}       → ("...", "error")
+            dict: {"result": "...", "status": ""}            → ("...", None)
+            None:                                            → ("", None)
+        """
         if isinstance(obs_output, str):
             return obs_output, None
 
@@ -322,7 +440,24 @@ class LangfuseProvider(TraceProvider):
         return content, None
 
     def _convert_agent_invocation(self, obs: Any, session_id: str) -> AgentInvocationSpan:
-        """Convert an invoke_agent SPAN observation to an AgentInvocationSpan."""
+        """Convert an invoke_agent SPAN observation to an AgentInvocationSpan.
+
+        Langfuse observation (obs.type == "SPAN", obs.name starts with "invoke_agent"):
+            obs.input: str | list[dict] | dict — user prompt
+                str:        "Hello"
+                list[dict]: [{"text": "Hello"}]
+                dict:       {"text": "Hello"}
+            obs.output: str | dict — agent response
+                str:  "Hi there!"
+                dict: {"message": "Hi there!", "finish_reason": "end_turn"}
+                dict: {"text": "Hi there!"}
+                dict: {"content": [{"text": "Hi there!"}]}
+            obs.metadata: dict | None — may contain "tools" key with available tool names
+                {"tools": ["shell", "get_pull_request", ...]}
+
+        Returns:
+            AgentInvocationSpan with user_prompt, agent_response, and available_tools extracted.
+        """
         span_info = self._create_span_info(obs, session_id)
         obs_input = obs.input
         obs_output = obs.output
@@ -345,7 +480,14 @@ class LangfuseProvider(TraceProvider):
         )
 
     def _extract_user_prompt(self, obs_input: Any) -> str:
-        """Extract user prompt from observation input (handles string or list formats)."""
+        """Extract user prompt string from observation input.
+
+        Input formats:
+            str:        "Hello"             → "Hello"
+            list[dict]: [{"text": "Hello"}] → "Hello"
+            dict:       {"text": "Hello"}   → "Hello"
+            None:                           → ""
+        """
         if isinstance(obs_input, str):
             return obs_input
         if isinstance(obs_input, list):
@@ -357,7 +499,16 @@ class LangfuseProvider(TraceProvider):
         return str(obs_input) if obs_input else ""
 
     def _extract_agent_response(self, obs_output: Any) -> str:
-        """Extract agent response from observation output (handles string or dict formats)."""
+        """Extract agent response string from observation output.
+
+        Input formats:
+            str:  "Hi there!"                                       → "Hi there!"
+            dict: {"text": "Hi there!"}                              → "Hi there!"
+            dict: {"message": "Hi there!", "finish_reason": "..."}   → "Hi there!"
+            dict: {"content": [{"text": "Hi there!"}]}               → "Hi there!"
+            dict: {"content": "Hi there!"}                           → "Hi there!"
+            None:                                                    → ""
+        """
         if isinstance(obs_output, str):
             return obs_output
         if isinstance(obs_output, dict):
@@ -376,7 +527,16 @@ class LangfuseProvider(TraceProvider):
         return str(obs_output) if obs_output else ""
 
     def _extract_available_tools(self, metadata: Any) -> list[ToolConfig]:
-        """Extract available tools from observation metadata."""
+        """Extract available tool configurations from observation metadata.
+
+        Input format:
+            metadata: {"tools": ["shell", "get_pull_request", ...], ...}
+            metadata: {"tools": '["shell", "get_pull_request"]', ...}  (JSON string)
+            metadata: None or {}  → []
+
+        Returns:
+            [ToolConfig(name="shell"), ToolConfig(name="get_pull_request"), ...]
+        """
         if not metadata or not isinstance(metadata, dict):
             return []
         tools_data = metadata.get("tools")
