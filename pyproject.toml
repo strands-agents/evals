@@ -92,7 +92,7 @@ prepare = [
 
 [tool.hatch.envs.hatch-static-analysis]
 installer = "uv"
-features = ["otel"]
+features = ["otel", "langfuse"]
 dependencies = [
   "mypy>=1.15.0,<2.0.0",
   "ruff>=0.13.0,<0.15.0",
