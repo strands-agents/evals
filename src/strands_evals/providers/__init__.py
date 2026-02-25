@@ -1,3 +1,5 @@
+from typing import Any
+
 from .exceptions import (
     ProviderError,
     SessionNotFoundError,
@@ -9,9 +11,19 @@ from .trace_provider import (
 )
 
 __all__ = [
+    "LangfuseProvider",
     "ProviderError",
     "SessionNotFoundError",
     "TraceNotFoundError",
     "TraceProvider",
     "TraceProviderError",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    """Lazy-load providers that depend on optional packages."""
+    if name == "LangfuseProvider":
+        from .langfuse_provider import LangfuseProvider
+
+        return LangfuseProvider
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

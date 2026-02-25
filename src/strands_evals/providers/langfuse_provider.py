@@ -57,6 +57,34 @@ class LangfuseProvider(TraceProvider):
         host: str | None = None,
         timeout: int = _DEFAULT_TIMEOUT,
     ):
+        """Initialize the Langfuse provider.
+
+        Credentials can be passed directly or read from environment variables
+        (LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST).
+
+        Example::
+
+            from strands_evals.providers import LangfuseProvider
+
+            # Reads LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY from env
+            provider = LangfuseProvider()
+
+            # Or pass credentials explicitly
+            provider = LangfuseProvider(
+                public_key="pk-...",
+                secret_key="sk-...",
+            )
+
+        Args:
+            public_key: Langfuse public API key. Falls back to LANGFUSE_PUBLIC_KEY env var.
+            secret_key: Langfuse secret API key. Falls back to LANGFUSE_SECRET_KEY env var.
+            host: Langfuse API host URL. Falls back to LANGFUSE_HOST env var,
+                defaulting to https://us.cloud.langfuse.com.
+            timeout: Request timeout in seconds.
+
+        Raises:
+            ProviderError: If no public key or secret key can be resolved.
+        """
         resolved_public_key = public_key or os.environ.get("LANGFUSE_PUBLIC_KEY")
         resolved_secret_key = secret_key or os.environ.get("LANGFUSE_SECRET_KEY")
         resolved_host = host or os.environ.get("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
