@@ -3,7 +3,6 @@ from typing import Any
 from .exceptions import (
     ProviderError,
     SessionNotFoundError,
-    TraceNotFoundError,
     TraceProviderError,
 )
 from .trace_provider import (
@@ -14,7 +13,6 @@ __all__ = [
     "LangfuseProvider",
     "ProviderError",
     "SessionNotFoundError",
-    "TraceNotFoundError",
     "TraceProvider",
     "TraceProviderError",
 ]

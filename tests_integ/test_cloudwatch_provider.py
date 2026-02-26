@@ -18,7 +18,6 @@ from strands_evals.providers.cloudwatch_provider import CloudWatchProvider
 from strands_evals.providers.exceptions import (
     ProviderError,
     SessionNotFoundError,
-    TraceNotFoundError,
 )
 from strands_evals.types.trace import (
     AgentInvocationSpan,
@@ -89,18 +88,6 @@ def evaluation_data(provider, session_id):
     return provider.get_evaluation_data(session_id)
 
 
-class TestListSessions:
-    def test_returns_at_least_one_session(self, provider):
-        sessions = list(provider.list_sessions())
-        assert len(sessions) > 0, "Expected at least one session in CloudWatch"
-
-    def test_session_ids_are_strings(self, provider):
-        for session_id in provider.list_sessions():
-            assert isinstance(session_id, str)
-            assert len(session_id) > 0
-            break  # Only check the first one
-
-
 class TestGetEvaluationData:
     def test_returns_session_with_traces(self, evaluation_data, session_id):
         session = evaluation_data["trajectory"]
@@ -167,23 +154,6 @@ class TestGetEvaluationData:
     def test_nonexistent_session_raises(self, provider):
         with pytest.raises(SessionNotFoundError):
             provider.get_evaluation_data("nonexistent-session-id-that-does-not-exist-12345")
-
-
-class TestGetEvaluationDataByTraceId:
-    def test_fetches_by_trace_id(self, provider, evaluation_data):
-        """Use a trace_id from the discovered session to test trace-level retrieval."""
-        session = evaluation_data["trajectory"]
-        trace_id = session.traces[0].trace_id
-
-        result = provider.get_evaluation_data_by_trace_id(trace_id)
-
-        assert isinstance(result["trajectory"], Session)
-        assert len(result["trajectory"].traces) > 0
-        assert result["trajectory"].traces[0].trace_id == trace_id
-
-    def test_nonexistent_trace_raises(self, provider):
-        with pytest.raises((TraceNotFoundError, ProviderError)):
-            provider.get_evaluation_data_by_trace_id("nonexistent-trace-id-12345")
 
 
 # --- End-to-end: CloudWatch → Evaluator pipeline ---

@@ -51,13 +51,6 @@ All providers implement the `TraceProvider` interface:
 data = provider.get_evaluation_data(session_id="my-session-id")
 # data["output"]     -> str (final agent response)
 # data["trajectory"] -> Session (traces and spans)
-
-# Discover session IDs
-for session_id in provider.list_sessions():
-    print(session_id)
-
-# Fetch a single trace by ID
-data = provider.get_evaluation_data_by_trace_id(trace_id="abc123")
 ```
 
 ## Running Evaluators on Remote Traces
@@ -90,7 +83,7 @@ for report in reports:
 ## Error Handling
 
 ```python
-from strands_evals.providers import SessionNotFoundError, TraceNotFoundError, ProviderError
+from strands_evals.providers import SessionNotFoundError, ProviderError
 
 try:
     data = provider.get_evaluation_data("unknown-session")
@@ -111,9 +104,5 @@ class MyProvider(TraceProvider):
     def get_evaluation_data(self, session_id: str) -> dict:
         # Fetch traces from your backend, return:
         # {"output": "final response text", "trajectory": Session(...)}
-        ...
-
-    def list_sessions(self, session_filter=None):
-        # Optional: yield session ID strings
         ...
 ```
