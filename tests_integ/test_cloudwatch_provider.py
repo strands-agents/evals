@@ -1,11 +1,17 @@
 """Integration tests for CloudWatchProvider against real CloudWatch Logs data.
 
-Requires AWS credentials with CloudWatch Logs read access. Uses the
-'strands_github_bot' AWS profile if available, otherwise falls back to default credentials.
+Requires the following environment variables:
+    CLOUDWATCH_TEST_LOG_GROUP  — CW Logs group containing agent traces
+    CLOUDWATCH_TEST_SESSION_ID — session ID with convertible spans
+    AWS_REGION (optional)      — defaults to us-east-1
+
+AWS credentials must be configured via standard mechanisms (env vars, profile, instance role).
+
 Run with: pytest tests_integ/test_cloudwatch_provider.py -v
 """
 
-import boto3
+import os
+
 import pytest
 
 from strands_evals import Case, Experiment
@@ -27,59 +33,29 @@ from strands_evals.types.trace import (
     Trace,
 )
 
-LOG_GROUP = "/aws/bedrock-agentcore/runtimes/github_issue_handler-zf6fZR2saQ-DEFAULT"
-
-KNOWN_SESSION_IDS = [
-    "github_issue_68_20260218_172558_d27beb07",
-    "github-issue-68-1771435544179-d5gc8kk4xan",
-]
-
-EXPECTED_ACCOUNT_ID = "249746592913"
-AWS_PROFILE = "strands_github_bot"
-AWS_REGION = "us-east-1"
-
-
-def _create_logs_client() -> boto3.client | None:
-    """Try the named profile first, then fall back to default credentials."""
-    for profile in [AWS_PROFILE, None]:
-        try:
-            session = boto3.Session(profile_name=profile, region_name=AWS_REGION)
-            sts = session.client("sts")
-            identity = sts.get_caller_identity()
-            if identity["Account"] == EXPECTED_ACCOUNT_ID:
-                return session.client("logs")
-        except Exception:
-            continue
-    return None
-
 
 @pytest.fixture(scope="module")
 def provider():
-    """Create a CloudWatchProvider targeting the correct AWS account."""
-    client = _create_logs_client()
-    if client is None:
-        pytest.skip(f"No AWS credentials found for account {EXPECTED_ACCOUNT_ID}")
+    """Create a CloudWatchProvider using env var configuration."""
+    log_group = os.environ.get("CLOUDWATCH_TEST_LOG_GROUP")
+    if not log_group:
+        pytest.skip("CLOUDWATCH_TEST_LOG_GROUP not set")
+
+    region = os.environ.get("AWS_REGION", "us-east-1")
 
     try:
-        cw = CloudWatchProvider(log_group=LOG_GROUP, region=AWS_REGION)
+        return CloudWatchProvider(log_group=log_group, region=region)
     except ProviderError as e:
         pytest.skip(f"CloudWatch provider creation failed: {e}")
 
-    # Inject the verified client
-    cw._client = client
-    return cw
-
 
 @pytest.fixture(scope="module")
-def session_id(provider):
-    """Try known session IDs; skip if none found."""
-    for sid in KNOWN_SESSION_IDS:
-        try:
-            provider.get_evaluation_data(sid)
-            return sid
-        except (SessionNotFoundError, ProviderError):
-            continue
-    pytest.skip("No known sessions found in CloudWatch")
+def session_id():
+    """Get a test session ID from environment variable."""
+    sid = os.environ.get("CLOUDWATCH_TEST_SESSION_ID")
+    if not sid:
+        pytest.skip("CLOUDWATCH_TEST_SESSION_ID not set")
+    return sid
 
 
 @pytest.fixture(scope="module")
