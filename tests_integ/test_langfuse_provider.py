@@ -41,7 +41,7 @@ def provider():
 
 
 @pytest.fixture(scope="module")
-def discovered_session_id():
+def session_id():
     """Get a test session ID from environment variable."""
     session_id = os.environ.get("LANGFUSE_TEST_SESSION_ID")
     if not session_id:
@@ -49,17 +49,11 @@ def discovered_session_id():
     return session_id
 
 
-@pytest.fixture(scope="module")
-def evaluation_data(provider, discovered_session_id):
-    """Fetch evaluation data for the discovered session."""
-    return provider.get_evaluation_data(discovered_session_id)
-
-
 class TestGetEvaluationData:
-    def test_returns_session_with_traces(self, evaluation_data, discovered_session_id):
+    def test_returns_session_with_traces(self, evaluation_data, session_id):
         session = evaluation_data["trajectory"]
         assert isinstance(session, Session)
-        assert session.session_id == discovered_session_id
+        assert session.session_id == session_id
         assert len(session.traces) > 0
 
     def test_traces_have_spans(self, evaluation_data):
@@ -126,7 +120,7 @@ class TestGetEvaluationData:
 class TestEndToEnd:
     """Fetch traces from Langfuse and run real evaluators on them."""
 
-    def test_output_evaluator_on_remote_trace(self, provider, discovered_session_id):
+    def test_output_evaluator_on_remote_trace(self, provider, session_id):
         """OutputEvaluator produces a valid score from a Langfuse session."""
 
         def task(case: Case) -> dict:
@@ -135,7 +129,7 @@ class TestEndToEnd:
         cases = [
             Case(
                 name="langfuse_session",
-                input=discovered_session_id,
+                input=session_id,
                 expected_output="any agent response",
             ),
         ]
@@ -154,7 +148,7 @@ class TestEndToEnd:
         assert 0.0 <= report.score <= 1.0
         assert len(report.case_results) == 1
 
-    def test_coherence_evaluator_on_remote_trace(self, provider, discovered_session_id):
+    def test_coherence_evaluator_on_remote_trace(self, provider, session_id):
         """CoherenceEvaluator produces a valid score from a Langfuse session."""
 
         def task(case: Case) -> dict:
@@ -163,7 +157,7 @@ class TestEndToEnd:
         cases = [
             Case(
                 name="langfuse_session",
-                input=discovered_session_id,
+                input=session_id,
                 expected_output="any agent response",
             ),
         ]
@@ -178,7 +172,7 @@ class TestEndToEnd:
         assert report.score is not None
         assert 0.0 <= report.score <= 1.0
 
-    def test_multiple_evaluators_on_remote_trace(self, provider, discovered_session_id):
+    def test_multiple_evaluators_on_remote_trace(self, provider, session_id):
         """Multiple evaluators can all run on the same Langfuse session data."""
 
         def task(case: Case) -> dict:
@@ -187,7 +181,7 @@ class TestEndToEnd:
         cases = [
             Case(
                 name="langfuse_session",
-                input=discovered_session_id,
+                input=session_id,
                 expected_output="any agent response",
             ),
         ]

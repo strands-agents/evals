@@ -37,6 +37,37 @@ class CloudWatchProvider(TraceProvider):
         lookback_days: int = 30,
         query_timeout_seconds: float = 60.0,
     ):
+        """Initialize the CloudWatch provider.
+
+        The log group can be specified directly or discovered automatically
+        from an agent name. Region falls back to AWS_REGION, then
+        AWS_DEFAULT_REGION, then `us-east-1`.
+
+        Example::
+
+            from strands_evals.providers import CloudWatchProvider
+
+            # Explicit log group
+            provider = CloudWatchProvider(
+                log_group="/aws/bedrock-agentcore/runtimes/my-agent-abc123-DEFAULT",
+            )
+
+            # Discover log group from agent name
+            provider = CloudWatchProvider(agent_name="my-agent")
+
+        Args:
+            region: AWS region. Falls back to AWS_REGION / AWS_DEFAULT_REGION env vars.
+            log_group: Full CloudWatch log group path.
+            agent_name: Agent name used to discover the runtime log group via
+                `describe_log_groups`. Exactly one of `log_group` or
+                `agent_name` must be provided.
+            lookback_days: How many days back to search for traces.
+            query_timeout_seconds: Maximum seconds to wait for a Logs Insights query.
+
+        Raises:
+            ProviderError: If neither `log_group` nor `agent_name` is provided,
+                or if the boto3 client cannot be created.
+        """
         resolved_region = region or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
 
         try:

@@ -8,43 +8,9 @@ from strands_evals.types.trace import (
     InferenceSpan,
     ToolExecutionSpan,
 )
+from tests.strands_evals.cloudwatch_helpers import make_assistant_text_message, make_log_record, make_user_message
 
 # --- Helpers for body-format log records ---
-
-
-def _make_log_record(
-    trace_id="abc123",
-    span_id="span-1",
-    input_messages=None,
-    output_messages=None,
-    session_id="sess-1",
-    time_nano=1000000000000000000,
-):
-    """Build a body-format OTEL log record dict as found in runtime log groups."""
-    record = {
-        "traceId": trace_id,
-        "spanId": span_id,
-        "timeUnixNano": time_nano,
-        "body": {
-            "input": {"messages": input_messages or []},
-            "output": {"messages": output_messages or []},
-        },
-        "attributes": {"session.id": session_id},
-    }
-    return record
-
-
-def _make_user_message(text):
-    """Build a user input message with double-encoded content."""
-    return {"role": "user", "content": {"content": json.dumps([{"text": text}])}}
-
-
-def _make_assistant_text_message(text):
-    """Build an assistant output message with double-encoded text content."""
-    return {
-        "role": "assistant",
-        "content": {"message": json.dumps([{"text": text}]), "finish_reason": "end_turn"},
-    }
 
 
 def _make_assistant_tool_use_message(tool_name, tool_input, tool_use_id):
@@ -77,9 +43,9 @@ class TestSpanConversion:
 
     def test_single_record_produces_inference_span(self):
         """One log record produces an InferenceSpan with input/output messages."""
-        record = _make_log_record(
-            input_messages=[_make_user_message("Hi")],
-            output_messages=[_make_assistant_text_message("Hello!")],
+        record = make_log_record(
+            input_messages=[make_user_message("Hi")],
+            output_messages=[make_assistant_text_message("Hello!")],
         )
         session = self.mapper.map_to_session([record], "sess-1")
         spans = session.traces[0].spans
@@ -90,21 +56,21 @@ class TestSpanConversion:
 
     def test_record_with_tool_use_and_result(self):
         """toolUse in output + toolResult in next record's input → ToolExecutionSpan."""
-        record1 = _make_log_record(
+        record1 = make_log_record(
             trace_id="t1",
             span_id="s1",
-            input_messages=[_make_user_message("Calculate 6*7")],
+            input_messages=[make_user_message("Calculate 6*7")],
             output_messages=[_make_assistant_tool_use_message("calculator", {"expr": "6*7"}, "tu-1")],
             time_nano=1000,
         )
-        record2 = _make_log_record(
+        record2 = make_log_record(
             trace_id="t1",
             span_id="s2",
             input_messages=[
-                _make_user_message("Calculate 6*7"),
+                make_user_message("Calculate 6*7"),
                 _make_tool_result_message("tu-1", "42"),
             ],
-            output_messages=[_make_assistant_text_message("The answer is 42.")],
+            output_messages=[make_assistant_text_message("The answer is 42.")],
             time_nano=2000,
         )
         session = self.mapper.map_to_session([record1, record2], "sess-1")
@@ -116,11 +82,11 @@ class TestSpanConversion:
 
     def test_agent_invocation_from_trace(self):
         """User prompt from first record, response from last → AgentInvocationSpan."""
-        record1 = _make_log_record(
+        record1 = make_log_record(
             trace_id="t1",
             span_id="s1",
-            input_messages=[_make_user_message("Tell me a joke")],
-            output_messages=[_make_assistant_text_message("Why did the chicken cross the road?")],
+            input_messages=[make_user_message("Tell me a joke")],
+            output_messages=[make_assistant_text_message("Why did the chicken cross the road?")],
             time_nano=1000,
         )
         session = self.mapper.map_to_session([record1], "sess-1")
@@ -131,18 +97,18 @@ class TestSpanConversion:
 
     def test_agent_invocation_extracts_tools(self):
         """available_tools populated from tool call names in the trace."""
-        record1 = _make_log_record(
+        record1 = make_log_record(
             trace_id="t1",
             span_id="s1",
-            input_messages=[_make_user_message("Search for X")],
+            input_messages=[make_user_message("Search for X")],
             output_messages=[_make_assistant_tool_use_message("web_search", {"q": "X"}, "tu-1")],
             time_nano=1000,
         )
-        record2 = _make_log_record(
+        record2 = make_log_record(
             trace_id="t1",
             span_id="s2",
-            input_messages=[_make_user_message("Search for X"), _make_tool_result_message("tu-1", "found X")],
-            output_messages=[_make_assistant_text_message("Here's what I found about X.")],
+            input_messages=[make_user_message("Search for X"), _make_tool_result_message("tu-1", "found X")],
+            output_messages=[make_assistant_text_message("Here's what I found about X.")],
             time_nano=2000,
         )
         session = self.mapper.map_to_session([record1, record2], "sess-1")
@@ -153,9 +119,9 @@ class TestSpanConversion:
 
     def test_double_encoded_content_parsed(self):
         """Content field is a JSON string that must be parsed to get content blocks."""
-        record = _make_log_record(
-            input_messages=[_make_user_message("test double encoding")],
-            output_messages=[_make_assistant_text_message("parsed correctly")],
+        record = make_log_record(
+            input_messages=[make_user_message("test double encoding")],
+            output_messages=[make_assistant_text_message("parsed correctly")],
         )
         session = self.mapper.map_to_session([record], "sess-1")
         inference_spans = [s for s in session.traces[0].spans if isinstance(s, InferenceSpan)]
@@ -164,20 +130,20 @@ class TestSpanConversion:
 
     def test_tool_call_matched_to_result_by_id(self):
         """toolUseId matching works across records in the same trace."""
-        record1 = _make_log_record(
+        record1 = make_log_record(
             trace_id="t1",
             span_id="s1",
-            input_messages=[_make_user_message("Do two things")],
+            input_messages=[make_user_message("Do two things")],
             output_messages=[
                 _make_assistant_tool_use_message("tool_a", {"x": 1}, "tu-a"),
             ],
             time_nano=1000,
         )
-        record2 = _make_log_record(
+        record2 = make_log_record(
             trace_id="t1",
             span_id="s2",
             input_messages=[
-                _make_user_message("Do two things"),
+                make_user_message("Do two things"),
                 _make_tool_result_message("tu-a", "result-a"),
             ],
             output_messages=[
@@ -185,15 +151,15 @@ class TestSpanConversion:
             ],
             time_nano=2000,
         )
-        record3 = _make_log_record(
+        record3 = make_log_record(
             trace_id="t1",
             span_id="s3",
             input_messages=[
-                _make_user_message("Do two things"),
+                make_user_message("Do two things"),
                 _make_tool_result_message("tu-a", "result-a"),
                 _make_tool_result_message("tu-b", "result-b"),
             ],
-            output_messages=[_make_assistant_text_message("Both done.")],
+            output_messages=[make_assistant_text_message("Both done.")],
             time_nano=3000,
         )
         session = self.mapper.map_to_session([record1, record2, record3], "sess-1")
@@ -214,15 +180,15 @@ class TestSessionBuilding:
     def test_multiple_records_grouped_by_trace_id(self):
         """Records with different traceIds become separate Trace objects."""
         records = [
-            _make_log_record(
+            make_log_record(
                 trace_id="t1",
-                input_messages=[_make_user_message("q1")],
-                output_messages=[_make_assistant_text_message("a1")],
+                input_messages=[make_user_message("q1")],
+                output_messages=[make_assistant_text_message("a1")],
             ),
-            _make_log_record(
+            make_log_record(
                 trace_id="t2",
-                input_messages=[_make_user_message("q2")],
-                output_messages=[_make_assistant_text_message("a2")],
+                input_messages=[make_user_message("q2")],
+                output_messages=[make_assistant_text_message("a2")],
             ),
         ]
         session = self.mapper.map_to_session(records, "sess-1")
@@ -233,21 +199,21 @@ class TestSessionBuilding:
 
     def test_multi_step_agent_loop(self):
         """user→LLM→tool→LLM→response produces InferenceSpan + ToolExecutionSpan + AgentInvocationSpan."""
-        record1 = _make_log_record(
+        record1 = make_log_record(
             trace_id="t1",
             span_id="s1",
-            input_messages=[_make_user_message("What is 6*7?")],
+            input_messages=[make_user_message("What is 6*7?")],
             output_messages=[_make_assistant_tool_use_message("calculator", {"expr": "6*7"}, "tu-1")],
             time_nano=1000,
         )
-        record2 = _make_log_record(
+        record2 = make_log_record(
             trace_id="t1",
             span_id="s2",
             input_messages=[
-                _make_user_message("What is 6*7?"),
+                make_user_message("What is 6*7?"),
                 _make_tool_result_message("tu-1", "42"),
             ],
-            output_messages=[_make_assistant_text_message("The answer is 42.")],
+            output_messages=[make_assistant_text_message("The answer is 42.")],
             time_nano=2000,
         )
         session = self.mapper.map_to_session([record1, record2], "sess-1")
@@ -267,10 +233,10 @@ class TestSessionBuilding:
         """Malformed records without body don't crash."""
         records = [
             {"traceId": "t1", "spanId": "s1", "timeUnixNano": 1000},
-            _make_log_record(
+            make_log_record(
                 trace_id="t1",
-                input_messages=[_make_user_message("Hi")],
-                output_messages=[_make_assistant_text_message("Hello!")],
+                input_messages=[make_user_message("Hi")],
+                output_messages=[make_assistant_text_message("Hello!")],
                 time_nano=2000,
             ),
         ]

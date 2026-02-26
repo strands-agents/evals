@@ -12,6 +12,7 @@ from strands_evals.providers.exceptions import (
     SessionNotFoundError,
 )
 from strands_evals.types.trace import Session
+from tests.strands_evals.cloudwatch_helpers import make_assistant_text_message, make_log_record, make_user_message
 
 # --- Fixtures ---
 
@@ -137,41 +138,6 @@ def _setup_query_results(mock_logs_client, records):
     }
 
 
-def _make_log_record(
-    trace_id="abc123",
-    span_id="span-1",
-    input_messages=None,
-    output_messages=None,
-    session_id="sess-1",
-    time_nano=1000000000000000000,
-):
-    """Build a body-format OTEL log record dict as found in runtime log groups."""
-    record = {
-        "traceId": trace_id,
-        "spanId": span_id,
-        "timeUnixNano": time_nano,
-        "body": {
-            "input": {"messages": input_messages or []},
-            "output": {"messages": output_messages or []},
-        },
-        "attributes": {"session.id": session_id},
-    }
-    return record
-
-
-def _make_user_message(text):
-    """Build a user input message with double-encoded content."""
-    return {"role": "user", "content": {"content": json.dumps([{"text": text}])}}
-
-
-def _make_assistant_text_message(text):
-    """Build an assistant output message with double-encoded text content."""
-    return {
-        "role": "assistant",
-        "content": {"message": json.dumps([{"text": text}]), "finish_reason": "end_turn"},
-    }
-
-
 # --- Output extraction ---
 
 
@@ -179,18 +145,18 @@ class TestExtractOutput:
     def test_extract_output_from_agent_response(self, provider):
         """_extract_output returns last agent response text."""
         records = [
-            _make_log_record(
+            make_log_record(
                 trace_id="t1",
                 span_id="s1",
-                input_messages=[_make_user_message("Hi")],
-                output_messages=[_make_assistant_text_message("First response")],
+                input_messages=[make_user_message("Hi")],
+                output_messages=[make_assistant_text_message("First response")],
                 time_nano=1000,
             ),
-            _make_log_record(
+            make_log_record(
                 trace_id="t1",
                 span_id="s2",
-                input_messages=[_make_user_message("Hi")],
-                output_messages=[_make_assistant_text_message("Final response")],
+                input_messages=[make_user_message("Hi")],
+                output_messages=[make_assistant_text_message("Final response")],
                 time_nano=2000,
             ),
         ]
@@ -206,11 +172,11 @@ class TestLogsInsightsPolling:
     def _make_record_json(self, trace_id="t1", span_id="s1"):
         """Return a JSON-serialized body-format log record for use in CW Logs @message fields."""
         return json.dumps(
-            _make_log_record(
+            make_log_record(
                 trace_id=trace_id,
                 span_id=span_id,
-                input_messages=[_make_user_message("Hi")],
-                output_messages=[_make_assistant_text_message("Hello!")],
+                input_messages=[make_user_message("Hi")],
+                output_messages=[make_assistant_text_message("Hello!")],
             )
         )
 
@@ -279,8 +245,8 @@ class TestLogsInsightsPolling:
 
     def test_parses_message_field(self, provider, mock_logs_client):
         """Each result row's @message field is parsed as JSON into a record dict."""
-        record1 = _make_log_record(trace_id="t1", span_id="s1")
-        record2 = _make_log_record(trace_id="t1", span_id="s2")
+        record1 = make_log_record(trace_id="t1", span_id="s1")
+        record2 = make_log_record(trace_id="t1", span_id="s2")
         mock_logs_client.start_query.return_value = {"queryId": "q-1"}
         mock_logs_client.get_query_results.return_value = {
             "status": "Complete",
@@ -306,12 +272,12 @@ class TestLogsInsightsPolling:
 class TestGetEvaluationData:
     def test_happy_path(self, provider, mock_logs_client):
         records = [
-            _make_log_record(
+            make_log_record(
                 trace_id="t1",
                 span_id="s1",
                 session_id="sess-1",
-                input_messages=[_make_user_message("What is 6*7?")],
-                output_messages=[_make_assistant_text_message("The answer is 42.")],
+                input_messages=[make_user_message("What is 6*7?")],
+                output_messages=[make_assistant_text_message("The answer is 42.")],
             )
         ]
         _setup_query_results(mock_logs_client, records)
@@ -335,10 +301,10 @@ class TestGetEvaluationData:
     def test_query_uses_session_id_filter(self, provider, mock_logs_client):
         """Verify the query string uses attributes.session.id filter."""
         records = [
-            _make_log_record(
+            make_log_record(
                 session_id="sess-1",
-                input_messages=[_make_user_message("Hi")],
-                output_messages=[_make_assistant_text_message("Hello")],
+                input_messages=[make_user_message("Hi")],
+                output_messages=[make_assistant_text_message("Hello")],
             )
         ]
         _setup_query_results(mock_logs_client, records)
@@ -349,15 +315,15 @@ class TestGetEvaluationData:
 
     def test_multiple_traces(self, provider, mock_logs_client):
         records = [
-            _make_log_record(
+            make_log_record(
                 trace_id="t1",
-                input_messages=[_make_user_message("q1")],
-                output_messages=[_make_assistant_text_message("first")],
+                input_messages=[make_user_message("q1")],
+                output_messages=[make_assistant_text_message("first")],
             ),
-            _make_log_record(
+            make_log_record(
                 trace_id="t2",
-                input_messages=[_make_user_message("q2")],
-                output_messages=[_make_assistant_text_message("second")],
+                input_messages=[make_user_message("q2")],
+                output_messages=[make_assistant_text_message("second")],
             ),
         ]
         _setup_query_results(mock_logs_client, records)
@@ -367,18 +333,18 @@ class TestGetEvaluationData:
 
     def test_output_from_last_agent_invocation(self, provider, mock_logs_client):
         records = [
-            _make_log_record(
+            make_log_record(
                 trace_id="t1",
                 span_id="s1",
-                input_messages=[_make_user_message("Hi")],
-                output_messages=[_make_assistant_text_message("first")],
+                input_messages=[make_user_message("Hi")],
+                output_messages=[make_assistant_text_message("first")],
                 time_nano=1000,
             ),
-            _make_log_record(
+            make_log_record(
                 trace_id="t1",
                 span_id="s2",
-                input_messages=[_make_user_message("Hi")],
-                output_messages=[_make_assistant_text_message("last")],
+                input_messages=[make_user_message("Hi")],
+                output_messages=[make_assistant_text_message("last")],
                 time_nano=2000,
             ),
         ]

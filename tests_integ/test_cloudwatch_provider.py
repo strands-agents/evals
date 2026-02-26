@@ -58,12 +58,6 @@ def session_id():
     return sid
 
 
-@pytest.fixture(scope="module")
-def evaluation_data(provider, session_id):
-    """Fetch evaluation data for the discovered session."""
-    return provider.get_evaluation_data(session_id)
-
-
 class TestGetEvaluationData:
     def test_returns_session_with_traces(self, evaluation_data, session_id):
         session = evaluation_data["trajectory"]

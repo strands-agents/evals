@@ -10,6 +10,7 @@ from .trace_provider import (
 )
 
 __all__ = [
+    "CloudWatchProvider",
     "LangfuseProvider",
     "ProviderError",
     "SessionNotFoundError",
@@ -20,6 +21,10 @@ __all__ = [
 
 def __getattr__(name: str) -> Any:
     """Lazy-load providers that depend on optional packages."""
+    if name == "CloudWatchProvider":
+        from .cloudwatch_provider import CloudWatchProvider
+
+        return CloudWatchProvider
     if name == "LangfuseProvider":
         from .langfuse_provider import LangfuseProvider
 
