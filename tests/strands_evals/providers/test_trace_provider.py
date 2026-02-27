@@ -5,7 +5,6 @@ import pytest
 from strands_evals.providers.exceptions import (
     ProviderError,
     SessionNotFoundError,
-    TraceNotFoundError,
     TraceProviderError,
 )
 from strands_evals.providers.trace_provider import (
@@ -37,9 +36,6 @@ class TestExceptionHierarchy:
     def test_session_not_found_is_trace_provider_error(self):
         assert issubclass(SessionNotFoundError, TraceProviderError)
 
-    def test_trace_not_found_is_trace_provider_error(self):
-        assert issubclass(TraceNotFoundError, TraceProviderError)
-
     def test_provider_error_is_trace_provider_error(self):
         assert issubclass(ProviderError, TraceProviderError)
 
@@ -49,7 +45,7 @@ class TestExceptionHierarchy:
 
     def test_catching_base_catches_all(self):
         """All provider exceptions can be caught with TraceProviderError."""
-        for exc_class in (SessionNotFoundError, TraceNotFoundError, ProviderError):
+        for exc_class in (SessionNotFoundError, ProviderError):
             with pytest.raises(TraceProviderError):
                 raise exc_class("test")
 

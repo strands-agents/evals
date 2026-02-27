@@ -1,10 +1,13 @@
-"""Integration tests for LangfuseProvider against a real Langfuse instance.
+"""Integration tests for CloudWatchProvider against real CloudWatch Logs data.
 
-Requires LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY environment variables.
-Requires LANGFUSE_TEST_SESSION_ID environment variable pointing to a session
-with convertible observations.
+Requires the following environment variables:
+    CLOUDWATCH_TEST_LOG_GROUP  — CW Logs group containing agent traces
+    CLOUDWATCH_TEST_SESSION_ID — session ID with convertible spans
+    AWS_REGION (optional)      — defaults to us-east-1
 
-Run with: pytest tests_integ/test_langfuse_provider.py -v
+AWS credentials must be configured via standard mechanisms (env vars, profile, instance role).
+
+Run with: pytest tests_integ/test_cloudwatch_provider.py -v
 """
 
 import os
@@ -17,11 +20,11 @@ from strands_evals.evaluators import (
     HelpfulnessEvaluator,
     OutputEvaluator,
 )
+from strands_evals.providers.cloudwatch_provider import CloudWatchProvider
 from strands_evals.providers.exceptions import (
     ProviderError,
     SessionNotFoundError,
 )
-from strands_evals.providers.langfuse_provider import LangfuseProvider
 from strands_evals.types.trace import (
     AgentInvocationSpan,
     InferenceSpan,
@@ -33,20 +36,26 @@ from strands_evals.types.trace import (
 
 @pytest.fixture(scope="module")
 def provider():
-    """Create a LangfuseProvider using env var credentials."""
+    """Create a CloudWatchProvider using env var configuration."""
+    log_group = os.environ.get("CLOUDWATCH_TEST_LOG_GROUP")
+    if not log_group:
+        pytest.skip("CLOUDWATCH_TEST_LOG_GROUP not set")
+
+    region = os.environ.get("AWS_REGION", "us-east-1")
+
     try:
-        return LangfuseProvider()
+        return CloudWatchProvider(log_group=log_group, region=region)
     except ProviderError as e:
-        pytest.skip(f"Langfuse credentials not available: {e}")
+        pytest.skip(f"CloudWatch provider creation failed: {e}")
 
 
 @pytest.fixture(scope="module")
 def session_id():
     """Get a test session ID from environment variable."""
-    session_id = os.environ.get("LANGFUSE_TEST_SESSION_ID")
-    if not session_id:
-        pytest.skip("LANGFUSE_TEST_SESSION_ID not set")
-    return session_id
+    sid = os.environ.get("CLOUDWATCH_TEST_SESSION_ID")
+    if not sid:
+        pytest.skip("CLOUDWATCH_TEST_SESSION_ID not set")
+    return sid
 
 
 class TestGetEvaluationData:
@@ -81,20 +90,23 @@ class TestGetEvaluationData:
         assert len(agent_spans) > 0, "Expected at least one AgentInvocationSpan"
 
     def test_agent_invocation_has_prompt_and_response(self, evaluation_data):
+        """AgentInvocationSpan should have user prompt, agent response, and tools list."""
         session = evaluation_data["trajectory"]
         for trace in session.traces:
             for span in trace.spans:
                 if isinstance(span, AgentInvocationSpan):
                     assert isinstance(span.user_prompt, str)
-                    assert isinstance(span.agent_response, str)
                     assert len(span.user_prompt) > 0
+                    assert isinstance(span.agent_response, str)
                     assert len(span.agent_response) > 0
+                    assert isinstance(span.available_tools, list)
                     return
         pytest.fail("No AgentInvocationSpan found")
 
     def test_output_is_nonempty_string(self, evaluation_data):
-        assert isinstance(evaluation_data["output"], str)
-        assert len(evaluation_data["output"]) > 0
+        output = evaluation_data["output"]
+        assert isinstance(output, str)
+        assert len(output) > 0, "Expected non-empty output from agent response"
 
     def test_span_info_populated(self, evaluation_data):
         session = evaluation_data["trajectory"]
@@ -114,21 +126,21 @@ class TestGetEvaluationData:
             provider.get_evaluation_data("nonexistent-session-id-that-does-not-exist-12345")
 
 
-# --- End-to-end: Langfuse → Evaluator pipeline ---
+# --- End-to-end: CloudWatch → Evaluator pipeline ---
 
 
 class TestEndToEnd:
-    """Fetch traces from Langfuse and run real evaluators on them."""
+    """Fetch traces from CloudWatch and run real evaluators on them."""
 
     def test_output_evaluator_on_remote_trace(self, provider, session_id):
-        """OutputEvaluator produces a valid score from a Langfuse session."""
+        """OutputEvaluator produces a valid score from a CloudWatch session."""
 
         def task(case: Case) -> dict:
             return provider.get_evaluation_data(case.input)
 
         cases = [
             Case(
-                name="langfuse_session",
+                name="cloudwatch_session",
                 input=session_id,
                 expected_output="any agent response",
             ),
@@ -144,19 +156,18 @@ class TestEndToEnd:
 
         assert len(reports) == 1
         report = reports[0]
-        assert report.score is not None
-        assert 0.0 <= report.score <= 1.0
-        assert len(report.case_results) == 1
+        assert 0.0 <= report.overall_score <= 1.0
+        assert len(report.scores) == 1
 
     def test_coherence_evaluator_on_remote_trace(self, provider, session_id):
-        """CoherenceEvaluator produces a valid score from a Langfuse session."""
+        """CoherenceEvaluator produces a valid score from a CloudWatch session."""
 
         def task(case: Case) -> dict:
             return provider.get_evaluation_data(case.input)
 
         cases = [
             Case(
-                name="langfuse_session",
+                name="cloudwatch_session",
                 input=session_id,
                 expected_output="any agent response",
             ),
@@ -169,18 +180,17 @@ class TestEndToEnd:
 
         assert len(reports) == 1
         report = reports[0]
-        assert report.score is not None
-        assert 0.0 <= report.score <= 1.0
+        assert 0.0 <= report.overall_score <= 1.0
 
     def test_multiple_evaluators_on_remote_trace(self, provider, session_id):
-        """Multiple evaluators can all run on the same Langfuse session data."""
+        """Multiple evaluators can all run on the same CloudWatch session data."""
 
         def task(case: Case) -> dict:
             return provider.get_evaluation_data(case.input)
 
         cases = [
             Case(
-                name="langfuse_session",
+                name="cloudwatch_session",
                 input=session_id,
                 expected_output="any agent response",
             ),
@@ -197,6 +207,5 @@ class TestEndToEnd:
 
         assert len(reports) == 3
         for report in reports:
-            assert report.score is not None
-            assert 0.0 <= report.score <= 1.0
-            assert len(report.case_results) == 1
+            assert 0.0 <= report.overall_score <= 1.0
+            assert len(report.scores) == 1
