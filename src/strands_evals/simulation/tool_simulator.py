@@ -182,17 +182,6 @@ class ToolSimulator:
         self.model = model
         self.state_registry = state_registry or StateRegistry(max_tool_call_cache_size=max_tool_call_cache_size)
         self._registered_tools: dict[str, RegisteredTool] = {}
-        self._initialize_shared_states()
-
-    def _initialize_shared_states(self):
-        """Initialize shared states from registered tools' initial descriptions."""
-        for tool_name, registered_tool in self._registered_tools.items():
-            if registered_tool.initial_state_description:
-                state_key = registered_tool.share_state_id or registered_tool.name
-                self.state_registry.initialize_state_via_description(
-                    registered_tool.initial_state_description, state_key
-                )
-                logger.info(f"Initialized state for tool '{tool_name}' with key '{state_key}'")
 
     def _create_tool_wrapper(self, registered_tool: RegisteredTool):
         """
