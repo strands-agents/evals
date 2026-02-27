@@ -28,3 +28,7 @@ class RegisteredTool(BaseModel):
     )
 
     model_config = {"arbitrary_types_allowed": True}
+
+
+class DefaultToolResponse(BaseModel):
+    response: str = Field(default="", description="The tool's response message or result")

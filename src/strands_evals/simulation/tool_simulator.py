@@ -11,7 +11,7 @@ from strands.agent import AgentResult
 from strands.models.model import Model
 from strands.tools.decorator import DecoratedFunctionTool, FunctionToolMetadata
 
-from strands_evals.types.simulation.tool import RegisteredTool
+from strands_evals.types.simulation.tool import DefaultToolResponse, RegisteredTool
 
 from .prompt_templates.tool_response_generation import TOOL_RESPONSE_PROMPT_TEMPLATE
 
@@ -286,7 +286,7 @@ class ToolSimulator:
 
     def tool(
         self,
-        output_schema: type[BaseModel],
+        output_schema: type[BaseModel] | None = None,
         name: str | None = None,
         share_state_id: str | None = None,
         initial_state_description: str | None = None,
@@ -300,13 +300,13 @@ class ToolSimulator:
         Example usage:
             simulator = ToolSimulator()
 
-            @simulator.tool(output_schema=MyOutputSchema)
-            def my_tool(param: str) -> dict:
+            @simulator.tool()
+            def simple_tool(param: str) -> dict:
                 '''Tool description'''
                 pass
 
         Args:
-            output_schema: Required pydantic BaseModel for tool's output schema.
+            output_schema: Optional pydantic BaseModel for tool's output schema
             name: Optional name for the tool. If None, uses the function's name
             share_state_id: Optional shared state ID for sharing state between tools
             initial_state_description: Optional initial state description for the tool's context
@@ -336,7 +336,7 @@ class ToolSimulator:
                 registered_tool = RegisteredTool(
                     name=tool_name,
                     function=decorated_tool,
-                    output_schema=output_schema,
+                    output_schema=output_schema or DefaultToolResponse,
                     initial_state_description=initial_state_description,
                     share_state_id=share_state_id,
                 )
