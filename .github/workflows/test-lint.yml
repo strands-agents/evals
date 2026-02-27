@@ -85,8 +85,10 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
+        # Pin virtualenv until hatch is fixed.
+        # See https://github.com/pypa/hatch/issues/2193
         run: |
-          pip install --no-cache-dir hatch
+          pip install --no-cache-dir hatch 'virtualenv<21'
 
       - name: Run lint
         id: lint

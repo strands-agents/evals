@@ -26,6 +26,11 @@ dependencies = [
     "tenacity>=8.0.0,<10.0.0",
 ]
 
+[tool.hatch.env]
+requires = [
+    "virtualenv==20.26.6",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/strands_evals"]
 
