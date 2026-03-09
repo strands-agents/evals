@@ -46,6 +46,13 @@ dev = [
 
 langfuse = ["langfuse>=2.0.0,<3"]
 otel = ["opentelemetry-exporter-otlp-proto-http>=1.30.0,<2.0.0"]
+langchain = [
+    "langchain>=0.3.0",
+    "langchain-aws>=0.2.0",
+    "langgraph>=0.2.0",
+    "openinference-instrumentation-langchain>=0.1.0",
+    "opentelemetry-instrumentation-langchain>=0.40.0,<0.50.0",
+]
 
 [tool.ruff]
 line-length = 120
@@ -54,7 +61,7 @@ include = ["src/**/*.py", "tests/**/*.py", "tests_integ/**/*.py"]
 [tool.hatch.envs.hatch-test]
 installer = "uv"
 extra-args = ["-n", "auto", "-vv"]
-features = ["otel", "langfuse"]
+features = ["otel", "langfuse", "langchain"]
 dependencies = [
     "pytest>=8.0.0,<10.0.0",
     "pytest-cov>=7.0.0,<8.0.0",

@@ -1,4 +1,8 @@
-"""CloudWatch session mapper — converts CW Logs Insights records to Session format."""
+"""CloudWatch session mapper - converts normalized CloudWatch spans to Session format.
+
+This mapper handles Strands telemetry data that has been normalized by CloudWatchLogsParser.
+It expects spans in the normalized format with span_events[].body containing input/output messages.
+"""
 
 import json
 import logging
@@ -7,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..mappers.session_mapper import SessionMapper
+from ..mappers.utils import get_body
 from ..types.trace import (
     AgentInvocationSpan,
     AssistantMessage,
@@ -28,109 +33,159 @@ logger = logging.getLogger(__name__)
 
 
 class CloudWatchSessionMapper(SessionMapper):
-    """Maps CloudWatch Logs Insights records to Session format.
+    """Maps normalized CloudWatch spans to Session format.
 
-    Parses body.input/output messages from OTEL log records emitted by
-    Strands agent runtimes and builds typed Session objects for evaluation.
+    This mapper handles Strands telemetry data. It expects spans in the normalized
+    format produced by CloudWatchLogsParser:
+    - snake_case field names (trace_id, span_id)
+    - Messages in span_events[].body.input/output.messages
+
+    For raw CloudWatch logs, use CloudWatchLogsParser first to normalize.
     """
 
-    def map_to_session(self, records: list[dict[str, Any]], session_id: str) -> Session:
-        """Group log records by traceId, convert each group to a Trace, return a Session."""
+    def map_to_session(self, spans: list[dict[str, Any]], session_id: str) -> Session:
+        """Map normalized spans to Session format.
+
+        Args:
+            spans: Normalized span dicts from CloudWatchLogsParser
+            session_id: Session identifier
+
+        Returns:
+            Session object ready for evaluation
+        """
+        # Group spans by trace_id
         traces_by_id: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for record in records:
-            trace_id = record.get("traceId", "")
-            if not trace_id:
-                continue
-            traces_by_id[trace_id].append(record)
+        for span in spans:
+            # Support both normalized (trace_id) and raw (traceId) formats
+            trace_id = span.get("trace_id") or span.get("traceId", "")
+            if trace_id:
+                traces_by_id[trace_id].append(span)
 
         traces: list[Trace] = []
-        for trace_id, trace_records in traces_by_id.items():
-            trace = self._convert_trace(trace_id, trace_records, session_id)
+        for trace_id, trace_spans in traces_by_id.items():
+            trace = self._convert_trace(trace_id, trace_spans, session_id)
             if trace.spans:
                 traces.append(trace)
 
         return Session(session_id=session_id, traces=traces)
 
-    def _convert_trace(self, trace_id: str, records: list[dict[str, Any]], session_id: str) -> Trace:
-        """Convert a group of log records (same traceId) into a Trace with typed spans."""
-        sorted_records = sorted(records, key=lambda r: r.get("timeUnixNano", 0))
+    def _convert_trace(self, trace_id: str, spans: list[dict[str, Any]], session_id: str) -> Trace:
+        """Convert spans with the same trace_id into a Trace with typed spans."""
+        # Sort by start_time or timestamp
+        sorted_spans = sorted(spans, key=lambda s: s.get("start_time") or s.get("timeUnixNano", 0))
 
-        spans: list[InferenceSpan | ToolExecutionSpan | AgentInvocationSpan] = []
+        result_spans: list[InferenceSpan | ToolExecutionSpan | AgentInvocationSpan] = []
 
-        # Collect all tool calls and results across records
+        # Collect all tool calls and results
         all_tool_calls: dict[str, ToolCall] = {}
         all_tool_results: dict[str, ToolResult] = {}
 
-        for record in sorted_records:
-            if not isinstance(record.get("body"), dict):
+        for span in sorted_spans:
+            body = get_body(span)
+            if not body:
                 continue
 
-            for tc in self._extract_tool_calls(record):
+            for tc in self._extract_tool_calls(body):
                 if tc.tool_call_id:
                     all_tool_calls[tc.tool_call_id] = tc
 
-            for tr in self._extract_tool_results(record):
+            for tr in self._extract_tool_results(body):
                 if tr.tool_call_id:
                     all_tool_results[tr.tool_call_id] = tr
 
-        # Create InferenceSpans (one per record with parseable body)
-        for record in sorted_records:
-            if not isinstance(record.get("body"), dict):
+        # Create InferenceSpans
+        for span in sorted_spans:
+            body = get_body(span)
+            if not body:
                 continue
 
             try:
-                messages = self._record_to_messages(record)
+                messages = self._body_to_messages(body)
                 if messages:
-                    span_info = self._create_span_info(record, session_id)
-                    spans.append(InferenceSpan(span_info=span_info, messages=messages, metadata={}))
+                    span_info = self._create_span_info(span, session_id)
+                    result_spans.append(InferenceSpan(span_info=span_info, messages=messages, metadata={}))
             except Exception as e:
-                logger.warning("Failed to create inference span from record %s: %s", record.get("spanId"), e)
+                span_id = span.get("span_id") or span.get("spanId", "unknown")
+                logger.warning("Failed to create inference span from %s: %s", span_id, e)
 
-        # Create ToolExecutionSpans by matching calls to results
+        # Create ToolExecutionSpans
         seen_tool_ids: set[str] = set()
-        for record in sorted_records:
-            for tc in self._extract_tool_calls(record):
+        for span in sorted_spans:
+            body = get_body(span)
+            if not body:
+                continue
+
+            for tc in self._extract_tool_calls(body):
                 if tc.tool_call_id and tc.tool_call_id not in seen_tool_ids:
                     seen_tool_ids.add(tc.tool_call_id)
                     tr = all_tool_results.get(tc.tool_call_id, ToolResult(content="", tool_call_id=tc.tool_call_id))
-                    span_info = self._create_span_info(record, session_id)
-                    spans.append(ToolExecutionSpan(span_info=span_info, tool_call=tc, tool_result=tr, metadata={}))
+                    span_info = self._create_span_info(span, session_id)
+                    result_spans.append(
+                        ToolExecutionSpan(span_info=span_info, tool_call=tc, tool_result=tr, metadata={})
+                    )
 
-        # Create AgentInvocationSpan from first user prompt + last agent response
-        agent_span = self._create_agent_invocation_span(sorted_records, all_tool_calls, session_id)
+        # Create AgentInvocationSpan
+        agent_span = self._create_agent_invocation_span(sorted_spans, all_tool_calls, session_id)
         if agent_span:
-            spans.append(agent_span)
+            result_spans.append(agent_span)
 
-        return Trace(spans=spans, trace_id=trace_id, session_id=session_id)
+        return Trace(spans=result_spans, trace_id=trace_id, session_id=session_id)
+
+    def _create_span_info(self, span: dict, session_id: str) -> SpanInfo:
+        """Create SpanInfo from span dict."""
+        # Handle both normalized and raw field names
+        trace_id = span.get("trace_id") or span.get("traceId", "")
+        span_id = span.get("span_id") or span.get("spanId", "")
+        parent_span_id = span.get("parent_span_id") or span.get("parentSpanId")
+
+        # Handle timestamps
+        time_value = span.get("start_time") or span.get("timeUnixNano", 0)
+        if isinstance(time_value, (int, float)) and time_value > 0:
+            ts = datetime.fromtimestamp(time_value / 1e9, tz=timezone.utc)
+        else:
+            ts = datetime.now(timezone.utc)
+
+        return SpanInfo(
+            trace_id=trace_id,
+            span_id=span_id,
+            session_id=session_id,
+            parent_span_id=parent_span_id,
+            start_time=ts,
+            end_time=ts,
+        )
 
     def _create_agent_invocation_span(
-        self, records: list[dict[str, Any]], tool_calls: dict[str, ToolCall], session_id: str
+        self, spans: list[dict], tool_calls: dict[str, ToolCall], session_id: str
     ) -> AgentInvocationSpan | None:
-        """Create an AgentInvocationSpan from the first user prompt and last agent response."""
+        """Create AgentInvocationSpan from first user prompt and last agent response."""
         user_prompt = None
-        for record in records:
-            prompt = self._extract_user_prompt(record)
-            if prompt:
-                user_prompt = prompt
-                break
+        for span in spans:
+            body = get_body(span)
+            if body:
+                prompt = self._extract_user_prompt(body)
+                if prompt:
+                    user_prompt = prompt
+                    break
 
         if not user_prompt:
             return None
 
         agent_response = None
-        best_record = None
-        for record in reversed(records):
-            response = self._extract_agent_response(record)
-            if response:
-                agent_response = response
-                best_record = record
-                break
+        best_span = None
+        for span in reversed(spans):
+            body = get_body(span)
+            if body:
+                response = self._extract_agent_response(body)
+                if response:
+                    agent_response = response
+                    best_span = span
+                    break
 
-        if not agent_response or not best_record:
+        if not agent_response or not best_span:
             return None
 
         available_tools = [ToolConfig(name=name) for name in sorted({tc.name for tc in tool_calls.values()})]
-        span_info = self._create_span_info(best_record, session_id)
+        span_info = self._create_span_info(best_span, session_id)
 
         return AgentInvocationSpan(
             span_info=span_info,
@@ -138,21 +193,6 @@ class CloudWatchSessionMapper(SessionMapper):
             agent_response=agent_response,
             available_tools=available_tools,
             metadata={},
-        )
-
-    # --- Span info ---
-
-    def _create_span_info(self, record: dict[str, Any], session_id: str) -> SpanInfo:
-        time_nano = record.get("timeUnixNano", 0)
-        ts = datetime.fromtimestamp(time_nano / 1e9, tz=timezone.utc)
-
-        return SpanInfo(
-            trace_id=record.get("traceId", ""),
-            span_id=record.get("spanId", ""),
-            session_id=session_id,
-            parent_span_id=record.get("parentSpanId") or None,
-            start_time=ts,
-            end_time=ts,
         )
 
     # --- Body-based content extraction ---
@@ -186,12 +226,8 @@ class CloudWatchSessionMapper(SessionMapper):
 
         return raw if isinstance(raw, str) else None
 
-    def _extract_message_text(self, record: dict[str, Any], message_type: str, role: str) -> str | None:
-        """Extract text from a specific message type and role in a log record."""
-        body = record.get("body", {})
-        if not isinstance(body, dict):
-            return None
-
+    def _extract_message_text(self, body: dict, message_type: str, role: str) -> str | None:
+        """Extract text from a specific message type and role."""
         messages = body.get(message_type, {}).get("messages", [])
         for msg in messages:
             if msg.get("role") == role:
@@ -200,20 +236,17 @@ class CloudWatchSessionMapper(SessionMapper):
                     return text
         return None
 
-    def _extract_user_prompt(self, record: dict[str, Any]) -> str | None:
-        """Extract user prompt text from a log record's body.input.messages."""
-        return self._extract_message_text(record, "input", "user")
+    def _extract_user_prompt(self, body: dict) -> str | None:
+        """Extract user prompt text from body.input.messages."""
+        return self._extract_message_text(body, "input", "user")
 
-    def _extract_agent_response(self, record: dict[str, Any]) -> str | None:
-        """Extract assistant text response from a log record's body.output.messages."""
-        return self._extract_message_text(record, "output", "assistant")
+    def _extract_agent_response(self, body: dict) -> str | None:
+        """Extract assistant text response from body.output.messages."""
+        return self._extract_message_text(body, "output", "assistant")
 
-    def _extract_tool_calls(self, record: dict[str, Any]) -> list[ToolCall]:
-        """Extract tool calls from a log record's body.output.messages."""
+    def _extract_tool_calls(self, body: dict) -> list[ToolCall]:
+        """Extract tool calls from body.output.messages."""
         tool_calls: list[ToolCall] = []
-        body = record.get("body", {})
-        if not isinstance(body, dict):
-            return tool_calls
 
         for msg in body.get("output", {}).get("messages", []):
             if msg.get("role") != "assistant":
@@ -237,12 +270,9 @@ class CloudWatchSessionMapper(SessionMapper):
 
         return tool_calls
 
-    def _extract_tool_results(self, record: dict[str, Any]) -> list[ToolResult]:
-        """Extract tool results from a log record's body.input.messages."""
+    def _extract_tool_results(self, body: dict) -> list[ToolResult]:
+        """Extract tool results from body.input.messages."""
         tool_results: list[ToolResult] = []
-        body = record.get("body", {})
-        if not isinstance(body, dict):
-            return tool_results
 
         for msg in body.get("input", {}).get("messages", []):
             raw = self._extract_content_field(msg.get("content", {}))
@@ -272,14 +302,11 @@ class CloudWatchSessionMapper(SessionMapper):
             return content[0].get("text", "")
         return str(content)
 
-    # --- Record-to-messages conversion ---
+    # --- Body-to-messages conversion ---
 
-    def _record_to_messages(self, record: dict[str, Any]) -> list[UserMessage | AssistantMessage]:
-        """Convert a log record's body into a list of typed messages for InferenceSpan."""
+    def _body_to_messages(self, body: dict) -> list[UserMessage | AssistantMessage]:
+        """Convert body into a list of typed messages for InferenceSpan."""
         messages: list[UserMessage | AssistantMessage] = []
-        body = record.get("body", {})
-        if not isinstance(body, dict):
-            return messages
 
         # Process input messages
         for msg in body.get("input", {}).get("messages", []):

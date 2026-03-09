@@ -62,21 +62,21 @@ class StrandsInMemorySessionMapper(SessionMapper):
 
     def map_to_session(
         self,
-        otel_spans: list[ReadableSpan],
+        data: list[ReadableSpan],
         session_id: str,
     ) -> Session:
-        if otel_spans:
-            self._convention_version = self._detect_convention_version(otel_spans[0])
+        if data:
+            self._convention_version = self._detect_convention_version(data[0])
 
         # Check if any spans have session.id or gen_ai.conversation.id attribute
         any_span_has_session_id = any(
             span.attributes and ("session.id" in span.attributes or "gen_ai.conversation.id" in span.attributes)
-            for span in otel_spans
+            for span in data
         )
 
         # Build traces: if no spans have session IDs, include all; otherwise filter by matching session_id
         traces_by_id = defaultdict(list)
-        for span in otel_spans:
+        for span in data:
             should_include = False
 
             if not any_span_has_session_id:
