@@ -7,7 +7,16 @@ from strands.models.model import Model
 from strands.types.exceptions import EventLoopException, ModelThrottledException
 
 from strands_evals import Case, Experiment
-from strands_evals.evaluators import Evaluator, InteractionsEvaluator, OutputEvaluator, TrajectoryEvaluator
+from strands_evals.evaluators import (
+    Contains,
+    Equals,
+    Evaluator,
+    InteractionsEvaluator,
+    OutputEvaluator,
+    StartsWith,
+    ToolCalled,
+    TrajectoryEvaluator,
+)
 from strands_evals.evaluators.evaluator import DEFAULT_BEDROCK_MODEL_ID
 from strands_evals.experiment import is_throttling_error
 from strands_evals.types import EvaluationData, EvaluationOutput
@@ -1441,3 +1450,226 @@ async def test_experiment_run_evaluations_async_task_executed_once_with_retry():
 
     # Task should be called once per case, not once per evaluator
     assert task_call_count == 1
+
+
+def _simulate_agent(case):
+    """Simulate an agent that processes queries and uses tools.
+
+    Mimics the real pattern where a task function invokes a strands Agent,
+    extracts tool usage from messages, and returns structured output.
+    """
+    knowledge = {
+        "What is the capital of France?": {
+            "response": "The capital of France is Paris.",
+            "tools_used": ["knowledge_base", "formatter"],
+        },
+        "What is 2+2?": {
+            "response": "2+2 equals 4.",
+            "tools_used": ["calculator"],
+        },
+    }
+    result = knowledge.get(case.input, {"response": f"I don't know about: {case.input}", "tools_used": []})
+    return {
+        "output": result["response"],
+        "trajectory": result["tools_used"],
+    }
+
+
+def test_deterministic_evaluator_alongside_mock_evaluator():
+    """Test deterministic evaluators alongside LLM-style evaluators in a realistic agent scenario."""
+    cases = [
+        Case(
+            name="geography", input="What is the capital of France?", expected_output="The capital of France is Paris."
+        ),
+        Case(name="math", input="What is 2+2?", expected_output="2+2 equals 4."),
+    ]
+
+    experiment = Experiment(
+        cases=cases,
+        evaluators=[Equals(), MockEvaluator()],
+    )
+    reports = experiment.run_evaluations(_simulate_agent)
+
+    assert len(reports) == 2
+
+    # Equals: both cases match expected_output exactly
+    equals_report = reports[0]
+    assert equals_report.scores == [1.0, 1.0]
+    assert equals_report.test_passes == [True, True]
+    assert equals_report.overall_score == 1.0
+
+    # MockEvaluator: also matches (actual==expected)
+    mock_report = reports[1]
+    assert mock_report.scores == [1.0, 1.0]
+    assert mock_report.test_passes == [True, True]
+
+
+@pytest.mark.asyncio
+async def test_deterministic_evaluator_alongside_mock_evaluator_async():
+    """Test deterministic evaluators in async experiment with realistic agent task."""
+    cases = [
+        Case(
+            name="geography",
+            input="What is the capital of France?",
+            expected_output="The capital of France is Paris.",
+        ),
+    ]
+
+    experiment = Experiment(
+        cases=cases,
+        evaluators=[Equals(), MockEvaluator()],
+    )
+    reports = await experiment.run_evaluations_async(_simulate_agent)
+
+    assert len(reports) == 2
+    assert reports[0].scores == [1.0]
+    assert reports[0].test_passes == [True]
+    assert reports[1].scores == [1.0]
+    assert reports[1].test_passes == [True]
+
+
+def test_multiple_deterministic_evaluators_in_experiment():
+    """Test multiple deterministic evaluators validating different aspects of agent output."""
+    cases = [
+        Case(
+            name="geography", input="What is the capital of France?", expected_output="The capital of France is Paris."
+        ),
+    ]
+
+    experiment = Experiment(
+        cases=cases,
+        evaluators=[
+            Equals(),
+            Contains(value="Paris"),
+            StartsWith(value="The capital"),
+        ],
+    )
+    reports = experiment.run_evaluations(_simulate_agent)
+
+    assert len(reports) == 3
+    for report in reports:
+        assert report.scores == [1.0]
+        assert report.test_passes == [True]
+
+
+def test_tool_called_evaluator_with_trajectory_task():
+    """Test ToolCalled evaluator with agent task that returns tool usage trajectory."""
+    cases = [
+        Case(
+            name="math_with_tools",
+            input="What is 2+2?",
+            expected_output="2+2 equals 4.",
+            expected_trajectory=["calculator"],
+        ),
+    ]
+
+    experiment = Experiment(
+        cases=cases,
+        evaluators=[
+            ToolCalled(tool_name="calculator"),
+            Contains(value="4"),
+        ],
+    )
+    reports = experiment.run_evaluations(_simulate_agent)
+
+    assert len(reports) == 2
+
+    # calculator was called in trajectory
+    assert reports[0].scores == [1.0]
+    assert reports[0].test_passes == [True]
+
+    # output contains "4"
+    assert reports[1].scores == [1.0]
+    assert reports[1].test_passes == [True]
+
+
+def test_tool_called_evaluator_tool_not_found():
+    """Test ToolCalled evaluator when agent doesn't use expected tool."""
+    cases = [
+        Case(
+            name="geography_no_calc",
+            input="What is the capital of France?",
+            expected_trajectory=["calculator"],
+        ),
+    ]
+
+    experiment = Experiment(
+        cases=cases,
+        evaluators=[ToolCalled(tool_name="calculator")],
+    )
+    reports = experiment.run_evaluations(_simulate_agent)
+
+    assert len(reports) == 1
+    # Agent used knowledge_base and formatter, not calculator
+    assert reports[0].scores == [0.0]
+    assert reports[0].test_passes == [False]
+
+
+def test_deterministic_evaluator_from_dict_round_trip():
+    """Test that Experiment with deterministic evaluators survives to_dict/from_dict."""
+    cases = [
+        Case(
+            name="geography", input="What is the capital of France?", expected_output="The capital of France is Paris."
+        ),
+    ]
+
+    experiment = Experiment(
+        cases=cases,
+        evaluators=[
+            Equals(),
+            Contains(value="Paris", case_sensitive=False),
+            StartsWith(value="The capital"),
+            ToolCalled(tool_name="knowledge_base"),
+        ],
+    )
+
+    data = experiment.to_dict()
+    restored = Experiment.from_dict(data)
+
+    assert len(restored.evaluators) == 4
+    assert restored.evaluators[0].get_type_name() == "Equals"
+    assert restored.evaluators[1].get_type_name() == "Contains"
+    assert restored.evaluators[2].get_type_name() == "StartsWith"
+    assert restored.evaluators[3].get_type_name() == "ToolCalled"
+
+    # Verify restored evaluators have correct parameters
+    assert restored.evaluators[1].value == "Paris"
+    assert restored.evaluators[1].case_sensitive is False
+    assert restored.evaluators[3].tool_name == "knowledge_base"
+
+    # Run restored experiment against the same agent — results should be identical
+    original_reports = experiment.run_evaluations(_simulate_agent)
+    restored_reports = restored.run_evaluations(_simulate_agent)
+
+    for orig, rest in zip(original_reports, restored_reports, strict=True):
+        assert orig.scores == rest.scores
+        assert orig.test_passes == rest.test_passes
+
+
+def test_deterministic_evaluator_error_isolation():
+    """Test that a failing deterministic evaluator doesn't crash other evaluators."""
+    cases = [
+        Case(
+            name="geography", input="What is the capital of France?", expected_output="The capital of France is Paris."
+        ),
+    ]
+
+    experiment = Experiment(
+        cases=cases,
+        evaluators=[
+            ThrowingEvaluator(),
+            Equals(),
+        ],
+    )
+    reports = experiment.run_evaluations(_simulate_agent)
+
+    assert len(reports) == 2
+
+    # ThrowingEvaluator failed with error isolation
+    assert reports[0].scores == [0]
+    assert reports[0].test_passes == [False]
+    assert "Evaluator exploded" in reports[0].reasons[0]
+
+    # Equals still ran successfully despite the ThrowingEvaluator failure
+    assert reports[1].scores == [1.0]
+    assert reports[1].test_passes == [True]

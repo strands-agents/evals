@@ -17,6 +17,7 @@ from tenacity import (
 from typing_extensions import Any, Generic
 
 from .case import Case
+from .evaluators.deterministic import Contains, Equals, StartsWith, ToolCalled
 from .evaluators.evaluator import Evaluator
 from .evaluators.interactions_evaluator import InteractionsEvaluator
 from .evaluators.output_evaluator import OutputEvaluator
@@ -794,6 +795,10 @@ class Experiment(Generic[InputT, OutputT]):
             "OutputEvaluator": OutputEvaluator,
             "TrajectoryEvaluator": TrajectoryEvaluator,
             "InteractionsEvaluator": InteractionsEvaluator,
+            "Equals": Equals,
+            "Contains": Contains,
+            "StartsWith": StartsWith,
+            "ToolCalled": ToolCalled,
         }
         all_evaluators: dict[str, type[Evaluator]] = {
             **default_evaluators,
