@@ -3,7 +3,7 @@ import uuid
 from pydantic import BaseModel, Field
 from typing_extensions import Any, Generic
 
-from .types.evaluation import InputT, Interaction, OutputT
+from .types.evaluation import EnvironmentState, InputT, Interaction, OutputT
 
 
 class Case(BaseModel, Generic[InputT, OutputT]):
@@ -47,4 +47,5 @@ class Case(BaseModel, Generic[InputT, OutputT]):
     expected_output: OutputT | None = None
     expected_trajectory: list[Any] | None = None
     expected_interactions: list[Interaction] | None = None
+    expected_environment_state: list[EnvironmentState] | None = None
     metadata: dict[str, Any] | None = None

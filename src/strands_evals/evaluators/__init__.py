@@ -1,6 +1,7 @@
 from .coherence_evaluator import CoherenceEvaluator
 from .conciseness_evaluator import ConcisenessEvaluator
-from .deterministic import Contains, Equals, StartsWith, ToolCalled
+from .deterministic import Contains, Equals, StartsWith, StateEquals, ToolCalled
+from .environment_state_evaluator import EnvironmentStateEvaluator
 from .evaluator import Evaluator
 from .faithfulness_evaluator import FaithfulnessEvaluator
 from .goal_success_rate_evaluator import GoalSuccessRateEvaluator
@@ -27,8 +28,10 @@ __all__ = [
     "ToolParameterAccuracyEvaluator",
     "ConcisenessEvaluator",
     "CoherenceEvaluator",
+    "EnvironmentStateEvaluator",
     "Contains",
     "Equals",
     "StartsWith",
+    "StateEquals",
     "ToolCalled",
 ]

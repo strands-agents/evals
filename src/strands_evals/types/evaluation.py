@@ -33,6 +33,18 @@ class Interaction(TypedDict, total=False):
     messages: list
 
 
+class EnvironmentState(BaseModel):
+    """A named piece of environment state captured after task execution.
+
+    Attributes:
+        name: Identifier for this state (e.g., "test_results", "file_system")
+        state: The captured state data
+    """
+
+    name: str
+    state: Any
+
+
 class TaskOutput(TypedDict, total=False):
     """
     Structured output format for task functions that return complex results.
@@ -59,6 +71,7 @@ class TaskOutput(TypedDict, total=False):
     trajectory: Union[list[Any], Session, None]
     interactions: list[Interaction]
     input: Any
+    environment_state: list[EnvironmentState]
 
 
 class EvaluationData(BaseModel, Generic[InputT, OutputT]):
@@ -86,6 +99,8 @@ class EvaluationData(BaseModel, Generic[InputT, OutputT]):
     metadata: dict[str, Any] | None = None
     actual_interactions: list[Interaction] | None = None
     expected_interactions: list[Interaction] | None = None
+    actual_environment_state: list[EnvironmentState] | None = None
+    expected_environment_state: list[EnvironmentState] | None = None
 
 
 class EvaluationOutput(BaseModel):

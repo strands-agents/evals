@@ -7,6 +7,7 @@ def compose_test_prompt(
     include_inputs: bool,
     uses_trajectory: bool = False,
     trajectory_description: dict | None = None,
+    uses_environment_state: bool = False,
 ) -> str:
     """
     Compose the prompt for a test case evaluation.
@@ -17,19 +18,21 @@ def compose_test_prompt(
         include_inputs: Whether to include the input in the prompt
         uses_trajectory: Whether this is a trajectory-based evaluation
         trajectory_description: A dictionary describing the type of trajectory expected for this evaluation.
+        uses_environment_state: Whether this is an environment-state-based evaluation
 
     Returns:
         str: The formatted evaluation prompt
 
     Raises:
-        Exception: If actual_output is missing for non-trajectory evaluations
+        Exception: If actual_output is missing for output-only evaluations
         Exception: If actual_trajectory is missing for trajectory evaluations
+        Exception: If actual_environment_state is missing for environment state evaluations
     """
     evaluation_prompt = "Evaluate this singular test case. THE FINAL SCORE MUST BE A DECIMAL BETWEEN 0.0 AND 1.0 (NOT 0 to 10 OR 0 to 100). \n"
     if include_inputs:
         evaluation_prompt += f"<Input>{evaluation_case.input}</Input>\n"
 
-    if uses_trajectory:  # trajectory evaluations don't require actual_output
+    if uses_trajectory or uses_environment_state:  # these evaluations don't require actual_output
         if evaluation_case.actual_output:
             evaluation_prompt += f"<Output>{evaluation_case.actual_output}</Output>\n"
     else:
@@ -52,6 +55,18 @@ def compose_test_prompt(
 
         if trajectory_description:
             evaluation_prompt += f"<TrajectoryDescription>{trajectory_description}</TrajectoryDescription>\n"
+
+    if uses_environment_state:
+        if evaluation_case.actual_environment_state is None:
+            raise Exception("Please make sure the task function return a dictionary with the key 'environment_state'.")
+        evaluation_prompt += (
+            f"<ActualEnvironmentState>{evaluation_case.actual_environment_state}</ActualEnvironmentState>\n"
+        )
+
+        if evaluation_case.expected_environment_state:
+            evaluation_prompt += (
+                f"<ExpectedEnvironmentState>{evaluation_case.expected_environment_state}</ExpectedEnvironmentState>\n"
+            )
 
     evaluation_prompt += f"<Rubric>{rubric}</Rubric>"
 

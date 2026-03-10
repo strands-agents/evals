@@ -17,7 +17,8 @@ from tenacity import (
 from typing_extensions import Any, Generic
 
 from .case import Case
-from .evaluators.deterministic import Contains, Equals, StartsWith, ToolCalled
+from .evaluators.deterministic import Contains, Equals, StartsWith, StateEquals, ToolCalled
+from .evaluators.environment_state_evaluator import EnvironmentStateEvaluator
 from .evaluators.evaluator import Evaluator
 from .evaluators.interactions_evaluator import InteractionsEvaluator
 from .evaluators.output_evaluator import OutputEvaluator
@@ -202,6 +203,7 @@ class Experiment(Generic[InputT, OutputT]):
             expected_output=case.expected_output,
             expected_trajectory=case.expected_trajectory,
             expected_interactions=case.expected_interactions,
+            expected_environment_state=case.expected_environment_state,
             metadata=case.metadata,
         )
         task_output = task(case)
@@ -209,6 +211,7 @@ class Experiment(Generic[InputT, OutputT]):
             evaluation_context.actual_output = task_output.get("output")
             evaluation_context.actual_trajectory = task_output.get("trajectory")
             evaluation_context.actual_interactions = task_output.get("interactions")
+            evaluation_context.actual_environment_state = task_output.get("environment_state")
             new_input = task_output.get("input", None)  # allows the user to update the input in the task function
             if new_input is not None:
                 evaluation_context.input = new_input
@@ -238,6 +241,7 @@ class Experiment(Generic[InputT, OutputT]):
             expected_output=case.expected_output,
             expected_trajectory=case.expected_trajectory,
             expected_interactions=case.expected_interactions,
+            expected_environment_state=case.expected_environment_state,
             metadata=case.metadata,
         )
 
@@ -252,6 +256,7 @@ class Experiment(Generic[InputT, OutputT]):
             evaluation_context.actual_output = task_output.get("output")
             evaluation_context.actual_trajectory = task_output.get("trajectory")
             evaluation_context.actual_interactions = task_output.get("interactions")
+            evaluation_context.actual_environment_state = task_output.get("environment_state")
             # allows the user to update the input in the task function
             new_input = task_output.get("input", None)
             if new_input is not None:
@@ -798,7 +803,9 @@ class Experiment(Generic[InputT, OutputT]):
             "Equals": Equals,
             "Contains": Contains,
             "StartsWith": StartsWith,
+            "StateEquals": StateEquals,
             "ToolCalled": ToolCalled,
+            "EnvironmentStateEvaluator": EnvironmentStateEvaluator,
         }
         all_evaluators: dict[str, type[Evaluator]] = {
             **default_evaluators,
