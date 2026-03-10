@@ -1,7 +1,7 @@
 import pytest
 
-from strands_evals.evaluators.deterministic.output import Contains, Custom, Equals, StartsWith
-from strands_evals.types import EvaluationData, EvaluationOutput
+from strands_evals.evaluators.deterministic.output import Contains, Equals, StartsWith
+from strands_evals.types import EvaluationData
 
 
 class TestEquals:
@@ -225,65 +225,3 @@ class TestStartsWith:
         assert d["case_sensitive"] is False
 
 
-class TestCustom:
-    def test_callback_pass(self):
-        def check(case):
-            return [EvaluationOutput(score=1.0, test_pass=True, reason="ok")]
-
-        evaluator = Custom(fn=check)
-        data = EvaluationData(input="q", actual_output="anything")
-        results = evaluator.evaluate(data)
-        assert len(results) == 1
-        assert results[0].test_pass is True
-        assert results[0].score == 1.0
-
-    def test_callback_fail(self):
-        def check(case):
-            return [EvaluationOutput(score=0.0, test_pass=False, reason="bad")]
-
-        evaluator = Custom(fn=check)
-        data = EvaluationData(input="q", actual_output="anything")
-        results = evaluator.evaluate(data)
-        assert results[0].test_pass is False
-
-    def test_callback_multiple_outputs(self):
-        def check(case):
-            return [
-                EvaluationOutput(score=1.0, test_pass=True, reason="check 1"),
-                EvaluationOutput(score=0.0, test_pass=False, reason="check 2"),
-            ]
-
-        evaluator = Custom(fn=check)
-        data = EvaluationData(input="q", actual_output="anything")
-        results = evaluator.evaluate(data)
-        assert len(results) == 2
-        assert results[0].test_pass is True
-        assert results[1].test_pass is False
-
-    def test_callback_receives_full_evaluation_data(self):
-        def check(case):
-            has_metadata = case.metadata is not None and case.metadata.get("key") == "val"
-            return [
-                EvaluationOutput(score=1.0 if has_metadata else 0.0, test_pass=has_metadata, reason="metadata check")
-            ]
-
-        evaluator = Custom(fn=check)
-        data = EvaluationData(input="q", actual_output="x", metadata={"key": "val"})
-        results = evaluator.evaluate(data)
-        assert results[0].test_pass is True
-
-    @pytest.mark.asyncio
-    async def test_evaluate_async_delegates_to_evaluate(self):
-        def check(case):
-            return [EvaluationOutput(score=1.0, test_pass=True, reason="ok")]
-
-        evaluator = Custom(fn=check)
-        data = EvaluationData(input="q", actual_output="anything")
-        results = await evaluator.evaluate_async(data)
-        assert results[0].test_pass is True
-
-    def test_to_dict_excludes_fn(self):
-        evaluator = Custom(fn=lambda case: [])
-        d = evaluator.to_dict()
-        assert d["evaluator_type"] == "Custom"
-        assert "fn" not in d

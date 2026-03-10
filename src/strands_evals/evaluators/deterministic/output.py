@@ -1,5 +1,3 @@
-from collections.abc import Callable
-
 from typing_extensions import Any
 
 from ...types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
@@ -82,15 +80,3 @@ class StartsWith(Evaluator[InputT, OutputT]):
         return self.evaluate(evaluation_case)
 
 
-class Custom(Evaluator[InputT, OutputT]):
-    """Evaluates using a user-provided callback function."""
-
-    def __init__(self, fn: Callable[[EvaluationData[InputT, OutputT]], list[EvaluationOutput]]):
-        super().__init__()
-        self._fn = fn
-
-    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
-        return self._fn(evaluation_case)
-
-    async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
-        return self.evaluate(evaluation_case)
