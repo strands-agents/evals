@@ -36,6 +36,14 @@ class EnvironmentStateEvaluator(Evaluator[InputT, OutputT]):
         self.system_prompt = system_prompt
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
+        """Evaluate the environment state produced by the task.
+
+        Args:
+            evaluation_case: The test case with all of the neccessary context to be evaluated.
+
+        Returns:
+            The results of the evaluation as EvaluationOutput.
+        """
         evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
         evaluation_prompt = compose_test_prompt(
             evaluation_case=evaluation_case,
@@ -47,6 +55,14 @@ class EnvironmentStateEvaluator(Evaluator[InputT, OutputT]):
         return [cast(EvaluationOutput, result.structured_output)]
 
     async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
+        """Evaluate the environment state produced by the task asynchronously.
+
+        Args:
+            evaluation_case: The test case with all of the neccessary context to be evaluated.
+
+        Returns:
+            The results of the evaluation as EvaluationOutput.
+        """
         evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
         evaluation_prompt = compose_test_prompt(
             evaluation_case=evaluation_case,
