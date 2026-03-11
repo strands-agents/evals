@@ -79,21 +79,20 @@ class CollapsibleTableReportDisplay:
             symbol = "▼" if item["expanded"] else "▶"
             case = item["details"]
             pass_status = "✅" if case["test_pass"] else "❌"
-            other_fields = list(case.values())[3:]
-            if item["expanded"]:  # We always to render at least the index, name, score, test_pass, and reason
-                renderables = [
-                    f"{symbol} {key}",
-                    case.get("name", f"Test {key}"),
-                    case.get("score"),
-                    pass_status,
-                ] + other_fields
-            else:
-                renderables = [
-                    f"{symbol} {key}",
-                    case.get("name", f"Test {key}"),
-                    case.get("score"),
-                    pass_status,
-                ] + len(other_fields) * ["..."]
+
+            # Build renderables dynamically based on headers order
+            renderables = [f"{symbol} {key}"]  # index column
+            for header in list(case.keys()):
+                if header == "test_pass":
+                    renderables.append(pass_status)
+                elif item["expanded"]:
+                    renderables.append(case.get(header, ""))
+                else:
+                    # Show actual values for core fields, "..." for rest when collapsed
+                    if header in ("name", "evaluator", "score"):
+                        renderables.append(case.get(header, ""))
+                    else:
+                        renderables.append("...")
             table.add_row(*renderables)
 
         console.print(table)

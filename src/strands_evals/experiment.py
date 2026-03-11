@@ -654,6 +654,7 @@ class Experiment(Generic[InputT, OutputT]):
             eval_name = evaluator.get_type_name()
             data = evaluator_data[eval_name]
             report = EvaluationReport(
+                evaluator_name=eval_name,
                 overall_score=sum(data["scores"]) / len(data["scores"]) if len(data["scores"]) else 0,
                 scores=data["scores"],
                 test_passes=data["test_passes"],
@@ -721,6 +722,7 @@ class Experiment(Generic[InputT, OutputT]):
             data = evaluator_data[eval_name]
             scores = data["scores"]
             report = EvaluationReport(
+                evaluator_name=eval_name,
                 overall_score=sum(scores) / len(scores) if scores else 0,
                 scores=scores,
                 test_passes=data["test_passes"],

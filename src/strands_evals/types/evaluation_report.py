@@ -12,6 +12,7 @@ class EvaluationReport(BaseModel):
     A report of the evaluation of a task.
 
     Attributes:
+        evaluator_name: The name of the evaluator that produced this report.
         overall_score: The overall score of the task.
         scores: A list of the score for each test case in order.
         cases: A list of records for each test case.
@@ -19,12 +20,40 @@ class EvaluationReport(BaseModel):
         reasons: A list of reason for each test case.
     """
 
+    evaluator_name: str = ""
     overall_score: float
     scores: list[float]
     cases: list[dict]
     test_passes: list[bool]
     reasons: list[str] = []
     detailed_results: list[list[EvaluationOutput]] = []
+
+    @classmethod
+    def flatten(cls, reports: list["EvaluationReport"]) -> "EvaluationReport":
+        """Flatten multiple evaluation reports into a single report."""
+        if not reports:
+            return cls(overall_score=0.0, scores=[], cases=[], test_passes=[])
+
+        scores, cases, passes, reasons, detailed = [], [], [], [], []
+
+        for report in reports:
+            evaluator = report.evaluator_name or "Unknown"
+            for i, case in enumerate(report.cases):
+                cases.append({**case, "evaluator": evaluator})
+                scores.append(report.scores[i] if i < len(report.scores) else 0.0)
+                passes.append(report.test_passes[i] if i < len(report.test_passes) else False)
+                reasons.append(report.reasons[i] if i < len(report.reasons) else "")
+                detailed.append(report.detailed_results[i] if i < len(report.detailed_results) else [])
+
+        return cls(
+            evaluator_name="Combined",
+            overall_score=sum(scores) / len(scores) if scores else 0.0,
+            scores=scores,
+            cases=cases,
+            test_passes=passes,
+            reasons=reasons,
+            detailed_results=detailed,
+        )
 
     def _display(
         self,
@@ -60,12 +89,13 @@ class EvaluationReport(BaseModel):
         for i in range(len(self.scores)):
             name = self.cases[i].get("name", f"Test {i + 1}")
             reason = self.reasons[i] if i < len(self.reasons) else "N/A"
-            details_dict = {
-                "name": name,
-                "score": f"{self.scores[i]:.2f}",
-                "test_pass": self.test_passes[i],
-                "reason": reason,
-            }
+            details_dict = {"name": name}
+            # Include evaluator column for flattened reports (right after name)
+            if "evaluator" in self.cases[i]:
+                details_dict["evaluator"] = self.cases[i]["evaluator"]
+            details_dict["score"] = f"{self.scores[i]:.2f}"
+            details_dict["test_pass"] = self.test_passes[i]
+            details_dict["reason"] = reason
             if include_input:
                 details_dict["input"] = str(self.cases[i].get("input"))
             if include_actual_output:
