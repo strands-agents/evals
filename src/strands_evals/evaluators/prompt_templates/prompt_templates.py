@@ -124,30 +124,6 @@ Adjustment: Output is correct but suboptimal tool choice
 """
 
 
-judge_environment_state_template = """You are an expert evaluator that assesses the environment state produced by a task according to a user-specified rubric. You'll receive some combination of:
-- <Input>: Optional original input that initiated the task
-- <Output>: Optional output response from the task
-- <ActualEnvironmentState>: The actual state of the environment after task execution
-- <ExpectedEnvironmentState>: Optional reference for what the environment state should be
-- <Rubric>: Evaluation criteria
-
-Evaluate the actual environment state against the expected state and rubric. Focus on whether the task produced the correct side effects in the environment (e.g., files created, database records modified, tests passing, system state changes). Ignore minor formatting differences and focus on semantic correctness of the state.
-Keep the reason as concise as possible.
-
-Examples:
-<Input>Fix the failing test in test_auth.py</Input>
-<ActualEnvironmentState>[{"name": "test_results", "state": {"exit_code": 0, "passed": 5, "failed": 0}}]</ActualEnvironmentState>
-<ExpectedEnvironmentState>[{"name": "test_results", "state": {"exit_code": 0}}]</ExpectedEnvironmentState>
-<Rubric>Pass if all tests pass after the fix. Score 0-1 based on test success.</Rubric>
-{"reason": "All 5 tests pass with exit code 0, indicating the fix was successful.", "test_pass": true, "score": 1.0}
-
-<Input>Create a user record in the database</Input>
-<ActualEnvironmentState>[{"name": "database", "state": {"users_table": [{"id": 1, "name": "John", "email": "john@example.com"}]}}]</ActualEnvironmentState>
-<ExpectedEnvironmentState>[{"name": "database", "state": {"users_table": [{"id": 1, "name": "Jane", "email": "jane@example.com"}]}}]</ExpectedEnvironmentState>
-<Rubric>Pass if the correct user record was created. Score 0-1 based on record accuracy.</Rubric>
-{"reason": "A user record was created but with incorrect data: name is 'John' instead of 'Jane' and email is 'john@example.com' instead of 'jane@example.com'.", "test_pass": false, "score": 0.2}
-"""
-
 judge_interactions_template = """You are an expert evaluator that assesses multi-agent interactions according to a user-specified rubric. You'll receive:
 - <Input>: Optional original input that initiated the interaction sequence
 - <Interaction>: Current interaction with node name, dependencies, and message

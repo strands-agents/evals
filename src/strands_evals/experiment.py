@@ -18,7 +18,6 @@ from typing_extensions import Any, Generic
 
 from .case import Case
 from .evaluators.deterministic import Contains, Equals, StartsWith, StateEquals, ToolCalled
-from .evaluators.environment_state_evaluator import EnvironmentStateEvaluator
 from .evaluators.evaluator import Evaluator
 from .evaluators.interactions_evaluator import InteractionsEvaluator
 from .evaluators.output_evaluator import OutputEvaluator
@@ -805,7 +804,6 @@ class Experiment(Generic[InputT, OutputT]):
             "StartsWith": StartsWith,
             "StateEquals": StateEquals,
             "ToolCalled": ToolCalled,
-            "EnvironmentStateEvaluator": EnvironmentStateEvaluator,
         }
         all_evaluators: dict[str, type[Evaluator]] = {
             **default_evaluators,
