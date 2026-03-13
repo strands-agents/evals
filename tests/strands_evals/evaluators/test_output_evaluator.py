@@ -3,7 +3,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from strands_evals.evaluators import OutputEvaluator
-from strands_evals.types import EvaluationData, EvaluationOutput, EnvironmentState
+from strands_evals.types import EnvironmentState, EvaluationData, EvaluationOutput
 
 
 @pytest.fixture
