@@ -350,7 +350,7 @@ def test_experiment_run_evaluations_task_executed_once():
 def test_experiment_to_dict_empty(mock_evaluator):
     """Test converting empty experiment to dictionary"""
     experiment = Experiment(cases=[], evaluators=[mock_evaluator])
-    assert experiment.to_dict() == {"cases": [], "evaluators": [{"evaluator_type": "MockEvaluator"}]}
+    assert experiment.to_dict() == {"name": "unnamed_experiment", "cases": [], "evaluators": [{"evaluator_type": "MockEvaluator"}]}
 
 
 def test_experiment_to_dict_non_empty(mock_evaluator):
@@ -359,6 +359,7 @@ def test_experiment_to_dict_non_empty(mock_evaluator):
     experiment = Experiment(cases=cases, evaluators=[mock_evaluator])
     session_id = experiment.cases[0].session_id
     assert experiment.to_dict() == {
+        "name": "unnamed_experiment",
         "cases": [
             {
                 "name": "test",
@@ -390,6 +391,7 @@ def test_experiment_to_dict_OutputEvaluator_full():
     experiment = Experiment(cases=cases, evaluators=[evaluator])
     session_id = experiment.cases[0].session_id
     assert experiment.to_dict() == {
+        "name": "unnamed_experiment",
         "cases": [
             {
                 "name": "test",
@@ -423,6 +425,7 @@ def test_experiment_to_dict_OutputEvaluator_default():
     session_id = experiment.cases[0].session_id
     result = experiment.to_dict()
     assert result == {
+        "name": "unnamed_experiment",
         "cases": [
             {
                 "name": "test",
@@ -447,6 +450,7 @@ def test_experiment_to_dict_TrajectoryEvaluator_default():
     experiment = Experiment(cases=cases, evaluators=[evaluator])
     session_id = experiment.cases[0].session_id
     assert experiment.to_dict() == {
+        "name": "unnamed_experiment",
         "cases": [
             {
                 "name": "test",
@@ -476,6 +480,7 @@ def test_experiment_to_dict_TrajectoryEvaluator_full():
     experiment = Experiment(cases=cases, evaluators=[evaluator])
     session_id = experiment.cases[0].session_id
     assert experiment.to_dict() == {
+        "name": "unnamed_experiment",
         "cases": [
             {
                 "name": "test",
@@ -508,6 +513,7 @@ def test_experiment_to_dict_InteractionsEvaluator_default():
     experiment = Experiment(cases=cases, evaluators=[evaluator])
     session_id = experiment.cases[0].session_id
     assert experiment.to_dict() == {
+        "name": "unnamed_experiment",
         "cases": [
             {
                 "name": "test",
@@ -540,6 +546,7 @@ def test_experiment_to_dict_InteractionsEvaluator_full():
     experiment = Experiment(cases=cases, evaluators=[evaluator])
     session_id = experiment.cases[0].session_id
     assert experiment.to_dict() == {
+        "name": "unnamed_experiment",
         "cases": [
             {
                 "name": "test",
@@ -571,6 +578,7 @@ def test_experiment_to_dict_case_dict():
     experiment = Experiment(cases=[case], evaluators=[evaluator])
     session_id = experiment.cases[0].session_id
     assert experiment.to_dict() == {
+        "name": "unnamed_experiment",
         "cases": [
             {
                 "name": "test",
@@ -598,6 +606,7 @@ def test_experiment_to_dict_case_function():
     experiment = Experiment(cases=[case], evaluators=[evaluator])
     session_id = experiment.cases[0].session_id
     assert experiment.to_dict() == {
+        "name": "unnamed_experiment",
         "cases": [
             {
                 "name": "test",
