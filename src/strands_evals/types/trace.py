@@ -118,6 +118,7 @@ class AgentInvocationSpan(BaseSpan):
     user_prompt: str
     agent_response: str
     available_tools: list[ToolConfig]
+    system_prompt: str | None = None
 
 
 SpanUnion: TypeAlias = Union[InferenceSpan, ToolExecutionSpan, AgentInvocationSpan]
