@@ -9,7 +9,9 @@ from typing import Any
 
 import boto3
 
-from ..mappers.cloudwatch_session_mapper import CloudWatchSessionMapper
+from ..mappers.cloudwatch_parser import CloudWatchLogsParser
+from ..mappers.session_mapper import SessionMapper
+from ..mappers.utils import detect_otel_mapper
 from ..providers.exceptions import ProviderError, SessionNotFoundError
 from ..providers.trace_provider import TraceProvider
 from ..types.evaluation import TaskOutput
@@ -29,6 +31,8 @@ class CloudWatchProvider(TraceProvider):
     and returns Session objects ready for the evaluation pipeline.
     """
 
+    SPANS_LOG_GROUP = "aws/spans"
+
     def __init__(
         self,
         region: str | None = None,
@@ -36,6 +40,7 @@ class CloudWatchProvider(TraceProvider):
         agent_name: str | None = None,
         lookback_days: int = 30,
         query_timeout_seconds: float = 60.0,
+        mapper: SessionMapper | None = None,
     ):
         """Initialize the CloudWatch provider.
 
@@ -47,13 +52,20 @@ class CloudWatchProvider(TraceProvider):
 
             from strands_evals.providers import CloudWatchProvider
 
-            # Explicit log group
+            # Explicit log group — auto-detects framework from span scope
             provider = CloudWatchProvider(
                 log_group="/aws/bedrock-agentcore/runtimes/my-agent-abc123-DEFAULT",
             )
 
             # Discover log group from agent name
             provider = CloudWatchProvider(agent_name="my-agent")
+
+            # Override mapper for a specific framework
+            from strands_evals.mappers import LangChainOtelSessionMapper
+            provider = CloudWatchProvider(
+                log_group="/aws/...",
+                mapper=LangChainOtelSessionMapper(),
+            )
 
         Args:
             region: AWS region. Falls back to AWS_REGION / AWS_DEFAULT_REGION env vars.
@@ -63,6 +75,10 @@ class CloudWatchProvider(TraceProvider):
                 `agent_name` must be provided.
             lookback_days: How many days back to search for traces.
             query_timeout_seconds: Maximum seconds to wait for a Logs Insights query.
+            mapper: Optional SessionMapper to use for converting spans to Session.
+                If not provided, the mapper is auto-detected from the span data
+                using ``detect_otel_mapper()``, which inspects ``scope.name``
+                to determine the correct framework mapper.
 
         Raises:
             ProviderError: If neither `log_group` nor `agent_name` is provided,
@@ -84,7 +100,7 @@ class CloudWatchProvider(TraceProvider):
 
         self._lookback_days = lookback_days
         self._query_timeout_seconds = query_timeout_seconds
-        self._mapper = CloudWatchSessionMapper()
+        self._mapper = mapper
 
     def _discover_log_group(self, agent_name: str) -> str:
         """Discover the runtime log group for an agent via describe_log_groups."""
@@ -96,20 +112,44 @@ class CloudWatchProvider(TraceProvider):
         return log_groups[0]["logGroupName"]
 
     def get_evaluation_data(self, session_id: str) -> TaskOutput:
-        """Fetch all traces for a session and return evaluation data."""
-        query = f"fields @message | filter attributes.session.id = '{session_id}' | sort @timestamp asc | limit 10000"
+        """Fetch all traces for a session and return evaluation data.
+
+        Queries two CloudWatch log groups:
+
+        1. **Runtimes log group** — event records with ``body.input/output.messages``
+        2. **aws/spans** — lightweight hierarchy lookup (``spanId → parentSpanId``)
+           to enrich the events with proper parent-child relationships.
+        """
+        query = (
+            f"fields @message | filter attributes.session.id like '{session_id}' | sort @timestamp asc | limit 10000"
+        )
 
         try:
-            span_dicts = self._run_logs_insights_query(query)
+            raw_records = self._run_logs_insights_query(query)
         except ProviderError:
             raise
         except Exception as e:
             raise ProviderError(f"CloudWatch: failed to query spans for session '{session_id}': {e}") from e
 
-        if not span_dicts:
+        if not raw_records:
             raise SessionNotFoundError(f"CloudWatch: no spans found for session_id='{session_id}'")
 
-        session = self._mapper.map_to_session(span_dicts, session_id)
+        # Normalize raw CloudWatch log records into the standard span format.
+        span_dicts = CloudWatchLogsParser(raw_records).parse()
+
+        if not span_dicts:
+            raise SessionNotFoundError(f"CloudWatch: no normalizable spans found for session_id='{session_id}'")
+
+        # Enrich with hierarchy from aws/spans (best-effort).
+        hierarchy = self._fetch_span_hierarchy(session_id)
+        if hierarchy:
+            for span in span_dicts:
+                parent = hierarchy.get(span.get("span_id", ""))
+                if parent:
+                    span["parent_span_id"] = parent
+
+        mapper = self._mapper or detect_otel_mapper(span_dicts)
+        session = mapper.map_to_session(span_dicts, session_id)
 
         if not session.traces:
             raise SessionNotFoundError(
@@ -119,19 +159,44 @@ class CloudWatchProvider(TraceProvider):
         output = self._extract_output(session)
         return TaskOutput(output=output, trajectory=session)
 
+    def _fetch_span_hierarchy(self, session_id: str) -> dict[str, str]:
+        """Fetch spanId→parentSpanId map from aws/spans. Returns empty dict on failure."""
+        query = f"fields spanId, parentSpanId | filter attributes.session.id like '{session_id}' | limit 10000"
+        now = datetime.now(tz=timezone.utc)
+        try:
+            response = self._client.start_query(
+                logGroupName=self.SPANS_LOG_GROUP,
+                startTime=int((now - timedelta(days=self._lookback_days)).timestamp()),
+                endTime=int(now.timestamp()),
+                queryString=query,
+            )
+            raw_results = self._poll_query_results(response["queryId"])
+        except Exception:
+            logger.debug("CloudWatch: aws/spans hierarchy query failed, continuing without hierarchy")
+            return {}
+
+        hierarchy: dict[str, str] = {}
+        for row in raw_results:
+            fields = {f["field"]: f["value"] for f in row}
+            span_id = fields.get("spanId", "")
+            parent_span_id = fields.get("parentSpanId", "")
+            if span_id and parent_span_id:
+                hierarchy[span_id] = parent_span_id
+
+        return hierarchy
+
     # --- Internal: CW Logs Insights query execution ---
 
     def _run_logs_insights_query(self, query: str) -> list[dict[str, Any]]:
         """Execute a CW Logs Insights query and return parsed span dicts from @message fields."""
         now = datetime.now(tz=timezone.utc)
-        end_time = now
         start_time = now - timedelta(days=self._lookback_days)
 
         try:
             response = self._client.start_query(
                 logGroupName=self._log_group,
                 startTime=int(start_time.timestamp()),
-                endTime=int(end_time.timestamp()),
+                endTime=int(now.timestamp()),
                 queryString=query,
             )
         except Exception as e:

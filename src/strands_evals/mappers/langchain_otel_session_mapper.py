@@ -37,6 +37,26 @@ logger = logging.getLogger(__name__)
 
 SCOPE_NAME = "opentelemetry.instrumentation.langchain"
 
+# --- OTEL semantic convention attribute keys ---
+_ATTR_LLM_REQUEST_TYPE = "llm.request.type"
+
+# --- Traceloop/OpenLLMetry attribute keys ---
+_ATTR_TRACELOOP_SPAN_KIND = "traceloop.span.kind"
+_ATTR_TRACELOOP_ENTITY_NAME = "traceloop.entity.name"
+_ATTR_TRACELOOP_ENTITY_INPUT = "traceloop.entity.input"
+_ATTR_TRACELOOP_ENTITY_OUTPUT = "traceloop.entity.output"
+
+# --- Traceloop/OpenLLMetry attribute values ---
+_KIND_WORKFLOW = "workflow"
+_KIND_TOOL = "tool"
+_LLM_TYPE_CHAT = "chat"
+
+# --- ADOT body field values (LangChain serialization) ---
+_ADOT_ROLE_UNKNOWN = "unknown"
+_ADOT_LANGGRAPH_NAME = "LangGraph"
+_ADOT_TOOL_CALL_WITH_CONTEXT = "tool_call_with_context"
+_ADOT_INPUT_STR_KEY = "input_str"
+
 
 class LangChainOtelSessionMapper(SessionMapper):
     """Maps Traceloop/OpenLLMetry LangChain traces to Session format.
@@ -56,10 +76,12 @@ class LangChainOtelSessionMapper(SessionMapper):
 
     def __init__(self):
         super().__init__()
-        # Track tools per trace (LangGraph stores tools in inference spans, not agent spans)
-        self._trace_tools_map: dict[str, dict[str, ToolConfig]] = defaultdict(dict)
-        # Track system prompts per trace
-        self._trace_system_prompt_map: dict[str, str] = defaultdict(str)
+        # Cache: span_id → (input_messages, output_messages) from _get_messages_from_span_events
+        # Avoids re-parsing span_events body during detection and again during conversion.
+        # Reset at the start of each map_to_session call.
+        self._span_messages_cache: dict[str, tuple[list[dict], list[dict]]] = {}
+        # Cache: span_id → parsed input body from _parse_adot_body
+        self._adot_body_cache: dict[str, Any] = {}
 
     def map_to_session(self, data: Any, session_id: str) -> Session:
         """Map LangChain OTEL spans to Session format.
@@ -74,9 +96,8 @@ class LangChainOtelSessionMapper(SessionMapper):
         Returns:
             Session object ready for evaluation
         """
-        # Reset state for new mapping
-        self._trace_tools_map = defaultdict(dict)
-        self._trace_system_prompt_map = defaultdict(str)
+        self._span_messages_cache = {}
+        self._adot_body_cache = {}
 
         # Normalize input to flat spans
         spans = self._normalize_to_flat_spans(data)
@@ -100,13 +121,19 @@ class LangChainOtelSessionMapper(SessionMapper):
         return Session(traces=result_traces, session_id=session_id)
 
     def _build_trace(self, trace_id: str, spans: list[dict], session_id: str) -> Trace:
-        """Build a Trace from spans with the same trace_id."""
+        """Build a Trace from spans with the same trace_id.
+
+        Tools are collected from inference spans and passed to agent invocation spans,
+        since LangGraph stores tool definitions in inference spans, not agent spans.
+        """
         converted_spans: list[InferenceSpan | ToolExecutionSpan | AgentInvocationSpan] = []
+        # Local tools accumulator — populated by inference spans, consumed by agent spans
+        trace_tools: dict[str, ToolConfig] = {}
 
         for span in spans:
             try:
                 if self._is_inference_span(span):
-                    inference_span = self._convert_inference_span(span, session_id)
+                    inference_span = self._convert_inference_span(span, session_id, trace_tools)
                     if inference_span and inference_span.messages:
                         converted_spans.append(inference_span)
                 elif self._is_tool_execution_span(span):
@@ -114,11 +141,36 @@ class LangChainOtelSessionMapper(SessionMapper):
                     if tool_span:
                         converted_spans.append(tool_span)
                 elif self._is_agent_invocation_span(span):
-                    agent_span = self._convert_agent_invocation_span(span, session_id)
+                    agent_span = self._convert_agent_invocation_span(span, session_id, trace_tools)
                     if agent_span:
                         converted_spans.append(agent_span)
             except Exception as e:
                 logger.warning(f"Failed to convert span {span.get('span_id', 'unknown')}: {e}")
+
+        # In multi-agent LangGraph systems, each nested sub-graph (from
+        # create_react_agent) produces its own kwargs.name="LangGraph" record
+        # in ADOT, creating multiple AgentInvocationSpans with intermediate data.
+        # The root graph is always the LAST one (outermost scope finishes last).
+        # Keep only the root to match the live path behavior where Traceloop
+        # only marks the outermost graph as traceloop.span.kind="workflow".
+        agent_spans = [s for s in converted_spans if isinstance(s, AgentInvocationSpan)]
+        if len(agent_spans) > 1:
+            root = agent_spans[-1]
+            converted_spans = [s for s in converted_spans if not isinstance(s, AgentInvocationSpan) or s is root]
+
+        # If no tools found from attributes (common in ADOT), build from converted tool spans
+        if not trace_tools:
+            for converted in converted_spans:
+                if isinstance(converted, ToolExecutionSpan):
+                    name = converted.tool_call.name
+                    if name and name not in trace_tools:
+                        trace_tools[name] = ToolConfig(name=name, description=None, parameters=None)
+            # Back-fill available_tools into any AgentInvocationSpan already created
+            if trace_tools:
+                tools_list = sorted(trace_tools.values(), key=lambda t: t.name)
+                for converted in converted_spans:
+                    if isinstance(converted, AgentInvocationSpan) and not converted.available_tools:
+                        converted.available_tools = tools_list
 
         return Trace(spans=converted_spans, trace_id=trace_id, session_id=session_id)
 
@@ -127,33 +179,102 @@ class LangChainOtelSessionMapper(SessionMapper):
     # =========================================================================
 
     def _is_inference_span(self, span: dict) -> bool:
-        """Check if span is an LLM inference span."""
+        """Check if span is an LLM inference span.
+
+        Detection:
+        1. Live instrumentation: llm.request.type == "chat"
+        2. ADOT body: role == "unknown" with raw string content (direct LLM I/O)
+        """
         attrs = span.get("attributes", {})
-        return attrs.get("llm.request.type") == "chat"
+        if attrs.get(_ATTR_LLM_REQUEST_TYPE) == _LLM_TYPE_CHAT:
+            return True
+
+        # ADOT fallback: records with role="unknown" and raw string content are LLM calls
+        input_messages, _ = self._get_messages_from_span_events(span)
+        if input_messages and input_messages[0].get("role") == _ADOT_ROLE_UNKNOWN:
+            return True
+
+        return False
 
     def _is_tool_execution_span(self, span: dict) -> bool:
-        """Check if span is a tool execution span."""
+        """Check if span is a tool execution span.
+
+        Detection:
+        1. Live instrumentation: traceloop.span.kind == "tool"
+        2. ADOT body: input has "input_str" key (direct tool call format)
+        """
         attrs = span.get("attributes", {})
-        return attrs.get("traceloop.span.kind") == "tool"
+        if attrs.get(_ATTR_TRACELOOP_SPAN_KIND) == _KIND_TOOL:
+            return True
+
+        # ADOT fallback: "input_str" is the direct tool invocation format.
+        # Note: "tool_call_with_context" records are graph-level wrappers that
+        # duplicate the actual tool call — skip them to avoid duplicate spans.
+        in_parsed = self._parse_adot_body(span)
+        if isinstance(in_parsed, dict) and _ADOT_INPUT_STR_KEY in in_parsed:
+            return True
+
+        return False
 
     def _is_agent_invocation_span(self, span: dict) -> bool:
-        """Check if span is an agent invocation span."""
+        """Check if span is an agent invocation span.
+
+        Detection:
+        1. Live instrumentation: traceloop.span.kind == "workflow"
+        2. ADOT body: kwargs.name == "LangGraph" (root graph node only)
+
+        Only the root LangGraph node should become an AgentInvocationSpan.
+        Intermediate nodes (Prompt, call_model, should_continue, agent,
+        RunnableSequence, tools) are internal graph steps and must be skipped.
+        """
         attrs = span.get("attributes", {})
-        return attrs.get("traceloop.span.kind") == "workflow"
+        if attrs.get(_ATTR_TRACELOOP_SPAN_KIND) == _KIND_WORKFLOW:
+            return True
+
+        # ADOT fallback: only the root LangGraph node is the agent invocation
+        in_parsed = self._parse_adot_body(span)
+        if isinstance(in_parsed, dict):
+            kwargs = in_parsed.get("kwargs")
+            if isinstance(kwargs, dict) and kwargs.get("name") == _ADOT_LANGGRAPH_NAME:
+                return True
+
+        return False
+
+    def _parse_adot_body(self, span: dict) -> Any:
+        """Parse the input content from the first ADOT body message.
+
+        Returns the parsed JSON object or raw string, or None if no body found.
+        Result is cached per span_id to avoid re-parsing across detection methods.
+        """
+        span_id = span.get("span_id", "")
+        if span_id in self._adot_body_cache:
+            return self._adot_body_cache[span_id]
+
+        input_messages, _ = self._get_messages_from_span_events(span)
+        if not input_messages:
+            result = None
+        else:
+            in_content = input_messages[0].get("content", "")
+            result = self._safe_json_parse(in_content) if isinstance(in_content, str) else in_content
+
+        if span_id:
+            self._adot_body_cache[span_id] = result
+        return result
 
     # =========================================================================
     # Span Conversion
     # =========================================================================
 
-    def _convert_inference_span(self, span: dict, session_id: str) -> InferenceSpan | None:
+    def _convert_inference_span(
+        self, span: dict, session_id: str, trace_tools: dict[str, ToolConfig]
+    ) -> InferenceSpan | None:
         """Convert OTEL span to InferenceSpan."""
         span_info = self._create_span_info(span, session_id)
         attrs = span.get("attributes", {})
-        trace_id = span.get("trace_id", "")
 
-        # Extract available tools from attributes
+        # Extract available tools from attributes and accumulate for agent span
         tools = self._extract_tools_from_attributes(attrs)
-        self._trace_tools_map[trace_id].update(tools)
+        trace_tools.update(tools)
 
         # Extract messages from span events
         input_messages, output_messages = self._get_messages_from_span_events(span)
@@ -172,14 +293,6 @@ class LangChainOtelSessionMapper(SessionMapper):
             if assistant_msg:
                 messages.append(assistant_msg)
 
-        # Extract system prompt
-        for idx, msg in enumerate(input_messages):
-            if attrs.get(f"gen_ai.prompt.{idx}.role") == "system":
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    self._trace_system_prompt_map[trace_id] = content
-                break
-
         if not messages:
             return None
 
@@ -195,64 +308,72 @@ class LangChainOtelSessionMapper(SessionMapper):
         span_info = self._create_span_info(span, session_id)
         attrs = span.get("attributes", {})
 
-        tool_name = attrs.get("traceloop.entity.name")
+        tool_name = attrs.get(_ATTR_TRACELOOP_ENTITY_NAME)
         tool_parameters: dict | None = None
         tool_output_content: str | None = None
         tool_call_id: str | None = None
-        tool_status: str | None = ""
+        tool_status: str | None = None
 
         # Try ADOT/CloudWatch format first (span_events)
         input_messages, output_messages = self._get_messages_from_span_events(span)
 
         if input_messages and output_messages:
-            # ADOT format - extract from messages
-            input_content = input_messages[-1].get("content", "")
-            if isinstance(input_content, str):
-                parsed = self._safe_json_parse(input_content)
-                if isinstance(parsed, dict):
-                    if "inputs" in parsed and isinstance(parsed.get("inputs"), dict):
-                        tool_parameters = parsed.get("inputs")
-                    elif "input_str" in parsed:
-                        params_parsed = self._safe_json_parse(parsed.get("input_str", ""))
-                        if isinstance(params_parsed, dict):
-                            tool_parameters = params_parsed
+            in_parsed, out_parsed = self._parse_adot_tool_content(input_messages, output_messages)
 
-            output_content = output_messages[-1].get("content", "")
-            if isinstance(output_content, str):
-                parsed = self._safe_json_parse(output_content)
-                if isinstance(parsed, dict) and "output" in parsed:
-                    output_obj = parsed["output"]
-                    if isinstance(output_obj, dict) and "kwargs" in output_obj:
-                        kwargs = output_obj["kwargs"]
-                        if isinstance(kwargs, dict):
-                            tool_output_content = kwargs.get("content")
-                            tool_call_id = kwargs.get("tool_call_id")
-                            tool_status = kwargs.get("status")
+            # Extract tool parameters from input
+            if isinstance(in_parsed, dict):
+                inputs = in_parsed.get("inputs")
+                if isinstance(inputs, dict):
+                    # tool_call_with_context: {"inputs": {"__type": "tool_call_with_context", "tool_call": {...}}}
+                    if inputs.get("__type") == _ADOT_TOOL_CALL_WITH_CONTEXT:
+                        tc = inputs.get("tool_call", {})
+                        tool_parameters = tc.get("args", {})
+                        tool_name = tool_name or tc.get("name")
+                        tool_call_id = tool_call_id or tc.get("id")
+                    else:
+                        # Direct inputs dict: {"inputs": {"a": 1, "b": 2}}
+                        tool_parameters = inputs
+                if tool_parameters is None and _ADOT_INPUT_STR_KEY in in_parsed:
+                    params_parsed = self._safe_json_parse(in_parsed.get(_ADOT_INPUT_STR_KEY, ""))
+                    if isinstance(params_parsed, dict):
+                        tool_parameters = params_parsed
+
+            # Extract tool output, name, call_id from output
+            if isinstance(out_parsed, dict):
+                lc_kwargs = self._extract_lc_kwargs(out_parsed, "output")
+                if lc_kwargs is None:
+                    lc_kwargs = self._extract_lc_kwargs(out_parsed, "outputs")
+                if lc_kwargs:
+                    tool_output_content = str(lc_kwargs.get("content", ""))
+                    tool_call_id = tool_call_id or lc_kwargs.get("tool_call_id")
+                    tool_status = lc_kwargs.get("status", tool_status)
+                    tool_name = tool_name or lc_kwargs.get("name")
+                # Also check top-level kwargs for name
+                top_kwargs = out_parsed.get("kwargs", {})
+                if isinstance(top_kwargs, dict):
+                    tool_name = tool_name or top_kwargs.get("name")
         else:
             # Live format - extract from traceloop.entity.* attributes
-            entity_input = attrs.get("traceloop.entity.input", "")
-            entity_output = attrs.get("traceloop.entity.output", "")
+            entity_input = attrs.get(_ATTR_TRACELOOP_ENTITY_INPUT, "")
+            entity_output = attrs.get(_ATTR_TRACELOOP_ENTITY_OUTPUT, "")
 
             if entity_input:
                 parsed = self._safe_json_parse(entity_input)
                 if isinstance(parsed, dict):
                     if "inputs" in parsed and isinstance(parsed.get("inputs"), dict):
                         tool_parameters = parsed.get("inputs")
-                    elif "input_str" in parsed:
-                        params_parsed = self._safe_json_parse(parsed.get("input_str", ""))
+                    elif _ADOT_INPUT_STR_KEY in parsed:
+                        params_parsed = self._safe_json_parse(parsed.get(_ADOT_INPUT_STR_KEY, ""))
                         if isinstance(params_parsed, dict):
                             tool_parameters = params_parsed
 
             if entity_output:
                 parsed = self._safe_json_parse(entity_output)
-                if isinstance(parsed, dict) and "output" in parsed:
-                    output_obj = parsed["output"]
-                    if isinstance(output_obj, dict) and "kwargs" in output_obj:
-                        kwargs = output_obj["kwargs"]
-                        if isinstance(kwargs, dict):
-                            tool_output_content = kwargs.get("content")
-                            tool_call_id = kwargs.get("tool_call_id")
-                            tool_status = kwargs.get("status")
+                lc_kwargs = self._extract_lc_kwargs(parsed, "output") if isinstance(parsed, dict) else None
+                if lc_kwargs:
+                    tool_output_content = str(lc_kwargs.get("content", ""))
+                    tool_call_id = lc_kwargs.get("tool_call_id")
+                    tool_status = lc_kwargs.get("status", tool_status)
 
         # Validate required fields
         if not tool_name or tool_parameters is None or tool_output_content is None:
@@ -262,13 +383,15 @@ class LangChainOtelSessionMapper(SessionMapper):
         tool_call = ToolCall(name=tool_name, arguments=tool_parameters or {}, tool_call_id=tool_call_id)
         tool_result = ToolResult(
             content=tool_output_content or "",
-            error=None if tool_status == "success" else tool_status,
+            error=None if tool_status in ("success", None) else tool_status,
             tool_call_id=tool_call_id,
         )
 
         return ToolExecutionSpan(span_info=span_info, tool_call=tool_call, tool_result=tool_result, metadata={})
 
-    def _convert_agent_invocation_span(self, span: dict, session_id: str) -> AgentInvocationSpan | None:
+    def _convert_agent_invocation_span(
+        self, span: dict, session_id: str, trace_tools: dict[str, ToolConfig]
+    ) -> AgentInvocationSpan | None:
         """Convert OTEL span to AgentInvocationSpan.
 
         Handles two formats:
@@ -276,7 +399,6 @@ class LangChainOtelSessionMapper(SessionMapper):
         2. Live instrumentation: Data in traceloop.entity.input/output attributes
         """
         span_info = self._create_span_info(span, session_id)
-        trace_id = span.get("trace_id", "")
         attrs = span.get("attributes", {})
 
         user_query: str | None = None
@@ -291,8 +413,8 @@ class LangChainOtelSessionMapper(SessionMapper):
             agent_response = self._extract_agent_response_from_output(output_messages)
         else:
             # Live format - extract from traceloop.entity.* attributes
-            entity_input = attrs.get("traceloop.entity.input", "")
-            entity_output = attrs.get("traceloop.entity.output", "")
+            entity_input = attrs.get(_ATTR_TRACELOOP_ENTITY_INPUT, "")
+            entity_output = attrs.get(_ATTR_TRACELOOP_ENTITY_OUTPUT, "")
 
             if entity_input:
                 parsed = self._safe_json_parse(entity_input)
@@ -308,12 +430,12 @@ class LangChainOtelSessionMapper(SessionMapper):
                     if isinstance(outputs, dict) and "messages" in outputs:
                         agent_response = self._get_last_message_text(outputs["messages"])
 
-        if not user_query or not agent_response:
+        if user_query is None or agent_response is None:
             logger.warning(f"Missing user_query or agent_response for span {span.get('span_id')}")
             return None
 
         available_tools = sorted(
-            self._trace_tools_map.get(trace_id, {}).values(),
+            trace_tools.values(),
             key=lambda t: t.name,
         )
 
@@ -379,6 +501,40 @@ class LangChainOtelSessionMapper(SessionMapper):
                 return content
         return content
 
+    def _parse_adot_tool_content(self, input_messages: list[dict], output_messages: list[dict]) -> tuple[Any, Any]:
+        """Parse and return (input_parsed, output_parsed) from ADOT body messages."""
+        in_content = input_messages[-1].get("content", "")
+        in_parsed = self._safe_json_parse(in_content) if isinstance(in_content, str) else in_content
+
+        out_content = output_messages[-1].get("content", "")
+        out_parsed = self._safe_json_parse(out_content) if isinstance(out_content, str) else out_content
+
+        return in_parsed, out_parsed
+
+    def _extract_lc_kwargs(self, parsed: dict, key: str) -> dict | None:
+        """Extract kwargs from a LangChain serialized object at parsed[key].
+
+        Handles: {"output": {"lc": 1, "kwargs": {...}}}
+        Also handles list of LC objects: {"outputs": [{"lc": 1, "kwargs": {...}}]}
+        Also handles nested messages: {"outputs": {"messages": [{"kwargs": {...}}]}}
+        """
+        obj = parsed.get(key)
+        if isinstance(obj, dict):
+            if "kwargs" in obj:
+                return obj["kwargs"]
+            # Nested messages list
+            if "messages" in obj:
+                msgs = obj["messages"]
+                if isinstance(msgs, list) and msgs:
+                    last = msgs[-1]
+                    if isinstance(last, dict) and "kwargs" in last:
+                        return last["kwargs"]
+        if isinstance(obj, list) and obj:
+            last = obj[-1]
+            if isinstance(last, dict) and "kwargs" in last:
+                return last["kwargs"]
+        return None
+
     def _get_messages_from_span_events(self, span: dict) -> tuple[list[dict], list[dict]]:
         """Extract input and output messages from span events or attributes.
 
@@ -386,6 +542,17 @@ class LangChainOtelSessionMapper(SessionMapper):
         1. ADOT/CloudWatch: Messages in span_events[].body.input/output.messages
         2. Live instrumentation: Messages in gen_ai.prompt.*/gen_ai.completion.* attributes
         """
+        span_id = span.get("span_id", "")
+        if span_id in self._span_messages_cache:
+            return self._span_messages_cache[span_id]
+
+        result = self._extract_messages_from_span(span)
+        if span_id:
+            self._span_messages_cache[span_id] = result
+        return result
+
+    def _extract_messages_from_span(self, span: dict) -> tuple[list[dict], list[dict]]:
+        """Extract messages without caching — called by _get_messages_from_span_events."""
         # Try ADOT/CloudWatch format first (span_events)
         span_events = span.get("span_events", [])
         for event in span_events:
@@ -478,11 +645,16 @@ class LangChainOtelSessionMapper(SessionMapper):
 
         msg_content = message.get("content", "")
         if isinstance(msg_content, str):
+            # ADOT double-encodes strings — decode outer JSON quotes if present
+            text = self._safe_json_parse(msg_content) if msg_content.startswith('"') else msg_content
+            if not isinstance(text, str):
+                text = msg_content
             if is_tool_msg:
-                content.append(ToolResultContent(content=msg_content, error=None, tool_call_id=tool_call_id))
-            else:
-                content.append(TextContent(text=msg_content))
-            return UserMessage(content=content)
+                content.append(ToolResultContent(content=text, error=None, tool_call_id=tool_call_id))
+            elif text:
+                content.append(TextContent(text=text))
+            if content:
+                return UserMessage(content=content)
 
         return None
 
@@ -492,13 +664,19 @@ class LangChainOtelSessionMapper(SessionMapper):
 
         msg_content = message.get("content", "")
         if isinstance(msg_content, str):
-            content.append(TextContent(text=msg_content))
+            # ADOT double-encodes empty strings as '""' — decode and skip if empty
+            text = self._safe_json_parse(msg_content) if msg_content.startswith('"') else msg_content
+            if not isinstance(text, str):
+                text = msg_content
+            if text:
+                content.append(TextContent(text=text))
 
             # Check for tool calls
             tool_calls = self._get_assistant_tool_calls(index, attrs)
             content.extend(tool_calls)
 
-            return AssistantMessage(content=content)
+            if content:
+                return AssistantMessage(content=content)
 
         return None
 
@@ -554,45 +732,110 @@ class LangChainOtelSessionMapper(SessionMapper):
         return None
 
     def _extract_agent_response_from_output(self, output_messages: list[dict]) -> str | None:
-        """Extract agent response from agent invocation output messages."""
+        """Extract agent response from agent invocation output messages.
+
+        Handles multiple LangChain output formats:
+        1. {"outputs": {"messages": [...]}} — LangGraph state with messages list
+        2. {"outputs": {"lc": 1, "kwargs": {"content": "..."}}} — single LC object
+        3. {"outputs": [{"lc": 1, "kwargs": {"content": "..."}}]} — list of LC objects
+        4. {"output": "..."} / {"output": {"kwargs": {"content": "..."}}} — singular key
+        """
         if not output_messages:
             return None
 
         msg = output_messages[-1]
         content = msg.get("content", "")
-        if isinstance(content, str):
-            parsed = self._safe_json_parse(content)
-            if isinstance(parsed, dict) and "outputs" in parsed:
-                outputs = parsed["outputs"]
-                if isinstance(outputs, dict) and "messages" in outputs:
-                    messages = outputs["messages"]
-                    return self._get_last_message_text(messages)
+        if not isinstance(content, str):
+            return None
+
+        parsed = self._safe_json_parse(content)
+        if not isinstance(parsed, dict):
+            return None
+
+        # Try "outputs" key first, then "output"
+        for key in ("outputs", "output"):
+            if key not in parsed:
+                continue
+            value = parsed[key]
+
+            # Direct string
+            if isinstance(value, str) and value:
+                return value
+
+            # Dict with messages list: {"messages": [...]}
+            if isinstance(value, dict) and "messages" in value:
+                text = self._get_last_message_text(value["messages"])
+                if text:
+                    return text
+
+            # Single LC object: {"lc": 1, "kwargs": {"content": "..."}}
+            if isinstance(value, dict) and "kwargs" in value:
+                text = self._get_lc_text_content(value)
+                if text:
+                    return text
+
+            # List of LC objects: [{"lc": 1, "kwargs": {"content": "..."}}]
+            if isinstance(value, list) and value:
+                text = self._get_last_message_text(value)
+                if text:
+                    return text
+
+        return None
+
+    def _get_lc_text_content(self, lc_obj: dict) -> str | None:
+        """Extract text content from a LangChain serialized object.
+
+        Format: {"lc": 1, "type": "constructor", "id": [...], "kwargs": {"content": "..."}}
+        Content can be a string or a list of content blocks.
+        """
+        kwargs = lc_obj.get("kwargs", {})
+        if not isinstance(kwargs, dict):
+            return None
+        content = kwargs.get("content")
+        if isinstance(content, str) and content:
+            return content
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and "text" in item:
+                    return item["text"]
         return None
 
     def _get_last_message_text(self, messages: list) -> str | None:
-        """Extract text from the last message in a LangGraph state messages list."""
+        """Extract text from the last message in a LangGraph state messages list.
+
+        Searches backward through messages to find the last one with non-empty text content.
+        Skips tool messages (type="tool") since they aren't agent responses.
+        """
         if not messages:
             return None
 
-        msg = messages[-1]
+        # Search backward for last message with non-empty content
+        for msg in reversed(messages):
+            text = self._extract_message_text(msg)
+            if text:
+                return text
 
-        # LangGraph-native format: {"kwargs": {"content": "..."}}
+        return None
+
+    def _extract_message_text(self, msg) -> str | None:
+        """Extract text content from a single message."""
         if isinstance(msg, dict):
+            # Skip tool messages — they aren't agent responses
+            if isinstance(msg.get("kwargs"), dict) and msg["kwargs"].get("type") == "tool":
+                return None
+
             if "kwargs" in msg:
                 kwargs = msg["kwargs"]
                 if isinstance(kwargs, dict) and "content" in kwargs:
                     content = kwargs["content"]
-                    # Handle list content (multi-part messages)
                     if isinstance(content, list):
                         for item in content:
                             if isinstance(item, dict) and "text" in item:
                                 return item["text"]
                     return content
-            # OpenAI format: {"content": "..."}
             if "content" in msg:
                 return msg["content"]
 
-        # Tuple format: ["role", "content"]
         elif isinstance(msg, list):
             return msg[-1] if msg else None
 

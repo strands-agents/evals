@@ -2,17 +2,34 @@
 
 import json
 import os
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from strands_evals.mappers import LangChainOtelSessionMapper, OpenInferenceSessionMapper
 from strands_evals.providers.cloudwatch_provider import CloudWatchProvider
 from strands_evals.providers.exceptions import (
     ProviderError,
     SessionNotFoundError,
 )
-from strands_evals.types.trace import Session
+from strands_evals.types.trace import AgentInvocationSpan, Session, SpanInfo, Trace
 from tests.strands_evals.cloudwatch_helpers import make_assistant_text_message, make_log_record, make_user_message
+
+# --- Helpers ---
+
+
+def _session_with_agent_span(session_id: str, trace_id: str, user_prompt: str, agent_response: str) -> Session:
+    """Build a minimal valid Session that passes CloudWatchProvider's post-mapping checks."""
+    now = datetime.now(timezone.utc)
+    span = AgentInvocationSpan(
+        span_info=SpanInfo(session_id=session_id, trace_id=trace_id, span_id="s1", start_time=now, end_time=now),
+        user_prompt=user_prompt,
+        agent_response=agent_response,
+        available_tools=[],
+    )
+    return Session(session_id=session_id, traces=[Trace(trace_id=trace_id, session_id=session_id, spans=[span])])
+
 
 # --- Fixtures ---
 
@@ -25,7 +42,10 @@ def mock_logs_client():
 @pytest.fixture
 def provider(mock_logs_client):
     with patch("boto3.client", return_value=mock_logs_client):
-        return CloudWatchProvider(log_group="/test/group")
+        p = CloudWatchProvider(log_group="/test/group")
+    # Skip hierarchy lookup for tests that only exercise the events path
+    p._fetch_span_hierarchy = lambda session_id: {}
+    return p
 
 
 # --- Constructor ---
@@ -142,7 +162,7 @@ def _setup_query_results(mock_logs_client, records):
 
 
 class TestExtractOutput:
-    def test_extract_output_from_agent_response(self, provider):
+    def test_extract_output_from_agent_response(self, provider, mock_logs_client):
         """_extract_output returns last agent response text."""
         records = [
             make_log_record(
@@ -160,9 +180,9 @@ class TestExtractOutput:
                 time_nano=2000,
             ),
         ]
-        session = provider._mapper.map_to_session(records, "sess-1")
-        output = provider._extract_output(session)
-        assert output == "Final response"
+        _setup_query_results(mock_logs_client, records)
+        result = provider.get_evaluation_data("sess-1")
+        assert result["output"] == "Final response"
 
 
 # --- CW Logs Insights polling ---
@@ -317,11 +337,13 @@ class TestGetEvaluationData:
         records = [
             make_log_record(
                 trace_id="t1",
+                span_id="s1",
                 input_messages=[make_user_message("q1")],
                 output_messages=[make_assistant_text_message("first")],
             ),
             make_log_record(
                 trace_id="t2",
+                span_id="s2",
                 input_messages=[make_user_message("q2")],
                 output_messages=[make_assistant_text_message("second")],
             ),
@@ -350,3 +372,209 @@ class TestGetEvaluationData:
         ]
         _setup_query_results(mock_logs_client, records)
         assert provider.get_evaluation_data("sess-1")["output"] == "last"
+
+
+# --- Mapper auto-detection ---
+
+
+class TestMapperAutoDetection:
+    def test_default_mapper_is_none(self, mock_logs_client):
+        """When no mapper is provided, auto-detection is used."""
+        with patch("boto3.client", return_value=mock_logs_client):
+            p = CloudWatchProvider(log_group="/test/group")
+            assert p._mapper is None
+
+    def test_explicit_mapper_override(self, mock_logs_client):
+        """User can provide a specific mapper to skip auto-detection."""
+        with patch("boto3.client", return_value=mock_logs_client):
+            mapper = LangChainOtelSessionMapper()
+            p = CloudWatchProvider(log_group="/test/group", mapper=mapper)
+            assert p._mapper is mapper
+
+    def test_auto_detects_strands_mapper_for_strands_spans(self, mock_logs_client):
+        """Strands body-format spans auto-detect to CloudWatchSessionMapper."""
+        records = [
+            make_log_record(
+                trace_id="t1",
+                input_messages=[make_user_message("Hi")],
+                output_messages=[make_assistant_text_message("Hello!")],
+            )
+        ]
+        _setup_query_results(mock_logs_client, records)
+
+        with patch("boto3.client", return_value=mock_logs_client):
+            p = CloudWatchProvider(log_group="/test/group")
+            p._fetch_span_hierarchy = lambda session_id: {}
+            result = p.get_evaluation_data("sess-1")
+            assert isinstance(result["trajectory"], Session)
+            assert result["output"] == "Hello!"
+
+    def test_auto_detects_langchain_otel_mapper(self, mock_logs_client):
+        """Spans with opentelemetry.instrumentation.langchain scope trigger LangChainOtelSessionMapper."""
+        span = {
+            "trace_id": "t1",
+            "span_id": "s1",
+            "scope": {"name": "opentelemetry.instrumentation.langchain", "version": "0.1"},
+            "attributes": {"traceloop.span.kind": "workflow"},
+            "span_events": [],
+        }
+        _setup_query_results(mock_logs_client, [span])
+
+        with patch("boto3.client", return_value=mock_logs_client):
+            p = CloudWatchProvider(log_group="/test/group")
+            p._fetch_span_hierarchy = lambda session_id: {}
+            with patch.object(LangChainOtelSessionMapper, "map_to_session") as mock_map:
+                mock_map.return_value = _session_with_agent_span("sess-1", "t1", "Hello", "Hi!")
+                result = p.get_evaluation_data("sess-1")
+                mock_map.assert_called_once()
+                assert result["output"] == "Hi!"
+
+    def test_auto_detects_openinference_mapper(self, mock_logs_client):
+        """Spans with openinference.instrumentation.langchain scope trigger OpenInferenceSessionMapper."""
+        span = {
+            "trace_id": "t1",
+            "span_id": "s1",
+            "scope": {"name": "openinference.instrumentation.langchain", "version": "0.1"},
+            "attributes": {"openinference.span.kind": "CHAIN"},
+            "span_events": [],
+        }
+        _setup_query_results(mock_logs_client, [span])
+
+        with patch("boto3.client", return_value=mock_logs_client):
+            p = CloudWatchProvider(log_group="/test/group")
+            p._fetch_span_hierarchy = lambda session_id: {}
+            with patch.object(OpenInferenceSessionMapper, "map_to_session") as mock_map:
+                mock_map.return_value = _session_with_agent_span("sess-1", "t1", "Hello", "Hi!")
+                result = p.get_evaluation_data("sess-1")
+                mock_map.assert_called_once()
+                assert result["output"] == "Hi!"
+
+
+# --- Span hierarchy (aws/spans) ---
+
+
+def _make_hierarchy_row(span_id: str, parent_span_id: str) -> list[dict[str, str]]:
+    """Build a Logs Insights result row with spanId and parentSpanId fields."""
+    return [
+        {"field": "spanId", "value": span_id},
+        {"field": "parentSpanId", "value": parent_span_id},
+    ]
+
+
+class TestSpanHierarchy:
+    def test_hierarchy_enriches_parent_span_id(self, mock_logs_client):
+        """Events get parent_span_id from aws/spans hierarchy lookup."""
+        events = [
+            make_log_record(
+                trace_id="t1",
+                span_id="s1",
+                input_messages=[make_user_message("Hi")],
+                output_messages=[make_assistant_text_message("Hello!")],
+            ),
+            make_log_record(
+                trace_id="t1",
+                span_id="s2",
+                input_messages=[make_user_message("More")],
+                output_messages=[make_assistant_text_message("Done")],
+            ),
+        ]
+        hierarchy_rows = [
+            _make_hierarchy_row("s1", "root"),
+            _make_hierarchy_row("s2", "s1"),
+        ]
+
+        # First query → events, second query → hierarchy
+        call_count = 0
+
+        def start_query(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            return {"queryId": f"q-{call_count}"}
+
+        def get_results(**kwargs):
+            qid = kwargs["queryId"]
+            if qid == "q-1":  # events
+                return {
+                    "status": "Complete",
+                    "results": [[{"field": "@message", "value": json.dumps(e)}] for e in events],
+                }
+            else:  # hierarchy
+                return {"status": "Complete", "results": hierarchy_rows}
+
+        mock_logs_client.start_query.side_effect = start_query
+        mock_logs_client.get_query_results.side_effect = get_results
+
+        with patch("boto3.client", return_value=mock_logs_client):
+            p = CloudWatchProvider(log_group="/test/group")
+            p.get_evaluation_data("sess-1")
+            # Verify hierarchy query was made
+            assert mock_logs_client.start_query.call_count == 2
+            # Second query targets aws/spans
+            second_call = mock_logs_client.start_query.call_args_list[1][1]
+            assert second_call["logGroupName"] == "aws/spans"
+            assert "spanId, parentSpanId" in second_call["queryString"]
+
+    def test_hierarchy_failure_still_works(self, mock_logs_client):
+        """If aws/spans query fails, events still produce a valid session."""
+        events = [
+            make_log_record(
+                trace_id="t1",
+                span_id="s1",
+                input_messages=[make_user_message("Hi")],
+                output_messages=[make_assistant_text_message("Works!")],
+            ),
+        ]
+        call_count = 0
+
+        def start_query(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:  # hierarchy query
+                raise Exception("access denied to aws/spans")
+            return {"queryId": "q-1"}
+
+        mock_logs_client.start_query.side_effect = start_query
+        mock_logs_client.get_query_results.return_value = {
+            "status": "Complete",
+            "results": [[{"field": "@message", "value": json.dumps(e)}] for e in events],
+        }
+
+        with patch("boto3.client", return_value=mock_logs_client):
+            p = CloudWatchProvider(log_group="/test/group")
+            result = p.get_evaluation_data("sess-1")
+            assert result["output"] == "Works!"
+
+    def test_hierarchy_empty_is_fine(self, mock_logs_client):
+        """Empty hierarchy (no spans in aws/spans) doesn't break anything."""
+        events = [
+            make_log_record(
+                trace_id="t1",
+                span_id="s1",
+                input_messages=[make_user_message("Hi")],
+                output_messages=[make_assistant_text_message("OK")],
+            ),
+        ]
+        call_count = 0
+
+        def start_query(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            return {"queryId": f"q-{call_count}"}
+
+        def get_results(**kwargs):
+            qid = kwargs["queryId"]
+            if qid == "q-1":
+                return {
+                    "status": "Complete",
+                    "results": [[{"field": "@message", "value": json.dumps(e)}] for e in events],
+                }
+            else:
+                return {"status": "Complete", "results": []}
+
+        mock_logs_client.start_query.side_effect = start_query
+        mock_logs_client.get_query_results.side_effect = get_results
+
+        with patch("boto3.client", return_value=mock_logs_client):
+            p = CloudWatchProvider(log_group="/test/group")
+            result = p.get_evaluation_data("sess-1")
+            assert result["output"] == "OK"

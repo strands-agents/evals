@@ -2,10 +2,16 @@
 
 This mapper handles Strands telemetry data that has been normalized by CloudWatchLogsParser.
 It expects spans in the normalized format with span_events[].body containing input/output messages.
+
+.. deprecated::
+    CloudWatchSessionMapper is deprecated. Use ``CloudWatchProvider`` with auto-detection
+    (via ``detect_otel_mapper()``) instead, which automatically selects the correct mapper
+    based on the framework that produced the traces.
 """
 
 import json
 import logging
+import warnings
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
@@ -35,6 +41,12 @@ logger = logging.getLogger(__name__)
 class CloudWatchSessionMapper(SessionMapper):
     """Maps normalized CloudWatch spans to Session format.
 
+    .. deprecated::
+        Use ``CloudWatchProvider`` with auto-detection instead. ``CloudWatchProvider``
+        now uses ``detect_otel_mapper()`` to automatically select the correct mapper
+        based on the span ``scope.name``, supporting Strands, LangChain, and other
+        frameworks stored in CloudWatch.
+
     This mapper handles Strands telemetry data. It expects spans in the normalized
     format produced by CloudWatchLogsParser:
     - snake_case field names (trace_id, span_id)
@@ -42,6 +54,16 @@ class CloudWatchSessionMapper(SessionMapper):
 
     For raw CloudWatch logs, use CloudWatchLogsParser first to normalize.
     """
+
+    def __init__(self):
+        super().__init__()
+        warnings.warn(
+            "CloudWatchSessionMapper is deprecated. Use CloudWatchProvider with "
+            "auto-detection (detect_otel_mapper) instead, which automatically selects "
+            "the correct mapper based on the framework that produced the traces.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     def map_to_session(self, spans: list[dict[str, Any]], session_id: str) -> Session:
         """Map normalized spans to Session format.

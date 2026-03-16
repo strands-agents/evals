@@ -61,6 +61,13 @@ def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
             else:
                 return StrandsInMemorySessionMapper()
 
+    # Fallback: check if spans use the CloudWatch body format (no scope.name
+    # but have body.input/output structure). This handles raw CloudWatch
+    # log records that haven't been normalized by CloudWatchLogsParser.
+    for span in spans:
+        if get_body(span) is not None:
+            return CloudWatchSessionMapper()
+
     # Default to StrandsInMemorySessionMapper
     return StrandsInMemorySessionMapper()
 

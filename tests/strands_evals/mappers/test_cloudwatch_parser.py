@@ -208,6 +208,73 @@ class TestParserIntegration:
         assert span_ids == {"s1", "s2"}
 
 
+class TestScopePreservation:
+    """Verify scope.name is preserved for all frameworks."""
+
+    def test_langchain_traceloop_scope_preserved(self):
+        """LangChain OpenLLMetry spans preserve scope.name through normalization."""
+        span = make_span_record(
+            scope_name="opentelemetry.instrumentation.langchain",
+            attributes={"traceloop.span.kind": "workflow"},
+        )
+        parser = CloudWatchLogsParser([span])
+        result = parser.parse()
+
+        assert len(result) == 1
+        assert result[0]["scope"]["name"] == "opentelemetry.instrumentation.langchain"
+
+    def test_openinference_scope_preserved(self):
+        """LangChain OpenInference spans preserve scope.name through normalization."""
+        span = make_span_record(
+            scope_name="openinference.instrumentation.langchain",
+            attributes={"openinference.span.kind": "CHAIN"},
+        )
+        parser = CloudWatchLogsParser([span])
+        result = parser.parse()
+
+        assert len(result) == 1
+        assert result[0]["scope"]["name"] == "openinference.instrumentation.langchain"
+
+    def test_strands_scope_preserved(self):
+        """Strands spans preserve scope.name through normalization."""
+        span = make_span_record(scope_name="strands.telemetry.tracer")
+        parser = CloudWatchLogsParser([span])
+        result = parser.parse()
+
+        assert result[0]["scope"]["name"] == "strands.telemetry.tracer"
+
+    def test_scope_preserved_with_events(self):
+        """Scope is preserved when span has associated events."""
+        span = make_span_record(
+            span_id="s1",
+            scope_name="opentelemetry.instrumentation.langchain",
+        )
+        event = make_event_record(span_id="s1", body={"data": "test"})
+
+        parser = CloudWatchLogsParser([span, event])
+        result = parser.parse()
+
+        assert result[0]["scope"]["name"] == "opentelemetry.instrumentation.langchain"
+
+    def test_synthetic_span_picks_up_scope_from_raw_record(self):
+        """Synthetic spans use scope.name from raw record if available."""
+        # Event record that also has a scope field on it
+        event_with_scope = {
+            "spanId": "s1",
+            "EventName": "test.event",
+            "timeUnixNano": 1000,
+            "attributes": {},
+            "body": {"input": {"messages": []}, "output": {"messages": []}},
+            "scope": {"name": "opentelemetry.instrumentation.langchain", "version": "0.1"},
+        }
+
+        parser = CloudWatchLogsParser([event_with_scope])
+        result = parser.parse()
+
+        assert len(result) == 1
+        assert result[0]["scope"]["name"] == "opentelemetry.instrumentation.langchain"
+
+
 class TestConvenienceFunction:
     def test_parse_cloudwatch_logs_function(self):
         """Convenience function works same as class."""

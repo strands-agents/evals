@@ -88,7 +88,12 @@ class CloudWatchLogsParser:
         return result
 
     def _is_event(self, record: dict) -> bool:
-        """Check if record is an OTEL event (has event.name attribute)."""
+        """Check if record is an OTEL event.
+
+        Recognized patterns:
+        1. Has explicit event name (EventName, eventName, or attributes.event.name)
+        2. Has body dict with input/output keys (body-format OTEL log record)
+        """
         if not isinstance(record, dict):
             return False
 
@@ -100,18 +105,34 @@ class CloudWatchLogsParser:
         if isinstance(attrs, dict) and "event.name" in attrs:
             return True
 
+        # Body-format records (body dict with input/output) are also events
+        body = record.get("body")
+        if isinstance(body, dict) and ("input" in body or "output" in body):
+            return True
+
         return False
 
     def _is_span(self, record: dict) -> bool:
-        """Check if record is an OTEL span (has start/end time)."""
+        """Check if record is an OTEL span.
+
+        Recognized patterns:
+        1. Has start/end timestamps (startTimeUnixNano/endTimeUnixNano or start_time/end_time)
+        2. Already normalized format with span_events list (pass-through)
+        """
         if not isinstance(record, dict):
             return False
 
         # Spans have startTimeUnixNano or start_time
         has_start = "startTimeUnixNano" in record or "start_time" in record
         has_end = "endTimeUnixNano" in record or "end_time" in record
+        if has_start and has_end:
+            return True
 
-        return has_start and has_end
+        # Already-normalized spans have span_events list
+        if "span_events" in record and isinstance(record.get("span_events"), list):
+            return True
+
+        return False
 
     def _normalize_event(self, record: dict) -> dict | None:
         """Normalize a CloudWatch event record."""
@@ -175,7 +196,7 @@ class CloudWatchLogsParser:
                     "version": scope.get("version", ""),
                 },
                 "status": {"code": status.get("code", "UNSET")},
-                "span_events": [],  # Will be populated later
+                "span_events": record.get("span_events", []),  # Preserve existing or populate later
             }
         except Exception as e:
             logger.warning(f"Failed to normalize span: {e}")
@@ -183,18 +204,23 @@ class CloudWatchLogsParser:
 
     def _create_synthetic_span(self, span_id: str, events: list[dict], first_event: dict) -> dict:
         """Create a synthetic span from events when no span records exist."""
-        # Get trace_id from the raw logs (need to find matching record)
+        # Get trace_id and scope from the raw logs
         trace_id = ""
+        scope_name = ""
         for record in self.raw_logs:
             if record.get("spanId") == span_id or record.get("span_id") == span_id:
-                trace_id = record.get("traceId") or record.get("trace_id", "")
-                break
+                trace_id = trace_id or record.get("traceId") or record.get("trace_id", "")
+                raw_scope = record.get("scope")
+                if isinstance(raw_scope, dict):
+                    scope_name = scope_name or raw_scope.get("name", "")
 
-        # Get scope from event name
-        event_name = first_event.get("event_name", "")
-        scope_name = first_event.get("attributes", {}).get("event.name", event_name)
+        # Fall back to event name as scope hint
+        if not scope_name:
+            event_name = first_event.get("event_name", "")
+            scope_name = first_event.get("attributes", {}).get("event.name", event_name)
 
         # Use event timestamp for span times
+        event_name = first_event.get("event_name", "")
         timestamp = first_event.get("timestamp", 0)
 
         return {

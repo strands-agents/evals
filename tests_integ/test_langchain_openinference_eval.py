@@ -70,8 +70,10 @@ class ToolUsageEvaluator(Evaluator[str, str]):
 def telemetry():
     """Setup OTEL tracing with StrandsEvalsTelemetry for OpenInference."""
     telemetry = StrandsEvalsTelemetry().setup_in_memory_exporter()
-    LangChainInstrumentor().instrument()
-    return telemetry
+    instrumentor = LangChainInstrumentor()
+    instrumentor.instrument()
+    yield telemetry
+    instrumentor.uninstrument()
 
 
 @pytest.fixture

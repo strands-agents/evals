@@ -73,8 +73,10 @@ class ToolUsageEvaluator(Evaluator[str, str]):
 def telemetry():
     """Setup OTEL tracing with StrandsEvalsTelemetry for Traceloop."""
     telemetry = StrandsEvalsTelemetry().setup_in_memory_exporter()
-    LangchainInstrumentor().instrument()
-    return telemetry
+    instrumentor = LangchainInstrumentor()
+    instrumentor.instrument()
+    yield telemetry
+    instrumentor.uninstrument()
 
 
 @pytest.fixture

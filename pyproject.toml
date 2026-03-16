@@ -70,6 +70,9 @@ dependencies = [
     "moto>=5.1.0,<6.0.0",
 ]
 
+[[tool.hatch.envs.hatch-test.matrix]]
+python = ["3.13", "3.12", "3.11", "3.10"]
+
 [tool.hatch.envs.default.scripts]
 list = [
     "echo 'Scripts commands available for default env:'; hatch env show --json | jq --raw-output '.default.scripts | keys[]'"
