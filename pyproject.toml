@@ -14,11 +14,11 @@ authors = [
 ]
 
 dependencies = [
-    "pydantic>=2.0.0,<3.0.0",
+    "pydantic>=2.4.0,<3.0.0",
     "rich>=14.0.0,<15.0.0",
     "strands-agents>=1.0.0",
     "strands-agents-tools>=0.1.0,<1.0.0",
-    "typing-extensions>=4.0",
+    "typing-extensions>=4.13.2,<5.0.0",
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
     "opentelemetry-instrumentation-threading>=0.51b0,<1.00b0",
@@ -44,7 +44,7 @@ dev = [
     "ruff>=0.13.0,<0.15.0",
 ]
 
-langfuse = ["langfuse>=2.0.0,<3"]
+langfuse = ["langfuse>=2.0.0,<5"]
 otel = ["opentelemetry-exporter-otlp-proto-http>=1.30.0,<2.0.0"]
 langchain = [
     "langchain>=0.3.0",
@@ -69,6 +69,9 @@ dependencies = [
     "pytest-xdist>=3.0.0,<4.0.0",
     "moto>=5.1.0,<6.0.0",
 ]
+
+[[tool.hatch.envs.hatch-test.matrix]]
+python = ["3.13", "3.12", "3.11", "3.10"]
 
 [tool.hatch.envs.default.scripts]
 list = [

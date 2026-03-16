@@ -21,7 +21,7 @@ from strands_evals.types.trace import (
 
 
 def _meta(page=1, total_pages=1, total_items=10, limit=100):
-    m = MagicMock()
+    m = MagicMock(spec=["page", "limit", "total_items", "total_pages"])
     m.page, m.limit, m.total_items, m.total_pages = page, limit, total_items, total_pages
     return m
 
@@ -64,9 +64,21 @@ def _paginated(data, page=1, total_pages=1):
     return r
 
 
+def _cursor_paginated(data, cursor=None):
+    """Build a cursor-based paginated response (Langfuse v4+ observations API)."""
+    r = MagicMock(spec=["data", "meta"])
+    m = MagicMock(spec=["cursor"])
+    m.cursor = cursor
+    r.data, r.meta = data, m
+    return r
+
+
 @pytest.fixture
 def mock_client():
-    return MagicMock()
+    m = MagicMock()
+    # Simulate Langfuse v2/v3 SDK (no legacy API) so tests use observations.get_many
+    m.api.legacy = None
+    return m
 
 
 @pytest.fixture
@@ -240,6 +252,47 @@ class TestGetEvaluationData:
             ),
         ]
         assert len(provider.get_evaluation_data("s1")["trajectory"].traces[0].spans) == 2
+
+    def test_cursor_pagination_observations(self, provider, mock_client):
+        """Langfuse v4+ uses cursor-based pagination via legacy.observations_v1."""
+        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
+        # Simulate v4 SDK: legacy.observations_v1 exists
+        legacy = MagicMock()
+        mock_client.api.legacy = legacy
+        legacy.observations_v1.get_many.side_effect = [
+            _cursor_paginated(
+                [_obs("o1", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a")],
+                cursor="cursor-page2",
+            ),
+            _cursor_paginated(
+                [
+                    _obs(
+                        "o2",
+                        "t1",
+                        "GENERATION",
+                        name="chat",
+                        obs_input=[{"role": "user", "content": [{"text": "q"}]}],
+                        obs_output={"role": "assistant", "content": [{"text": "a"}]},
+                    )
+                ],
+                cursor=None,
+            ),
+        ]
+        spans = provider.get_evaluation_data("s1")["trajectory"].traces[0].spans
+        assert len(spans) == 2
+
+    def test_cursor_pagination_single_page(self, provider, mock_client):
+        """Cursor-based pagination with a single page (cursor=None from the start)."""
+        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
+        # Simulate v4 SDK: legacy.observations_v1 exists
+        legacy = MagicMock()
+        mock_client.api.legacy = legacy
+        legacy.observations_v1.get_many.return_value = _cursor_paginated(
+            [_obs("o1", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a")],
+            cursor=None,
+        )
+        spans = provider.get_evaluation_data("s1")["trajectory"].traces[0].spans
+        assert len(spans) == 1
 
     def test_wraps_api_error(self, provider, mock_client):
         mock_client.api.trace.list.side_effect = Exception("Connection refused")
@@ -584,3 +637,298 @@ class TestExtractOutputToolUse:
             ],
         )
         assert result["output"] == "agent says this"
+
+
+# --- LangChain framework support via obs.type routing ---
+
+
+class TestLangChainToolType:
+    """TOOL-type observations from LangChain via Langfuse."""
+
+    def _get_spans(self, provider, mock_client, observations):
+        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
+        mock_client.api.observations.get_many.return_value = _paginated(observations)
+        return provider.get_evaluation_data("s1")["trajectory"].traces[0].spans
+
+    def test_tool_type_produces_tool_execution_span(self, provider, mock_client):
+        """obs.type == 'TOOL' is routed to ToolExecutionSpan."""
+        spans = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs("o-tool", "t1", "TOOL", name="add_numbers", obs_input={"a": 2, "b": 3}, obs_output="5"),
+                _obs("o-agent", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a"),
+            ],
+        )
+        tools = [s for s in spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tools) == 1
+        assert tools[0].tool_call.name == "add_numbers"
+        assert tools[0].tool_call.arguments == {"a": 2, "b": 3}
+        assert tools[0].tool_result.content == "5"
+
+    def test_tool_type_with_dict_output(self, provider, mock_client):
+        """TOOL with dict output parses result/status correctly."""
+        spans = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs(
+                    "o-tool",
+                    "t1",
+                    "TOOL",
+                    name="search",
+                    obs_input={"query": "weather"},
+                    obs_output={"result": "Sunny", "status": "success"},
+                ),
+                _obs("o-agent", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a"),
+            ],
+        )
+        tools = [s for s in spans if isinstance(s, ToolExecutionSpan)]
+        assert tools[0].tool_result.content == "Sunny"
+        assert tools[0].tool_result.error is None
+
+    def test_tool_type_with_string_input(self, provider, mock_client):
+        """TOOL with string input wraps it in a dict."""
+        spans = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs("o-tool", "t1", "TOOL", name="echo", obs_input="hello", obs_output="hello"),
+                _obs("o-agent", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a"),
+            ],
+        )
+        tools = [s for s in spans if isinstance(s, ToolExecutionSpan)]
+        assert tools[0].tool_call.name == "echo"
+        assert tools[0].tool_call.arguments == {"input": "hello"}
+
+
+class TestLangChainChainType:
+    """CHAIN-type observations from LangChain via Langfuse."""
+
+    def _get_spans(self, provider, mock_client, observations):
+        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
+        mock_client.api.observations.get_many.return_value = _paginated(observations)
+        return provider.get_evaluation_data("s1")["trajectory"].traces[0].spans
+
+    def test_root_chain_produces_agent_invocation(self, provider, mock_client):
+        """Root CHAIN (parent_observation_id=None) → AgentInvocationSpan."""
+        spans = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs(
+                    "o-chain",
+                    "t1",
+                    "CHAIN",
+                    name="AgentExecutor",
+                    obs_input={"input": "What is 2+2?"},
+                    obs_output={"output": "4"},
+                    parent_observation_id=None,
+                ),
+            ],
+        )
+        agents = [s for s in spans if isinstance(s, AgentInvocationSpan)]
+        assert len(agents) == 1
+        assert agents[0].user_prompt == "What is 2+2?"
+        assert agents[0].agent_response == "4"
+
+    def test_child_chain_is_skipped(self, provider, mock_client):
+        """Non-root CHAIN (has parent) is skipped."""
+        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
+        mock_client.api.observations.get_many.return_value = _paginated(
+            [
+                _obs(
+                    "o-child",
+                    "t1",
+                    "CHAIN",
+                    name="SubChain",
+                    obs_input={"input": "sub"},
+                    obs_output={"output": "sub-out"},
+                    parent_observation_id="o-parent",
+                ),
+                _obs("o-agent", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a"),
+            ],
+        )
+        spans = provider.get_evaluation_data("s1")["trajectory"].traces[0].spans
+        assert len(spans) == 1
+        assert isinstance(spans[0], AgentInvocationSpan)
+
+    def test_chain_with_messages_input(self, provider, mock_client):
+        """CHAIN with LangChain messages-style input extracts human message."""
+        spans = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs(
+                    "o-chain",
+                    "t1",
+                    "CHAIN",
+                    name="LangGraph",
+                    obs_input={"messages": [{"type": "human", "content": "Tell me a joke"}]},
+                    obs_output={"output": "Why did the chicken cross the road?"},
+                    parent_observation_id=None,
+                ),
+            ],
+        )
+        agents = [s for s in spans if isinstance(s, AgentInvocationSpan)]
+        assert agents[0].user_prompt == "Tell me a joke"
+
+    def test_chain_with_content_output(self, provider, mock_client):
+        """CHAIN with content-style output."""
+        spans = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs(
+                    "o-chain",
+                    "t1",
+                    "CHAIN",
+                    name="LangGraph",
+                    obs_input={"input": "Hi"},
+                    obs_output={"content": "Hello!"},
+                    parent_observation_id=None,
+                ),
+            ],
+        )
+        agents = [s for s in spans if isinstance(s, AgentInvocationSpan)]
+        assert agents[0].agent_response == "Hello!"
+
+
+class TestLangChainEndToEnd:
+    """Full LangChain agent trace: CHAIN + GENERATION + TOOL."""
+
+    def test_full_langchain_trace(self, provider, mock_client):
+        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
+        mock_client.api.observations.get_many.return_value = _paginated(
+            [
+                _obs(
+                    "o-chain",
+                    "t1",
+                    "CHAIN",
+                    name="AgentExecutor",
+                    obs_input={"input": "What is the weather?"},
+                    obs_output={"output": "Sunny, 72F."},
+                    parent_observation_id=None,
+                ),
+                _obs(
+                    "o-gen",
+                    "t1",
+                    "GENERATION",
+                    name="ChatOpenAI",
+                    obs_input=[{"role": "user", "content": [{"text": "What is the weather?"}]}],
+                    obs_output={"role": "assistant", "content": [{"text": "Let me check."}]},
+                    parent_observation_id="o-chain",
+                ),
+                _obs(
+                    "o-tool",
+                    "t1",
+                    "TOOL",
+                    name="get_weather",
+                    obs_input={"location": "SF"},
+                    obs_output="Sunny, 72F",
+                    parent_observation_id="o-chain",
+                ),
+            ],
+        )
+        result = provider.get_evaluation_data("s1")
+        spans = result["trajectory"].traces[0].spans
+
+        agent_spans = [s for s in spans if isinstance(s, AgentInvocationSpan)]
+        inference_spans = [s for s in spans if isinstance(s, InferenceSpan)]
+        tool_spans = [s for s in spans if isinstance(s, ToolExecutionSpan)]
+
+        assert len(agent_spans) == 1
+        assert len(inference_spans) == 1
+        assert len(tool_spans) == 1
+
+        assert agent_spans[0].user_prompt == "What is the weather?"
+        assert agent_spans[0].agent_response == "Sunny, 72F."
+        assert tool_spans[0].tool_call.name == "get_weather"
+        assert tool_spans[0].tool_result.content == "Sunny, 72F"
+        assert result["output"] == "Sunny, 72F."
+
+
+class TestStrandsOtelViaLangfuse:
+    """Strands message-list format arriving via OTEL→Langfuse OTLP endpoint."""
+
+    def _get_spans(self, provider, mock_client, observations):
+        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
+        mock_client.api.observations.get_many.return_value = _paginated(observations)
+        return provider.get_evaluation_data("s1")["trajectory"].traces[0].spans
+
+    def test_strands_message_list_input(self, provider, mock_client):
+        """Strands invoke_agent with message-list input extracts user text."""
+        spans = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs(
+                    "o1",
+                    "t1",
+                    "SPAN",
+                    name="invoke_agent my_agent",
+                    obs_input=[{"role": "user", "content": '[{"text": "What\'s the weather?"}]'}],
+                    obs_output="Sunny and warm!",
+                ),
+            ],
+        )
+        agents = [s for s in spans if isinstance(s, AgentInvocationSpan)]
+        assert len(agents) == 1
+        assert agents[0].user_prompt == "What's the weather?"
+
+    def test_strands_message_list_input_plain_string_content(self, provider, mock_client):
+        """Strands message-list where content is a plain string (not JSON)."""
+        spans = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs(
+                    "o1",
+                    "t1",
+                    "SPAN",
+                    name="invoke_agent my_agent",
+                    obs_input=[{"role": "user", "content": "Hello there"}],
+                    obs_output="Hi!",
+                ),
+            ],
+        )
+        agents = [s for s in spans if isinstance(s, AgentInvocationSpan)]
+        assert agents[0].user_prompt == "Hello there"
+
+    def test_strands_message_list_output(self, provider, mock_client):
+        """Strands invoke_agent with message-list output extracts assistant text."""
+        spans = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs(
+                    "o1",
+                    "t1",
+                    "SPAN",
+                    name="invoke_agent my_agent",
+                    obs_input=[{"text": "Hello"}],
+                    obs_output=[{"role": "assistant", "content": '[{"text": "Hi there!"}]'}],
+                ),
+            ],
+        )
+        agents = [s for s in spans if isinstance(s, AgentInvocationSpan)]
+        assert agents[0].agent_response == "Hi there!"
+
+    def test_strands_message_list_content_as_list(self, provider, mock_client):
+        """Strands message-list where content is already a parsed list."""
+        spans = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs(
+                    "o1",
+                    "t1",
+                    "SPAN",
+                    name="invoke_agent my_agent",
+                    obs_input=[{"role": "user", "content": [{"text": "How are you?"}]}],
+                    obs_output="I'm fine!",
+                ),
+            ],
+        )
+        agents = [s for s in spans if isinstance(s, AgentInvocationSpan)]
+        assert agents[0].user_prompt == "How are you?"

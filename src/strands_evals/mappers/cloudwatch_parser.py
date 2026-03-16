@@ -183,18 +183,24 @@ class CloudWatchLogsParser:
 
     def _create_synthetic_span(self, span_id: str, events: list[dict], first_event: dict) -> dict:
         """Create a synthetic span from events when no span records exist."""
-        # Get trace_id from the raw logs (need to find matching record)
+        # Get trace_id and scope from the raw logs
         trace_id = ""
+        scope_name = ""
         for record in self.raw_logs:
             if record.get("spanId") == span_id or record.get("span_id") == span_id:
-                trace_id = record.get("traceId") or record.get("trace_id", "")
-                break
+                trace_id = trace_id or record.get("traceId") or record.get("trace_id", "")
+                # Prefer scope.name from raw record if available
+                raw_scope = record.get("scope", {})
+                if isinstance(raw_scope, dict) and raw_scope.get("name"):
+                    scope_name = raw_scope["name"]
 
-        # Get scope from event name
-        event_name = first_event.get("event_name", "")
-        scope_name = first_event.get("attributes", {}).get("event.name", event_name)
+        # Fall back to event name as scope hint
+        if not scope_name:
+            event_name = first_event.get("event_name", "")
+            scope_name = first_event.get("attributes", {}).get("event.name", event_name)
 
         # Use event timestamp for span times
+        event_name = first_event.get("event_name", "")
         timestamp = first_event.get("timestamp", 0)
 
         return {
