@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from strands_evals.mappers import LangChainOtelSessionMapper, OpenInferenceSessionMapper
 from strands_evals.providers.cloudwatch_provider import CloudWatchProvider
 from strands_evals.providers.exceptions import (
     ProviderError,
@@ -142,7 +143,7 @@ def _setup_query_results(mock_logs_client, records):
 
 
 class TestExtractOutput:
-    def test_extract_output_from_agent_response(self, provider):
+    def test_extract_output_from_agent_response(self, provider, mock_logs_client):
         """_extract_output returns last agent response text."""
         records = [
             make_log_record(
@@ -160,9 +161,9 @@ class TestExtractOutput:
                 time_nano=2000,
             ),
         ]
-        session = provider._mapper.map_to_session(records, "sess-1")
-        output = provider._extract_output(session)
-        assert output == "Final response"
+        _setup_query_results(mock_logs_client, records)
+        result = provider.get_evaluation_data("sess-1")
+        assert result["output"] == "Final response"
 
 
 # --- CW Logs Insights polling ---
@@ -350,3 +351,80 @@ class TestGetEvaluationData:
         ]
         _setup_query_results(mock_logs_client, records)
         assert provider.get_evaluation_data("sess-1")["output"] == "last"
+
+
+# --- Mapper auto-detection ---
+
+
+class TestMapperAutoDetection:
+    def test_default_mapper_is_none(self, mock_logs_client):
+        """When no mapper is provided, auto-detection is used."""
+        with patch("boto3.client", return_value=mock_logs_client):
+            p = CloudWatchProvider(log_group="/test/group")
+            assert p._mapper is None
+
+    def test_explicit_mapper_override(self, mock_logs_client):
+        """User can provide a specific mapper to skip auto-detection."""
+        with patch("boto3.client", return_value=mock_logs_client):
+            mapper = LangChainOtelSessionMapper()
+            p = CloudWatchProvider(log_group="/test/group", mapper=mapper)
+            assert p._mapper is mapper
+
+    def test_auto_detects_strands_mapper_for_strands_spans(self, mock_logs_client):
+        """Strands body-format spans auto-detect to CloudWatchSessionMapper."""
+        records = [
+            make_log_record(
+                trace_id="t1",
+                input_messages=[make_user_message("Hi")],
+                output_messages=[make_assistant_text_message("Hello!")],
+            )
+        ]
+        _setup_query_results(mock_logs_client, records)
+
+        with patch("boto3.client", return_value=mock_logs_client):
+            p = CloudWatchProvider(log_group="/test/group")
+            result = p.get_evaluation_data("sess-1")
+            assert isinstance(result["trajectory"], Session)
+            assert result["output"] == "Hello!"
+
+    def test_auto_detects_langchain_otel_mapper(self, mock_logs_client):
+        """Spans with opentelemetry.instrumentation.langchain scope trigger LangChainOtelSessionMapper."""
+        span = {
+            "trace_id": "t1",
+            "span_id": "s1",
+            "scope": {"name": "opentelemetry.instrumentation.langchain", "version": "0.1"},
+            "attributes": {"traceloop.span.kind": "workflow"},
+            "span_events": [],
+        }
+        _setup_query_results(mock_logs_client, [span])
+
+        with patch("boto3.client", return_value=mock_logs_client):
+            p = CloudWatchProvider(log_group="/test/group")
+            with patch.object(LangChainOtelSessionMapper, "map_to_session") as mock_map:
+                mock_map.return_value = Session(session_id="sess-1", traces=[])
+                try:
+                    p.get_evaluation_data("sess-1")
+                except Exception:
+                    pass
+                mock_map.assert_called_once()
+
+    def test_auto_detects_openinference_mapper(self, mock_logs_client):
+        """Spans with openinference.instrumentation.langchain scope trigger OpenInferenceSessionMapper."""
+        span = {
+            "trace_id": "t1",
+            "span_id": "s1",
+            "scope": {"name": "openinference.instrumentation.langchain", "version": "0.1"},
+            "attributes": {"openinference.span.kind": "CHAIN"},
+            "span_events": [],
+        }
+        _setup_query_results(mock_logs_client, [span])
+
+        with patch("boto3.client", return_value=mock_logs_client):
+            p = CloudWatchProvider(log_group="/test/group")
+            with patch.object(OpenInferenceSessionMapper, "map_to_session") as mock_map:
+                mock_map.return_value = Session(session_id="sess-1", traces=[])
+                try:
+                    p.get_evaluation_data("sess-1")
+                except Exception:
+                    pass
+                mock_map.assert_called_once()

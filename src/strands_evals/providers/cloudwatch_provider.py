@@ -9,7 +9,8 @@ from typing import Any
 
 import boto3
 
-from ..mappers.cloudwatch_session_mapper import CloudWatchSessionMapper
+from ..mappers.session_mapper import SessionMapper
+from ..mappers.utils import detect_otel_mapper
 from ..providers.exceptions import ProviderError, SessionNotFoundError
 from ..providers.trace_provider import TraceProvider
 from ..types.evaluation import TaskOutput
@@ -36,6 +37,7 @@ class CloudWatchProvider(TraceProvider):
         agent_name: str | None = None,
         lookback_days: int = 30,
         query_timeout_seconds: float = 60.0,
+        mapper: SessionMapper | None = None,
     ):
         """Initialize the CloudWatch provider.
 
@@ -47,13 +49,20 @@ class CloudWatchProvider(TraceProvider):
 
             from strands_evals.providers import CloudWatchProvider
 
-            # Explicit log group
+            # Explicit log group — auto-detects framework from span scope
             provider = CloudWatchProvider(
                 log_group="/aws/bedrock-agentcore/runtimes/my-agent-abc123-DEFAULT",
             )
 
             # Discover log group from agent name
             provider = CloudWatchProvider(agent_name="my-agent")
+
+            # Override mapper for a specific framework
+            from strands_evals.mappers import LangChainOtelSessionMapper
+            provider = CloudWatchProvider(
+                log_group="/aws/...",
+                mapper=LangChainOtelSessionMapper(),
+            )
 
         Args:
             region: AWS region. Falls back to AWS_REGION / AWS_DEFAULT_REGION env vars.
@@ -63,6 +72,10 @@ class CloudWatchProvider(TraceProvider):
                 `agent_name` must be provided.
             lookback_days: How many days back to search for traces.
             query_timeout_seconds: Maximum seconds to wait for a Logs Insights query.
+            mapper: Optional SessionMapper to use for converting spans to Session.
+                If not provided, the mapper is auto-detected from the span data
+                using ``detect_otel_mapper()``, which inspects ``scope.name``
+                to determine the correct framework mapper.
 
         Raises:
             ProviderError: If neither `log_group` nor `agent_name` is provided,
@@ -84,7 +97,7 @@ class CloudWatchProvider(TraceProvider):
 
         self._lookback_days = lookback_days
         self._query_timeout_seconds = query_timeout_seconds
-        self._mapper = CloudWatchSessionMapper()
+        self._mapper = mapper
 
     def _discover_log_group(self, agent_name: str) -> str:
         """Discover the runtime log group for an agent via describe_log_groups."""
@@ -109,7 +122,8 @@ class CloudWatchProvider(TraceProvider):
         if not span_dicts:
             raise SessionNotFoundError(f"CloudWatch: no spans found for session_id='{session_id}'")
 
-        session = self._mapper.map_to_session(span_dicts, session_id)
+        mapper = self._mapper or detect_otel_mapper(span_dicts)
+        session = mapper.map_to_session(span_dicts, session_id)
 
         if not session.traces:
             raise SessionNotFoundError(
