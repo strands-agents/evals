@@ -7,6 +7,7 @@ build
 .venv
 .mypy_cache
 .ruff_cache
+.claude
 *.bak
 .vscode
 dist
@@ -16,4 +17,3 @@ report_files
 .venv
 *.DS_Store*
 uv.lock
-.claude
