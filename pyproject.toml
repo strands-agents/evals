@@ -134,6 +134,7 @@ select = [
 
 [tool.ruff.lint.per-file-ignores]
 "src/strands_evals/evaluators/prompt_templates/*" = ["E501"] # line-length
+"src/strands_evals/detectors/prompt_templates/*" = ["E501"] # line-length
 "src/strands_evals/generators/prompt_template/*" = ["E501"] # line-length
 
 [tool.mypy]
