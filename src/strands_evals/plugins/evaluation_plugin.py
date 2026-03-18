@@ -85,16 +85,9 @@ class EvaluationPlugin(Plugin):
                 attempt + 1,
                 all_pass,
             )
-            print("begin retrying============================")
-            print('result')
-            print(result)
-            print('outputs')
-            print(outputs)
 
             expected_output = evaluation_data.expected_output
             suggestion = self._suggest_improvements(prompt, str(result), outputs, agent.system_prompt, expected_output)
-            print('suggestion')
-            print(suggestion)
             agent.system_prompt = suggestion
 
         agent.system_prompt = original_system_prompt
