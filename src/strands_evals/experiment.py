@@ -179,6 +179,146 @@ class Experiment(Generic[InputT, OutputT]):
         evaluator_data[eval_name]["reasons"].append(reason)
         evaluator_data[eval_name]["detailed_results"].append(detailed_results)
 
+    def _build_reports(self, evaluator_data: dict[str, dict[str, list]]) -> list[EvaluationReport]:
+        """Build EvaluationReport objects from collected evaluator data.
+
+        Args:
+            evaluator_data: Dictionary keyed by evaluator name containing scores, test_passes,
+                cases, reasons, and detailed_results lists.
+
+        Returns:
+            A list of EvaluationReport objects, one per evaluator.
+        """
+        reports = []
+        for evaluator in self._evaluators:
+            eval_name = evaluator.get_type_name()
+            data = evaluator_data[eval_name]
+            scores = data["scores"]
+            report = EvaluationReport(
+                evaluator_name=eval_name,
+                overall_score=sum(scores) / len(scores) if scores else 0,
+                scores=scores,
+                test_passes=data["test_passes"],
+                cases=data["cases"],
+                reasons=data["reasons"],
+                detailed_results=data["detailed_results"],
+            )
+            reports.append(report)
+        return reports
+
+    def _init_evaluator_data(self) -> dict[str, dict[str, list]]:
+        """Initialize the evaluator data dictionary for collecting results."""
+        return {
+            evaluator.get_type_name(): {
+                "scores": [],
+                "test_passes": [],
+                "cases": [],
+                "reasons": [],
+                "detailed_results": [],
+            }
+            for evaluator in self._evaluators
+        }
+
+    def _log_evaluation_to_cloudwatch(
+        self,
+        evaluator: Evaluator,
+        eval_span: Any,
+        evaluation_context: EvaluationData,
+        score: float,
+        reason: str,
+    ):
+        """Log evaluation result to CloudWatch if observability is enabled.
+
+        Args:
+            evaluator: The evaluator that produced the result
+            eval_span: The OpenTelemetry span for this evaluation
+            evaluation_context: The evaluation data being evaluated
+            score: The aggregate evaluation score
+            reason: The aggregate evaluation reason
+        """
+        try:
+            label = _get_label_from_score(evaluator, score)
+        except Exception:
+            label = "UNKNOWN"
+
+        eval_span.set_attributes({"gen_ai.evaluation.score.label": label})
+
+        try:
+            trace_id = format_trace_id(eval_span.get_span_context().trace_id)
+            session_id = (evaluation_context.metadata or {}).get("session_id", "")
+            evaluator_full_name = f"Custom.{evaluator.get_type_name()}"
+            region = os.environ.get("AWS_REGION", "us-east-1")
+            _config_arn = f"arn:aws:strands:{region}::strands-evaluation-empty-config/{self._config_id}"
+            _evaluator_arn = f"arn:aws:strands-evals:::evaluator/{evaluator_full_name}"
+
+            log_data = {
+                "gen_ai.evaluation.name": evaluator_full_name,
+                "gen_ai.evaluation.score.value": str(score),
+                "gen_ai.evaluation.explanation": reason or "",
+                "gen_ai.evaluation.score.label": label,
+                "gen_ai.response.id": trace_id,
+                "aws.bedrock_agentcore.evaluator.rating_scale": "Numerical",
+                "aws.bedrock_agentcore.evaluation_level": evaluator.evaluation_level or "Trace",
+                "event.name": "gen_ai.evaluation.result",
+                "aws.bedrock_agentcore.online_evaluation_config.arn": _config_arn,
+                "aws.bedrock_agentcore.online_evaluation_config.name": "strands-local-evaluation",
+                "aws.bedrock_agentcore.evaluator.arn": _evaluator_arn,
+                "session.id": session_id,
+            }
+
+            agent_observability_enabled = os.environ.get("AGENT_OBSERVABILITY_ENABLED", "")
+            if agent_observability_enabled:
+                _send_to_cloudwatch(
+                    message="gen_ai.evaluation.result",
+                    log_data=log_data,
+                    trace_id=trace_id,
+                    evaluator_name=evaluator_full_name,
+                    score=cast(float, score),
+                    config_id=self._config_id,
+                    label=label,
+                )
+        except Exception as e:
+            logger.debug(f"Skipping CloudWatch logging: {str(e)}")
+
+    def _set_task_span_attributes(self, task_span: Any, evaluation_context: EvaluationData) -> None:
+        """Set standard attributes on a task execution span."""
+        task_span.set_attributes(
+            {
+                "gen_ai.evaluation.data.input": serialize(evaluation_context.input),
+                "gen_ai.evaluation.data.expected_output": serialize(evaluation_context.expected_output),
+                "gen_ai.evaluation.data.actual_output": serialize(evaluation_context.actual_output),
+                "gen_ai.evaluation.data.has_trajectory": evaluation_context.actual_trajectory is not None,
+                "gen_ai.evaluation.data.has_interactions": evaluation_context.actual_interactions is not None,
+            }
+        )
+
+    def _extract_task_error(self, e: Exception, case_name: str) -> str:
+        """Extract error message from a task execution exception and log it."""
+        if isinstance(e, RetryError):
+            original_exception = e.last_attempt.exception()
+            if original_exception is None:
+                original_exception = Exception(f"Task execution failed after {_MAX_RETRY_ATTEMPTS} retries")
+            error_msg = str(original_exception)
+        else:
+            error_msg = str(e)
+        logger.error(f"Task execution failed for case {case_name}: {error_msg}")
+        return error_msg
+
+    def _build_failed_evaluation_data(
+        self, case: Case[InputT, OutputT], error_msg: str
+    ) -> EvaluationData[InputT, OutputT]:
+        """Build an EvaluationData record for a failed task execution."""
+        return EvaluationData(
+            name=case.name,
+            input=case.input,
+            actual_output=None,
+            expected_output=case.expected_output,
+            expected_trajectory=case.expected_trajectory,
+            expected_interactions=case.expected_interactions,
+            expected_environment_state=case.expected_environment_state,
+            metadata={**(case.metadata or {}), "task_error": error_msg},
+        )
+
     def _run_task(
         self, task: Callable[[Case[InputT, OutputT]], OutputT | dict[str, Any]], case: Case[InputT, OutputT]
     ) -> EvaluationData[InputT, OutputT]:
@@ -196,6 +336,7 @@ class Experiment(Generic[InputT, OutputT]):
         if asyncio.iscoroutinefunction(task):
             raise ValueError("Async task is not supported. Please use run_evaluations_async instead.")
 
+        metadata = {**(case.metadata or {}), "session_id": case.session_id}
         evaluation_context = EvaluationData(
             name=case.name,
             input=case.input,
@@ -203,7 +344,7 @@ class Experiment(Generic[InputT, OutputT]):
             expected_trajectory=case.expected_trajectory,
             expected_interactions=case.expected_interactions,
             expected_environment_state=case.expected_environment_state,
-            metadata=case.metadata,
+            metadata=metadata,
         )
         task_output = task(case)
         if isinstance(task_output, dict):  # could be evaluating the trajectory as well
@@ -234,6 +375,7 @@ class Experiment(Generic[InputT, OutputT]):
             An EvaluationData record containing the input and actual output, name, expected output, and metadata.
         """
         # Create evaluation context
+        metadata = {**(case.metadata or {}), "session_id": case.session_id}
         evaluation_context = EvaluationData(
             name=case.name,
             input=case.input,
@@ -241,7 +383,7 @@ class Experiment(Generic[InputT, OutputT]):
             expected_trajectory=case.expected_trajectory,
             expected_interactions=case.expected_interactions,
             expected_environment_state=case.expected_environment_state,
-            metadata=case.metadata,
+            metadata=metadata,
         )
 
         # Handle both async and sync tasks
@@ -265,251 +407,38 @@ class Experiment(Generic[InputT, OutputT]):
 
         return evaluation_context
 
-    async def _worker(self, queue: asyncio.Queue, task: Callable, results: list):
-        """
-        Worker that processes cases from the queue. Run evaluation on the task.
-
-        Args:
-            queue: Queue containing cases to process
-            task: Task function to run on each case
-            results: List to store results
-        """
-        while True:
-            try:
-                case = queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-
-            case_name = case.name or f"case_{len(results)}"
-            trace_id = None
-
-            try:
-
-                @retry(
-                    retry=retry_if_exception(is_throttling_error),
-                    stop=stop_after_attempt(_MAX_RETRY_ATTEMPTS),
-                    wait=wait_exponential(multiplier=_INITIAL_RETRY_DELAY, max=_MAX_RETRY_DELAY),
-                    reraise=True,
-                )
-                async def _run_task_with_retry(task=task, case=case):
-                    return await self._run_task_async(task, case)
-
-                try:
-                    with self._tracer.start_as_current_span(
-                        f"execute_case {case_name}",
-                    ) as case_span:
-                        evaluation_context = await _run_task_with_retry()
-                        case_span.set_attributes(
-                            {
-                                "gen_ai.evaluation.data.input": serialize(evaluation_context.input),
-                                "gen_ai.evaluation.data.expected_output": serialize(evaluation_context.expected_output),
-                                "gen_ai.evaluation.data.actual_output": serialize(evaluation_context.actual_output),
-                                "gen_ai.evaluation.data.has_trajectory": (
-                                    evaluation_context.actual_trajectory is not None
-                                ),
-                                "gen_ai.evaluation.data.has_interactions": (
-                                    evaluation_context.actual_interactions is not None
-                                ),
-                            }
-                        )
-                        trace_id = format_trace_id(case_span.get_span_context().trace_id)
-                except RetryError as e:
-                    # Max retries exceeded
-                    original_exception = e.last_attempt.exception()
-                    if original_exception is None:
-                        original_exception = Exception(f"Task execution failed after {_MAX_RETRY_ATTEMPTS} retries")
-                    logger.error(
-                        f"Max retry attempts ({_MAX_RETRY_ATTEMPTS}) exceeded for task execution "
-                        f"on case {case_name}. Last error: {str(original_exception)}"
-                    )
-                    raise original_exception from e
-
-                # Evaluate with each evaluator
-                evaluator_results = []
-                for evaluator in self._evaluators:
-
-                    @retry(
-                        retry=retry_if_exception(is_throttling_error),
-                        stop=stop_after_attempt(_MAX_RETRY_ATTEMPTS),
-                        wait=wait_exponential(multiplier=_INITIAL_RETRY_DELAY, max=_MAX_RETRY_DELAY),
-                        reraise=True,
-                    )
-                    async def _evaluate_with_retry(evaluator=evaluator, evaluation_context=evaluation_context):
-                        outputs = await evaluator.evaluate_async(evaluation_context)
-                        (score, passed, reason) = evaluator.aggregator(outputs)
-                        return outputs, float(score), passed, reason
-
-                    try:
-                        with self._tracer.start_as_current_span(
-                            f"evaluator {evaluator.get_type_name()}",
-                        ) as eval_span:
-                            (
-                                evaluation_outputs,
-                                aggregate_score,
-                                aggregate_pass,
-                                aggregate_reason,
-                            ) = await _evaluate_with_retry()
-
-                            try:
-                                label = _get_label_from_score(evaluator, aggregate_score)
-                            except Exception:
-                                label = "UNKNOWN"
-
-                            eval_span.set_attributes(
-                                {
-                                    "gen_ai.evaluation.score.label": label,
-                                    "gen_ai.evaluation.score.value": str(aggregate_score),
-                                    "gen_ai.evaluation.test_pass": aggregate_pass,
-                                    "gen_ai.evaluation.explanation": aggregate_reason or "",
-                                }
-                            )
-
-                            evaluator_results.append(
-                                {
-                                    "evaluator_name": evaluator.get_type_name(),
-                                    "test_pass": aggregate_pass,
-                                    "score": aggregate_score,
-                                    "reason": aggregate_reason or "",
-                                    "detailed_results": evaluation_outputs,
-                                }
-                            )
-
-                            # CloudWatch logging for this evaluator
-                            try:
-                                evaluator_full_name = f"Custom.{evaluator.get_type_name()}"
-                                region = os.environ.get("AWS_REGION", "us-east-1")
-                                _config_arn = (
-                                    f"arn:aws:strands:{region}::strands-evaluation-empty-config/{self._config_id}"
-                                )
-                                _evaluator_arn = f"arn:aws:strands-evals:::evaluator/{evaluator_full_name}"
-
-                                log_data = {
-                                    "gen_ai.evaluation.name": evaluator_full_name,
-                                    "gen_ai.evaluation.score.value": str(aggregate_score),
-                                    "gen_ai.evaluation.explanation": aggregate_reason or "",
-                                    "gen_ai.evaluation.score.label": label,
-                                    "gen_ai.response.id": trace_id,
-                                    "aws.bedrock_agentcore.evaluator.rating_scale": "Numerical",
-                                    "aws.bedrock_agentcore.evaluation_level": evaluator.evaluation_level or "Trace",
-                                    "event.name": "gen_ai.evaluation.result",
-                                    "aws.bedrock_agentcore.online_evaluation_config.arn": _config_arn,
-                                    "aws.bedrock_agentcore.online_evaluation_config.name": "strands-local-evaluation",
-                                    "aws.bedrock_agentcore.evaluator.arn": _evaluator_arn,
-                                    "session.id": case.session_id,
-                                }
-
-                                agent_observability_enabled = os.environ.get("AGENT_OBSERVABILITY_ENABLED", "")
-                                if agent_observability_enabled:
-                                    _send_to_cloudwatch(
-                                        message="gen_ai.evaluation.result",
-                                        log_data=log_data,
-                                        trace_id=trace_id,
-                                        evaluator_name=evaluator_full_name,
-                                        score=cast(float, aggregate_score),
-                                        config_id=self._config_id,
-                                        label=label,
-                                    )
-                            except Exception as e:
-                                logger.debug(f"Skipping CloudWatch logging: {str(e)}")
-
-                    except RetryError as e:
-                        # Max retries exceeded
-                        original_exception = e.last_attempt.exception()
-                        if original_exception is None:
-                            original_exception = Exception(
-                                f"Evaluator {evaluator.get_type_name()} failed after {_MAX_RETRY_ATTEMPTS} retries"
-                            )
-                        logger.error(
-                            f"Max retry attempts ({_MAX_RETRY_ATTEMPTS}) exceeded for evaluator "
-                            f"{evaluator.get_type_name()} on case {case_name}. Last error: {str(original_exception)}"
-                        )
-                        evaluator_results.append(
-                            {
-                                "evaluator_name": evaluator.get_type_name(),
-                                "test_pass": False,
-                                "score": 0,
-                                "reason": f"Evaluator error: {str(original_exception)}",
-                                "detailed_results": [],
-                            }
-                        )
-                    except Exception as e:
-                        # Catch non-throttling errors and record as failure (error isolation)
-                        evaluator_results.append(
-                            {
-                                "evaluator_name": evaluator.get_type_name(),
-                                "test_pass": False,
-                                "score": 0,
-                                "reason": f"Evaluator error: {str(e)}",
-                                "detailed_results": [],
-                            }
-                        )
-
-                # Store results
-                results.append(
-                    {
-                        "case": evaluation_context.model_dump(),
-                        "evaluator_results": evaluator_results,
-                    }
-                )
-
-            except Exception as e:
-                # Handle task execution errors
-                evaluator_results = []
-                for evaluator in self._evaluators:
-                    evaluator_results.append(
-                        {
-                            "evaluator_name": evaluator.get_type_name(),
-                            "test_pass": False,
-                            "score": 0,
-                            "reason": f"An error occurred: {str(e)}",
-                            "detailed_results": [],
-                        }
-                    )
-                results.append(
-                    {
-                        "case": case.model_dump(),
-                        "evaluator_results": evaluator_results,
-                    }
-                )
-            finally:
-                queue.task_done()
-
-    def run_evaluations(
+    def run_tasks(
         self, task: Callable[[Case[InputT, OutputT]], OutputT | dict[str, Any]]
-    ) -> list[EvaluationReport]:
-        """
-        Run the evaluations for all of the test cases with all evaluators.
+    ) -> list[EvaluationData[InputT, OutputT]]:
+        """Run the task against all cases and return the evaluation data.
+
+        Executes the task function against each case with retry logic for throttling errors,
+        without running any evaluators. The returned EvaluationData can be passed to
+        run_evaluators() later, enabling reuse of task results across multiple evaluation runs.
 
         Args:
-            task: The task to run the test case on. This function should take in InputT and returns either
-                OutputT or {"output": OutputT, "trajectory": ...}.
+            task: The task to run on each case. Takes a Case and returns either
+                OutputT or {"output": OutputT, "trajectory": ..., "interactions": ..., "environment_state": ...}.
 
-        Return:
-            A list of EvaluationReport objects, one for each evaluator, containing the overall score,
-            individual case results, and basic feedback for each test case.
+        Returns:
+            A list of EvaluationData objects, one per case. On task failure, the corresponding
+            EvaluationData will have actual_output=None and the error in metadata["task_error"].
         """
-        evaluator_data: dict[str, dict[str, list]] = {
-            evaluator.get_type_name(): {
-                "scores": [],
-                "test_passes": [],
-                "cases": [],
-                "reasons": [],
-                "detailed_results": [],
-            }
-            for evaluator in self._evaluators
-        }
+        if asyncio.iscoroutinefunction(task):
+            raise ValueError("Async task is not supported. Please use run_tasks_async instead.")
+
+        results: list[EvaluationData[InputT, OutputT]] = []
 
         for case in self._cases:
-            case_name = case.name or f"case_{len(evaluator_data[self._evaluators[0].get_type_name()]['cases'])}"
+            case_name = case.name or f"case_{len(results)}"
 
             with self._tracer.start_as_current_span(
-                f"eval_case {case_name}",
+                f"run_task {case_name}",
                 attributes={
                     "gen_ai.evaluation.case.name": case_name,
                     "gen_ai.evaluation.case.input": serialize(case.input),
                 },
-            ) as case_span:
-                # Task execution with retry logic
+            ) as run_task_span:
                 @retry(
                     retry=retry_if_exception(is_throttling_error),
                     stop=stop_after_attempt(_MAX_RETRY_ATTEMPTS),
@@ -528,61 +457,150 @@ class Experiment(Generic[InputT, OutputT]):
                         },
                     ) as task_span:
                         evaluation_context = _run_task_with_retry()
-                        task_span.set_attributes(
-                            {
-                                "gen_ai.evaluation.data.input": serialize(evaluation_context.input),
-                                "gen_ai.evaluation.data.expected_output": serialize(evaluation_context.expected_output),
-                                "gen_ai.evaluation.data.actual_output": serialize(evaluation_context.actual_output),
-                                "gen_ai.evaluation.data.has_trajectory": (
-                                    evaluation_context.actual_trajectory is not None
-                                ),
-                                "gen_ai.evaluation.data.has_interactions": (
-                                    evaluation_context.actual_interactions is not None
-                                ),
-                            }
-                        )
-                except RetryError as e:
-                    # Max retries exceeded
-                    original_exception = e.last_attempt.exception()
-                    if original_exception is None:
-                        original_exception = Exception(f"Task execution failed after {_MAX_RETRY_ATTEMPTS} retries")
-                    logger.error(
-                        f"Max retry attempts ({_MAX_RETRY_ATTEMPTS}) exceeded for task execution "
-                        f"on case {case_name}. Last error: {str(original_exception)}"
-                    )
-                    case_span.record_exception(original_exception)
-                    for evaluator in self._evaluators:
-                        eval_name = evaluator.get_type_name()
-                        self._record_evaluator_result(
-                            evaluator_data=evaluator_data,
-                            eval_name=eval_name,
-                            case_data=case.model_dump(),
-                            test_pass=False,
-                            score=0,
-                            reason=f"Task execution error: {str(original_exception)}",
-                            detailed_results=[],
-                        )
-                    continue
-                except Exception as e:
-                    case_span.record_exception(e)
-                    for evaluator in self._evaluators:
-                        eval_name = evaluator.get_type_name()
-                        self._record_evaluator_result(
-                            evaluator_data=evaluator_data,
-                            eval_name=eval_name,
-                            case_data=case.model_dump(),
-                            test_pass=False,
-                            score=0,
-                            reason=f"Task execution error: {str(e)}",
-                            detailed_results=[],
-                        )
-                    continue
+                        self._set_task_span_attributes(task_span, evaluation_context)
+                        results.append(evaluation_context)
+                except (RetryError, Exception) as e:
+                    error_msg = self._extract_task_error(e, case_name)
+                    run_task_span.record_exception(e)
+                    results.append(self._build_failed_evaluation_data(case, error_msg))
 
-                # Evaluate with each evaluator using the same task output
+        return results
+
+    async def _task_worker(
+        self,
+        queue: asyncio.Queue,
+        task: Callable,
+        results: list[EvaluationData[InputT, OutputT]],
+    ):
+        """Worker that processes cases from the queue for task execution only.
+
+        Args:
+            queue: Queue containing cases to process
+            task: Task function to run on each case
+            results: List to store EvaluationData results
+        """
+        while True:
+            try:
+                case = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+            case_name = case.name or f"case_{len(results)}"
+
+            try:
+                with self._tracer.start_as_current_span(
+                    f"run_task {case_name}",
+                    attributes={
+                        "gen_ai.evaluation.case.name": case_name,
+                        "gen_ai.evaluation.case.input": serialize(case.input),
+                    },
+                ) as run_task_span:
+
+                    @retry(
+                        retry=retry_if_exception(is_throttling_error),
+                        stop=stop_after_attempt(_MAX_RETRY_ATTEMPTS),
+                        wait=wait_exponential(multiplier=_INITIAL_RETRY_DELAY, max=_MAX_RETRY_DELAY),
+                        reraise=True,
+                    )
+                    async def _run_task_with_retry(task=task, case=case):
+                        return await self._run_task_async(task, case)
+
+                    try:
+                        with self._tracer.start_as_current_span(
+                            "task_execution",
+                            attributes={
+                                "gen_ai.evaluation.task.type": "agent_task",
+                                "gen_ai.evaluation.case.name": case_name,
+                            },
+                        ) as task_span:
+                            evaluation_context = await _run_task_with_retry()
+                            self._set_task_span_attributes(task_span, evaluation_context)
+                            results.append(evaluation_context)
+                    except (RetryError, Exception) as e:
+                        error_msg = self._extract_task_error(e, case_name)
+                        run_task_span.record_exception(e)
+                        results.append(self._build_failed_evaluation_data(case, error_msg))
+            finally:
+                queue.task_done()
+
+    async def run_tasks_async(
+        self,
+        task: Callable[[Case[InputT, OutputT]], OutputT | dict[str, Any]],
+        max_workers: int = 10,
+    ) -> list[EvaluationData[InputT, OutputT]]:
+        """Run the task against all cases asynchronously and return the evaluation data.
+
+        Args:
+            task: The task to run on each case. Can be sync or async.
+            max_workers: Maximum number of parallel workers (default: 10)
+
+        Returns:
+            A list of EvaluationData objects, one per case. On task failure, the corresponding
+            EvaluationData will have actual_output=None and the error in metadata["task_error"].
+        """
+        queue: asyncio.Queue[Case[InputT, OutputT]] = asyncio.Queue()
+        results: list[EvaluationData[InputT, OutputT]] = []
+
+        for case in self._cases:
+            queue.put_nowait(case)
+
+        num_workers = min(max_workers, len(self._cases))
+
+        workers = [asyncio.create_task(self._task_worker(queue, task, results)) for _ in range(num_workers)]
+
+        await queue.join()
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+
+        return results
+
+    def run_evaluators(
+        self, evaluation_data: list[EvaluationData[InputT, OutputT]]
+    ) -> list[EvaluationReport]:
+        """Run evaluators on pre-computed evaluation data.
+
+        Evaluates each EvaluationData item with all configured evaluators, without executing
+        any task functions. Use with run_tasks() to separate task execution from evaluation.
+
+        Args:
+            evaluation_data: Pre-computed evaluation data, e.g. from run_tasks() or deserialized
+                from a previous run.
+
+        Returns:
+            A list of EvaluationReport objects, one per evaluator.
+        """
+        evaluator_data = self._init_evaluator_data()
+
+        for evaluation_context in evaluation_data:
+            first_eval_name = self._evaluators[0].get_type_name()
+            case_name = evaluation_context.name or f"case_{len(evaluator_data[first_eval_name]['cases'])}"
+
+            # If task execution failed, record failure for all evaluators without running them
+            task_error = (evaluation_context.metadata or {}).get("task_error")
+            if task_error:
+                for evaluator in self._evaluators:
+                    self._record_evaluator_result(
+                        evaluator_data=evaluator_data,
+                        eval_name=evaluator.get_type_name(),
+                        case_data=evaluation_context.model_dump(),
+                        test_pass=False,
+                        score=0,
+                        reason=f"Task execution error: {task_error}",
+                        detailed_results=[],
+                    )
+                continue
+
+            with self._tracer.start_as_current_span(
+                f"eval_case {case_name}",
+                attributes={
+                    "gen_ai.evaluation.case.name": case_name,
+                    "gen_ai.evaluation.case.input": serialize(evaluation_context.input),
+                },
+            ):
                 for evaluator in self._evaluators:
                     eval_name = evaluator.get_type_name()
 
-                    # Evaluator execution with retry logic
                     @retry(
                         retry=retry_if_exception(is_throttling_error),
                         stop=stop_after_attempt(_MAX_RETRY_ATTEMPTS),
@@ -607,7 +625,7 @@ class Experiment(Generic[InputT, OutputT]):
                             )
                             eval_span.set_attributes(
                                 {
-                                    "gen_ai.evaluation.score.value": aggregate_score,
+                                    "gen_ai.evaluation.score.value": str(aggregate_score),
                                     "gen_ai.evaluation.test_pass": aggregate_pass,
                                     "gen_ai.evaluation.explanation": aggregate_reason or "",
                                 }
@@ -623,7 +641,6 @@ class Experiment(Generic[InputT, OutputT]):
                                 detailed_results=evaluation_outputs,
                             )
                     except RetryError as e:
-                        # Max retries exceeded
                         original_exception = e.last_attempt.exception()
                         if original_exception is None:
                             original_exception = Exception(
@@ -653,45 +670,184 @@ class Experiment(Generic[InputT, OutputT]):
                             detailed_results=[],
                         )
 
-        reports = []
-        for evaluator in self._evaluators:
-            eval_name = evaluator.get_type_name()
-            data = evaluator_data[eval_name]
-            report = EvaluationReport(
-                evaluator_name=eval_name,
-                overall_score=sum(data["scores"]) / len(data["scores"]) if len(data["scores"]) else 0,
-                scores=data["scores"],
-                test_passes=data["test_passes"],
-                cases=data["cases"],
-                reasons=data["reasons"],
-                detailed_results=data["detailed_results"],
-            )
-            reports.append(report)
+        return self._build_reports(evaluator_data)
 
-        return reports
-
-    async def run_evaluations_async(self, task: Callable, max_workers: int = 10) -> list[EvaluationReport]:
-        """
-        Run evaluations asynchronously using a queue for parallel processing.
+    async def _evaluator_worker(
+        self,
+        queue: asyncio.Queue,
+        results: list[dict],
+    ):
+        """Worker that processes EvaluationData from the queue for evaluation only.
 
         Args:
-            task: The task function to run on each case. This function should take in InputT and returns
-                either OutputT or {"output": OutputT, "trajectory": ...}. The task can either run
-                synchronously or asynchronously.
+            queue: Queue containing EvaluationData to evaluate
+            results: List to store per-case evaluator results
+        """
+        while True:
+            try:
+                evaluation_context = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+            case_name = evaluation_context.name or f"case_{len(results)}"
+
+            # If task execution failed, record failure for all evaluators
+            task_error = (evaluation_context.metadata or {}).get("task_error")
+            if task_error:
+                evaluator_results = []
+                for evaluator in self._evaluators:
+                    evaluator_results.append(
+                        {
+                            "evaluator_name": evaluator.get_type_name(),
+                            "test_pass": False,
+                            "score": 0,
+                            "reason": f"Task execution error: {task_error}",
+                            "detailed_results": [],
+                        }
+                    )
+                results.append(
+                    {
+                        "case": evaluation_context.model_dump(),
+                        "evaluator_results": evaluator_results,
+                    }
+                )
+                queue.task_done()
+                continue
+
+            try:
+                evaluator_results = []
+                with self._tracer.start_as_current_span(
+                    f"eval_case {case_name}",
+                    attributes={
+                        "gen_ai.evaluation.case.name": case_name,
+                        "gen_ai.evaluation.case.input": serialize(evaluation_context.input),
+                    },
+                ) as case_span:
+                    for evaluator in self._evaluators:
+
+                        @retry(
+                            retry=retry_if_exception(is_throttling_error),
+                            stop=stop_after_attempt(_MAX_RETRY_ATTEMPTS),
+                            wait=wait_exponential(multiplier=_INITIAL_RETRY_DELAY, max=_MAX_RETRY_DELAY),
+                            reraise=True,
+                        )
+                        async def _evaluate_with_retry(evaluator=evaluator, evaluation_context=evaluation_context):
+                            outputs = await evaluator.evaluate_async(evaluation_context)
+                            (score, passed, reason) = evaluator.aggregator(outputs)
+                            return outputs, float(score), passed, reason
+
+                        try:
+                            with self._tracer.start_as_current_span(
+                                f"evaluator {evaluator.get_type_name()}",
+                                attributes={
+                                    "gen_ai.evaluation.name": evaluator.get_type_name(),
+                                    "gen_ai.evaluation.case.name": case_name,
+                                },
+                            ) as eval_span:
+                                (
+                                    evaluation_outputs,
+                                    aggregate_score,
+                                    aggregate_pass,
+                                    aggregate_reason,
+                                ) = await _evaluate_with_retry()
+
+                                try:
+                                    label = _get_label_from_score(evaluator, aggregate_score)
+                                except Exception:
+                                    label = "UNKNOWN"
+
+                                eval_span.set_attributes(
+                                    {
+                                        "gen_ai.evaluation.score.label": label,
+                                        "gen_ai.evaluation.score.value": str(aggregate_score),
+                                        "gen_ai.evaluation.test_pass": aggregate_pass,
+                                        "gen_ai.evaluation.explanation": aggregate_reason or "",
+                                    }
+                                )
+
+                                evaluator_results.append(
+                                    {
+                                        "evaluator_name": evaluator.get_type_name(),
+                                        "test_pass": aggregate_pass,
+                                        "score": aggregate_score,
+                                        "reason": aggregate_reason or "",
+                                        "detailed_results": evaluation_outputs,
+                                    }
+                                )
+
+                                self._log_evaluation_to_cloudwatch(
+                                    evaluator=evaluator,
+                                    eval_span=case_span,
+                                    evaluation_context=evaluation_context,
+                                    score=aggregate_score,
+                                    reason=aggregate_reason or "",
+                                )
+
+                        except RetryError as e:
+                            original_exception = e.last_attempt.exception()
+                            if original_exception is None:
+                                original_exception = Exception(
+                                    f"Evaluator {evaluator.get_type_name()} failed after"
+                                    f" {_MAX_RETRY_ATTEMPTS} retries"
+                                )
+                            logger.error(
+                                f"Max retry attempts ({_MAX_RETRY_ATTEMPTS}) exceeded for evaluator "
+                                f"{evaluator.get_type_name()} on case {case_name}."
+                                f" Last error: {str(original_exception)}"
+                            )
+                            evaluator_results.append(
+                                {
+                                    "evaluator_name": evaluator.get_type_name(),
+                                    "test_pass": False,
+                                    "score": 0,
+                                    "reason": f"Evaluator error: {str(original_exception)}",
+                                    "detailed_results": [],
+                                }
+                            )
+                        except Exception as e:
+                            evaluator_results.append(
+                                {
+                                    "evaluator_name": evaluator.get_type_name(),
+                                    "test_pass": False,
+                                    "score": 0,
+                                    "reason": f"Evaluator error: {str(e)}",
+                                    "detailed_results": [],
+                                }
+                            )
+
+                results.append(
+                    {
+                        "case": evaluation_context.model_dump(),
+                        "evaluator_results": evaluator_results,
+                    }
+                )
+            finally:
+                queue.task_done()
+
+    async def run_evaluators_async(
+        self,
+        evaluation_data: list[EvaluationData[InputT, OutputT]],
+        max_workers: int = 10,
+    ) -> list[EvaluationReport]:
+        """Run evaluators on pre-computed evaluation data asynchronously.
+
+        Args:
+            evaluation_data: Pre-computed evaluation data, e.g. from run_tasks_async() or deserialized
+                from a previous run.
             max_workers: Maximum number of parallel workers (default: 10)
 
         Returns:
-            List of EvaluationReport objects, one for each evaluator, containing evaluation results
+            A list of EvaluationReport objects, one per evaluator.
         """
-        queue: asyncio.Queue[Case[InputT, OutputT]] = asyncio.Queue()
-        results: list[Any] = []
+        queue: asyncio.Queue[EvaluationData[InputT, OutputT]] = asyncio.Queue()
+        results: list[dict] = []
 
-        for case in self._cases:
-            queue.put_nowait(case)
+        for data in evaluation_data:
+            queue.put_nowait(data)
 
-        num_workers = min(max_workers, len(self._cases))
+        num_workers = min(max_workers, len(evaluation_data)) if evaluation_data else 0
 
-        workers = [asyncio.create_task(self._worker(queue, task, results)) for _ in range(num_workers)]
+        workers = [asyncio.create_task(self._evaluator_worker(queue, results)) for _ in range(num_workers)]
 
         await queue.join()
         for worker in workers:
@@ -699,16 +855,7 @@ class Experiment(Generic[InputT, OutputT]):
         await asyncio.gather(*workers, return_exceptions=True)
 
         # Organize results by evaluator
-        evaluator_data: dict[str, dict[str, list]] = {
-            evaluator.get_type_name(): {
-                "scores": [],
-                "test_passes": [],
-                "cases": [],
-                "reasons": [],
-                "detailed_results": [],
-            }
-            for evaluator in self._evaluators
-        }
+        evaluator_data = self._init_evaluator_data()
 
         for result in results:
             case_data = result["case"]
@@ -720,23 +867,38 @@ class Experiment(Generic[InputT, OutputT]):
                 evaluator_data[eval_name]["reasons"].append(eval_result["reason"])
                 evaluator_data[eval_name]["detailed_results"].append(eval_result["detailed_results"])
 
-        reports = []
-        for evaluator in self._evaluators:
-            eval_name = evaluator.get_type_name()
-            data = evaluator_data[eval_name]
-            scores = data["scores"]
-            report = EvaluationReport(
-                evaluator_name=eval_name,
-                overall_score=sum(scores) / len(scores) if scores else 0,
-                scores=scores,
-                test_passes=data["test_passes"],
-                cases=data["cases"],
-                reasons=data["reasons"],
-                detailed_results=data["detailed_results"],
-            )
-            reports.append(report)
+        return self._build_reports(evaluator_data)
 
-        return reports
+    def run_evaluations(
+        self, task: Callable[[Case[InputT, OutputT]], OutputT | dict[str, Any]]
+    ) -> list[EvaluationReport]:
+        """Run tasks and evaluators in sequence.
+
+        Convenience method equivalent to run_evaluators(run_tasks(task)).
+
+        Args:
+            task: The task to run on each case. Takes a Case and returns either
+                OutputT or {"output": OutputT, "trajectory": ...}.
+
+        Returns:
+            A list of EvaluationReport objects, one per evaluator.
+        """
+        return self.run_evaluators(self.run_tasks(task))
+
+    async def run_evaluations_async(self, task: Callable, max_workers: int = 10) -> list[EvaluationReport]:
+        """Run tasks and evaluators asynchronously in sequence.
+
+        Convenience method equivalent to run_evaluators_async(run_tasks_async(task)).
+
+        Args:
+            task: The task function to run on each case. Can be sync or async.
+            max_workers: Maximum number of parallel workers (default: 10)
+
+        Returns:
+            A list of EvaluationReport objects, one per evaluator.
+        """
+        evaluation_data = await self.run_tasks_async(task, max_workers)
+        return await self.run_evaluators_async(evaluation_data, max_workers)
 
     def to_dict(self) -> dict:
         """
