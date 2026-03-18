@@ -16,7 +16,7 @@ authors = [
 dependencies = [
     "pydantic>=2.0.0,<3.0.0",
     "rich>=14.0.0,<15.0.0",
-    "strands-agents>=1.0.0",
+    "strands-agents>=1.28.0",
     "strands-agents-tools>=0.1.0,<1.0.0",
     "typing-extensions>=4.0",
     "opentelemetry-api>=1.20.0",
@@ -135,6 +135,7 @@ select = [
 [tool.ruff.lint.per-file-ignores]
 "src/strands_evals/evaluators/prompt_templates/*" = ["E501"] # line-length
 "src/strands_evals/generators/prompt_template/*" = ["E501"] # line-length
+"src/strands_evals/plugins/prompt_templates/*" = ["E501"] # line-length
 
 [tool.mypy]
 # Disable strict checks that cause false positives with Generic classes
