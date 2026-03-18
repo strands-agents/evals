@@ -171,7 +171,9 @@ def test_retry_on_failure(mock_agent):
         [EvaluationOutput(score=1.0, test_pass=True, reason="good")],
     ]
     plugin = EvaluationPlugin(evaluators=[evaluator], max_retries=1)
-    plugin._suggest_improvements = Mock(return_value="improved prompt")
+    plugin._suggest_improvements = Mock(
+        return_value=ImprovementSuggestion(reasoning="needs improvement", system_prompt="improved prompt")
+    )
     plugin.init_agent(mock_agent)
 
     mock_agent("prompt")
@@ -185,7 +187,9 @@ def test_max_retries_respected(mock_agent):
     evaluator = Mock()
     evaluator.evaluate.return_value = [EvaluationOutput(score=0.0, test_pass=False, reason="always bad")]
     plugin = EvaluationPlugin(evaluators=[evaluator], max_retries=2)
-    plugin._suggest_improvements = Mock(return_value="improved prompt")
+    plugin._suggest_improvements = Mock(
+        return_value=ImprovementSuggestion(reasoning="needs improvement", system_prompt="improved prompt")
+    )
     plugin.init_agent(mock_agent)
 
     mock_agent("prompt")
@@ -227,7 +231,9 @@ def test_messages_reset_between_retries(mock_agent):
     evaluator = Mock()
     evaluator.evaluate.return_value = [EvaluationOutput(score=0.0, test_pass=False)]
     plugin = EvaluationPlugin(evaluators=[evaluator], max_retries=1)
-    plugin._suggest_improvements = Mock(return_value="improved prompt")
+    plugin._suggest_improvements = Mock(
+        return_value=ImprovementSuggestion(reasoning="needs improvement", system_prompt="improved prompt")
+    )
     plugin.init_agent(mock_agent)
 
     mock_agent("prompt")
@@ -243,7 +249,9 @@ def test_system_prompt_restored_after_all_attempts(mock_agent):
     evaluator = Mock()
     evaluator.evaluate.return_value = [EvaluationOutput(score=0.0, test_pass=False)]
     plugin = EvaluationPlugin(evaluators=[evaluator], max_retries=1)
-    plugin._suggest_improvements = Mock(return_value="improved prompt")
+    plugin._suggest_improvements = Mock(
+        return_value=ImprovementSuggestion(reasoning="needs improvement", system_prompt="improved prompt")
+    )
     plugin.init_agent(mock_agent)
 
     mock_agent("prompt")
@@ -413,7 +421,9 @@ def test_partial_evaluator_failure_triggers_retry(mock_agent):
         [EvaluationOutput(score=1.0, test_pass=True)],
     ]
     plugin = EvaluationPlugin(evaluators=[evaluator1, evaluator2], max_retries=1)
-    plugin._suggest_improvements = Mock(return_value="improved")
+    plugin._suggest_improvements = Mock(
+        return_value=ImprovementSuggestion(reasoning="needs improvement", system_prompt="improved")
+    )
     plugin.init_agent(mock_agent)
 
     mock_agent("prompt")
@@ -429,7 +439,9 @@ def test_evaluator_exception_recorded_as_failure(mock_agent):
         [EvaluationOutput(score=1.0, test_pass=True)],
     ]
     plugin = EvaluationPlugin(evaluators=[evaluator], max_retries=1)
-    plugin._suggest_improvements = Mock(return_value="improved")
+    plugin._suggest_improvements = Mock(
+        return_value=ImprovementSuggestion(reasoning="needs improvement", system_prompt="improved")
+    )
     plugin.init_agent(mock_agent)
 
     mock_agent("prompt")
@@ -458,7 +470,9 @@ def test_returns_final_attempt_result(mock_agent):
         [EvaluationOutput(score=1.0, test_pass=True)],
     ]
     plugin = EvaluationPlugin(evaluators=[evaluator], max_retries=1)
-    plugin._suggest_improvements = Mock(return_value="improved")
+    plugin._suggest_improvements = Mock(
+        return_value=ImprovementSuggestion(reasoning="needs improvement", system_prompt="improved")
+    )
     plugin.init_agent(mock_agent)
 
     result = mock_agent("prompt")
