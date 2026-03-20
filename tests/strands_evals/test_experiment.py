@@ -925,13 +925,73 @@ async def test_experiment_run_evaluations_async_creates_spans(mock_span):
 
             await experiment.run_evaluations_async(async_task)
 
-            # Verify both execute_case and evaluator spans were created
+            # Verify execute_case, task_execution, and evaluator spans were created
             calls = mock_start_span.call_args_list
-            assert len(calls) == 2
-            execute_case_span_call = calls[0]
-            evaluator_span_call = calls[1]
-            assert execute_case_span_call[0][0] == "execute_case async_test"
-            assert evaluator_span_call[0][0] == "evaluator MockEvaluator"
+            assert len(calls) == 3
+
+            # execute_case span has case.name and case.input attributes
+            assert calls[0][0][0] == "execute_case async_test"
+            assert calls[0][1]["attributes"]["gen_ai.evaluation.case.name"] == "async_test"
+            assert calls[0][1]["attributes"]["gen_ai.evaluation.case.input"] == '"hello"'
+
+            # task_execution span has task.type and case.name attributes
+            assert calls[1][0][0] == "task_execution async_test"
+            assert calls[1][1]["attributes"]["gen_ai.evaluation.task.type"] == "agent_task"
+            assert calls[1][1]["attributes"]["gen_ai.evaluation.case.name"] == "async_test"
+
+            # evaluator span has evaluation.name and case.name attributes
+            assert calls[2][0][0] == "evaluator MockEvaluator"
+            assert calls[2][1]["attributes"]["gen_ai.evaluation.name"] == "MockEvaluator"
+            assert calls[2][1]["attributes"]["gen_ai.evaluation.case.name"] == "async_test"
+
+
+@pytest.mark.asyncio
+async def test_experiment_run_evaluations_async_data_attrs_on_task_span():
+    """Test that data attributes (input, expected_output, etc.) are set on the task_execution span, not execute_case."""
+    case = Case(name="test", input="hello", expected_output="hello")
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
+
+    # Create distinct mock spans so we can tell which span gets which set_attributes call
+    case_span = MagicMock()
+    case_span.__enter__ = MagicMock(return_value=case_span)
+    case_span.__exit__ = MagicMock(return_value=False)
+    task_span = MagicMock()
+    task_span.__enter__ = MagicMock(return_value=task_span)
+    task_span.__exit__ = MagicMock(return_value=False)
+    eval_span = MagicMock()
+    eval_span.__enter__ = MagicMock(return_value=eval_span)
+    eval_span.__exit__ = MagicMock(return_value=False)
+
+    spans = [case_span, task_span, eval_span]
+    span_index = 0
+
+    def fake_start_span(name, **kwargs):
+        nonlocal span_index
+        span = spans[span_index]
+        span_index += 1
+        return span
+
+    with patch.object(experiment._tracer, "start_as_current_span", side_effect=fake_start_span):
+        with patch("strands_evals.experiment.format_trace_id", return_value="mock_trace_id"):
+
+            async def async_task(c):
+                return c.input
+
+            await experiment.run_evaluations_async(async_task)
+
+            # data attributes should be on task_span, NOT case_span
+            task_span.set_attributes.assert_called_once()
+            data_attrs = task_span.set_attributes.call_args[0][0]
+            assert "gen_ai.evaluation.data.input" in data_attrs
+            assert "gen_ai.evaluation.data.expected_output" in data_attrs
+            assert "gen_ai.evaluation.data.actual_output" in data_attrs
+            assert "gen_ai.evaluation.data.has_trajectory" in data_attrs
+            assert "gen_ai.evaluation.data.has_interactions" in data_attrs
+
+            # case_span should NOT have data attributes set via set_attributes
+            for call in case_span.set_attributes.call_args_list:
+                attrs = call[0][0]
+                assert "gen_ai.evaluation.data.input" not in attrs
 
 
 @pytest.mark.asyncio

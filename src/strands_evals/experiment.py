@@ -219,6 +219,10 @@ class Experiment(Generic[InputT, OutputT]):
             try:
                 with self._tracer.start_as_current_span(
                     f"execute_case {case_name}",
+                    attributes={
+                        "gen_ai.evaluation.case.name": case_name,
+                        "gen_ai.evaluation.case.input": serialize(case.input),
+                    },
                 ) as case_span:
                     try:
 
@@ -231,15 +235,37 @@ class Experiment(Generic[InputT, OutputT]):
                         async def _run_task_with_retry(task=task, case=case):
                             return await self._run_task_async(task, case)
 
-                        try:
-                            evaluation_context = await _run_task_with_retry()
-                            case_span.set_attributes(
+                        with self._tracer.start_as_current_span(
+                            f"task_execution {case_name}",
+                            attributes={
+                                "gen_ai.evaluation.task.type": "agent_task",
+                                "gen_ai.evaluation.case.name": case_name,
+                            },
+                        ) as task_span:
+                            try:
+                                evaluation_context = await _run_task_with_retry()
+                            except RetryError as e:
+                                # Max retries exceeded
+                                original_exception = e.last_attempt.exception()
+                                if original_exception is None:
+                                    original_exception = Exception(
+                                        f"Task execution failed after {_MAX_RETRY_ATTEMPTS} retries"
+                                    )
+                                logger.error(
+                                    f"Max retry attempts ({_MAX_RETRY_ATTEMPTS}) exceeded for task execution "
+                                    f"on case {case_name}. Last error: {str(original_exception)}"
+                                )
+                                raise original_exception from e
+
+                            task_span.set_attributes(
                                 {
                                     "gen_ai.evaluation.data.input": serialize(evaluation_context.input),
                                     "gen_ai.evaluation.data.expected_output": serialize(
                                         evaluation_context.expected_output
                                     ),
-                                    "gen_ai.evaluation.data.actual_output": serialize(evaluation_context.actual_output),
+                                    "gen_ai.evaluation.data.actual_output": serialize(
+                                        evaluation_context.actual_output
+                                    ),
                                     "gen_ai.evaluation.data.has_trajectory": (
                                         evaluation_context.actual_trajectory is not None
                                     ),
@@ -248,19 +274,7 @@ class Experiment(Generic[InputT, OutputT]):
                                     ),
                                 }
                             )
-                            trace_id = format_trace_id(case_span.get_span_context().trace_id)
-                        except RetryError as e:
-                            # Max retries exceeded
-                            original_exception = e.last_attempt.exception()
-                            if original_exception is None:
-                                original_exception = Exception(
-                                    f"Task execution failed after {_MAX_RETRY_ATTEMPTS} retries"
-                                )
-                            logger.error(
-                                f"Max retry attempts ({_MAX_RETRY_ATTEMPTS}) exceeded for task execution "
-                                f"on case {case_name}. Last error: {str(original_exception)}"
-                            )
-                            raise original_exception from e
+                        trace_id = format_trace_id(case_span.get_span_context().trace_id)
 
                         # Evaluate with each evaluator
                         evaluator_results = []
@@ -280,6 +294,10 @@ class Experiment(Generic[InputT, OutputT]):
                             try:
                                 with self._tracer.start_as_current_span(
                                     f"evaluator {evaluator.get_type_name()}",
+                                    attributes={
+                                        "gen_ai.evaluation.name": evaluator.get_type_name(),
+                                        "gen_ai.evaluation.case.name": case_name,
+                                    },
                                 ) as eval_span:
                                     (
                                         evaluation_outputs,
