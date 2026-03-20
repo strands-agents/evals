@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -278,7 +279,7 @@ class Experiment(Generic[InputT, OutputT]):
                     label=label,
                 )
         except Exception as e:
-            logger.debug(f"Skipping CloudWatch logging: {str(e)}")
+            logger.debug("error=<%s> | skipping cloudwatch logging", e)
 
     def _set_task_span_attributes(self, task_span: Any, evaluation_context: EvaluationData) -> None:
         """Set standard attributes on a task execution span."""
@@ -301,7 +302,7 @@ class Experiment(Generic[InputT, OutputT]):
             error_msg = str(original_exception)
         else:
             error_msg = str(e)
-        logger.error(f"Task execution failed for case {case_name}: {error_msg}")
+        logger.error("case=<%s>, error=<%s> | task execution failed", case_name, error_msg)
         return error_msg
 
     def _build_failed_evaluation_data(
@@ -333,7 +334,7 @@ class Experiment(Generic[InputT, OutputT]):
         Return:
             An EvaluationData record containing the input and actual output, name, expected output, and metadata.
         """
-        if asyncio.iscoroutinefunction(task):
+        if inspect.iscoroutinefunction(task):
             raise ValueError("Async task is not supported. Please use run_evaluations_async instead.")
 
         metadata = {**(case.metadata or {}), "session_id": case.session_id}
@@ -387,7 +388,7 @@ class Experiment(Generic[InputT, OutputT]):
         )
 
         # Handle both async and sync tasks
-        if asyncio.iscoroutinefunction(task):
+        if inspect.iscoroutinefunction(task):
             task_output = await task(case)
         else:
             # Run sync function in separate thread to avoid blocking
@@ -424,7 +425,7 @@ class Experiment(Generic[InputT, OutputT]):
             A list of EvaluationData objects, one per case. On task failure, the corresponding
             EvaluationData will have actual_output=None and the error in metadata["task_error"].
         """
-        if asyncio.iscoroutinefunction(task):
+        if inspect.iscoroutinefunction(task):
             raise ValueError("Async task is not supported. Please use run_tasks_async instead.")
 
         results: list[EvaluationData[InputT, OutputT]] = []
@@ -439,6 +440,7 @@ class Experiment(Generic[InputT, OutputT]):
                     "gen_ai.evaluation.case.input": serialize(case.input),
                 },
             ) as run_task_span:
+
                 @retry(
                     retry=retry_if_exception(is_throttling_error),
                     stop=stop_after_attempt(_MAX_RETRY_ATTEMPTS),
@@ -470,22 +472,22 @@ class Experiment(Generic[InputT, OutputT]):
         self,
         queue: asyncio.Queue,
         task: Callable,
-        results: list[EvaluationData[InputT, OutputT]],
+        results: list[EvaluationData[InputT, OutputT] | None],
     ):
         """Worker that processes cases from the queue for task execution only.
 
         Args:
-            queue: Queue containing cases to process
+            queue: Queue containing (index, case) tuples to process
             task: Task function to run on each case
-            results: List to store EvaluationData results
+            results: Pre-allocated list to store EvaluationData results by index
         """
         while True:
             try:
-                case = queue.get_nowait()
+                index, case = queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
 
-            case_name = case.name or f"case_{len(results)}"
+            case_name = case.name or f"case_{index}"
 
             try:
                 with self._tracer.start_as_current_span(
@@ -515,11 +517,11 @@ class Experiment(Generic[InputT, OutputT]):
                         ) as task_span:
                             evaluation_context = await _run_task_with_retry()
                             self._set_task_span_attributes(task_span, evaluation_context)
-                            results.append(evaluation_context)
+                            results[index] = evaluation_context
                     except (RetryError, Exception) as e:
                         error_msg = self._extract_task_error(e, case_name)
                         run_task_span.record_exception(e)
-                        results.append(self._build_failed_evaluation_data(case, error_msg))
+                        results[index] = self._build_failed_evaluation_data(case, error_msg)
             finally:
                 queue.task_done()
 
@@ -538,11 +540,11 @@ class Experiment(Generic[InputT, OutputT]):
             A list of EvaluationData objects, one per case. On task failure, the corresponding
             EvaluationData will have actual_output=None and the error in metadata["task_error"].
         """
-        queue: asyncio.Queue[Case[InputT, OutputT]] = asyncio.Queue()
-        results: list[EvaluationData[InputT, OutputT]] = []
+        queue: asyncio.Queue[tuple[int, Case[InputT, OutputT]]] = asyncio.Queue()
+        results: list[EvaluationData[InputT, OutputT] | None] = [None] * len(self._cases)
 
-        for case in self._cases:
-            queue.put_nowait(case)
+        for index, case in enumerate(self._cases):
+            queue.put_nowait((index, case))
 
         num_workers = min(max_workers, len(self._cases))
 
@@ -553,11 +555,9 @@ class Experiment(Generic[InputT, OutputT]):
             worker.cancel()
         await asyncio.gather(*workers, return_exceptions=True)
 
-        return results
+        return cast(list[EvaluationData[InputT, OutputT]], results)
 
-    def run_evaluators(
-        self, evaluation_data: list[EvaluationData[InputT, OutputT]]
-    ) -> list[EvaluationReport]:
+    def run_evaluators(self, evaluation_data: list[EvaluationData[InputT, OutputT]]) -> list[EvaluationReport]:
         """Run evaluators on pre-computed evaluation data.
 
         Evaluates each EvaluationData item with all configured evaluators, without executing
@@ -640,6 +640,14 @@ class Experiment(Generic[InputT, OutputT]):
                                 reason=aggregate_reason or "",
                                 detailed_results=evaluation_outputs,
                             )
+
+                            self._log_evaluation_to_cloudwatch(
+                                evaluator=evaluator,
+                                eval_span=eval_span,
+                                evaluation_context=evaluation_context,
+                                score=aggregate_score,
+                                reason=aggregate_reason or "",
+                            )
                     except RetryError as e:
                         original_exception = e.last_attempt.exception()
                         if original_exception is None:
@@ -647,8 +655,11 @@ class Experiment(Generic[InputT, OutputT]):
                                 f"Evaluator {evaluator.get_type_name()} failed after {_MAX_RETRY_ATTEMPTS} retries"
                             )
                         logger.error(
-                            f"Max retry attempts ({_MAX_RETRY_ATTEMPTS}) exceeded for evaluator "
-                            f"{evaluator.get_type_name()} on case {case_name}. Last error: {str(original_exception)}"
+                            "evaluator=<%s>, case=<%s>, retries=<%s>, error=<%s> | max retry attempts exceeded",
+                            evaluator.get_type_name(),
+                            case_name,
+                            _MAX_RETRY_ATTEMPTS,
+                            original_exception,
                         )
                         self._record_evaluator_result(
                             evaluator_data=evaluator_data,
@@ -675,21 +686,21 @@ class Experiment(Generic[InputT, OutputT]):
     async def _evaluator_worker(
         self,
         queue: asyncio.Queue,
-        results: list[dict],
+        results: list[dict | None],
     ):
         """Worker that processes EvaluationData from the queue for evaluation only.
 
         Args:
-            queue: Queue containing EvaluationData to evaluate
-            results: List to store per-case evaluator results
+            queue: Queue containing (index, EvaluationData) tuples to evaluate
+            results: Pre-allocated list to store per-case evaluator results by index
         """
         while True:
             try:
-                evaluation_context = queue.get_nowait()
+                index, evaluation_context = queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
 
-            case_name = evaluation_context.name or f"case_{len(results)}"
+            case_name = evaluation_context.name or f"case_{index}"
 
             # If task execution failed, record failure for all evaluators
             task_error = (evaluation_context.metadata or {}).get("task_error")
@@ -705,12 +716,10 @@ class Experiment(Generic[InputT, OutputT]):
                             "detailed_results": [],
                         }
                     )
-                results.append(
-                    {
-                        "case": evaluation_context.model_dump(),
-                        "evaluator_results": evaluator_results,
-                    }
-                )
+                results[index] = {
+                    "case": evaluation_context.model_dump(),
+                    "evaluator_results": evaluator_results,
+                }
                 queue.task_done()
                 continue
 
@@ -787,13 +796,14 @@ class Experiment(Generic[InputT, OutputT]):
                             original_exception = e.last_attempt.exception()
                             if original_exception is None:
                                 original_exception = Exception(
-                                    f"Evaluator {evaluator.get_type_name()} failed after"
-                                    f" {_MAX_RETRY_ATTEMPTS} retries"
+                                    f"Evaluator {evaluator.get_type_name()} failed after {_MAX_RETRY_ATTEMPTS} retries"
                                 )
                             logger.error(
-                                f"Max retry attempts ({_MAX_RETRY_ATTEMPTS}) exceeded for evaluator "
-                                f"{evaluator.get_type_name()} on case {case_name}."
-                                f" Last error: {str(original_exception)}"
+                                "evaluator=<%s>, case=<%s>, retries=<%s>, error=<%s> | max retry attempts exceeded",
+                                evaluator.get_type_name(),
+                                case_name,
+                                _MAX_RETRY_ATTEMPTS,
+                                original_exception,
                             )
                             evaluator_results.append(
                                 {
@@ -815,12 +825,10 @@ class Experiment(Generic[InputT, OutputT]):
                                 }
                             )
 
-                results.append(
-                    {
-                        "case": evaluation_context.model_dump(),
-                        "evaluator_results": evaluator_results,
-                    }
-                )
+                results[index] = {
+                    "case": evaluation_context.model_dump(),
+                    "evaluator_results": evaluator_results,
+                }
             finally:
                 queue.task_done()
 
@@ -839,11 +847,11 @@ class Experiment(Generic[InputT, OutputT]):
         Returns:
             A list of EvaluationReport objects, one per evaluator.
         """
-        queue: asyncio.Queue[EvaluationData[InputT, OutputT]] = asyncio.Queue()
-        results: list[dict] = []
+        queue: asyncio.Queue[tuple[int, EvaluationData[InputT, OutputT]]] = asyncio.Queue()
+        results: list[dict | None] = [None] * len(evaluation_data)
 
-        for data in evaluation_data:
-            queue.put_nowait(data)
+        for index, data in enumerate(evaluation_data):
+            queue.put_nowait((index, data))
 
         num_workers = min(max_workers, len(evaluation_data)) if evaluation_data else 0
 
@@ -858,6 +866,8 @@ class Experiment(Generic[InputT, OutputT]):
         evaluator_data = self._init_evaluator_data()
 
         for result in results:
+            if result is None:
+                continue
             case_data = result["case"]
             for eval_result in result["evaluator_results"]:
                 eval_name = eval_result["evaluator_name"]
