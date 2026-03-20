@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import logging
 
@@ -95,15 +96,13 @@ class Evaluator(Generic[InputT, OutputT]):
         """
         Evaluate the performance of the task on the given test cases asynchronously.
 
+        Delegates to evaluate() via asyncio.to_thread by default, ensuring subclasses
+        that only implement evaluate() work in the async path.
+
         Args:
             evaluation_case: The test case with all of the neccessary context to be evaluated.
-
-        Raises:
-            NotImplementedError: This method is not implemented in the base class.
         """
-        raise NotImplementedError(
-            "This method should be implemented in subclasses, especially if you want to run evaluations asynchronously."
-        )
+        return await asyncio.to_thread(self.evaluate, evaluation_case)
 
     def _parse_trajectory(self, evaluation_case: EvaluationData[InputT, OutputT]) -> Any:
         """Parse Session trajectory using TraceExtractor."""
