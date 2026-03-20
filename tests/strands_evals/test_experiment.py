@@ -183,7 +183,7 @@ def test_experiment__run_task_simple_output(mock_evaluator):
     assert result.name == "test"
     assert result.expected_trajectory is None
     assert result.actual_trajectory is None
-    assert result.metadata is None
+    assert "session_id" in result.metadata
     assert result.actual_interactions is None
     assert result.expected_interactions is None
 
@@ -1003,20 +1003,18 @@ async def test_experiment_run_evaluations_async_creates_spans(mock_span):
     experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
 
     with patch.object(experiment._tracer, "start_as_current_span", return_value=mock_span) as mock_start_span:
-        with patch("strands_evals.experiment.format_trace_id", return_value="mock_trace_id"):
 
-            async def async_task(c):
-                return c.input
+        async def async_task(c):
+            return c.input
 
-            await experiment.run_evaluations_async(async_task)
+        await experiment.run_evaluations_async(async_task)
 
-            # Verify both execute_case and evaluator spans were created
-            calls = mock_start_span.call_args_list
-            assert len(calls) == 2
-            execute_case_span_call = calls[0]
-            evaluator_span_call = calls[1]
-            assert execute_case_span_call[0][0] == "execute_case async_test"
-            assert evaluator_span_call[0][0] == "evaluator MockEvaluator"
+        # Verify spans were created for task and evaluation phases
+        calls = mock_start_span.call_args_list
+        span_names = [call[0][0] for call in calls]
+        assert any("run_task" in name for name in span_names)
+        assert any("eval_case" in name for name in span_names)
+        assert any("evaluator MockEvaluator" in name for name in span_names)
 
 
 @pytest.mark.asyncio
@@ -1048,25 +1046,24 @@ async def test_experiment_run_evaluations_async_with_dict_output(mock_span):
     experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
 
     with patch.object(experiment._tracer, "start_as_current_span", return_value=mock_span):
-        with patch("strands_evals.experiment.format_trace_id", return_value="mock_trace_id"):
 
-            async def async_task_with_dict(c):
-                return {"output": c.input, "trajectory": ["step1"], "interactions": interactions}
+        async def async_task_with_dict(c):
+            return {"output": c.input, "trajectory": ["step1"], "interactions": interactions}
 
-            await experiment.run_evaluations_async(async_task_with_dict)
+        await experiment.run_evaluations_async(async_task_with_dict)
 
-            # Check that set_attributes was called (trajectory/interactions are set via set_attributes)
-            mock_span.set_attributes.assert_called()
-            # Verify has_trajectory and has_interactions flags are set
-            set_attrs_calls = mock_span.set_attributes.call_args_list
-            has_trajectory_set = any(
-                "gen_ai.evaluation.data.has_trajectory" in call[0][0] for call in set_attrs_calls if call[0]
-            )
-            has_interactions_set = any(
-                "gen_ai.evaluation.data.has_interactions" in call[0][0] for call in set_attrs_calls if call[0]
-            )
-            assert has_trajectory_set
-            assert has_interactions_set
+        # Check that set_attributes was called (trajectory/interactions are set via set_attributes)
+        mock_span.set_attributes.assert_called()
+        # Verify has_trajectory and has_interactions flags are set
+        set_attrs_calls = mock_span.set_attributes.call_args_list
+        has_trajectory_set = any(
+            "gen_ai.evaluation.data.has_trajectory" in call[0][0] for call in set_attrs_calls if call[0]
+        )
+        has_interactions_set = any(
+            "gen_ai.evaluation.data.has_interactions" in call[0][0] for call in set_attrs_calls if call[0]
+        )
+        assert has_trajectory_set
+        assert has_interactions_set
 
 
 def test_experiment_run_evaluations_multiple_cases(mock_span, simple_task):
@@ -1351,7 +1348,7 @@ async def test_experiment_run_evaluations_async_fails_after_max_retries():
     assert len(reports) == 1
     assert reports[0].scores[0] == 0
     assert reports[0].test_passes[0] is False
-    assert "An error occurred" in reports[0].reasons[0]
+    assert "Task execution error" in reports[0].reasons[0]
 
 
 @pytest.mark.asyncio
@@ -1682,3 +1679,272 @@ def test_deterministic_evaluator_error_isolation():
     # Equals still ran successfully despite the ThrowingEvaluator failure
     assert reports[1].scores == [1.0]
     assert reports[1].test_passes == [True]
+
+
+# ============================================================
+# run_tasks tests
+# ============================================================
+
+
+def test_run_tasks_returns_evaluation_data(mock_evaluator):
+    """Test run_tasks returns list of EvaluationData with correct fields populated"""
+    cases = [
+        Case(name="case1", input="hello", expected_output="world"),
+        Case(name="case2", input="foo", expected_output="bar"),
+    ]
+    experiment = Experiment(cases=cases, evaluators=[mock_evaluator])
+
+    def echo_task(c):
+        return c.input
+
+    results = experiment.run_tasks(echo_task)
+
+    assert len(results) == 2
+    assert results[0].input == "hello"
+    assert results[0].actual_output == "hello"
+    assert results[0].expected_output == "world"
+    assert results[0].name == "case1"
+    assert results[1].input == "foo"
+    assert results[1].actual_output == "foo"
+    assert results[1].expected_output == "bar"
+    assert results[1].name == "case2"
+
+
+def test_run_tasks_with_dict_output(mock_evaluator):
+    """Test run_tasks handles task returning dict with output/trajectory/interactions"""
+    interactions = [{"node_name": "agent1", "dependencies": [], "messages": ["hello"]}]
+    cases = [Case(name="test", input="hello", expected_output="world", expected_interactions=interactions)]
+    experiment = Experiment(cases=cases, evaluators=[mock_evaluator])
+
+    def dict_task(c):
+        return {
+            "output": f"response to {c.input}",
+            "trajectory": ["step1", "step2"],
+            "interactions": interactions,
+        }
+
+    results = experiment.run_tasks(dict_task)
+
+    assert len(results) == 1
+    assert results[0].actual_output == "response to hello"
+    assert results[0].actual_trajectory == ["step1", "step2"]
+    assert results[0].actual_interactions == interactions
+    assert results[0].expected_output == "world"
+    assert results[0].expected_interactions == interactions
+
+
+def test_run_tasks_handles_task_failure(mock_evaluator):
+    """Test run_tasks returns EvaluationData with actual_output=None and error in metadata on failure"""
+    cases = [
+        Case(name="will_fail", input="hello", expected_output="world"),
+    ]
+    experiment = Experiment(cases=cases, evaluators=[mock_evaluator])
+
+    def failing_task(c):
+        raise RuntimeError("Task exploded")
+
+    results = experiment.run_tasks(failing_task)
+
+    assert len(results) == 1
+    assert results[0].actual_output is None
+    assert results[0].input == "hello"
+    assert results[0].expected_output == "world"
+    assert results[0].name == "will_fail"
+    assert "task_error" in results[0].metadata
+    assert "Task exploded" in results[0].metadata["task_error"]
+
+
+# ============================================================
+# run_evaluators tests
+# ============================================================
+
+
+def test_run_evaluators_with_precomputed_data(mock_evaluator):
+    """Test run_evaluators evaluates pre-computed EvaluationData without running tasks"""
+    evaluation_data = [
+        EvaluationData(input="hello", actual_output="hello", expected_output="hello", name="match"),
+        EvaluationData(input="foo", actual_output="foo", expected_output="bar", name="no_match"),
+    ]
+    experiment = Experiment(evaluators=[mock_evaluator])
+
+    reports = experiment.run_evaluators(evaluation_data)
+
+    assert len(reports) == 1
+    assert reports[0].evaluator_name == "MockEvaluator"
+    assert reports[0].scores == [1.0, 0.0]
+    assert reports[0].test_passes == [True, False]
+    assert reports[0].overall_score == 0.5
+
+
+def test_run_evaluators_handles_evaluator_failure():
+    """Test run_evaluators isolates evaluator errors without crashing"""
+    evaluation_data = [
+        EvaluationData(input="hello", actual_output="hello", expected_output="hello", name="test"),
+    ]
+    experiment = Experiment(evaluators=[ThrowingEvaluator(), MockEvaluator()])
+
+    reports = experiment.run_evaluators(evaluation_data)
+
+    assert len(reports) == 2
+    # ThrowingEvaluator should fail gracefully
+    assert reports[0].scores == [0]
+    assert reports[0].test_passes == [False]
+    assert "Evaluator exploded" in reports[0].reasons[0]
+    # MockEvaluator should still succeed
+    assert reports[1].scores == [1.0]
+    assert reports[1].test_passes == [True]
+
+
+def test_run_evaluators_with_multiple_evaluators():
+    """Test run_evaluators with multiple evaluators on precomputed data"""
+    evaluation_data = [
+        EvaluationData(input="hello", actual_output="hello", expected_output="hello", name="test"),
+    ]
+    experiment = Experiment(evaluators=[MockEvaluator(), MockEvaluator2()])
+
+    reports = experiment.run_evaluators(evaluation_data)
+
+    assert len(reports) == 2
+    assert reports[0].evaluator_name == "MockEvaluator"
+    assert reports[0].scores == [1.0]
+    assert reports[1].evaluator_name == "MockEvaluator2"
+    assert reports[1].scores == [0.5]
+
+
+# ============================================================
+# Roundtrip and serialization tests
+# ============================================================
+
+
+def test_roundtrip_run_tasks_then_run_evaluators(mock_evaluator):
+    """Test that run_tasks output feeds correctly into run_evaluators"""
+    cases = [
+        Case(name="match", input="hello", expected_output="hello"),
+        Case(name="no_match", input="foo", expected_output="bar"),
+    ]
+    experiment = Experiment(cases=cases, evaluators=[mock_evaluator])
+
+    def echo_task(c):
+        return c.input
+
+    # Two-step flow
+    evaluation_data = experiment.run_tasks(echo_task)
+    reports = experiment.run_evaluators(evaluation_data)
+
+    assert len(reports) == 1
+    assert reports[0].scores == [1.0, 0.0]
+    assert reports[0].test_passes == [True, False]
+    assert reports[0].overall_score == 0.5
+
+
+def test_run_evaluators_with_serialized_data(mock_evaluator):
+    """Test that EvaluationData survives serialization roundtrip and can still be evaluated"""
+    cases = [
+        Case(name="match", input="hello", expected_output="hello"),
+    ]
+    experiment = Experiment(cases=cases, evaluators=[mock_evaluator])
+
+    def echo_task(c):
+        return c.input
+
+    # Run tasks, serialize, deserialize, then evaluate
+    evaluation_data = experiment.run_tasks(echo_task)
+    serialized = [d.model_dump() for d in evaluation_data]
+    deserialized = [EvaluationData.model_validate(d) for d in serialized]
+
+    reports = experiment.run_evaluators(deserialized)
+
+    assert len(reports) == 1
+    assert reports[0].scores == [1.0]
+    assert reports[0].test_passes == [True]
+
+
+# ============================================================
+# Async run_tasks and run_evaluators tests
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_run_tasks_async_returns_evaluation_data():
+    """Test run_tasks_async returns list of EvaluationData with correct fields"""
+    cases = [
+        Case(name="case1", input="hello", expected_output="world"),
+        Case(name="case2", input="foo", expected_output="bar"),
+    ]
+    experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
+
+    def echo_task(c):
+        return c.input
+
+    results = await experiment.run_tasks_async(echo_task)
+
+    assert len(results) == 2
+    assert results[0].actual_output == "hello"
+    assert results[0].expected_output == "world"
+    assert results[1].actual_output == "foo"
+    assert results[1].expected_output == "bar"
+
+
+@pytest.mark.asyncio
+async def test_run_tasks_async_with_async_task():
+    """Test run_tasks_async works with async task functions"""
+    cases = [Case(name="test", input="hello", expected_output="world")]
+    experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
+
+    async def async_task(c):
+        return c.input
+
+    results = await experiment.run_tasks_async(async_task)
+
+    assert len(results) == 1
+    assert results[0].actual_output == "hello"
+
+
+@pytest.mark.asyncio
+async def test_run_tasks_async_handles_task_failure():
+    """Test run_tasks_async handles task failure with error in metadata"""
+    cases = [Case(name="will_fail", input="hello", expected_output="world")]
+    experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
+
+    def failing_task(c):
+        raise RuntimeError("Async task exploded")
+
+    results = await experiment.run_tasks_async(failing_task)
+
+    assert len(results) == 1
+    assert results[0].actual_output is None
+    assert "task_error" in results[0].metadata
+    assert "Async task exploded" in results[0].metadata["task_error"]
+
+
+@pytest.mark.asyncio
+async def test_run_evaluators_async_with_precomputed_data():
+    """Test run_evaluators_async evaluates pre-computed EvaluationData"""
+    evaluation_data = [
+        EvaluationData(input="hello", actual_output="hello", expected_output="hello", name="match"),
+        EvaluationData(input="foo", actual_output="foo", expected_output="bar", name="no_match"),
+    ]
+    experiment = Experiment(evaluators=[MockEvaluator()])
+
+    reports = await experiment.run_evaluators_async(evaluation_data)
+
+    assert len(reports) == 1
+    assert reports[0].scores == [1.0, 0.0]
+    assert reports[0].test_passes == [True, False]
+    assert reports[0].overall_score == 0.5
+
+
+@pytest.mark.asyncio
+async def test_run_evaluators_async_handles_evaluator_failure():
+    """Test run_evaluators_async isolates evaluator errors"""
+    evaluation_data = [
+        EvaluationData(input="hello", actual_output="hello", expected_output="hello", name="test"),
+    ]
+    experiment = Experiment(evaluators=[ThrowingEvaluator(), MockEvaluator()])
+
+    reports = await experiment.run_evaluators_async(evaluation_data)
+
+    assert len(reports) == 2
+    assert reports[0].scores == [0]
+    assert "Async evaluator exploded" in reports[0].reasons[0]
+    assert reports[1].scores == [1.0]
