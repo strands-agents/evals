@@ -4,6 +4,7 @@ Utility functions for mapper selection and detection.
 
 from typing import Any
 
+from .constants import SCOPE_LANGCHAIN_OTEL, SCOPE_OPENINFERENCE, SCOPE_STRANDS
 from .session_mapper import SessionMapper
 
 
@@ -48,13 +49,13 @@ def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
     for span in spans:
         scope_name = get_scope_name(span)
 
-        if scope_name == "opentelemetry.instrumentation.langchain":
+        if scope_name == SCOPE_LANGCHAIN_OTEL:
             return LangChainOtelSessionMapper()
 
-        if scope_name == "openinference.instrumentation.langchain":
+        if scope_name == SCOPE_OPENINFERENCE:
             return OpenInferenceSessionMapper()
 
-        if scope_name == "strands.telemetry.tracer":
+        if scope_name == SCOPE_STRANDS:
             # Auto-detect format for Strands
             if get_body(span) is not None:
                 return CloudWatchSessionMapper()
