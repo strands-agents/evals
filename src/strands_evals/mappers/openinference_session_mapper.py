@@ -27,11 +27,10 @@ from ..types.trace import (
     Trace,
     UserMessage,
 )
+from .constants import SCOPE_OPENINFERENCE
 from .session_mapper import SessionMapper
 
 logger = logging.getLogger(__name__)
-
-SCOPE_NAME = "openinference.instrumentation.langchain"
 
 
 class OpenInferenceSessionMapper(SessionMapper):
@@ -79,7 +78,7 @@ class OpenInferenceSessionMapper(SessionMapper):
         spans = self._normalize_to_flat_spans(data)
 
         # Filter to only spans from this scope
-        openinference_spans = [s for s in spans if self._get_scope_name(s) == SCOPE_NAME]
+        openinference_spans = [s for s in spans if self._get_scope_name(s) == SCOPE_OPENINFERENCE]
 
         # Group spans by trace_id
         grouped = defaultdict(list)
@@ -193,7 +192,9 @@ class OpenInferenceSessionMapper(SessionMapper):
 
         Detection:
         1. Live instrumentation: CHAIN + name=LangGraph
-        2. ADOT body: output has "final_answer" key (supervisor routing decision)
+        2. ADOT body: root LangGraph graph node — input has "messages" without
+           "remaining_steps" (intermediate nodes always have "remaining_steps"),
+           and output has "messages".
         """
         attrs = span.get("attributes", {})
         span_kind = attrs.get("openinference.span.kind", "")
@@ -201,10 +202,17 @@ class OpenInferenceSessionMapper(SessionMapper):
         if span_kind == "CHAIN" and span_name == "LangGraph":
             return True
 
-        # ADOT fallback: supervisor finish decision has "final_answer" in output
-        out_parsed = self._parse_adot_output(span)
-        if isinstance(out_parsed, dict) and "final_answer" in out_parsed:
-            return True
+        # ADOT fallback: root LangGraph node has messages in/out but no remaining_steps.
+        # Intermediate agent nodes (from create_react_agent) always include
+        # "remaining_steps" in input — the root graph invocation does not.
+        input_messages, _ = self._get_messages_from_span_events(span)
+        if input_messages:
+            in_content = input_messages[0].get("content", "")
+            in_parsed = self._safe_json_parse(in_content) if isinstance(in_content, str) else in_content
+            if isinstance(in_parsed, dict) and "messages" in in_parsed and "remaining_steps" not in in_parsed:
+                out_parsed = self._parse_adot_output(span)
+                if isinstance(out_parsed, dict) and "messages" in out_parsed:
+                    return True
 
         return False
 
@@ -267,7 +275,7 @@ class OpenInferenceSessionMapper(SessionMapper):
         if not tool_name:
             span_name = span.get("name", "")
             # ADOT synthetic spans use the scope name as span name — skip it
-            if span_name and span_name != SCOPE_NAME:
+            if span_name and span_name != SCOPE_OPENINFERENCE:
                 tool_name = span_name
 
         # Get input from attributes
@@ -476,7 +484,7 @@ class OpenInferenceSessionMapper(SessionMapper):
         span_events = span.get("span_events", [])
         for event in span_events:
             event_name = event.get("event_name", "")
-            if event_name == SCOPE_NAME:
+            if event_name == SCOPE_OPENINFERENCE:
                 body = event.get("body", {})
                 input_group = body.get("input", {})
                 output_group = body.get("output", {})
