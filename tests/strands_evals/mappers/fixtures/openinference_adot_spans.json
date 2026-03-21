@@ -1,0 +1,170 @@
+[
+  {
+    "trace_id": "adot-trace-1",
+    "span_id": "adot-inf-1",
+    "parent_span_id": null,
+    "name": "openinference.instrumentation.langchain",
+    "start_time": 1700000000000000000,
+    "end_time": 1700000001000000000,
+    "attributes": {"event.name": "openinference.instrumentation.langchain"},
+    "scope": {"name": "openinference.instrumentation.langchain", "version": ""},
+    "status": {"code": "OK"},
+    "span_events": [{
+      "event_name": "openinference.instrumentation.langchain",
+      "span_id": "adot-inf-1",
+      "timestamp": 1700000000000000000,
+      "attributes": {"event.name": "openinference.instrumentation.langchain"},
+      "body": {
+        "input": {"messages": [{"content": "What is the weather in Alaska?", "role": "user"}]},
+        "output": {"messages": [{"content": "{\"generations\": [[{\"text\": \"Let me check the weather for you.\", \"message\": {\"tool_calls\": [{\"name\": \"get_weather\", \"args\": {\"city\": \"Alaska\"}, \"id\": \"tc_01\"}]}}]], \"llm_output\": null}", "role": "assistant"}]}
+      }
+    }]
+  },
+  {
+    "trace_id": "adot-trace-1",
+    "span_id": "adot-tool-1",
+    "parent_span_id": null,
+    "name": "openinference.instrumentation.langchain",
+    "start_time": 1700000001000000000,
+    "end_time": 1700000002000000000,
+    "attributes": {"event.name": "openinference.instrumentation.langchain"},
+    "scope": {"name": "openinference.instrumentation.langchain", "version": ""},
+    "status": {"code": "OK"},
+    "span_events": [{
+      "event_name": "openinference.instrumentation.langchain",
+      "span_id": "adot-tool-1",
+      "timestamp": 1700000001000000000,
+      "attributes": {"event.name": "openinference.instrumentation.langchain"},
+      "body": {
+        "input": {"messages": [{"content": "{'city': 'Alaska'}", "role": "user"}]},
+        "output": {"messages": [{"content": "{\"name\": \"get_weather\", \"type\": \"tool\", \"content\": \"Weather in Alaska: -5C, snowy\", \"tool_call_id\": \"tc_01\", \"status\": \"success\"}", "role": "assistant"}]}
+      }
+    }]
+  },
+  {
+    "trace_id": "adot-trace-1",
+    "span_id": "adot-inf-2",
+    "parent_span_id": null,
+    "name": "openinference.instrumentation.langchain",
+    "start_time": 1700000002000000000,
+    "end_time": 1700000003000000000,
+    "attributes": {"event.name": "openinference.instrumentation.langchain"},
+    "scope": {"name": "openinference.instrumentation.langchain", "version": ""},
+    "status": {"code": "OK"},
+    "span_events": [{
+      "event_name": "openinference.instrumentation.langchain",
+      "span_id": "adot-inf-2",
+      "timestamp": 1700000002000000000,
+      "attributes": {"event.name": "openinference.instrumentation.langchain"},
+      "body": {
+        "input": {"messages": [{"content": "What is the weather in Alaska?", "role": "user"}]},
+        "output": {"messages": [{"content": "{\"generations\": [[{\"text\": \"The weather in Alaska is -5C and snowy.\"}]], \"llm_output\": null}", "role": "assistant"}]}
+      }
+    }]
+  },
+  {
+    "trace_id": "adot-trace-1",
+    "span_id": "adot-skip-remaining",
+    "parent_span_id": null,
+    "name": "openinference.instrumentation.langchain",
+    "start_time": 1700000003000000000,
+    "end_time": 1700000004000000000,
+    "attributes": {"event.name": "openinference.instrumentation.langchain"},
+    "scope": {"name": "openinference.instrumentation.langchain", "version": ""},
+    "status": {"code": "OK"},
+    "span_events": [{
+      "event_name": "openinference.instrumentation.langchain",
+      "span_id": "adot-skip-remaining",
+      "timestamp": 1700000003000000000,
+      "attributes": {"event.name": "openinference.instrumentation.langchain"},
+      "body": {
+        "input": {"messages": [{"content": "{\"messages\": [{\"content\": \"hi\", \"type\": \"human\"}], \"remaining_steps\": 10}", "role": "user"}]},
+        "output": {"messages": [{"content": "{\"messages\": [{\"content\": \"ok\", \"type\": \"ai\"}]}", "role": "assistant"}]}
+      }
+    }]
+  },
+  {
+    "trace_id": "adot-trace-1",
+    "span_id": "adot-skip-end",
+    "parent_span_id": null,
+    "name": "openinference.instrumentation.langchain",
+    "start_time": 1700000004000000000,
+    "end_time": 1700000005000000000,
+    "attributes": {"event.name": "openinference.instrumentation.langchain"},
+    "scope": {"name": "openinference.instrumentation.langchain", "version": ""},
+    "status": {"code": "OK"},
+    "span_events": [{
+      "event_name": "openinference.instrumentation.langchain",
+      "span_id": "adot-skip-end",
+      "timestamp": 1700000004000000000,
+      "attributes": {"event.name": "openinference.instrumentation.langchain"},
+      "body": {
+        "input": {"messages": [{"content": "some input", "role": "user"}]},
+        "output": {"messages": [{"content": "__end__", "role": "assistant"}]}
+      }
+    }]
+  },
+  {
+    "trace_id": "adot-trace-1",
+    "span_id": "adot-agent-1",
+    "parent_span_id": null,
+    "name": "openinference.instrumentation.langchain",
+    "start_time": 1700000000000000000,
+    "end_time": 1700000005000000000,
+    "attributes": {"event.name": "openinference.instrumentation.langchain"},
+    "scope": {"name": "openinference.instrumentation.langchain", "version": ""},
+    "status": {"code": "OK"},
+    "span_events": [{
+      "event_name": "openinference.instrumentation.langchain",
+      "span_id": "adot-agent-1",
+      "timestamp": 1700000000000000000,
+      "attributes": {"event.name": "openinference.instrumentation.langchain"},
+      "body": {
+        "input": {"messages": [{"content": "{\"messages\": [{\"content\": \"What is the weather in Alaska?\", \"type\": \"human\"}]}", "role": "user"}]},
+        "output": {"messages": [{"content": "{\"messages\": [{\"content\": \"The weather in Alaska is -5C and snowy.\", \"type\": \"ai\"}]}", "role": "assistant"}]}
+      }
+    }]
+  },
+  {
+    "trace_id": "adot-trace-2",
+    "span_id": "adot-t2-inf-1",
+    "parent_span_id": null,
+    "name": "openinference.instrumentation.langchain",
+    "start_time": 1700000010000000000,
+    "end_time": 1700000011000000000,
+    "attributes": {"event.name": "openinference.instrumentation.langchain"},
+    "scope": {"name": "openinference.instrumentation.langchain", "version": ""},
+    "status": {"code": "OK"},
+    "span_events": [{
+      "event_name": "openinference.instrumentation.langchain",
+      "span_id": "adot-t2-inf-1",
+      "timestamp": 1700000010000000000,
+      "attributes": {"event.name": "openinference.instrumentation.langchain"},
+      "body": {
+        "input": {"messages": [{"content": "Tell me a joke", "role": "user"}]},
+        "output": {"messages": [{"content": "{\"generations\": [[{\"text\": \"Why did the chicken cross the road? To get to the other side!\"}]], \"llm_output\": null}", "role": "assistant"}]}
+      }
+    }]
+  },
+  {
+    "trace_id": "adot-trace-2",
+    "span_id": "adot-t2-agent-1",
+    "parent_span_id": null,
+    "name": "openinference.instrumentation.langchain",
+    "start_time": 1700000010000000000,
+    "end_time": 1700000012000000000,
+    "attributes": {"event.name": "openinference.instrumentation.langchain"},
+    "scope": {"name": "openinference.instrumentation.langchain", "version": ""},
+    "status": {"code": "OK"},
+    "span_events": [{
+      "event_name": "openinference.instrumentation.langchain",
+      "span_id": "adot-t2-agent-1",
+      "timestamp": 1700000010000000000,
+      "attributes": {"event.name": "openinference.instrumentation.langchain"},
+      "body": {
+        "input": {"messages": [{"content": "{\"messages\": [{\"content\": \"Tell me a joke\", \"type\": \"human\"}]}", "role": "user"}]},
+        "output": {"messages": [{"content": "{\"messages\": [{\"content\": \"Why did the chicken cross the road? To get to the other side!\", \"type\": \"ai\"}]}", "role": "assistant"}]}
+      }
+    }]
+  }
+]

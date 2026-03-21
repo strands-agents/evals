@@ -41,6 +41,7 @@ class CloudWatchProvider(TraceProvider):
         lookback_days: int = 30,
         query_timeout_seconds: float = 60.0,
         mapper: SessionMapper | None = None,
+        end_time: datetime | None = None,
     ):
         """Initialize the CloudWatch provider.
 
@@ -67,6 +68,13 @@ class CloudWatchProvider(TraceProvider):
                 mapper=LangChainOtelSessionMapper(),
             )
 
+            # Narrow the query window with an explicit end time
+            from datetime import datetime, timezone
+            provider = CloudWatchProvider(
+                log_group="/aws/...",
+                end_time=datetime(2026, 3, 01, 12, 0, 0, tzinfo=timezone.utc),
+            )
+
         Args:
             region: AWS region. Falls back to AWS_REGION / AWS_DEFAULT_REGION env vars.
             log_group: Full CloudWatch log group path.
@@ -79,6 +87,8 @@ class CloudWatchProvider(TraceProvider):
                 If not provided, the mapper is auto-detected from the span data
                 using ``detect_otel_mapper()``, which inspects ``scope.name``
                 to determine the correct framework mapper.
+            end_time: Upper bound for the query window. Defaults to now (UTC).
+                Combined with ``lookback_days`` to form the full time range.
 
         Raises:
             ProviderError: If neither `log_group` nor `agent_name` is provided,
@@ -101,6 +111,7 @@ class CloudWatchProvider(TraceProvider):
         self._lookback_days = lookback_days
         self._query_timeout_seconds = query_timeout_seconds
         self._mapper = mapper
+        self._end_time = end_time
 
     def _discover_log_group(self, agent_name: str) -> str:
         """Discover the runtime log group for an agent via describe_log_groups."""
@@ -162,12 +173,12 @@ class CloudWatchProvider(TraceProvider):
     def _fetch_span_hierarchy(self, session_id: str) -> dict[str, str]:
         """Fetch spanId→parentSpanId map from aws/spans. Returns empty dict on failure."""
         query = f"fields spanId, parentSpanId | filter attributes.session.id like '{session_id}' | limit 10000"
-        now = datetime.now(tz=timezone.utc)
+        end = self._end_time or datetime.now(tz=timezone.utc)
         try:
             response = self._client.start_query(
                 logGroupName=self.SPANS_LOG_GROUP,
-                startTime=int((now - timedelta(days=self._lookback_days)).timestamp()),
-                endTime=int(now.timestamp()),
+                startTime=int((end - timedelta(days=self._lookback_days)).timestamp()),
+                endTime=int(end.timestamp()),
                 queryString=query,
             )
             raw_results = self._poll_query_results(response["queryId"])
@@ -189,14 +200,14 @@ class CloudWatchProvider(TraceProvider):
 
     def _run_logs_insights_query(self, query: str) -> list[dict[str, Any]]:
         """Execute a CW Logs Insights query and return parsed span dicts from @message fields."""
-        now = datetime.now(tz=timezone.utc)
-        start_time = now - timedelta(days=self._lookback_days)
+        end = self._end_time or datetime.now(tz=timezone.utc)
+        start_time = end - timedelta(days=self._lookback_days)
 
         try:
             response = self._client.start_query(
                 logGroupName=self._log_group,
                 startTime=int(start_time.timestamp()),
-                endTime=int(now.timestamp()),
+                endTime=int(end.timestamp()),
                 queryString=query,
             )
         except Exception as e:

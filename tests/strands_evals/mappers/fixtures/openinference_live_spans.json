@@ -1,0 +1,113 @@
+[
+  {
+    "trace_id": "live-trace-1",
+    "span_id": "llm-1",
+    "parent_span_id": "chain-root",
+    "name": "ChatBedrock",
+    "start_time": 1700000000000000000,
+    "end_time": 1700000001000000000,
+    "attributes": {
+      "openinference.span.kind": "LLM",
+      "llm.input_messages.0.message.role": "system",
+      "llm.input_messages.0.message.content": "You are a helpful weather assistant.",
+      "llm.input_messages.1.message.role": "user",
+      "llm.input_messages.1.message.content": "What is the weather difference between Taipei and Seattle?",
+      "llm.output_messages.0.message.role": "assistant",
+      "llm.output_messages.0.message.content": "I'll check the weather for both cities.",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.name": "get_weather",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments": "{\"city\": \"Taipei\"}",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.id": "toolu_001",
+      "llm.tools.0.tool.json_schema": "{\"name\": \"get_weather\", \"description\": \"Get weather\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}}}"
+    },
+    "scope": {"name": "openinference.instrumentation.langchain", "version": "0.1.0"},
+    "status": {"code": "OK"},
+    "span_events": []
+  },
+  {
+    "trace_id": "live-trace-1",
+    "span_id": "llm-2",
+    "parent_span_id": "chain-root",
+    "name": "ChatBedrock",
+    "start_time": 1700000002000000000,
+    "end_time": 1700000003000000000,
+    "attributes": {
+      "openinference.span.kind": "LLM",
+      "llm.input_messages.0.message.role": "user",
+      "llm.input_messages.0.message.content": "Now compare them.",
+      "llm.output_messages.0.message.role": "assistant",
+      "llm.output_messages.0.message.content": "Taipei is warmer than Seattle. Taipei averages 25C while Seattle averages 12C.",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.name": "finish",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments": "{\"answer\": \"Taipei is warmer\"}",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.id": "toolu_002"
+    },
+    "scope": {"name": "openinference.instrumentation.langchain", "version": "0.1.0"},
+    "status": {"code": "OK"},
+    "span_events": []
+  },
+  {
+    "trace_id": "live-trace-1",
+    "span_id": "tool-finish",
+    "parent_span_id": "chain-root",
+    "name": "finish",
+    "start_time": 1700000003000000000,
+    "end_time": 1700000004000000000,
+    "attributes": {
+      "openinference.span.kind": "TOOL",
+      "tool.name": "finish",
+      "input.value": "{\"answer\": \"Taipei is warmer\"}",
+      "output.value": "{\"content\": \"Taipei is warmer than Seattle.\", \"tool_call_id\": \"toolu_002\", \"status\": \"success\"}"
+    },
+    "scope": {"name": "openinference.instrumentation.langchain", "version": "0.1.0"},
+    "status": {"code": "OK"},
+    "span_events": []
+  },
+  {
+    "trace_id": "live-trace-1",
+    "span_id": "agent-mislabeled",
+    "parent_span_id": "chain-root",
+    "name": "route_to_agent",
+    "start_time": 1700000001000000000,
+    "end_time": 1700000002000000000,
+    "attributes": {
+      "openinference.span.kind": "AGENT",
+      "metadata": "{\"langgraph_step\": 2}",
+      "input.value": "{'agent_name': 'research_agent'}",
+      "output.value": "{\"result\": \"done\"}"
+    },
+    "scope": {"name": "openinference.instrumentation.langchain", "version": "0.1.0"},
+    "status": {"code": "OK"},
+    "span_events": []
+  },
+  {
+    "trace_id": "live-trace-1",
+    "span_id": "chain-sub",
+    "parent_span_id": "chain-root",
+    "name": "LangGraph",
+    "start_time": 1700000000000000000,
+    "end_time": 1700000003000000000,
+    "attributes": {
+      "openinference.span.kind": "CHAIN",
+      "input.value": "{\"messages\": [{\"kwargs\": {\"content\": \"What is the weather difference between Taipei and Seattle?\", \"type\": \"human\"}}]}",
+      "output.value": "{\"messages\": [{\"kwargs\": {\"content\": \"Taipei is warmer than Seattle.\", \"type\": \"ai\"}}]}"
+    },
+    "scope": {"name": "openinference.instrumentation.langchain", "version": "0.1.0"},
+    "status": {"code": "OK"},
+    "span_events": []
+  },
+  {
+    "trace_id": "live-trace-1",
+    "span_id": "chain-root",
+    "parent_span_id": null,
+    "name": "LangGraph",
+    "start_time": 1700000000000000000,
+    "end_time": 1700000005000000000,
+    "attributes": {
+      "openinference.span.kind": "CHAIN",
+      "input.value": "{\"messages\": [{\"kwargs\": {\"content\": \"What is the weather difference between Taipei and Seattle?\", \"type\": \"human\"}}]}",
+      "output.value": "{\"messages\": [{\"kwargs\": {\"content\": \"Taipei is warmer than Seattle overall.\", \"type\": \"ai\"}}]}"
+    },
+    "scope": {"name": "openinference.instrumentation.langchain", "version": "0.1.0"},
+    "status": {"code": "OK"},
+    "span_events": []
+  }
+]

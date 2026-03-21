@@ -27,11 +27,10 @@ from ..types.trace import (
     Trace,
     UserMessage,
 )
+from .constants import SCOPE_OPENINFERENCE
 from .session_mapper import SessionMapper
 
 logger = logging.getLogger(__name__)
-
-SCOPE_NAME = "openinference.instrumentation.langchain"
 
 
 class OpenInferenceSessionMapper(SessionMapper):
@@ -79,7 +78,7 @@ class OpenInferenceSessionMapper(SessionMapper):
         spans = self._normalize_to_flat_spans(data)
 
         # Filter to only spans from this scope
-        openinference_spans = [s for s in spans if self._get_scope_name(s) == SCOPE_NAME]
+        openinference_spans = [s for s in spans if self._get_scope_name(s) == SCOPE_OPENINFERENCE]
 
         # Group spans by trace_id
         grouped = defaultdict(list)
@@ -124,19 +123,17 @@ class OpenInferenceSessionMapper(SessionMapper):
             root = agent_spans[-1]
             converted_spans = [s for s in converted_spans if not isinstance(s, AgentInvocationSpan) or s is root]
 
-        # If no tools found from attributes (common in ADOT), build from converted tool spans
+        # If no tools found from attributes (common in ADOT), collect from converted tool spans
         trace_tools = self._trace_tools_map.get(trace_id, {})
         if not trace_tools:
+            trace_tools = self._collect_tools_from_spans(converted_spans)
+
+        # Back-fill available_tools into agent spans that don't have them yet
+        if trace_tools:
+            tools_list = sorted(trace_tools.values(), key=lambda t: t.name)
             for converted in converted_spans:
-                if isinstance(converted, ToolExecutionSpan):
-                    name = converted.tool_call.name
-                    if name and name not in trace_tools:
-                        trace_tools[name] = ToolConfig(name=name, description=None, parameters=None)
-            if trace_tools:
-                tools_list = sorted(trace_tools.values(), key=lambda t: t.name)
-                for converted in converted_spans:
-                    if isinstance(converted, AgentInvocationSpan) and not converted.available_tools:
-                        converted.available_tools = tools_list
+                if isinstance(converted, AgentInvocationSpan) and not converted.available_tools:
+                    converted.available_tools = tools_list
 
         return Trace(spans=converted_spans, trace_id=trace_id, session_id=session_id)
 
@@ -193,7 +190,9 @@ class OpenInferenceSessionMapper(SessionMapper):
 
         Detection:
         1. Live instrumentation: CHAIN + name=LangGraph
-        2. ADOT body: output has "final_answer" key (supervisor routing decision)
+        2. ADOT body: root LangGraph graph node — input has "messages" without
+           "remaining_steps" (intermediate nodes always have "remaining_steps"),
+           and output has "messages".
         """
         attrs = span.get("attributes", {})
         span_kind = attrs.get("openinference.span.kind", "")
@@ -201,10 +200,17 @@ class OpenInferenceSessionMapper(SessionMapper):
         if span_kind == "CHAIN" and span_name == "LangGraph":
             return True
 
-        # ADOT fallback: supervisor finish decision has "final_answer" in output
-        out_parsed = self._parse_adot_output(span)
-        if isinstance(out_parsed, dict) and "final_answer" in out_parsed:
-            return True
+        # ADOT fallback: root LangGraph node has messages in/out but no remaining_steps.
+        # Intermediate agent nodes (from create_react_agent) always include
+        # "remaining_steps" in input — the root graph invocation does not.
+        input_messages, _ = self._get_messages_from_span_events(span)
+        if input_messages:
+            in_content = input_messages[0].get("content", "")
+            in_parsed = self._safe_json_parse(in_content) if isinstance(in_content, str) else in_content
+            if isinstance(in_parsed, dict) and "messages" in in_parsed and "remaining_steps" not in in_parsed:
+                out_parsed = self._parse_adot_output(span)
+                if isinstance(out_parsed, dict) and "messages" in out_parsed:
+                    return True
 
         return False
 
@@ -267,7 +273,7 @@ class OpenInferenceSessionMapper(SessionMapper):
         if not tool_name:
             span_name = span.get("name", "")
             # ADOT synthetic spans use the scope name as span name — skip it
-            if span_name and span_name != SCOPE_NAME:
+            if span_name and span_name != SCOPE_OPENINFERENCE:
                 tool_name = span_name
 
         # Get input from attributes
@@ -384,6 +390,19 @@ class OpenInferenceSessionMapper(SessionMapper):
     # Helper Methods
     # =========================================================================
 
+    @staticmethod
+    def _collect_tools_from_spans(
+        converted_spans: list[InferenceSpan | ToolExecutionSpan | AgentInvocationSpan],
+    ) -> dict[str, ToolConfig]:
+        """Collect tool configs from ToolExecutionSpans by name."""
+        tools: dict[str, ToolConfig] = {}
+        for span in converted_spans:
+            if isinstance(span, ToolExecutionSpan):
+                name = span.tool_call.name
+                if name and name not in tools:
+                    tools[name] = ToolConfig(name=name, description=None, parameters=None)
+        return tools
+
     def _get_scope_name(self, span: dict) -> str:
         """Extract scope name from span."""
         scope = span.get("scope", {})
@@ -476,7 +495,7 @@ class OpenInferenceSessionMapper(SessionMapper):
         span_events = span.get("span_events", [])
         for event in span_events:
             event_name = event.get("event_name", "")
-            if event_name == SCOPE_NAME:
+            if event_name == SCOPE_OPENINFERENCE:
                 body = event.get("body", {})
                 input_group = body.get("input", {})
                 output_group = body.get("output", {})
@@ -543,13 +562,33 @@ class OpenInferenceSessionMapper(SessionMapper):
     def _extract_user_contents(
         self, input_messages: list[dict], span: dict
     ) -> tuple[list[TextContent | ToolResultContent], str | None]:
-        """Extract user contents from input messages or attributes."""
-        results: list[TextContent | ToolResultContent] = []
-        system_prompt: str | None = None
+        """Extract user contents from input messages or attributes.
+
+        Tries three strategies in order:
+        1. Live attributes (llm.input_messages.*)
+        2. ADOT structured messages (body with LangChain serialized messages)
+        3. Raw content fallback
+        """
         attrs = span.get("attributes", {})
 
-        # First, try to get from llm.input_messages attributes (live format)
-        # Iterate through message indices to find by role — index 0 may be a system message.
+        # Strategy 1: live attributes
+        results, system_prompt = self._extract_user_from_live_attrs(attrs)
+        if results:
+            return results, system_prompt
+
+        # Strategy 2: ADOT structured messages
+        results, system_prompt = self._extract_user_from_structured_messages(input_messages)
+        if results:
+            return results, system_prompt
+
+        # Strategy 3: raw content fallback
+        results = self._extract_user_from_raw_content(input_messages)
+        return results, None
+
+    def _extract_user_from_live_attrs(self, attrs: dict) -> tuple[list[TextContent | ToolResultContent], str | None]:
+        """Extract user content from llm.input_messages.* attributes (live instrumentation)."""
+        results: list[TextContent | ToolResultContent] = []
+        system_prompt: str | None = None
         idx = 0
         while True:
             role = attrs.get(f"llm.input_messages.{idx}.message.role")
@@ -562,8 +601,15 @@ class OpenInferenceSessionMapper(SessionMapper):
                 results.append(TextContent(text=content))
                 return results, system_prompt
             idx += 1
+        return results, system_prompt
 
-        # Try to find structured message list from input_messages
+    def _extract_user_from_structured_messages(
+        self, input_messages: list[dict]
+    ) -> tuple[list[TextContent | ToolResultContent], str | None]:
+        """Extract user content from ADOT structured messages (LangChain serialized format)."""
+        results: list[TextContent | ToolResultContent] = []
+        system_prompt: str | None = None
+
         structured_messages = None
         for msg in input_messages:
             if msg.get("role") != "user":
@@ -576,91 +622,116 @@ class OpenInferenceSessionMapper(SessionMapper):
             except (json.JSONDecodeError, TypeError):
                 pass
 
-        if structured_messages:
-            # Handle nested list
-            if (
-                isinstance(structured_messages, list)
-                and structured_messages
-                and isinstance(structured_messages[0], list)
-            ):
-                structured_messages = structured_messages[0]
+        if not structured_messages:
+            return results, system_prompt
 
-            for item in structured_messages:
-                if not isinstance(item, dict):
-                    continue
-                kwargs = item.get("kwargs", {})
-                data_type = kwargs.get("type")
+        # Handle nested list (e.g. [[msg1, msg2]])
+        if isinstance(structured_messages, list) and structured_messages and isinstance(structured_messages[0], list):
+            structured_messages = structured_messages[0]
 
-                if data_type == "human":
-                    results.append(TextContent(text=kwargs.get("content", "")))
-                elif data_type == "tool":
-                    status = kwargs.get("status")
-                    results.append(
-                        ToolResultContent(
-                            content=kwargs.get("content", ""),
-                            tool_call_id=kwargs.get("tool_call_id"),
-                            error=None if status == "success" else status,
-                        )
+        for item in structured_messages:
+            if not isinstance(item, dict):
+                continue
+            kwargs = item.get("kwargs", {})
+            data_type = kwargs.get("type")
+
+            if data_type == "human":
+                results.append(TextContent(text=kwargs.get("content", "")))
+            elif data_type == "tool":
+                status = kwargs.get("status")
+                results.append(
+                    ToolResultContent(
+                        content=kwargs.get("content", ""),
+                        tool_call_id=kwargs.get("tool_call_id"),
+                        error=None if status == "success" else status,
                     )
-                elif data_type == "system":
-                    system_prompt = kwargs.get("content")
-        else:
-            # Fallback: use raw content
-            for msg in input_messages:
-                if msg.get("role") == "user":
-                    content = msg.get("content", "")
-                    # Try to parse if it's a JSON string
-                    try:
-                        parsed = json.loads(content)
-                        if isinstance(parsed, dict) and "messages" in parsed:
-                            # Extract first human message
-                            for m in parsed.get("messages", []):
-                                if isinstance(m, dict):
-                                    c = m.get("content", "")
-                                    if c:
-                                        results.append(TextContent(text=c))
-                                        break
-                        else:
-                            results.append(TextContent(text=content))
-                    except (json.JSONDecodeError, TypeError):
-                        results.append(TextContent(text=content))
-                    break
+                )
+            elif data_type == "system":
+                system_prompt = kwargs.get("content")
 
         return results, system_prompt
+
+    def _extract_user_from_raw_content(self, input_messages: list[dict]) -> list[TextContent | ToolResultContent]:
+        """Extract user content from raw message content (fallback)."""
+        results: list[TextContent | ToolResultContent] = []
+        for msg in input_messages:
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content", "")
+            try:
+                parsed = json.loads(content)
+                if isinstance(parsed, dict) and "messages" in parsed:
+                    for m in parsed.get("messages", []):
+                        if isinstance(m, dict):
+                            c = m.get("content", "")
+                            if c:
+                                results.append(TextContent(text=c))
+                                break
+                else:
+                    results.append(TextContent(text=content))
+            except (json.JSONDecodeError, TypeError):
+                results.append(TextContent(text=content))
+            break
+        return results
 
     def _extract_assistant_contents(
         self, output_messages: list[dict], span: dict
     ) -> list[TextContent | ToolCallContent]:
-        """Extract assistant contents from output messages or attributes."""
-        results: list[TextContent | ToolCallContent] = []
+        """Extract assistant contents from output messages or attributes.
+
+        Tries three strategies in order:
+        1. Live attributes (llm.output_messages.*)
+        2. ADOT generations format (LLMResult with generations key)
+        3. Raw content fallback
+        """
         attrs = span.get("attributes", {})
 
-        # First, try to get from llm.output_messages attributes (live format)
+        # Strategy 1: live attributes
+        results = self._extract_assistant_from_live_attrs(attrs)
+        if results:
+            return results
+
+        # Strategy 2: ADOT generations format
+        results = self._extract_assistant_from_generations(output_messages)
+        if results:
+            return results
+
+        # Strategy 3: raw content fallback
+        return self._extract_assistant_from_raw_content(output_messages)
+
+    def _extract_assistant_from_live_attrs(self, attrs: dict) -> list[TextContent | ToolCallContent]:
+        """Extract assistant content from llm.output_messages.* attributes (live instrumentation)."""
+        results: list[TextContent | ToolCallContent] = []
+
         assistant_content = attrs.get("llm.output_messages.0.message.content")
-        if assistant_content:
-            results.append(TextContent(text=assistant_content))
+        if not assistant_content:
+            return results
 
-            # Check for tool calls in attributes
-            tool_idx = 0
-            while True:
-                tool_name = attrs.get(f"llm.output_messages.0.message.tool_calls.{tool_idx}.tool_call.function.name")
-                if not tool_name:
-                    break
-                tool_args_str = attrs.get(
-                    f"llm.output_messages.0.message.tool_calls.{tool_idx}.tool_call.function.arguments", "{}"
-                )
-                tool_id = attrs.get(f"llm.output_messages.0.message.tool_calls.{tool_idx}.tool_call.id")
-                try:
-                    tool_args = json.loads(tool_args_str) if isinstance(tool_args_str, str) else tool_args_str
-                except json.JSONDecodeError:
-                    tool_args = {}
-                results.append(ToolCallContent(name=tool_name, arguments=tool_args, tool_call_id=tool_id))
-                tool_idx += 1
+        results.append(TextContent(text=assistant_content))
 
-            if results:
-                return results
+        # Extract tool calls from attributes
+        tool_idx = 0
+        while True:
+            tool_name = attrs.get(f"llm.output_messages.0.message.tool_calls.{tool_idx}.tool_call.function.name")
+            if not tool_name:
+                break
+            tool_args_str = attrs.get(
+                f"llm.output_messages.0.message.tool_calls.{tool_idx}.tool_call.function.arguments", "{}"
+            )
+            tool_id = attrs.get(f"llm.output_messages.0.message.tool_calls.{tool_idx}.tool_call.id")
+            try:
+                tool_args = json.loads(tool_args_str) if isinstance(tool_args_str, str) else tool_args_str
+            except json.JSONDecodeError:
+                tool_args = {}
+            results.append(ToolCallContent(name=tool_name, arguments=tool_args, tool_call_id=tool_id))
+            tool_idx += 1
 
-        # Try parsing from output_messages
+        return results
+
+    @staticmethod
+    def _extract_assistant_from_generations(output_messages: list[dict]) -> list[TextContent | ToolCallContent]:
+        """Extract assistant content from ADOT generations format (LLMResult)."""
+        results: list[TextContent | ToolCallContent] = []
         for msg in output_messages:
             if msg.get("role") != "assistant":
                 continue
@@ -671,31 +742,35 @@ class OpenInferenceSessionMapper(SessionMapper):
 
             try:
                 gen = json.loads(content_str)
-                if "generations" in gen:
-                    gen_item = gen["generations"][0][0]
-                    results.append(TextContent(text=gen_item.get("text", "")))
+                if "generations" not in gen:
+                    continue
+                gen_item = gen["generations"][0][0]
+                results.append(TextContent(text=gen_item.get("text", "")))
 
-                    # Extract tool calls
-                    kwargs = gen_item.get("message", {}).get("kwargs", {})
-                    for call in kwargs.get("tool_calls", []):
-                        results.append(
-                            ToolCallContent(
-                                name=call.get("name", ""),
-                                arguments=call.get("args", {}),
-                                tool_call_id=call.get("id"),
-                            )
+                kwargs = gen_item.get("message", {}).get("kwargs", {})
+                for call in kwargs.get("tool_calls", []):
+                    results.append(
+                        ToolCallContent(
+                            name=call.get("name", ""),
+                            arguments=call.get("args", {}),
+                            tool_call_id=call.get("id"),
                         )
-                    return results
+                    )
+                return results
             except (json.JSONDecodeError, KeyError, IndexError, TypeError):
                 pass
 
-        # Fallback: use raw content
+        return results
+
+    @staticmethod
+    def _extract_assistant_from_raw_content(output_messages: list[dict]) -> list[TextContent | ToolCallContent]:
+        """Extract assistant content from raw message content (fallback)."""
+        results: list[TextContent | ToolCallContent] = []
         for msg in output_messages:
             if msg.get("role") == "assistant":
                 content_str = msg.get("content", "")
                 if isinstance(content_str, str):
                     results.append(TextContent(text=content_str))
-
         return results
 
     def _extract_user_prompt(self, input_messages: list[dict], span: dict) -> str | None:
