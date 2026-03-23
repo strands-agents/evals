@@ -28,12 +28,6 @@ class MockEvaluator(Evaluator[str, str]):
         score = 1.0 if evaluation_case.actual_output == evaluation_case.expected_output else 0.0
         return [EvaluationOutput(score=score, test_pass=score > 0.5, reason="Mock evaluation")]
 
-    async def evaluate_async(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
-        # Add a small delay to simulate async processing
-        await asyncio.sleep(0.01)
-        score = 1.0 if evaluation_case.actual_output == evaluation_case.expected_output else 0.0
-        return [EvaluationOutput(score=score, test_pass=score > 0.5, reason="Async test evaluation")]
-
 
 class MockEvaluator2(Evaluator[str, str]):
     """Second mock evaluator that always returns 0.5 for distinguishable results"""
@@ -41,19 +35,12 @@ class MockEvaluator2(Evaluator[str, str]):
     def evaluate(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
         return [EvaluationOutput(score=0.5, test_pass=True, reason="Mock evaluation 2")]
 
-    async def evaluate_async(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
-        await asyncio.sleep(0.01)
-        return [EvaluationOutput(score=0.5, test_pass=True, reason="Async test evaluation 2")]
-
 
 class ThrowingEvaluator(Evaluator[str, str]):
     """Evaluator that always throws an exception - used to test error isolation"""
 
     def evaluate(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
         raise RuntimeError("Evaluator exploded")
-
-    async def evaluate_async(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
-        raise RuntimeError("Async evaluator exploded")
 
 
 @pytest.fixture
@@ -167,79 +154,6 @@ def test_experiment_evaluators_setter():
     assert experiment.evaluators == [eval2, eval3]
 
 
-def test_experiment__run_task_simple_output(mock_evaluator):
-    """Test _run_task with simple output"""
-    case = Case(name="test", input="hello", expected_output="world")
-    experiment = Experiment(cases=[case], evaluators=[mock_evaluator])
-
-    def simple_task(c):
-        return f"response to {c.input}"
-
-    result = experiment._run_task(simple_task, case)
-
-    assert result.input == "hello"
-    assert result.actual_output == "response to hello"
-    assert result.expected_output == "world"
-    assert result.name == "test"
-    assert result.expected_trajectory is None
-    assert result.actual_trajectory is None
-    assert result.metadata is None
-    assert result.actual_interactions is None
-    assert result.expected_interactions is None
-
-
-def test_experiment__run_task_dict_output(mock_evaluator):
-    """Test _run_task with dictionary output containing trajectory"""
-    case = Case(name="test", input="hello", expected_output="world")
-    experiment = Experiment(cases=[case], evaluators=[mock_evaluator])
-
-    def dict_task(c):
-        return {"output": f"response to {c.input}", "trajectory": ["step1", "step2"]}
-
-    result = experiment._run_task(dict_task, case)
-
-    assert result.actual_output == "response to hello"
-    assert result.actual_trajectory == ["step1", "step2"]
-
-
-def test_experiment_run_task_dict_output_with_interactions(mock_evaluator):
-    """Test _run_task with dictionary output containing interactions"""
-    interactions = [{"node_name": "agent1", "dependencies": [], "messages": ["hello"]}]
-    case = Case(name="test", input="hello", expected_output="world", expected_interactions=interactions)
-    experiment = Experiment(cases=[case], evaluators=[mock_evaluator])
-
-    def dict_task(c):
-        return {
-            "output": f"response to {c.input}",
-            "trajectory": ["step1", "step2"],
-            "interactions": interactions,
-        }
-
-    result = experiment._run_task(dict_task, case)
-
-    assert result.actual_output == "response to hello"
-    assert result.actual_trajectory == ["step1", "step2"]
-    assert result.actual_interactions == interactions
-    assert result.expected_output == "world"
-    assert result.expected_trajectory is None
-    assert result.expected_interactions == interactions
-
-
-def test_experiment__run_task_dict_output_with_input_update(mock_evaluator):
-    """Test _run_task with dictionary output containing updated input"""
-    case = Case(name="test", input="original_input", expected_output="world")
-    experiment = Experiment(cases=[case], evaluators=[mock_evaluator])
-
-    def task_with_input_update(c):
-        return {"output": f"response to {c.input}", "input": "updated_input", "trajectory": ["step1"]}
-
-    result = experiment._run_task(task_with_input_update, case)
-
-    assert result.input == "updated_input"
-    assert result.actual_output == "response to original_input"
-    assert result.actual_trajectory == ["step1"]
-
-
 @pytest.mark.asyncio
 async def test_experiment__run_task_async_with_input_update():
     """Test _run_task_async with dictionary output containing updated input"""
@@ -255,8 +169,8 @@ async def test_experiment__run_task_async_with_input_update():
     assert result.actual_output == "response to original_input"
 
 
-def test_experiment__run_task_async_function_raises_error(mock_evaluator):
-    """Test _run_task raises ValueError when async task is passed"""
+def test_experiment_run_evaluations_async_function_raises_error(mock_evaluator):
+    """Test run_evaluations raises ValueError when async task is passed"""
     case = Case(name="test", input="hello", expected_output="world")
     experiment = Experiment(cases=[case], evaluators=[mock_evaluator])
 
@@ -264,7 +178,7 @@ def test_experiment__run_task_async_function_raises_error(mock_evaluator):
         return f"response to {c.input}"
 
     with pytest.raises(ValueError, match="Async task is not supported. Please use run_evaluations_async instead."):
-        experiment._run_task(async_task, case)
+        experiment.run_evaluations(async_task)
 
 
 @pytest.mark.asyncio
@@ -989,11 +903,12 @@ def test_experiment_run_evaluations_with_unnamed_case(mock_span, simple_task):
     experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
 
     with patch.object(experiment._tracer, "start_as_current_span", return_value=mock_span):
-        reports = experiment.run_evaluations(simple_task)
+        with patch("strands_evals.experiment.format_trace_id", return_value="mock_trace_id"):
+            reports = experiment.run_evaluations(simple_task)
 
-        # Should complete successfully
-        assert len(reports) == 1
-        assert reports[0].scores[0] == 1.0
+            # Should complete successfully
+            assert len(reports) == 1
+            assert reports[0].scores[0] == 1.0
 
 
 @pytest.mark.asyncio
@@ -1010,13 +925,73 @@ async def test_experiment_run_evaluations_async_creates_spans(mock_span):
 
             await experiment.run_evaluations_async(async_task)
 
-            # Verify both execute_case and evaluator spans were created
+            # Verify execute_case, task_execution, and evaluator spans were created
             calls = mock_start_span.call_args_list
-            assert len(calls) == 2
-            execute_case_span_call = calls[0]
-            evaluator_span_call = calls[1]
-            assert execute_case_span_call[0][0] == "execute_case async_test"
-            assert evaluator_span_call[0][0] == "evaluator MockEvaluator"
+            assert len(calls) == 3
+
+            # execute_case span has case.name and case.input attributes
+            assert calls[0][0][0] == "execute_case async_test"
+            assert calls[0][1]["attributes"]["gen_ai.evaluation.case.name"] == "async_test"
+            assert calls[0][1]["attributes"]["gen_ai.evaluation.case.input"] == '"hello"'
+
+            # task_execution span has task.type and case.name attributes
+            assert calls[1][0][0] == "task_execution async_test"
+            assert calls[1][1]["attributes"]["gen_ai.evaluation.task.type"] == "agent_task"
+            assert calls[1][1]["attributes"]["gen_ai.evaluation.case.name"] == "async_test"
+
+            # evaluator span has evaluation.name and case.name attributes
+            assert calls[2][0][0] == "evaluator MockEvaluator"
+            assert calls[2][1]["attributes"]["gen_ai.evaluation.name"] == "MockEvaluator"
+            assert calls[2][1]["attributes"]["gen_ai.evaluation.case.name"] == "async_test"
+
+
+@pytest.mark.asyncio
+async def test_experiment_run_evaluations_async_data_attrs_on_task_span():
+    """Test that data attributes (input, expected_output, etc.) are set on the task_execution span, not execute_case."""
+    case = Case(name="test", input="hello", expected_output="hello")
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
+
+    # Create distinct mock spans so we can tell which span gets which set_attributes call
+    case_span = MagicMock()
+    case_span.__enter__ = MagicMock(return_value=case_span)
+    case_span.__exit__ = MagicMock(return_value=False)
+    task_span = MagicMock()
+    task_span.__enter__ = MagicMock(return_value=task_span)
+    task_span.__exit__ = MagicMock(return_value=False)
+    eval_span = MagicMock()
+    eval_span.__enter__ = MagicMock(return_value=eval_span)
+    eval_span.__exit__ = MagicMock(return_value=False)
+
+    spans = [case_span, task_span, eval_span]
+    span_index = 0
+
+    def fake_start_span(name, **kwargs):
+        nonlocal span_index
+        span = spans[span_index]
+        span_index += 1
+        return span
+
+    with patch.object(experiment._tracer, "start_as_current_span", side_effect=fake_start_span):
+        with patch("strands_evals.experiment.format_trace_id", return_value="mock_trace_id"):
+
+            async def async_task(c):
+                return c.input
+
+            await experiment.run_evaluations_async(async_task)
+
+            # data attributes should be on task_span, NOT case_span
+            task_span.set_attributes.assert_called_once()
+            data_attrs = task_span.set_attributes.call_args[0][0]
+            assert "gen_ai.evaluation.data.input" in data_attrs
+            assert "gen_ai.evaluation.data.expected_output" in data_attrs
+            assert "gen_ai.evaluation.data.actual_output" in data_attrs
+            assert "gen_ai.evaluation.data.has_trajectory" in data_attrs
+            assert "gen_ai.evaluation.data.has_interactions" in data_attrs
+
+            # case_span should NOT have data attributes set via set_attributes
+            for call in case_span.set_attributes.call_args_list:
+                attrs = call[0][0]
+                assert "gen_ai.evaluation.data.input" not in attrs
 
 
 @pytest.mark.asyncio
@@ -1078,11 +1053,12 @@ def test_experiment_run_evaluations_multiple_cases(mock_span, simple_task):
     experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
 
     with patch.object(experiment._tracer, "start_as_current_span", return_value=mock_span):
-        reports = experiment.run_evaluations(simple_task)
+        with patch("strands_evals.experiment.format_trace_id", return_value="mock_trace_id"):
+            reports = experiment.run_evaluations(simple_task)
 
-        assert len(reports) == 1
-        assert len(reports[0].scores) == 2
-        assert all(score == 1.0 for score in reports[0].scores)
+            assert len(reports) == 1
+            assert len(reports[0].scores) == 2
+            assert all(score == 1.0 for score in reports[0].scores)
 
 
 def test_experiment_run_evaluations_evaluator_error_isolated():
@@ -1215,7 +1191,7 @@ def test_experiment_run_evaluations_fails_after_max_retries():
     assert len(reports) == 1
     assert reports[0].scores[0] == 0
     assert reports[0].test_passes[0] is False
-    assert "Task execution error" in reports[0].reasons[0]
+    assert "An error occurred" in reports[0].reasons[0]
 
 
 def test_experiment_run_evaluations_no_retry_on_non_throttling():
@@ -1243,7 +1219,7 @@ def test_experiment_run_evaluations_exponential_backoff():
     """Test that run_evaluations uses exponential backoff for retries"""
     sleep_delays = []
 
-    def mock_sleep(delay):
+    async def mock_async_sleep(delay):
         sleep_delays.append(delay)
 
     call_count = 0
@@ -1258,7 +1234,7 @@ def test_experiment_run_evaluations_exponential_backoff():
     case = Case(name="test", input="hello", expected_output="hello")
     experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
 
-    with patch("time.sleep", mock_sleep):
+    with patch("asyncio.sleep", mock_async_sleep):
         with patch("strands_evals.experiment._INITIAL_RETRY_DELAY", 1):
             with patch("strands_evals.experiment._MAX_RETRY_DELAY", 10):
                 experiment.run_evaluations(throttling_task)
@@ -1401,7 +1377,7 @@ async def test_experiment_run_evaluations_async_exponential_backoff():
             with patch("strands_evals.experiment._MAX_RETRY_DELAY", 10):
                 await experiment.run_evaluations_async(throttling_task, max_workers=1)
 
-    # Filter out MockEvaluator's sleep calls (0.01) and verify exponential backoff: 1, 2, 4
+    # Verify exponential backoff: 1, 2, 4
     retry_delays = [d for d in sleep_delays if d >= 1]
     assert len(retry_delays) == 3
     assert retry_delays[0] == 1

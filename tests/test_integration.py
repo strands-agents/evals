@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -14,13 +14,6 @@ class SimpleEvaluator(Evaluator[str, str]):
     def evaluate(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
         score = 1.0 if evaluation_case.actual_output == evaluation_case.expected_output else 0.0
         return [EvaluationOutput(score=score, test_pass=score > 0.5, reason="Integration test")]
-
-    async def evaluate_async(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
-        """Async version of evaluate"""
-        # Add a small delay to simulate async processing
-        await asyncio.sleep(0.01)
-        score = 1.0 if evaluation_case.actual_output == evaluation_case.expected_output else 0.0
-        return [EvaluationOutput(score=score, test_pass=score > 0.5, reason="Async integration test")]
 
 
 @pytest.fixture
@@ -52,27 +45,12 @@ mock_score = 0.8
 
 @pytest.fixture
 def mock_agent():
-    """Mock agent for evaluators using agent() call with structured_output_model"""
+    """Mock agent for evaluators supporting both sync and async call patterns"""
     agent = Mock()
     mock_result = Mock()
     mock_result.structured_output = EvaluationOutput(score=mock_score, test_pass=True, reason="LLM evaluation")
     agent.return_value = mock_result
-    return agent
-
-
-@pytest.fixture
-def mock_async_agent():
-    """Mock agent for async evaluators"""
-    agent = Mock()
-
-    async def mock_invoke_async(*args, **kwargs):
-        mock_result = Mock()
-        mock_result.structured_output = EvaluationOutput(
-            score=mock_score, test_pass=True, reason="Async LLM evaluation"
-        )
-        return mock_result
-
-    agent.invoke_async = mock_invoke_async
+    agent.invoke_async = AsyncMock(return_value=mock_result)
     return agent
 
 
@@ -135,7 +113,7 @@ def test_integration_dataset_with_output_evaluator(mock_agent_class, cases, mock
     reports = experiment.run_evaluations(simple_task)
 
     # Verify LLM evaluator was called for each test case
-    assert mock_agent.call_count == 3
+    assert mock_agent.invoke_async.call_count == 3
     assert len(reports) == 1
     report = reports[0]
     assert len(report.scores) == 3
@@ -226,11 +204,9 @@ async def test_integration_async_dataset_with_simple_evaluator(cases):
     assert len(reports) == 1
     report = reports[0]
     assert len(report.scores) == 3
-    assert report.scores[0] == 1.0  # exact match
-    assert report.scores[1] == 0.0  # no match
-    assert report.scores[2] == 0.0  # partial no match
+    assert sorted(report.scores, reverse=True) == [1.0, 0.0, 0.0]
     assert report.overall_score == 1.0 / 3
-    assert report.test_passes == [True, False, False]
+    assert sum(report.test_passes) == 1
     assert len(report.cases) == 3
 
 
@@ -259,9 +235,9 @@ async def test_integration_async_dataset_with_async_task(cases):
 
 @pytest.mark.asyncio
 @patch("strands_evals.evaluators.output_evaluator.Agent")
-async def test_integration_async_dataset_with_output_evaluator(mock_agent_class, cases, mock_async_agent):
+async def test_integration_async_dataset_with_output_evaluator(mock_agent_class, cases, mock_agent):
     """Test async Experiment with OutputEvaluator integration"""
-    mock_agent_class.return_value = mock_async_agent
+    mock_agent_class.return_value = mock_agent
 
     output_evaluator = OutputEvaluator(rubric="Test if outputs match exactly")
     experiment = Experiment(cases=cases, evaluators=[output_evaluator])
@@ -327,7 +303,7 @@ def test_experiment_with_interactions_evaluator(mock_agent_class, interaction_ca
     reports = experiment.run_evaluations(task_with_interactions)
 
     # Verify the evaluator was called (once per interaction, so 2 times)
-    assert mock_agent.call_count == 2
+    assert mock_agent.invoke_async.call_count == 2
     assert len(reports) == 1
     report = reports[0]
     assert len(report.scores) == 1

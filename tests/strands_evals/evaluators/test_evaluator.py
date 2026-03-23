@@ -22,9 +22,6 @@ class SimpleEvaluator(Evaluator[str, str]):
         score = 1.0 if evaluation_case.actual_output == evaluation_case.expected_output else 0.0
         return EvaluationOutput(score=score, test_pass=score > 0.5, reason="Test evaluation")
 
-    async def evaluate_async(self, evaluation_case: EvaluationData[str, str]) -> EvaluationOutput:
-        return self.evaluate(evaluation_case)
-
 
 @pytest.fixture
 def evaluation_data():
@@ -40,16 +37,27 @@ def test_evaluator_not_implemented_evaluate(evaluation_data):
 
 
 @pytest.mark.asyncio
-async def test_evaluator_not_implemented_evaluate_async(evaluation_data):
-    """Test that base Evaluator raises NotImplementedError for evaluate_async"""
+async def test_evaluator_evaluate_async_delegates_to_evaluate(evaluation_data):
+    """Test that base evaluate_async delegates to evaluate via asyncio.to_thread"""
     evaluator = Evaluator[str, str]()
 
+    # Base evaluate() raises NotImplementedError, which should propagate through evaluate_async
     with pytest.raises(
         NotImplementedError,
-        match="This method should be implemented in subclasses,"
-        " especially if you want to run evaluations asynchronously.",
+        match="This method should be implemented in subclasses.",
     ):
         await evaluator.evaluate_async(evaluation_data)
+
+
+@pytest.mark.asyncio
+async def test_evaluator_evaluate_async_fallback_calls_evaluate(evaluation_data):
+    """Test that evaluate_async correctly calls evaluate for subclasses that only implement evaluate"""
+    evaluator = SimpleEvaluator()
+
+    # SimpleEvaluator only needs evaluate() — evaluate_async should delegate to it
+    result = await evaluator.evaluate_async(evaluation_data)
+    assert result.score == 0.0
+    assert result.test_pass is False
 
 
 def test_evaluator_custom_implementation(evaluation_data):
