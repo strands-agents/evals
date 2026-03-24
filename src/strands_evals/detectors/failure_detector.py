@@ -22,6 +22,10 @@ from .constants import DEFAULT_DETECTOR_MODEL
 from .prompt_templates.failure_detection import get_template
 
 logger = logging.getLogger(__name__)
+<<<<<<< HEAD
+=======
+
+>>>>>>> ee4de73 (feat(rca): added root_cause_analyzer)
 CONFIDENCE_ORDER: dict[ConfidenceLevel, int] = {"low": 0, "medium": 1, "high": 2}
 
 

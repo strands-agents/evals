@@ -16,10 +16,12 @@ from ..types.detector import (
     RCAStructuredOutput,
 )
 from .failure_detector import detect_failures
+from .root_cause_analyzer import analyze_root_cause
 
 __all__ = [
     # Core detectors
     "detect_failures",
+    "analyze_root_cause",
     # Types
     "ConfidenceLevel",
     "DiagnosisResult",

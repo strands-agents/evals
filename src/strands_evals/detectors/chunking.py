@@ -22,6 +22,10 @@ from .constants import (
 )
 
 logger = logging.getLogger(__name__)
+<<<<<<< HEAD
+=======
+
+>>>>>>> ee4de73 (feat(rca): added root_cause_analyzer)
 _CONFIDENCE_RANK: dict[ConfidenceLevel, int] = {"low": 0, "medium": 1, "high": 2}
 
 
