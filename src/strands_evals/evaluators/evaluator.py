@@ -127,6 +127,26 @@ class Evaluator(Generic[InputT, OutputT]):
             )
         return parsed_inputs[-1]
 
+    def _extract_user_prompt(self, parsed_input: TraceLevelInput) -> str:
+        """Extract user prompt from last message in session history.
+
+        Args:
+            parsed_input: Trace-level input containing session history
+
+        Returns:
+            User prompt text, or empty string if not available
+        """
+        if not parsed_input.session_history:
+            return ""
+
+        last_msg = parsed_input.session_history[-1]
+        if not isinstance(last_msg, list) and self._has_text_content(last_msg):
+            first_content = last_msg.content[0]
+            if isinstance(first_content, TextContent):
+                return first_content.text
+
+        return ""
+
     def _format_tools(self, tools: list[ToolConfig]) -> str:
         """Format available tools for prompt display."""
         return "\n".join([f"- {tool.name}: {tool.description or 'No description'}" for tool in tools])

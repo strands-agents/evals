@@ -47,7 +47,7 @@ class GoalSuccessRateEvaluator(Evaluator[InputT, OutputT]):
     - **Basic mode**: Evaluates goal success based on conversation analysis alone.
       The judge LLM infers user goals from the conversation and checks whether they were met.
       Uses a Yes/No scoring rubric (Yes=1.0, No=0.0).
-    - **Assertion mode**: When ``expected_assertion`` is provided on the evaluation case,
+    - **Assertion mode**: When `expected_assertion` is provided on the evaluation case,
       evaluates whether the agent's behavior satisfies the specified success assertions —
       human-authored statements describing expected agent actions, responses, or behaviors.
       Unlike basic mode, assertion mode judges against explicit criteria defined upfront
