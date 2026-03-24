@@ -17,12 +17,12 @@ from tenacity import (
 from typing_extensions import Any, Generic
 
 from .case import Case
+from .evaluation_data_store import EvaluationDataStore
 from .evaluators.deterministic import Contains, Equals, StartsWith, StateEquals, ToolCalled
 from .evaluators.evaluator import Evaluator
 from .evaluators.interactions_evaluator import InteractionsEvaluator
 from .evaluators.output_evaluator import OutputEvaluator
 from .evaluators.trajectory_evaluator import TrajectoryEvaluator
-from .evaluation_data_store import EvaluationDataStore
 from .telemetry import get_tracer, serialize
 from .telemetry._cloudwatch_logger import _send_to_cloudwatch
 from .types.evaluation import EvaluationData, InputT, OutputT
