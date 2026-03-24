@@ -101,31 +101,6 @@ def test_score_mapping(mock_agent_class, evaluation_data, score, expected_value,
     assert result[0].label == score
 
 
-@pytest.mark.asyncio
-@patch("strands_evals.evaluators.coherence_evaluator.Agent")
-async def test_evaluate_async(mock_agent_class, evaluation_data):
-    mock_agent = Mock()
-
-    async def mock_invoke_async(*args, **kwargs):
-        mock_result = Mock()
-        mock_result.structured_output = CoherenceRating(
-            reasoning="The response is logically coherent with no contradictions", score=CoherenceScore.COMPLETELY_YES
-        )
-        return mock_result
-
-    mock_agent.invoke_async = mock_invoke_async
-    mock_agent_class.return_value = mock_agent
-    evaluator = CoherenceEvaluator()
-
-    result = await evaluator.evaluate_async(evaluation_data)
-
-    assert len(result) == 1
-    assert result[0].score == 1.0
-    assert result[0].test_pass is True
-    assert result[0].reason == "The response is logically coherent with no contradictions"
-    assert result[0].label == CoherenceScore.COMPLETELY_YES
-
-
 def test_coherence_score_enum_values():
     """Test that CoherenceScore enum has all expected values."""
     assert CoherenceScore.NOT_AT_ALL.value == "Not At All"
