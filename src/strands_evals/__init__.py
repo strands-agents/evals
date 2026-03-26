@@ -2,12 +2,14 @@ from . import evaluators, extractors, generators, providers, simulation, telemet
 from .case import Case
 from .evaluation_data_store import EvaluationDataStore
 from .experiment import Experiment
+from .local_file_task_result_store import LocalFileTaskResultStore
 from .simulation import ActorSimulator, UserSimulator
 from .telemetry import StrandsEvalsTelemetry, get_tracer
 
 __all__ = [
     "Experiment",
     "Case",
+    "LocalFileTaskResultStore",
     "EvaluationDataStore",
     "evaluators",
     "extractors",
