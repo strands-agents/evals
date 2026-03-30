@@ -23,6 +23,7 @@ from .evaluators.evaluator import Evaluator
 from .evaluators.interactions_evaluator import InteractionsEvaluator
 from .evaluators.output_evaluator import OutputEvaluator
 from .evaluators.trajectory_evaluator import TrajectoryEvaluator
+from .providers.trace_provider import TraceProvider
 from .telemetry import get_tracer, serialize
 from .telemetry._cloudwatch_logger import _send_to_cloudwatch
 from .types.evaluation import EvaluationData, InputT, OutputT
@@ -167,6 +168,31 @@ class Experiment(Generic[InputT, OutputT]):
         case_names = [case.name for case in self._cases]
         if len(case_names) != len(set(case_names)):
             raise ValueError("All case names must be unique when using an evaluation_data_store.")
+
+    @staticmethod
+    def _resolve_task(
+        task: Callable | None,
+        provider: TraceProvider | None,
+    ) -> Callable:
+        """Resolve task and provider into a single task callable.
+
+        Args:
+            task: User-provided task function.
+            provider: TraceProvider that fetches evaluation data by session_id.
+
+        Returns:
+            The task callable to use for evaluation.
+
+        Raises:
+            ValueError: If both or neither of task and provider are specified.
+        """
+        if task is not None and provider is not None:
+            raise ValueError("Cannot specify both 'task' and 'provider'. Use one or the other.")
+        if task is None and provider is None:
+            raise ValueError("Must specify either 'task' or 'provider'.")
+        if provider is not None:
+            return lambda case: provider.get_evaluation_data(case.session_id)
+        return task
 
     async def _run_task_async(
         self, task: Callable[[Case[InputT, OutputT]], OutputT | dict[str, Any]], case: Case[InputT, OutputT]
@@ -499,8 +525,9 @@ class Experiment(Generic[InputT, OutputT]):
 
     def run_evaluations(
         self,
-        task: Callable[[Case[InputT, OutputT]], OutputT | dict[str, Any]],
+        task: Callable[[Case[InputT, OutputT]], OutputT | dict[str, Any]] | None = None,
         evaluation_data_store: EvaluationDataStore | None = None,
+        provider: TraceProvider | None = None,
     ) -> list[EvaluationReport]:
         """
         Run the evaluations for all of the test cases with all evaluators.
@@ -509,21 +536,29 @@ class Experiment(Generic[InputT, OutputT]):
 
         Args:
             task: The task to run the test case on. This function should take in InputT and returns either
-                OutputT or {"output": OutputT, "trajectory": ...}.
+                OutputT or {"output": OutputT, "trajectory": ...}. Mutually exclusive with provider.
             evaluation_data_store: Optional store for loading/saving evaluation data. When provided, cached
                 results are loaded instead of running the task, and new results are saved after task execution.
+            provider: A TraceProvider that fetches evaluation data by session_id. When given, a task function
+                is generated automatically. Mutually exclusive with task.
 
         Return:
             A list of EvaluationReport objects, one for each evaluator, containing the overall score,
             individual case results, and basic feedback for each test case.
         """
+        task = self._resolve_task(task, provider)
+
         if asyncio.iscoroutinefunction(task):
             raise ValueError("Async task is not supported. Please use run_evaluations_async instead.")
 
         return asyncio.run(self.run_evaluations_async(task, max_workers=1, evaluation_data_store=evaluation_data_store))
 
     async def run_evaluations_async(
-        self, task: Callable, max_workers: int = 10, evaluation_data_store: EvaluationDataStore | None = None
+        self,
+        task: Callable | None = None,
+        max_workers: int = 10,
+        evaluation_data_store: EvaluationDataStore | None = None,
+        provider: TraceProvider | None = None,
     ) -> list[EvaluationReport]:
         """
         Run evaluations asynchronously using a queue for parallel processing.
@@ -531,14 +566,17 @@ class Experiment(Generic[InputT, OutputT]):
         Args:
             task: The task function to run on each case. This function should take in InputT and returns
                 either OutputT or {"output": OutputT, "trajectory": ...}. The task can either run
-                synchronously or asynchronously.
+                synchronously or asynchronously. Mutually exclusive with provider.
             max_workers: Maximum number of parallel workers (default: 10)
             evaluation_data_store: Optional store for loading/saving evaluation data. When provided, cached
                 results are loaded instead of running the task, and new results are saved after task execution.
+            provider: A TraceProvider that fetches evaluation data by session_id. When given, a task function
+                is generated automatically. Mutually exclusive with task.
 
         Returns:
             List of EvaluationReport objects, one for each evaluator, containing evaluation results
         """
+        task = self._resolve_task(task, provider)
         if evaluation_data_store is not None:
             self._validate_case_names()
 

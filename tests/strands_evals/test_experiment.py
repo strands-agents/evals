@@ -1756,3 +1756,108 @@ class TestEvaluationDataStore:
 
         assert len(reports) == 1
         assert reports[0].scores[0] == 1.0
+
+
+class MockTraceProvider:
+    """Simple mock provider for testing."""
+
+    def __init__(self, data: dict[str, dict]):
+        self._data = data
+        self.call_count = 0
+        self.called_session_ids: list[str] = []
+
+    def get_evaluation_data(self, session_id: str) -> dict:
+        self.call_count += 1
+        self.called_session_ids.append(session_id)
+        return self._data[session_id]
+
+
+class TestProviderIntegration:
+    def test_run_evaluations_with_provider(self):
+        """Provider should be called with each case's session_id and results passed to evaluators."""
+        cases = [
+            Case(name="c1", session_id="sess-1", input="hello", expected_output="hello"),
+            Case(name="c2", session_id="sess-2", input="foo", expected_output="foo"),
+        ]
+        provider = MockTraceProvider({
+            "sess-1": {"output": "hello"},
+            "sess-2": {"output": "foo"},
+        })
+        experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
+
+        reports = experiment.run_evaluations(provider=provider)
+
+        assert provider.call_count == 2
+        assert set(provider.called_session_ids) == {"sess-1", "sess-2"}
+        assert len(reports) == 1
+        assert reports[0].scores == [1.0, 1.0]
+
+    def test_run_evaluations_with_provider_and_task_raises(self):
+        """Passing both task and provider should raise ValueError."""
+        cases = [Case(name="c1", input="hello", expected_output="hello")]
+        provider = MockTraceProvider({"sess": {"output": "hello"}})
+        experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
+
+        with pytest.raises(ValueError, match="Cannot specify both"):
+            experiment.run_evaluations(task=lambda c: c.input, provider=provider)
+
+    def test_run_evaluations_with_neither_task_nor_provider_raises(self):
+        """Passing neither task nor provider should raise ValueError."""
+        cases = [Case(name="c1", input="hello", expected_output="hello")]
+        experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
+
+        with pytest.raises(ValueError, match="Must specify either"):
+            experiment.run_evaluations()
+
+    @pytest.mark.asyncio
+    async def test_run_evaluations_async_with_provider(self):
+        """Async variant should also accept provider parameter."""
+        cases = [
+            Case(name="c1", session_id="sess-1", input="hello", expected_output="hello"),
+        ]
+        provider = MockTraceProvider({
+            "sess-1": {"output": "hello"},
+        })
+        experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
+
+        reports = await experiment.run_evaluations_async(provider=provider)
+
+        assert provider.call_count == 1
+        assert provider.called_session_ids == ["sess-1"]
+        assert len(reports) == 1
+        assert reports[0].scores == [1.0]
+
+    def test_run_evaluations_with_provider_and_data_store_caches(self):
+        """When data store has cached data, provider should not be called for that case."""
+        store = DictEvaluationDataStore()
+        cached_data = EvaluationData(
+            input="hello",
+            actual_output="hello",
+            name="c1",
+            expected_output="hello",
+        )
+        store.save("c1", cached_data)
+
+        provider = MockTraceProvider({
+            "sess-1": {"output": "hello"},
+        })
+        cases = [Case(name="c1", session_id="sess-1", input="hello", expected_output="hello")]
+        experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
+
+        reports = experiment.run_evaluations(provider=provider, evaluation_data_store=store)
+
+        # Provider should NOT have been called - data was cached
+        assert provider.call_count == 0
+        assert len(reports) == 1
+        assert reports[0].scores == [1.0]
+
+    def test_run_evaluations_with_task_positional_arg_unchanged(self):
+        """Existing positional task argument should continue to work."""
+        cases = [Case(name="c1", input="hello", expected_output="hello")]
+        experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
+
+        # Positional arg - existing behavior
+        reports = experiment.run_evaluations(lambda c: c.input)
+
+        assert len(reports) == 1
+        assert reports[0].scores == [1.0]
