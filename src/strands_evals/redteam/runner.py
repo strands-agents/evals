@@ -8,6 +8,7 @@ import json
 import logging
 import random
 from collections.abc import Callable
+from typing import cast
 
 from pydantic import BaseModel, Field
 from strands import Agent
@@ -85,7 +86,8 @@ def _generate_attack_goals(
     )
     agent = Agent(model=model, callback_handler=None)
     result = agent(prompt, structured_output_model=_AttackGoals)
-    return {g.attack_type: g for g in result.structured_output.goals}
+    goals = cast(_AttackGoals, result.structured_output)
+    return {g.attack_type: g for g in goals.goals}
 
 
 def generate_cases(
@@ -217,7 +219,7 @@ def build_task_function(
             max_turns=max_turns,
         )
 
-        conversation = []
+        conversation: list[dict[str, str]] = []
         attacker_message = case.input
 
         while simulator.has_next():
