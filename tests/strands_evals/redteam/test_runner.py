@@ -8,7 +8,6 @@ from strands_evals.case import Case
 from strands_evals.redteam.presets import ATTACK_REGISTRY
 from strands_evals.redteam.runner import (
     _AttackGoal,
-    _AttackGoals,
     build_task_function,
     generate_cases,
     run_red_team,
@@ -44,8 +43,10 @@ class TestGenerateCases:
         assert "traits" in metadata
         assert "context" in metadata
         assert "actor_goal" in metadata
-        assert "system_prompt_template" in metadata
+        assert "system_prompt_template" in metadata  # from strategy config
         assert "severity" in metadata
+        assert "strategy" in metadata
+        assert "evaluation_metrics" in metadata
 
     def test_case_input_is_from_seed_inputs(self):
         cases = generate_cases(attack_types=["jailbreak"], n_per_type=3)
@@ -69,6 +70,10 @@ class TestGenerateCases:
     def test_unknown_attack_type_raises_error(self):
         with pytest.raises(ValueError, match="Unknown attack type"):
             generate_cases(attack_types=["nonexistent_attack"])
+
+    def test_unknown_strategy_raises_error(self):
+        with pytest.raises(ValueError, match="Unknown strategy"):
+            generate_cases(attack_types=["jailbreak"], strategy="nonexistent")
 
     def test_uses_preset_defaults_without_target_info(self):
         cases = generate_cases(attack_types=["jailbreak"], n_per_type=1)
@@ -139,6 +144,7 @@ class TestBuildTaskFunction:
                 "actor_goal": preset["actor_goal"],
                 "system_prompt_template": "Test: {actor_profile}",
                 "severity": preset["severity"],
+                "strategy": "default",
             },
         )
 
@@ -249,11 +255,13 @@ class TestRunRedTeam:
             n_per_type=1,
             target_info=None,
             model="test-model",
+            strategy="gradual_escalation",
         )
         mock_build_fn.assert_called_once_with(
             target=target,
             max_turns=3,
             model="test-model",
+            strategy="gradual_escalation",
         )
         mock_experiment.run_evaluations.assert_called_once_with(mock_task_fn)
 

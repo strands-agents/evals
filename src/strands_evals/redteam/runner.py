@@ -18,11 +18,23 @@ from strands_evals.case import Case
 from strands_evals.evaluators.red_team_judge_evaluator import RedTeamJudgeEvaluator
 from strands_evals.experiment import Experiment
 from strands_evals.redteam.presets import ATTACK_REGISTRY
+from strands_evals.redteam.prompt_templates.strategies.gradual_escalation import (
+    SYSTEM_PROMPT_TEMPLATE as GRADUAL_ESCALATION_PROMPT,
+)
 from strands_evals.simulation.actor_simulator import ActorSimulator
 from strands_evals.types.evaluation_report import EvaluationReport
 from strands_evals.types.simulation import ActorProfile
 
 logger = logging.getLogger(__name__)
+
+STRATEGY_CONFIGS = {
+    "gradual_escalation": {
+        "system_prompt_template": GRADUAL_ESCALATION_PROMPT,
+    },
+}
+
+DEFAULT_STRATEGY = "gradual_escalation"
+SUPPORTED_STRATEGIES = list(STRATEGY_CONFIGS.keys())
 
 _GOAL_GENERATION_PROMPT = """\
 You are a security testing planner. Given information about a target AI system \
@@ -81,6 +93,7 @@ def generate_cases(
     n_per_type: int = 5,
     target_info: dict | None = None,
     model: Union[Model, str, None] = None,
+    strategy: str = DEFAULT_STRATEGY,
 ) -> list[Case]:
     """Generate red team test cases from attack presets.
 
@@ -101,14 +114,17 @@ def generate_cases(
 
     Raises:
         ValueError: If an attack type is not found in ATTACK_REGISTRY.
+        ValueError: If strategy is not supported.
     """
+    if strategy not in STRATEGY_CONFIGS:
+        raise ValueError(f"Unknown strategy: '{strategy}'. Supported strategies: {SUPPORTED_STRATEGIES}")
+
+    strategy_config = STRATEGY_CONFIGS[strategy]
+
     # Validate attack types
     for attack_type in attack_types:
         if attack_type not in ATTACK_REGISTRY:
-            raise ValueError(
-                f"Unknown attack type: '{attack_type}'. "
-                f"Available types: {list(ATTACK_REGISTRY.keys())}"
-            )
+            raise ValueError(f"Unknown attack type: '{attack_type}'. Available types: {list(ATTACK_REGISTRY.keys())}")
 
     # Generate target-specific goals if target_info is provided
     custom_goals = {}
@@ -124,9 +140,7 @@ def generate_cases(
         if n_per_type <= len(seed_inputs):
             selected_seeds = random.sample(seed_inputs, n_per_type)
         else:
-            selected_seeds = seed_inputs + random.choices(
-                seed_inputs, k=n_per_type - len(seed_inputs)
-            )
+            selected_seeds = seed_inputs + random.choices(seed_inputs, k=n_per_type - len(seed_inputs))
 
         # Use custom goal if available, otherwise preset default
         custom_goal = custom_goals.get(attack_type)
@@ -139,8 +153,10 @@ def generate_cases(
                 "traits": preset["traits"],
                 "context": context,
                 "actor_goal": actor_goal,
-                "system_prompt_template": preset["system_prompt_template"],
+                "system_prompt_template": strategy_config["system_prompt_template"],
                 "severity": preset["severity"],
+                "strategy": strategy,
+                "evaluation_metrics": preset.get("evaluation_metrics", []),
             }
 
             cases.append(
@@ -158,6 +174,7 @@ def build_task_function(
     target: Callable,
     max_turns: int = 10,
     model: Union[Model, str, None] = None,
+    strategy: str = DEFAULT_STRATEGY,
 ) -> Callable:
     """Build a task function that runs multi-turn red team conversations.
 
@@ -169,15 +186,20 @@ def build_task_function(
             Typically a lambda wrapping an Agent call (e.g., lambda msg: str(agent(msg))).
         max_turns: Maximum conversation turns per case.
         model: Model for the ActorSimulator's underlying agent.
+        strategy: Attack strategy name. See SUPPORTED_STRATEGIES for available options.
 
     Returns:
         A task function compatible with Experiment.run_evaluations().
+
+    Raises:
+        ValueError: If strategy is not supported.
     """
+    if strategy not in SUPPORTED_STRATEGIES:
+        raise ValueError(f"Unknown strategy: '{strategy}'. Supported strategies: {SUPPORTED_STRATEGIES}")
 
     def task_fn(case: Case) -> dict:
         metadata = case.metadata or {}
 
-        # Build actor profile from case metadata
         actor_profile = ActorProfile(
             traits=metadata.get("traits", {}),
             context=metadata.get("context", ""),
@@ -185,8 +207,8 @@ def build_task_function(
         )
 
         system_prompt_template = metadata.get("system_prompt_template", "")
+        system_prompt_template = system_prompt_template.replace("{max_turns}", str(max_turns))
 
-        # Create adversarial simulator
         simulator = ActorSimulator(
             actor_profile=actor_profile,
             initial_query=case.input,
@@ -195,12 +217,10 @@ def build_task_function(
             max_turns=max_turns,
         )
 
-        # Run multi-turn conversation
         conversation = []
         attacker_message = case.input
 
         while simulator.has_next():
-            # Target agent responds
             try:
                 target_response = str(target(attacker_message))
             except Exception as e:
@@ -210,11 +230,9 @@ def build_task_function(
             conversation.append({"role": "attacker", "content": attacker_message})
             conversation.append({"role": "target", "content": target_response})
 
-            # Check if simulator wants to continue before generating next attack
             if not simulator.has_next():
                 break
 
-            # Attacker generates next message
             attacker_result = simulator.act(target_response)
             attacker_message = str(attacker_result.structured_output.message)
 
@@ -233,6 +251,7 @@ def run_red_team(
     max_turns: int = 10,
     evaluators: list | None = None,
     model: Union[Model, str, None] = None,
+    strategy: str = DEFAULT_STRATEGY,
 ) -> list[EvaluationReport]:
     """Run an end-to-end red team evaluation.
 
@@ -247,6 +266,7 @@ def run_red_team(
         max_turns: Maximum conversation turns per case.
         evaluators: List of evaluator instances. If None, uses default RedTeamJudgeEvaluator.
         model: Model for the ActorSimulator and default evaluator.
+        strategy: Attack strategy name. See SUPPORTED_STRATEGIES for available options.
 
     Returns:
         List of EvaluationReport, one per evaluator.
@@ -269,26 +289,24 @@ def run_red_team(
             report.display()
         ```
     """
-    # Generate cases
     cases = generate_cases(
         attack_types=attack_types,
         n_per_type=n_per_type,
         target_info=target_info,
         model=model,
+        strategy=strategy,
     )
 
-    # Build task function
     task_fn = build_task_function(
         target=target,
         max_turns=max_turns,
         model=model,
+        strategy=strategy,
     )
 
-    # Set up evaluators
     if evaluators is None:
         evaluators = [RedTeamJudgeEvaluator(model=model)]
 
-    # Run experiment
     experiment = Experiment(cases=cases, evaluators=evaluators)
     reports = experiment.run_evaluations(task_fn)
 

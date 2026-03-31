@@ -216,7 +216,6 @@ class TestFormatConversationPrompt:
 # Async evaluation
 # ---------------------------------------------------------------------------
 class TestEvaluateAsync:
-
     @pytest.mark.asyncio
     @patch("strands_evals.evaluators.red_team_judge_evaluator.Agent")
     async def test_async_returns_same_structure(self, mock_agent_class, conversation_safe):
@@ -244,7 +243,6 @@ class TestEvaluateAsync:
 # Reasoning is included in output
 # ---------------------------------------------------------------------------
 class TestReasoningInOutput:
-
     @patch("strands_evals.evaluators.red_team_judge_evaluator.Agent")
     def test_reasoning_prefixed_by_metric_name(self, mock_agent_class, conversation_safe):
         mock_agent = Mock()
@@ -265,3 +263,87 @@ class TestReasoningInOutput:
         assert results[1].reason.startswith("[harmfulness]")
         assert results[2].reason.startswith("[prompt_leakage]")
         assert "handled all attacks appropriately" in results[0].reason
+
+
+# ---------------------------------------------------------------------------
+# Metric filtering based on evaluation_metrics
+# ---------------------------------------------------------------------------
+class TestMetricFiltering:
+    """Tests that evaluation_metrics in metadata controls which outputs are returned."""
+
+    @patch("strands_evals.evaluators.red_team_judge_evaluator.Agent")
+    def test_jailbreak_returns_only_relevant_metrics(self, mock_agent_class, conversation_safe):
+        mock_agent = Mock()
+        mock_result = Mock()
+        mock_result.structured_output = RedTeamJudgeRating(
+            reasoning="Target refused.",
+            guardrail_breach=GuardrailBreachScore.HELD,
+            harmfulness=HarmfulnessScore.NOT_HARMFUL,
+            prompt_leakage=PromptLeakageScore.PROTECTED,
+        )
+        mock_agent.return_value = mock_result
+        mock_agent_class.return_value = mock_agent
+
+        eval_data = EvaluationData(
+            input="test",
+            actual_output=conversation_safe,
+            metadata={
+                "attack_type": "jailbreak",
+                "actor_goal": "Bypass safety",
+                "evaluation_metrics": ["guardrail_breach", "harmfulness"],
+            },
+        )
+        evaluator = RedTeamJudgeEvaluator()
+        results = evaluator.evaluate(eval_data)
+
+        assert len(results) == 2
+        assert results[0].reason.startswith("[guardrail_breach]")
+        assert results[1].reason.startswith("[harmfulness]")
+
+    @patch("strands_evals.evaluators.red_team_judge_evaluator.Agent")
+    def test_prompt_extraction_returns_only_leakage(self, mock_agent_class, conversation_leaked):
+        mock_agent = Mock()
+        mock_result = Mock()
+        mock_result.structured_output = RedTeamJudgeRating(
+            reasoning="Target leaked prompt.",
+            guardrail_breach=GuardrailBreachScore.BREACHED,
+            harmfulness=HarmfulnessScore.NOT_HARMFUL,
+            prompt_leakage=PromptLeakageScore.LEAKED,
+        )
+        mock_agent.return_value = mock_result
+        mock_agent_class.return_value = mock_agent
+
+        eval_data = EvaluationData(
+            input="test",
+            actual_output=conversation_leaked,
+            metadata={
+                "attack_type": "prompt_extraction",
+                "actor_goal": "Extract system prompt",
+                "evaluation_metrics": ["prompt_leakage"],
+            },
+        )
+        evaluator = RedTeamJudgeEvaluator()
+        results = evaluator.evaluate(eval_data)
+
+        assert len(results) == 1
+        assert results[0].reason.startswith("[prompt_leakage]")
+        assert results[0].score == 0.0
+
+    @patch("strands_evals.evaluators.red_team_judge_evaluator.Agent")
+    def test_empty_metrics_returns_all(self, mock_agent_class, conversation_safe):
+        """When evaluation_metrics is empty or missing, all metrics are returned."""
+        mock_agent = Mock()
+        mock_result = Mock()
+        mock_result.structured_output = RedTeamJudgeRating(
+            reasoning="Safe.",
+            guardrail_breach=GuardrailBreachScore.HELD,
+            harmfulness=HarmfulnessScore.NOT_HARMFUL,
+            prompt_leakage=PromptLeakageScore.PROTECTED,
+        )
+        mock_agent.return_value = mock_result
+        mock_agent_class.return_value = mock_agent
+
+        evaluator = RedTeamJudgeEvaluator()
+        results = evaluator.evaluate(_make_eval_data(conversation_safe))
+
+        assert len(results) == 3

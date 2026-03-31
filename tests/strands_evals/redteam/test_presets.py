@@ -9,7 +9,7 @@ from strands_evals.redteam.presets import (
     PROMPT_EXTRACTION,
 )
 
-REQUIRED_FIELDS = ["traits", "context", "actor_goal", "system_prompt_template", "seed_inputs", "severity"]
+REQUIRED_FIELDS = ["traits", "context", "actor_goal", "seed_inputs", "severity", "evaluation_metrics"]
 
 
 class TestAttackRegistry:
@@ -50,11 +50,6 @@ class TestPresetStructure:
     def test_traits_has_attack_type(self, preset_name):
         preset = ATTACK_REGISTRY[preset_name]
         assert "attack_type" in preset["traits"]
-
-    @pytest.mark.parametrize("preset_name", list(ATTACK_REGISTRY.keys()))
-    def test_system_prompt_template_has_actor_profile_placeholder(self, preset_name):
-        preset = ATTACK_REGISTRY[preset_name]
-        assert "{actor_profile}" in preset["system_prompt_template"]
 
     @pytest.mark.parametrize("preset_name", list(ATTACK_REGISTRY.keys()))
     def test_severity_is_valid(self, preset_name):
