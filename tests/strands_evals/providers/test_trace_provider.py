@@ -70,3 +70,22 @@ class TestTraceProviderABC:
         provider = ConcreteProvider(session=None)
         with pytest.raises(SessionNotFoundError, match="No session found"):
             provider.get_evaluation_data("missing")
+
+    def test_as_task_returns_callable(self):
+        session = Session(session_id="s1", traces=[])
+        provider = ConcreteProvider(session=session)
+        task = provider.as_task()
+        assert callable(task)
+
+    def test_as_task_callable_delegates_to_get_evaluation_data(self):
+        """as_task() callable should pass case.session_id to get_evaluation_data."""
+        session = Session(session_id="s1", traces=[])
+        provider = ConcreteProvider(session=session)
+        task = provider.as_task()
+
+        class FakeCase:
+            session_id = "s1"
+
+        result = task(FakeCase())
+        assert result["output"] == "test response"
+        assert result["trajectory"] == session

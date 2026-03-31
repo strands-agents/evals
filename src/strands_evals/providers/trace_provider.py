@@ -1,6 +1,7 @@
 """TraceProvider interface for retrieving agent trace data from observability backends."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 
 from ..types.evaluation import TaskOutput
 
@@ -32,3 +33,11 @@ class TraceProvider(ABC):
             ProviderError: If the provider is unreachable or returns an error
         """
         ...
+
+    def as_task(self) -> Callable:
+        """Return a task callable that fetches evaluation data by session_id.
+
+        Returns:
+            A callable that takes a Case and returns the result of get_evaluation_data.
+        """
+        return lambda case: self.get_evaluation_data(case.session_id)

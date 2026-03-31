@@ -19,6 +19,7 @@ from strands_evals.evaluators import (
 )
 from strands_evals.evaluators.evaluator import DEFAULT_BEDROCK_MODEL_ID
 from strands_evals.experiment import is_throttling_error
+from strands_evals.providers.trace_provider import TraceProvider
 from strands_evals.types import EvaluationData, EvaluationOutput
 
 
@@ -1758,7 +1759,7 @@ class TestEvaluationDataStore:
         assert reports[0].scores[0] == 1.0
 
 
-class MockTraceProvider:
+class MockTraceProvider(TraceProvider):
     """Simple mock provider for testing."""
 
     def __init__(self, data: dict[str, dict]):
@@ -1774,53 +1775,40 @@ class MockTraceProvider:
 
 class TestProviderIntegration:
     def test_run_evaluations_with_provider(self):
-        """Provider should be called with each case's session_id and results passed to evaluators."""
+        """provider.as_task() should be called with each case's session_id."""
         cases = [
             Case(name="c1", session_id="sess-1", input="hello", expected_output="hello"),
             Case(name="c2", session_id="sess-2", input="foo", expected_output="foo"),
         ]
-        provider = MockTraceProvider({
-            "sess-1": {"output": "hello"},
-            "sess-2": {"output": "foo"},
-        })
+        provider = MockTraceProvider(
+            {
+                "sess-1": {"output": "hello"},
+                "sess-2": {"output": "foo"},
+            }
+        )
         experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
 
-        reports = experiment.run_evaluations(provider=provider)
+        reports = experiment.run_evaluations(provider.as_task())
 
         assert provider.call_count == 2
         assert set(provider.called_session_ids) == {"sess-1", "sess-2"}
         assert len(reports) == 1
         assert reports[0].scores == [1.0, 1.0]
 
-    def test_run_evaluations_with_provider_and_task_raises(self):
-        """Passing both task and provider should raise ValueError."""
-        cases = [Case(name="c1", input="hello", expected_output="hello")]
-        provider = MockTraceProvider({"sess": {"output": "hello"}})
-        experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
-
-        with pytest.raises(ValueError, match="Cannot specify both"):
-            experiment.run_evaluations(task=lambda c: c.input, provider=provider)
-
-    def test_run_evaluations_with_neither_task_nor_provider_raises(self):
-        """Passing neither task nor provider should raise ValueError."""
-        cases = [Case(name="c1", input="hello", expected_output="hello")]
-        experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
-
-        with pytest.raises(ValueError, match="Must specify either"):
-            experiment.run_evaluations()
-
     @pytest.mark.asyncio
     async def test_run_evaluations_async_with_provider(self):
-        """Async variant should also accept provider parameter."""
+        """Async variant should also accept a provider as the task arg."""
         cases = [
             Case(name="c1", session_id="sess-1", input="hello", expected_output="hello"),
         ]
-        provider = MockTraceProvider({
-            "sess-1": {"output": "hello"},
-        })
+        provider = MockTraceProvider(
+            {
+                "sess-1": {"output": "hello"},
+            }
+        )
         experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
 
-        reports = await experiment.run_evaluations_async(provider=provider)
+        reports = await experiment.run_evaluations_async(provider.as_task())
 
         assert provider.call_count == 1
         assert provider.called_session_ids == ["sess-1"]
@@ -1838,13 +1826,15 @@ class TestProviderIntegration:
         )
         store.save("c1", cached_data)
 
-        provider = MockTraceProvider({
-            "sess-1": {"output": "hello"},
-        })
+        provider = MockTraceProvider(
+            {
+                "sess-1": {"output": "hello"},
+            }
+        )
         cases = [Case(name="c1", session_id="sess-1", input="hello", expected_output="hello")]
         experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
 
-        reports = experiment.run_evaluations(provider=provider, evaluation_data_store=store)
+        reports = experiment.run_evaluations(provider.as_task(), evaluation_data_store=store)
 
         # Provider should NOT have been called - data was cached
         assert provider.call_count == 0
