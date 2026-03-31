@@ -3,6 +3,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 
+from ..case import Case
 from ..types.evaluation import TaskOutput
 
 
@@ -34,10 +35,11 @@ class TraceProvider(ABC):
         """
         ...
 
-    def as_task(self) -> Callable:
+    def as_task(self) -> Callable[[Case], TaskOutput]:
         """Return a task callable that fetches evaluation data by session_id.
 
         Returns:
-            A callable that takes a Case and returns the result of get_evaluation_data.
+            A callable that takes a single Case and returns the TaskOutput
+            for that case's session.
         """
         return lambda case: self.get_evaluation_data(case.session_id)
