@@ -188,6 +188,7 @@ class Experiment(Generic[InputT, OutputT]):
             name=case.name,
             input=case.input,
             expected_output=case.expected_output,
+            expected_assertion=case.expected_assertion,
             expected_trajectory=case.expected_trajectory,
             expected_interactions=case.expected_interactions,
             expected_environment_state=case.expected_environment_state,

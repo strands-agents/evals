@@ -82,6 +82,11 @@ class EvaluationData(BaseModel, Generic[InputT, OutputT]):
         input: The input to the task. eg. the query to the agent
         actual_output: The actual response given the input.
         expected_output: The expected response given the input.
+        expected_assertion: Human-authored success assertions describing expected agent actions,
+            responses, or behaviors. Used by assertion-based evaluators (e.g., GoalSuccessRateEvaluator)
+            to judge whether the agent satisfied explicit criteria rather than inferring goals
+            from the conversation. Example: 'find_user_id_by_name_zip is called with
+            {"first_name": "Yusuf", "last_name": "Rossi", "zip": "19122"}'
         actual_trajectory: The actual trajectory of a task given the input.
         expected_trajectory: The expected trajectory of a task given the input.
         name: The name of the test case. This will be used to identify the test in the summary report.
@@ -94,6 +99,7 @@ class EvaluationData(BaseModel, Generic[InputT, OutputT]):
     actual_output: OutputT | None = None
     name: str | None = None
     expected_output: OutputT | None = None
+    expected_assertion: str | None = None
     expected_trajectory: Union[list[Any], Session, None] = None
     actual_trajectory: Union[list[Any], Session, None] = None
     metadata: dict[str, Any] | None = None
