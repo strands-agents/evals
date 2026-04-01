@@ -8,6 +8,7 @@ from .harmfulness_evaluator import HarmfulnessEvaluator
 from .helpfulness_evaluator import HelpfulnessEvaluator
 from .interactions_evaluator import InteractionsEvaluator
 from .output_evaluator import OutputEvaluator
+from .red_team_judge_evaluator import RedTeamJudgeEvaluator
 from .response_relevance_evaluator import ResponseRelevanceEvaluator
 from .tool_parameter_accuracy_evaluator import ToolParameterAccuracyEvaluator
 from .tool_selection_accuracy_evaluator import ToolSelectionAccuracyEvaluator
@@ -32,4 +33,5 @@ __all__ = [
     "StartsWith",
     "StateEquals",
     "ToolCalled",
+    "RedTeamJudgeEvaluator",
 ]
