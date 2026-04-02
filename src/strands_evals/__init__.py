@@ -1,4 +1,4 @@
-from . import evaluators, extractors, generators, providers, simulation, telemetry, types
+from . import detectors, evaluators, extractors, generators, providers, simulation, telemetry, types
 from .case import Case
 from .evaluation_data_store import EvaluationDataStore
 from .experiment import Experiment
@@ -11,6 +11,7 @@ __all__ = [
     "Case",
     "LocalFileTaskResultStore",
     "EvaluationDataStore",
+    "detectors",
     "evaluators",
     "extractors",
     "providers",
