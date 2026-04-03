@@ -1,4 +1,4 @@
-from . import evaluators, extractors, generators, providers, simulation, telemetry, types
+from . import evaluators, extractors, generators, plugins, providers, simulation, telemetry, types
 from .case import Case
 from .evaluation_data_store import EvaluationDataStore
 from .experiment import Experiment
@@ -16,6 +16,7 @@ __all__ = [
     "providers",
     "types",
     "generators",
+    "plugins",
     "simulation",
     "telemetry",
     "StrandsEvalsTelemetry",
