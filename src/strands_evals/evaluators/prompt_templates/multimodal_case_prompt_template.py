@@ -86,9 +86,7 @@ def compose_multimodal_test_prompt(
         text_parts.append(f"<Input>{evaluation_case.input}</Input>\n")
 
     if evaluation_case.actual_output is None:
-        raise ValueError(
-            "Please make sure the task function return the output or a dictionary with the key 'output'."
-        )
+        raise ValueError("Please make sure the task function return the output or a dictionary with the key 'output'.")
     text_parts.append(f"<Output>{evaluation_case.actual_output}</Output>\n")
 
     if evaluation_case.expected_output is not None:

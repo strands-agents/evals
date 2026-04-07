@@ -92,10 +92,7 @@ def _download_s3(uri: str) -> bytes:
         ValueError: If the URI is malformed or the download fails.
     """
     if not BOTO3_AVAILABLE:
-        raise ImportError(
-            f"boto3 is required to download from S3 URIs ({uri}). "
-            f"Install it with: pip install boto3"
-        )
+        raise ImportError(f"boto3 is required to download from S3 URIs ({uri}). Install it with: pip install boto3")
     match = _S3_URI_PARSE_PATTERN.match(uri)
     if not match:
         raise ValueError(f"Malformed S3 URI: {uri}. Expected format: s3://bucket/key")
@@ -247,6 +244,7 @@ AnyMediaData = Union[ImageData]
 # =============================================================================
 # MultimodalInput TypedDict
 # =============================================================================
+
 
 class MultimodalInput(TypedDict):
     """Input structure for multimodal evaluations.

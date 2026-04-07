@@ -36,6 +36,7 @@ Strands Evaluation is a powerful framework for evaluating AI agents and LLM appl
 ## Feature Overview
 
 - **Multiple Evaluation Types**: Output evaluation, trajectory analysis, tool usage assessment, and interaction evaluation
+- **Multimodal Evaluation**: MLLM-as-a-Judge evaluators for image-to-text tasks with built-in rubrics
 - **Dynamic Simulators**: Multi-turn conversation simulation with realistic user behavior and goal-oriented interactions
 - **LLM-as-a-Judge**: Built-in evaluators using language models for sophisticated assessment with structured scoring
 - **Trace-based Evaluation**: Analyze agent behavior through OpenTelemetry execution traces
@@ -346,6 +347,54 @@ tool_parameter_evaluator = ToolParameterAccuracyEvaluator(
 )
 ```
 
+### Multimodal Evaluation (MLLM-as-a-Judge)
+
+Evaluate multimodal agent responses involving images and text using MLLM-as-a-Judge:
+
+```python
+from strands_evals import Case, Experiment
+from strands_evals.evaluators import (
+    MultimodalCorrectnessEvaluator,
+    MultimodalFaithfulnessEvaluator,
+    MultimodalInstructionFollowingEvaluator,
+    MultimodalOverallQualityEvaluator,
+)
+from strands_evals.types import ImageData, MultimodalInput
+
+# Create image data from various sources
+image = ImageData(source="path/to/image.png")
+# Also supports: base64 strings, data URLs, HTTP URLs, S3 URIs, PIL Images, raw bytes
+
+# Define test cases with multimodal input
+test_cases = [
+    Case[MultimodalInput, str](
+        name="image-description-1",
+        input={
+            "media": image,
+            "instruction": "Describe the contents of this image in detail.",
+        },
+    )
+]
+
+# Use built-in evaluators with default rubrics (reference-free by default; reference-based rubric auto-selected when expected_output is provided)
+evaluators = [
+    MultimodalCorrectnessEvaluator(),       # Factual accuracy and completeness
+    MultimodalFaithfulnessEvaluator(),      # Grounded in media without hallucinations
+    MultimodalInstructionFollowingEvaluator(),  # Addresses query requirements
+    MultimodalOverallQualityEvaluator(),    # Visual accuracy, adherence, completeness, coherence
+]
+
+# Run evaluation
+experiment = Experiment[MultimodalInput, str](cases=test_cases, evaluators=evaluators)
+
+def get_response(case: Case) -> str:
+    agent = Agent(callback_handler=None)
+    return str(agent(case.input["instruction"]))
+
+reports = experiment.run_evaluations(get_response)
+reports[0].run_display()
+```
+
 ## Available Evaluators
 
 ### Output-Based Evaluators
@@ -376,6 +425,15 @@ Evaluate the most recent turn in a conversation:
 #### Session-Level Evaluators
 Evaluate entire conversation sessions:
 - **GoalSuccessRateEvaluator**: Measures if user goals were achieved across the full conversation
+
+### Multimodal Evaluators
+These evaluators assess multimodal (image-to-text) responses using MLLM-as-a-Judge, with built-in rubrics that support both reference-based and reference-free evaluation:
+
+- **MultimodalCorrectnessEvaluator**: Evaluates factual accuracy and completeness against media content
+- **MultimodalFaithfulnessEvaluator**: Evaluates whether responses are grounded in media without hallucinations
+- **MultimodalInstructionFollowingEvaluator**: Evaluates whether responses address query requirements and constraints
+- **MultimodalOverallQualityEvaluator**: Holistic evaluation across visual accuracy, instruction adherence, completeness, and coherence
+- **MultimodalOutputEvaluator**: Base class for custom multimodal evaluators with configurable rubrics
 
 ## Experiment Management and Serialization
 
