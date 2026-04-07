@@ -7,6 +7,11 @@ from .goal_success_rate_evaluator import GoalSuccessRateEvaluator
 from .harmfulness_evaluator import HarmfulnessEvaluator
 from .helpfulness_evaluator import HelpfulnessEvaluator
 from .interactions_evaluator import InteractionsEvaluator
+from .multimodal_correctness_evaluator import MultimodalCorrectnessEvaluator
+from .multimodal_faithfulness_evaluator import MultimodalFaithfulnessEvaluator
+from .multimodal_instruction_following_evaluator import MultimodalInstructionFollowingEvaluator
+from .multimodal_output_evaluator import MultimodalOutputEvaluator
+from .multimodal_overall_quality_evaluator import MultimodalOverallQualityEvaluator
 from .output_evaluator import OutputEvaluator
 from .response_relevance_evaluator import ResponseRelevanceEvaluator
 from .tool_parameter_accuracy_evaluator import ToolParameterAccuracyEvaluator
@@ -16,6 +21,11 @@ from .trajectory_evaluator import TrajectoryEvaluator
 __all__ = [
     "Evaluator",
     "OutputEvaluator",
+    "MultimodalOutputEvaluator",
+    "MultimodalCorrectnessEvaluator",
+    "MultimodalFaithfulnessEvaluator",
+    "MultimodalInstructionFollowingEvaluator",
+    "MultimodalOverallQualityEvaluator",
     "TrajectoryEvaluator",
     "InteractionsEvaluator",
     "HelpfulnessEvaluator",

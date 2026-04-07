@@ -1,4 +1,5 @@
 from .evaluation import EnvironmentState, EvaluationData, EvaluationOutput, InputT, Interaction, OutputT, TaskOutput
+from .multimodal import AnyMediaData, ImageData, MultimodalInput
 from .simulation import ActorProfile, ActorResponse
 
 __all__ = [
@@ -11,4 +12,8 @@ __all__ = [
     "ActorResponse",
     "InputT",
     "OutputT",
+    # Media types
+    "AnyMediaData",
+    "ImageData",
+    "MultimodalInput",
 ]
