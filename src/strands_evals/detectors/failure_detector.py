@@ -9,12 +9,15 @@ Ported from AgentCoreLens tools/failure_detector.py.
 
 import json
 import logging
+import re
 
-from strands import Agent
+from strands.models.bedrock import BedrockModel
 from strands.models.model import Model
+from strands.types.content import ContentBlock, Message, Messages
 from strands.types.exceptions import ContextWindowOverflowException
-from typing_extensions import Union, cast
+from typing_extensions import Union
 
+from .._async import run_async
 from ..types.detector import ConfidenceLevel, FailureDetectionStructuredOutput, FailureItem, FailureOutput
 from ..types.trace import Session, SpanUnion
 from .chunking import merge_chunk_failures, split_spans_by_tokens, would_exceed_context
@@ -37,13 +40,14 @@ def detect_failures(
         session: The Session object to analyze.
         confidence_threshold: Minimum confidence level ("low", "medium", "high")
             to include a failure. Defaults to "low" (include all).
-        model: Any Strands model provider. None uses default Haiku.
+        model: A Model instance, model ID string (wrapped in BedrockModel),
+            or None (uses default Haiku).
 
     Returns:
         FailureOutput with list of FailureItems, each with span_id, category,
         confidence, and evidence.
     """
-    effective_model = model if model is not None else DEFAULT_DETECTOR_MODEL
+    effective_model = _resolve_model(model)
     template = get_template("v0")
     session_json = _serialize_session(session)
     user_prompt = template.build_prompt(session_json=session_json)
@@ -65,16 +69,15 @@ def detect_failures(
     return FailureOutput(session_id=session.session_id, failures=filtered)
 
 
-def _detect_direct(user_prompt: str, model: Union[Model, str], template: object) -> list[FailureItem]:
+def _detect_direct(user_prompt: str, model: Model, template: object) -> list[FailureItem]:
     """Attempt direct LLM detection on the full session."""
-    agent = Agent(model=model, system_prompt=template.SYSTEM_PROMPT, callback_handler=None)
-    result = agent(user_prompt, structured_output_model=FailureDetectionStructuredOutput)
-    return _parse_structured_result(cast(FailureDetectionStructuredOutput, result.structured_output))
+    text = _call_model(model, system_prompt=template.SYSTEM_PROMPT, user_prompt=user_prompt)
+    return _parse_text_result(text)
 
 
 def _detect_chunked(
     session: Session,
-    model: Union[Model, str],
+    model: Model,
     template: object,
 ) -> list[FailureItem]:
     """Chunk session and detect failures per chunk, then merge."""
@@ -88,11 +91,8 @@ def _detect_chunked(
         try:
             chunk_json = _serialize_spans(chunk_spans, session.session_id)
             user_prompt = template.build_prompt(session_json=chunk_json)
-            agent = Agent(model=model, system_prompt=template.SYSTEM_PROMPT, callback_handler=None)
-            result = agent(user_prompt, structured_output_model=FailureDetectionStructuredOutput)
-            chunk_results.append(
-                _parse_structured_result(cast(FailureDetectionStructuredOutput, result.structured_output))
-            )
+            text = _call_model(model, system_prompt=template.SYSTEM_PROMPT, user_prompt=user_prompt)
+            chunk_results.append(_parse_text_result(text))
             logger.info("Chunk %d/%d: processed %d spans", i + 1, len(chunks), len(chunk_spans))
         except Exception as e:
             if _is_context_exceeded(e):
@@ -103,8 +103,53 @@ def _detect_chunked(
     return merge_chunk_failures(chunk_results)
 
 
-def _parse_structured_result(output: FailureDetectionStructuredOutput) -> list[FailureItem]:
-    """Convert LLM structured output to list[FailureItem]."""
+def _resolve_model(model: Union[Model, str, None]) -> Model:
+    """Resolve a model parameter to a Model instance.
+
+    Args:
+        model: A Model instance (returned as-is), a model ID string
+            (wrapped in BedrockModel), or None (uses default).
+    """
+    if model is None:
+        return BedrockModel(model_id=DEFAULT_DETECTOR_MODEL)
+    if isinstance(model, str):
+        return BedrockModel(model_id=model)
+    return model
+
+
+def _call_model(model: Model, *, system_prompt: str, user_prompt: str) -> str:
+    """Call the model directly and return the full text response.
+
+    Uses Model.stream() in text mode to avoid tool-use structured output
+    overhead, which can degrade detection quality.
+    """
+    messages: Messages = [Message(role="user", content=[ContentBlock(text=user_prompt)])]
+
+    async def _stream() -> str:
+        chunks: list[str] = []
+        async for event in model.stream(messages, system_prompt=system_prompt):
+            if "contentBlockDelta" in event:
+                delta = event["contentBlockDelta"].get("delta", {})
+                if "text" in delta:
+                    chunks.append(delta["text"])
+        return "".join(chunks)
+
+    return run_async(_stream)
+
+
+def _extract_json(text: str) -> str:
+    """Extract JSON from LLM response, stripping markdown fences if present."""
+    match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return text.strip()
+
+
+def _parse_text_result(text: str) -> list[FailureItem]:
+    """Parse raw LLM text response into list[FailureItem]."""
+    json_str = _extract_json(text)
+    output = FailureDetectionStructuredOutput.model_validate_json(json_str)
+
     items = []
     for err in output.errors:
         # Validate element-wise correspondence
