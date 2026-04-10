@@ -8,6 +8,7 @@ Trace providers fetch agent execution data from observability backends and conve
 |----------|---------|------|
 | `CloudWatchProvider` | AWS CloudWatch Logs (Bedrock AgentCore runtime logs) | AWS credentials (boto3) |
 | `LangfuseProvider` | Langfuse | API keys |
+| `OpenSearchProvider` | OpenSearch (via Data Prepper) | Basic auth, SigV4, or none |
 
 ## Quick Start
 
@@ -39,6 +40,30 @@ provider = LangfuseProvider(
     public_key="pk-...",
     secret_key="sk-...",
     host="https://us.cloud.langfuse.com",
+)
+```
+
+### OpenSearch
+
+```python
+from strands_evals.providers import OpenSearchProvider
+
+# Local / development (basic auth)
+provider = OpenSearchProvider(
+    host="https://localhost:9200",
+    auth=("admin", "password"),
+    verify_certs=False,
+)
+
+# Amazon OpenSearch Service (SigV4)
+from opensearchpy import RequestsAWSV4SignerAuth
+import boto3
+
+credentials = boto3.Session().get_credentials()
+auth = RequestsAWSV4SignerAuth(credentials, "us-east-1", "es")
+provider = OpenSearchProvider(
+    host="https://my-domain.us-east-1.es.amazonaws.com",
+    auth=auth,
 )
 ```
 
