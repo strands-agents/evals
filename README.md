@@ -36,7 +36,7 @@ Strands Evaluation is a powerful framework for evaluating AI agents and LLM appl
 ## Feature Overview
 
 - **Multiple Evaluation Types**: Output evaluation, trajectory analysis, tool usage assessment, and interaction evaluation
-- **Dynamic Simulators**: Multi-turn conversation simulation with realistic user behavior and goal-oriented interactions
+- **Dynamic Simulators**: Multi-turn conversation simulation with realistic user behavior, goal-oriented interactions, and LLM-powered tool simulation with shared state
 - **LLM-as-a-Judge**: Built-in evaluators using language models for sophisticated assessment with structured scoring
 - **Trace-based Evaluation**: Analyze agent behavior through OpenTelemetry execution traces
 - **Automated Experiment Generation**: Generate comprehensive test suites from context descriptions
@@ -261,6 +261,61 @@ reports = experiment.run_evaluations(task_function)
 - **Realistic Conversations**: Generate authentic multi-turn interaction patterns
 - **No Predefined Scripts**: Test agents without hardcoded conversation paths
 - **Comprehensive Evaluation**: Combine with trace-based evaluators for full assessment
+
+### Tool Simulation
+
+Simulate tool behavior with LLM-powered responses for controlled agent evaluation using ToolSimulator. Register tools with a decorator, define output schemas, and optionally share state across related tools — the simulator replaces real execution with realistic, schema-validated responses:
+
+```python
+from typing import Any
+from enum import Enum
+from pydantic import BaseModel, Field
+from strands import Agent
+from strands_evals import Case, Experiment
+from strands_evals.evaluators import GoalSuccessRateEvaluator
+from strands_evals.simulation.tool_simulator import ToolSimulator
+
+tool_simulator = ToolSimulator()
+
+# Define output schema
+class HVACMode(str, Enum):
+    HEAT = "heat"
+    COOL = "cool"
+    AUTO = "auto"
+    OFF = "off"
+
+class HVACResponse(BaseModel):
+    temperature: float = Field(..., description="Target temperature in Fahrenheit")
+    mode: HVACMode = Field(..., description="HVAC mode")
+    status: str = Field(default="success", description="Operation status")
+
+# Register tool — the function body is never called; the LLM generates responses
+@tool_simulator.tool(
+    share_state_id="room_environment",
+    initial_state_description="Room: 68°F, humidity 45%, HVAC off",
+    output_schema=HVACResponse,
+)
+def hvac_controller(temperature: float, mode: str) -> dict[str, Any]:
+    """Control heating/cooling system that affects room temperature and humidity."""
+    pass
+
+def task_function(case: Case) -> dict:
+    hvac_tool = tool_simulator.get_tool("hvac_controller")
+    agent = Agent(tools=[hvac_tool], callback_handler=None)
+    response = agent(case.input)
+    return {"output": str(response)}
+
+cases = [Case(name="heat_control", input="Turn on the heat to 72 degrees")]
+experiment = Experiment(cases=cases, evaluators=[GoalSuccessRateEvaluator()])
+reports = experiment.run_evaluations(task_function)
+```
+
+**Key Benefits:**
+- **No Real Infrastructure**: Test tool-using agents without live APIs, databases, or services
+- **Schema-Validated Responses**: Pydantic output schemas ensure structured, consistent tool responses
+- **Shared State**: Related tools (e.g., sensor + controller) share state via `share_state_id` for coherent behavior
+- **Stateful Context**: Call history and initial state are passed to the LLM for consistent multi-call sequences
+- **Drop-in Replacement**: Simulated tools plug directly into Strands `Agent` via `get_tool()`
 
 ### Automated Experiment Generation
 
