@@ -51,7 +51,7 @@ langchain = [
     "langchain-aws>=0.2.0",
     "langgraph>=0.2.0",
     "openinference-instrumentation-langchain>=0.1.0",
-    "opentelemetry-instrumentation-langchain>=0.40.0,<0.50.0",
+    "opentelemetry-instrumentation-langchain>=0.40.0,<0.60.0",
 ]
 
 [tool.ruff]
