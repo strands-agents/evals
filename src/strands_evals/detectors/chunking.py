@@ -15,10 +15,11 @@ from ..types.detector import ConfidenceLevel, FailureItem
 from ..types.trace import SpanUnion
 from .constants import (
     CHARS_PER_TOKEN,
+    CHUNK_MIN_NEW_CONTENT_RATIO,
     CHUNK_OVERLAP_SPANS,
-    CONTEXT_SAFETY_MARGIN,
+    CHUNK_SAFETY_MARGIN,
     DEFAULT_MAX_INPUT_TOKENS,
-    MIN_CHUNK_SIZE,
+    PREFLIGHT_SAFETY_MARGIN,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,54 +34,167 @@ def estimate_tokens(text: str) -> int:
 def would_exceed_context(prompt_text: str, max_input_tokens: int = DEFAULT_MAX_INPUT_TOKENS) -> bool:
     """Pre-flight check: would this prompt likely exceed context?
 
-    If wrong (false negative), the model returns a context-exceeded error,
-    which triggers the chunking fallback in each detector.
+    Uses a generous safety margin (0.85) so that more sessions attempt
+    direct analysis, which is always higher quality than chunked.
+    If the estimate is wrong (false negative), the model returns a
+    context-exceeded error, which triggers the chunking fallback.
     """
-    return estimate_tokens(prompt_text) > int(max_input_tokens * CONTEXT_SAFETY_MARGIN)
+    return estimate_tokens(prompt_text) > int(max_input_tokens * PREFLIGHT_SAFETY_MARGIN)
+
+
+def _compute_overlap(
+    prev_chunk_spans: list[SpanUnion],
+    prev_chunk_token_counts: list[int],
+    next_span_token_count: int,
+    available_token_limit: int,
+    num_overlap_spans: int,
+    min_new_content_ratio: float,
+) -> tuple[list[SpanUnion], list[int]]:
+    """Compute overlap spans for the next chunk, applying all constraints.
+
+    Constraints applied in order:
+    1. num_overlap_spans: maximum number of spans to consider
+    2. min_new_content_ratio: limits overlap to (1 - ratio) of available tokens
+    3. Token limit: overlap + next_span must fit within available_token_limit
+
+    Ported from Lens failure_detector._compute_overlap().
+    """
+    if not prev_chunk_spans or num_overlap_spans <= 0:
+        return [], []
+
+    # Constraint 1: take at most num_overlap_spans from end of previous chunk
+    overlap_spans = list(prev_chunk_spans[-num_overlap_spans:])
+    overlap_token_counts = list(prev_chunk_token_counts[-num_overlap_spans:])
+
+    # Constraint 2: limit overlap tokens based on min_new_content_ratio
+    max_overlap_tokens = int(available_token_limit * (1 - min_new_content_ratio))
+    while overlap_spans and sum(overlap_token_counts) > max_overlap_tokens:
+        overlap_spans = overlap_spans[1:]
+        overlap_token_counts = overlap_token_counts[1:]
+
+    # Constraint 3: ensure overlap + next span fits within available_token_limit
+    while overlap_spans and sum(overlap_token_counts) + next_span_token_count > available_token_limit:
+        overlap_spans = overlap_spans[1:]
+        overlap_token_counts = overlap_token_counts[1:]
+
+    return overlap_spans, overlap_token_counts
 
 
 def split_spans_by_tokens(
     spans: list[SpanUnion],
     max_tokens: int = DEFAULT_MAX_INPUT_TOKENS,
     overlap_spans: int = CHUNK_OVERLAP_SPANS,
+    min_new_content_ratio: float = CHUNK_MIN_NEW_CONTENT_RATIO,
+    prompt_overhead_tokens: int = 0,
 ) -> list[list[SpanUnion]]:
     """Split spans into chunks fitting within token limits.
 
-    Adjacent chunks share ``overlap_spans`` spans for context continuity.
+    Adjacent chunks share up to ``overlap_spans`` spans for context continuity,
+    subject to token-aware constraints that guarantee each chunk has at least
+    ``min_new_content_ratio`` fraction of new content.
+
+    Uses a conservative safety margin (0.70) for chunk sizing so that chunks
+    have headroom and don't overflow at runtime.
+
     Ported from Lens ``failure_detector._split_spans_by_tokens()``.
 
     Args:
         spans: Flat list of span objects to chunk.
         max_tokens: Maximum model input tokens.
-        overlap_spans: Number of spans shared between adjacent chunks.
+        overlap_spans: Maximum number of spans shared between adjacent chunks.
+        min_new_content_ratio: Minimum fraction of each chunk that must be new
+            content (not overlap).
+        prompt_overhead_tokens: Tokens consumed by the prompt template itself.
+            Subtracted from the budget so spans fill only the remaining space.
 
     Returns:
         List of span chunks. Each chunk fits within the effective token limit.
     """
-    effective_limit = int(max_tokens * CONTEXT_SAFETY_MARGIN)
+    if not spans:
+        return []
+
+    effective_limit = int(max_tokens * CHUNK_SAFETY_MARGIN) - prompt_overhead_tokens
+
+    # Pre-compute token counts for all spans (O(n), done once).
+    # indent=2 matches the actual serialization format sent to the LLM
+    # (see _serialize_spans / _serialize_session). Without it, compact JSON
+    # underestimates by ~30-50%, causing chunks to overflow at runtime.
+    span_token_counts = [estimate_tokens(json.dumps(span.model_dump(), indent=2, default=str)) for span in spans]
+
     chunks: list[list[SpanUnion]] = []
-    current_chunk: list[SpanUnion] = []
-    current_tokens = 0
+    prev_chunk_spans: list[SpanUnion] = []
+    prev_chunk_token_counts: list[int] = []
+    span_idx = 0
 
-    for span in spans:
-        span_tokens = estimate_tokens(json.dumps(span.model_dump(), default=str))
-        if current_tokens + span_tokens > effective_limit and len(current_chunk) >= MIN_CHUNK_SIZE:
+    while span_idx < len(spans):
+        span_token_count = span_token_counts[span_idx]
+
+        # Step 1: compute overlap from previous chunk
+        overlap_result_spans, overlap_result_counts = _compute_overlap(
+            prev_chunk_spans,
+            prev_chunk_token_counts,
+            next_span_token_count=span_token_count,
+            available_token_limit=effective_limit,
+            num_overlap_spans=overlap_spans,
+            min_new_content_ratio=min_new_content_ratio,
+        )
+
+        if not overlap_result_spans and prev_chunk_spans and overlap_spans > 0:
+            logger.warning(
+                "Chunk %d: overlap skipped (overlap + next span > available limit)",
+                len(chunks) + 1,
+            )
+
+        # Initialize chunk with overlap
+        current_chunk = list(overlap_result_spans)
+        current_chunk_token_counts = list(overlap_result_counts)
+        current_token_count = sum(overlap_result_counts) if overlap_result_counts else 0
+
+        # Step 2: add new spans until limit or oversized span
+        while span_idx < len(spans):
+            span_token_count = span_token_counts[span_idx]
+
+            # Handle oversized span: isolate into its own chunk so it doesn't
+            # poison neighbors. The LLM call for this chunk may still fail,
+            # but at least surrounding spans get their own properly-sized chunks.
+            if span_token_count >= effective_limit:
+                if current_chunk:
+                    chunks.append(current_chunk)
+                    current_chunk = []
+
+                chunks.append([spans[span_idx]])
+                logger.warning(
+                    "Span has ~%d tokens, exceeds limit %d -- isolated in own chunk",
+                    span_token_count,
+                    effective_limit,
+                )
+                prev_chunk_spans = [spans[span_idx]]
+                prev_chunk_token_counts = [span_token_count]
+                span_idx += 1
+                break
+
+            # Check if span fits in current chunk
+            if current_token_count + span_token_count > effective_limit:
+                break  # chunk full -- finalize in Step 3
+
+            current_chunk.append(spans[span_idx])
+            current_chunk_token_counts.append(span_token_count)
+            current_token_count += span_token_count
+            span_idx += 1
+
+        # Step 3: finalize current chunk (skip if oversized span was just handled)
+        if current_chunk:
             chunks.append(current_chunk)
-            overlap = current_chunk[-overlap_spans:] if overlap_spans > 0 else []
-            current_chunk = list(overlap)
-            current_tokens = sum(estimate_tokens(json.dumps(s.model_dump(), default=str)) for s in overlap)
-        current_chunk.append(span)
-        current_tokens += span_tokens
-
-    if current_chunk:
-        chunks.append(current_chunk)
+            prev_chunk_spans = current_chunk
+            prev_chunk_token_counts = current_chunk_token_counts
 
     logger.info(
-        "Split %d spans into %d chunks (max_tokens=%d, overlap=%d)",
+        "Split %d spans into %d chunks (effective_limit=%d, overlap=%d, min_new_ratio=%.2f)",
         len(spans),
         len(chunks),
-        max_tokens,
+        effective_limit,
         overlap_spans,
+        min_new_content_ratio,
     )
     return chunks
 

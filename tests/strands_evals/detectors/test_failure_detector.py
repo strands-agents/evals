@@ -7,17 +7,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from strands_evals.detectors.failure_detector import (
-    CONFIDENCE_ORDER,
     _extract_json,
+    _group_spans_into_traces,
     _is_context_exceeded,
-    _max_confidence_rank,
     _parse_text_result,
     _resolve_model,
     _serialize_session,
     _serialize_spans,
     detect_failures,
 )
-from strands_evals.types.detector import FailureItem, FailureOutput
+from strands_evals.types.detector import FailureOutput
 from strands_evals.types.trace import (
     AgentInvocationSpan,
     InferenceSpan,
@@ -176,19 +175,6 @@ def test_parse_text_result_markdown_fenced():
     assert result[0].span_id == "s1"
 
 
-# --- _max_confidence_rank ---
-
-
-def test_max_confidence_rank():
-    item = FailureItem(span_id="s", category=["a", "b"], confidence=["low", "high"], evidence=["x", "y"])
-    assert _max_confidence_rank(item) == CONFIDENCE_ORDER["high"]
-
-
-def test_max_confidence_rank_empty():
-    item = FailureItem(span_id="s", category=[], confidence=[], evidence=[])
-    assert _max_confidence_rank(item) == -1
-
-
 # --- _is_context_exceeded ---
 
 
@@ -284,6 +270,30 @@ def test_detect_failures_confidence_threshold(mock_call_model):
 
 
 @patch("strands_evals.detectors.failure_detector._call_model")
+def test_detect_failures_per_mode_filtering(mock_call_model):
+    """Individual failure modes below threshold are pruned, not just whole spans."""
+    mock_call_model.return_value = _make_json_response(
+        [
+            {
+                "location": "span_1",
+                "category": ["hallucination", "repetition"],
+                "confidence": ["high", "low"],
+                "evidence": ["fabricated response", "minor repeat"],
+            }
+        ]
+    )
+
+    session = _make_session()
+    output = detect_failures(session, confidence_threshold="medium")
+
+    # Span is kept (has a high-confidence mode) but low-confidence mode is pruned
+    assert len(output.failures) == 1
+    assert output.failures[0].category == ["hallucination"]
+    assert output.failures[0].confidence == ["high"]
+    assert "repetition" not in output.failures[0].category
+
+
+@patch("strands_evals.detectors.failure_detector._call_model")
 def test_detect_failures_context_overflow_fallback(mock_call_model):
     """When direct call raises context overflow, should fall back to chunking."""
     from strands.types.exceptions import ContextWindowOverflowException
@@ -326,3 +336,94 @@ def test_detect_failures_passes_model(mock_call_model, mock_resolve_model):
     # Verify _call_model was called with the resolved model
     mock_call_model.assert_called_once()
     assert mock_call_model.call_args.args[0] is mock_model
+
+
+# --- _PROMPT_OVERHEAD_TOKENS ---
+
+
+def test_prompt_overhead_is_positive():
+    """Sanity check: prompt overhead should be a reasonable token count."""
+    from strands_evals.detectors.failure_detector import _PROMPT_OVERHEAD_TOKENS
+
+    assert _PROMPT_OVERHEAD_TOKENS > 200
+    assert _PROMPT_OVERHEAD_TOKENS < 10_000
+
+
+# --- _group_spans_into_traces / _serialize_spans ---
+
+
+def test_serialize_spans_preserves_trace_structure():
+    """Spans from different traces should be grouped by trace_id."""
+    span_a = ToolExecutionSpan(
+        span_info=SpanInfo(
+            session_id="sess_1",
+            span_id="s1",
+            trace_id="trace_A",
+            start_time=datetime.now(),
+            end_time=datetime.now(),
+        ),
+        tool_call=ToolCall(name="t", arguments={}),
+        tool_result=ToolResult(content="ok"),
+    )
+    span_b = ToolExecutionSpan(
+        span_info=SpanInfo(
+            session_id="sess_1",
+            span_id="s2",
+            trace_id="trace_B",
+            start_time=datetime.now(),
+            end_time=datetime.now(),
+        ),
+        tool_call=ToolCall(name="t", arguments={}),
+        tool_result=ToolResult(content="ok"),
+    )
+    span_a2 = ToolExecutionSpan(
+        span_info=SpanInfo(
+            session_id="sess_1",
+            span_id="s3",
+            trace_id="trace_A",
+            start_time=datetime.now(),
+            end_time=datetime.now(),
+        ),
+        tool_call=ToolCall(name="t", arguments={}),
+        tool_result=ToolResult(content="ok"),
+    )
+
+    result = json.loads(_serialize_spans([span_a, span_b, span_a2], "sess_1"))
+
+    assert len(result["traces"]) == 2
+    trace_ids = [t["trace_id"] for t in result["traces"]]
+    assert "trace_A" in trace_ids
+    assert "trace_B" in trace_ids
+
+    trace_a = [t for t in result["traces"] if t["trace_id"] == "trace_A"][0]
+    span_ids = [s["span_info"]["span_id"] for s in trace_a["spans"]]
+    assert span_ids == ["s1", "s3"]
+
+
+def test_group_spans_into_traces_preserves_order():
+    """Trace groups should appear in insertion order."""
+    spans = [
+        _make_tool_span_with_trace("s1", "trace_B"),
+        _make_tool_span_with_trace("s2", "trace_A"),
+        _make_tool_span_with_trace("s3", "trace_B"),
+    ]
+    traces = _group_spans_into_traces(spans)
+    assert len(traces) == 2
+    assert traces[0]["trace_id"] == "trace_B"
+    assert traces[1]["trace_id"] == "trace_A"
+    assert len(traces[0]["spans"]) == 2
+    assert len(traces[1]["spans"]) == 1
+
+
+def _make_tool_span_with_trace(span_id: str, trace_id: str) -> ToolExecutionSpan:
+    return ToolExecutionSpan(
+        span_info=SpanInfo(
+            session_id="sess_1",
+            span_id=span_id,
+            trace_id=trace_id,
+            start_time=datetime.now(),
+            end_time=datetime.now(),
+        ),
+        tool_call=ToolCall(name="t", arguments={}),
+        tool_result=ToolResult(content="ok"),
+    )

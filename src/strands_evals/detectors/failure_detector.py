@@ -28,6 +28,23 @@ logger = logging.getLogger(__name__)
 CONFIDENCE_ORDER: dict[ConfidenceLevel, int] = {"low": 0, "medium": 1, "high": 2}
 
 
+def _estimate_prompt_overhead() -> int:
+    """Estimate token count of the prompt template with no session data.
+
+    Matches Lens pattern: render template with empty session, measure tokens.
+    This is the fixed overhead per chunk that must be subtracted from the
+    token budget so span data fills only the remaining space.
+    """
+    from .chunking import estimate_tokens
+
+    template = get_template("v0")
+    empty_prompt = template.build_prompt(session_json="[]")
+    return estimate_tokens(template.SYSTEM_PROMPT + empty_prompt)
+
+
+_PROMPT_OVERHEAD_TOKENS = _estimate_prompt_overhead()
+
+
 def detect_failures(
     session: Session,
     *,
@@ -65,7 +82,18 @@ def detect_failures(
                 raise
 
     threshold_rank = CONFIDENCE_ORDER[confidence_threshold]
-    filtered = [f for f in raw if _max_confidence_rank(f) >= threshold_rank]
+    filtered = []
+    for f in raw:
+        valid_indices = [i for i, conf in enumerate(f.confidence) if CONFIDENCE_ORDER.get(conf, 0) >= threshold_rank]
+        if valid_indices:
+            filtered.append(
+                FailureItem(
+                    span_id=f.span_id,
+                    category=[f.category[i] for i in valid_indices],
+                    confidence=[f.confidence[i] for i in valid_indices],
+                    evidence=[f.evidence[i] for i in valid_indices],
+                )
+            )
     return FailureOutput(session_id=session.session_id, failures=filtered)
 
 
@@ -82,7 +110,7 @@ def _detect_chunked(
 ) -> list[FailureItem]:
     """Chunk session and detect failures per chunk, then merge."""
     spans = _flatten_traces_to_spans(session.traces)
-    chunks = split_spans_by_tokens(spans)
+    chunks = split_spans_by_tokens(spans, prompt_overhead_tokens=_PROMPT_OVERHEAD_TOKENS)
 
     logger.info("Chunked detection: %d spans -> %d chunks", len(spans), len(chunks))
 
@@ -120,14 +148,22 @@ def _resolve_model(model: Union[Model, str, None]) -> Model:
 def _call_model(model: Model, *, system_prompt: str, user_prompt: str) -> str:
     """Call the model directly and return the full text response.
 
+    Matches Lens prompt delivery: everything goes in a single user message
+    with no separate system prompt. When the failure taxonomy and guidelines
+    are in the system role, the model treats them with higher authority and
+    over-applies categories (more false positives). Putting everything in
+    the user message gives the model a balanced view between "what to look
+    for" and "what actually happened".
+
     Uses Model.stream() in text mode to avoid tool-use structured output
     overhead, which can degrade detection quality.
     """
-    messages: Messages = [Message(role="user", content=[ContentBlock(text=user_prompt)])]
+    full_prompt = f"{system_prompt}\n\n{user_prompt}"
+    messages: Messages = [Message(role="user", content=[ContentBlock(text=full_prompt)])]
 
     async def _stream() -> str:
         chunks: list[str] = []
-        async for event in model.stream(messages, system_prompt=system_prompt):
+        async for event in model.stream(messages):
             if "contentBlockDelta" in event:
                 delta = event["contentBlockDelta"].get("delta", {})
                 if "text" in delta:
@@ -174,13 +210,6 @@ def _parse_text_result(text: str) -> list[FailureItem]:
     return items
 
 
-def _max_confidence_rank(item: FailureItem) -> int:
-    """Return the maximum confidence rank across all failure modes."""
-    if not item.confidence:
-        return -1
-    return max(CONFIDENCE_ORDER.get(c, 0) for c in item.confidence)
-
-
 def _is_context_exceeded(exception: Exception) -> bool:
     """Check if the exception indicates a context window overflow.
 
@@ -204,12 +233,45 @@ def _serialize_session(session: Session) -> str:
     return json.dumps(session.model_dump(), indent=2, default=str)
 
 
+def _group_spans_into_traces(spans: list[SpanUnion]) -> list[dict]:
+    """Group spans back into trace-like structures for prompt formatting.
+
+    When spans from different traces end up in the same chunk (because
+    flattening loses trace boundaries), this reconstructs the per-trace
+    grouping so the LLM can distinguish which spans belong to which turn.
+
+    Ported from Lens failure_detector._group_spans_into_traces().
+    """
+    from collections import OrderedDict
+
+    traces_map: OrderedDict[str, list[SpanUnion]] = OrderedDict()
+    for span in spans:
+        trace_id = span.span_info.trace_id or "unknown"
+        if trace_id not in traces_map:
+            traces_map[trace_id] = []
+        traces_map[trace_id].append(span)
+
+    traces = []
+    for trace_id, trace_spans in traces_map.items():
+        trace_dict = {
+            "trace_id": trace_id,
+            "session_id": trace_spans[0].span_info.session_id,
+            "spans": [s.model_dump() for s in trace_spans],
+        }
+        traces.append(trace_dict)
+    return traces
+
+
 def _serialize_spans(spans: list[SpanUnion], session_id: str) -> str:
-    """Serialize a list of spans as a minimal session JSON for chunk prompts."""
+    """Serialize a list of spans as a session JSON for chunk prompts.
+
+    Reconstructs per-trace grouping so the LLM can see turn boundaries.
+    """
+    traces = _group_spans_into_traces(spans)
     return json.dumps(
         {
             "session_id": session_id,
-            "traces": [{"spans": [s.model_dump() for s in spans]}],
+            "traces": traces,
         },
         indent=2,
         default=str,
