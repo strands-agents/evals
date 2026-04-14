@@ -12,6 +12,7 @@ from .trace_provider import (
 __all__ = [
     "CloudWatchProvider",
     "LangfuseProvider",
+    "OpenSearchProvider",
     "ProviderError",
     "SessionNotFoundError",
     "TraceProvider",
@@ -29,4 +30,8 @@ def __getattr__(name: str) -> Any:
         from .langfuse_provider import LangfuseProvider
 
         return LangfuseProvider
+    if name == "OpenSearchProvider":
+        from .opensearch_provider import OpenSearchProvider
+
+        return OpenSearchProvider
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
