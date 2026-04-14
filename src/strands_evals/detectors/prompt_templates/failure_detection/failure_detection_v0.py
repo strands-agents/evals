@@ -182,8 +182,8 @@ points<br> \u2022 Ignoring completion signals<br> \u2022 Redundant actions|
 debug information in user-facing responses; producing malformed, illogical, or endlessly looping tool calls or \
 JSON structures; or displaying redacted, placeholder, or special tokens|\u2022 "As per my system prompt..."<br> \
 \u2022 "According to my training..."<br> \u2022 "Error in function call_api() line 234"<br> \u2022 "Internal \
-state: processing_step_2"<br> \u2022 Showing API keys/endpoints<br> \u2022 {{"tool": {{"tool": {{"tool": \
-{{...}}}}}}}}<br> \u2022 Mixing user text and JSON<br> \u2022 Invalid tool call sequences<br> \u2022 "Hello \
+state: processing_step_2"<br> \u2022 Showing API keys/endpoints<br> \u2022 {"tool": {"tool": {"tool": \
+{...}}}}<br> \u2022 Mixing user text and JSON<br> \u2022 Invalid tool call sequences<br> \u2022 "Hello \
 [MASK], how are you?"<br> \u2022 "Your balance is <VALUE_TOKEN>"|
 |**configuration-mismatch**|configuration-mismatch-category-tool-definition|Tool functionality differs from its \
 declared purpose or capabilities<br>Disconnect between API requirements and agent's actual capabilities<br><br>\

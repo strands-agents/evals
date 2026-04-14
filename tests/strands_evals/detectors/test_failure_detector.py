@@ -390,12 +390,13 @@ def test_serialize_spans_preserves_trace_structure():
 
     result = json.loads(_serialize_spans([span_a, span_b, span_a2], "sess_1"))
 
-    assert len(result["traces"]) == 2
-    trace_ids = [t["trace_id"] for t in result["traces"]]
+    # Result is now a bare traces array (matching Lens format)
+    assert len(result) == 2
+    trace_ids = [t["trace_id"] for t in result]
     assert "trace_A" in trace_ids
     assert "trace_B" in trace_ids
 
-    trace_a = [t for t in result["traces"] if t["trace_id"] == "trace_A"][0]
+    trace_a = [t for t in result if t["trace_id"] == "trace_A"][0]
     span_ids = [s["span_info"]["span_id"] for s in trace_a["spans"]]
     assert span_ids == ["s1", "s3"]
 

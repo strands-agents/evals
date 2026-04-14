@@ -4,12 +4,13 @@ Used by detect_failures, summarize_execution, and analyze_root_cause
 to handle sessions that exceed LLM context limits.
 
 Ported from AgentCoreLens failure_detector._split_spans_by_tokens() and
-related helpers, replacing litellm.token_counter() with a conservative
-character-based estimate.
+related helpers. Uses tiktoken (via strands SDK) for accurate token
+estimation, with a character-based fallback when tiktoken is unavailable.
 """
 
 import json
 import logging
+from typing import Any
 
 from ..types.detector import ConfidenceLevel, FailureItem
 from ..types.trace import SpanUnion
@@ -25,9 +26,36 @@ from .constants import (
 logger = logging.getLogger(__name__)
 _CONFIDENCE_RANK: dict[ConfidenceLevel, int] = {"low": 0, "medium": 1, "high": 2}
 
+# Cached tiktoken encoding — loaded once on first use.
+_tiktoken_encoding: Any = None
+_tiktoken_available: bool | None = None
+
+
+def _get_tiktoken_encoding() -> Any:
+    """Return the cached tiktoken encoding, or None if unavailable."""
+    global _tiktoken_encoding, _tiktoken_available
+    if _tiktoken_available is None:
+        try:
+            from strands.models.model import _get_encoding
+
+            _tiktoken_encoding = _get_encoding()
+            _tiktoken_available = True
+            logger.debug("tiktoken encoding loaded via strands SDK")
+        except (ImportError, Exception) as exc:
+            _tiktoken_available = False
+            logger.info("tiktoken unavailable, using char-based fallback: %s", exc)
+    return _tiktoken_encoding
+
 
 def estimate_tokens(text: str) -> int:
-    """Conservative token estimate from text length."""
+    """Estimate token count for a text string.
+
+    Uses tiktoken (cl100k_base via strands SDK) when available for accurate
+    counts. Falls back to ``len(text) // CHARS_PER_TOKEN`` otherwise.
+    """
+    enc = _get_tiktoken_encoding()
+    if enc is not None:
+        return len(enc.encode(text))
     return len(text) // CHARS_PER_TOKEN
 
 

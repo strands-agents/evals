@@ -229,8 +229,12 @@ def _flatten_traces_to_spans(traces: list) -> list[SpanUnion]:
 
 
 def _serialize_session(session: Session) -> str:
-    """Serialize a full Session to JSON for the prompt."""
-    return json.dumps(session.model_dump(), indent=2, default=str)
+    """Serialize a full Session to JSON for the prompt.
+
+    Matches Lens format: bare traces array, not wrapped in a session object.
+    Lens: json.dumps([t.model_dump() for t in traces], indent=2)
+    """
+    return json.dumps([t.model_dump() for t in session.traces], indent=2, default=str)
 
 
 def _group_spans_into_traces(spans: list[SpanUnion]) -> list[dict]:
@@ -263,16 +267,10 @@ def _group_spans_into_traces(spans: list[SpanUnion]) -> list[dict]:
 
 
 def _serialize_spans(spans: list[SpanUnion], session_id: str) -> str:
-    """Serialize a list of spans as a session JSON for chunk prompts.
+    """Serialize a list of spans as a bare traces array for chunk prompts.
 
-    Reconstructs per-trace grouping so the LLM can see turn boundaries.
+    Matches Lens format: bare traces array, not wrapped in a session object.
+    Lens: json.dumps(chunk_traces, indent=2)
     """
     traces = _group_spans_into_traces(spans)
-    return json.dumps(
-        {
-            "session_id": session_id,
-            "traces": traces,
-        },
-        indent=2,
-        default=str,
-    )
+    return json.dumps(traces, indent=2, default=str)
