@@ -7,10 +7,13 @@ for sessions exceeding context limits.
 Ported from AgentCoreLens tools/failure_detector.py.
 """
 
+import functools
 import json
 import logging
 import re
+from collections import OrderedDict
 
+from pydantic import ValidationError
 from strands.models.bedrock import BedrockModel
 from strands.models.model import Model
 from strands.types.content import ContentBlock, Message, Messages
@@ -28,21 +31,20 @@ logger = logging.getLogger(__name__)
 CONFIDENCE_ORDER: dict[ConfidenceLevel, int] = {"low": 0, "medium": 1, "high": 2}
 
 
-def _estimate_prompt_overhead() -> int:
+@functools.lru_cache(maxsize=1)
+def _get_prompt_overhead_tokens() -> int:
     """Estimate token count of the prompt template with no session data.
 
-    Matches Lens pattern: render template with empty session, measure tokens.
-    This is the fixed overhead per chunk that must be subtracted from the
-    token budget so span data fills only the remaining space.
+    Computed lazily on first call and cached. Matches Lens pattern: render
+    template with empty session, measure tokens. This is the fixed overhead
+    per chunk that must be subtracted from the token budget so span data
+    fills only the remaining space.
     """
     from .chunking import estimate_tokens
 
     template = get_template("v0")
     empty_prompt = template.build_prompt(session_json="[]")
     return estimate_tokens(template.SYSTEM_PROMPT + empty_prompt)
-
-
-_PROMPT_OVERHEAD_TOKENS = _estimate_prompt_overhead()
 
 
 def detect_failures(
@@ -110,7 +112,7 @@ def _detect_chunked(
 ) -> list[FailureItem]:
     """Chunk session and detect failures per chunk, then merge."""
     spans = _flatten_traces_to_spans(session.traces)
-    chunks = split_spans_by_tokens(spans, prompt_overhead_tokens=_PROMPT_OVERHEAD_TOKENS)
+    chunks = split_spans_by_tokens(spans, prompt_overhead_tokens=_get_prompt_overhead_tokens())
 
     logger.info("Chunked detection: %d spans -> %d chunks", len(spans), len(chunks))
 
@@ -182,9 +184,17 @@ def _extract_json(text: str) -> str:
 
 
 def _parse_text_result(text: str) -> list[FailureItem]:
-    """Parse raw LLM text response into list[FailureItem]."""
-    json_str = _extract_json(text)
-    output = FailureDetectionStructuredOutput.model_validate_json(json_str)
+    """Parse raw LLM text response into list[FailureItem].
+
+    Returns an empty list on malformed JSON or validation errors rather than
+    crashing, matching Lens's graceful degradation behavior.
+    """
+    try:
+        json_str = _extract_json(text)
+        output = FailureDetectionStructuredOutput.model_validate_json(json_str)
+    except (json.JSONDecodeError, KeyError, AttributeError, ValidationError) as e:
+        logger.warning("Failed to parse LLM response for failure detection: %s", e)
+        return []
 
     items = []
     for err in output.errors:
@@ -220,7 +230,18 @@ def _is_context_exceeded(exception: Exception) -> bool:
     if isinstance(exception, ContextWindowOverflowException):
         return True
     msg = str(exception).lower()
-    return any(p in msg for p in ["context", "too long", "max_tokens", "input_limit"])
+    return any(
+        p in msg
+        for p in [
+            "context window",
+            "context length",
+            "context_length",
+            "too long",
+            "max_tokens",
+            "input_limit",
+            "input too large",
+        ]
+    )
 
 
 def _flatten_traces_to_spans(traces: list) -> list[SpanUnion]:
@@ -246,8 +267,6 @@ def _group_spans_into_traces(spans: list[SpanUnion]) -> list[dict]:
 
     Ported from Lens failure_detector._group_spans_into_traces().
     """
-    from collections import OrderedDict
-
     traces_map: OrderedDict[str, list[SpanUnion]] = OrderedDict()
     for span in spans:
         trace_id = span.span_info.trace_id or "unknown"

@@ -175,6 +175,24 @@ def test_parse_text_result_markdown_fenced():
     assert result[0].span_id == "s1"
 
 
+def test_parse_text_result_malformed_json():
+    """Malformed JSON should return empty list, not crash."""
+    result = _parse_text_result("this is not json at all")
+    assert result == []
+
+
+def test_parse_text_result_invalid_schema():
+    """Valid JSON but wrong schema should return empty list, not crash."""
+    result = _parse_text_result('{"wrong_key": "wrong_value"}')
+    assert result == []
+
+
+def test_parse_text_result_partial_json():
+    """Truncated JSON should return empty list, not crash."""
+    result = _parse_text_result('{"errors": [{"location": "s1", "category":')
+    assert result == []
+
+
 # --- _is_context_exceeded ---
 
 
@@ -188,11 +206,16 @@ def test_is_context_exceeded_string_match():
     assert _is_context_exceeded(Exception("The context window is exceeded"))
     assert _is_context_exceeded(Exception("Input too long for model"))
     assert _is_context_exceeded(Exception("max_tokens limit reached"))
+    assert _is_context_exceeded(Exception("context length exceeded"))
+    assert _is_context_exceeded(Exception("input too large for this model"))
 
 
 def test_is_context_exceeded_unrelated():
     assert not _is_context_exceeded(Exception("Something else went wrong"))
     assert not _is_context_exceeded(ValueError("bad value"))
+    # "context" alone should NOT match — must be "context window" or "context length"
+    assert not _is_context_exceeded(Exception("invalid context parameter"))
+    assert not _is_context_exceeded(Exception("missing context"))
 
 
 # --- _serialize_session / _serialize_spans ---
@@ -343,10 +366,11 @@ def test_detect_failures_passes_model(mock_call_model, mock_resolve_model):
 
 def test_prompt_overhead_is_positive():
     """Sanity check: prompt overhead should be a reasonable token count."""
-    from strands_evals.detectors.failure_detector import _PROMPT_OVERHEAD_TOKENS
+    from strands_evals.detectors.failure_detector import _get_prompt_overhead_tokens
 
-    assert _PROMPT_OVERHEAD_TOKENS > 200
-    assert _PROMPT_OVERHEAD_TOKENS < 10_000
+    overhead = _get_prompt_overhead_tokens()
+    assert overhead > 200
+    assert overhead < 10_000
 
 
 # --- _group_spans_into_traces / _serialize_spans ---
