@@ -31,6 +31,7 @@ class TestEvalTaskDecorator:
 
     def test_no_case_param_function_works(self):
         """Functions with no parameters are called without case."""
+
         @eval_task()
         def my_task():
             return "output"
@@ -161,9 +162,7 @@ class TestTracedHandler:
 
         assert result["output"] == "output"
         assert result["trajectory"] is mock_session
-        mock_mapper_cls.return_value.map_to_session.assert_called_once_with(
-            list(mock_spans), "sess-1"
-        )
+        mock_mapper_cls.return_value.map_to_session.assert_called_once_with(list(mock_spans), "sess-1")
 
     @patch("strands_evals.eval_task.StrandsEvalsTelemetry")
     @patch("strands_evals.eval_task.StrandsInMemorySessionMapper")

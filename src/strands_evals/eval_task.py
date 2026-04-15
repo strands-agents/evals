@@ -42,6 +42,11 @@ class TracedHandler(EvalTaskHandler):
 
     Use with @eval_task when your evaluators need trajectory data.
 
+    This handler shares a single span exporter across calls. Use only with
+    sequential execution (run_evaluations) or run_evaluations_async with
+    max_workers=1. For concurrent execution, each worker needs its own
+    TracedHandler instance.
+
     Args:
         mapper: Session mapper to use. Defaults to StrandsInMemorySessionMapper.
 
