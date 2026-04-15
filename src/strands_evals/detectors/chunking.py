@@ -21,6 +21,7 @@ from .constants import (
     CHUNK_SAFETY_MARGIN,
     DEFAULT_MAX_INPUT_TOKENS,
     PREFLIGHT_SAFETY_MARGIN,
+    TIKTOKEN_FALLBACK_MULTIPLIER,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,12 +51,14 @@ def _get_tiktoken_encoding() -> Any:
 def estimate_tokens(text: str) -> int:
     """Estimate token count for a text string.
 
-    Uses tiktoken (cl100k_base via strands SDK) when available for accurate
-    counts. Falls back to ``len(text) // CHARS_PER_TOKEN`` otherwise.
+    Uses tiktoken (cl100k_base via strands SDK) when available, then applies
+    a correction multiplier to compensate for the systematic underestimation
+    vs Anthropic Claude's actual tokenizer. Falls back to
+    ``len(text) // CHARS_PER_TOKEN`` otherwise.
     """
     enc = _get_tiktoken_encoding()
     if enc is not None:
-        return len(enc.encode(text))
+        return int(len(enc.encode(text)) * TIKTOKEN_FALLBACK_MULTIPLIER)
     return len(text) // CHARS_PER_TOKEN
 
 

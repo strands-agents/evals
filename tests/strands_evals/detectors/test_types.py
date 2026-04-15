@@ -13,8 +13,6 @@ from strands_evals.types.detector import (
     RootCauseItem,
 )
 
-# --- Output types ---
-
 
 def test_failure_item_creation():
     item = FailureItem(
@@ -95,9 +93,6 @@ def test_diagnosis_result_empty():
     result = DiagnosisResult(session_id="sess_1")
     assert result.failures == []
     assert result.root_causes == []
-
-
-# --- LLM structured output schemas ---
 
 
 def test_failure_error():

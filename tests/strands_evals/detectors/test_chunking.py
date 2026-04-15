@@ -49,9 +49,6 @@ def _make_inference_span(span_id: str) -> InferenceSpan:
     )
 
 
-# --- estimate_tokens ---
-
-
 def _tiktoken_available() -> bool:
     """Check if tiktoken is available for accurate token estimation."""
     try:
@@ -93,9 +90,6 @@ def test_estimate_tokens_returns_positive_for_nonempty():
     assert estimate_tokens("Hello world, this is a test.") > 0
 
 
-# --- would_exceed_context ---
-
-
 def test_would_exceed_context_small():
     assert not would_exceed_context("Hello world")
 
@@ -126,9 +120,6 @@ def test_would_exceed_context_uses_preflight_margin():
     # With 200K max and 0.85 margin, threshold is 170K tokens
     # A short text should always pass
     assert not would_exceed_context("short text", max_input_tokens=200_000)
-
-
-# --- _compute_overlap ---
 
 
 def test_compute_overlap_constraint_1_span_count():
@@ -205,9 +196,6 @@ def test_compute_overlap_zero_overlap_requested():
         min_new_content_ratio=0.5,
     )
     assert result_spans == []
-
-
-# --- split_spans_by_tokens ---
 
 
 def test_split_spans_single_chunk():
@@ -306,9 +294,6 @@ def test_split_spans_uses_chunk_margin():
     chunks = split_spans_by_tokens(spans, max_tokens=10000, overlap_spans=0)
     # Verify we get a reasonable number of chunks (not just 1)
     assert len(chunks) > 1
-
-
-# --- merge_chunk_failures ---
 
 
 def test_merge_no_overlap():

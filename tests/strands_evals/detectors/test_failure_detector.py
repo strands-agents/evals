@@ -62,9 +62,6 @@ def _make_json_response(errors: list[dict]) -> str:
     return json.dumps({"errors": errors})
 
 
-# --- _resolve_model ---
-
-
 def test_resolve_model_none():
     from strands.models.bedrock import BedrockModel
 
@@ -82,9 +79,6 @@ def test_resolve_model_string():
 def test_resolve_model_instance():
     mock_model = MagicMock()
     assert _resolve_model(mock_model) is mock_model
-
-
-# --- _extract_json ---
 
 
 def test_extract_json_raw():
@@ -105,9 +99,6 @@ def test_extract_json_markdown_fenced_no_lang():
 def test_extract_json_with_surrounding_text():
     text = 'I found these failures:\n```json\n{"errors": [{"location": "s1"}]}\n```\nDone.'
     assert '"errors"' in _extract_json(text)
-
-
-# --- _parse_text_result ---
 
 
 def test_parse_text_result_basic():
@@ -193,9 +184,6 @@ def test_parse_text_result_partial_json():
     assert result == []
 
 
-# --- _is_context_exceeded ---
-
-
 def test_is_context_exceeded_strands_exception():
     from strands.types.exceptions import ContextWindowOverflowException
 
@@ -218,9 +206,6 @@ def test_is_context_exceeded_unrelated():
     assert not _is_context_exceeded(Exception("missing context"))
 
 
-# --- _serialize_session / _serialize_spans ---
-
-
 def test_serialize_session():
     session = _make_session()
     result = _serialize_session(session)
@@ -237,9 +222,6 @@ def test_serialize_spans():
     result = _serialize_spans([span], "sess_1")
     assert "sess_1" in result
     assert "span_10" in result
-
-
-# --- detect_failures (with mocked _call_model) ---
 
 
 @patch("strands_evals.detectors.failure_detector._call_model")
@@ -361,9 +343,6 @@ def test_detect_failures_passes_model(mock_call_model, mock_resolve_model):
     assert mock_call_model.call_args.args[0] is mock_model
 
 
-# --- _PROMPT_OVERHEAD_TOKENS ---
-
-
 def test_prompt_overhead_is_positive():
     """Sanity check: prompt overhead should be a reasonable token count."""
     from strands_evals.detectors.failure_detector import _get_prompt_overhead_tokens
@@ -371,9 +350,6 @@ def test_prompt_overhead_is_positive():
     overhead = _get_prompt_overhead_tokens()
     assert overhead > 200
     assert overhead < 10_000
-
-
-# --- _group_spans_into_traces / _serialize_spans ---
 
 
 def test_serialize_spans_preserves_trace_structure():

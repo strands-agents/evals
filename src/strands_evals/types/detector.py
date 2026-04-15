@@ -11,8 +11,6 @@ from pydantic import BaseModel, Field
 # Confidence levels used across detectors
 ConfidenceLevel = Literal["low", "medium", "high"]
 
-# --- Output types (what users consume) ---
-
 
 class FailureItem(BaseModel):
     """A single detected failure."""
@@ -57,9 +55,6 @@ class DiagnosisResult(BaseModel):
     session_id: str
     failures: list[FailureItem] = Field(default_factory=list)
     root_causes: list[RCAItem] = Field(default_factory=list)
-
-
-# --- LLM structured output schemas (used with Agent structured_output_model) ---
 
 
 class FailureError(BaseModel):

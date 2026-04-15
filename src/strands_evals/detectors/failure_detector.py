@@ -24,7 +24,7 @@ from .._async import run_async
 from ..types.detector import ConfidenceLevel, FailureDetectionStructuredOutput, FailureItem, FailureOutput
 from ..types.trace import Session, SpanUnion
 from .chunking import merge_chunk_failures, split_spans_by_tokens, would_exceed_context
-from .constants import DEFAULT_DETECTOR_MODEL
+from .constants import DEFAULT_DETECTOR_MODEL, MIN_CHUNK_SIZE
 from .prompt_templates.failure_detection import get_template
 
 logger = logging.getLogger(__name__)
@@ -112,6 +112,11 @@ def _detect_chunked(
 ) -> list[FailureItem]:
     """Chunk session and detect failures per chunk, then merge."""
     spans = _flatten_traces_to_spans(session.traces)
+
+    if len(spans) <= MIN_CHUNK_SIZE:
+        logger.warning("Cannot split further: %d spans <= min_chunk_size", len(spans))
+        return []
+
     chunks = split_spans_by_tokens(spans, prompt_overhead_tokens=_get_prompt_overhead_tokens())
 
     logger.info("Chunked detection: %d spans -> %d chunks", len(spans), len(chunks))
