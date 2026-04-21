@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from strands_evals.case import Case
-from strands_evals.eval_task import EvalTaskHandler, TracedHandler, eval_task
+from strands_evals.eval_task_handler import EvalTaskHandler, TracedHandler, eval_task
 
 
 class TestEvalTaskDecorator:
@@ -132,8 +132,8 @@ class TestEvalTaskHandler:
 class TestTracedHandler:
     """Tests for TracedHandler that collects telemetry spans."""
 
-    @patch("strands_evals.eval_task.StrandsEvalsTelemetry")
-    @patch("strands_evals.eval_task.StrandsInMemorySessionMapper")
+    @patch("strands_evals.eval_task_handler.StrandsEvalsTelemetry")
+    @patch("strands_evals.eval_task_handler.StrandsInMemorySessionMapper")
     def test_clears_spans_on_before(self, mock_mapper_cls, mock_telemetry_cls):
         mock_telemetry = MagicMock()
         mock_telemetry.setup_in_memory_exporter.return_value = mock_telemetry
@@ -144,8 +144,8 @@ class TestTracedHandler:
 
         mock_telemetry.in_memory_exporter.clear.assert_called_once()
 
-    @patch("strands_evals.eval_task.StrandsEvalsTelemetry")
-    @patch("strands_evals.eval_task.StrandsInMemorySessionMapper")
+    @patch("strands_evals.eval_task_handler.StrandsEvalsTelemetry")
+    @patch("strands_evals.eval_task_handler.StrandsInMemorySessionMapper")
     def test_after_adds_trajectory(self, mock_mapper_cls, mock_telemetry_cls):
         mock_spans = [MagicMock()]
         mock_telemetry = MagicMock()
@@ -164,8 +164,8 @@ class TestTracedHandler:
         assert result["trajectory"] is mock_session
         mock_mapper_cls.return_value.map_to_session.assert_called_once_with(list(mock_spans), "sess-1")
 
-    @patch("strands_evals.eval_task.StrandsEvalsTelemetry")
-    @patch("strands_evals.eval_task.StrandsInMemorySessionMapper")
+    @patch("strands_evals.eval_task_handler.StrandsEvalsTelemetry")
+    @patch("strands_evals.eval_task_handler.StrandsInMemorySessionMapper")
     def test_does_not_override_user_trajectory(self, mock_mapper_cls, mock_telemetry_cls):
         mock_telemetry = MagicMock()
         mock_telemetry.setup_in_memory_exporter.return_value = mock_telemetry
@@ -182,8 +182,8 @@ class TestTracedHandler:
 
         assert result["trajectory"] is user_trajectory
 
-    @patch("strands_evals.eval_task.StrandsEvalsTelemetry")
-    @patch("strands_evals.eval_task.StrandsInMemorySessionMapper")
+    @patch("strands_evals.eval_task_handler.StrandsEvalsTelemetry")
+    @patch("strands_evals.eval_task_handler.StrandsInMemorySessionMapper")
     def test_accepts_custom_mapper(self, mock_mapper_cls, mock_telemetry_cls):
         mock_telemetry = MagicMock()
         mock_telemetry.setup_in_memory_exporter.return_value = mock_telemetry
@@ -200,8 +200,8 @@ class TestTracedHandler:
         custom_mapper.map_to_session.assert_called_once()
         assert result["trajectory"] is custom_session
 
-    @patch("strands_evals.eval_task.StrandsEvalsTelemetry")
-    @patch("strands_evals.eval_task.StrandsInMemorySessionMapper")
+    @patch("strands_evals.eval_task_handler.StrandsEvalsTelemetry")
+    @patch("strands_evals.eval_task_handler.StrandsInMemorySessionMapper")
     def test_full_decorator_flow(self, mock_mapper_cls, mock_telemetry_cls):
         mock_telemetry = MagicMock()
         mock_telemetry.setup_in_memory_exporter.return_value = mock_telemetry

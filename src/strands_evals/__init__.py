@@ -1,6 +1,6 @@
 from . import evaluators, extractors, generators, providers, simulation, telemetry, types
 from .case import Case
-from .eval_task import EvalTaskHandler, TracedHandler, eval_task
+from .eval_task_handler import EvalTaskHandler, TracedHandler, eval_task
 from .evaluation_data_store import EvaluationDataStore
 from .experiment import Experiment
 from .local_file_task_result_store import LocalFileTaskResultStore
