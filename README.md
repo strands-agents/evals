@@ -37,7 +37,7 @@ Strands Evaluation is a powerful framework for evaluating AI agents and LLM appl
 
 - **Multiple Evaluation Types**: Output evaluation, trajectory analysis, tool usage assessment, and interaction evaluation
 - **Multimodal Evaluation**: MLLM-as-a-Judge evaluators for image-to-text tasks with built-in rubrics
-- **Dynamic Simulators**: Multi-turn conversation simulation with realistic user behavior and goal-oriented interactions
+- **Dynamic Simulators**: Multi-turn conversation simulation with realistic user behavior, goal-oriented interactions, and LLM-powered tool simulation with shared state
 - **LLM-as-a-Judge**: Built-in evaluators using language models for sophisticated assessment with structured scoring
 - **Trace-based Evaluation**: Analyze agent behavior through OpenTelemetry execution traces
 - **Automated Experiment Generation**: Generate comprehensive test suites from context descriptions

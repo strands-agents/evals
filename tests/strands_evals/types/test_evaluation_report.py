@@ -270,6 +270,94 @@ class TestEvaluationReportFlatten:
         assert "evaluator" in flattened.cases[0]
 
 
+class TestFormatInputForDisplay:
+    """Tests for _format_input_for_display static method."""
+
+    def test_non_multimodal_input_passthrough(self):
+        assert EvaluationReport._format_input_for_display("plain text") == "plain text"
+
+    def test_non_dict_input(self):
+        assert EvaluationReport._format_input_for_display(42) == "42"
+
+    def test_dict_without_media_key(self):
+        result = EvaluationReport._format_input_for_display({"instruction": "test"})
+        assert result == "{'instruction': 'test'}"
+
+    def test_multimodal_dict_with_list_media(self):
+        input_val = {
+            "media": [{"source": "a"}, {"source": "b"}],
+            "instruction": "Describe these images",
+        }
+        result = EvaluationReport._format_input_for_display(input_val)
+
+        assert "instruction: Describe these images" in result
+        assert "[2 media item(s)]" in result
+
+    def test_multimodal_dict_with_dict_media(self):
+        input_val = {
+            "media": {"source": "abc123", "format": "png"},
+            "instruction": "Describe this image",
+        }
+        result = EvaluationReport._format_input_for_display(input_val)
+
+        assert "instruction: Describe this image" in result
+        assert "[1 media item]" in result
+
+    def test_multimodal_dict_with_long_string_media(self):
+        long_base64 = "a" * 300
+        input_val = {
+            "media": long_base64,
+            "instruction": "Describe",
+        }
+        result = EvaluationReport._format_input_for_display(input_val)
+
+        assert "[media: " + "a" * 50 + "...]" in result
+
+    def test_multimodal_dict_with_short_string_media(self):
+        input_val = {
+            "media": "image.png",
+            "instruction": "Describe",
+        }
+        result = EvaluationReport._format_input_for_display(input_val)
+
+        assert "[media: image.png]" in result
+
+    def test_multimodal_dict_with_context(self):
+        input_val = {
+            "media": {"source": "abc"},
+            "instruction": "Analyze",
+            "context": "You are a botanist",
+        }
+        result = EvaluationReport._format_input_for_display(input_val)
+
+        assert "instruction: Analyze" in result
+        assert "context: You are a botanist" in result
+        assert "[1 media item]" in result
+
+    def test_multimodal_dict_without_context(self):
+        input_val = {
+            "media": {"source": "abc"},
+            "instruction": "Describe",
+        }
+        result = EvaluationReport._format_input_for_display(input_val)
+
+        assert "context" not in result
+
+    def test_multimodal_dict_parts_joined_with_pipe(self):
+        input_val = {
+            "media": {"source": "abc"},
+            "instruction": "Describe",
+            "context": "Context here",
+        }
+        result = EvaluationReport._format_input_for_display(input_val)
+
+        parts = result.split(" | ")
+        assert len(parts) == 3
+        assert parts[0] == "instruction: Describe"
+        assert parts[1] == "context: Context here"
+        assert parts[2] == "[1 media item]"
+
+
 class TestEvaluationReportFileOperations:
     """Tests for file save/load with evaluator_name."""
 
