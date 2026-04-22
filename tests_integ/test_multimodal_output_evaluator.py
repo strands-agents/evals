@@ -83,9 +83,7 @@ async def test_multimodal_evaluator_basic_integration(city_image):
             media=city_image,
             instruction="Describe what you see in this image.",
         ),
-        expected_output=(
-            "A nighttime city scene with illuminated billboards and signs."
-        ),
+        expected_output=("A nighttime city scene with illuminated billboards and signs."),
     )
 
     evaluator = MultimodalOutputEvaluator(
@@ -184,10 +182,7 @@ async def test_multimodal_evaluator_llm_mode(city_image):
     """Text-only evaluation mode where media is excluded from the judge prompt."""
 
     def multimodal_task(case: Case) -> str:
-        return (
-            "A brightly lit urban scene at night with tall buildings "
-            "and illuminated commercial signage."
-        )
+        return "A brightly lit urban scene at night with tall buildings and illuminated commercial signage."
 
     test_case = Case(
         name="llm_mode_test",
@@ -238,8 +233,7 @@ async def test_multimodal_evaluator_multiple_images(city_image, flower_image):
             instruction="Compare these two images. What do they show?",
         ),
         expected_output=(
-            "The first image is a city nightscape and the second "
-            "is a close-up of flowers. They are unrelated subjects."
+            "The first image is a city nightscape and the second is a close-up of flowers. They are unrelated subjects."
         ),
     )
 
@@ -281,10 +275,7 @@ async def test_multimodal_evaluator_with_file_path(temp_image_file):
     )
 
     evaluator = MultimodalOutputEvaluator(
-        rubric=(
-            "Score 1.0 if the main subject of the image is correctly "
-            "identified, 0.0 otherwise."
-        ),
+        rubric=("Score 1.0 if the main subject of the image is correctly identified, 0.0 otherwise."),
         include_media=True,
     )
 
@@ -403,10 +394,7 @@ async def test_multimodal_evaluator_batch_processing(city_image, flower_image):
     ]
 
     evaluator = MultimodalOutputEvaluator(
-        rubric=(
-            "Score 1.0 if the output correctly identifies the subject, "
-            "0.0 otherwise."
-        ),
+        rubric=("Score 1.0 if the output correctly identifies the subject, 0.0 otherwise."),
         include_media=True,
     )
 

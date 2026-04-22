@@ -62,9 +62,7 @@ def mock_agent():
     """Mock Agent for testing."""
     agent = Mock()
     mock_result = Mock()
-    mock_result.structured_output = EvaluationOutput(
-        score=0.85, test_pass=True, reason="Good description"
-    )
+    mock_result.structured_output = EvaluationOutput(score=0.85, test_pass=True, reason="Good description")
     agent.return_value = mock_result
     return agent
 
@@ -76,9 +74,7 @@ def mock_async_agent():
 
     async def mock_invoke_async(*args, **kwargs):
         mock_result = Mock()
-        mock_result.structured_output = EvaluationOutput(
-            score=0.85, test_pass=True, reason="Good async description"
-        )
+        mock_result.structured_output = EvaluationOutput(score=0.85, test_pass=True, reason="Good async description")
         return mock_result
 
     agent.invoke_async = mock_invoke_async
@@ -195,17 +191,13 @@ class TestBuildPrompt:
 
         assert "<Input>" not in result
 
-    def test_build_prompt_includes_reference_suffix_when_expected_output_present(
-        self, evaluation_data_with_reference
-    ):
+    def test_build_prompt_includes_reference_suffix_when_expected_output_present(self, evaluation_data_with_reference):
         evaluator = MultimodalOutputEvaluator(rubric="Test rubric", include_media=False)
         result = evaluator._build_prompt(evaluation_data_with_reference)
 
         assert "REFERENCE COMPARISON" in result
 
-    def test_build_prompt_excludes_reference_suffix_when_no_expected_output(
-        self, evaluation_data_without_reference
-    ):
+    def test_build_prompt_excludes_reference_suffix_when_no_expected_output(self, evaluation_data_without_reference):
         evaluator = MultimodalOutputEvaluator(rubric="Test rubric", include_media=False)
         result = evaluator._build_prompt(evaluation_data_without_reference)
 
@@ -234,9 +226,7 @@ class TestBuildPrompt:
 
 class TestEvaluate:
     @patch("strands_evals.evaluators.output_evaluator.Agent")
-    def test_evaluate_with_multimodal_input(
-        self, mock_agent_class, evaluation_data_with_reference, mock_agent
-    ):
+    def test_evaluate_with_multimodal_input(self, mock_agent_class, evaluation_data_with_reference, mock_agent):
         mock_agent_class.return_value = mock_agent
         evaluator = MultimodalOutputEvaluator(rubric="Test rubric")
 
@@ -263,9 +253,7 @@ class TestEvaluate:
         assert isinstance(prompt, list)
 
     @patch("strands_evals.evaluators.output_evaluator.Agent")
-    def test_evaluate_llm_mode_passes_string(
-        self, mock_agent_class, evaluation_data_with_reference, mock_agent
-    ):
+    def test_evaluate_llm_mode_passes_string(self, mock_agent_class, evaluation_data_with_reference, mock_agent):
         mock_agent_class.return_value = mock_agent
         evaluator = MultimodalOutputEvaluator(rubric="Test rubric", include_media=False)
 

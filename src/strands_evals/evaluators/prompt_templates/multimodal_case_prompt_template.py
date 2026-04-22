@@ -4,7 +4,7 @@ import logging
 import warnings
 from typing import Any
 
-from ...types.evaluation import EvaluationData
+from ...types.evaluation import EvaluationData, InputT, OutputT
 from ...types.multimodal import ImageData, MultimodalInput
 
 logger = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ def _build_media_content_block(media_data: ImageData) -> dict[str, Any]:
 
 
 def compose_multimodal_test_prompt(
-    evaluation_case: EvaluationData[MultimodalInput, str],
+    evaluation_case: EvaluationData[InputT, OutputT],
     rubric: str,
     include_inputs: bool = True,
     include_media: bool = True,

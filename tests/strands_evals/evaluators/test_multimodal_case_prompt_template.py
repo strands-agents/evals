@@ -1,6 +1,5 @@
 """Tests for multimodal_case_prompt_template.py."""
 
-
 import pytest
 
 from strands_evals.evaluators.prompt_templates.multimodal_case_prompt_template import (
@@ -93,9 +92,7 @@ class TestComposeMultimodalTestPrompt:
             actual_output="A pixel",
             name="test",
         )
-        result = compose_multimodal_test_prompt(
-            eval_case, rubric="Test rubric", include_media=False
-        )
+        result = compose_multimodal_test_prompt(eval_case, rubric="Test rubric", include_media=False)
 
         assert isinstance(result, str)
         assert "<Output>A pixel</Output>" in result
@@ -107,9 +104,7 @@ class TestComposeMultimodalTestPrompt:
             actual_output="A pixel",
             name="test",
         )
-        result = compose_multimodal_test_prompt(
-            eval_case, rubric="Test rubric", include_media=True
-        )
+        result = compose_multimodal_test_prompt(eval_case, rubric="Test rubric", include_media=True)
 
         assert isinstance(result, list)
         assert len(result) == 2
@@ -125,9 +120,7 @@ class TestComposeMultimodalTestPrompt:
             actual_output="They are the same",
             name="test",
         )
-        result = compose_multimodal_test_prompt(
-            eval_case, rubric="Test rubric", include_media=True
-        )
+        result = compose_multimodal_test_prompt(eval_case, rubric="Test rubric", include_media=True)
 
         assert isinstance(result, list)
         assert len(result) == 3
@@ -141,9 +134,7 @@ class TestComposeMultimodalTestPrompt:
             actual_output="A pixel",
             name="test",
         )
-        result = compose_multimodal_test_prompt(
-            eval_case, rubric="Rubric", include_inputs=True, include_media=False
-        )
+        result = compose_multimodal_test_prompt(eval_case, rubric="Rubric", include_inputs=True, include_media=False)
 
         assert "<Input>Tell me about this</Input>" in result
 
@@ -153,9 +144,7 @@ class TestComposeMultimodalTestPrompt:
             actual_output="A pixel",
             name="test",
         )
-        result = compose_multimodal_test_prompt(
-            eval_case, rubric="Rubric", include_inputs=False, include_media=False
-        )
+        result = compose_multimodal_test_prompt(eval_case, rubric="Rubric", include_inputs=False, include_media=False)
 
         assert "<Input>" not in result
 
@@ -169,9 +158,7 @@ class TestComposeMultimodalTestPrompt:
             actual_output="Medical image",
             name="test",
         )
-        result = compose_multimodal_test_prompt(
-            eval_case, rubric="Rubric", include_inputs=True, include_media=False
-        )
+        result = compose_multimodal_test_prompt(eval_case, rubric="Rubric", include_inputs=True, include_media=False)
 
         assert "Context: You are a doctor" in result
         assert "Instruction: Analyze this" in result
@@ -183,9 +170,7 @@ class TestComposeMultimodalTestPrompt:
             expected_output="A red pixel",
             name="test",
         )
-        result = compose_multimodal_test_prompt(
-            eval_case, rubric="Rubric", include_media=False
-        )
+        result = compose_multimodal_test_prompt(eval_case, rubric="Rubric", include_media=False)
 
         assert "<ExpectedOutput>A red pixel</ExpectedOutput>" in result
 
@@ -195,9 +180,7 @@ class TestComposeMultimodalTestPrompt:
             actual_output="A pixel",
             name="test",
         )
-        result = compose_multimodal_test_prompt(
-            eval_case, rubric="Rubric", include_media=False
-        )
+        result = compose_multimodal_test_prompt(eval_case, rubric="Rubric", include_media=False)
 
         assert "<ExpectedOutput>" not in result
 
@@ -215,9 +198,7 @@ class TestComposeMultimodalTestPrompt:
             actual_output="Some output",
             name="test",
         )
-        result = compose_multimodal_test_prompt(
-            eval_case, rubric="Rubric", include_inputs=True, include_media=True
-        )
+        result = compose_multimodal_test_prompt(eval_case, rubric="Rubric", include_inputs=True, include_media=True)
 
         assert isinstance(result, str)
         assert "<Input>plain text input</Input>" in result
@@ -229,9 +210,7 @@ class TestComposeMultimodalTestPrompt:
             name="test",
         )
 
-        result = compose_multimodal_test_prompt(
-            eval_case, rubric="Rubric", include_media=True
-        )
+        result = compose_multimodal_test_prompt(eval_case, rubric="Rubric", include_media=True)
 
         assert isinstance(result, str)
 
@@ -244,9 +223,7 @@ class TestComposeMultimodalTestPrompt:
             actual_output="A pixel",
             name="test",
         )
-        result = compose_multimodal_test_prompt(
-            eval_case, rubric="Rubric", include_media=True
-        )
+        result = compose_multimodal_test_prompt(eval_case, rubric="Rubric", include_media=True)
 
         assert isinstance(result, list)
         assert "image" in result[0]
@@ -257,8 +234,6 @@ class TestComposeMultimodalTestPrompt:
             actual_output="A pixel",
             name="test",
         )
-        result = compose_multimodal_test_prompt(
-            eval_case, rubric="Rubric", include_media=False
-        )
+        result = compose_multimodal_test_prompt(eval_case, rubric="Rubric", include_media=False)
 
         assert "DECIMAL BETWEEN 0.0 AND 1.0" in result

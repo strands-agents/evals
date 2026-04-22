@@ -46,9 +46,7 @@ def evaluation_data(sample_png_bytes):
 def mock_agent():
     agent = Mock()
     mock_result = Mock()
-    mock_result.structured_output = EvaluationOutput(
-        score=0.9, test_pass=True, reason="Accurate"
-    )
+    mock_result.structured_output = EvaluationOutput(score=0.9, test_pass=True, reason="Accurate")
     agent.return_value = mock_result
     return agent
 
