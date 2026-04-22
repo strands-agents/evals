@@ -16,3 +16,4 @@ report_files
 .venv
 *.DS_Store*
 uv.lock
+.claude
