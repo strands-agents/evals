@@ -226,7 +226,9 @@ def test_split_spans_overlap():
     are too large relative to the chunk budget (min_new_content_ratio).
     """
     spans = [_make_tool_span(f"span_{i}", content_size=2000) for i in range(10)]
-    chunks = split_spans_by_tokens(spans, max_tokens=5000, overlap_spans=2)
+    # max_tokens=7000 keeps the same effective budget (~3500 cl100k) as the
+    # original 5000 under the old 0.70 chunk margin, now with the 0.500 margin.
+    chunks = split_spans_by_tokens(spans, max_tokens=7000, overlap_spans=2)
     if len(chunks) > 1:
         # Verify there IS overlap: last span of chunk 0 should appear in chunk 1
         last_of_first = chunks[0][-1].span_info.span_id
@@ -238,7 +240,8 @@ def test_split_spans_full_overlap_with_headroom():
     """With sufficient headroom, full overlap count is preserved."""
     # Small spans with large budget: overlap won't be trimmed
     spans = [_make_tool_span(f"span_{i}", content_size=100) for i in range(20)]
-    chunks = split_spans_by_tokens(spans, max_tokens=3000, overlap_spans=2)
+    # Same budget-to-span ratio as before; scaled for the 0.500 margin.
+    chunks = split_spans_by_tokens(spans, max_tokens=4200, overlap_spans=2)
     if len(chunks) > 1:
         last_of_first = [s.span_info.span_id for s in chunks[0][-2:]]
         first_of_second = [s.span_info.span_id for s in chunks[1][:2]]
@@ -286,11 +289,10 @@ def test_split_spans_oversized_span_isolated():
 
 
 def test_split_spans_uses_chunk_margin():
-    """split_spans_by_tokens uses the conservative 0.70 chunk margin, not 0.85."""
+    """split_spans_by_tokens uses the conservative chunk margin (< preflight margin)."""
     spans = [_make_tool_span(f"span_{i}", content_size=2000) for i in range(20)]
-    # With max_tokens=10000 and chunk margin 0.70: effective = 7000
-    # With preflight margin 0.85: would be 8500
-    # More conservative margin should produce more chunks
+    # With max_tokens=10000 the chunk margin produces a tighter budget than the
+    # preflight margin would, forcing more chunks.
     chunks = split_spans_by_tokens(spans, max_tokens=10000, overlap_spans=0)
     # Verify we get a reasonable number of chunks (not just 1)
     assert len(chunks) > 1
@@ -299,10 +301,10 @@ def test_split_spans_uses_chunk_margin():
 def test_merge_no_overlap():
     """Failures from different spans should be preserved."""
     chunk1 = [
-        FailureItem(span_id="span_1", category=["error_a"], confidence=["high"], evidence=["ev_a"]),
+        FailureItem(span_id="span_1", category=["error_a"], confidence=[0.9], evidence=["ev_a"]),
     ]
     chunk2 = [
-        FailureItem(span_id="span_2", category=["error_b"], confidence=["high"], evidence=["ev_b"]),
+        FailureItem(span_id="span_2", category=["error_b"], confidence=[0.9], evidence=["ev_b"]),
     ]
     merged = merge_chunk_failures([chunk1, chunk2])
     assert len(merged) == 2
@@ -311,10 +313,10 @@ def test_merge_no_overlap():
 def test_merge_same_span_different_category():
     """Same span, different categories should be combined."""
     chunk1 = [
-        FailureItem(span_id="span_1", category=["error_a"], confidence=["high"], evidence=["ev_a"]),
+        FailureItem(span_id="span_1", category=["error_a"], confidence=[0.9], evidence=["ev_a"]),
     ]
     chunk2 = [
-        FailureItem(span_id="span_1", category=["error_b"], confidence=["high"], evidence=["ev_b"]),
+        FailureItem(span_id="span_1", category=["error_b"], confidence=[0.9], evidence=["ev_b"]),
     ]
     merged = merge_chunk_failures([chunk1, chunk2])
     assert len(merged) == 1
@@ -326,27 +328,27 @@ def test_merge_same_span_different_category():
 def test_merge_same_span_same_category_keeps_highest():
     """Same span+category: keep the higher confidence."""
     chunk1 = [
-        FailureItem(span_id="span_1", category=["error_a"], confidence=["low"], evidence=["weak"]),
+        FailureItem(span_id="span_1", category=["error_a"], confidence=[0.5], evidence=["weak"]),
     ]
     chunk2 = [
-        FailureItem(span_id="span_1", category=["error_a"], confidence=["high"], evidence=["strong"]),
+        FailureItem(span_id="span_1", category=["error_a"], confidence=[0.9], evidence=["strong"]),
     ]
     merged = merge_chunk_failures([chunk1, chunk2])
     assert len(merged) == 1
-    assert merged[0].confidence[0] == "high"
+    assert merged[0].confidence[0] == 0.9
     assert merged[0].evidence[0] == "strong"
 
 
 def test_merge_same_span_same_category_no_downgrade():
     """Same span+category: lower confidence should not replace higher."""
     chunk1 = [
-        FailureItem(span_id="span_1", category=["error_a"], confidence=["high"], evidence=["strong"]),
+        FailureItem(span_id="span_1", category=["error_a"], confidence=[0.9], evidence=["strong"]),
     ]
     chunk2 = [
-        FailureItem(span_id="span_1", category=["error_a"], confidence=["low"], evidence=["weak"]),
+        FailureItem(span_id="span_1", category=["error_a"], confidence=[0.5], evidence=["weak"]),
     ]
     merged = merge_chunk_failures([chunk1, chunk2])
-    assert merged[0].confidence[0] == "high"
+    assert merged[0].confidence[0] == 0.9
     assert merged[0].evidence[0] == "strong"
 
 
@@ -357,10 +359,10 @@ def test_merge_empty():
 
 def test_merge_does_not_mutate_originals():
     """Merging should not modify the input FailureItems."""
-    item = FailureItem(span_id="span_1", category=["error_a"], confidence=["high"], evidence=["ev_a"])
+    item = FailureItem(span_id="span_1", category=["error_a"], confidence=[0.9], evidence=["ev_a"])
     chunk1 = [item]
     chunk2 = [
-        FailureItem(span_id="span_1", category=["error_b"], confidence=["high"], evidence=["ev_b"]),
+        FailureItem(span_id="span_1", category=["error_b"], confidence=[0.9], evidence=["ev_b"]),
     ]
     merge_chunk_failures([chunk1, chunk2])
     # Original item should be unchanged

@@ -13,11 +13,17 @@ ConfidenceLevel = Literal["low", "medium", "high"]
 
 
 class FailureItem(BaseModel):
-    """A single detected failure."""
+    """A single detected failure.
+
+    ``confidence`` is a list of floats (one per category) in the range [0.0, 1.0],
+    matching AgentCoreLens semantics. Strings from the LLM (``"low"|"medium"|"high"``)
+    are mapped to numeric values at parse time so downstream thresholding and
+    merging can use direct numeric comparisons.
+    """
 
     span_id: str = Field(description="Span where failure occurred")
     category: list[str] = Field(description="Failure classifications")
-    confidence: list[ConfidenceLevel] = Field(description="Confidence per category")
+    confidence: list[float] = Field(description="Confidence per category in [0.0, 1.0]")
     evidence: list[str] = Field(description="Evidence per category")
 
 

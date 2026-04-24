@@ -12,7 +12,7 @@ import json
 import logging
 from typing import Any
 
-from ..types.detector import ConfidenceLevel, FailureItem
+from ..types.detector import FailureItem
 from ..types.trace import SpanUnion
 from .constants import (
     CHARS_PER_TOKEN,
@@ -21,11 +21,9 @@ from .constants import (
     CHUNK_SAFETY_MARGIN,
     DEFAULT_MAX_INPUT_TOKENS,
     PREFLIGHT_SAFETY_MARGIN,
-    TIKTOKEN_FALLBACK_MULTIPLIER,
 )
 
 logger = logging.getLogger(__name__)
-_CONFIDENCE_RANK: dict[ConfidenceLevel, int] = {"low": 0, "medium": 1, "high": 2}
 
 # Cached tiktoken encoding — loaded once on first use.
 _tiktoken_encoding: Any = None
@@ -51,15 +49,16 @@ def _get_tiktoken_encoding() -> Any:
 def estimate_tokens(text: str) -> int:
     """Estimate token count for a text string.
 
-    Uses tiktoken (cl100k_base via strands SDK) when available, then applies
-    a correction multiplier to compensate for the systematic underestimation
-    vs Anthropic Claude's actual tokenizer. Falls back to
-    ``len(text) // CHARS_PER_TOKEN`` otherwise.
+    Any non-empty input returns at least 1 so that short JSON punctuation
+    (``"{"``, ``","``) contributes to the cumulative count during chunking
+    rather than rounding to zero.
     """
+    if not text:
+        return 0
     enc = _get_tiktoken_encoding()
     if enc is not None:
-        return int(len(enc.encode(text)) * TIKTOKEN_FALLBACK_MULTIPLIER)
-    return len(text) // CHARS_PER_TOKEN
+        return max(1, len(enc.encode(text)))
+    return max(1, len(text) // CHARS_PER_TOKEN)
 
 
 def would_exceed_context(prompt_text: str, max_input_tokens: int = DEFAULT_MAX_INPUT_TOKENS) -> bool:
@@ -258,9 +257,7 @@ def merge_chunk_failures(chunk_results: list[list[FailureItem]]) -> list[Failure
                 for i, cat in enumerate(failure.category):
                     if cat in existing.category:
                         idx = existing.category.index(cat)
-                        if _CONFIDENCE_RANK.get(failure.confidence[i], 0) > _CONFIDENCE_RANK.get(
-                            existing.confidence[idx], 0
-                        ):
+                        if failure.confidence[i] > existing.confidence[idx]:
                             existing.confidence[idx] = failure.confidence[i]
                             existing.evidence[idx] = failure.evidence[i]
                     else:

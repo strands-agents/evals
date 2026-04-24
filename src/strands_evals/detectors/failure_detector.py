@@ -24,11 +24,17 @@ from .._async import run_async
 from ..types.detector import ConfidenceLevel, FailureDetectionStructuredOutput, FailureItem, FailureOutput
 from ..types.trace import Session, SpanUnion
 from .chunking import merge_chunk_failures, split_spans_by_tokens, would_exceed_context
-from .constants import DEFAULT_DETECTOR_MODEL, MIN_CHUNK_SIZE
+from .constants import CONFIDENCE_MAP, DEFAULT_DETECTOR_MODEL, MIN_CHUNK_SIZE
 from .prompt_templates.failure_detection import get_template
 
 logger = logging.getLogger(__name__)
-CONFIDENCE_ORDER: dict[ConfidenceLevel, int] = {"low": 0, "medium": 1, "high": 2}
+
+
+def _resolve_confidence_threshold(threshold: ConfidenceLevel) -> float:
+    """Map the categorical ``"low"|"medium"|"high"`` threshold to the numeric
+    value used for comparison (matches Lens's ``confidence_map``).
+    """
+    return CONFIDENCE_MAP[threshold]
 
 
 @functools.lru_cache(maxsize=1)
@@ -57,15 +63,19 @@ def detect_failures(
 
     Args:
         session: The Session object to analyze.
-        confidence_threshold: Minimum confidence level ("low", "medium", "high")
-            to include a failure. Defaults to "low" (include all).
+        confidence_threshold: Minimum categorical confidence to include a
+            failure (``"low"`` | ``"medium"`` | ``"high"``). Internally mapped
+            to ``0.5 | 0.75 | 0.9`` via ``CONFIDENCE_MAP`` before filtering,
+            matching Lens. Defaults to ``"low"`` (include everything the LLM
+            flagged).
         model: A Model instance, model ID string (wrapped in BedrockModel),
             or None (uses default Haiku).
 
     Returns:
         FailureOutput with list of FailureItems, each with span_id, category,
-        confidence, and evidence.
+        confidence (float in [0.0, 1.0]), and evidence.
     """
+    threshold = _resolve_confidence_threshold(confidence_threshold)
     effective_model = _resolve_model(model)
     template = get_template("v0")
     session_json = _serialize_session(session)
@@ -83,10 +93,9 @@ def detect_failures(
             else:
                 raise
 
-    threshold_rank = CONFIDENCE_ORDER[confidence_threshold]
     filtered = []
     for f in raw:
-        valid_indices = [i for i, conf in enumerate(f.confidence) if CONFIDENCE_ORDER.get(conf, 0) >= threshold_rank]
+        valid_indices = [i for i, conf in enumerate(f.confidence) if conf >= threshold]
         if valid_indices:
             filtered.append(
                 FailureItem(
@@ -214,11 +223,16 @@ def _parse_text_result(text: str) -> list[FailureItem]:
             )
             continue
 
+        # Map the LLM's "low" | "medium" | "high" strings to numeric confidence
+        # (matches Lens's confidence_map). Unknown values map to 0.0 so they get
+        # filtered out by any non-zero confidence_threshold.
+        confidence_values = [CONFIDENCE_MAP.get(c.lower() if isinstance(c, str) else "", 0.0) for c in err.confidence]
+
         items.append(
             FailureItem(
                 span_id=err.location,
                 category=list(err.category),
-                confidence=list(err.confidence),
+                confidence=confidence_values,
                 evidence=list(err.evidence),
             )
         )

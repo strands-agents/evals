@@ -116,7 +116,7 @@ def test_parse_text_result_basic():
     assert len(result) == 1
     assert result[0].span_id == "span_1"
     assert result[0].category == ["hallucination-category-hall-usage"]
-    assert result[0].confidence == ["high"]
+    assert result[0].confidence == [0.9]
     assert result[0].evidence == ["Agent claimed to use tool without calling it"]
 
 
@@ -134,7 +134,7 @@ def test_parse_text_result_multiple_modes():
     result = _parse_text_result(text)
     assert len(result) == 1
     assert len(result[0].category) == 2
-    assert result[0].confidence == ["low", "high"]
+    assert result[0].confidence == [0.5, 0.9]
 
 
 def test_parse_text_result_mismatched_arrays():
@@ -254,7 +254,7 @@ def test_detect_failures_with_failures(mock_call_model):
 
     assert len(output.failures) == 1
     assert output.failures[0].span_id == "span_1"
-    assert output.failures[0].confidence == ["high"]
+    assert output.failures[0].confidence == [0.9]
 
 
 @patch("strands_evals.detectors.failure_detector._call_model")
@@ -294,7 +294,7 @@ def test_detect_failures_per_mode_filtering(mock_call_model):
     # Span is kept (has a high-confidence mode) but low-confidence mode is pruned
     assert len(output.failures) == 1
     assert output.failures[0].category == ["hallucination"]
-    assert output.failures[0].confidence == ["high"]
+    assert output.failures[0].confidence == [0.9]
     assert "repetition" not in output.failures[0].category
 
 

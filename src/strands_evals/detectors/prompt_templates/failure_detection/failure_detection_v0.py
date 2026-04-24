@@ -45,8 +45,8 @@ observable in system outputs and feedback.
 
 1. **Read the complete session** to understand context, goals, and agent behavior
 2. **For each span** (within each trace):
-   - If no failure detected -> Skip this span (do not annotate)
-   - If failure detected -> Assign appropriate category and provide evidence"""
+   - If no failure detected \u2192 Skip this span (do not annotate)
+   - If failure detected \u2192 Assign appropriate category and provide evidence"""
 
 CATEGORIES = """\
 Use the specific category names (not parent categories) in your annotations. \
@@ -198,8 +198,6 @@ modification||
 imports, or external library requirements||"""
 
 OUTPUT_FORMAT = """\
-Your output must be a valid JSON object following this exact structure:
-
 ```json
 {
   "errors": [
@@ -281,6 +279,12 @@ def build_prompt(
 ) -> str:
     """Build the user message with session data for failure analysis.
 
+    Whitespace is intentionally shaped to match Lens's Jinja template output
+    byte-for-byte (with the same inputs). Jinja's ``{% if %}/{% else %}/{% endif %}``
+    blocks leave an extra blank line between section headers and their bodies;
+    reproducing that structure keeps the LLM's section-boundary emphasis
+    identical to Lens so category attribution stays consistent.
+
     Args:
         session_json: Serialized session trace as JSON string.
         annotation_guidelines: Custom guidelines. Uses DEFAULT_ANNOTATION_GUIDELINES if None.
@@ -289,33 +293,47 @@ def build_prompt(
     guidelines = annotation_guidelines or DEFAULT_ANNOTATION_GUIDELINES
     categories = category_descriptions or CATEGORIES
 
+    # Each section follows the pattern Jinja produces: header, blank line,
+    # optional preamble, blank line, body, blank line, separator.
     return f"""---
 
 ## Annotation Guidelines
 
+
 {guidelines}
+
 
 ---
 
 ## Failure Category Definitions
 
+
 {categories}
+
 
 ---
 
 ## Output Format
 
+Your output must be a valid JSON object following this exact structure:
+
+
 {OUTPUT_FORMAT}
+
 
 ### Format Requirements:
 
+
 {FORMAT_REQUIREMENTS}
+
 
 ---
 
 ## Examples
 
+
 {EXAMPLES}
+
 
 ---
 
@@ -323,13 +341,17 @@ def build_prompt(
 
 Ensure these are verified before submitting your annotation:
 
+
 {QUALITY_CHECKS}
+
 
 ---
 
 ## Task Instructions
 
+
 {TASK_INSTRUCTIONS}
+
 
 ---
 

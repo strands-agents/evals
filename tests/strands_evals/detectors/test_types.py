@@ -18,12 +18,12 @@ def test_failure_item_creation():
     item = FailureItem(
         span_id="span_123",
         category=["hallucination", "incomplete_task"],
-        confidence=["high", "medium"],
+        confidence=[0.9, 0.75],
         evidence=["Made up product ID", "Did not finish checkout"],
     )
     assert item.span_id == "span_123"
     assert len(item.category) == 2
-    assert item.confidence[0] == "high"
+    assert item.confidence[0] == 0.9
     assert item.evidence[1] == "Did not finish checkout"
 
 
@@ -37,7 +37,7 @@ def test_failure_output_with_failures():
     item = FailureItem(
         span_id="span_1",
         category=["error"],
-        confidence=["high"],
+        confidence=[0.9],
         evidence=["timeout"],
     )
     output = FailureOutput(session_id="sess_1", failures=[item])
@@ -68,7 +68,7 @@ def test_diagnosis_result():
     item = FailureItem(
         span_id="span_1",
         category=["error"],
-        confidence=["high"],
+        confidence=[0.9],
         evidence=["timeout"],
     )
     rca = RCAItem(
@@ -186,11 +186,11 @@ def test_failure_output_serialization_roundtrip():
     item = FailureItem(
         span_id="span_1",
         category=["hallucination"],
-        confidence=["high"],
+        confidence=[0.9],
         evidence=["Made up data"],
     )
     output = FailureOutput(session_id="sess_1", failures=[item])
     json_str = output.model_dump_json()
     restored = FailureOutput.model_validate_json(json_str)
     assert restored.session_id == "sess_1"
-    assert restored.failures[0].confidence[0] == "high"
+    assert restored.failures[0].confidence[0] == 0.9
