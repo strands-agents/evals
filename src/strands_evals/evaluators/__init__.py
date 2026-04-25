@@ -1,3 +1,4 @@
+from .attack_success_evaluator import AttackSuccessEvaluator
 from .coherence_evaluator import CoherenceEvaluator
 from .conciseness_evaluator import ConcisenessEvaluator
 from .deterministic import Contains, Equals, StartsWith, StateEquals, ToolCalled
@@ -34,4 +35,5 @@ __all__ = [
     "StateEquals",
     "ToolCalled",
     "RedTeamJudgeEvaluator",
+    "AttackSuccessEvaluator",
 ]

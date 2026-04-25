@@ -2,7 +2,13 @@
 
 Provides helper functions for generating red team test cases, building
 multi-turn task functions, and running end-to-end red team evaluations.
+
+Supports both Callable and Agent targets. When an Agent is passed directly,
+tool definitions are extracted automatically for context-aware attacks and
+tool execution traces are captured for richer evaluation.
 """
+
+from __future__ import annotations
 
 import json
 import logging
@@ -18,6 +24,7 @@ from typing_extensions import Union
 from strands_evals.case import Case
 from strands_evals.evaluators.red_team_judge_evaluator import RedTeamJudgeEvaluator
 from strands_evals.experiment import Experiment
+from strands_evals.redteam.agent_adapter import extract_tool_info, wrap_agent_with_trace
 from strands_evals.redteam.presets import ATTACK_REGISTRY
 from strands_evals.redteam.prompt_templates.strategies.gradual_escalation import (
     SYSTEM_PROMPT_TEMPLATE as GRADUAL_ESCALATION_PROMPT,
@@ -177,6 +184,7 @@ def build_task_function(
     max_turns: int = 10,
     model: Union[Model, str, None] = None,
     strategy: str = DEFAULT_STRATEGY,
+    tool_trace: list[dict] | None = None,
 ) -> Callable:
     """Build a task function that runs multi-turn red team conversations.
 
@@ -189,6 +197,9 @@ def build_task_function(
         max_turns: Maximum conversation turns per case.
         model: Model for the ActorSimulator's underlying agent.
         strategy: Attack strategy name. See SUPPORTED_STRATEGIES for available options.
+        tool_trace: Optional mutable list that collects tool call records from
+            Agent targets. When provided, accumulated traces are included in
+            the task output as ``trajectory`` for downstream evaluators.
 
     Returns:
         A task function compatible with Experiment.run_evaluations().
@@ -219,6 +230,9 @@ def build_task_function(
             max_turns=max_turns,
         )
 
+        if tool_trace is not None:
+            tool_trace.clear()
+
         conversation: list[dict[str, str]] = []
         attacker_message = case.input
 
@@ -238,9 +252,11 @@ def build_task_function(
             attacker_result = simulator.act(target_response)
             attacker_message = str(attacker_result.structured_output.message)
 
-        return {
-            "output": conversation,
-        }
+        result: dict = {"output": conversation}
+        if tool_trace:
+            result["trajectory"] = list(tool_trace)
+
+        return result
 
     return task_fn
 
@@ -304,6 +320,136 @@ def run_red_team(
         max_turns=max_turns,
         model=model,
         strategy=strategy,
+    )
+
+    if evaluators is None:
+        evaluators = [RedTeamJudgeEvaluator(model=model)]
+
+    experiment = Experiment(cases=cases, evaluators=evaluators)
+    reports = experiment.run_evaluations(task_fn)
+
+    return reports
+
+
+def _expand_cases_with_strategies(
+    cases: list[Case],
+    attack_strategies: list,
+) -> list[Case]:
+    """Expand N cases × M strategies into N×M cases with strategy in metadata.
+
+    Each expanded case carries the strategy reference in metadata so that
+    build_task_function can retrieve and apply it. This uses the base
+    Experiment queue without modification.
+    """
+    expanded = []
+    for case in cases:
+        for strategy in attack_strategies:
+            c = case.model_copy(deep=True)
+            c.name = f"{case.name}__{strategy.name}"
+            c.metadata = {
+                **(c.metadata or {}),
+                "_strategy_name": strategy.name,
+                "_strategy_ref": strategy,
+            }
+            expanded.append(c)
+    return expanded
+
+
+def red_team(
+    target: Union[Agent, Callable],
+    attack_types: list[str] | None = None,
+    target_info: dict | None = None,
+    n_per_type: int = 5,
+    max_turns: int = 10,
+    evaluators: list | None = None,
+    model: Union[Model, str, None] = None,
+    strategy: str = DEFAULT_STRATEGY,
+    attack_strategies: list | None = None,
+    custom_cases: list[Case] | None = None,
+) -> list[EvaluationReport]:
+    """Run red team evaluation with automatic Agent support.
+
+    Accepts either a Strands Agent or a Callable as the target. When an Agent
+    is passed, tool definitions and system prompt are extracted automatically
+    to generate context-aware attack cases, and tool execution traces are
+    captured for downstream evaluation.
+
+    Args:
+        target: A Strands Agent instance or a Callable[[str], str].
+        attack_types: Attack type names. Defaults to all registered types
+            when None.
+        target_info: Optional target metadata. When target is an Agent and
+            target_info is None, it is auto-extracted from the agent.
+        n_per_type: Number of test cases per attack type.
+        max_turns: Maximum conversation turns per case.
+        evaluators: Evaluator instances. Defaults to RedTeamJudgeEvaluator.
+        model: Model for the attacker simulator and default evaluator.
+        strategy: Attack strategy name (used when attack_strategies is None).
+        attack_strategies: List of AttackStrategy instances. When provided,
+            each case is expanded into N×M (case × strategy) pairs. Takes
+            precedence over the ``strategy`` string parameter.
+        custom_cases: Additional hand-crafted cases (e.g., business-rule
+            scenarios) merged with auto-generated cases.
+
+    Returns:
+        List of EvaluationReport, one per evaluator.
+
+    Example:
+        ```python
+        from strands import Agent
+        from strands_evals.redteam import red_team
+
+        agent = Agent(
+            system_prompt="You are a customer service agent.",
+            tools=[order_lookup, process_refund, send_email],
+        )
+
+        # Simplest usage — Agent target with defaults
+        reports = red_team(agent, max_turns=10)
+
+        # With explicit strategies and custom cases
+        from strands_evals.redteam.strategies import PromptStrategy
+        from strands_evals.case import Case
+
+        reports = red_team(
+            target=agent,
+            attack_strategies=[my_crescendo_strategy, my_linear_strategy],
+            custom_cases=[Case(name="biz_rule", input="...", metadata={...})],
+        )
+        ```
+    """
+    if attack_types is None:
+        attack_types = list(ATTACK_REGISTRY.keys())
+
+    tool_trace: list[dict] | None = None
+
+    if isinstance(target, Agent):
+        if target_info is None:
+            target_info = extract_tool_info(target)
+        target_fn, tool_trace = wrap_agent_with_trace(target)
+    else:
+        target_fn = target
+
+    cases = generate_cases(
+        attack_types=attack_types,
+        n_per_type=n_per_type,
+        target_info=target_info,
+        model=model,
+        strategy=strategy,
+    )
+
+    if custom_cases:
+        cases.extend(custom_cases)
+
+    if attack_strategies:
+        cases = _expand_cases_with_strategies(cases, attack_strategies)
+
+    task_fn = build_task_function(
+        target=target_fn,
+        max_turns=max_turns,
+        model=model,
+        strategy=strategy,
+        tool_trace=tool_trace,
     )
 
     if evaluators is None:
