@@ -1,7 +1,6 @@
 """Failure detection prompt template v0.
 
-Ported verbatim from AgentCoreLens failure_detection.j2.
-Only the rendering mechanism changed (Jinja2 -> Python f-strings).
+Uses Python f-string rendering for prompt assembly.
 """
 
 SYSTEM_PROMPT = """\
@@ -279,11 +278,10 @@ def build_prompt(
 ) -> str:
     """Build the user message with session data for failure analysis.
 
-    Whitespace is intentionally shaped to match Lens's Jinja template output
-    byte-for-byte (with the same inputs). Jinja's ``{% if %}/{% else %}/{% endif %}``
-    blocks leave an extra blank line between section headers and their bodies;
-    reproducing that structure keeps the LLM's section-boundary emphasis
-    identical to Lens so category attribution stays consistent.
+    Whitespace is intentionally shaped so the section headers and their
+    bodies are separated by a blank line. That extra blank line acts as a
+    section-boundary cue for the LLM and keeps category attribution
+    consistent across runs.
 
     Args:
         session_json: Serialized session trace as JSON string.

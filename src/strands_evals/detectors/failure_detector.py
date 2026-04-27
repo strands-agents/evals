@@ -3,8 +3,6 @@
 Identifies semantic failures (hallucinations, task errors, tool misuse, etc.)
 in Session traces using LLM-based analysis with automatic chunking fallback
 for sessions exceeding context limits.
-
-Ported from AgentCoreLens tools/failure_detector.py.
 """
 
 import functools
@@ -18,7 +16,6 @@ from strands.models.bedrock import BedrockModel
 from strands.models.model import Model
 from strands.types.content import ContentBlock, Message, Messages
 from strands.types.exceptions import ContextWindowOverflowException
-from typing_extensions import Union
 
 from .._async import run_async
 from ..types.detector import ConfidenceLevel, FailureDetectionStructuredOutput, FailureItem, FailureOutput
@@ -32,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 def _resolve_confidence_threshold(threshold: ConfidenceLevel) -> float:
     """Map the categorical ``"low"|"medium"|"high"`` threshold to the numeric
-    value used for comparison (matches Lens's ``confidence_map``).
+    value used for comparison (see ``CONFIDENCE_MAP``).
     """
     return CONFIDENCE_MAP[threshold]
 
@@ -41,10 +38,10 @@ def _resolve_confidence_threshold(threshold: ConfidenceLevel) -> float:
 def _get_prompt_overhead_tokens() -> int:
     """Estimate token count of the prompt template with no session data.
 
-    Computed lazily on first call and cached. Matches Lens pattern: render
-    template with empty session, measure tokens. This is the fixed overhead
-    per chunk that must be subtracted from the token budget so span data
-    fills only the remaining space.
+    Computed lazily on first call and cached: render the template with an
+    empty session and measure tokens. This is the fixed overhead per chunk
+    that must be subtracted from the token budget so span data fills only
+    the remaining space.
     """
     from .chunking import estimate_tokens
 
@@ -57,7 +54,7 @@ def detect_failures(
     session: Session,
     *,
     confidence_threshold: ConfidenceLevel = "low",
-    model: Union[Model, str, None] = None,
+    model: Model | str | None = None,
 ) -> FailureOutput:
     """Detect semantic failures in an agent execution session.
 
@@ -65,9 +62,8 @@ def detect_failures(
         session: The Session object to analyze.
         confidence_threshold: Minimum categorical confidence to include a
             failure (``"low"`` | ``"medium"`` | ``"high"``). Internally mapped
-            to ``0.5 | 0.75 | 0.9`` via ``CONFIDENCE_MAP`` before filtering,
-            matching Lens. Defaults to ``"low"`` (include everything the LLM
-            flagged).
+            to ``0.5 | 0.75 | 0.9`` via ``CONFIDENCE_MAP`` before filtering.
+            Defaults to ``"low"`` (include everything the LLM flagged).
         model: A Model instance, model ID string (wrapped in BedrockModel),
             or None (uses default Haiku).
 
@@ -133,7 +129,7 @@ def _detect_chunked(
     chunk_results: list[list[FailureItem]] = []
     for i, chunk_spans in enumerate(chunks):
         try:
-            chunk_json = _serialize_spans(chunk_spans, session.session_id)
+            chunk_json = _serialize_spans(chunk_spans)
             user_prompt = template.build_prompt(session_json=chunk_json)
             text = _call_model(model, system_prompt=template.SYSTEM_PROMPT, user_prompt=user_prompt)
             chunk_results.append(_parse_text_result(text))
@@ -147,7 +143,7 @@ def _detect_chunked(
     return merge_chunk_failures(chunk_results)
 
 
-def _resolve_model(model: Union[Model, str, None]) -> Model:
+def _resolve_model(model: Model | str | None) -> Model:
     """Resolve a model parameter to a Model instance.
 
     Args:
@@ -164,8 +160,8 @@ def _resolve_model(model: Union[Model, str, None]) -> Model:
 def _call_model(model: Model, *, system_prompt: str, user_prompt: str) -> str:
     """Call the model directly and return the full text response.
 
-    Matches Lens prompt delivery: everything goes in a single user message
-    with no separate system prompt. When the failure taxonomy and guidelines
+    Prompt delivery: everything goes in a single user message with no
+    separate system prompt. When the failure taxonomy and guidelines
     are in the system role, the model treats them with higher authority and
     over-applies categories (more false positives). Putting everything in
     the user message gives the model a balanced view between "what to look
@@ -201,7 +197,7 @@ def _parse_text_result(text: str) -> list[FailureItem]:
     """Parse raw LLM text response into list[FailureItem].
 
     Returns an empty list on malformed JSON or validation errors rather than
-    crashing, matching Lens's graceful degradation behavior.
+    crashing, to keep failure detection resilient to occasional bad model output.
     """
     try:
         json_str = _extract_json(text)
@@ -224,8 +220,8 @@ def _parse_text_result(text: str) -> list[FailureItem]:
             continue
 
         # Map the LLM's "low" | "medium" | "high" strings to numeric confidence
-        # (matches Lens's confidence_map). Unknown values map to 0.0 so they get
-        # filtered out by any non-zero confidence_threshold.
+        # via CONFIDENCE_MAP. Unknown values map to 0.0 so they get filtered
+        # out by any non-zero confidence_threshold.
         confidence_values = [CONFIDENCE_MAP.get(c.lower() if isinstance(c, str) else "", 0.0) for c in err.confidence]
 
         items.append(
@@ -271,8 +267,8 @@ def _flatten_traces_to_spans(traces: list) -> list[SpanUnion]:
 def _serialize_session(session: Session) -> str:
     """Serialize a full Session to JSON for the prompt.
 
-    Matches Lens format: bare traces array, not wrapped in a session object.
-    Lens: json.dumps([t.model_dump() for t in traces], indent=2)
+    Uses a bare traces array rather than wrapping in a session object:
+    ``json.dumps([t.model_dump() for t in traces], indent=2)``.
     """
     return json.dumps([t.model_dump() for t in session.traces], indent=2, default=str)
 
@@ -283,8 +279,6 @@ def _group_spans_into_traces(spans: list[SpanUnion]) -> list[dict]:
     When spans from different traces end up in the same chunk (because
     flattening loses trace boundaries), this reconstructs the per-trace
     grouping so the LLM can distinguish which spans belong to which turn.
-
-    Ported from Lens failure_detector._group_spans_into_traces().
     """
     traces_map: OrderedDict[str, list[SpanUnion]] = OrderedDict()
     for span in spans:
@@ -304,11 +298,12 @@ def _group_spans_into_traces(spans: list[SpanUnion]) -> list[dict]:
     return traces
 
 
-def _serialize_spans(spans: list[SpanUnion], session_id: str) -> str:
+def _serialize_spans(spans: list[SpanUnion]) -> str:
     """Serialize a list of spans as a bare traces array for chunk prompts.
 
-    Matches Lens format: bare traces array, not wrapped in a session object.
-    Lens: json.dumps(chunk_traces, indent=2)
+    Uses the same bare traces array format as _serialize_session, not
+    wrapped in a session object:
+    ``json.dumps(chunk_traces, indent=2)``.
     """
     traces = _group_spans_into_traces(spans)
     return json.dumps(traces, indent=2, default=str)

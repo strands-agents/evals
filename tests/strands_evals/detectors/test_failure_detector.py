@@ -219,7 +219,7 @@ def test_serialize_spans():
         tool_call=ToolCall(name="test", arguments={}),
         tool_result=ToolResult(content="ok"),
     )
-    result = _serialize_spans([span], "sess_1")
+    result = _serialize_spans([span])
     assert "sess_1" in result
     assert "span_10" in result
 
@@ -388,9 +388,9 @@ def test_serialize_spans_preserves_trace_structure():
         tool_result=ToolResult(content="ok"),
     )
 
-    result = json.loads(_serialize_spans([span_a, span_b, span_a2], "sess_1"))
+    result = json.loads(_serialize_spans([span_a, span_b, span_a2]))
 
-    # Result is now a bare traces array (matching Lens format)
+    # Result is now a bare traces array
     assert len(result) == 2
     trace_ids = [t["trace_id"] for t in result]
     assert "trace_A" in trace_ids

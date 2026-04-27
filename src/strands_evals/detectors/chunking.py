@@ -1,11 +1,9 @@
 """Shared utilities for context window management and span chunking.
 
-Used by detect_failures, summarize_execution, and analyze_root_cause
-to handle sessions that exceed LLM context limits.
+Used by detect_failures to handle sessions that exceed LLM context limits.
 
-Ported from AgentCoreLens failure_detector._split_spans_by_tokens() and
-related helpers. Uses tiktoken (via strands SDK) for accurate token
-estimation, with a character-based fallback when tiktoken is unavailable.
+Uses tiktoken (via strands SDK) for accurate token estimation, with a
+character-based fallback when tiktoken is unavailable.
 """
 
 import json
@@ -86,8 +84,6 @@ def _compute_overlap(
     1. num_overlap_spans: maximum number of spans to consider
     2. min_new_content_ratio: limits overlap to (1 - ratio) of available tokens
     3. Token limit: overlap + next_span must fit within available_token_limit
-
-    Ported from Lens failure_detector._compute_overlap().
     """
     if not prev_chunk_spans or num_overlap_spans <= 0:
         return [], []
@@ -125,8 +121,6 @@ def split_spans_by_tokens(
 
     Uses a conservative safety margin (0.70) for chunk sizing so that chunks
     have headroom and don't overflow at runtime.
-
-    Ported from Lens ``failure_detector._split_spans_by_tokens()``.
 
     Args:
         spans: Flat list of span objects to chunk.
@@ -233,7 +227,7 @@ def merge_chunk_failures(chunk_results: list[list[FailureItem]]) -> list[Failure
     """Merge failures from overlapping chunks, deduplicating by span_id.
 
     Keeps highest confidence per category when the same span_id appears
-    in multiple chunks. Ported from Lens ``_merge_chunk_failures()``.
+    in multiple chunks.
 
     Args:
         chunk_results: List of failure lists, one per chunk.
