@@ -17,3 +17,8 @@ MIN_CHUNK_SIZE = 2
 
 # Map the LLM's categorical confidence strings to numeric values.
 CONFIDENCE_MAP: dict[str, float] = {"low": 0.5, "medium": 0.75, "high": 0.9}
+
+# RCA pruning and chunking
+RCA_MAX_DESCENDANTS = 10
+RCA_WINDOW_SPLIT_FACTOR = 3
+RCA_MIN_WINDOW_SIZE = 5

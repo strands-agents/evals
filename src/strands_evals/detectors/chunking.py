@@ -1,6 +1,7 @@
 """Shared utilities for context window management and span chunking.
 
-Used by detect_failures to handle sessions that exceed LLM context limits.
+Used by detect_failures, summarize_execution, and analyze_root_cause
+to handle sessions that exceed LLM context limits.
 
 Uses tiktoken (via strands SDK) for accurate token estimation, with a
 character-based fallback when tiktoken is unavailable.

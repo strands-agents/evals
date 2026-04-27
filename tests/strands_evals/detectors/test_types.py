@@ -1,10 +1,16 @@
 """Tests for detector Pydantic models."""
 
 from strands_evals.types.detector import (
+    DiagnosisResult,
     FailureDetectionStructuredOutput,
     FailureError,
     FailureItem,
     FailureOutput,
+    FixRecommendation,
+    RCAItem,
+    RCAOutput,
+    RCAStructuredOutput,
+    RootCauseItem,
 )
 
 
@@ -39,6 +45,56 @@ def test_failure_output_with_failures():
     assert output.failures[0].span_id == "span_1"
 
 
+def test_rca_item_creation():
+    item = RCAItem(
+        failure_span_id="span_1",
+        location="span_0",
+        causality="PRIMARY_FAILURE",
+        propagation_impact=["TASK_TERMINATION"],
+        root_cause_explanation="The tool returned ambiguous results",
+        fix_type="TOOL_DESCRIPTION_FIX",
+        fix_recommendation="Add disambiguation instructions",
+    )
+    assert item.failure_span_id == "span_1"
+    assert item.causality == "PRIMARY_FAILURE"
+
+
+def test_rca_output_empty():
+    output = RCAOutput()
+    assert output.root_causes == []
+
+
+def test_diagnosis_result():
+    item = FailureItem(
+        span_id="span_1",
+        category=["error"],
+        confidence=[0.9],
+        evidence=["timeout"],
+    )
+    rca = RCAItem(
+        failure_span_id="span_1",
+        location="span_0",
+        causality="PRIMARY_FAILURE",
+        root_cause_explanation="Timeout due to slow API",
+        fix_type="OTHERS",
+        fix_recommendation="Add retry logic",
+    )
+    result = DiagnosisResult(
+        session_id="sess_1",
+        failures=[item],
+        root_causes=[rca],
+    )
+    assert result.session_id == "sess_1"
+    assert len(result.failures) == 1
+    assert len(result.root_causes) == 1
+
+
+def test_diagnosis_result_empty():
+    result = DiagnosisResult(session_id="sess_1")
+    assert result.failures == []
+    assert result.root_causes == []
+
+
 def test_failure_error():
     err = FailureError(
         location="span_1",
@@ -62,6 +118,67 @@ def test_failure_detection_structured_output():
         ]
     )
     assert len(output.errors) == 1
+
+
+def test_root_cause_item_with_aliases():
+    """RootCauseItem should accept both alias names and field names."""
+    item = RootCauseItem(
+        failure_span_id="span_1",
+        location="span_0",
+        failure_causality="PRIMARY_FAILURE",
+        failure_propagation_impact=["TASK_TERMINATION"],
+        failure_detection_timing="IMMEDIATELY_AT_OCCURRENCE",
+        completion_status="COMPLETE_FAILURE",
+        root_cause_explanation="Tool returned bad data",
+        fix_recommendation=FixRecommendation(
+            fix_type="TOOL_DESCRIPTION_FIX",
+            recommendation="Add validation",
+        ),
+    )
+    assert item.failure_span_id == "span_1"
+    assert item.failure_causality == "PRIMARY_FAILURE"
+
+
+def test_root_cause_item_from_llm_aliases():
+    """RootCauseItem should parse from LLM output using JSON aliases."""
+    data = {
+        "Failure Span ID": "span_1",
+        "Location": "span_0",
+        "Failure Causality": "SECONDARY_FAILURE",
+        "Failure Propagation Impact": ["QUALITY_DEGRADATION"],
+        "Failure Detection Timing": "SEVERAL_STEPS_LATER",
+        "Completion Status": "PARTIAL_SUCCESS",
+        "Root Cause Explanation": "Ambiguous tool output",
+        "Fix Recommendation": {
+            "Fix Type": "SYSTEM_PROMPT_FIX",
+            "Recommendation": "Add disambiguation",
+        },
+    }
+    item = RootCauseItem.model_validate(data)
+    assert item.failure_span_id == "span_1"
+    assert item.failure_causality == "SECONDARY_FAILURE"
+    assert item.fix_recommendation.fix_type == "SYSTEM_PROMPT_FIX"
+
+
+def test_rca_structured_output():
+    output = RCAStructuredOutput(
+        root_causes=[
+            RootCauseItem(
+                failure_span_id="span_1",
+                location="span_0",
+                failure_causality="PRIMARY_FAILURE",
+                failure_propagation_impact=["TASK_TERMINATION"],
+                failure_detection_timing="IMMEDIATELY_AT_OCCURRENCE",
+                completion_status="COMPLETE_FAILURE",
+                root_cause_explanation="Error",
+                fix_recommendation=FixRecommendation(
+                    fix_type="OTHERS",
+                    recommendation="Fix it",
+                ),
+            )
+        ]
+    )
+    assert len(output.root_causes) == 1
 
 
 def test_failure_output_serialization_roundtrip():
