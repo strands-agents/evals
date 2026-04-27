@@ -1,7 +1,6 @@
 """Root cause merge prompt template v0.
 
-Ported from AgentCoreLens root_cause_merge.j2.
-Only the rendering mechanism changed (Jinja2 -> Python f-strings).
+Uses Python f-string rendering for prompt assembly.
 """
 
 SYSTEM_PROMPT = """\

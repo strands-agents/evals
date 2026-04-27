@@ -6,8 +6,6 @@ strategy to handle sessions that exceed LLM context limits:
 1. Direct analysis (full session)
 2. Failure path pruning (keep only ancestor + descendant spans of failures)
 3. Chunked analysis with merge (split pruned session, analyze each, merge)
-
-Ported from AgentCoreLens tools/root_cause_analyzer.py.
 """
 
 import json
@@ -235,8 +233,6 @@ def _prune_session_to_failure_paths(
     Keeps:
     1. All spans on paths from root to failure spans (ancestors)
     2. Up to max_descendants descendants for each failure span (context)
-
-    Ported from Lens RootCauseAnalyzer._prune_session_to_failure_paths().
     """
     if not failure_span_ids:
         return session
