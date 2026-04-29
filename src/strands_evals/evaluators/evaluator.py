@@ -3,7 +3,7 @@ import inspect
 import logging
 
 from strands.models.model import Model
-from typing_extensions import Any, Generic, TypeGuard, Union
+from typing_extensions import Any, Generic, TypeGuard
 
 from ..extractors import TraceExtractor
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
@@ -49,7 +49,7 @@ class Evaluator(Generic[InputT, OutputT]):
         elif self.evaluation_level:
             self._trace_extractor = TraceExtractor(self.evaluation_level)
 
-    def _get_model_id(self, model: Union[Model, str, None]) -> str:
+    def _get_model_id(self, model: Model | str | None) -> str:
         """Extract model_id from a Model instance or string for serialization.
 
         This helper method should be called in subclass __init__ methods that accept a model parameter.

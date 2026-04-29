@@ -2,7 +2,7 @@ from typing import cast
 
 from strands import Agent
 from strands.models.model import Model
-from typing_extensions import Any, Union
+from typing_extensions import Any
 
 from ..tools.evaluation_tools import any_order_match_scorer, exact_match_scorer, in_order_match_scorer
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
@@ -29,7 +29,7 @@ class TrajectoryEvaluator(Evaluator[InputT, OutputT]):
         self,
         rubric: str,
         trajectory_description: dict | None = None,
-        model: Union[Model, str, None] = None,
+        model: Model | str | None = None,
         system_prompt: str = SYSTEM_PROMPT,
         include_inputs: bool = True,
     ):
@@ -38,7 +38,7 @@ class TrajectoryEvaluator(Evaluator[InputT, OutputT]):
         self.trajectory_description = trajectory_description
         self.model = model
         self.include_inputs = include_inputs
-        self._tools: list[Union[str, dict[str, str], Any]] | None = [
+        self._tools: list[str | dict[str, str] | Any] | None = [
             exact_match_scorer,
             in_order_match_scorer,
             any_order_match_scorer,
