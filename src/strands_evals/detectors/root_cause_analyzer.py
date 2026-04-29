@@ -14,22 +14,26 @@ from collections import deque
 from copy import deepcopy
 
 from strands import Agent
-from strands.models.bedrock import BedrockModel
 from strands.models.model import Model
 from strands.types.exceptions import ContextWindowOverflowException
-from typing_extensions import Union, cast
+from typing_extensions import cast
 
 from ..types.detector import FailureItem, RCAItem, RCAOutput, RCAStructuredOutput
 from ..types.trace import Session, SpanUnion
 from .chunking import would_exceed_context
 from .constants import (
-    DEFAULT_DETECTOR_MODEL,
     RCA_MAX_DESCENDANTS,
     RCA_MIN_WINDOW_SIZE,
     RCA_WINDOW_SPLIT_FACTOR,
 )
 from .failure_detector import detect_failures
 from .prompt_templates.root_cause import get_merge_template, get_template
+from .utils import (
+    _is_context_exceeded,
+    _resolve_model,
+    _serialize_session,
+    _serialize_spans,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +42,7 @@ def analyze_root_cause(
     session: Session,
     failures: list[FailureItem] | None = None,
     *,
-    model: Union[Model, str, None] = None,
+    model: Model | str | None = None,
 ) -> RCAOutput:
     """Perform root cause analysis on detected failures in a session.
 
@@ -109,14 +113,6 @@ def analyze_root_cause(
     return RCAOutput(root_causes=raw)
 
 
-def _resolve_model(model: Union[Model, str, None]) -> Model:
-    if model is None:
-        return BedrockModel(model_id=DEFAULT_DETECTOR_MODEL)
-    if isinstance(model, str):
-        return BedrockModel(model_id=model)
-    return model
-
-
 def _rca_direct(system_prompt: str, model: Model) -> list[RCAItem]:
     template = get_template("v0")
     agent = Agent(
@@ -167,7 +163,7 @@ def _rca_chunked(
             window_failures = [f for f in failures if f.span_id in window_span_ids]
             window_failures_json = _serialize_failures(window_failures) if window_failures else failures_json
 
-            window_json = _serialize_spans(window_spans, pruned_session.session_id)
+            window_json = _serialize_spans(window_spans)
             system_prompt = template.build_prompt(
                 execution_json=window_json,
                 execution_failures_json=window_failures_json,
@@ -303,24 +299,6 @@ def _collect_descendants(
                 collected += 1
 
 
-def _is_context_exceeded(exception: Exception) -> bool:
-    if isinstance(exception, ContextWindowOverflowException):
-        return True
-    msg = str(exception).lower()
-    return any(
-        p in msg
-        for p in [
-            "context window",
-            "context length",
-            "context_length",
-            "too long",
-            "max_tokens",
-            "input_limit",
-            "input too large",
-        ]
-    )
-
-
 def _get_span_id(span: SpanUnion) -> str:
     return span.span_info.span_id or ""
 
@@ -329,16 +307,5 @@ def _get_parent_span_id(span: SpanUnion) -> str | None:
     return span.span_info.parent_span_id
 
 
-def _serialize_session(session: Session) -> str:
-    return json.dumps([t.model_dump() for t in session.traces], indent=2, default=str)
-
-
 def _serialize_failures(failures: list[FailureItem]) -> str:
     return json.dumps([f.model_dump() for f in failures], indent=2, default=str)
-
-
-def _serialize_spans(spans: list[SpanUnion], session_id: str) -> str:
-    from .failure_detector import _group_spans_into_traces
-
-    traces = _group_spans_into_traces(spans)
-    return json.dumps(traces, indent=2, default=str)

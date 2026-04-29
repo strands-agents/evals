@@ -8,13 +8,15 @@ import pytest
 
 from strands_evals.detectors.failure_detector import (
     _extract_json,
+    _parse_text_result,
+    detect_failures,
+)
+from strands_evals.detectors.utils import (
     _group_spans_into_traces,
     _is_context_exceeded,
-    _parse_text_result,
     _resolve_model,
     _serialize_session,
     _serialize_spans,
-    detect_failures,
 )
 from strands_evals.types.detector import FailureOutput
 from strands_evals.types.trace import (

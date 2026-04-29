@@ -7,12 +7,12 @@ import pytest
 
 from strands_evals.detectors.root_cause_analyzer import (
     _collect_descendants,
-    _is_context_exceeded,
     _parse_structured_result,
     _prune_session_to_failure_paths,
     _trace_to_roots,
     analyze_root_cause,
 )
+from strands_evals.detectors.utils import _is_context_exceeded
 from strands_evals.types.detector import (
     FailureItem,
     FixRecommendation,
