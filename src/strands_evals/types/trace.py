@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from enum import Enum
 
 from pydantic import BaseModel, field_serializer
-from typing_extensions import Mapping, Sequence, TypeAlias, Union
+from typing_extensions import Mapping, Sequence, TypeAlias
 
 
 class Role(str, Enum):
@@ -69,12 +69,12 @@ class ToolResultContent(ToolResult):
 
 class UserMessage(BaseModel):
     role: Role = Role.USER
-    content: list[Union[TextContent, ToolResultContent]]
+    content: list[TextContent | ToolResultContent]
 
 
 class AssistantMessage(BaseModel):
     role: Role = Role.ASSISTANT
-    content: list[Union[TextContent, ToolCallContent]]
+    content: list[TextContent | ToolCallContent]
 
 
 class SpanInfo(BaseModel):
@@ -104,7 +104,7 @@ class BaseSpan(BaseModel):
 
 class InferenceSpan(BaseSpan):
     span_type: SpanType = SpanType.INFERENCE
-    messages: list[Union[UserMessage, AssistantMessage]]
+    messages: list[UserMessage | AssistantMessage]
 
 
 class ToolExecutionSpan(BaseSpan):
@@ -121,7 +121,7 @@ class AgentInvocationSpan(BaseSpan):
     system_prompt: str | None = None
 
 
-SpanUnion: TypeAlias = Union[InferenceSpan, ToolExecutionSpan, AgentInvocationSpan]
+SpanUnion: TypeAlias = InferenceSpan | ToolExecutionSpan | AgentInvocationSpan
 
 
 class Trace(BaseModel):
@@ -163,7 +163,7 @@ class TraceLevelInput(BaseEvaluationInput):
     """Input for trace-level evaluators"""
 
     agent_response: TextContent
-    session_history: list[Union[UserMessage, list[ToolExecution], AssistantMessage]]
+    session_history: list[UserMessage | list[ToolExecution] | AssistantMessage]
 
 
 class ToolLevelInput(BaseEvaluationInput):
@@ -171,12 +171,12 @@ class ToolLevelInput(BaseEvaluationInput):
 
     available_tools: list[ToolConfig]
     tool_execution_details: ToolExecutionSpan
-    session_history: list[Union[UserMessage, list[ToolExecution], AssistantMessage]]
+    session_history: list[UserMessage | list[ToolExecution] | AssistantMessage]
 
 
 class EvaluatorScore(BaseModel):
     explanation: str
-    value: Union[int, float] | None = None
+    value: int | float | None = None
     error: str | None = None
 
 

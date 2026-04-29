@@ -2,7 +2,6 @@ from typing import cast
 
 from strands import Agent
 from strands.models.model import Model
-from typing_extensions import Union
 
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from .evaluator import Evaluator
@@ -26,7 +25,7 @@ class OutputEvaluator(Evaluator[InputT, OutputT]):
     def __init__(
         self,
         rubric: str,
-        model: Union[Model, str, None] = None,
+        model: Model | str | None = None,
         system_prompt: str = SYSTEM_PROMPT,
         include_inputs: bool = True,
         uses_environment_state: bool = False,

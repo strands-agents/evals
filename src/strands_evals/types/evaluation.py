@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing_extensions import Any, Generic, TypedDict, TypeVar, Union
+from typing_extensions import Any, Generic, TypedDict, TypeVar
 
 from .trace import Session
 
@@ -68,7 +68,7 @@ class TaskOutput(TypedDict, total=False):
     """
 
     output: Any
-    trajectory: Union[list[Any], Session, None]
+    trajectory: list[Any] | Session | None
     interactions: list[Interaction]
     input: Any
     environment_state: list[EnvironmentState]
@@ -100,8 +100,8 @@ class EvaluationData(BaseModel, Generic[InputT, OutputT]):
     name: str | None = None
     expected_output: OutputT | None = None
     expected_assertion: str | None = None
-    expected_trajectory: Union[list[Any], Session, None] = None
-    actual_trajectory: Union[list[Any], Session, None] = None
+    expected_trajectory: list[Any] | Session | None = None
+    actual_trajectory: list[Any] | Session | None = None
     metadata: dict[str, Any] | None = None
     actual_interactions: list[Interaction] | None = None
     expected_interactions: list[Interaction] | None = None

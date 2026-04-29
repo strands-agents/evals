@@ -1,7 +1,5 @@
 import logging
 
-from typing_extensions import Union
-
 from ..types.trace import (
     AgentInvocationSpan,
     AssistantMessage,
@@ -28,7 +26,7 @@ class TraceExtractor:
     def __init__(self, evaluation_level: EvaluationLevel):
         self.evaluation_level = evaluation_level
 
-    def extract(self, session: Session) -> Union[list[TraceLevelInput], list[ToolLevelInput], SessionLevelInput]:
+    def extract(self, session: Session) -> list[TraceLevelInput] | list[ToolLevelInput] | SessionLevelInput:
         """Extract evaluation inputs based on configured level."""
         if not isinstance(session, Session):
             raise TypeError(f"Expected Session object, got {type(session).__name__}")
@@ -45,7 +43,7 @@ class TraceExtractor:
     def _extract_trace_level(self, session: Session) -> list[TraceLevelInput]:
         """Extract trace-level inputs with session history up to each turn."""
         evaluation_inputs: list[TraceLevelInput] = []
-        previous_turns: list[Union[UserMessage, list[ToolExecution], AssistantMessage]] = []
+        previous_turns: list[UserMessage | list[ToolExecution] | AssistantMessage] = []
 
         for trace in session.traces:
             tool_spans = self._find_tool_execution_spans(trace)
@@ -89,7 +87,7 @@ class TraceExtractor:
     def _extract_tool_level(self, session: Session) -> list[ToolLevelInput]:
         """Extract tool-level inputs with session and tool context."""
         evaluator_inputs: list[ToolLevelInput] = []
-        session_history: list[Union[UserMessage, list[ToolExecution], AssistantMessage]] = []
+        session_history: list[UserMessage | list[ToolExecution] | AssistantMessage] = []
         available_tools: list[ToolConfig] = []
 
         for trace in session.traces:
