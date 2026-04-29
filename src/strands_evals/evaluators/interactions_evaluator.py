@@ -3,7 +3,6 @@ from typing import cast
 from strands import Agent
 from strands.agent.conversation_manager import SlidingWindowConversationManager
 from strands.models.model import Model
-from typing_extensions import Union
 
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from .evaluator import Evaluator
@@ -30,7 +29,7 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
         self,
         rubric: str | dict[str, str],
         interaction_description: dict | None = None,
-        model: Union[Model, str, None] = None,
+        model: Model | str | None = None,
         system_prompt: str = SYSTEM_PROMPT,
         include_inputs: bool = True,
     ):

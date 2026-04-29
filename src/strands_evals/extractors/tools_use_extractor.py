@@ -1,4 +1,4 @@
-from typing import Union, cast
+from typing import cast
 
 from strands import Agent
 
@@ -129,7 +129,7 @@ def extract_agent_tools_used_from_trace(session: Session) -> list[dict]:
     return tools_used
 
 
-def extract_agent_tools_used(source: Union[list, Session]) -> list[dict]:
+def extract_agent_tools_used(source: list | Session) -> list[dict]:
     """
     Extract tool usage information from either agent messages or trace data.
     This is a unified interface that automatically detects the input type and uses

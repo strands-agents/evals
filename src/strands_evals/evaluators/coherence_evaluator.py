@@ -4,7 +4,6 @@ from typing import cast
 from pydantic import BaseModel, Field
 from strands import Agent
 from strands.models.model import Model
-from typing_extensions import Union
 
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from ..types.trace import EvaluationLevel, TextContent, ToolExecution, TraceLevelInput
@@ -57,7 +56,7 @@ class CoherenceEvaluator(Evaluator[InputT, OutputT]):
     def __init__(
         self,
         version: str = "v0",
-        model: Union[Model, str, None] = None,
+        model: Model | str | None = None,
         system_prompt: str | None = None,
         include_inputs: bool = True,
     ):
