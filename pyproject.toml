@@ -15,7 +15,7 @@ authors = [
 
 dependencies = [
     "pydantic>=2.4.0,<3.0.0",
-    "rich>=14.0.0,<15.0.0",
+    "rich>=14.0.0,<16.0.0",
     "strands-agents>=1.0.0",
     "strands-agents-tools>=0.1.0,<1.0.0",
     "typing-extensions>=4.13.2,<5.0.0",
