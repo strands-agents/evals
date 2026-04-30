@@ -7,7 +7,6 @@ performing root cause analysis.
 
 from ..types.detector import (
     ConfidenceLevel,
-    DiagnosisResult,
     FailureDetectionStructuredOutput,
     FailureItem,
     FailureOutput,
@@ -24,7 +23,6 @@ __all__ = [
     "analyze_root_cause",
     # Types
     "ConfidenceLevel",
-    "DiagnosisResult",
     "FailureOutput",
     "FailureItem",
     "FailureDetectionStructuredOutput",

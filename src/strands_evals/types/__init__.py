@@ -1,5 +1,4 @@
 from .detector import (
-    DiagnosisResult,
     FailureDetectionStructuredOutput,
     FailureItem,
     FailureOutput,
@@ -20,7 +19,6 @@ __all__ = [
     "ActorResponse",
     "InputT",
     "OutputT",
-    "DiagnosisResult",
     "FailureDetectionStructuredOutput",
     "FailureItem",
     "FailureOutput",

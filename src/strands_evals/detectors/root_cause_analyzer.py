@@ -37,6 +37,10 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 
+_TEMPLATE_VERSION = "v0"
+_TEMPLATE = get_template(_TEMPLATE_VERSION)
+_MERGE_TEMPLATE = get_merge_template(_TEMPLATE_VERSION)
+
 
 def analyze_root_cause(
     session: Session,
@@ -69,13 +73,12 @@ def analyze_root_cause(
         return RCAOutput()
 
     effective_model = _resolve_model(model)
-    template = get_template("v0")
 
     session_json = _serialize_session(session)
     failures_json = _serialize_failures(failures)
 
     # Tier 1: Direct analysis
-    system_prompt = template.build_prompt(
+    system_prompt = _TEMPLATE.build_prompt(
         execution_json=session_json,
         execution_failures_json=failures_json,
     )
@@ -94,7 +97,7 @@ def analyze_root_cause(
     pruned_session = _prune_session_to_failure_paths(session, failure_span_ids)
     pruned_json = _serialize_session(pruned_session)
 
-    pruned_prompt = template.build_prompt(
+    pruned_prompt = _TEMPLATE.build_prompt(
         execution_json=pruned_json,
         execution_failures_json=failures_json,
     )
@@ -114,13 +117,12 @@ def analyze_root_cause(
 
 
 def _rca_direct(system_prompt: str, model: Model) -> list[RCAItem]:
-    template = get_template("v0")
     agent = Agent(
         model=model,
         system_prompt=system_prompt,
         callback_handler=None,
     )
-    result = agent(template.USER_PROMPT, structured_output_model=RCAStructuredOutput)
+    result = agent(_TEMPLATE.USER_PROMPT, structured_output_model=RCAStructuredOutput)
     return _parse_structured_result(cast(RCAStructuredOutput, result.structured_output))
 
 
@@ -130,9 +132,6 @@ def _rca_chunked(
     model: Model,
 ) -> list[RCAItem]:
     """Split pruned session into per-trace windows, analyze each, merge results."""
-    template = get_template("v0")
-    merge_template = get_merge_template("v0")
-
     total_spans = sum(len(t.spans) for t in pruned_session.traces)
 
     if total_spans <= RCA_MIN_WINDOW_SIZE:
@@ -164,14 +163,14 @@ def _rca_chunked(
             window_failures_json = _serialize_failures(window_failures) if window_failures else failures_json
 
             window_json = _serialize_spans(window_spans)
-            system_prompt = template.build_prompt(
+            system_prompt = _TEMPLATE.build_prompt(
                 execution_json=window_json,
                 execution_failures_json=window_failures_json,
             )
 
             try:
                 agent = Agent(model=model, system_prompt=system_prompt, callback_handler=None)
-                result = agent(template.USER_PROMPT, structured_output_model=RCAStructuredOutput)
+                result = agent(_TEMPLATE.USER_PROMPT, structured_output_model=RCAStructuredOutput)
                 structured = cast(RCAStructuredOutput, result.structured_output)
                 chunk_results.append(structured.model_dump_json(by_alias=True, indent=2))
                 logger.info("RCA chunk %d: processed %d spans", window_num, len(window_spans))
@@ -192,13 +191,13 @@ def _rca_chunked(
 
     # Merge chunk results
     logger.info("Merging %d chunk RCA results", len(chunk_results))
-    merge_prompt = merge_template.build_prompt(
+    merge_prompt = _MERGE_TEMPLATE.build_prompt(
         chunk_results=chunk_results,
         execution_failures_json=failures_json,
     )
 
     agent = Agent(model=model, system_prompt=merge_prompt, callback_handler=None)
-    result = agent(merge_template.USER_PROMPT, structured_output_model=RCAStructuredOutput)
+    result = agent(_MERGE_TEMPLATE.USER_PROMPT, structured_output_model=RCAStructuredOutput)
     return _parse_structured_result(cast(RCAStructuredOutput, result.structured_output))
 
 

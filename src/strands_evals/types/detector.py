@@ -52,17 +52,6 @@ class RCAOutput(BaseModel):
     root_causes: list[RCAItem] = Field(default_factory=list)
 
 
-class DiagnosisResult(BaseModel):
-    """Output from diagnose_session().
-
-    Contains failures detected and their root causes.
-    """
-
-    session_id: str
-    failures: list[FailureItem] = Field(default_factory=list)
-    root_causes: list[RCAItem] = Field(default_factory=list)
-
-
 class FailureError(BaseModel):
     """LLM output schema: single failure entry."""
 

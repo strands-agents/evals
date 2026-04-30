@@ -1,7 +1,6 @@
 """Tests for detector Pydantic models."""
 
 from strands_evals.types.detector import (
-    DiagnosisResult,
     FailureDetectionStructuredOutput,
     FailureError,
     FailureItem,
@@ -62,37 +61,6 @@ def test_rca_item_creation():
 def test_rca_output_empty():
     output = RCAOutput()
     assert output.root_causes == []
-
-
-def test_diagnosis_result():
-    item = FailureItem(
-        span_id="span_1",
-        category=["error"],
-        confidence=[0.9],
-        evidence=["timeout"],
-    )
-    rca = RCAItem(
-        failure_span_id="span_1",
-        location="span_0",
-        causality="PRIMARY_FAILURE",
-        root_cause_explanation="Timeout due to slow API",
-        fix_type="OTHERS",
-        fix_recommendation="Add retry logic",
-    )
-    result = DiagnosisResult(
-        session_id="sess_1",
-        failures=[item],
-        root_causes=[rca],
-    )
-    assert result.session_id == "sess_1"
-    assert len(result.failures) == 1
-    assert len(result.root_causes) == 1
-
-
-def test_diagnosis_result_empty():
-    result = DiagnosisResult(session_id="sess_1")
-    assert result.failures == []
-    assert result.root_causes == []
 
 
 def test_failure_error():

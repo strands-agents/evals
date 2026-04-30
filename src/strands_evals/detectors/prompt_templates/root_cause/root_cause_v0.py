@@ -97,13 +97,13 @@ STEP 3: IMPACT ASSESSMENT
 Determine the actual impact on task execution (not potential impact):
 - Did the failure prevent task completion? → TASK_TERMINATION
 - Did it reduce final output quality? → QUALITY_DEGRADATION
-- Did it force a different approach that eventually succeeded? → INCORRECT_PATH
+- Did it force a fundamentally different strategy (different tools, different workflow, multi-turn workaround)? → INCORRECT_PATH
 - Did it corrupt the agent's understanding? → STATE_CORRUPTION
-- Was it contained with no downstream effects? → NO_PROPAGATION
+- Was the failure recovered quickly (within 1-2 turns) with no lasting impact on the final outcome? → NO_PROPAGATION
 - Cannot determine impact? → UNCLEAR
 
 RECOVERY CONTEXT:
-If a failure occurs but is immediately recovered without affecting subsequent execution or output quality, strongly consider whether it should be reported. Focus on failures with lasting impact.
+Most tool errors and resource-not-found failures are recovered quickly by the agent (retry, ask user for correction, look up the right value). If the agent recovers within 1-2 turns and the final task outcome is unaffected, this is NO_PROPAGATION — not INCORRECT_PATH. Reserve INCORRECT_PATH for cases where the agent must abandon its current strategy and take a substantially different approach (e.g., switching from API to web scraping, or completely changing the workflow).
 
 OUTPUT REQUIREMENTS:
 - Generate ONLY valid JSON as specified in <output_format>
@@ -153,21 +153,22 @@ Failure Propagation Impact (List of Categorical):
   * Use only when final output is demonstrably less accurate or complete
   * Example: Analysis based on incomplete data, fabricated information in results
 
-- INCORRECT_PATH: Forces different approach, eventual success possible
-  * Use when failure changes execution strategy but task can still succeed
-  * Example: API failure leading to web scraping approach, authentication failure requiring alternative method
-  * Use when agent must try different tools, parameters, or approaches due to failure
-  * CRITICAL: Use this for authentication failures that require fallback methods
+- INCORRECT_PATH: Forces fundamentally different strategy, eventual success possible
+  * Use when the agent must abandon its current approach and take a substantially different one
+  * Example: API failure leading to web scraping approach, tool completely unavailable requiring different workflow
+  * Reserve for cases where the agent changes tools, skips major workflow steps, or takes a multi-turn detour
+  * A simple retry, parameter correction, or user-guided correction is NOT INCORRECT_PATH
 
 - STATE_CORRUPTION: Agent develops incorrect understanding of state
   * Use when agent maintains false beliefs that affect subsequent decisions
   * Example: Misinterpreting user preferences, wrong context assumptions
 
 - NO_PROPAGATION: Contained failure, no downstream effects
-  * Use ONLY when failure is immediately recovered with zero lasting impact on execution flow
-  * Example: Authentication failure resolved with alternative method, task continues normally
-  * Example: Tool parameter error immediately corrected, successful retry after temporary failure
-  * CRITICAL: If failure forces ANY change in approach or strategy, use INCORRECT_PATH instead
+  * Use when failure is recovered within 1-2 turns with no lasting impact on the final outcome
+  * Example: Authentication lookup fails with email, agent immediately retries with name+zip and succeeds
+  * Example: Tool parameter error corrected on next attempt, task continues normally
+  * Example: Resource not found, user provides correct ID, agent proceeds successfully
+  * This is the most common impact for tool errors and lookup failures that the agent handles quickly
 
 - UNCLEAR: Cannot determine impact due to missing context
 
@@ -265,15 +266,15 @@ Example 2 - File Access Failure:
   }
 }
 
-Example 3 - Authentication Failure (Always Report):
+Example 3 - Authentication Failure Recovered Quickly (NO_PROPAGATION):
 {
   "Failure Span ID": "auth123fail456",
   "Location": "auth123fail456",
   "Failure Causality": "PRIMARY_FAILURE",
-  "Failure Propagation Impact": ["INCORRECT_PATH"],
+  "Failure Propagation Impact": ["NO_PROPAGATION"],
   "Failure Detection Timing": "IMMEDIATELY_AT_OCCURRENCE",
   "Completion Status": "COMPLETE_SUCCESS",
-  "Root Cause Explanation": "Agent called authenticate_user with email parameter at span auth123fail456 but system prompt doesn't specify authentication method priority. This caused initial authentication failure, forcing agent to discover alternative name+zip method through trial-and-error.",
+  "Root Cause Explanation": "Agent called authenticate_user with email parameter at span auth123fail456 but system prompt doesn't specify authentication method priority. Agent immediately retried with name+zip and succeeded on the next turn, with no impact on task completion or output quality.",
   "Fix Recommendation": {
     "Fix Type": "SYSTEM_PROMPT_FIX",
     "Recommendation": "Add authentication strategy to system prompt specifying to attempt email-based lookup first, then fallback to name+zip code combination if email not found."
@@ -311,12 +312,12 @@ Example 5 - Data Fabrication:
 }
 
 COMMON FAILURE PATTERNS TO ALWAYS REPORT:
-1. Authentication failures (email not found, user lookup errors) → PRIMARY_FAILURE, INCORRECT_PATH if requires fallback method
-2. Tool parameter hallucinations (wrong arguments, missing parameters) → PRIMARY_FAILURE, INCORRECT_PATH
+1. Authentication failures (email not found, user lookup errors) → PRIMARY_FAILURE, NO_PROPAGATION if agent retries and succeeds quickly, INCORRECT_PATH only if agent must abandon auth entirely
+2. Tool parameter hallucinations (wrong arguments, missing parameters) → PRIMARY_FAILURE, NO_PROPAGATION if corrected within 1-2 turns, INCORRECT_PATH if forces completely different tool/workflow
 3. Business policy violations (wrong tool for order status, missing confirmations) → PRIMARY_FAILURE, QUALITY_DEGRADATION or SILENT_UNDETECTED
-4. Resource access failures (order not found, file not found) → PRIMARY_FAILURE, NO_PROPAGATION if user error, INCORRECT_PATH if system issue
+4. Resource access failures (order not found, file not found) → PRIMARY_FAILURE, NO_PROPAGATION if agent recovers quickly (retry, user correction)
 5. State inconsistencies (step number repetition, context confusion) → PRIMARY_FAILURE, STATE_CORRUPTION
-6. Order lookup failures with wrong IDs → PRIMARY_FAILURE, NO_PROPAGATION if user provides wrong info
+6. Order lookup failures with wrong IDs → PRIMARY_FAILURE, NO_PROPAGATION if user provides correct info and agent continues
 
 CRITICAL GUIDELINES:
 1. Report failures that impact task execution, output quality, or force workarounds
