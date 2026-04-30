@@ -1,3 +1,5 @@
+from strands_evals.types.simulation import SimulatorResult
+
 from .actor_simulator import ActorSimulator
 from .tool_simulator import ToolSimulator
 
@@ -8,4 +10,5 @@ __all__ = [
     "ActorSimulator",
     "UserSimulator",
     "ToolSimulator",
+    "SimulatorResult",
 ]
