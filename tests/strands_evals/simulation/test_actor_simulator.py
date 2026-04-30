@@ -8,7 +8,7 @@ from strands.agent.agent_result import AgentResult
 
 from strands_evals import Case
 from strands_evals.simulation import ActorSimulator
-from strands_evals.types.simulation import ActorProfile, ActorResponse, SimulatorResult
+from strands_evals.types.simulation import ActorProfile, ActorResponse, ActorStructuredResponse
 
 
 @pytest.fixture
@@ -227,7 +227,7 @@ class _AgentInput(BaseModel):
 
 
 def test_init_without_input_type_uses_simulator_result(sample_actor_profile):
-    """Without input_type, act_structured() hands SimulatorResult to the underlying agent."""
+    """Without input_type, act_structured() hands ActorStructuredResponse to the underlying agent."""
     simulator = ActorSimulator(
         actor_profile=sample_actor_profile,
         initial_query="Hello",
@@ -235,16 +235,16 @@ def test_init_without_input_type_uses_simulator_result(sample_actor_profile):
     )
 
     mock_response = MagicMock(spec=AgentResult)
-    mock_response.structured_output = SimulatorResult(reasoning="r", stop=False, message="hi")
+    mock_response.structured_output = ActorStructuredResponse(reasoning="r", stop=False, message="hi")
     simulator.agent = MagicMock(return_value=mock_response)
 
     simulator.act_structured("agent reply")
 
-    assert simulator.agent.call_args[1]["structured_output_model"] is SimulatorResult
+    assert simulator.agent.call_args[1]["structured_output_model"] is ActorStructuredResponse
 
 
 def test_init_with_input_type_narrows_message_schema(sample_actor_profile):
-    """With input_type, act_structured() hands a SimulatorResult subclass whose message is typed."""
+    """With input_type, act_structured() hands a ActorStructuredResponse subclass whose message is typed."""
     simulator = ActorSimulator(
         actor_profile=sample_actor_profile,
         initial_query="Hello",
@@ -258,9 +258,7 @@ def test_init_with_input_type_narrows_message_schema(sample_actor_profile):
     def _capture(agent_message, *, structured_output_model):
         captured_model.append(structured_output_model)
         mock_response = MagicMock(spec=AgentResult)
-        mock_response.structured_output = structured_output_model(
-            reasoning="r", stop=False, message=typed_message
-        )
+        mock_response.structured_output = structured_output_model(reasoning="r", stop=False, message=typed_message)
         return mock_response
 
     simulator.agent = MagicMock(side_effect=_capture)
@@ -268,8 +266,8 @@ def test_init_with_input_type_narrows_message_schema(sample_actor_profile):
     simulator.act_structured("agent reply")
 
     (model_used,) = captured_model
-    # It must be a SimulatorResult subclass (so act_structured can return SimulatorResult).
-    assert issubclass(model_used, SimulatorResult)
+    # It must be a ActorStructuredResponse subclass (so act_structured can return ActorStructuredResponse).
+    assert issubclass(model_used, ActorStructuredResponse)
     # And it must schema-accept input_type instances on `message`.
     msg_field = model_used.model_fields["message"]
     assert msg_field.annotation == _AgentInput | None
@@ -304,7 +302,7 @@ def test_act_structured_passes_structured_model_to_agent(sample_actor_profile):
 
 
 def test_act_structured_continuing_turn(sample_actor_profile):
-    """act_structured() returns SimulatorResult with stop=False for normal continuing turns."""
+    """act_structured() returns ActorStructuredResponse with stop=False for normal continuing turns."""
     simulator = ActorSimulator(
         actor_profile=sample_actor_profile,
         initial_query="Hello",
@@ -312,14 +310,12 @@ def test_act_structured_continuing_turn(sample_actor_profile):
     )
 
     mock_response = MagicMock(spec=AgentResult)
-    mock_response.structured_output = SimulatorResult(
-        reasoning="thinking", stop=False, message="keep going"
-    )
+    mock_response.structured_output = ActorStructuredResponse(reasoning="thinking", stop=False, message="keep going")
     simulator.agent = MagicMock(return_value=mock_response)
 
     result = simulator.act_structured("agent reply")
 
-    assert isinstance(result, SimulatorResult)
+    assert isinstance(result, ActorStructuredResponse)
     assert result.message == "keep going"
     assert result.reasoning == "thinking"
     assert result.stop is False
@@ -335,9 +331,7 @@ def test_act_structured_explicit_stop(sample_actor_profile):
     )
 
     mock_response = MagicMock(spec=AgentResult)
-    mock_response.structured_output = SimulatorResult(
-        reasoning="done", stop=True, message=None
-    )
+    mock_response.structured_output = ActorStructuredResponse(reasoning="done", stop=True, message=None)
     simulator.agent = MagicMock(return_value=mock_response)
 
     result = simulator.act_structured("agent reply")
@@ -356,9 +350,7 @@ def test_act_structured_hits_max_turns(sample_actor_profile):
     )
 
     mock_response = MagicMock(spec=AgentResult)
-    mock_response.structured_output = SimulatorResult(
-        reasoning="r", stop=False, message="more please"
-    )
+    mock_response.structured_output = ActorStructuredResponse(reasoning="r", stop=False, message="more please")
     simulator.agent = MagicMock(return_value=mock_response)
 
     result = simulator.act_structured("agent reply")
@@ -378,9 +370,7 @@ def test_act_structured_input_type_returns_typed_message(sample_actor_profile):
 
     typed_message = _AgentInput(query="ship it", urgency="high")
     mock_response = MagicMock(spec=AgentResult)
-    mock_response.structured_output = simulator._structured_model(
-        reasoning="r", stop=False, message=typed_message
-    )
+    mock_response.structured_output = simulator._structured_model(reasoning="r", stop=False, message=typed_message)
     simulator.agent = MagicMock(return_value=mock_response)
 
     result = simulator.act_structured("agent reply")
@@ -401,9 +391,7 @@ def test_act_structured_input_type_null_message_becomes_implicit_stop(sample_act
     )
 
     mock_response = MagicMock(spec=AgentResult)
-    mock_response.structured_output = simulator._structured_model(
-        reasoning="r", stop=False, message=None
-    )
+    mock_response.structured_output = simulator._structured_model(reasoning="r", stop=False, message=None)
     simulator.agent = MagicMock(return_value=mock_response)
 
     result = simulator.act_structured("agent reply")
@@ -432,15 +420,14 @@ def test_act_does_not_use_input_type(sample_actor_profile):
 
 
 def test_rejects_simulator_result_as_input_type(sample_actor_profile):
-    """Passing SimulatorResult (or a subclass) as input_type raises at __init__."""
-    with pytest.raises(ValueError, match="SimulatorResult"):
+    """Passing ActorStructuredResponse (or a subclass) as input_type raises at __init__."""
+    with pytest.raises(ValueError, match="ActorStructuredResponse"):
         ActorSimulator(
             actor_profile=sample_actor_profile,
             initial_query="Hello",
             system_prompt_template="Test: {actor_profile}",
-            input_type=SimulatorResult,
+            input_type=ActorStructuredResponse,
         )
-
 
 
 def test_system_prompt_template_none_uses_default(sample_actor_profile):
@@ -454,9 +441,7 @@ def test_system_prompt_template_none_uses_default(sample_actor_profile):
         initial_query="Hello",
     )
 
-    expected = DEFAULT_USER_SIMULATOR_PROMPT_TEMPLATE.format(
-        actor_profile=sample_actor_profile.model_dump()
-    )
+    expected = DEFAULT_USER_SIMULATOR_PROMPT_TEMPLATE.format(actor_profile=sample_actor_profile.model_dump())
     assert simulator.agent.system_prompt == expected
 
 
@@ -471,3 +456,32 @@ def test_system_prompt_template_prerendered_passes_through(sample_actor_profile)
     )
 
     assert simulator.agent.system_prompt == prerendered
+
+
+def test_system_prompt_template_autopicks_structured_when_input_type_set(sample_actor_profile):
+    """When input_type is set and no template is given, the structured-stop template is used."""
+    from strands_evals.simulation.prompt_templates.actor_system_prompt import (
+        STRUCTURED_USER_SIMULATOR_PROMPT_TEMPLATE,
+    )
+
+    simulator = ActorSimulator(
+        actor_profile=sample_actor_profile,
+        initial_query="Hello",
+        input_type=_AgentInput,
+    )
+
+    expected = STRUCTURED_USER_SIMULATOR_PROMPT_TEMPLATE.format(actor_profile=sample_actor_profile.model_dump())
+    assert simulator.agent.system_prompt == expected
+
+
+def test_explicit_template_overrides_autopick(sample_actor_profile):
+    """Explicit system_prompt_template wins even when input_type is set."""
+    custom = "Custom prompt for {actor_profile}"
+    simulator = ActorSimulator(
+        actor_profile=sample_actor_profile,
+        initial_query="Hello",
+        system_prompt_template=custom,
+        input_type=_AgentInput,
+    )
+
+    assert simulator.agent.system_prompt == custom.format(actor_profile=sample_actor_profile.model_dump())
