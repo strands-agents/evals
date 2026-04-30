@@ -1,0 +1,18 @@
+"""Multimodal evaluation prompt templates.
+
+Re-exports image_to_text rubrics at the multimodal package level for convenience.
+"""
+
+from .image_to_text import (
+    CORRECTNESS_RUBRIC_V0,
+    FAITHFULNESS_RUBRIC_V0,
+    INSTRUCTION_FOLLOWING_RUBRIC_V0,
+    OVERALL_QUALITY_RUBRIC_V0,
+)
+
+__all__ = [
+    "CORRECTNESS_RUBRIC_V0",
+    "FAITHFULNESS_RUBRIC_V0",
+    "INSTRUCTION_FOLLOWING_RUBRIC_V0",
+    "OVERALL_QUALITY_RUBRIC_V0",
+]

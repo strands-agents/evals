@@ -55,6 +55,35 @@ class EvaluationReport(BaseModel):
             detailed_results=detailed,
         )
 
+    @staticmethod
+    def _format_input_for_display(input_value: object) -> str:
+        """Format an input value for display, handling multimodal inputs gracefully.
+
+        Detects serialized multimodal inputs (dicts with 'media' and 'instruction' keys)
+        and renders a readable summary instead of dumping raw binary or base64 data.
+        """
+        if isinstance(input_value, dict) and "media" in input_value and "instruction" in input_value:
+            instruction = input_value.get("instruction", "")
+            context = input_value.get("context")
+            media = input_value.get("media")
+
+            # Describe media without dumping raw data
+            if isinstance(media, list):
+                media_desc = f"[{len(media)} media item(s)]"
+            elif isinstance(media, dict):
+                media_desc = "[1 media item]"
+            elif isinstance(media, str) and len(media) > 200:
+                media_desc = f"[media: {media[:50]}...]"
+            else:
+                media_desc = f"[media: {media}]"
+
+            parts = [f"instruction: {instruction}"]
+            if context:
+                parts.append(f"context: {context}")
+            parts.append(media_desc)
+            return " | ".join(parts)
+        return str(input_value)
+
     def _display(
         self,
         static: bool = True,
@@ -97,7 +126,7 @@ class EvaluationReport(BaseModel):
             details_dict["test_pass"] = self.test_passes[i]
             details_dict["reason"] = reason
             if include_input:
-                details_dict["input"] = str(self.cases[i].get("input"))
+                details_dict["input"] = self._format_input_for_display(self.cases[i].get("input"))
             if include_actual_output:
                 details_dict["actual_output"] = str(self.cases[i].get("actual_output"))
             if include_expected_output:
