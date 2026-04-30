@@ -24,12 +24,11 @@ class ActorProfile(BaseModel):
 
 class ActorResponse(BaseModel):
     """
-    Structured response from an actor.
+    Structured response schema used by `ActorSimulator.act`.
 
-    Used by :meth:`ActorSimulator.act` as the LLM's structured-output schema. The
-    simulator keeps ``act()`` on this legacy shape so existing callers continue
-    to see ``message: str`` as a required field. New code should prefer
-    :meth:`ActorSimulator.act_structured` and :class:`SimulatorResult`.
+    The LLM fills in `reasoning` and `message`. The simulator inspects the
+    returned `message` for the `<stop/>` sentinel to decide whether to
+    continue the conversation.
 
     Attributes:
         reasoning: Internal reasoning process for the response.
@@ -42,33 +41,32 @@ class ActorResponse(BaseModel):
 
 class SimulatorResult(BaseModel):
     """
-    Typed return value from :meth:`ActorSimulator.act_structured`.
+    Typed return value from `ActorSimulator.act_structured`.
 
-    Used in two roles:
+    Used in two roles.
 
-    - **As the LLM structured-output schema.** ``reasoning``, ``stop``, and
-      ``message`` are produced by the LLM via Strands' tool-use contract.
-      ``stop_reason`` is not part of the schema — the simulator fills it in
-      after the call, but it is kept on this model so the public return type
-      stays a single class.
+    As the LLM structured-output schema: `reasoning`, `stop`, and `message`
+    are produced by the LLM via Strands' tool-use contract. `stop_reason` is
+    not part of the schema. The simulator fills it in after the call, but it
+    is kept on this model so the public return type stays a single class.
 
-      When ``ActorSimulator`` is given an ``input_type``, a dynamic subclass of
-      this model is built that narrows ``message`` to ``input_type | None`` so
-      the LLM's tool-use schema enforces the caller's agent-input shape.
+    When `ActorSimulator` is given an `input_type`, a dynamic subclass of
+    this model is built that narrows `message` to `input_type | None`, so the
+    LLM's tool-use schema enforces the caller's agent-input shape.
 
-    - **As the caller-facing result.** Callers of ``act_structured()`` receive
-      an instance of this class (or its dynamic subclass) with all four fields
-      populated.
+    As the caller-facing result: callers of `act_structured()` receive an
+    instance of this class (or its dynamic subclass) with all four fields
+    populated.
 
     Attributes:
-        message: The actor's next message. An ``input_type`` instance when the
-            simulator was constructed with ``input_type``; a plain string or
-            ``None`` otherwise. ``None`` is expected when ``stop=True``.
+        message: The actor's next message. An `input_type` instance when the
+            simulator was constructed with `input_type`. A plain string or
+            `None` otherwise. `None` is expected when `stop=True`.
         reasoning: The actor's internal reasoning for this response.
-        stop: ``True`` when the actor signals the conversation should end
-            (either the goal was completed or ``max_turns`` was reached).
-        stop_reason: Why the conversation ended: ``"goal_completed"``,
-            ``"max_turns"``, or ``None`` while the conversation is still ongoing.
+        stop: `True` when the actor signals the conversation should end
+            (either the goal was completed or `max_turns` was reached).
+        stop_reason: Why the conversation ended. One of `"goal_completed"`,
+            `"max_turns"`, or `None` while the conversation is still ongoing.
             Populated by the simulator after the LLM call; not part of the
             LLM-facing schema semantics even though the field exists on the
             model.
@@ -79,22 +77,13 @@ class SimulatorResult(BaseModel):
     reasoning: str = Field(..., description="Reasoning for the actor's response")
     stop: bool = Field(
         False,
-        description=(
-            "Set to true when the conversation goal is met or the "
-            "conversation should end."
-        ),
+        description=("Set to true when the conversation goal is met or the conversation should end."),
     )
     message: Any = Field(
         None,
-        description=(
-            "The actor's next message to the agent. Provide when stop=false; "
-            "set to null when stop=true."
-        ),
+        description=("The actor's next message to the agent. Provide when stop=false; set to null when stop=true."),
     )
     stop_reason: str | None = Field(
         None,
-        description=(
-            "Populated by the simulator after the call. One of "
-            '"goal_completed", "max_turns", or None.'
-        ),
+        description=('Populated by the simulator after the call. One of "goal_completed", "max_turns", or None.'),
     )
