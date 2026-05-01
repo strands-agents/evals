@@ -9,13 +9,14 @@ Complements (does not replace) RedTeamJudgeEvaluator, which provides
 binary per-metric judgments.
 """
 
+from __future__ import annotations
+
 import logging
 from typing import cast
 
 from pydantic import BaseModel, Field
 from strands import Agent
 from strands.models.model import Model
-from typing_extensions import Union
 
 from strands_evals.evaluators.evaluator import Evaluator
 from strands_evals.types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
@@ -64,7 +65,7 @@ class AttackSuccessEvaluator(Evaluator[InputT, OutputT]):
 
     def __init__(
         self,
-        model: Union[Model, str, None] = None,
+        model: Model | str | None = None,
         rubric: str | None = None,
     ):
         super().__init__()

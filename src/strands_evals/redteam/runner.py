@@ -356,13 +356,13 @@ def _expand_cases_with_strategies(
 
 
 def red_team(
-    target: Union[Agent, Callable],
+    target: Agent | Callable,
     attack_types: list[str] | None = None,
     target_info: dict | None = None,
     n_per_type: int = 5,
     max_turns: int = 10,
     evaluators: list | None = None,
-    model: Union[Model, str, None] = None,
+    model: Model | str | None = None,
     strategy: str = DEFAULT_STRATEGY,
     attack_strategies: list | None = None,
     custom_cases: list[Case] | None = None,
