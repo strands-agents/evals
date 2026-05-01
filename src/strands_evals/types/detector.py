@@ -7,9 +7,29 @@ LLM structured output schemas (FailureDetectionStructuredOutput, etc.).
 from typing import Literal
 
 from pydantic import BaseModel, Field
+from strands.models.model import Model
 
 # Confidence levels used across detectors
 ConfidenceLevel = Literal["low", "medium", "high"]
+
+
+DiagnosisTrigger = Literal["on_failure", "always"]
+
+
+class DiagnosisConfig(BaseModel):
+    """Configuration for detectors in an experiment.
+
+    Attributes:
+        trigger: When to run diagnosis — "on_failure" or "always".
+        model: The model to use for diagnosis.
+        confidence_threshold: Minimum confidence level for failure detection.
+    """
+
+    trigger: DiagnosisTrigger = "on_failure"
+    model: Model | str | None = None
+    confidence_threshold: ConfidenceLevel = "medium"
+
+    model_config = {"arbitrary_types_allowed": True}
 
 
 class FailureItem(BaseModel):
@@ -50,6 +70,26 @@ class RCAOutput(BaseModel):
     """Output from analyze_root_cause()."""
 
     root_causes: list[RCAItem] = Field(default_factory=list)
+
+
+class DiagnosisResult(BaseModel):
+    """Output from diagnose_session()."""
+
+    session_id: str
+    failures: list[FailureItem] = Field(default_factory=list)
+    root_causes: list[RCAItem] = Field(default_factory=list)
+
+    @property
+    def recommendations(self) -> list[str]:
+        """Deduplicated fix recommendations from all root causes."""
+        seen: set[str] = set()
+        result: list[str] = []
+        for rc in self.root_causes:
+            rec = rc.fix_recommendation.strip()
+            if rec and rec not in seen:
+                result.append(rec)
+                seen.add(rec)
+        return result
 
 
 class FailureError(BaseModel):

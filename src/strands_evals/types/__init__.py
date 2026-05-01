@@ -1,4 +1,5 @@
 from .detector import (
+    DiagnosisConfig,
     FailureDetectionStructuredOutput,
     FailureItem,
     FailureOutput,
@@ -24,6 +25,7 @@ __all__ = [
     "ImageData",
     "MultimodalInput",
     "resolve_image_bytes",
+    "DiagnosisConfig",
     "FailureDetectionStructuredOutput",
     "FailureItem",
     "FailureOutput",

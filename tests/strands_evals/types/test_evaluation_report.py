@@ -251,6 +251,35 @@ class TestEvaluationReportFlatten:
         assert len(flattened.detailed_results) == 1
         assert flattened.detailed_results[0] == detailed
 
+    def test_flatten_preserves_diagnoses_and_recommendations(self):
+        """Test that flatten preserves diagnoses and recommendations."""
+        report1 = EvaluationReport(
+            evaluator_name="Eval1",
+            overall_score=0.0,
+            scores=[0.0],
+            cases=[{"name": "case-1"}],
+            test_passes=[False],
+            diagnoses=[{"session_id": "s1", "failures": [], "root_causes": []}],
+            recommendations=["Fix the prompt"],
+        )
+        report2 = EvaluationReport(
+            evaluator_name="Eval2",
+            overall_score=1.0,
+            scores=[1.0],
+            cases=[{"name": "case-2"}],
+            test_passes=[True],
+            diagnoses=[None],
+            recommendations=[None],
+        )
+
+        flattened = EvaluationReport.flatten([report1, report2])
+
+        assert len(flattened.diagnoses) == 2
+        assert flattened.diagnoses[0] == {"session_id": "s1", "failures": [], "root_causes": []}
+        assert flattened.diagnoses[1] is None
+        assert flattened.recommendations[0] == "Fix the prompt"
+        assert flattened.recommendations[1] is None
+
     def test_flatten_does_not_modify_original(self):
         """Test that flatten does not modify the original reports."""
         original_case = {"name": "case-1", "input": "test"}

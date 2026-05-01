@@ -44,6 +44,7 @@ Strands Evaluation is a powerful framework for evaluating AI agents and LLM appl
 - **Custom Evaluators**: Extensible framework for domain-specific evaluation logic
 - **Experiment Management**: Save, load, and version your evaluation experiments with JSON serialization
 - **Built-in Scoring Tools**: Helper functions for exact, in-order, and any-order trajectory matching
+- **Failure Detection & Root Cause Analysis**: Automatically detect failures in agent sessions and diagnose root causes with actionable fix recommendations
 
 ## Quick Start
 
@@ -348,6 +349,50 @@ experiment = await generator.from_context_async(
 experiment.to_file("generated_experiment", "json")
 ```
 
+### Failure Detection & Diagnosis
+
+Detect failures in agent sessions and analyze root causes to get actionable fix recommendations:
+
+```python
+from strands_evals import Case, DiagnosisConfig, Experiment
+from strands_evals.evaluators import HelpfulnessEvaluator
+
+# Enable diagnosis on failing cases — runs failure detection then root cause analysis
+experiment = Experiment(
+    cases=test_cases,
+    evaluators=[HelpfulnessEvaluator()],
+    diagnosis_config=DiagnosisConfig(
+        trigger="on_failure",           # "on_failure" or "always"
+        confidence_threshold="medium",  # "low", "medium", or "high"
+    ),
+)
+
+reports = experiment.run_evaluations(task_function)
+
+# Display results with recommendations
+reports[0].display(include_recommendations=True)
+```
+
+You can also use the detectors standalone on any `Session` object (`strands_evals.types.trace.Session`):
+
+```python
+from strands_evals.detectors import detect_failures, analyze_root_cause, diagnose_session
+
+# Full pipeline: detect failures → root cause analysis
+result = diagnose_session(session, confidence_threshold="medium")
+
+for rc in result.root_causes:
+    print(f"{rc.fix_type}: {rc.fix_recommendation}")
+
+# Or run each step independently
+failures = detect_failures(session, confidence_threshold="medium")
+if failures.failures:
+    rca = analyze_root_cause(session, failures=failures.failures)
+
+# analyze_root_cause calls detect_failures automatically if failures is not provided
+rca = analyze_root_cause(session)
+```
+
 ### Custom Evaluators with Structured Output
 
 Create domain-specific evaluation logic with standardized output format:
@@ -494,6 +539,13 @@ These evaluators assess multimodal (image-to-text) responses using MLLM-as-a-Jud
 - **MultimodalOverallQualityEvaluator**: Holistic evaluation across visual accuracy, instruction adherence, completeness, and coherence
 - **MultimodalOutputEvaluator**: Base class for custom multimodal evaluators with configurable rubrics
 
+### Detectors
+Analyze agent sessions to identify failures and their root causes:
+
+- **detect_failures**: Scans a Session for failures with configurable confidence thresholds
+- **analyze_root_cause**: Identifies root causes for detected failures with fix recommendations
+- **diagnose_session**: End-to-end pipeline combining failure detection and root cause analysis
+
 ## Experiment Management and Serialization
 
 Save, load, and version experiments for reproducibility:
@@ -531,6 +583,11 @@ metrics = {
 # Generate analysis reports
 reports = experiment.run_evaluations(task_function)
 reports[0].run_display()  # Interactive display with metrics breakdown
+
+# Flatten multiple evaluator reports into a single combined view
+from strands_evals.types.evaluation_report import EvaluationReport
+combined = EvaluationReport.flatten(reports)
+combined.display(include_recommendations=True)
 ```
 
 ## Best Practices
