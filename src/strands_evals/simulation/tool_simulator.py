@@ -166,6 +166,7 @@ class ToolSimulator:
         state_registry: StateRegistry | None = None,
         model: Model | str | None = None,
         max_tool_call_cache_size: int = 20,
+        tools: list | None = None,
     ):
         """
         Initialize a ToolSimulator instance.
@@ -178,8 +179,12 @@ class ToolSimulator:
                                      Only used when creating a new StateRegistry (ignored if state_registry
                                      is provided). Older calls are automatically evicted when limit is exceeded.
                                      Default is 20.
+            tools: Optional list of tools to provide to the internal simulation agent.
+                   When provided, the agent can use these tools (e.g. calculator) to improve
+                   accuracy of generated responses. Defaults to an empty list.
         """
         self.model = model
+        self.tools = tools or []
         self.state_registry = state_registry or StateRegistry(max_tool_call_cache_size=max_tool_call_cache_size)
         self._registered_tools: dict[str, RegisteredTool] = {}
 
@@ -229,7 +234,7 @@ class ToolSimulator:
     def _simulate_tool_call(self, prompt: str, structured_output_model=None) -> Any:
         """Tool simulation agent creation and response generation."""
         agent = Agent(
-            tools=[],
+            tools=self.tools,
             model=self.model,
             callback_handler=None,
         )
