@@ -2,6 +2,9 @@ from .detector import (
     FailureDetectionStructuredOutput,
     FailureItem,
     FailureOutput,
+    RCAItem,
+    RCAOutput,
+    RCAStructuredOutput,
 )
 from .evaluation import EnvironmentState, EvaluationData, EvaluationOutput, InputT, Interaction, OutputT, TaskOutput
 from .multimodal import AnyMediaData, ImageData, MultimodalInput, resolve_image_bytes
@@ -24,4 +27,7 @@ __all__ = [
     "FailureDetectionStructuredOutput",
     "FailureItem",
     "FailureOutput",
+    "RCAItem",
+    "RCAOutput",
+    "RCAStructuredOutput",
 ]
