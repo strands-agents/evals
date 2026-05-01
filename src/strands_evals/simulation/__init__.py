@@ -1,4 +1,10 @@
+from strands_evals.types.simulation import SimulatorResult
+
 from .actor_simulator import ActorSimulator
+from .prompt_templates.actor_system_prompt import (
+    DEFAULT_USER_SIMULATOR_PROMPT_TEMPLATE,
+    STRUCTURED_USER_SIMULATOR_PROMPT_TEMPLATE,
+)
 from .tool_simulator import ToolSimulator
 
 # Alias for backward compatibility
@@ -8,4 +14,7 @@ __all__ = [
     "ActorSimulator",
     "UserSimulator",
     "ToolSimulator",
+    "SimulatorResult",
+    "DEFAULT_USER_SIMULATOR_PROMPT_TEMPLATE",
+    "STRUCTURED_USER_SIMULATOR_PROMPT_TEMPLATE",
 ]

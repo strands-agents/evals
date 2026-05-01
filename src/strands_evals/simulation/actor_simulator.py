@@ -1,6 +1,7 @@
 import logging
 import random
 
+from pydantic import BaseModel, Field, create_model
 from strands import Agent
 from strands.agent.agent_result import AgentResult
 from strands.types.content import Message
@@ -9,9 +10,12 @@ from typing_extensions import cast
 from strands_evals.case import Case
 from strands_evals.simulation.profiles.actor_profile import DEFAULT_USER_PROFILE_SCHEMA
 from strands_evals.simulation.prompt_templates.actor_profile_extraction import ACTOR_PROFILE_PROMPT_TEMPLATE
-from strands_evals.simulation.prompt_templates.actor_system_prompt import DEFAULT_USER_SIMULATOR_PROMPT_TEMPLATE
+from strands_evals.simulation.prompt_templates.actor_system_prompt import (
+    DEFAULT_USER_SIMULATOR_PROMPT_TEMPLATE,
+    STRUCTURED_USER_SIMULATOR_PROMPT_TEMPLATE,
+)
 from strands_evals.simulation.tools.goal_completion import get_conversation_goal_completion
-from strands_evals.types.simulation import ActorProfile, ActorResponse
+from strands_evals.types.simulation import ActorProfile, ActorResponse, SimulatorResult
 
 logger = logging.getLogger(__name__)
 
@@ -138,10 +142,12 @@ class ActorSimulator:
         self,
         actor_profile: ActorProfile,
         initial_query: str,
-        system_prompt_template: str,
+        system_prompt_template: str | None = None,
         tools: list | None = None,
         model: str | None = None,
         max_turns: int = 10,
+        *,
+        input_type: type[BaseModel] | None = None,
     ):
         """
         Initialize an ActorSimulator with profile and goal.
@@ -152,10 +158,36 @@ class ActorSimulator:
         Args:
             actor_profile: ActorProfile object containing traits, context, and actor_goal.
             initial_query: The actor's first query or message.
-            system_prompt_template: Template string for system prompt. Must include {actor_profile} placeholder.
+            system_prompt_template: System prompt for the actor. Accepts two shapes:
+
+                - A template containing the `{actor_profile}` placeholder, which
+                  is rendered via `str.format(actor_profile=...)` against the
+                  actor's profile.
+                - An already-rendered system prompt string with no
+                  `{actor_profile}` placeholder, which is used verbatim.
+
+                When `None` (the default), the simulator picks one of two
+                built-in defaults. If `input_type` is set, uses
+                `STRUCTURED_USER_SIMULATOR_PROMPT_TEMPLATE`: the actor signals
+                end-of-conversation by setting `stop=true` on the structured
+                response. Otherwise uses `DEFAULT_USER_SIMULATOR_PROMPT_TEMPLATE`:
+                the actor signals end-of-conversation by emitting the
+                `<stop/>` sentinel in the message text, which `has_next`
+                inspects.
+
+                Pass an explicit template to override the auto-selection.
             tools: Additional tools available to the actor. Defaults to goal completion tool only.
             model: Model identifier for the underlying agent. Uses Strands default if None.
             max_turns: Maximum number of conversation turns before stopping (default: 10).
+            input_type: Pydantic model class describing the agent-under-test's expected
+                input payload. Only affects `act_structured`. The LLM's
+                structured-output schema is narrowed so `message` is produced as an
+                `input_type` instance. `act` is unaffected and always uses the
+                `ActorResponse` schema.
+
+                Must describe what the agent under test accepts, not a
+                simulator type. Passing `SimulatorResult` (or a subclass) raises
+                `ValueError` at construction time.
 
         Example:
             ```python
@@ -188,8 +220,26 @@ class ActorSimulator:
         self._turn_count = 0
         self._last_message = ""
         self._max_turns = max_turns
+        self._input_type = input_type
+        self._structured_model = self._build_structured_model(input_type)
 
-        system_prompt = system_prompt_template.format(actor_profile=actor_profile.model_dump())
+        # Auto-select the default template when the caller didn't provide one.
+        # A set `input_type` signals the actor produces structured messages; the
+        # structured template instructs the LLM to end the conversation via
+        # `stop=true` on the structured response, matching `act_structured`'s
+        # read path. Without `input_type`, the default template uses the
+        # `<stop/>` sentinel that `has_next` inspects.
+        if system_prompt_template is None:
+            system_prompt_template = (
+                STRUCTURED_USER_SIMULATOR_PROMPT_TEMPLATE
+                if input_type is not None
+                else DEFAULT_USER_SIMULATOR_PROMPT_TEMPLATE
+            )
+
+        if "{actor_profile}" in system_prompt_template:
+            system_prompt = system_prompt_template.format(actor_profile=actor_profile.model_dump())
+        else:
+            system_prompt = system_prompt_template  # already rendered
 
         # Combine tools
         all_tools = [get_conversation_goal_completion]
@@ -205,6 +255,46 @@ class ActorSimulator:
             tools=all_tools,
             model=self.model_id,
             callback_handler=None,
+        )
+
+    def _build_structured_model(self, input_type: type[BaseModel] | None) -> type[SimulatorResult]:
+        """Return the `SimulatorResult` subclass used by `act_structured`.
+
+        When `input_type` is `None`, returns `SimulatorResult` itself so
+        `message` stays typed as `Any` and the LLM is free to produce a string.
+        When `input_type` is set, returns a dynamic subclass that narrows
+        `message` to `input_type | None` so the LLM's tool-use schema enforces
+        the caller's agent-input shape.
+
+        `input_type` is rejected if it is `SimulatorResult` or a subclass of
+        it. That's the one nesting case where the outer simulator envelope
+        (`reasoning`, `stop`, `message`) is duplicated inside the payload and
+        the LLM's schema becomes ambiguous.
+        """
+        if input_type is None:
+            return SimulatorResult
+
+        if isinstance(input_type, type) and issubclass(input_type, SimulatorResult):
+            raise ValueError(
+                "input_type must describe the agent-under-test's input schema, not "
+                "SimulatorResult (or a subclass). SimulatorResult is the simulator's "
+                "return envelope and cannot be used as an agent payload."
+            )
+
+        return create_model(
+            "SimulatorResult",
+            __base__=SimulatorResult,
+            message=(
+                input_type | None,
+                Field(
+                    None,
+                    description=(
+                        f"Structured message matching the agent's input schema "
+                        f"({input_type.__name__}). Provide when stop=false. Set "
+                        "to null when stop=true."
+                    ),
+                ),
+            ),
         )
 
     def _initialize_conversation(self):
@@ -232,13 +322,20 @@ class ActorSimulator:
         profile and goal. The response includes reasoning about the actor's thought
         process and the actual message to send.
 
+        Uses `ActorResponse` as the structured-output schema and returns the
+        raw Strands `AgentResult`. End-of-conversation is signalled by the
+        `<stop/>` sentinel embedded in the message text and inspected by
+        `has_next`. The `input_type` kwarg on `__init__` does not affect this
+        method. Use `act_structured` when typed messages or a structured
+        `stop` field are needed.
+
         Args:
             agent_message: The agent's response to react to (required).
 
         Returns:
             AgentResult containing the actor's structured response with:
                 - structured_output.reasoning: Actor's internal reasoning
-                - structured_output.message: Actor's response message
+                - structured_output.message: Actor's response message (str)
 
         Example:
             ```python
@@ -260,6 +357,61 @@ class ActorSimulator:
         self._turn_count += 1
         self._last_message = str(cast(ActorResponse, response.structured_output).message)
         return response
+
+    def act_structured(self, agent_message: str) -> SimulatorResult:
+        """
+        Generate the next actor message and return a typed `SimulatorResult`.
+
+        The underlying Strands call uses a `SimulatorResult` subclass as its
+        structured-output schema (narrowing `message` to `input_type` when
+        configured). The LLM produces `reasoning`, `stop`, and `message`
+        directly; the simulator populates `stop_reason` after the call based on
+        whether the actor signalled stop itself or the `max_turns` backstop
+        tripped.
+
+        This method also keeps `_last_message` in sync with the returned
+        message so `has_next` works alongside `act_structured` in the same
+        conversation.
+
+        Args:
+            agent_message: The agent's response to react to (required).
+
+        Returns:
+            A `SimulatorResult` with `message`, `reasoning`, `stop`, and
+            `stop_reason` populated.
+
+        Example:
+            ```python
+            result = user_sim.act_structured(str(agent_response))
+            if result.stop:
+                break
+            next_message = result.message
+            ```
+        """
+        response = self.agent(agent_message.strip(), structured_output_model=self._structured_model)
+        self._turn_count += 1
+
+        result = cast(SimulatorResult, response.structured_output)
+
+        hit_max_turns = self._turn_count >= self._max_turns
+        if result.stop:
+            result.stop_reason = "goal_completed"
+        elif hit_max_turns:
+            result.stop = True
+            result.stop_reason = "max_turns"
+        elif result.message is None and self._input_type is not None:
+            # Guard: structured path, actor signalled continue but produced no
+            # message. Treat as implicit goal_completed to avoid feeding None
+            # back to the agent under test.
+            logger.warning(
+                "Actor produced null message when stop=False; treating as goal_completed (input_type=%s)",
+                self._input_type.__name__,
+            )
+            result.stop = True
+            result.stop_reason = "goal_completed"
+
+        self._last_message = str(result.message) if result.message is not None else ""
+        return result
 
     def has_next(self) -> bool:
         """
