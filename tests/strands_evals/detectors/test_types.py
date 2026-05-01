@@ -1,6 +1,7 @@
 """Tests for detector Pydantic models."""
 
 from strands_evals.types.detector import (
+    DiagnosisResult,
     FailureDetectionStructuredOutput,
     FailureError,
     FailureItem,
@@ -162,3 +163,44 @@ def test_failure_output_serialization_roundtrip():
     restored = FailureOutput.model_validate_json(json_str)
     assert restored.session_id == "sess_1"
     assert restored.failures[0].confidence[0] == 0.9
+
+
+def test_diagnosis_result_recommendations():
+    """Test that recommendations property extracts and deduplicates fix_recommendations."""
+    result = DiagnosisResult(
+        session_id="sess_1",
+        root_causes=[
+            RCAItem(
+                failure_span_id="s1",
+                location="s0",
+                causality="PRIMARY_FAILURE",
+                root_cause_explanation="Bad tool output",
+                fix_type="TOOL_DESCRIPTION_FIX",
+                fix_recommendation="Add disambiguation instructions",
+            ),
+            RCAItem(
+                failure_span_id="s2",
+                location="s0",
+                causality="SECONDARY_FAILURE",
+                root_cause_explanation="Missing context",
+                fix_type="SYSTEM_PROMPT_FIX",
+                fix_recommendation="Add disambiguation instructions",
+            ),
+            RCAItem(
+                failure_span_id="s3",
+                location="s1",
+                causality="PRIMARY_FAILURE",
+                root_cause_explanation="Hallucination",
+                fix_type="SYSTEM_PROMPT_FIX",
+                fix_recommendation="Add grounding examples",
+            ),
+        ],
+    )
+    recs = result.recommendations
+    assert recs == ["Add disambiguation instructions", "Add grounding examples"]
+
+
+def test_diagnosis_result_recommendations_empty():
+    """Recommendations should be empty when there are no root causes."""
+    result = DiagnosisResult(session_id="sess_1")
+    assert result.recommendations == []

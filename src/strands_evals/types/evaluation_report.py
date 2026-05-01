@@ -27,6 +27,8 @@ class EvaluationReport(BaseModel):
     test_passes: list[bool]
     reasons: list[str] = []
     detailed_results: list[list[EvaluationOutput]] = []
+    diagnoses: list[dict | None] = []
+    recommendations: list[str | None] = []
 
     @classmethod
     def flatten(cls, reports: list["EvaluationReport"]) -> "EvaluationReport":

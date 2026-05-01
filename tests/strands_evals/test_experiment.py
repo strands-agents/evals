@@ -1860,3 +1860,145 @@ class TestProviderIntegration:
 
         assert len(reports) == 1
         assert reports[0].scores == [1.0]
+
+
+class TestDiagnoseOnFailure:
+    def _make_session(self):
+        from datetime import datetime
+
+        from strands_evals.types.trace import (
+            AgentInvocationSpan,
+            Session,
+            SpanInfo,
+            ToolConfig,
+            Trace,
+        )
+
+        now = datetime.now()
+        info = SpanInfo(session_id="sess_1", span_id="span_1", trace_id="trace_1", start_time=now, end_time=now)
+        spans = [
+            AgentInvocationSpan(
+                span_info=info,
+                user_prompt="Hello",
+                agent_response="Hi",
+                available_tools=[ToolConfig(name="search")],
+            ),
+        ]
+        return Session(
+            session_id="sess_1",
+            traces=[Trace(trace_id="trace_1", session_id="sess_1", spans=spans)],
+        )
+
+    def test_diagnose_on_failure_disabled_by_default(self):
+        """When diagnose_on_failure is not set, diagnoses and recommendations should be empty."""
+        cases = [Case(name="fail", input="foo", expected_output="bar")]
+        experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
+
+        reports = experiment.run_evaluations(lambda c: c.input)
+
+        assert len(reports) == 1
+        assert reports[0].diagnoses == [None]
+        assert reports[0].recommendations == [None]
+
+    @patch("strands_evals.experiment.Experiment._run_diagnosis")
+    def test_diagnose_on_failure_calls_diagnosis_for_failing_case(self, mock_run_diag):
+        """When enabled and a case fails, diagnosis and recommendations should be populated."""
+        mock_run_diag.return_value = (
+            {
+                "session_id": "sess_1",
+                "failures": [{"span_id": "s1", "category": ["error"], "confidence": [0.9], "evidence": ["e"]}],
+                "root_causes": [],
+            },
+            "Add disambiguation instructions",
+        )
+
+        session = self._make_session()
+        cases = [Case(name="fail", input="foo", expected_output="bar")]
+        experiment = Experiment(cases=cases, evaluators=[MockEvaluator()], diagnose_on_failure=True)
+
+        def task_returning_session(c):
+            return {"output": c.input, "trajectory": session}
+
+        reports = experiment.run_evaluations(task_returning_session)
+
+        assert len(reports) == 1
+        assert reports[0].diagnoses[0] is not None
+        assert reports[0].diagnoses[0]["session_id"] == "sess_1"
+        assert reports[0].recommendations[0] == "Add disambiguation instructions"
+        mock_run_diag.assert_called_once()
+
+    @patch("strands_evals.experiment.Experiment._run_diagnosis")
+    def test_diagnose_on_failure_skips_passing_case(self, mock_run_diag):
+        """When enabled but case passes, diagnosis should not run."""
+        cases = [Case(name="pass", input="hello", expected_output="hello")]
+        experiment = Experiment(cases=cases, evaluators=[MockEvaluator()], diagnose_on_failure=True)
+
+        reports = experiment.run_evaluations(lambda c: c.input)
+
+        assert len(reports) == 1
+        assert reports[0].diagnoses == [None]
+        assert reports[0].recommendations == [None]
+        mock_run_diag.assert_not_called()
+
+    def test_diagnose_on_failure_returns_none_for_non_session_trajectory(self):
+        """Diagnosis should return None when trajectory is not a Session."""
+        cases = [Case(name="fail", input="foo", expected_output="bar")]
+        experiment = Experiment(cases=cases, evaluators=[MockEvaluator()], diagnose_on_failure=True)
+
+        def task_with_list_trajectory(c):
+            return {"output": c.input, "trajectory": ["step1", "step2"]}
+
+        reports = experiment.run_evaluations(task_with_list_trajectory)
+
+        assert len(reports) == 1
+        assert reports[0].diagnoses == [None]
+        assert reports[0].recommendations == [None]
+
+    @patch("strands_evals.experiment.Experiment._run_diagnosis")
+    def test_diagnose_on_failure_with_multiple_evaluators(self, mock_run_diag):
+        """Diagnosis runs once per case, result shared across evaluator reports."""
+        mock_run_diag.return_value = (
+            {"session_id": "s1", "failures": [], "root_causes": []},
+            "Fix the prompt",
+        )
+        session = self._make_session()
+
+        class AlwaysFailEvaluator(Evaluator[str, str]):
+            def evaluate(self, evaluation_case):
+                return [EvaluationOutput(score=0.0, test_pass=False, reason="fail")]
+
+        cases = [Case(name="fail", input="foo", expected_output="bar")]
+        experiment = Experiment(
+            cases=cases,
+            evaluators=[AlwaysFailEvaluator(), MockEvaluator2()],
+            diagnose_on_failure=True,
+        )
+
+        def task_with_session(c):
+            return {"output": c.input, "trajectory": session}
+
+        reports = experiment.run_evaluations(task_with_session)
+
+        assert len(reports) == 2
+        # Both reports share the same diagnosis and recommendation
+        assert reports[0].diagnoses[0] == reports[1].diagnoses[0]
+        assert reports[0].recommendations[0] == reports[1].recommendations[0] == "Fix the prompt"
+        mock_run_diag.assert_called_once()
+
+    @patch("strands_evals.experiment.diagnose_session")
+    def test_diagnosis_exception_returns_none(self, mock_diagnose):
+        """If diagnosis throws, it should be caught and return None for both fields."""
+        mock_diagnose.side_effect = RuntimeError("LLM unavailable")
+        session = self._make_session()
+
+        cases = [Case(name="fail", input="foo", expected_output="bar")]
+        experiment = Experiment(cases=cases, evaluators=[MockEvaluator()], diagnose_on_failure=True)
+
+        def task_with_session(c):
+            return {"output": c.input, "trajectory": session}
+
+        reports = experiment.run_evaluations(task_with_session)
+
+        assert len(reports) == 1
+        assert reports[0].diagnoses == [None]
+        assert reports[0].recommendations == [None]

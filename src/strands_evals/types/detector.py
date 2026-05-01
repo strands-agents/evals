@@ -52,6 +52,26 @@ class RCAOutput(BaseModel):
     root_causes: list[RCAItem] = Field(default_factory=list)
 
 
+class DiagnosisResult(BaseModel):
+    """Output from diagnose_session()."""
+
+    session_id: str
+    failures: list[FailureItem] = Field(default_factory=list)
+    root_causes: list[RCAItem] = Field(default_factory=list)
+
+    @property
+    def recommendations(self) -> list[str]:
+        """Deduplicated fix recommendations from all root causes."""
+        seen: set[str] = set()
+        result: list[str] = []
+        for rc in self.root_causes:
+            rec = rc.fix_recommendation.strip()
+            if rec and rec not in seen:
+                result.append(rec)
+                seen.add(rec)
+        return result
+
+
 class FailureError(BaseModel):
     """LLM output schema: single failure entry."""
 
