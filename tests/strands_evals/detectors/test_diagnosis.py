@@ -73,6 +73,8 @@ class TestDiagnoseSession:
                 location="span_1",
                 causality="PRIMARY_FAILURE",
                 propagation_impact=["QUALITY_DEGRADATION"],
+                failure_detection_timing="IMMEDIATELY_AT_OCCURRENCE",
+                completion_status="PARTIAL_SUCCESS",
                 root_cause_explanation="Bad tool output",
                 fix_type="TOOL_DESCRIPTION_FIX",
                 fix_recommendation="Improve tool description",

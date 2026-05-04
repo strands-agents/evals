@@ -61,6 +61,10 @@ class RCAItem(BaseModel):
     location: str = Field(description="Span where root cause originated")
     causality: str = Field(description="PRIMARY_FAILURE | SECONDARY_FAILURE | TERTIARY_FAILURE")
     propagation_impact: list[str] = Field(default_factory=list)
+    failure_detection_timing: str = Field(
+        description="IMMEDIATELY_AT_OCCURRENCE | SEVERAL_STEPS_LATER | ONLY_AT_TASK_END | SILENT_UNDETECTED"
+    )
+    completion_status: str = Field(description="COMPLETE_SUCCESS | PARTIAL_SUCCESS | COMPLETE_FAILURE")
     root_cause_explanation: str
     fix_type: str = Field(description="SYSTEM_PROMPT_FIX | TOOL_DESCRIPTION_FIX | OTHERS")
     fix_recommendation: str

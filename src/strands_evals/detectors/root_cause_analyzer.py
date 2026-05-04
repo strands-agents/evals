@@ -210,6 +210,8 @@ def _parse_structured_result(output: RCAStructuredOutput) -> list[RCAItem]:
                 location=rc.location,
                 causality=rc.failure_causality,
                 propagation_impact=list(rc.failure_propagation_impact),
+                failure_detection_timing=rc.failure_detection_timing,
+                completion_status=rc.completion_status,
                 root_cause_explanation=rc.root_cause_explanation,
                 fix_type=rc.fix_recommendation.fix_type,
                 fix_recommendation=rc.fix_recommendation.recommendation,
