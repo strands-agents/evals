@@ -17,6 +17,7 @@ from tenacity import (
 from typing_extensions import Any, Generic
 
 from .case import Case
+from .detectors.diagnosis import diagnose_session
 from .evaluation_data_store import EvaluationDataStore
 from .evaluators.deterministic import Contains, Equals, StartsWith, StateEquals, ToolCalled
 from .evaluators.evaluator import Evaluator
@@ -25,8 +26,10 @@ from .evaluators.output_evaluator import OutputEvaluator
 from .evaluators.trajectory_evaluator import TrajectoryEvaluator
 from .telemetry import get_tracer, serialize
 from .telemetry._cloudwatch_logger import _send_to_cloudwatch
+from .types.detector import DiagnosisConfig
 from .types.evaluation import EvaluationData, InputT, OutputT
 from .types.evaluation_report import EvaluationReport
+from .types.trace import Session
 from .utils import is_throttling_error
 
 logger = logging.getLogger()
@@ -101,13 +104,14 @@ class Experiment(Generic[InputT, OutputT]):
         self,
         cases: list[Case[InputT, OutputT]] | None = None,
         evaluators: list[Evaluator[InputT, OutputT]] | None = None,
+        diagnosis_config: DiagnosisConfig | None = None,
     ):
         self._cases = cases or []
         self._evaluators = evaluators or [Evaluator()]
         self._tracer = get_tracer()
-        # self._logger = get_logger(__name__)
 
         self._config_id = os.environ.get("EVALUATION_RESULTS_LOG_GROUP", "default-strands-evals")
+        self._diagnosis_config = diagnosis_config
 
     @property
     def cases(self) -> list[Case[InputT, OutputT]]:
@@ -412,6 +416,35 @@ class Experiment(Generic[InputT, OutputT]):
                 "detailed_results": [],
             }
 
+    async def _run_diagnosis(
+        self,
+        evaluation_context: EvaluationData,
+        case_name: str,
+    ) -> tuple[dict | None, str | None]:
+        """Run diagnosis on a failing case's trajectory if it is a Session.
+
+        Returns:
+            (diagnosis_dict, recommendations_string) — both None if diagnosis
+            cannot run or fails.
+        """
+        trajectory = evaluation_context.actual_trajectory
+        if not isinstance(trajectory, Session) or self._diagnosis_config is None:
+            return None, None
+
+        try:
+            result = await asyncio.to_thread(
+                diagnose_session,
+                trajectory,
+                model=self._diagnosis_config.model,
+                confidence_threshold=self._diagnosis_config.confidence_threshold,
+            )
+            recs = result.recommendations
+            recs_str = "; ".join(recs) if recs else None
+            return result.model_dump(), recs_str
+        except Exception as e:
+            logger.warning("Diagnosis failed for case %s: %s", case_name, e)
+            return None, None
+
     async def _worker(
         self,
         queue: asyncio.Queue,
@@ -467,11 +500,22 @@ class Experiment(Generic[InputT, OutputT]):
                             )
                             evaluator_results.append(result)
 
+                        # Run diagnosis on failing cases if enabled
+                        diagnosis = None
+                        recommendation = None
+                        if self._diagnosis_config is not None:
+                            trigger = self._diagnosis_config.trigger
+                            any_failed = any(not r["test_pass"] for r in evaluator_results)
+                            if trigger == "always" or (trigger == "on_failure" and any_failed):
+                                diagnosis, recommendation = await self._run_diagnosis(evaluation_context, case_name)
+
                         # Store results
                         results.append(
                             {
                                 "case": evaluation_context.model_dump(),
                                 "evaluator_results": evaluator_results,
+                                "diagnosis": diagnosis,
+                                "recommendation": recommendation,
                             }
                         )
 
@@ -493,6 +537,8 @@ class Experiment(Generic[InputT, OutputT]):
                             {
                                 "case": case.model_dump(),
                                 "evaluator_results": evaluator_results,
+                                "diagnosis": None,
+                                "recommendation": None,
                             }
                         )
             finally:
@@ -571,12 +617,16 @@ class Experiment(Generic[InputT, OutputT]):
                 "cases": [],
                 "reasons": [],
                 "detailed_results": [],
+                "diagnoses": [],
+                "recommendations": [],
             }
             for evaluator in self._evaluators
         }
 
         for result in results:
             case_data = result["case"]
+            diagnosis = result.get("diagnosis")
+            recommendation = result.get("recommendation")
             for eval_result in result["evaluator_results"]:
                 eval_name = eval_result["evaluator_name"]
                 evaluator_data[eval_name]["cases"].append(case_data)
@@ -584,6 +634,8 @@ class Experiment(Generic[InputT, OutputT]):
                 evaluator_data[eval_name]["test_passes"].append(eval_result["test_pass"])
                 evaluator_data[eval_name]["reasons"].append(eval_result["reason"])
                 evaluator_data[eval_name]["detailed_results"].append(eval_result["detailed_results"])
+                evaluator_data[eval_name]["diagnoses"].append(diagnosis)
+                evaluator_data[eval_name]["recommendations"].append(recommendation)
 
         reports = []
         for evaluator in self._evaluators:
@@ -598,6 +650,8 @@ class Experiment(Generic[InputT, OutputT]):
                 cases=data["cases"],
                 reasons=data["reasons"],
                 detailed_results=data["detailed_results"],
+                diagnoses=data["diagnoses"],
+                recommendations=data["recommendations"],
             )
             reports.append(report)
 
