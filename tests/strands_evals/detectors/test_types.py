@@ -51,12 +51,16 @@ def test_rca_item_creation():
         location="span_0",
         causality="PRIMARY_FAILURE",
         propagation_impact=["TASK_TERMINATION"],
+        failure_detection_timing="IMMEDIATELY_AT_OCCURRENCE",
+        completion_status="COMPLETE_FAILURE",
         root_cause_explanation="The tool returned ambiguous results",
         fix_type="TOOL_DESCRIPTION_FIX",
         fix_recommendation="Add disambiguation instructions",
     )
     assert item.failure_span_id == "span_1"
     assert item.causality == "PRIMARY_FAILURE"
+    assert item.failure_detection_timing == "IMMEDIATELY_AT_OCCURRENCE"
+    assert item.completion_status == "COMPLETE_FAILURE"
 
 
 def test_rca_output_empty():
@@ -174,6 +178,8 @@ def test_diagnosis_result_recommendations():
                 failure_span_id="s1",
                 location="s0",
                 causality="PRIMARY_FAILURE",
+                failure_detection_timing="IMMEDIATELY_AT_OCCURRENCE",
+                completion_status="PARTIAL_SUCCESS",
                 root_cause_explanation="Bad tool output",
                 fix_type="TOOL_DESCRIPTION_FIX",
                 fix_recommendation="Add disambiguation instructions",
@@ -182,6 +188,8 @@ def test_diagnosis_result_recommendations():
                 failure_span_id="s2",
                 location="s0",
                 causality="SECONDARY_FAILURE",
+                failure_detection_timing="SEVERAL_STEPS_LATER",
+                completion_status="PARTIAL_SUCCESS",
                 root_cause_explanation="Missing context",
                 fix_type="SYSTEM_PROMPT_FIX",
                 fix_recommendation="Add disambiguation instructions",
@@ -190,6 +198,8 @@ def test_diagnosis_result_recommendations():
                 failure_span_id="s3",
                 location="s1",
                 causality="PRIMARY_FAILURE",
+                failure_detection_timing="SILENT_UNDETECTED",
+                completion_status="COMPLETE_FAILURE",
                 root_cause_explanation="Hallucination",
                 fix_type="SYSTEM_PROMPT_FIX",
                 fix_recommendation="Add grounding examples",
