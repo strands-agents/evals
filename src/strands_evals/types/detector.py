@@ -4,16 +4,26 @@ Includes both output types (FailureOutput, RCAOutput, etc.) and
 LLM structured output schemas (FailureDetectionStructuredOutput, etc.).
 """
 
+from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, Field
 from strands.models.model import Model
 
-# Confidence levels used across detectors
-ConfidenceLevel = Literal["low", "medium", "high"]
+
+class ConfidenceLevel(str, Enum):
+    """Minimum confidence level for failure detection filtering."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
 
 
-DiagnosisTrigger = Literal["on_failure", "always"]
+class DiagnosisTrigger(str, Enum):
+    """When to run diagnosis in an experiment."""
+
+    ON_FAILURE = "on_failure"
+    ALWAYS = "always"
 
 
 class DiagnosisConfig(BaseModel):
@@ -25,9 +35,9 @@ class DiagnosisConfig(BaseModel):
         confidence_threshold: Minimum confidence level for failure detection.
     """
 
-    trigger: DiagnosisTrigger = "on_failure"
+    trigger: DiagnosisTrigger = DiagnosisTrigger.ON_FAILURE
     model: Model | str | None = None
-    confidence_threshold: ConfidenceLevel = "medium"
+    confidence_threshold: ConfidenceLevel = ConfidenceLevel.MEDIUM
 
     model_config = {"arbitrary_types_allowed": True}
 

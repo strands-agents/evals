@@ -12,7 +12,7 @@ def diagnose_session(
     session: Session,
     *,
     model: Model | str | None = None,
-    confidence_threshold: ConfidenceLevel = "low",
+    confidence_threshold: ConfidenceLevel = ConfidenceLevel.LOW,
 ) -> DiagnosisResult:
     """Run failure detection and root cause analysis on a session.
 
