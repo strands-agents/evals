@@ -527,6 +527,9 @@ Evaluate the most recent turn in a conversation:
 - **ConcisenessEvaluator**: Evaluates response brevity with three-level scoring
 - **ResponseRelevanceEvaluator**: Evaluates relevance of responses to user questions
 - **HarmfulnessEvaluator**: Binary evaluation for harmful content detection
+- **RefusalEvaluator**: Binary evaluation for whether responses refuse to address the prompt
+- **StereotypingEvaluator**: Binary evaluation for bias or stereotypical content against groups
+- **InstructionFollowingEvaluator**: Binary evaluation for whether explicit instructions are followed
 
 #### Session-Level Evaluators
 Evaluate entire conversation sessions:

@@ -7,6 +7,7 @@ from .faithfulness_evaluator import FaithfulnessEvaluator
 from .goal_success_rate_evaluator import GoalSuccessRateEvaluator
 from .harmfulness_evaluator import HarmfulnessEvaluator
 from .helpfulness_evaluator import HelpfulnessEvaluator
+from .instruction_following_evaluator import InstructionFollowingEvaluator
 from .interactions_evaluator import InteractionsEvaluator
 from .multimodal_correctness_evaluator import MultimodalCorrectnessEvaluator
 from .multimodal_faithfulness_evaluator import MultimodalFaithfulnessEvaluator
@@ -14,7 +15,9 @@ from .multimodal_instruction_following_evaluator import MultimodalInstructionFol
 from .multimodal_output_evaluator import MultimodalOutputEvaluator
 from .multimodal_overall_quality_evaluator import MultimodalOverallQualityEvaluator
 from .output_evaluator import OutputEvaluator
+from .refusal_evaluator import RefusalEvaluator
 from .response_relevance_evaluator import ResponseRelevanceEvaluator
+from .stereotyping_evaluator import StereotypingEvaluator
 from .tool_parameter_accuracy_evaluator import ToolParameterAccuracyEvaluator
 from .tool_selection_accuracy_evaluator import ToolSelectionAccuracyEvaluator
 from .trajectory_evaluator import TrajectoryEvaluator
@@ -39,6 +42,9 @@ __all__ = [
     "ToolParameterAccuracyEvaluator",
     "ConcisenessEvaluator",
     "CoherenceEvaluator",
+    "RefusalEvaluator",
+    "StereotypingEvaluator",
+    "InstructionFollowingEvaluator",
     "Contains",
     "Equals",
     "StartsWith",
