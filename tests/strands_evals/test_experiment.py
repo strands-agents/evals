@@ -787,6 +787,32 @@ async def test_experiment_run_evaluations_async_with_async_task():
 
 
 @pytest.mark.asyncio
+async def test_experiment_run_evaluations_async_preserves_input_order():
+    """Test that run_evaluations_async returns results in input order regardless of completion order"""
+    import random
+
+    cases = [
+        Case(name=f"case_{i}", input=f"input_{i}", expected_output=f"input_{i}")
+        for i in range(10)
+    ]
+    experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
+
+    async def variable_delay_task(c):
+        await asyncio.sleep(random.uniform(0.01, 0.1))
+        return c.input
+
+    reports = await experiment.run_evaluations_async(variable_delay_task, max_workers=5)
+
+    assert len(reports) == 1
+    report = reports[0]
+    for i, case_data in enumerate(report.cases):
+        assert case_data["name"] == f"case_{i}", (
+            f"report.cases[{i}] has name '{case_data['name']}', expected 'case_{i}'"
+        )
+        assert case_data["input"] == f"input_{i}"
+
+
+@pytest.mark.asyncio
 async def test_experiment_run_evaluations_async_with_errors():
     """Test run_evaluations_async handles errors gracefully"""
 
