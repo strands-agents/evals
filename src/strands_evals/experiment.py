@@ -456,18 +456,18 @@ class Experiment(Generic[InputT, OutputT]):
         Worker that processes cases from the queue. Run evaluation on the task.
 
         Args:
-            queue: Queue containing cases to process
+            queue: Queue containing (index, case) tuples to process
             task: Task function to run on each case
             results: List to store results
             evaluation_data_store: Optional store for loading/saving evaluation data
         """
         while True:
             try:
-                case = queue.get_nowait()
+                index, case = queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
 
-            case_name = case.name or f"case_{len(results)}"
+            case_name = case.name or f"case_{index}"
             trace_id = None
 
             try:
@@ -510,14 +510,12 @@ class Experiment(Generic[InputT, OutputT]):
                                 diagnosis, recommendation = await self._run_diagnosis(evaluation_context, case_name)
 
                         # Store results
-                        results.append(
-                            {
-                                "case": evaluation_context.model_dump(),
-                                "evaluator_results": evaluator_results,
-                                "diagnosis": diagnosis,
-                                "recommendation": recommendation,
-                            }
-                        )
+                        results[index] = {
+                            "case": evaluation_context.model_dump(),
+                            "evaluator_results": evaluator_results,
+                            "diagnosis": diagnosis,
+                            "recommendation": recommendation,
+                        }
 
                     except Exception as e:
                         case_span.record_exception(e)
@@ -533,14 +531,12 @@ class Experiment(Generic[InputT, OutputT]):
                                     "detailed_results": [],
                                 }
                             )
-                        results.append(
-                            {
-                                "case": case.model_dump(),
-                                "evaluator_results": evaluator_results,
-                                "diagnosis": None,
-                                "recommendation": None,
-                            }
-                        )
+                        results[index] = {
+                            "case": case.model_dump(),
+                            "evaluator_results": evaluator_results,
+                            "diagnosis": None,
+                            "recommendation": None,
+                        }
             finally:
                 queue.task_done()
 
@@ -592,11 +588,11 @@ class Experiment(Generic[InputT, OutputT]):
         if evaluation_data_store is not None:
             self._validate_case_names()
 
-        queue: asyncio.Queue[Case[InputT, OutputT]] = asyncio.Queue()
-        results: list[Any] = []
+        queue: asyncio.Queue[tuple[int, Case[InputT, OutputT]]] = asyncio.Queue()
+        results: list[Any] = [None] * len(self._cases)
 
-        for case in self._cases:
-            queue.put_nowait(case)
+        for i, case in enumerate(self._cases):
+            queue.put_nowait((i, case))
 
         num_workers = min(max_workers, len(self._cases))
 
