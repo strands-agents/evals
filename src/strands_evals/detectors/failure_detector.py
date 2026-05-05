@@ -57,7 +57,7 @@ def _get_prompt_overhead_tokens() -> int:
 def detect_failures(
     session: Session,
     *,
-    confidence_threshold: ConfidenceLevel = "low",
+    confidence_threshold: ConfidenceLevel = ConfidenceLevel.LOW,
     model: Model | str | None = None,
 ) -> FailureOutput:
     """Detect semantic failures in an agent execution session.

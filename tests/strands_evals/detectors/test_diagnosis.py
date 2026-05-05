@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from strands_evals.detectors.diagnosis import diagnose_session
 from strands_evals.types.detector import (
+    ConfidenceLevel,
     DiagnosisResult,
     FailureItem,
     FailureOutput,
@@ -96,11 +97,11 @@ class TestDiagnoseSession:
         session = _make_session()
         mock_model = MagicMock()
 
-        diagnose_session(session, model=mock_model, confidence_threshold="high")
+        diagnose_session(session, model=mock_model, confidence_threshold=ConfidenceLevel.HIGH)
 
         mock_detect.assert_called_once_with(
             session,
-            confidence_threshold="high",
+            confidence_threshold=ConfidenceLevel.HIGH,
             model=mock_model,
         )
 

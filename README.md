@@ -356,14 +356,15 @@ Detect failures in agent sessions and analyze root causes to get actionable fix 
 ```python
 from strands_evals import Case, DiagnosisConfig, Experiment
 from strands_evals.evaluators import HelpfulnessEvaluator
+from strands_evals.types.detector import ConfidenceLevel, DiagnosisTrigger
 
 # Enable diagnosis on failing cases — runs failure detection then root cause analysis
 experiment = Experiment(
     cases=test_cases,
     evaluators=[HelpfulnessEvaluator()],
     diagnosis_config=DiagnosisConfig(
-        trigger="on_failure",           # "on_failure" or "always"
-        confidence_threshold="medium",  # "low", "medium", or "high"
+        trigger=DiagnosisTrigger.ON_FAILURE,           # ON_FAILURE or ALWAYS
+        confidence_threshold=ConfidenceLevel.MEDIUM,   # LOW, MEDIUM, or HIGH
     ),
 )
 
@@ -377,15 +378,16 @@ You can also use the detectors standalone on any `Session` object (`strands_eval
 
 ```python
 from strands_evals.detectors import detect_failures, analyze_root_cause, diagnose_session
+from strands_evals.types.detector import ConfidenceLevel
 
 # Full pipeline: detect failures → root cause analysis
-result = diagnose_session(session, confidence_threshold="medium")
+result = diagnose_session(session, confidence_threshold=ConfidenceLevel.MEDIUM)
 
 for rc in result.root_causes:
     print(f"{rc.fix_type}: {rc.fix_recommendation}")
 
 # Or run each step independently
-failures = detect_failures(session, confidence_threshold="medium")
+failures = detect_failures(session, confidence_threshold=ConfidenceLevel.MEDIUM)
 if failures.failures:
     rca = analyze_root_cause(session, failures=failures.failures)
 

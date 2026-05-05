@@ -18,7 +18,7 @@ from strands_evals.detectors.utils import (
     _serialize_session,
     _serialize_spans,
 )
-from strands_evals.types.detector import FailureOutput
+from strands_evals.types.detector import ConfidenceLevel, FailureOutput
 from strands_evals.types.trace import (
     AgentInvocationSpan,
     InferenceSpan,
@@ -269,7 +269,7 @@ def test_detect_failures_confidence_threshold(mock_call_model):
     )
 
     session = _make_session()
-    output = detect_failures(session, confidence_threshold="medium")
+    output = detect_failures(session, confidence_threshold=ConfidenceLevel.MEDIUM)
 
     # "low" is below "medium" threshold
     assert len(output.failures) == 1
@@ -291,7 +291,7 @@ def test_detect_failures_per_mode_filtering(mock_call_model):
     )
 
     session = _make_session()
-    output = detect_failures(session, confidence_threshold="medium")
+    output = detect_failures(session, confidence_threshold=ConfidenceLevel.MEDIUM)
 
     # Span is kept (has a high-confidence mode) but low-confidence mode is pruned
     assert len(output.failures) == 1
