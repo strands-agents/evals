@@ -465,3 +465,75 @@ def test_no_parameters_tool_input_model():
     properties = schema.get("properties", {})
     # Empty model should mean no properties
     assert len(properties) == 0, "Tool with empty schema should have no properties"
+
+
+def test_tool_simulator_init_default_tools():
+    """Test ToolSimulator initializes with empty tools list by default."""
+    simulator = ToolSimulator()
+    assert simulator.tools == []
+
+
+def test_tool_simulator_init_with_tools():
+    """Test ToolSimulator stores provided tools."""
+    mock_tool = MagicMock()
+    simulator = ToolSimulator(tools=[mock_tool])
+    assert simulator.tools == [mock_tool]
+
+
+def test_tool_simulator_init_tools_none_becomes_empty_list():
+    """Test ToolSimulator converts None tools to empty list."""
+    simulator = ToolSimulator(tools=None)
+    assert simulator.tools == []
+
+
+def test_simulate_tool_call_passes_tools_to_agent(mock_model):
+    """Test that tools are passed through to the internal Agent."""
+    mock_tool = MagicMock()
+    simulator = ToolSimulator(model=mock_model, tools=[mock_tool])
+
+    @simulator.tool(output_schema=GenericOutput)
+    def test_func(message: str) -> dict:
+        """Test function."""
+        pass
+
+    captured_kwargs = {}
+
+    def mock_agent_constructor(**kwargs):
+        captured_kwargs.update(kwargs)
+        mock_agent = MagicMock()
+        mock_result = MagicMock()
+        mock_result.__str__ = MagicMock(return_value='{"result": "response"}')
+        mock_agent.return_value = mock_result
+        return mock_agent
+
+    with pytest.MonkeyPatch().context() as m:
+        m.setattr("strands_evals.simulation.tool_simulator.Agent", mock_agent_constructor)
+        simulator.test_func("hello")
+
+    assert captured_kwargs["tools"] == [mock_tool]
+
+
+def test_simulate_tool_call_default_empty_tools(mock_model):
+    """Test that default simulator passes empty tools list to Agent."""
+    simulator = ToolSimulator(model=mock_model)
+
+    @simulator.tool(output_schema=GenericOutput)
+    def test_func(message: str) -> dict:
+        """Test function."""
+        pass
+
+    captured_kwargs = {}
+
+    def mock_agent_constructor(**kwargs):
+        captured_kwargs.update(kwargs)
+        mock_agent = MagicMock()
+        mock_result = MagicMock()
+        mock_result.__str__ = MagicMock(return_value='{"result": "response"}')
+        mock_agent.return_value = mock_result
+        return mock_agent
+
+    with pytest.MonkeyPatch().context() as m:
+        m.setattr("strands_evals.simulation.tool_simulator.Agent", mock_agent_constructor)
+        simulator.test_func("hello")
+
+    assert captured_kwargs["tools"] == []
