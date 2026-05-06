@@ -37,6 +37,8 @@ class ChaosExperiment:
             ChaosExperiment,
             ChaosPlugin,
             ChaosScenario,
+            ChaosScenarioAggregator,
+            display_chaos_aggregation,
         )
         from strands_evals.chaos.effects import ToolCallFailure
 
@@ -65,6 +67,11 @@ class ChaosExperiment:
         )
 
         reports = experiment.run_evaluations(task=my_task)
+
+        # Aggregate and display separately
+        aggregator = ChaosScenarioAggregator(known_tools=["search_tool", "database_tool"])
+        aggregations = aggregator.aggregate(reports)
+        display_chaos_aggregation(aggregations, reports=reports)
     """
 
     def __init__(
