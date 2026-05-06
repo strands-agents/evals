@@ -127,7 +127,7 @@ from strands_evals.evaluators import OutputEvaluator
 evaluator = OutputEvaluator(
     rubric="Score 1.0 for accurate, complete responses. Score 0.5 for partial answers. Score 0.0 for incorrect or unhelpful responses.",
     include_inputs=True,  # Include context in evaluation
-    model="us.anthropic.claude-sonnet-4-20250514-v1:0"  # Custom judge model
+    model="global.anthropic.claude-sonnet-4-6"  # Custom judge model
 )
 ```
 
