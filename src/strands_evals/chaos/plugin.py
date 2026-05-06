@@ -161,8 +161,33 @@ class ChaosPlugin(Plugin):
         if hasattr(event, "result") and event.result is not None:
             result = event.result
             # Handle ToolResult-like objects with content
-            if hasattr(result, "content") and isinstance(result.content, dict):
-                result.content = self._apply_corruption(chaos_config, result.content)
+            if hasattr(result, "content"):
+                if isinstance(result.content, dict):
+                    # Content is a data dict — corrupt it directly
+                    result.content = self._apply_corruption(chaos_config, result.content)
+                elif isinstance(result.content, list):
+                    # Content is a list of blocks (e.g., [{"text": "..."}])
+                    # Corrupt text content within each block
+                    corrupted_blocks = []
+                    for block in result.content:
+                        if isinstance(block, dict) and "text" in block:
+                            text_data = block["text"]
+                            if isinstance(text_data, str):
+                                # Try to parse as JSON dict for field-level corruption
+                                import json
+                                try:
+                                    parsed = json.loads(text_data)
+                                    if isinstance(parsed, dict):
+                                        corrupted = self._apply_corruption(chaos_config, parsed)
+                                        block = {**block, "text": json.dumps(corrupted)}
+                                    else:
+                                        block = {**block, "text": text_data}
+                                except (json.JSONDecodeError, ValueError):
+                                    # Plain text — truncate if that's the effect
+                                    if chaos_config.effect == ToolChaosEffect.TRUNCATE_FIELDS:
+                                        block = {**block, "text": text_data[: len(text_data) // 2]}
+                        corrupted_blocks.append(block)
+                    result.content = corrupted_blocks
             elif isinstance(result, dict):
                 event.result = self._apply_corruption(chaos_config, result)
 
@@ -175,11 +200,14 @@ class ChaosPlugin(Plugin):
     # ------------------------------------------------------------------
 
     def _apply_corruption(self, effect_config: ChaosEffectConfig, response: Any) -> Any:
-        """Apply a corruption effect to a tool response.
+        """Apply a corruption effect to a tool response data dict.
+
+        Only preserves the `status` field (Bedrock requires "success"/"error").
+        All other fields including `content` are fair game for corruption.
 
         Args:
             effect_config: The normalized effect configuration.
-            response: The tool result to corrupt. Expected to be a dict.
+            response: The tool result data dict to corrupt.
 
         Returns:
             The corrupted response.
@@ -189,14 +217,21 @@ class ChaosPlugin(Plugin):
 
         effect = effect_config.effect
 
+        # Preserve status — Bedrock requires toolResult.status to be "success" or "error"
+        saved_status = response.get("status")
+
         if effect == ToolChaosEffect.TRUNCATE_FIELDS:
-            return self._truncate_fields(response)
+            response = self._truncate_fields(response)
         elif effect == ToolChaosEffect.REMOVE_FIELDS:
             ratio = effect_config.remove_ratio if effect_config.remove_ratio is not None else 0.33
-            return self._remove_fields(response, ratio)
+            response = self._remove_fields(response, ratio)
         elif effect == ToolChaosEffect.CORRUPT_VALUES:
             rate = effect_config.corrupt_rate if effect_config.corrupt_rate is not None else 0.4
-            return self._corrupt_values(response, rate)
+            response = self._corrupt_values(response, rate)
+
+        # Restore status
+        if saved_status is not None:
+            response["status"] = saved_status
 
         return response
 
@@ -205,7 +240,9 @@ class ChaosPlugin(Plugin):
         """Truncate string values to partial content."""
         result: dict[str, Any] = {}
         for key, value in response.items():
-            if isinstance(value, str) and len(value) > 0:
+            if key == "status":
+                result[key] = value
+            elif isinstance(value, str) and len(value) > 0:
                 result[key] = value[: random.randint(0, max(0, len(value) - 1))]
             elif isinstance(value, dict):
                 result[key] = ChaosPlugin._truncate_fields(value)
@@ -216,7 +253,7 @@ class ChaosPlugin(Plugin):
     @staticmethod
     def _remove_fields(response: dict[str, Any], remove_ratio: float) -> dict[str, Any]:
         """Remove a fraction of fields from the response."""
-        keys = list(response.keys())
+        keys = [k for k in response.keys() if k != "status"]
         if not keys:
             return response
 
@@ -229,7 +266,7 @@ class ChaosPlugin(Plugin):
         """Replace a fraction of values with wrong types or garbage data."""
         corruptions: list[Any] = [None, 99999, "", True, [], "CORRUPTED_DATA"]
 
-        keys = list(response.keys())
+        keys = [k for k in response.keys() if k != "status"]
         if not keys:
             return response
 
