@@ -37,6 +37,7 @@ def provider(mock_retriever):
         p = OpenSearchProvider()
         p._retriever = mock_retriever
         from strands_evals.mappers.opensearch_session_mapper import OpenSearchSessionMapper
+
         p._mapper = OpenSearchSessionMapper()
         return p
 
@@ -48,9 +49,7 @@ class TestGetEvaluationData:
             make_agent_span(user_prompt="Hello", agent_response="Hi there"),
             make_tool_span(tool_name="greet"),
         ]
-        mock_retriever.get_traces.return_value = MockSessionRecord(
-            traces=[MockTraceRecord(spans=spans)]
-        )
+        mock_retriever.get_traces.return_value = MockSessionRecord(traces=[MockTraceRecord(spans=spans)])
 
         result = provider.get_evaluation_data("sess-1")
 
@@ -73,18 +72,23 @@ class TestGetEvaluationData:
             provider.get_evaluation_data("sess-1")
 
 
-
 class TestMultipleTraces:
     def test_spans_from_multiple_traces_are_regrouped(self, provider, mock_retriever):
         """Spans from multiple TraceRecords are flattened and re-grouped by trace_id."""
         mock_retriever.get_traces.return_value = MockSessionRecord(
             traces=[
-                MockTraceRecord(trace_id="t1", spans=[
-                    make_agent_span(trace_id="t1", span_id="a1", user_prompt="Q1", agent_response="A1"),
-                ]),
-                MockTraceRecord(trace_id="t2", spans=[
-                    make_agent_span(trace_id="t2", span_id="a2", user_prompt="Q2", agent_response="A2"),
-                ]),
+                MockTraceRecord(
+                    trace_id="t1",
+                    spans=[
+                        make_agent_span(trace_id="t1", span_id="a1", user_prompt="Q1", agent_response="A1"),
+                    ],
+                ),
+                MockTraceRecord(
+                    trace_id="t2",
+                    spans=[
+                        make_agent_span(trace_id="t2", span_id="a2", user_prompt="Q2", agent_response="A2"),
+                    ],
+                ),
             ]
         )
 
@@ -94,6 +98,7 @@ class TestMultipleTraces:
         trace_ids = {t.trace_id for t in session.traces}
         assert trace_ids == {"t1", "t2"}
 
+
 class TestExtractOutput:
     def test_extracts_last_agent_response(self, provider, mock_retriever):
         """Output comes from the last AgentInvocationSpan's response."""
@@ -101,9 +106,7 @@ class TestExtractOutput:
             make_agent_span(span_id="a1", agent_response="First", start_time="2026-01-01T00:00:00Z"),
             make_agent_span(span_id="a2", agent_response="Final answer", start_time="2026-01-01T00:00:01Z"),
         ]
-        mock_retriever.get_traces.return_value = MockSessionRecord(
-            traces=[MockTraceRecord(spans=spans)]
-        )
+        mock_retriever.get_traces.return_value = MockSessionRecord(traces=[MockTraceRecord(spans=spans)])
 
         result = provider.get_evaluation_data("sess-1")
         assert result["output"] == "Final answer"
@@ -111,9 +114,7 @@ class TestExtractOutput:
     def test_empty_output_when_no_agent_spans(self, provider, mock_retriever):
         """Returns empty string when there are no AgentInvocationSpans."""
         spans = [make_tool_span()]
-        mock_retriever.get_traces.return_value = MockSessionRecord(
-            traces=[MockTraceRecord(spans=spans)]
-        )
+        mock_retriever.get_traces.return_value = MockSessionRecord(traces=[MockTraceRecord(spans=spans)])
 
         result = provider.get_evaluation_data("sess-1")
         assert result["output"] == ""

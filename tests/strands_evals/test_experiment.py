@@ -791,10 +791,7 @@ async def test_experiment_run_evaluations_async_preserves_input_order():
     """Test that run_evaluations_async returns results in input order regardless of completion order"""
     import random
 
-    cases = [
-        Case(name=f"case_{i}", input=f"input_{i}", expected_output=f"input_{i}")
-        for i in range(10)
-    ]
+    cases = [Case(name=f"case_{i}", input=f"input_{i}", expected_output=f"input_{i}") for i in range(10)]
     experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
 
     async def variable_delay_task(c):
