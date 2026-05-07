@@ -14,6 +14,9 @@ from ..evaluators.evaluator import Evaluator
 from ..experiment import Experiment
 from ..types.evaluation_report import EvaluationReport
 from ._context import _current_scenario
+from .aggregator import ChaosScenarioAggregator
+from .aggregator_types import ChaosAggregationReport
+from .plugin import ChaosPlugin
 from .scenario import ChaosScenario
 
 logger = logging.getLogger(__name__)
@@ -38,7 +41,7 @@ class ChaosExperiment:
             ChaosPlugin,
             ChaosScenario,
             ChaosScenarioAggregator,
-            display_chaos_aggregation,
+            ToolChaosEffect,
         )
         from strands_evals.chaos.effects import ToolCallFailure
 
@@ -72,6 +75,18 @@ class ChaosExperiment:
         aggregator = ChaosScenarioAggregator(known_tools=["search_tool", "database_tool"])
         aggregations = aggregator.aggregate(reports)
         display_chaos_aggregation(aggregations, reports=reports)
+        experiment = ChaosExperiment(
+            chaos_plugin=chaos,
+            chaos_scenarios=scenarios,
+            cases=cases,
+            evaluators=[GoalSuccessRateEvaluator(), RecoveryStrategyEvaluator()],
+            aggregator=ChaosScenarioAggregator(),
+        )
+
+        reports = experiment.run_evaluations(task=my_task)
+        aggregation_report = experiment.aggregate_evaluations()
+        aggregation_report.run_display()
+        aggregation_report.to_file("chaos_report.json")
     """
 
     def __init__(
@@ -80,6 +95,8 @@ class ChaosExperiment:
         scenarios: list[ChaosScenario],
         evaluators: Optional[list[Evaluator]] = None,
         include_baseline: bool = True,
+        baseline_assertion: Optional[str] = None,
+        aggregator: Optional[ChaosScenarioAggregator] = None,
     ):
         """Initialize a ChaosExperiment.
 
@@ -158,6 +175,25 @@ class ChaosExperiment:
             The original case name, or None if not found.
         """
         return self._original_case_name_by_session.get(session_id)
+            baseline_assertion: Optional assertion string for baseline evaluation.
+            aggregator: Optional ChaosScenarioAggregator for cross-scenario analysis.
+                If provided, aggregate_evaluations() can be called after run_evaluations().
+                The aggregator auto-derives known_tools from chaos_scenarios.
+        """
+        super().__init__(cases=cases, evaluators=evaluators)
+        self.chaos_plugin = chaos_plugin
+        self.chaos_scenarios = chaos_scenarios
+        self.include_baseline = include_baseline
+        self.baseline_assertion = baseline_assertion
+        self._aggregator = aggregator
+        self._last_reports: list[EvaluationReport] = []
+
+        # Auto-populate aggregator's known_tools from scenarios
+        if self._aggregator is not None and not self._aggregator.known_tools:
+            tools: set[str] = set()
+            for scenario in chaos_scenarios:
+                tools.update(scenario.tool_effects.keys())
+            self._aggregator.known_tools = sorted(tools)
 
     def run_evaluations(
         self,
@@ -168,6 +204,12 @@ class ChaosExperiment:
 
         Wraps the user's task function to set the ContextVar before each
         case execution, so the ChaosPlugin sees the correct scenario.
+        Executes the task for each (scenario, case) pair:
+        1. If include_baseline=True, runs all cases with no chaos active.
+        2. For each scenario, activates it on the plugin, runs all cases,
+           then clears.
+
+        Results are stored internally for use by aggregate_evaluations().
 
         Args:
             task: The task function to evaluate. Takes a Case and returns output.
@@ -208,6 +250,40 @@ class ChaosExperiment:
 
         Same as run_evaluations but uses the async worker pool for parallelism.
         ContextVar ensures each case sees its own scenario even under concurrency.
+        # Store for aggregate_evaluations()
+        self._last_reports = all_reports
+        return all_reports
+
+    def aggregate_evaluations(self) -> ChaosAggregationReport:
+        """Aggregate the last run's evaluation reports into a ChaosAggregationReport.
+
+        Must be called after run_evaluations(). Uses the aggregator passed to __init__.
+
+        Returns:
+            ChaosAggregationReport with .run_display() and .to_file() methods.
+
+        Raises:
+            RuntimeError: If no aggregator was configured or run_evaluations() hasn't been called.
+        """
+        if self._aggregator is None:
+            raise RuntimeError(
+                "No aggregator configured. Pass aggregator=ChaosScenarioAggregator() "
+                "to ChaosExperiment.__init__()."
+            )
+        if not self._last_reports:
+            raise RuntimeError(
+                "No evaluation reports available. Call run_evaluations() first."
+            )
+
+        report = self._aggregator.aggregate(self._last_reports)
+        # Store the raw reports on the aggregation report for run_display()
+        report._reports = self._last_reports
+        return report
+
+    def _tag_cases_with_scenario(
+        self, scenario_name: str, scenario: Optional[ChaosScenario] = None
+    ) -> list[Case]:
+        """Create copies of cases with scenario name injected into metadata.
 
         Args:
             task: The task function (sync or async).
@@ -227,6 +303,19 @@ class ChaosExperiment:
                 return task(case)
             finally:
                 _current_scenario.reset(token)
+            # Store structured tool_effects for aggregator consumption
+            if scenario is not None and scenario.tool_effects:
+                tool_effects_serialized = {}
+                for tool_name, effect_spec in scenario.tool_effects.items():
+                    if isinstance(effect_spec, str):
+                        tool_effects_serialized[tool_name] = effect_spec
+                    elif hasattr(effect_spec, "value"):
+                        tool_effects_serialized[tool_name] = effect_spec.value
+                    elif hasattr(effect_spec, "effect"):
+                        tool_effects_serialized[tool_name] = effect_spec.effect.value
+                    else:
+                        tool_effects_serialized[tool_name] = str(effect_spec)
+                tagged.metadata["chaos_tool_effects"] = tool_effects_serialized
 
         async def chaos_aware_task_async(case: Case) -> Any:
             """Async wrapper that activates the correct scenario via ContextVar."""

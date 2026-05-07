@@ -7,6 +7,7 @@ under tool failures and response corruption scenarios.
 from .aggregation_display import ChaosAggregationDisplay, display_chaos_aggregation
 from .aggregator import ChaosScenarioAggregator
 from .aggregator_types import (
+    ChaosAggregationReport,
     ChaosScenarioAggregation,
     CoverageStatus,
     ToolEffectResult,
@@ -32,6 +33,9 @@ from .scenario import ChaosScenario
 
 __all__ = [
     # Core classes
+    "ChaosAggregationDisplay",
+    "ChaosAggregationReport",
+    "ChaosEffectConfig",
     "ChaosExperiment",
     "ChaosPlugin",
     "ChaosScenario",

@@ -22,6 +22,7 @@ from strands.models.model import Model
 from ..aggregators.base import EvaluationAggregator
 from ..types.evaluation_report import EvaluationReport
 from .aggregator_types import (
+    ChaosAggregationReport,
     ChaosScenarioAggregation,
     CoverageStatus,
     ToolEffectResult,
@@ -117,20 +118,21 @@ class ChaosScenarioAggregator(EvaluationAggregator):
         super().__init__(name=name or "ChaosScenarioAggregator")
         self.known_tools = known_tools or []
         self.known_effects = known_effects or [e.value for e in ToolChaosEffect]
+        # None means use Agent's default model (same as evaluators)
         self.model = model
         self.system_prompt = system_prompt or _SUMMARIZE_SYSTEM_PROMPT
 
-    def aggregate(self, reports: list[EvaluationReport]) -> list[ChaosScenarioAggregation]:
+    def aggregate(self, reports: list[EvaluationReport]) -> ChaosAggregationReport:
         """Aggregate chaos experiment reports into per-case scenario aggregations.
 
         Args:
             reports: Flat list of EvaluationReport objects from ChaosExperiment.
 
         Returns:
-            List of ChaosScenarioAggregation objects, one per (original_case, evaluator).
+            ChaosAggregationReport with .run_display() and .to_file() methods.
         """
         if not reports:
-            return []
+            return ChaosAggregationReport(aggregations=[])
 
         grouped = self._group_results(reports)
 
@@ -140,13 +142,13 @@ class ChaosScenarioAggregator(EvaluationAggregator):
             aggregations.append(aggregation)
 
         aggregations.sort(key=lambda a: (a.group_key, a.evaluator_name))
-        return aggregations
+        return ChaosAggregationReport(aggregations=aggregations)
 
     def summarize_reasons(self, reasons: list[str]) -> str:
         """Produce a narrative summary from per-scenario reason strings.
 
-        If a model is configured, uses LLM-as-a-Judge with structured output.
-        Otherwise falls back to simple concatenation.
+        Uses LLM-as-a-Judge with structured output (Agent uses default model
+        when self.model is None, matching evaluator behavior).
 
         Args:
             reasons: List of reason strings from individual evaluations.
@@ -154,9 +156,6 @@ class ChaosScenarioAggregator(EvaluationAggregator):
         Returns:
             A summary string.
         """
-        if not self.model:
-            return self._concatenate_reasons(reasons)
-
         non_empty = [r for r in reasons if r]
         if not non_empty:
             return ""
@@ -199,9 +198,6 @@ class ChaosScenarioAggregator(EvaluationAggregator):
             Summary string.
         """
         reasons = [e["reason"] for e in entries]
-
-        if not self.model:
-            return self._concatenate_reasons(reasons)
 
         # Build detailed prompt for LLM
         scenario_lines = []
