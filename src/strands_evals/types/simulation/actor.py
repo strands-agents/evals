@@ -21,30 +21,7 @@ class ActorProfile(BaseModel):
     )
 
 
-class ActorOutputBase(BaseModel):
-    """Base class for actor simulator structured output models.
-
-    Any model passed as `structured_output_model` to `ActorSimulator.act()`
-    must subclass this. The simulator reads `stop` and `reasoning` from the
-    result to manage conversation state.
-
-    Subclasses must also define a `message` field (of any type) — this is
-    validated at runtime by the simulator rather than enforced here, so
-    subclasses are free to type `message` however they need.
-
-    Attributes:
-        reasoning: Internal reasoning process for the response.
-        stop: `True` when the actor signals the conversation should end.
-    """
-
-    reasoning: str = Field(..., description="Reasoning for the actor's response")
-    stop: bool = Field(
-        False,
-        description="Set to true when the conversation goal is met or the conversation should end.",
-    )
-
-
-class ActorResponse(ActorOutputBase):
+class ActorResponse(BaseModel):
     """Default structured response from the actor simulator.
 
     Used as the LLM structured-output schema for `ActorSimulator.act` when no
@@ -52,6 +29,8 @@ class ActorResponse(ActorOutputBase):
     `stop`, and `message`. The simulator fills `stop_reason` after the LLM call.
 
     Attributes:
+        reasoning: Internal reasoning process for the response.
+        stop: `True` when the actor signals the conversation should end.
         message: The actual message content from the actor. `None` when `stop=True`.
         stop_reason: Why the conversation ended. One of `"goal_completed"`,
             `"max_turns"`, or `None` while ongoing. Populated by the simulator
@@ -60,6 +39,11 @@ class ActorResponse(ActorOutputBase):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    reasoning: str = Field(..., description="Reasoning for the actor's response")
+    stop: bool = Field(
+        False,
+        description="Set to true when the conversation goal is met or the conversation should end.",
+    )
     message: str | None = Field(
         None,
         description="The actor's next message to the agent. Provide when stop=false; set to null when stop=true.",

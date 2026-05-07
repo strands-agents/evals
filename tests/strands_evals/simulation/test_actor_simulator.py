@@ -8,7 +8,7 @@ from strands.agent.agent_result import AgentResult
 
 from strands_evals import Case
 from strands_evals.simulation import ActorSimulator
-from strands_evals.types.simulation import ActorOutputBase, ActorProfile, ActorResponse
+from strands_evals.types.simulation import ActorProfile, ActorResponse
 
 
 @pytest.fixture
@@ -158,35 +158,9 @@ def test_act_uses_actor_response_by_default(sample_actor_profile):
 def test_act_with_custom_structured_output_model(sample_actor_profile):
     """Test act passes custom structured_output_model to the agent."""
 
-    class CustomOutput(ActorOutputBase):
+    class CustomOutput(BaseModel):
         answer: str
         confidence: float
-        message: str | None = None
-
-    simulator = ActorSimulator(
-        actor_profile=sample_actor_profile,
-        initial_query="Hello",
-        system_prompt_template="Test: {actor_profile}",
-    )
-
-    mock_response = MagicMock(spec=AgentResult)
-    mock_response.structured_output = CustomOutput(
-        reasoning="r", answer="test", confidence=0.9, stop=False, message="hi"
-    )
-    simulator.agent = MagicMock(return_value=mock_response)
-
-    result = simulator.act("Test message", structured_output_model=CustomOutput)
-
-    call_kwargs = simulator.agent.call_args[1]
-    assert call_kwargs["structured_output_model"] == CustomOutput
-    assert result.structured_output.answer == "test"
-
-
-def test_act_custom_model_not_subclass_raises(sample_actor_profile):
-    """Test act raises TypeError if custom model is not a subclass of ActorOutputBase."""
-
-    class BadModel(BaseModel):
-        answer: str
         stop: bool = False
         message: str | None = None
 
@@ -196,15 +170,39 @@ def test_act_custom_model_not_subclass_raises(sample_actor_profile):
         system_prompt_template="Test: {actor_profile}",
     )
 
-    with pytest.raises(TypeError, match="must be a subclass of ActorOutputBase"):
-        simulator.act("Test message", structured_output_model=BadModel)
+    mock_response = MagicMock(spec=AgentResult)
+    mock_response.structured_output = CustomOutput(answer="test", confidence=0.9, stop=False, message="hi")
+    simulator.agent = MagicMock(return_value=mock_response)
+
+    result = simulator.act("Test message", structured_output_model=CustomOutput)
+
+    call_kwargs = simulator.agent.call_args[1]
+    assert call_kwargs["structured_output_model"] == CustomOutput
+    assert result.structured_output.answer == "test"
+
+
+def test_act_custom_model_without_stop_raises(sample_actor_profile):
+    """Test act raises ValueError if custom model has no stop field."""
+
+    class NoStopModel(BaseModel):
+        message: str | None = None
+
+    simulator = ActorSimulator(
+        actor_profile=sample_actor_profile,
+        initial_query="Hello",
+        system_prompt_template="Test: {actor_profile}",
+    )
+
+    with pytest.raises(ValueError, match="must have a 'stop' field"):
+        simulator.act("Test message", structured_output_model=NoStopModel)
 
 
 def test_act_custom_model_without_message_raises(sample_actor_profile):
     """Test act raises ValueError if custom model has no message field."""
 
-    class NoMessageModel(ActorOutputBase):
-        answer: str
+    class NoMessageModel(BaseModel):
+        answer: str = ""
+        stop: bool = False
 
     simulator = ActorSimulator(
         actor_profile=sample_actor_profile,
@@ -326,7 +324,8 @@ def test_act_continuing_turn_no_stop_reason(sample_actor_profile):
 def test_act_custom_model_manages_stop(sample_actor_profile):
     """When structured_output_model is provided, act() still manages stop via the stop field."""
 
-    class CustomOutput(ActorOutputBase):
+    class CustomOutput(BaseModel):
+        stop: bool = False
         message: str | None = None
 
     simulator = ActorSimulator(
@@ -336,7 +335,7 @@ def test_act_custom_model_manages_stop(sample_actor_profile):
     )
 
     mock_response = MagicMock(spec=AgentResult)
-    mock_response.structured_output = CustomOutput(reasoning="r", message="done", stop=True)
+    mock_response.structured_output = CustomOutput(message="done", stop=True)
     simulator.agent = MagicMock(return_value=mock_response)
 
     simulator.act("agent reply", structured_output_model=CustomOutput)
@@ -348,7 +347,8 @@ def test_act_custom_model_manages_stop(sample_actor_profile):
 def test_act_custom_model_max_turns(sample_actor_profile):
     """Custom model path still enforces max_turns."""
 
-    class CustomOutput(ActorOutputBase):
+    class CustomOutput(BaseModel):
+        stop: bool = False
         message: str | None = None
 
     simulator = ActorSimulator(
@@ -359,7 +359,7 @@ def test_act_custom_model_max_turns(sample_actor_profile):
     )
 
     mock_response = MagicMock(spec=AgentResult)
-    mock_response.structured_output = CustomOutput(reasoning="r", message="hi", stop=False)
+    mock_response.structured_output = CustomOutput(message="hi", stop=False)
     simulator.agent = MagicMock(return_value=mock_response)
 
     simulator.act("agent reply", structured_output_model=CustomOutput)
@@ -421,7 +421,8 @@ def test_explicit_template_overrides_default(sample_actor_profile):
 def test_init_structured_output_model_used_by_act(sample_actor_profile):
     """structured_output_model set at init is used as default for act()."""
 
-    class CustomOutput(ActorOutputBase):
+    class CustomOutput(BaseModel):
+        stop: bool = False
         message: str | None = None
         extra: str = "default"
 
@@ -433,7 +434,7 @@ def test_init_structured_output_model_used_by_act(sample_actor_profile):
     )
 
     mock_response = MagicMock(spec=AgentResult)
-    mock_response.structured_output = CustomOutput(reasoning="r", message="hi", stop=False)
+    mock_response.structured_output = CustomOutput(message="hi", stop=False)
     simulator.agent = MagicMock(return_value=mock_response)
 
     simulator.act("agent reply")
@@ -445,10 +446,12 @@ def test_init_structured_output_model_used_by_act(sample_actor_profile):
 def test_init_structured_output_model_overridden_per_call(sample_actor_profile):
     """Per-call structured_output_model overrides the init-level default."""
 
-    class InitModel(ActorOutputBase):
+    class InitModel(BaseModel):
+        stop: bool = False
         message: str | None = None
 
-    class CallModel(ActorOutputBase):
+    class CallModel(BaseModel):
+        stop: bool = False
         message: str | None = None
         priority: int = 0
 
@@ -460,7 +463,7 @@ def test_init_structured_output_model_overridden_per_call(sample_actor_profile):
     )
 
     mock_response = MagicMock(spec=AgentResult)
-    mock_response.structured_output = CallModel(reasoning="r", message="hi", stop=False)
+    mock_response.structured_output = CallModel(message="hi", stop=False)
     simulator.agent = MagicMock(return_value=mock_response)
 
     simulator.act("agent reply", structured_output_model=CallModel)
@@ -469,27 +472,27 @@ def test_init_structured_output_model_overridden_per_call(sample_actor_profile):
     assert call_kwargs["structured_output_model"] == CallModel
 
 
-def test_init_structured_output_model_validates_subclass(sample_actor_profile):
-    """Init raises TypeError if structured_output_model is not a subclass of ActorOutputBase."""
+def test_init_structured_output_model_validates_stop_field(sample_actor_profile):
+    """Init raises ValueError if structured_output_model has no stop field."""
 
-    class BadModel(BaseModel):
+    class NoStopModel(BaseModel):
         message: str | None = None
-        stop: bool = False
 
-    with pytest.raises(TypeError, match="must be a subclass of ActorOutputBase"):
+    with pytest.raises(ValueError, match="must have a 'stop' field"):
         ActorSimulator(
             actor_profile=sample_actor_profile,
             initial_query="Hello",
             system_prompt_template="Test: {actor_profile}",
-            structured_output_model=BadModel,
+            structured_output_model=NoStopModel,
         )
 
 
 def test_init_structured_output_model_validates_message_field(sample_actor_profile):
     """Init raises ValueError if structured_output_model has no message field."""
 
-    class NoMessageModel(ActorOutputBase):
+    class NoMessageModel(BaseModel):
         answer: str = ""
+        stop: bool = False
 
     with pytest.raises(ValueError, match="must have a 'message' field"):
         ActorSimulator(

@@ -1,6 +1,8 @@
 import logging
 import random
+from typing import Any, cast
 
+from pydantic import BaseModel
 from strands import Agent
 from strands.agent.agent_result import AgentResult
 from strands.types.content import Message
@@ -10,7 +12,7 @@ from strands_evals.simulation.profiles.actor_profile import DEFAULT_USER_PROFILE
 from strands_evals.simulation.prompt_templates.actor_profile_extraction import ACTOR_PROFILE_PROMPT_TEMPLATE
 from strands_evals.simulation.prompt_templates.actor_system_prompt import DEFAULT_USER_SIMULATOR_PROMPT_TEMPLATE
 from strands_evals.simulation.tools.goal_completion import get_conversation_goal_completion
-from strands_evals.types.simulation import ActorOutputBase, ActorProfile, ActorResponse
+from strands_evals.types.simulation import ActorProfile, ActorResponse
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +129,7 @@ class ActorSimulator:
         model: str | None = None,
         max_turns: int = 10,
         *,
-        structured_output_model: type[ActorOutputBase] | None = None,
+        structured_output_model: type[BaseModel] | None = None,
     ):
         """Initialize an ActorSimulator with profile and goal.
 
@@ -155,16 +157,19 @@ class ActorSimulator:
             model: Model identifier for the underlying agent. Uses Strands default if None.
             max_turns: Maximum number of conversation turns before stopping (default: 10).
             structured_output_model: Optional Pydantic model to use for all `act()` calls.
-                Must subclass `ActorOutputBase` and include a `message` field.
+                Must have `message` and `stop` fields.
                 When set, `act()` uses this model by default instead of `ActorResponse`.
                 Can still be overridden per-call via `act(structured_output_model=...)`.
 
         Example:
             ```python
             from strands_evals.simulation import ActorSimulator
-            from strands_evals.types.simulation import ActorOutputBase, ActorProfile
+            from pydantic import BaseModel
+            from strands_evals.types.simulation import ActorProfile
 
-            class AgentInput(ActorOutputBase):
+            class SimulatorResult(BaseModel):
+                reasoning: str = ""
+                stop: bool = False
                 message: str | None = None
                 urgency: str = "normal"
 
@@ -177,13 +182,13 @@ class ActorSimulator:
             simulator = ActorSimulator(
                 actor_profile=profile,
                 initial_query="Our service is experiencing high memory usage.",
-                structured_output_model=AgentInput,
+                structured_output_model=SimulatorResult,
                 max_turns=15,
             )
 
-            # act() uses AgentInput automatically
+            # act() uses SimulatorResult automatically
             result = simulator.act(str(agent_response))
-            result.structured_output  # AgentInput instance
+            result.structured_output  # SimulatorResult instance
             ```
         """
         self.actor_profile = actor_profile
@@ -193,7 +198,7 @@ class ActorSimulator:
         self.stop = False
         self._turn_count = 0
         self._max_turns = max_turns
-        self._structured_output_model = structured_output_model
+        self._structured_output_model = structured_output_model or ActorResponse
 
         if structured_output_model is not None:
             self._validate_output_model(structured_output_model)
@@ -230,22 +235,18 @@ class ActorSimulator:
         self.conversation_history.append(initial_query_message)
 
     @staticmethod
-    def _validate_output_model(model: type[ActorOutputBase]) -> None:
-        """Validate that a structured output model is compatible with the simulator."""
-        if not issubclass(model, ActorOutputBase):
-            raise TypeError(
-                f"structured_output_model must be a subclass of ActorOutputBase, got {model.__name__}."
-            )
+    def _validate_output_model(model: type) -> None:
+        """Validate that a structured output model has the required fields for the simulator."""
         if "message" not in model.model_fields:
-            raise ValueError(
-                f"structured_output_model {model.__name__} must have a 'message' field."
-            )
+            raise ValueError(f"structured_output_model {model.__name__} must have a 'message' field.")
+        if "stop" not in model.model_fields:
+            raise ValueError(f"structured_output_model {model.__name__} must have a 'stop' field.")
 
     def act(
         self,
         agent_message: str,
         *,
-        structured_output_model: type[ActorOutputBase] | None = None,
+        structured_output_model: type[BaseModel] | None = None,
     ) -> AgentResult:
         """Generate the next actor message in the conversation.
 
@@ -254,15 +255,13 @@ class ActorSimulator:
         `AgentResult` whose `structured_output` is an `ActorResponse` (or the
         caller-provided `structured_output_model`).
 
-        The provided model must subclass `ActorOutputBase` and have a `message`
-        field. A `TypeError` is raised if not a subclass, and `ValueError` if
-        `message` is missing.
+        The provided model must have `message` and `stop` fields.
+        A `ValueError` is raised if either is missing.
 
         Args:
             agent_message: The agent's response to react to.
             structured_output_model: Optional Pydantic model to use instead of
-                `ActorResponse`. Must subclass `ActorOutputBase` and include a
-                `message` field.
+                `ActorResponse`. Must have `message` and `stop` fields.
 
         Returns:
             AgentResult with `structured_output` set to either `ActorResponse`
@@ -280,13 +279,13 @@ class ActorSimulator:
             my_output = result.structured_output  # MySchema instance
             ```
         """
-        model = structured_output_model or self._structured_output_model or ActorResponse
+        model = structured_output_model or self._structured_output_model
         self._validate_output_model(model)
 
         response = self.agent(agent_message.strip(), structured_output_model=model)
         self._turn_count += 1
 
-        result = response.structured_output
+        result = cast(Any, response.structured_output)
 
         if result.stop:
             self.stop = True
