@@ -126,6 +126,8 @@ class ActorSimulator:
         tools: list | None = None,
         model: str | None = None,
         max_turns: int = 10,
+        *,
+        structured_output_model: type[ActorOutputBase] | None = None,
     ):
         """Initialize an ActorSimulator with profile and goal.
 
@@ -152,11 +154,19 @@ class ActorSimulator:
             tools: Additional tools available to the actor. Defaults to goal completion tool only.
             model: Model identifier for the underlying agent. Uses Strands default if None.
             max_turns: Maximum number of conversation turns before stopping (default: 10).
+            structured_output_model: Optional Pydantic model to use for all `act()` calls.
+                Must subclass `ActorOutputBase` and include a `message` field.
+                When set, `act()` uses this model by default instead of `ActorResponse`.
+                Can still be overridden per-call via `act(structured_output_model=...)`.
 
         Example:
             ```python
             from strands_evals.simulation import ActorSimulator
-            from strands_evals.types.simulation import ActorProfile
+            from strands_evals.types.simulation import ActorOutputBase, ActorProfile
+
+            class AgentInput(ActorOutputBase):
+                message: str | None = None
+                urgency: str = "normal"
 
             profile = ActorProfile(
                 traits={"expertise_level": "expert", "communication_style": "technical"},
@@ -167,9 +177,13 @@ class ActorSimulator:
             simulator = ActorSimulator(
                 actor_profile=profile,
                 initial_query="Our service is experiencing high memory usage.",
-                system_prompt_template="You are simulating: {actor_profile}",
-                max_turns=15
+                structured_output_model=AgentInput,
+                max_turns=15,
             )
+
+            # act() uses AgentInput automatically
+            result = simulator.act(str(agent_response))
+            result.structured_output  # AgentInput instance
             ```
         """
         self.actor_profile = actor_profile
@@ -179,6 +193,17 @@ class ActorSimulator:
         self.stop = False
         self._turn_count = 0
         self._max_turns = max_turns
+        self._structured_output_model = structured_output_model
+
+        if structured_output_model is not None:
+            if not issubclass(structured_output_model, ActorOutputBase):
+                raise TypeError(
+                    f"structured_output_model must be a subclass of ActorOutputBase, got {structured_output_model.__name__}."
+                )
+            if "message" not in structured_output_model.model_fields:
+                raise ValueError(
+                    f"structured_output_model {structured_output_model.__name__} must have a 'message' field."
+                )
 
         if system_prompt_template is None:
             system_prompt_template = DEFAULT_USER_SIMULATOR_PROMPT_TEMPLATE
@@ -250,7 +275,7 @@ class ActorSimulator:
             my_output = result.structured_output  # MySchema instance
             ```
         """
-        model = structured_output_model or ActorResponse
+        model = structured_output_model or self._structured_output_model or ActorResponse
 
         if not issubclass(model, ActorOutputBase):
             raise TypeError(f"structured_output_model must be a subclass of ActorOutputBase, got {model.__name__}.")

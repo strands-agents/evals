@@ -416,3 +416,85 @@ def test_explicit_template_overrides_default(sample_actor_profile):
     )
 
     assert simulator.agent.system_prompt == custom.format(actor_profile=sample_actor_profile.model_dump())
+
+
+def test_init_structured_output_model_used_by_act(sample_actor_profile):
+    """structured_output_model set at init is used as default for act()."""
+
+    class CustomOutput(ActorOutputBase):
+        message: str | None = None
+        extra: str = "default"
+
+    simulator = ActorSimulator(
+        actor_profile=sample_actor_profile,
+        initial_query="Hello",
+        system_prompt_template="Test: {actor_profile}",
+        structured_output_model=CustomOutput,
+    )
+
+    mock_response = MagicMock(spec=AgentResult)
+    mock_response.structured_output = CustomOutput(reasoning="r", message="hi", stop=False)
+    simulator.agent = MagicMock(return_value=mock_response)
+
+    simulator.act("agent reply")
+
+    call_kwargs = simulator.agent.call_args[1]
+    assert call_kwargs["structured_output_model"] == CustomOutput
+
+
+def test_init_structured_output_model_overridden_per_call(sample_actor_profile):
+    """Per-call structured_output_model overrides the init-level default."""
+
+    class InitModel(ActorOutputBase):
+        message: str | None = None
+
+    class CallModel(ActorOutputBase):
+        message: str | None = None
+        priority: int = 0
+
+    simulator = ActorSimulator(
+        actor_profile=sample_actor_profile,
+        initial_query="Hello",
+        system_prompt_template="Test: {actor_profile}",
+        structured_output_model=InitModel,
+    )
+
+    mock_response = MagicMock(spec=AgentResult)
+    mock_response.structured_output = CallModel(reasoning="r", message="hi", stop=False)
+    simulator.agent = MagicMock(return_value=mock_response)
+
+    simulator.act("agent reply", structured_output_model=CallModel)
+
+    call_kwargs = simulator.agent.call_args[1]
+    assert call_kwargs["structured_output_model"] == CallModel
+
+
+def test_init_structured_output_model_validates_subclass(sample_actor_profile):
+    """Init raises TypeError if structured_output_model is not a subclass of ActorOutputBase."""
+
+    class BadModel(BaseModel):
+        message: str | None = None
+        stop: bool = False
+
+    with pytest.raises(TypeError, match="must be a subclass of ActorOutputBase"):
+        ActorSimulator(
+            actor_profile=sample_actor_profile,
+            initial_query="Hello",
+            system_prompt_template="Test: {actor_profile}",
+            structured_output_model=BadModel,
+        )
+
+
+def test_init_structured_output_model_validates_message_field(sample_actor_profile):
+    """Init raises ValueError if structured_output_model has no message field."""
+
+    class NoMessageModel(ActorOutputBase):
+        answer: str = ""
+
+    with pytest.raises(ValueError, match="must have a 'message' field"):
+        ActorSimulator(
+            actor_profile=sample_actor_profile,
+            initial_query="Hello",
+            system_prompt_template="Test: {actor_profile}",
+            structured_output_model=NoMessageModel,
+        )
