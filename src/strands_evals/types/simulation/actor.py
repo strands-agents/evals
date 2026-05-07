@@ -4,8 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ActorProfile(BaseModel):
-    """
-    Profile for actor simulation.
+    """Profile for actor simulation.
 
     Attributes:
         traits: Dictionary of actor characteristics and attributes.
@@ -22,68 +21,50 @@ class ActorProfile(BaseModel):
     )
 
 
-class ActorResponse(BaseModel):
-    """
-    Structured response schema used by `ActorSimulator.act`.
+class ActorOutputBase(BaseModel):
+    """Base class for actor simulator structured output models.
 
-    The LLM fills in `reasoning` and `message`. The simulator inspects the
-    returned `message` for the `<stop/>` sentinel to decide whether to
-    continue the conversation.
+    Any model passed as `structured_output_model` to `ActorSimulator.act()`
+    must subclass this. The simulator reads `stop` and `reasoning` from the
+    result to manage conversation state.
+
+    Subclasses must also define a `message` field (of any type) — this is
+    validated at runtime by the simulator rather than enforced here, so
+    subclasses are free to type `message` however they need.
 
     Attributes:
         reasoning: Internal reasoning process for the response.
-        message: The actual message content from the actor.
+        stop: `True` when the actor signals the conversation should end.
     """
-
-    reasoning: str = Field(..., description="Reasoning for the actor's response")
-    message: str = Field(..., description="Message from the actor")
-
-
-class ActorStructuredResponse(BaseModel):
-    """
-    Typed return value from `ActorSimulator.act_structured`.
-
-    Used in two roles.
-
-    As the LLM structured-output schema: `reasoning`, `stop`, and `message`
-    are produced by the LLM via Strands' tool-use contract. `stop_reason` is
-    not part of the schema. The simulator fills it in after the call, but it
-    is kept on this model so the public return type stays a single class.
-
-    When `ActorSimulator` is given an `input_type`, a dynamic subclass of
-    this model is built that narrows `message` to `input_type | None`, so the
-    LLM's tool-use schema enforces the caller's agent-input shape.
-
-    As the caller-facing result: callers of `act_structured()` receive an
-    instance of this class (or its dynamic subclass) with all four fields
-    populated.
-
-    Attributes:
-        message: The actor's next message. An `input_type` instance when the
-            simulator was constructed with `input_type`. A plain string or
-            `None` otherwise. `None` is expected when `stop=True`.
-        reasoning: The actor's internal reasoning for this response.
-        stop: `True` when the actor signals the conversation should end
-            (either the goal was completed or `max_turns` was reached).
-        stop_reason: Why the conversation ended. One of `"goal_completed"`,
-            `"max_turns"`, or `None` while the conversation is still ongoing.
-            Populated by the simulator after the LLM call; not part of the
-            LLM-facing schema semantics even though the field exists on the
-            model.
-    """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     reasoning: str = Field(..., description="Reasoning for the actor's response")
     stop: bool = Field(
         False,
-        description=("Set to true when the conversation goal is met or the conversation should end."),
+        description="Set to true when the conversation goal is met or the conversation should end.",
     )
-    message: Any = Field(
+
+
+class ActorResponse(ActorOutputBase):
+    """Default structured response from the actor simulator.
+
+    Used as the LLM structured-output schema for `ActorSimulator.act` when no
+    custom `structured_output_model` is provided. The LLM fills `reasoning`,
+    `stop`, and `message`. The simulator fills `stop_reason` after the LLM call.
+
+    Attributes:
+        message: The actual message content from the actor. `None` when `stop=True`.
+        stop_reason: Why the conversation ended. One of `"goal_completed"`,
+            `"max_turns"`, or `None` while ongoing. Populated by the simulator
+            after the LLM call.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    message: str | None = Field(
         None,
-        description=("The actor's next message to the agent. Provide when stop=false; set to null when stop=true."),
+        description="The actor's next message to the agent. Provide when stop=false; set to null when stop=true.",
     )
     stop_reason: str | None = Field(
         None,
-        description=('Populated by the simulator after the call. One of "goal_completed", "max_turns", or None.'),
+        description='Populated by the simulator after the call. One of "goal_completed", "max_turns", or None.',
     )

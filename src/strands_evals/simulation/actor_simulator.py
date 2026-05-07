@@ -1,28 +1,22 @@
 import logging
 import random
 
-from pydantic import BaseModel, Field, create_model
 from strands import Agent
 from strands.agent.agent_result import AgentResult
 from strands.types.content import Message
-from typing_extensions import cast
 
 from strands_evals.case import Case
 from strands_evals.simulation.profiles.actor_profile import DEFAULT_USER_PROFILE_SCHEMA
 from strands_evals.simulation.prompt_templates.actor_profile_extraction import ACTOR_PROFILE_PROMPT_TEMPLATE
-from strands_evals.simulation.prompt_templates.actor_system_prompt import (
-    DEFAULT_USER_SIMULATOR_PROMPT_TEMPLATE,
-    STRUCTURED_USER_SIMULATOR_PROMPT_TEMPLATE,
-)
+from strands_evals.simulation.prompt_templates.actor_system_prompt import DEFAULT_USER_SIMULATOR_PROMPT_TEMPLATE
 from strands_evals.simulation.tools.goal_completion import get_conversation_goal_completion
-from strands_evals.types.simulation import ActorProfile, ActorResponse, ActorStructuredResponse
+from strands_evals.types.simulation import ActorOutputBase, ActorProfile, ActorResponse
 
 logger = logging.getLogger(__name__)
 
 
 class ActorSimulator:
-    """
-    Simulates an actor in multi-turn conversations for agent evaluation.
+    """Simulates an actor in multi-turn conversations for agent evaluation.
 
     ActorSimulator wraps a Strands Agent configured to behave as a specific actor
     (typically a user) in conversation scenarios. It maintains conversation history,
@@ -53,8 +47,7 @@ class ActorSimulator:
         model: str | None = None,
         max_turns: int = 10,
     ) -> "ActorSimulator":
-        """
-        Create an ActorSimulator configured as a user simulator from a test case.
+        """Create an ActorSimulator configured as a user simulator from a test case.
 
         Generates a realistic user profile and goal from case.input and optionally
         case.metadata["task_description"], then configures the simulator with
@@ -75,22 +68,14 @@ class ActorSimulator:
             from strands_evals import Case, ActorSimulator
             from strands import Agent
 
-            # Create test case
             case = Case(
                 input="I need to book a flight to Paris",
                 metadata={"task_description": "Flight booking confirmed"}
             )
 
-            # Create user simulator
-            user_sim = ActorSimulator.from_case_for_user_simulator(
-                case=case,
-                max_turns=5
-            )
-
-            # Create target agent to evaluate
+            user_sim = ActorSimulator.from_case_for_user_simulator(case=case, max_turns=5)
             agent = Agent(system_prompt="You are a travel assistant.")
 
-            # Run conversation
             user_message = case.input
             while user_sim.has_next():
                 agent_response = agent(user_message)
@@ -99,9 +84,6 @@ class ActorSimulator:
             ```
         """
         actor_profile = cls._generate_profile_from_case(case)
-
-        if system_prompt_template is None:
-            system_prompt_template = DEFAULT_USER_SIMULATOR_PROMPT_TEMPLATE
 
         return cls(
             actor_profile=actor_profile,
@@ -114,10 +96,8 @@ class ActorSimulator:
 
     @staticmethod
     def _generate_profile_from_case(case: Case) -> ActorProfile:
-        """
-        Generate user profile from case.
+        """Generate user profile from case.
 
-        Private helper for from_case_for_user_simulator factory method.
         Uses case.input and optionally case.metadata["task_description"] if present.
 
         Args:
@@ -146,11 +126,8 @@ class ActorSimulator:
         tools: list | None = None,
         model: str | None = None,
         max_turns: int = 10,
-        *,
-        input_type: type[BaseModel] | None = None,
     ):
-        """
-        Initialize an ActorSimulator with profile and goal.
+        """Initialize an ActorSimulator with profile and goal.
 
         Use this constructor when you have a pre-defined ActorProfile. For automatic
         profile generation from test cases, use from_case_for_user_simulator() instead.
@@ -166,45 +143,27 @@ class ActorSimulator:
                 - An already-rendered system prompt string with no
                   `{actor_profile}` placeholder, which is used verbatim.
 
-                When `None` (the default), the simulator picks one of two
-                built-in defaults. If `input_type` is set, uses
-                `STRUCTURED_USER_SIMULATOR_PROMPT_TEMPLATE`: the actor signals
-                end-of-conversation by setting `stop=true` on the structured
-                response. Otherwise uses `DEFAULT_USER_SIMULATOR_PROMPT_TEMPLATE`:
-                the actor signals end-of-conversation by emitting the
-                `<stop/>` sentinel in the message text, which `has_next`
-                inspects.
+                When `None` (the default), uses
+                `DEFAULT_USER_SIMULATOR_PROMPT_TEMPLATE` which instructs the LLM
+                to set `stop=true` on the structured response when the
+                conversation goal is met.
 
-                Pass an explicit template to override the auto-selection.
+                Pass an explicit template to override.
             tools: Additional tools available to the actor. Defaults to goal completion tool only.
             model: Model identifier for the underlying agent. Uses Strands default if None.
             max_turns: Maximum number of conversation turns before stopping (default: 10).
-            input_type: Pydantic model class describing the agent-under-test's expected
-                input payload. Only affects `act_structured`. The LLM's
-                structured-output schema is narrowed so `message` is produced as an
-                `input_type` instance. `act` is unaffected and always uses the
-                `ActorResponse` schema.
-
-                Must describe what the agent under test accepts, not a
-                simulator type. Passing `ActorStructuredResponse` (or a subclass) raises
-                `ValueError` at construction time.
 
         Example:
             ```python
             from strands_evals.simulation import ActorSimulator
             from strands_evals.types.simulation import ActorProfile
 
-            # Define custom actor profile
             profile = ActorProfile(
-                traits={
-                    "expertise_level": "expert",
-                    "communication_style": "technical"
-                },
+                traits={"expertise_level": "expert", "communication_style": "technical"},
                 context="A software engineer debugging a production issue.",
                 actor_goal="Identify and resolve the memory leak."
             )
 
-            # Create simulator with custom profile
             simulator = ActorSimulator(
                 actor_profile=profile,
                 initial_query="Our service is experiencing high memory usage.",
@@ -217,38 +176,24 @@ class ActorSimulator:
         self.initial_query = initial_query
         self.conversation_history: list[Message] = []
         self.model_id = model
+        self.stop = False
         self._turn_count = 0
-        self._last_message = ""
         self._max_turns = max_turns
-        self._input_type = input_type
-        self._structured_model = self._build_structured_model(input_type)
 
-        # Auto-select the default template when the caller didn't provide one.
-        # A set `input_type` signals the actor produces structured messages; the
-        # structured template instructs the LLM to end the conversation via
-        # `stop=true` on the structured response, matching `act_structured`'s
-        # read path. Without `input_type`, the default template uses the
-        # `<stop/>` sentinel that `has_next` inspects.
         if system_prompt_template is None:
-            system_prompt_template = (
-                STRUCTURED_USER_SIMULATOR_PROMPT_TEMPLATE
-                if input_type is not None
-                else DEFAULT_USER_SIMULATOR_PROMPT_TEMPLATE
-            )
+            system_prompt_template = DEFAULT_USER_SIMULATOR_PROMPT_TEMPLATE
 
         if "{actor_profile}" in system_prompt_template:
             system_prompt = system_prompt_template.format(actor_profile=actor_profile.model_dump())
         else:
-            system_prompt = system_prompt_template  # already rendered
+            system_prompt = system_prompt_template
 
-        # Combine tools
         all_tools = [get_conversation_goal_completion]
         if tools:
             all_tools.extend(tools)
 
         self._initialize_conversation()
 
-        # Create agent
         self.agent = Agent(
             system_prompt=system_prompt,
             messages=self.conversation_history,
@@ -257,55 +202,8 @@ class ActorSimulator:
             callback_handler=None,
         )
 
-    def _build_structured_model(self, input_type: type[BaseModel] | None) -> type[ActorStructuredResponse]:
-        """Return the `ActorStructuredResponse` subclass used by `act_structured`.
-
-        When `input_type` is `None`, returns `ActorStructuredResponse` itself so
-        `message` stays typed as `Any` and the LLM is free to produce a string.
-        When `input_type` is set, returns a dynamic subclass that narrows
-        `message` to `input_type | None` so the LLM's tool-use schema enforces
-        the caller's agent-input shape.
-
-        `input_type` is rejected if it is `ActorStructuredResponse` or a subclass of
-        it. That's the one nesting case where the outer simulator envelope
-        (`reasoning`, `stop`, `message`) is duplicated inside the payload and
-        the LLM's schema becomes ambiguous.
-        """
-        if input_type is None:
-            return ActorStructuredResponse
-
-        if isinstance(input_type, type) and issubclass(input_type, ActorStructuredResponse):
-            raise ValueError(
-                "input_type must describe the agent-under-test's input schema, not "
-                "ActorStructuredResponse (or a subclass). ActorStructuredResponse is the simulator's "
-                "return envelope and cannot be used as an agent payload."
-            )
-
-        return create_model(
-            "ActorStructuredResponse",
-            __base__=ActorStructuredResponse,
-            message=(
-                input_type | None,
-                Field(
-                    None,
-                    description=(
-                        f"Structured message matching the agent's input schema "
-                        f"({input_type.__name__}). Provide when stop=false. Set "
-                        "to null when stop=true."
-                    ),
-                ),
-            ),
-        )
-
     def _initialize_conversation(self):
-        """
-        Initialize the conversation history with a greeting and initial query.
-
-        Sets up the conversation with a random greeting from the assistant followed
-        by the actor's initial query. This establishes the conversation context.
-
-        Note: This is a private method called during initialization.
-        """
+        """Initialize the conversation history with a greeting and initial query."""
         selected_greeting = random.choice(self.INITIAL_GREETINGS)
         greeting_message = {"role": "user", "content": [{"text": selected_greeting}]}
         self.conversation_history.append(greeting_message)
@@ -313,113 +211,75 @@ class ActorSimulator:
         initial_query_message = {"role": "assistant", "content": [{"text": self.initial_query.strip()}]}
         self.conversation_history.append(initial_query_message)
 
-    def act(self, agent_message: str) -> AgentResult:
-        """
-        Generate the next actor message in the conversation.
+    def act(
+        self,
+        agent_message: str,
+        *,
+        structured_output_model: type[ActorOutputBase] | None = None,
+    ) -> AgentResult:
+        """Generate the next actor message in the conversation.
 
         Processes the agent's message and generates a contextually appropriate
-        response from the actor's perspective, maintaining consistency with the actor's
-        profile and goal. The response includes reasoning about the actor's thought
-        process and the actual message to send.
+        response from the actor's perspective. The response is returned as an
+        `AgentResult` whose `structured_output` is an `ActorResponse` (or the
+        caller-provided `structured_output_model`).
 
-        Uses `ActorResponse` as the structured-output schema and returns the
-        raw Strands `AgentResult`. End-of-conversation is signalled by the
-        `<stop/>` sentinel embedded in the message text and inspected by
-        `has_next`. The `input_type` kwarg on `__init__` does not affect this
-        method. Use `act_structured` when typed messages or a structured
-        `stop` field are needed.
+        The provided model must subclass `ActorOutputBase` and have a `message`
+        field. A `TypeError` is raised if not a subclass, and `ValueError` if
+        `message` is missing.
 
         Args:
-            agent_message: The agent's response to react to (required).
+            agent_message: The agent's response to react to.
+            structured_output_model: Optional Pydantic model to use instead of
+                `ActorResponse`. Must subclass `ActorOutputBase` and include a
+                `message` field.
 
         Returns:
-            AgentResult containing the actor's structured response with:
-                - structured_output.reasoning: Actor's internal reasoning
-                - structured_output.message: Actor's response message (str)
+            AgentResult with `structured_output` set to either `ActorResponse`
+            or the caller-provided model instance.
 
         Example:
             ```python
-            # Agent responds to user
-            agent_response = agent("I need help booking a flight")
+            # Default usage
+            result = simulator.act(str(agent_response))
+            response = result.structured_output  # ActorResponse
+            print(response.message)
 
-            # User simulator generates next message
-            user_result = user_sim.act(str(agent_response))
-
-            # Access the response
-            print(user_result.structured_output.reasoning)  # Why the actor responded this way
-            print(user_result.structured_output.message)    # The actual message
-
-            # Continue conversation
-            next_message = str(user_result.structured_output.message)
+            # Custom structured output
+            result = simulator.act(str(agent_response), structured_output_model=MySchema)
+            my_output = result.structured_output  # MySchema instance
             ```
         """
-        response = self.agent(agent_message.strip(), structured_output_model=ActorResponse)
+        model = structured_output_model or ActorResponse
+
+        if not issubclass(model, ActorOutputBase):
+            raise TypeError(f"structured_output_model must be a subclass of ActorOutputBase, got {model.__name__}.")
+
+        if "message" not in model.model_fields:
+            raise ValueError(f"structured_output_model {model.__name__} must have a 'message' field.")
+
+        response = self.agent(agent_message.strip(), structured_output_model=model)
         self._turn_count += 1
-        self._last_message = str(cast(ActorResponse, response.structured_output).message)
+
+        result = response.structured_output
+
+        if result.stop:
+            self.stop = True
+            if hasattr(result, "stop_reason"):
+                result.stop_reason = "goal_completed"
+        elif self._turn_count >= self._max_turns:
+            result.stop = True
+            self.stop = True
+            if hasattr(result, "stop_reason"):
+                result.stop_reason = "max_turns"
+
         return response
 
-    def act_structured(self, agent_message: str) -> ActorStructuredResponse:
-        """
-        Generate the next actor message and return a typed `ActorStructuredResponse`.
-
-        The underlying Strands call uses a `ActorStructuredResponse` subclass as its
-        structured-output schema (narrowing `message` to `input_type` when
-        configured). The LLM produces `reasoning`, `stop`, and `message`
-        directly; the simulator populates `stop_reason` after the call based on
-        whether the actor signalled stop itself or the `max_turns` backstop
-        tripped.
-
-        This method also keeps `_last_message` in sync with the returned
-        message so `has_next` works alongside `act_structured` in the same
-        conversation.
-
-        Args:
-            agent_message: The agent's response to react to (required).
-
-        Returns:
-            A `ActorStructuredResponse` with `message`, `reasoning`, `stop`, and
-            `stop_reason` populated.
-
-        Example:
-            ```python
-            result = user_sim.act_structured(str(agent_response))
-            if result.stop:
-                break
-            next_message = result.message
-            ```
-        """
-        response = self.agent(agent_message.strip(), structured_output_model=self._structured_model)
-        self._turn_count += 1
-
-        result = cast(ActorStructuredResponse, response.structured_output)
-
-        hit_max_turns = self._turn_count >= self._max_turns
-        if result.stop:
-            result.stop_reason = "goal_completed"
-        elif hit_max_turns:
-            result.stop = True
-            result.stop_reason = "max_turns"
-        elif result.message is None and self._input_type is not None:
-            # Guard: structured path, actor signalled continue but produced no
-            # message. Treat as implicit goal_completed to avoid feeding None
-            # back to the agent under test.
-            logger.warning(
-                "Actor produced null message when stop=False; treating as goal_completed (input_type=%s)",
-                self._input_type.__name__,
-            )
-            result.stop = True
-            result.stop_reason = "goal_completed"
-
-        self._last_message = str(result.message) if result.message is not None else ""
-        return result
-
     def has_next(self) -> bool:
-        """
-        Check if the conversation should continue.
+        """Check if the conversation should continue.
 
-        Returns False if the stop token (<stop/>) is present in the last message or if
-        the maximum number of turns has been reached. Use this in a loop to control
-        multi-turn conversations.
+        Returns False if the actor signalled stop or if the maximum number of
+        turns has been reached.
 
         Returns:
             True if the conversation should continue, False otherwise.
@@ -427,18 +287,10 @@ class ActorSimulator:
         Example:
             ```python
             user_message = case.input
-
-            # Continue conversation until completion
             while user_sim.has_next():
                 agent_response = agent(user_message)
                 user_result = user_sim.act(str(agent_response))
                 user_message = str(user_result.structured_output.message)
-
-            # Conversation ended either by:
-            # - Actor including <stop/> token in message
-            # - Reaching max_turns limit
             ```
         """
-        if self._turn_count >= self._max_turns:
-            return False
-        return "<stop/>" not in self._last_message
+        return not self.stop

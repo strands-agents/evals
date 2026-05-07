@@ -1,9 +1,9 @@
 """Data models for actor simulation."""
 
-from .actor import ActorProfile, ActorResponse, ActorStructuredResponse
+from .actor import ActorOutputBase, ActorProfile, ActorResponse
 
 __all__ = [
+    "ActorOutputBase",
     "ActorProfile",
     "ActorResponse",
-    "ActorStructuredResponse",
 ]

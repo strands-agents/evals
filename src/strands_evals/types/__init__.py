@@ -17,6 +17,7 @@ __all__ = [
     "TaskOutput",
     "EvaluationData",
     "EvaluationOutput",
+    "ActorOutputBase",
     "ActorProfile",
     "ActorResponse",
     "InputT",
