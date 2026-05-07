@@ -196,14 +196,7 @@ class ActorSimulator:
         self._structured_output_model = structured_output_model
 
         if structured_output_model is not None:
-            if not issubclass(structured_output_model, ActorOutputBase):
-                raise TypeError(
-                    f"structured_output_model must be a subclass of ActorOutputBase, got {structured_output_model.__name__}."
-                )
-            if "message" not in structured_output_model.model_fields:
-                raise ValueError(
-                    f"structured_output_model {structured_output_model.__name__} must have a 'message' field."
-                )
+            self._validate_output_model(structured_output_model)
 
         if system_prompt_template is None:
             system_prompt_template = DEFAULT_USER_SIMULATOR_PROMPT_TEMPLATE
@@ -235,6 +228,18 @@ class ActorSimulator:
 
         initial_query_message = {"role": "assistant", "content": [{"text": self.initial_query.strip()}]}
         self.conversation_history.append(initial_query_message)
+
+    @staticmethod
+    def _validate_output_model(model: type[ActorOutputBase]) -> None:
+        """Validate that a structured output model is compatible with the simulator."""
+        if not issubclass(model, ActorOutputBase):
+            raise TypeError(
+                f"structured_output_model must be a subclass of ActorOutputBase, got {model.__name__}."
+            )
+        if "message" not in model.model_fields:
+            raise ValueError(
+                f"structured_output_model {model.__name__} must have a 'message' field."
+            )
 
     def act(
         self,
@@ -276,12 +281,7 @@ class ActorSimulator:
             ```
         """
         model = structured_output_model or self._structured_output_model or ActorResponse
-
-        if not issubclass(model, ActorOutputBase):
-            raise TypeError(f"structured_output_model must be a subclass of ActorOutputBase, got {model.__name__}.")
-
-        if "message" not in model.model_fields:
-            raise ValueError(f"structured_output_model {model.__name__} must have a 'message' field.")
+        self._validate_output_model(model)
 
         response = self.agent(agent_message.strip(), structured_output_model=model)
         self._turn_count += 1
