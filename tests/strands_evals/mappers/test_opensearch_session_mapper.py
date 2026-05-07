@@ -57,10 +57,15 @@ class TestSpanConversion:
 
     def test_chat_span_without_messages_is_skipped(self):
         """chat spans with no input/output messages produce no InferenceSpan."""
-        records = [SpanRecord(
-            trace_id="t1", span_id="s1", operation_name="chat",
-            start_time="2026-01-01T00:00:00Z", end_time="2026-01-01T00:00:01Z",
-        )]
+        records = [
+            SpanRecord(
+                trace_id="t1",
+                span_id="s1",
+                operation_name="chat",
+                start_time="2026-01-01T00:00:00Z",
+                end_time="2026-01-01T00:00:01Z",
+            )
+        ]
         session = self.mapper.map_to_session(records, "sess-1")
 
         # Trace with no typed spans is filtered out entirely
@@ -68,22 +73,32 @@ class TestSpanConversion:
 
     def test_invoke_agent_without_messages_is_skipped(self):
         """invoke_agent spans with no prompt or response produce no span."""
-        records = [SpanRecord(
-            trace_id="t1", span_id="s1", operation_name="invoke_agent",
-            start_time="2026-01-01T00:00:00Z", end_time="2026-01-01T00:00:01Z",
-        )]
+        records = [
+            SpanRecord(
+                trace_id="t1",
+                span_id="s1",
+                operation_name="invoke_agent",
+                start_time="2026-01-01T00:00:00Z",
+                end_time="2026-01-01T00:00:01Z",
+            )
+        ]
         session = self.mapper.map_to_session(records, "sess-1")
 
         assert len(session.traces) == 0
 
     def test_chat_span_with_tool_role_message(self):
         """Tool-role messages in chat spans map to UserMessage with ToolResultContent."""
-        records = [SpanRecord(
-            trace_id="t1", span_id="s1", operation_name="chat",
-            start_time="2026-01-01T00:00:00Z", end_time="2026-01-01T00:00:01Z",
-            input_messages=[Message(role="tool", content="tool output here")],
-            output_messages=[Message(role="assistant", content="Got it")],
-        )]
+        records = [
+            SpanRecord(
+                trace_id="t1",
+                span_id="s1",
+                operation_name="chat",
+                start_time="2026-01-01T00:00:00Z",
+                end_time="2026-01-01T00:00:01Z",
+                input_messages=[Message(role="tool", content="tool output here")],
+                output_messages=[Message(role="assistant", content="Got it")],
+            )
+        ]
         session = self.mapper.map_to_session(records, "sess-1")
 
         span = session.traces[0].spans[0]
@@ -149,8 +164,10 @@ class TestSingleAgentTrace:
         """A single invoke_agent span with direct child tool spans."""
         records = [
             make_agent_span(
-                span_id="agent", parent_span_id="",
-                user_prompt="What's the weather?", agent_response="It's sunny in Paris.",
+                span_id="agent",
+                parent_span_id="",
+                user_prompt="What's the weather?",
+                agent_response="It's sunny in Paris.",
             ),
             make_tool_span(span_id="t1", parent_span_id="agent", tool_name="get_weather"),
             make_tool_span(span_id="t2", parent_span_id="agent", tool_name="get_forecast"),
@@ -195,12 +212,17 @@ class TestInferenceSpanMapping:
 
     def test_chat_with_only_assistant_output(self):
         """Chat span with no user input, only assistant output."""
-        records = [SpanRecord(
-            trace_id="t1", span_id="s1", operation_name="chat",
-            start_time="2026-01-01T00:00:00Z", end_time="2026-01-01T00:00:01Z",
-            input_messages=[],
-            output_messages=[Message(role="assistant", content="Thinking out loud")],
-        )]
+        records = [
+            SpanRecord(
+                trace_id="t1",
+                span_id="s1",
+                operation_name="chat",
+                start_time="2026-01-01T00:00:00Z",
+                end_time="2026-01-01T00:00:01Z",
+                input_messages=[],
+                output_messages=[Message(role="assistant", content="Thinking out loud")],
+            )
+        ]
         session = self.mapper.map_to_session(records, "sess-1")
 
         span = session.traces[0].spans[0]
@@ -209,18 +231,23 @@ class TestInferenceSpanMapping:
 
     def test_chat_with_multiple_turns(self):
         """Multiple user/assistant messages in a single chat span."""
-        records = [SpanRecord(
-            trace_id="t1", span_id="s1", operation_name="chat",
-            start_time="2026-01-01T00:00:00Z", end_time="2026-01-01T00:00:01Z",
-            input_messages=[
-                Message(role="user", content="First question"),
-                Message(role="user", content="Follow up"),
-            ],
-            output_messages=[
-                Message(role="assistant", content="First answer"),
-                Message(role="assistant", content="Second answer"),
-            ],
-        )]
+        records = [
+            SpanRecord(
+                trace_id="t1",
+                span_id="s1",
+                operation_name="chat",
+                start_time="2026-01-01T00:00:00Z",
+                end_time="2026-01-01T00:00:01Z",
+                input_messages=[
+                    Message(role="user", content="First question"),
+                    Message(role="user", content="Follow up"),
+                ],
+                output_messages=[
+                    Message(role="assistant", content="First answer"),
+                    Message(role="assistant", content="Second answer"),
+                ],
+            )
+        ]
         session = self.mapper.map_to_session(records, "sess-1")
 
         span = session.traces[0].spans[0]
@@ -236,12 +263,17 @@ class TestAgentWithoutMessages:
 
     def test_agent_with_input_only(self):
         """invoke_agent with input but no output still produces a span."""
-        records = [SpanRecord(
-            trace_id="t1", span_id="s1", operation_name="invoke_agent",
-            start_time="2026-01-01T00:00:00Z", end_time="2026-01-01T00:00:01Z",
-            input_messages=[Message(role="user", content="Hello")],
-            output_messages=[],
-        )]
+        records = [
+            SpanRecord(
+                trace_id="t1",
+                span_id="s1",
+                operation_name="invoke_agent",
+                start_time="2026-01-01T00:00:00Z",
+                end_time="2026-01-01T00:00:01Z",
+                input_messages=[Message(role="user", content="Hello")],
+                output_messages=[],
+            )
+        ]
         session = self.mapper.map_to_session(records, "sess-1")
 
         span = session.traces[0].spans[0]
@@ -251,12 +283,17 @@ class TestAgentWithoutMessages:
 
     def test_agent_with_output_only(self):
         """invoke_agent with output but no input still produces a span."""
-        records = [SpanRecord(
-            trace_id="t1", span_id="s1", operation_name="invoke_agent",
-            start_time="2026-01-01T00:00:00Z", end_time="2026-01-01T00:00:01Z",
-            input_messages=[],
-            output_messages=[Message(role="assistant", content="Done")],
-        )]
+        records = [
+            SpanRecord(
+                trace_id="t1",
+                span_id="s1",
+                operation_name="invoke_agent",
+                start_time="2026-01-01T00:00:00Z",
+                end_time="2026-01-01T00:00:01Z",
+                input_messages=[],
+                output_messages=[Message(role="assistant", content="Done")],
+            )
+        ]
         session = self.mapper.map_to_session(records, "sess-1")
 
         span = session.traces[0].spans[0]
@@ -275,10 +312,14 @@ class TestLargeTrace:
         """Mapper handles a trace with many tool execution spans."""
         records = [make_agent_span(span_id="agent", parent_span_id="")]
         for i in range(100):
-            records.append(make_tool_span(
-                span_id=f"tool-{i}", parent_span_id="agent",
-                tool_name=f"tool_{i}", start_time=f"2026-01-01T00:00:{i:02d}Z",
-            ))
+            records.append(
+                make_tool_span(
+                    span_id=f"tool-{i}",
+                    parent_span_id="agent",
+                    tool_name=f"tool_{i}",
+                    start_time=f"2026-01-01T00:00:{i:02d}Z",
+                )
+            )
         session = self.mapper.map_to_session(records, "sess-1")
 
         spans = session.traces[0].spans
@@ -300,31 +341,39 @@ class TestMultiAgentTraces:
         records = [
             # Orchestrator agent
             make_agent_span(
-                span_id="orchestrator", parent_span_id="",
-                user_prompt="Plan a trip", agent_response="Here's your plan",
+                span_id="orchestrator",
+                parent_span_id="",
+                user_prompt="Plan a trip",
+                agent_response="Here's your plan",
                 start_time="2026-01-01T00:00:00Z",
             ),
             # Weather sub-agent (child of orchestrator)
             make_agent_span(
-                span_id="weather-agent", parent_span_id="orchestrator",
-                user_prompt="Get weather", agent_response="Sunny",
+                span_id="weather-agent",
+                parent_span_id="orchestrator",
+                user_prompt="Get weather",
+                agent_response="Sunny",
                 start_time="2026-01-01T00:00:01Z",
             ),
             # Weather tool (child of weather-agent)
             make_tool_span(
-                span_id="weather-tool", parent_span_id="weather-agent",
+                span_id="weather-tool",
+                parent_span_id="weather-agent",
                 tool_name="get_weather",
                 start_time="2026-01-01T00:00:01.5Z",
             ),
             # Events sub-agent (child of orchestrator)
             make_agent_span(
-                span_id="events-agent", parent_span_id="orchestrator",
-                user_prompt="Get events", agent_response="Concert tonight",
+                span_id="events-agent",
+                parent_span_id="orchestrator",
+                user_prompt="Get events",
+                agent_response="Concert tonight",
                 start_time="2026-01-01T00:00:02Z",
             ),
             # Events tool (child of events-agent)
             make_tool_span(
-                span_id="events-tool", parent_span_id="events-agent",
+                span_id="events-tool",
+                parent_span_id="events-agent",
                 tool_name="get_events",
                 start_time="2026-01-01T00:00:02.5Z",
             ),
@@ -355,26 +404,31 @@ class TestParseTime:
 
     def test_valid_iso_with_z_suffix(self):
         from strands_evals.mappers.opensearch_session_mapper import _parse_time
+
         dt = _parse_time("2026-01-01T00:00:00Z")
         assert dt.year == 2026
         assert dt.tzinfo is not None
 
     def test_valid_iso_with_offset(self):
         from strands_evals.mappers.opensearch_session_mapper import _parse_time
+
         dt = _parse_time("2026-01-01T00:00:00+00:00")
         assert dt.year == 2026
 
     def test_empty_string_returns_epoch(self):
         from strands_evals.mappers.opensearch_session_mapper import _parse_time
+
         dt = _parse_time("")
         assert dt.year == 1970
 
     def test_none_returns_epoch(self):
         from strands_evals.mappers.opensearch_session_mapper import _parse_time
+
         dt = _parse_time(None)
         assert dt.year == 1970
 
     def test_invalid_string_returns_epoch(self):
         from strands_evals.mappers.opensearch_session_mapper import _parse_time
+
         dt = _parse_time("not-a-date")
         assert dt.year == 1970

@@ -71,9 +71,7 @@ class OpenSearchProvider(TraceProvider):
                 "Install with: pip install strands-agents-evals[opensearch]"
             ) from None
 
-        self._retriever = OpenSearchTraceRetriever(
-            host=host, index=index, auth=auth, verify_certs=verify_certs
-        )
+        self._retriever = OpenSearchTraceRetriever(host=host, index=index, auth=auth, verify_certs=verify_certs)
         self._mapper = OpenSearchSessionMapper()
 
     def get_evaluation_data(self, session_id: str) -> TaskOutput:

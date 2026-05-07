@@ -68,27 +68,31 @@ class OpenSearchSessionMapper(SessionMapper):
                     content=record.tool_call_result or "",
                     tool_call_id=record.span_id,
                 )
-                spans.append(ToolExecutionSpan(
-                    span_info=span_info, tool_call=tool_call, tool_result=tool_result, metadata={}
-                ))
+                spans.append(
+                    ToolExecutionSpan(span_info=span_info, tool_call=tool_call, tool_result=tool_result, metadata={})
+                )
 
             elif record.operation_name == "invoke_agent":
                 user_prompt = self._first_message_by_role(record.input_messages, "user")
                 agent_response = self._last_message_by_role(record.output_messages, "assistant")
                 if user_prompt or agent_response:
                     # Collect tool names only from direct child spans
-                    tool_names = sorted({
-                        r.tool_name for r in sorted_records
-                        if r.operation_name == "execute_tool" and r.tool_name
-                        and r.parent_span_id == record.span_id
-                    })
-                    spans.append(AgentInvocationSpan(
-                        span_info=span_info,
-                        user_prompt=user_prompt or "",
-                        agent_response=agent_response or "",
-                        available_tools=[ToolConfig(name=n) for n in tool_names],
-                        metadata={},
-                    ))
+                    tool_names = sorted(
+                        {
+                            r.tool_name
+                            for r in sorted_records
+                            if r.operation_name == "execute_tool" and r.tool_name and r.parent_span_id == record.span_id
+                        }
+                    )
+                    spans.append(
+                        AgentInvocationSpan(
+                            span_info=span_info,
+                            user_prompt=user_prompt or "",
+                            agent_response=agent_response or "",
+                            available_tools=[ToolConfig(name=n) for n in tool_names],
+                            metadata={},
+                        )
+                    )
 
         return Trace(spans=spans, trace_id=trace_id, session_id=session_id)
 
