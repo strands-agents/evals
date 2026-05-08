@@ -1,10 +1,11 @@
 """Chaos Experiment.
 
-Extends the base Experiment to run test cases across multiple chaos scenarios,
+Composes the base Experiment to run test cases across multiple chaos scenarios,
 providing deterministic evaluation of agent resilience under tool failures.
 """
 
 import logging
+import uuid
 from collections.abc import Callable
 from typing import Any, Optional
 
@@ -12,154 +13,233 @@ from ..case import Case
 from ..evaluators.evaluator import Evaluator
 from ..experiment import Experiment
 from ..types.evaluation_report import EvaluationReport
-from .plugin import ChaosPlugin
+from ._context import _current_scenario
 from .scenario import ChaosScenario
 
 logger = logging.getLogger(__name__)
 
+# The baseline scenario — no chaos effects
+_BASELINE_SCENARIO = ChaosScenario(name="baseline")
 
-class ChaosExperiment(Experiment):
-    """Extends Experiment to run cases × chaos scenarios.
 
-    For each scenario, sets it as active on the ChaosPlugin, runs all cases
-    through the evaluators, then clears. Reports are tagged by scenario name.
+class ChaosExperiment:
+    """Runs cases × scenarios by composing the base Experiment.
+
+    For each scenario, activates it via ContextVar, runs all cases through
+    the evaluators, then resets. The user's task body contains zero chaos
+    concepts — the plugin reads the active scenario from the ContextVar.
 
     Optionally includes a baseline run (no chaos) for comparison.
 
     Example::
 
         from strands_evals.chaos import (
-            ToolChaosEffect,
             ChaosExperiment,
             ChaosPlugin,
             ChaosScenario,
         )
+        from strands_evals.chaos.effects import ToolCallFailure
 
         chaos = ChaosPlugin()
-        agent = Agent(model=my_model, tools=[...], plugins=[chaos])
 
         scenarios = [
-            ChaosScenario(name="search_timeout", tool_effects={"search_tool": ToolChaosEffect.TIMEOUT}),
-            ChaosScenario(name="db_down", tool_effects={"database_tool": ToolChaosEffect.NETWORK_ERROR}),
+            ChaosScenario(
+                name="search_timeout",
+                effects={"search_tool": [ToolCallFailure(error_type="timeout")]},
+            ),
+            ChaosScenario(
+                name="db_down",
+                effects={"database_tool": [ToolCallFailure(error_type="network_error")]},
+            ),
         ]
 
+        def my_task(case):
+            agent = Agent(tools=[search_tool, database_tool], plugins=[chaos])
+            return {"output": str(agent(case.input))}
+
         experiment = ChaosExperiment(
-            chaos_plugin=chaos,
-            chaos_scenarios=scenarios,
             cases=[Case(input="Find flights to Tokyo", name="flight_search")],
+            scenarios=scenarios,
             evaluators=[my_evaluator],
             include_baseline=True,
         )
 
-        reports = experiment.run_evaluations(task=lambda case: agent(case.input))
+        reports = experiment.run_evaluations(task=my_task)
     """
 
     def __init__(
         self,
-        chaos_plugin: ChaosPlugin,
-        chaos_scenarios: list[ChaosScenario],
-        cases: Optional[list[Case]] = None,
+        cases: list[Case],
+        scenarios: list[ChaosScenario],
         evaluators: Optional[list[Evaluator]] = None,
         include_baseline: bool = True,
-        baseline_assertion: Optional[str] = None,
     ):
         """Initialize a ChaosExperiment.
 
         Args:
-            chaos_plugin: The ChaosPlugin instance attached to the agent.
-            chaos_scenarios: List of scenarios to evaluate. Each scenario runs
-                all cases independently.
-            cases: Test cases to evaluate (same as base Experiment).
-            evaluators: Evaluators to assess results (same as base Experiment).
+            cases: Test cases to evaluate.
+            scenarios: List of chaos scenarios. Each scenario runs all cases.
+                All effects in a scenario fire simultaneously in a single run.
+            evaluators: Evaluators to assess results.
             include_baseline: If True, runs all cases with no chaos first for comparison.
-            baseline_assertion: Optional assertion string for baseline evaluation
-                (e.g., "agent should respond correctly without any failures").
         """
-        super().__init__(cases=cases, evaluators=evaluators)
-        self.chaos_plugin = chaos_plugin
-        self.chaos_scenarios = chaos_scenarios
-        self.include_baseline = include_baseline
-        self.baseline_assertion = baseline_assertion
+        self._original_cases = cases
+        self._scenarios = scenarios
+        self._evaluators = evaluators
+        self._include_baseline = include_baseline
+
+        # Build the expanded case list and internal maps
+        self._expanded_cases: list[Case] = []
+        self._scenario_by_session: dict[str, ChaosScenario] = {}
+        self._original_case_name_by_session: dict[str, Optional[str]] = {}
+
+        all_scenarios = []
+        if include_baseline:
+            all_scenarios.append(_BASELINE_SCENARIO)
+        all_scenarios.extend(scenarios)
+
+        for case in cases:
+            for scenario in all_scenarios:
+                # Create expanded case with fresh session_id
+                session_id = str(uuid.uuid4())
+                expanded_case = case.model_copy(
+                    update={
+                        "name": f"{case.name}|{scenario.name}" if case.name else scenario.name,
+                        "session_id": session_id,
+                    }
+                )
+                self._expanded_cases.append(expanded_case)
+                self._scenario_by_session[session_id] = scenario
+                self._original_case_name_by_session[session_id] = case.name
+
+        # Internal Experiment with expanded cases
+        self._experiment = Experiment(
+            cases=self._expanded_cases,
+            evaluators=evaluators,
+        )
+
+    @property
+    def scenarios(self) -> list[ChaosScenario]:
+        """The chaos scenarios configured for this experiment."""
+        return self._scenarios
+
+    @property
+    def cases(self) -> list[Case]:
+        """The original (unexpanded) test cases."""
+        return self._original_cases
+
+    def get_scenario_for_session(self, session_id: str) -> Optional[ChaosScenario]:
+        """Look up the scenario assigned to a given session_id.
+
+        Useful for downstream aggregation and reporting.
+
+        Args:
+            session_id: The session_id of an expanded case.
+
+        Returns:
+            The ChaosScenario for that session, or None if not found.
+        """
+        return self._scenario_by_session.get(session_id)
+
+    def get_original_case_name(self, session_id: str) -> Optional[str]:
+        """Look up the original case name for a given session_id.
+
+        Args:
+            session_id: The session_id of an expanded case.
+
+        Returns:
+            The original case name, or None if not found.
+        """
+        return self._original_case_name_by_session.get(session_id)
 
     def run_evaluations(
         self,
         task: Callable[[Case], Any],
         **kwargs,
     ) -> list[EvaluationReport]:
-        """Run evaluations across all scenarios (and optionally baseline).
+        """Run evaluations across all (case × scenario) combinations.
 
-        Executes the task for each (scenario, case) pair:
-        1. If include_baseline=True, runs all cases with no chaos active.
-        2. For each scenario, activates it on the plugin, runs all cases,
-           then clears.
-
-        Results from all runs are collected into a flat list of EvaluationReports,
-        with each case tagged with its scenario name in metadata.
+        Wraps the user's task function to set the ContextVar before each
+        case execution, so the ChaosPlugin sees the correct scenario.
 
         Args:
             task: The task function to evaluate. Takes a Case and returns output.
-            **kwargs: Additional kwargs passed to the base run_evaluations.
+                The task body should contain zero chaos concepts — just construct
+                the agent with plugins=[chaos] and call it.
+            **kwargs: Additional kwargs passed to the base Experiment.run_evaluations.
 
         Returns:
             List of EvaluationReport objects covering all scenarios.
         """
-        all_reports: list[EvaluationReport] = []
 
-        # Baseline run (no chaos)
-        if self.include_baseline:
-            logger.info("Running baseline evaluation (no chaos)")
-            self.chaos_plugin.set_active_scenario(None)
-            baseline_cases = self._tag_cases_with_scenario("baseline")
-            original_cases = self._cases
-            self._cases = baseline_cases
+        def chaos_aware_task(case: Case) -> Any:
+            """Wrapper that activates the correct scenario via ContextVar."""
+            scenario = self._scenario_by_session.get(case.session_id)
+            token = _current_scenario.set(scenario)
             try:
-                reports = super().run_evaluations(task, **kwargs)
-                all_reports.extend(reports)
+                return task(case)
             finally:
-                self._cases = original_cases
+                _current_scenario.reset(token)
 
-        # Chaos scenario runs
-        for scenario in self.chaos_scenarios:
-            logger.info(f"Running chaos scenario: {scenario.name}")
-            self.chaos_plugin.set_active_scenario(scenario)
-            scenario_cases = self._tag_cases_with_scenario(scenario.name)
-            original_cases = self._cases
-            self._cases = scenario_cases
-            try:
-                reports = super().run_evaluations(task, **kwargs)
-                all_reports.extend(reports)
-            finally:
-                self._cases = original_cases
+        reports = self._experiment.run_evaluations(chaos_aware_task, **kwargs)
 
-        # Clear active scenario after all runs
-        self.chaos_plugin.set_active_scenario(None)
+        num_scenarios = len(self._scenarios) + (1 if self._include_baseline else 0)
         logger.info(
-            f"Chaos experiment complete: {len(all_reports)} reports "
-            f"({1 if self.include_baseline else 0} baseline + "
-            f"{len(self.chaos_scenarios)} scenarios)"
+            f"Chaos experiment complete: {len(reports)} reports "
+            f"({len(self._original_cases)} cases × {num_scenarios} scenarios)"
         )
 
-        return all_reports
+        return reports
 
-    def _tag_cases_with_scenario(self, scenario_name: str) -> list[Case]:
-        """Create copies of cases with scenario name injected into metadata.
+    async def run_evaluations_async(
+        self,
+        task: Callable[[Case], Any],
+        max_workers: int = 10,
+        **kwargs,
+    ) -> list[EvaluationReport]:
+        """Run evaluations asynchronously across all (case × scenario) combinations.
+
+        Same as run_evaluations but uses the async worker pool for parallelism.
+        ContextVar ensures each case sees its own scenario even under concurrency.
 
         Args:
-            scenario_name: The scenario name to tag.
+            task: The task function (sync or async).
+            max_workers: Maximum number of parallel workers.
+            **kwargs: Additional kwargs passed to the base Experiment.run_evaluations_async.
 
         Returns:
-            Deep copies of all cases with metadata["chaos_scenario"] set.
+            List of EvaluationReport objects covering all scenarios.
         """
-        tagged_cases = []
-        for case in self._cases:
-            tagged = case.model_copy(deep=True)
-            if tagged.metadata is None:
-                tagged.metadata = {}
-            tagged.metadata["chaos_scenario"] = scenario_name
-            # Update case name to include scenario for report clarity
-            if tagged.name:
-                tagged.name = f"{tagged.name} [{scenario_name}]"
-            else:
-                tagged.name = f"[{scenario_name}]"
-            tagged_cases.append(tagged)
-        return tagged_cases
+        import asyncio
+
+        def chaos_aware_task(case: Case) -> Any:
+            """Wrapper that activates the correct scenario via ContextVar."""
+            scenario = self._scenario_by_session.get(case.session_id)
+            token = _current_scenario.set(scenario)
+            try:
+                return task(case)
+            finally:
+                _current_scenario.reset(token)
+
+        async def chaos_aware_task_async(case: Case) -> Any:
+            """Async wrapper that activates the correct scenario via ContextVar."""
+            scenario = self._scenario_by_session.get(case.session_id)
+            token = _current_scenario.set(scenario)
+            try:
+                if asyncio.iscoroutinefunction(task):
+                    return await task(case)
+                else:
+                    return task(case)
+            finally:
+                _current_scenario.reset(token)
+
+        if asyncio.iscoroutinefunction(task):
+            reports = await self._experiment.run_evaluations_async(
+                chaos_aware_task_async, max_workers=max_workers, **kwargs
+            )
+        else:
+            reports = await self._experiment.run_evaluations_async(
+                chaos_aware_task, max_workers=max_workers, **kwargs
+            )
+
+        return reports
