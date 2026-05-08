@@ -2,23 +2,24 @@
 
 Implements chaos injection as a standard Strands Plugin using the SDK's
 native hook system (BeforeToolCallEvent / AfterToolCallEvent).
+
+The plugin is stateless — it reads the active scenario from a module-level
+ContextVar at hook time. The ChaosExperiment manages the ContextVar lifecycle.
+
+The plugin is a thin router:
+- Pre-hook effects: reads effect.error_message, cancels the tool call.
+- Post-hook effects: calls effect.apply(response), uses the return value.
 """
 
+import json
 import logging
-import math
-import random
-from typing import Any, Optional
+from typing import Any
 
 from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent
 from strands.plugins import Plugin, hook
 
-from .effects import (
-    TOOL_CORRUPTION_EFFECTS,
-    TOOL_ERROR_EFFECTS,
-    ToolChaosEffect,
-    ChaosEffectConfig,
-)
-from .scenario import ChaosScenario
+from ._context import _current_scenario
+from .effects import ChaosEffect
 
 logger = logging.getLogger(__name__)
 
@@ -27,16 +28,19 @@ class ChaosPlugin(Plugin):
     """Strands Plugin that injects deterministic chaos based on the active scenario.
 
     The plugin intercepts tool calls via Strands' native hook system:
-    - BeforeToolCallEvent: cancels tool calls for error effects (TIMEOUT, NETWORK_ERROR, etc.)
-    - AfterToolCallEvent: corrupts tool responses for corruption effects (TRUNCATE_FIELDS, etc.)
+    - BeforeToolCallEvent: cancels tool calls for pre-hook effects (Timeout, NetworkError, etc.)
+    - AfterToolCallEvent: corrupts tool responses for post-hook effects (TruncateFields, etc.)
 
-    The active scenario is set externally (typically by ChaosExperiment) before
-    each evaluation run. When no scenario is active, all tools behave normally.
+    The active scenario is managed via a ContextVar (set by ChaosExperiment).
+    When no scenario is active, all tools behave normally.
+
+    The plugin is stateless — no set_active_scenario method, no instance state
+    for the current scenario. This makes it safe under concurrent execution.
 
     Example::
 
         from strands import Agent
-        from strands_evals.chaos import ChaosPlugin, ChaosScenario, ToolChaosEffect
+        from strands_evals.chaos import ChaosPlugin
 
         chaos = ChaosPlugin()
         agent = Agent(
@@ -45,241 +49,111 @@ class ChaosPlugin(Plugin):
             plugins=[chaos],
         )
 
-        # Activate a scenario
-        chaos.set_active_scenario(ChaosScenario(
-            name="search_timeout",
-            tool_effects={"search_tool": ToolChaosEffect.TIMEOUT},
-        ))
-
-        result = agent("Find flights to Tokyo")
-        # search_tool will be cancelled with a timeout error
+        # The ChaosExperiment handles scenario activation via ContextVar.
+        # The user's task body contains zero chaos concepts.
     """
 
     name = "chaos-testing"
 
     def __init__(self) -> None:
         super().__init__()
-        self._active_scenario: Optional[ChaosScenario] = None
-
-    @property
-    def active_scenario(self) -> Optional[ChaosScenario]:
-        """The currently active chaos scenario, or None for baseline (no chaos)."""
-        return self._active_scenario
-
-    def set_active_scenario(self, scenario: Optional[ChaosScenario]) -> None:
-        """Set the scenario that drives chaos injection for subsequent tool calls.
-
-        Args:
-            scenario: The scenario to activate, or None to disable chaos (baseline).
-        """
-        self._active_scenario = scenario
-        if scenario:
-            logger.info(f"Chaos scenario activated: {scenario.name}")
-        else:
-            logger.info("Chaos scenario cleared (baseline mode)")
-
-    def _should_apply(self, config: ChaosEffectConfig) -> bool:
-        """Check if the effect should fire based on apply_rate."""
-        if config.apply_rate >= 1.0:
-            return True
-        if config.apply_rate <= 0.0:
-            return False
-        return random.random() < config.apply_rate
 
     @hook
     def before_tool_call(self, event: BeforeToolCallEvent) -> None:
-        """Intercept tool calls to inject error effects.
+        """Intercept tool calls to inject pre-hook (error) effects.
 
-        For error effects (TIMEOUT, NETWORK_ERROR, etc.), cancels the tool call
-        with a simulated error message before the tool executes.
+        For error effects (Timeout, NetworkError, etc.), cancels the tool call
+        with the effect's error_message before the tool executes.
         """
-        if not self._active_scenario:
+        scenario = _current_scenario.get()
+        if scenario is None:
             return
 
         tool_name = event.tool_use.get("name", "")
-        chaos_effect = self._active_scenario.tool_effects.get(tool_name)
-        if chaos_effect is None:
+        effects = scenario.effects.get(tool_name, [])
+        if not effects:
             return
 
-        if isinstance(chaos_effect, ToolChaosEffect):
-            chaos_config = ChaosEffectConfig(effect=chaos_effect)
-        elif isinstance(chaos_effect, ChaosEffectConfig):
-            chaos_config = chaos_effect
-        else:
-            raise TypeError(
-                f"Unexpected effect type for tool '{tool_name}': {type(chaos_effect).__name__}. "
-                f"Expected ToolChaosEffect or ChaosEffectConfig."
-            )
-
-        # Only handle error effects in the before hook
-        if chaos_config.effect not in TOOL_ERROR_EFFECTS:
-            return
-
-        if not self._should_apply(chaos_config):
-            return
-
-        # Cancel the tool call with a simulated error
-        error_message = chaos_config.error_message or f"Simulated {chaos_config.effect.value}"
-        event.cancel_tool = error_message
-        logger.info(
-            f"[Chaos] Injected {chaos_config.effect.value} on tool '{tool_name}': {error_message}"
-        )
+        # First pre-hook effect wins (tool is cancelled once)
+        for effect in effects:
+            if effect.hook == "pre":
+                event.cancel_tool = effect.apply()
+                logger.info(
+                    f"[Chaos] Injected {type(effect).__name__} on tool '{tool_name}'"
+                )
+                return
 
     @hook
     def after_tool_call(self, event: AfterToolCallEvent) -> None:
-        """Intercept tool results to inject corruption effects.
+        """Intercept tool results to inject post-hook (corruption) effects.
 
-        For corruption effects (TRUNCATE_FIELDS, REMOVE_FIELDS, CORRUPT_VALUES),
-        mutates the tool response after successful execution.
+        For corruption effects (TruncateFields, RemoveFields, CorruptValues),
+        calls effect.apply(response) to mutate the tool response.
+
+        Handles Strands ToolResult content shapes:
+        - dict content: pass directly to effect.apply()
+        - list of blocks: extract text dicts, parse JSON, apply effect
+        - plain dict result: pass directly to effect.apply()
+
+        Envelope fields (status, toolUseId) are preserved around the corruption.
         """
-        if not self._active_scenario:
+        scenario = _current_scenario.get()
+        if scenario is None:
             return
 
         tool_name = event.tool_use.get("name", "")
-        chaos_effect = self._active_scenario.tool_effects.get(tool_name)
-        if chaos_effect is None:
+        effects = scenario.effects.get(tool_name, [])
+        if not effects:
             return
 
-        if isinstance(chaos_effect, ToolChaosEffect):
-            chaos_config = ChaosEffectConfig(effect=chaos_effect)
-        elif isinstance(chaos_effect, ChaosEffectConfig):
-            chaos_config = chaos_effect
-        else:
-            raise TypeError(
-                f"Unexpected effect type for tool '{tool_name}': {type(chaos_effect).__name__}. "
-                f"Expected ToolChaosEffect or ChaosEffectConfig."
-            )
+        # Apply all post-hook effects sequentially (they compose)
+        for effect in effects:
+            if effect.hook != "post":
+                continue
 
-        # Only handle corruption effects in the after hook
-        if chaos_config.effect not in TOOL_CORRUPTION_EFFECTS:
-            return
+            if not hasattr(event, "result") or event.result is None:
+                continue
 
-        if not self._should_apply(chaos_config):
-            return
-
-        # Corrupt the tool result
-        if hasattr(event, "result") and event.result is not None:
             result = event.result
-            # Handle ToolResult-like objects with content
+
             if hasattr(result, "content"):
                 if isinstance(result.content, dict):
-                    # Content is a data dict — corrupt it directly
-                    result.content = self._apply_corruption(chaos_config, result.content)
+                    result.content = self._apply_with_envelope(effect, result.content)
                 elif isinstance(result.content, list):
-                    # Content is a list of blocks (e.g., [{"text": "..."}])
-                    # Corrupt text content within each block
-                    corrupted_blocks = []
-                    for block in result.content:
-                        if isinstance(block, dict) and "text" in block:
-                            text_data = block["text"]
-                            if isinstance(text_data, str):
-                                # Try to parse as JSON dict for field-level corruption
-                                import json
-                                try:
-                                    parsed = json.loads(text_data)
-                                    if isinstance(parsed, dict):
-                                        corrupted = self._apply_corruption(chaos_config, parsed)
-                                        block = {**block, "text": json.dumps(corrupted)}
-                                    else:
-                                        block = {**block, "text": text_data}
-                                except (json.JSONDecodeError, ValueError):
-                                    # Plain text — truncate if that's the effect
-                                    if chaos_config.effect == ToolChaosEffect.TRUNCATE_FIELDS:
-                                        block = {**block, "text": text_data[: len(text_data) // 2]}
-                        corrupted_blocks.append(block)
-                    result.content = corrupted_blocks
+                    result.content = self._apply_to_blocks(effect, result.content)
             elif isinstance(result, dict):
-                event.result = self._apply_corruption(chaos_config, result)
+                event.result = self._apply_with_envelope(effect, result)
 
-            logger.info(
-                f"[Chaos] Applied {chaos_config.effect.value} corruption on tool '{tool_name}'"
-            )
+            logger.info(f"[Chaos] Applied {type(effect).__name__} on tool '{tool_name}'")
 
-    # ------------------------------------------------------------------
-    # Corruption helpers (private)
-    # ------------------------------------------------------------------
+    def _apply_with_envelope(self, effect: ChaosEffect, response: dict[str, Any]) -> dict[str, Any]:
+        """Apply effect while preserving envelope fields."""
+        envelope_fields = {"status", "toolUseId"}
+        saved = {k: response[k] for k in envelope_fields if k in response}
 
-    def _apply_corruption(self, effect_config: ChaosEffectConfig, response: Any) -> Any:
-        """Apply a corruption effect to a tool response data dict.
+        # Strip envelope before passing to effect
+        payload = {k: v for k, v in response.items() if k not in envelope_fields}
+        corrupted = effect.apply(payload)
 
-        Only preserves the `status` field (Bedrock requires "success"/"error").
-        All other fields including `content` are fair game for corruption.
+        # Restore envelope
+        corrupted.update(saved)
+        return corrupted
 
-        Args:
-            effect_config: The normalized effect configuration.
-            response: The tool result data dict to corrupt.
-
-        Returns:
-            The corrupted response.
-        """
-        if not isinstance(response, dict):
-            return response
-
-        effect = effect_config.effect
-
-        # Preserve status — Bedrock requires toolResult.status to be "success" or "error"
-        saved_status = response.get("status")
-
-        if effect == ToolChaosEffect.TRUNCATE_FIELDS:
-            response = self._truncate_fields(response)
-        elif effect == ToolChaosEffect.REMOVE_FIELDS:
-            ratio = effect_config.remove_ratio if effect_config.remove_ratio is not None else 0.33
-            response = self._remove_fields(response, ratio)
-        elif effect == ToolChaosEffect.CORRUPT_VALUES:
-            rate = effect_config.corrupt_rate if effect_config.corrupt_rate is not None else 0.4
-            response = self._corrupt_values(response, rate)
-
-        # Restore status
-        if saved_status is not None:
-            response["status"] = saved_status
-
-        return response
-
-    @staticmethod
-    def _truncate_fields(response: dict[str, Any]) -> dict[str, Any]:
-        """Truncate string values to partial content."""
-        result: dict[str, Any] = {}
-        for key, value in response.items():
-            if key == "status":
-                result[key] = value
-            elif isinstance(value, str) and len(value) > 0:
-                result[key] = value[: random.randint(0, max(0, len(value) - 1))]
-            elif isinstance(value, dict):
-                result[key] = ChaosPlugin._truncate_fields(value)
-            else:
-                result[key] = value
-        return result
-
-    @staticmethod
-    def _remove_fields(response: dict[str, Any], remove_ratio: float) -> dict[str, Any]:
-        """Remove a fraction of fields from the response."""
-        keys = [k for k in response.keys() if k != "status"]
-        if not keys:
-            return response
-
-        num_to_remove = max(1, math.ceil(len(keys) * remove_ratio))
-        keys_to_remove = set(random.sample(keys, min(num_to_remove, len(keys))))
-        return {k: v for k, v in response.items() if k not in keys_to_remove}
-
-    @staticmethod
-    def _corrupt_values(response: dict[str, Any], corrupt_rate: float) -> dict[str, Any]:
-        """Replace a fraction of values with wrong types or garbage data."""
-        corruptions: list[Any] = [None, 99999, "", True, [], "CORRUPTED_DATA"]
-
-        keys = [k for k in response.keys() if k != "status"]
-        if not keys:
-            return response
-
-        num_to_corrupt = max(1, math.ceil(len(keys) * corrupt_rate))
-        keys_to_corrupt = set(random.sample(keys, min(num_to_corrupt, len(keys))))
-
-        result: dict[str, Any] = {}
-        for key, value in response.items():
-            if key in keys_to_corrupt:
-                candidates = [c for c in corruptions if c != value]
-                result[key] = random.choice(candidates) if candidates else "CORRUPTED_DATA"
-            elif isinstance(value, dict):
-                result[key] = ChaosPlugin._corrupt_values(value, corrupt_rate)
-            else:
-                result[key] = value
-        return result
+    def _apply_to_blocks(self, effect: ChaosEffect, blocks: list) -> list:
+        """Apply effect to text blocks in a content list."""
+        corrupted_blocks = []
+        for block in blocks:
+            if isinstance(block, dict) and "text" in block:
+                text_data = block["text"]
+                if isinstance(text_data, str):
+                    try:
+                        parsed = json.loads(text_data)
+                        if isinstance(parsed, dict):
+                            corrupted = effect.apply(parsed)
+                            block = {**block, "text": json.dumps(corrupted)}
+                    except (json.JSONDecodeError, ValueError):
+                        # Plain text — apply truncation via effect if applicable
+                        if hasattr(effect, "max_length"):
+                            block = {**block, "text": text_data[: effect.max_length]}
+            corrupted_blocks.append(block)
+        return corrupted_blocks
