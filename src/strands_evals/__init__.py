@@ -1,5 +1,5 @@
 from . import aggregators, chaos, detectors, evaluators, extractors, generators, providers, simulation, telemetry, types
-from .aggregators import EvaluationAggregator
+from .aggregators import CaseAggregator
 from .case import Case
 from .eval_task_handler import EvalTaskHandler, TracedHandler, eval_task
 from .evaluation_data_store import EvaluationDataStore
@@ -32,5 +32,5 @@ __all__ = [
     "get_tracer",
     "ActorSimulator",
     "UserSimulator",
-    "EvaluationAggregator",
+    "CaseAggregator",
 ]

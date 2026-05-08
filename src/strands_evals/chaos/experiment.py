@@ -107,12 +107,31 @@ class ChaosExperiment:
                 self._scenario_by_session[session_id] = scenario
                 self._original_case_name_by_session[session_id] = case.name
 
-        # Auto-populate aggregator's known_tools from scenarios
-        if self._aggregator is not None and not self._aggregator.known_tools:
-            tools: set[str] = set()
-            for scenario in scenarios:
-                tools.update(scenario.effects.keys())
-            self._aggregator.known_tools = sorted(tools)
+        # Auto-populate aggregator's known_tools and scenarios from experiment
+        if self._aggregator is not None:
+            if not self._aggregator.known_tools:
+                tools: set[str] = set()
+                for scenario in scenarios:
+                    tools.update(scenario.effects.keys())
+                self._aggregator.known_tools = sorted(tools)
+            if not self._aggregator._scenario_effects:
+                for scenario in scenarios:
+                    tool_effects: dict[str, list[str]] = {}
+                    for tool_name, effects in scenario.effects.items():
+                        effect_names = []
+                        for e in effects:
+                            if hasattr(e, "error_type"):
+                                effect_names.append(e.error_type)
+                            elif hasattr(e, "max_length"):
+                                effect_names.append("truncate_fields")
+                            elif hasattr(e, "remove_ratio"):
+                                effect_names.append("remove_fields")
+                            elif hasattr(e, "corrupt_ratio"):
+                                effect_names.append("corrupt_values")
+                            else:
+                                effect_names.append(type(e).__name__.lower())
+                        tool_effects[tool_name] = effect_names
+                    self._aggregator._scenario_effects[scenario.name] = tool_effects
 
         # Internal Experiment with expanded cases
         self._experiment = Experiment(

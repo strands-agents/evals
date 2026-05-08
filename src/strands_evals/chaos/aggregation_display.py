@@ -1,10 +1,13 @@
 """Rich console display for ChaosScenarioAggregation results.
 
 Interactive table with expand/collapse. Collapsed shows a summary row per case.
-Expanded shows the pretty view: Stats + Summary panels on top, Coverage Matrix below.
-"""
+Expanded shows Stats + Summary panels on top, scenario-centric Coverage Matrix below.
 
-import re
+The coverage matrix is scenario-centric:
+- Rows = scenarios
+- Columns = tools
+- Cells = effects applied to that tool in that scenario + pass/fail
+"""
 
 from rich.panel import Panel
 from rich.table import Table
@@ -12,33 +15,12 @@ from rich.table import Table
 from ..display.display_console import CollapsibleTableReportDisplay, console
 from .aggregator_types import CoverageStatus
 
-# All effects in display order: error effects first, then corruption effects
-_ALL_EFFECTS = [
-    "timeout",
-    "network_error",
-    "execution_error",
-    "validation_error",
-    "truncate_fields",
-    "remove_fields",
-    "corrupt_values",
-]
-
-_EFFECT_SHORT_NAMES = {
-    "timeout": "TIMEOUT",
-    "network_error": "NET_ERR",
-    "execution_error": "EXEC_ERR",
-    "validation_error": "VALID_ERR",
-    "truncate_fields": "TRUNCATE",
-    "remove_fields": "REMOVE",
-    "corrupt_values": "CORRUPT",
-}
-
 
 class ChaosAggregationDisplay(CollapsibleTableReportDisplay):
     """Interactive console display for chaos scenario aggregation results.
 
     Collapsed: single summary row per case (name, avg score, pass rate).
-    Expanded: Stats + Summary panels on top, full Coverage Matrix below.
+    Expanded: Stats + Summary panels on top, scenario-centric Coverage Matrix below.
     """
 
     def __init__(self, aggregations: list, reports: list | None = None):
@@ -136,7 +118,6 @@ class ChaosAggregationDisplay(CollapsibleTableReportDisplay):
             symbol = "▼" if expanded else "▶"
             baseline = f"{agg.baseline_score:.2f}" if agg.baseline_score is not None else "—"
 
-            # Evaluator name with neutral baseline note
             evaluator_cell = agg.evaluator_name
             if agg.evaluator_name in self._NEUTRAL_BASELINE_EVALUATORS:
                 evaluator_cell = f"{agg.evaluator_name}\n[dim](0.5 = neutral baseline)[/dim]"
@@ -172,8 +153,8 @@ class ChaosAggregationDisplay(CollapsibleTableReportDisplay):
             top_row.add_row(stats_panel, summary_panel)
             console.print(top_row)
 
-            # Bottom: Coverage Matrix
-            matrix_panel = self._build_coverage_matrix_panel(agg)
+            # Bottom: Scenario-centric Coverage Matrix
+            matrix_panel = self._build_scenario_matrix_panel(agg)
             console.print(matrix_panel)
 
     @staticmethod
@@ -208,36 +189,70 @@ class ChaosAggregationDisplay(CollapsibleTableReportDisplay):
         )
 
     @staticmethod
-    def _build_coverage_matrix_panel(agg) -> Panel:
-        """Build the full-width coverage matrix with all effects as columns."""
-        matrix_table = Table(
-            show_header=True,
-            show_lines=True,
-            expand=True,
-        )
+    def _build_scenario_matrix_panel(agg) -> Panel:
+        """Build a scenario-centric coverage matrix.
 
-        matrix_table.add_column("tool", style="bold", no_wrap=True)
-        for effect in _ALL_EFFECTS:
-            short_name = _EFFECT_SHORT_NAMES.get(effect, effect.upper())
-            matrix_table.add_column(short_name, justify="center")
+        Rows = scenarios (from scenario_results)
+        Columns = tools
+        Cells = effects applied + pass/fail
+        """
+        # Collect all tools from the coverage matrix
+        all_tools = sorted(agg.coverage_matrix.keys())
 
-        for tool_name in sorted(agg.coverage_matrix.keys()):
-            tool_effects = agg.coverage_matrix[tool_name]
-            cells = [tool_name]
-            for effect in _ALL_EFFECTS:
-                status = tool_effects.get(effect, CoverageStatus.NOT_TESTED)
-                if status == CoverageStatus.PASSED:
-                    cells.append("[green bold]PASS[/green bold]")
-                elif status == CoverageStatus.FAILED:
-                    cells.append("[red bold]FAIL[/red bold]")
-                else:
+        if not all_tools and not agg.scenario_results:
+            return Panel("[dim]No scenario data[/dim]", title="[bold yellow]Coverage Matrix[/bold yellow]")
+
+        # Group scenario_results by scenario_label
+        from collections import defaultdict
+        scenarios: dict[str, list] = defaultdict(list)
+        for sr in agg.scenario_results:
+            scenarios[sr.scenario_label].append(sr)
+
+        # Build table: rows = scenarios, columns = tools
+        matrix_table = Table(show_header=True, show_lines=True, expand=True)
+        matrix_table.add_column("scenario", style="bold", no_wrap=True)
+
+        for tool in all_tools:
+            matrix_table.add_column(tool, justify="center")
+
+        matrix_table.add_column("score", justify="center", style="green")
+        matrix_table.add_column("result", justify="center")
+
+        for scenario_name, results in scenarios.items():
+            # Build a lookup: tool_name -> effect_type for this scenario
+            tool_to_effect: dict[str, str] = {}
+            scenario_passed = True
+            scenario_score = 0.0
+
+            for r in results:
+                tool_to_effect[r.tool_name] = r.effect_type
+                scenario_score = r.score  # All results in same scenario share the score
+                if not r.passed:
+                    scenario_passed = False
+
+            cells = [scenario_name]
+            for tool in all_tools:
+                effect = tool_to_effect.get(tool)
+                if effect is None:
                     cells.append("[dim]—[/dim]")
+                else:
+                    # Show effect name with color based on pass/fail
+                    status = agg.coverage_matrix.get(tool, {}).get(effect, CoverageStatus.NOT_TESTED)
+                    if status == CoverageStatus.PASSED:
+                        cells.append(f"[green]{effect}[/green]")
+                    elif status == CoverageStatus.FAILED:
+                        cells.append(f"[red]{effect}[/red]")
+                    else:
+                        cells.append(f"[dim]{effect}[/dim]")
+
+            cells.append(f"{scenario_score:.2f}")
+            cells.append("[green bold]PASS[/green bold]" if scenario_passed else "[red bold]FAIL[/red bold]")
             matrix_table.add_row(*cells)
 
         return Panel(
             matrix_table,
             title="[bold yellow]Coverage Matrix[/bold yellow]",
-            subtitle="[dim]Error Effects (pre-hook) │ Corruption Effects (post-hook)[/dim]",
+            subtitle="[dim]Rows = scenarios │ Columns = tools │ Cells = effect applied[/dim]",
             border_style="yellow",
         )
 
@@ -250,7 +265,7 @@ def display_chaos_aggregation(
     """Display chaos aggregation results.
 
     Shows an interactive table with one row per case. Expanding a case
-    reveals Stats + Summary panels and a full Coverage Matrix.
+    reveals Stats + Summary panels and a scenario-centric Coverage Matrix.
 
     Args:
         aggregations: List of ChaosScenarioAggregation objects.

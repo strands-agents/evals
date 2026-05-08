@@ -1,4 +1,4 @@
-"""Base EvaluationAggregator class.
+"""Base CaseAggregator class.
 
 Provides a default implementation that groups results by evaluator and
 computes numeric statistics (mean/min/max score, pass rate). Derived
@@ -16,7 +16,7 @@ from .types import AggregationResult
 logger = logging.getLogger(__name__)
 
 
-class EvaluationAggregator:
+class CaseAggregator:
     """Base class for evaluation aggregators.
 
     An aggregator takes a flat list of EvaluationReports (produced by an
@@ -30,9 +30,9 @@ class EvaluationAggregator:
 
     Example::
 
-        from strands_evals.aggregators import EvaluationAggregator
+        from strands_evals.aggregators import CaseAggregator
 
-        aggregator = EvaluationAggregator()
+        aggregator = CaseAggregator()
         reports = experiment.run_evaluations(task=my_task)
         results = aggregator.aggregate(reports)
 

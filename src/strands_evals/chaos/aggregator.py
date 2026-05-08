@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from strands import Agent
 from strands.models.model import Model
 
-from ..aggregators.base import EvaluationAggregator
+from ..aggregators.base import CaseAggregator
 from ..types.evaluation_report import EvaluationReport
 from .aggregator_types import (
     ChaosAggregationReport,
@@ -46,16 +46,14 @@ _SUMMARIZE_SYSTEM_PROMPT = """\
 You are an evaluation analyst for AI agent resilience testing.
 
 You will receive per-scenario evaluation results from chaos testing, where each
-scenario injected a specific tool failure (timeout, network error, data corruption,
-etc.) into the agent's environment.
+scenario injected one or more failures into the agent's environment.
 
-Your job is to produce a concise narrative summary (2-4 sentences) that:
-1. Identifies which failure modes the agent handled well vs. poorly.
-2. Notes any patterns (e.g., "handles timeouts but not data corruption").
-3. Highlights the most critical failure if one stands out.
-4. Comments on degradation from baseline if significant.
+Produce a single paragraph (100 words max) that:
+1. States which failure modes the agent handled well vs. poorly.
+2. Notes any pattern (e.g., "handles timeouts but not data corruption").
+3. Highlights the most critical gap if one stands out.
 
-Be specific and actionable. Do not repeat the raw reasons verbatim.
+Be specific and actionable. Do not repeat raw reasons. Do not use bullet points nor multiple paragraphs.
 """
 
 _SUMMARIZE_USER_TEMPLATE = """\
@@ -74,11 +72,11 @@ Summarize the agent's resilience pattern for this case.
 class ResilienceSummary(BaseModel):
     """Structured output for LLM-based resilience summarization."""
 
-    reasoning: str = Field(description="Step-by-step analysis of the agent's resilience patterns")
-    summary: str = Field(description="Concise 2-4 sentence narrative summary of resilience findings")
+    reasoning: str = Field(description="Brief analysis of the agent's resilience patterns")
+    summary: str = Field(description="Single paragraph summary")
 
 
-class ChaosScenarioAggregator(EvaluationAggregator):
+class ChaosScenarioAggregator(CaseAggregator):
     """Aggregates evaluation results across chaos scenarios for each original case.
 
     Designed to work with the output of ChaosExperiment, which tags each case
@@ -92,8 +90,12 @@ class ChaosScenarioAggregator(EvaluationAggregator):
             weren't covered by any scenario.
         known_effects: Optional list of effect types to track. Defaults to all
             known effect types.
+        scenarios: Optional list of ChaosScenario objects. When provided, the
+            aggregator uses typed scenario lookup instead of metadata/name parsing.
+            Automatically populated by ChaosExperiment if not set.
         model: Model for LLM-as-a-Judge reason summarization. Accepts a model ID
-            string or a Model instance. If None, falls back to simple concatenation.
+            string or a Model instance. If None (default), summarization uses
+            simple concatenation — no model calls are made.
         system_prompt: Optional custom system prompt for the summarization judge.
         name: Optional human-readable name for this aggregator.
 
@@ -115,6 +117,7 @@ class ChaosScenarioAggregator(EvaluationAggregator):
         self,
         known_tools: Optional[list[str]] = None,
         known_effects: Optional[list[str]] = None,
+        scenarios: Optional[list] = None,
         model: Optional[Model | str] = None,
         system_prompt: Optional[str] = None,
         name: Optional[str] = None,
@@ -122,9 +125,29 @@ class ChaosScenarioAggregator(EvaluationAggregator):
         super().__init__(name=name or "ChaosScenarioAggregator")
         self.known_tools = known_tools or []
         self.known_effects = known_effects or _ALL_EFFECT_TYPES
-        # None means use Agent's default model (same as evaluators)
         self.model = model
         self.system_prompt = system_prompt or _SUMMARIZE_SYSTEM_PROMPT
+
+        # Build scenario lookup: scenario_name -> {tool_name: [effect_types]}
+        self._scenario_effects: dict[str, dict[str, list[str]]] = {}
+        if scenarios:
+            for scenario in scenarios:
+                tool_effects: dict[str, list[str]] = {}
+                for tool_name, effects in scenario.effects.items():
+                    effect_names = []
+                    for e in effects:
+                        if hasattr(e, "error_type"):
+                            effect_names.append(e.error_type)
+                        elif hasattr(e, "max_length"):
+                            effect_names.append("truncate_fields")
+                        elif hasattr(e, "remove_ratio"):
+                            effect_names.append("remove_fields")
+                        elif hasattr(e, "corrupt_ratio"):
+                            effect_names.append("corrupt_values")
+                        else:
+                            effect_names.append(type(e).__name__.lower())
+                    tool_effects[tool_name] = effect_names
+                self._scenario_effects[scenario.name] = tool_effects
 
     def aggregate(self, reports: list[EvaluationReport]) -> ChaosAggregationReport:
         """Aggregate chaos experiment reports into per-case scenario aggregations.
@@ -151,17 +174,16 @@ class ChaosScenarioAggregator(EvaluationAggregator):
     def summarize_reasons(self, reasons: list[str]) -> str:
         """Produce a narrative summary from per-scenario reason strings.
 
-        Uses LLM-as-a-Judge with structured output (Agent uses default model
-        when self.model is None, matching evaluator behavior).
+        Only produces a summary when self.model is set. Returns empty string otherwise.
 
         Args:
             reasons: List of reason strings from individual evaluations.
 
         Returns:
-            A summary string.
+            A summary string, or empty if no model configured.
         """
         non_empty = [r for r in reasons if r]
-        if not non_empty:
+        if not non_empty or self.model is None:
             return ""
 
         prompt = (
@@ -176,7 +198,7 @@ class ChaosScenarioAggregator(EvaluationAggregator):
             return rating.summary
         except Exception as e:
             logger.warning(f"LLM summarization failed: {e}")
-            return self._concatenate_reasons(reasons)
+            return ""
 
     def _summarize_for_aggregation(
         self,
@@ -228,7 +250,7 @@ class ChaosScenarioAggregator(EvaluationAggregator):
             return rating.summary
         except Exception as e:
             logger.warning(f"LLM summarization failed for case '{case_name}': {e}")
-            return self._concatenate_reasons(reasons)
+            return ""
 
     # ------------------------------------------------------------------
     # Internal grouping and aggregation logic
@@ -339,10 +361,13 @@ class ChaosScenarioAggregator(EvaluationAggregator):
 
         self._fill_not_tested(coverage_matrix)
 
-        # Summarize reasons via LLM-as-a-Judge (or concatenation fallback)
-        summary = self._summarize_for_aggregation(
-            case_name, evaluator_name, chaos_entries, stats, baseline_passed
-        )
+        # Summarize reasons (LLM-as-a-Judge only if model was explicitly provided)
+        if self.model is not None:
+            summary = self._summarize_for_aggregation(
+                case_name, evaluator_name, chaos_entries, stats, baseline_passed
+            )
+        else:
+            summary = ""
 
         return ChaosScenarioAggregation(
             group_key=case_name,
@@ -365,37 +390,17 @@ class ChaosScenarioAggregator(EvaluationAggregator):
     def _extract_tool_effects_from_metadata(
         self, metadata: dict, scenario_name: str
     ) -> list[tuple[str, str]]:
-        """Extract (tool_name, effect_type) pairs from case metadata."""
-        tool_effects = metadata.get("chaos_tool_effects")
-        if tool_effects and isinstance(tool_effects, dict):
+        """Extract (tool_name, effect_type) pairs for a scenario.
+
+        Uses the scenario lookup populated from ChaosScenario objects.
+        """
+        if scenario_name in self._scenario_effects:
             pairs = []
-            for tool_name, effect in tool_effects.items():
-                if isinstance(effect, str):
-                    pairs.append((tool_name, effect))
-                elif isinstance(effect, dict) and "effect" in effect:
-                    pairs.append((tool_name, effect["effect"]))
+            for tool_name, effect_types in self._scenario_effects[scenario_name].items():
+                for effect_type in effect_types:
+                    pairs.append((tool_name, effect_type))
             if pairs:
                 return pairs
-
-        scenario_details = metadata.get("chaos_scenario_details")
-        if scenario_details and isinstance(scenario_details, dict):
-            details_effects = scenario_details.get("tool_effects", {})
-            pairs = []
-            for tool_name, effect in details_effects.items():
-                if isinstance(effect, str):
-                    pairs.append((tool_name, effect))
-                elif isinstance(effect, dict) and "effect" in effect:
-                    pairs.append((tool_name, effect["effect"]))
-            if pairs:
-                return pairs
-
-        # Fallback: parse scenario_name as "tool_effect" pattern
-        for effect_type in _ALL_EFFECT_TYPES:
-            suffix = f"_{effect_type}"
-            if scenario_name.endswith(suffix):
-                tool_name = scenario_name[: -len(suffix)]
-                if tool_name:
-                    return [(tool_name, effect_type)]
 
         if scenario_name and scenario_name != _BASELINE_SCENARIO_NAME:
             return [(scenario_name, "unknown")]
