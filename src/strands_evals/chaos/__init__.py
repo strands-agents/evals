@@ -33,9 +33,6 @@ from .scenario import ChaosScenario
 
 __all__ = [
     # Core classes
-    "ChaosAggregationDisplay",
-    "ChaosAggregationReport",
-    "ChaosEffectConfig",
     "ChaosExperiment",
     "ChaosPlugin",
     "ChaosScenario",
@@ -47,6 +44,18 @@ __all__ = [
     "TruncateFields",
     "RemoveFields",
     "CorruptValues",
+    # Aggregation
+    "ChaosAggregationDisplay",
+    "ChaosAggregationReport",
+    "ChaosScenarioAggregator",
+    "ChaosScenarioAggregation",
+    "CoverageStatus",
+    "ToolEffectResult",
+    "display_chaos_aggregation",
+    # Evaluators
+    "FailureCommunicationEvaluator",
+    "PartialCompletionEvaluator",
+    "RecoveryStrategyEvaluator",
     # Classification sets
     "TOOL_ERROR_EFFECTS",
     "TOOL_CORRUPTION_EFFECTS",

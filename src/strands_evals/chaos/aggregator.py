@@ -11,7 +11,6 @@ Given a flat list of EvaluationReports from a ChaosExperiment, this aggregator:
 """
 
 import logging
-import re
 from collections import defaultdict
 from typing import Optional, cast
 
@@ -27,12 +26,17 @@ from .aggregator_types import (
     CoverageStatus,
     ToolEffectResult,
 )
-from .effects import ToolChaosEffect
 
 logger = logging.getLogger(__name__)
 
-# Regex to strip the scenario suffix from case names: "case_name [scenario_name]"
-_SCENARIO_SUFFIX_RE = re.compile(r"\s*\[([^\]]+)\]\s*$")
+# All known effect types for coverage matrix population
+_ALL_EFFECT_TYPES = [
+    "timeout", "network_error", "execution_error", "validation_error",
+    "truncate_fields", "remove_fields", "corrupt_values",
+]
+
+# Regex to strip the scenario suffix from case names: "case_name|scenario_name"
+_SCENARIO_SEPARATOR = "|"
 
 # The baseline scenario name used by ChaosExperiment
 _BASELINE_SCENARIO_NAME = "baseline"
@@ -87,7 +91,7 @@ class ChaosScenarioAggregator(EvaluationAggregator):
             populate NOT_TESTED entries in the coverage matrix for tools that
             weren't covered by any scenario.
         known_effects: Optional list of effect types to track. Defaults to all
-            ToolChaosEffect values.
+            known effect types.
         model: Model for LLM-as-a-Judge reason summarization. Accepts a model ID
             string or a Model instance. If None, falls back to simple concatenation.
         system_prompt: Optional custom system prompt for the summarization judge.
@@ -117,7 +121,7 @@ class ChaosScenarioAggregator(EvaluationAggregator):
     ):
         super().__init__(name=name or "ChaosScenarioAggregator")
         self.known_tools = known_tools or []
-        self.known_effects = known_effects or [e.value for e in ToolChaosEffect]
+        self.known_effects = known_effects or _ALL_EFFECT_TYPES
         # None means use Agent's default model (same as evaluators)
         self.model = model
         self.system_prompt = system_prompt or _SUMMARIZE_SYSTEM_PROMPT
@@ -386,12 +390,12 @@ class ChaosScenarioAggregator(EvaluationAggregator):
                 return pairs
 
         # Fallback: parse scenario_name as "tool_effect" pattern
-        for effect in ToolChaosEffect:
-            suffix = f"_{effect.value}"
+        for effect_type in _ALL_EFFECT_TYPES:
+            suffix = f"_{effect_type}"
             if scenario_name.endswith(suffix):
                 tool_name = scenario_name[: -len(suffix)]
                 if tool_name:
-                    return [(tool_name, effect.value)]
+                    return [(tool_name, effect_type)]
 
         if scenario_name and scenario_name != _BASELINE_SCENARIO_NAME:
             return [(scenario_name, "unknown")]
@@ -413,11 +417,9 @@ class ChaosScenarioAggregator(EvaluationAggregator):
     def _parse_case_name(raw_name: str) -> tuple[str, str]:
         """Parse a tagged case name into (original_name, scenario_name).
 
-        ChaosExperiment tags cases as "original_name [scenario_name]".
+        ChaosExperiment tags cases as "original_name|scenario_name".
         """
-        match = _SCENARIO_SUFFIX_RE.search(raw_name)
-        if match:
-            scenario_name = match.group(1)
-            original_name = raw_name[: match.start()].strip()
-            return original_name, scenario_name
+        if _SCENARIO_SEPARATOR in raw_name:
+            parts = raw_name.rsplit(_SCENARIO_SEPARATOR, 1)
+            return parts[0].strip(), parts[1].strip()
         return raw_name, "unknown"
