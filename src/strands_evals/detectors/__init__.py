@@ -9,6 +9,7 @@ from ..types.detector import (
     ConfidenceLevel,
     DiagnosisConfig,
     DiagnosisResult,
+    DiagnosisTrigger,
     FailureDetectionStructuredOutput,
     FailureItem,
     FailureOutput,
@@ -28,6 +29,7 @@ __all__ = [
     "diagnose_session",
     "DiagnosisConfig",
     "DiagnosisResult",
+    "DiagnosisTrigger",
     # Types
     "ConfidenceLevel",
     "FailureOutput",
