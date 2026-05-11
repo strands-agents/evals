@@ -18,9 +18,6 @@ from .scenario import ChaosScenario
 
 logger = logging.getLogger(__name__)
 
-# The baseline scenario — no chaos effects
-_BASELINE_SCENARIO = ChaosScenario(name="baseline")
-
 
 class ChaosExperiment:
     """Runs cases × scenarios by composing the base Experiment.
@@ -30,6 +27,11 @@ class ChaosExperiment:
     concepts — the plugin reads the active scenario from the ContextVar.
 
     Optionally includes a baseline run (no chaos) for comparison.
+
+    Note: The experiment runs ``len(cases) × (len(scenarios) + 1)`` evaluations
+    when ``include_baseline=True``, or ``len(cases) × len(scenarios)`` otherwise.
+    Plan scenario counts accordingly — each combination triggers a full agent
+    invocation.
 
     Example::
 
@@ -93,9 +95,7 @@ class ChaosExperiment:
         self._scenario_by_session: dict[str, ChaosScenario] = {}
         self._original_case_name_by_session: dict[str, Optional[str]] = {}
 
-        all_scenarios = []
-        if include_baseline:
-            all_scenarios.append(_BASELINE_SCENARIO)
+        all_scenarios = [ChaosScenario(name="baseline")] if include_baseline else []
         all_scenarios.extend(scenarios)
 
         for case in cases:
@@ -238,8 +238,6 @@ class ChaosExperiment:
                 chaos_aware_task_async, max_workers=max_workers, **kwargs
             )
         else:
-            reports = await self._experiment.run_evaluations_async(
-                chaos_aware_task, max_workers=max_workers, **kwargs
-            )
+            reports = await self._experiment.run_evaluations_async(chaos_aware_task, max_workers=max_workers, **kwargs)
 
         return reports

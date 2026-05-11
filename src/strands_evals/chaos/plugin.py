@@ -3,17 +3,12 @@
 Implements chaos injection as a standard Strands Plugin using the SDK's
 native hook system (BeforeToolCallEvent / AfterToolCallEvent).
 
-The plugin is stateless — it reads the active scenario from a module-level
-ContextVar at hook time. The ChaosExperiment manages the ContextVar lifecycle.
-
-The plugin is a thin router:
-- Pre-hook effects: reads effect.error_message, cancels the tool call.
-- Post-hook effects: calls effect.apply(response), uses the return value.
+The plugin reads the active scenario from a module-level ContextVar at hook
+time. The ChaosExperiment manages the ContextVar lifecycle.
 """
 
 import json
 import logging
-from typing import Any
 
 from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent
 from strands.plugins import Plugin, hook
@@ -28,14 +23,11 @@ class ChaosPlugin(Plugin):
     """Strands Plugin that injects deterministic chaos based on the active scenario.
 
     The plugin intercepts tool calls via Strands' native hook system:
-    - BeforeToolCallEvent: cancels tool calls for pre-hook effects (Timeout, NetworkError, etc.)
+    - BeforeToolCallEvent: cancels tool calls for pre-hook effects (ToolCallFailure)
     - AfterToolCallEvent: corrupts tool responses for post-hook effects (TruncateFields, etc.)
 
     The active scenario is managed via a ContextVar (set by ChaosExperiment).
     When no scenario is active, all tools behave normally.
-
-    The plugin is stateless — no set_active_scenario method, no instance state
-    for the current scenario. This makes it safe under concurrent execution.
 
     Example::
 
@@ -58,7 +50,7 @@ class ChaosPlugin(Plugin):
     def __init__(self) -> None:
         super().__init__()
 
-    @hook
+    @hook  # type: ignore[call-overload]
     def before_tool_call(self, event: BeforeToolCallEvent) -> None:
         """Intercept tool calls to inject pre-hook (error) effects.
 
@@ -78,24 +70,15 @@ class ChaosPlugin(Plugin):
         for effect in effects:
             if effect.hook == "pre":
                 event.cancel_tool = effect.apply()
-                logger.info(
-                    f"[Chaos] Injected {type(effect).__name__} on tool '{tool_name}'"
-                )
+                logger.info(f"[Chaos] Injected {type(effect).__name__} on tool '{tool_name}'")
                 return
 
-    @hook
+    @hook  # type: ignore[call-overload]
     def after_tool_call(self, event: AfterToolCallEvent) -> None:
         """Intercept tool results to inject post-hook (corruption) effects.
 
         For corruption effects (TruncateFields, RemoveFields, CorruptValues),
-        calls effect.apply(response) to mutate the tool response.
-
-        Handles Strands ToolResult content shapes:
-        - dict content: pass directly to effect.apply()
-        - list of blocks: extract text dicts, parse JSON, apply effect
-        - plain dict result: pass directly to effect.apply()
-
-        Envelope fields (status, toolUseId) are preserved around the corruption.
+        applies effect.apply() to JSON content blocks in the tool response.
         """
         scenario = _current_scenario.get()
         if scenario is None:
@@ -111,33 +94,16 @@ class ChaosPlugin(Plugin):
             if effect.hook != "post":
                 continue
 
-            if not hasattr(event, "result") or event.result is None:
+            if event.result is None:
                 continue
 
             result = event.result
+            content = result.get("content")
 
-            if hasattr(result, "content"):
-                if isinstance(result.content, dict):
-                    result.content = self._apply_with_envelope(effect, result.content)
-                elif isinstance(result.content, list):
-                    result.content = self._apply_to_blocks(effect, result.content)
-            elif isinstance(result, dict):
-                event.result = self._apply_with_envelope(effect, result)
+            if isinstance(content, list):
+                result["content"] = self._apply_to_blocks(effect, content)  # type: ignore[assignment]
 
             logger.info(f"[Chaos] Applied {type(effect).__name__} on tool '{tool_name}'")
-
-    def _apply_with_envelope(self, effect: ChaosEffect, response: dict[str, Any]) -> dict[str, Any]:
-        """Apply effect while preserving envelope fields."""
-        envelope_fields = {"status", "toolUseId"}
-        saved = {k: response[k] for k in envelope_fields if k in response}
-
-        # Strip envelope before passing to effect
-        payload = {k: v for k, v in response.items() if k not in envelope_fields}
-        corrupted = effect.apply(payload)
-
-        # Restore envelope
-        corrupted.update(saved)
-        return corrupted
 
     def _apply_to_blocks(self, effect: ChaosEffect, blocks: list) -> list:
         """Apply effect to text blocks in a content list."""

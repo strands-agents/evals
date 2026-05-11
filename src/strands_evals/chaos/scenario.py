@@ -15,8 +15,7 @@ class ChaosScenario(BaseModel):
     """A single, deterministic chaos injection scenario.
 
     Each scenario defines a set of tool effects that fire simultaneously when
-    the scenario is active. All listed effects are applied in the same
-    agent execution — this is NOT expanded into multiple runs.
+    the scenario is active.
 
     Tools not listed in tool_effects behave normally (no chaos).
 
@@ -61,7 +60,6 @@ class ChaosScenario(BaseModel):
 
     def __repr__(self) -> str:
         effects_str = ", ".join(
-            f"{target}: [{', '.join(type(e).__name__ for e in effs)}]"
-            for target, effs in self.effects.items()
+            f"{target}: [{', '.join(type(e).__name__ for e in effs)}]" for target, effs in self.effects.items()
         )
         return f"ChaosScenario(name='{self.name}', effects={{{effects_str}}})"

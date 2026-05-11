@@ -5,8 +5,6 @@ under tool failures and response corruption scenarios.
 """
 
 from .effects import (
-    TOOL_CORRUPTION_EFFECTS,
-    TOOL_ERROR_EFFECTS,
     ChaosEffect,
     CorruptValues,
     RemoveFields,
@@ -31,7 +29,4 @@ __all__ = [
     "TruncateFields",
     "RemoveFields",
     "CorruptValues",
-    # Classification sets
-    "TOOL_ERROR_EFFECTS",
-    "TOOL_CORRUPTION_EFFECTS",
 ]

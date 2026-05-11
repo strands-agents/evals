@@ -1,15 +1,11 @@
 """Chaos effect definitions.
 
 Effects are first-class parameterized classes organized in a hierarchy:
-    ChaosEffect → ToolEffect → concrete effects (Timeout, NetworkError, etc.)
-                → ModelEffect → (reserved for v2)
+    ChaosEffect → ToolEffect → concrete effects (ToolCallFailure, TruncateFields, etc.)
 
 Each concrete effect carries only the parameters meaningful to it.
 The `hook` class variable indicates whether the effect fires pre-tool-call
 (error effects) or post-tool-call (corruption effects).
-
-Pre-hook effects provide `error_message` (the plugin cancels the tool call).
-Post-hook effects implement `apply(response)` (the plugin passes the response through).
 """
 
 import math
@@ -20,17 +16,11 @@ from typing import Any, ClassVar, Literal
 from pydantic import BaseModel, Field
 
 
-# ---------------------------------------------------------------------------
-# Base classes
-# ---------------------------------------------------------------------------
-
-
 class ChaosEffect(BaseModel):
     """Base for all chaos effects.
 
     Attributes:
         apply_rate: Probability that this effect fires.
-            In v1 this field is accepted but ignored (always fires).
         hook: Whether this effect fires pre-call ("pre") or post-call ("post").
     """
 
@@ -45,11 +35,7 @@ class ChaosEffect(BaseModel):
 
     @abstractmethod
     def apply(self, context: Any = None) -> Any:
-        """Apply the chaos effect.
-
-        Pre-hook effects return an error message string.
-        Post-hook effects accept a response dict and return the corrupted dict.
-        """
+        """Apply the chaos effect to the given context and return the result."""
         ...
 
 
@@ -60,10 +46,6 @@ class ToolEffect(ChaosEffect):
     - "post": effect fires after tool execution (corrupts the response)
     """
 
-
-# ---------------------------------------------------------------------------
-# Pre-hook effect — cancels the tool call before execution
-# ---------------------------------------------------------------------------
 
 # All supported failure types
 ToolCallFailureType = Literal["timeout", "network_error", "execution_error", "validation_error"]
@@ -115,14 +97,6 @@ class ToolCallFailure(ToolEffect):
         return _DEFAULT_ERROR_MESSAGES[self.error_type]
 
 
-# ---------------------------------------------------------------------------
-# Concrete tool corruption effects (post-hook — mutate the response)
-#
-# Post-hook effects implement apply(response) -> response.
-# The plugin calls effect.apply(response_dict) and uses the return value.
-# ---------------------------------------------------------------------------
-
-
 class TruncateFields(ToolEffect):
     """Truncates string values in the tool response.
 
@@ -142,7 +116,7 @@ class TruncateFields(ToolEffect):
     hook: ClassVar[Literal["pre", "post"]] = "post"
     max_length: int = Field(default=10, ge=0, description="Maximum length to truncate string values to")
 
-    def apply(self, response: dict[str, Any]) -> dict[str, Any]:
+    def apply(self, response: Any = None) -> Any:
         """Truncate string values to max_length.
 
         Args:
@@ -151,12 +125,14 @@ class TruncateFields(ToolEffect):
         Returns:
             Response with string values truncated.
         """
+        if not isinstance(response, dict):
+            return response
         result: dict[str, Any] = {}
         for key, value in response.items():
             if isinstance(value, str) and len(value) > self.max_length:
                 result[key] = value[: self.max_length]
             elif isinstance(value, dict):
-                result[key] = self._truncate(value)
+                result[key] = self.apply(value)
             else:
                 result[key] = value
         return result
@@ -186,7 +162,7 @@ class RemoveFields(ToolEffect):
         description="Fraction of fields to remove from the response",
     )
 
-    def apply(self, response: dict[str, Any]) -> dict[str, Any]:
+    def apply(self, response: Any = None) -> Any:
         """Remove a fraction of fields from the response.
 
         Always removes at least 1 field when called.
@@ -197,6 +173,8 @@ class RemoveFields(ToolEffect):
         Returns:
             Response with fields removed.
         """
+        if not isinstance(response, dict):
+            return response
         keys = list(response.keys())
         if not keys:
             return response
@@ -232,7 +210,7 @@ class CorruptValues(ToolEffect):
 
     _CORRUPTIONS: ClassVar[list[Any]] = [None, 99999, "", True, [], "CORRUPTED_DATA"]
 
-    def apply(self, response: dict[str, Any]) -> dict[str, Any]:
+    def apply(self, response: Any = None) -> Any:
         """Replace a fraction of values with wrong types or garbage data.
 
         Always corrupts at least 1 field when called.
@@ -243,6 +221,8 @@ class CorruptValues(ToolEffect):
         Returns:
             Response with corrupted values.
         """
+        if not isinstance(response, dict):
+            return response
         keys = list(response.keys())
         if not keys:
             return response
@@ -260,14 +240,3 @@ class CorruptValues(ToolEffect):
             else:
                 result[key] = value
         return result
-
-
-# ---------------------------------------------------------------------------
-# Convenience sets for classification (derived from hierarchy, not maintained manually)
-# ---------------------------------------------------------------------------
-
-# All concrete pre-hook (error) effect classes
-TOOL_ERROR_EFFECTS: set[type[ToolEffect]] = {ToolCallFailure}
-
-# All concrete post-hook (corruption) effect classes
-TOOL_CORRUPTION_EFFECTS: set[type[ToolEffect]] = {TruncateFields, RemoveFields, CorruptValues}
