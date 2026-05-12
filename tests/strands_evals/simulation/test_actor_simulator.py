@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import BaseModel
 from strands.agent.agent_result import AgentResult
 
 from strands_evals import Case
@@ -68,7 +69,6 @@ def test_initialize_conversation(sample_actor_profile):
 @patch("strands_evals.simulation.actor_simulator.Agent")
 def test_from_case_for_user_simulator(mock_agent_class, sample_case):
     """Test factory method creates simulator from case."""
-    # Mock the profile generation agent
     mock_profile_agent = MagicMock()
     mock_profile = ActorProfile(
         traits={"test": "trait"},
@@ -79,10 +79,8 @@ def test_from_case_for_user_simulator(mock_agent_class, sample_case):
     mock_result.structured_output = mock_profile
     mock_profile_agent.return_value = mock_result
 
-    # Mock the main simulator agent
     mock_simulator_agent = MagicMock()
 
-    # Configure mock to return different instances
     mock_agent_class.side_effect = [mock_profile_agent, mock_simulator_agent]
 
     simulator = ActorSimulator.from_case_for_user_simulator(case=sample_case)
@@ -110,7 +108,6 @@ def test_generate_profile_from_case(mock_agent_class, sample_case):
 
     assert profile == mock_profile
     assert mock_agent.called
-    # Verify structured_output_model was passed
     call_args = mock_agent.call_args
     assert call_args[1]["structured_output_model"] == ActorProfile
 
@@ -123,11 +120,11 @@ def test_act_generates_response(sample_actor_profile):
         system_prompt_template="Test: {actor_profile}",
     )
 
-    # Mock the agent's response
     mock_response = MagicMock(spec=AgentResult)
     mock_actor_response = ActorResponse(
         reasoning="Test reasoning",
         message="Test response message",
+        stop=False,
     )
     mock_response.structured_output = mock_actor_response
     simulator.agent = MagicMock(return_value=mock_response)
@@ -139,8 +136,8 @@ def test_act_generates_response(sample_actor_profile):
     simulator.agent.assert_called_once()
 
 
-def test_act_uses_structured_output(sample_actor_profile):
-    """Test act method requests structured output."""
+def test_act_uses_actor_response_by_default(sample_actor_profile):
+    """Test act method uses ActorResponse as default structured output model."""
     simulator = ActorSimulator(
         actor_profile=sample_actor_profile,
         initial_query="Hello",
@@ -148,15 +145,73 @@ def test_act_uses_structured_output(sample_actor_profile):
     )
 
     mock_response = MagicMock(spec=AgentResult)
-    mock_actor_response = ActorResponse(reasoning="Test", message="Test message")
+    mock_actor_response = ActorResponse(reasoning="Test", message="Test message", stop=False)
     mock_response.structured_output = mock_actor_response
     simulator.agent = MagicMock(return_value=mock_response)
 
     simulator.act("Test message")
 
-    # Verify structured_output_model parameter
     call_kwargs = simulator.agent.call_args[1]
     assert call_kwargs["structured_output_model"] == ActorResponse
+
+
+def test_act_with_custom_structured_output_model(sample_actor_profile):
+    """Test act passes custom structured_output_model to the agent."""
+
+    class CustomOutput(BaseModel):
+        answer: str
+        confidence: float
+        stop: bool = False
+        message: str | None = None
+
+    simulator = ActorSimulator(
+        actor_profile=sample_actor_profile,
+        initial_query="Hello",
+        system_prompt_template="Test: {actor_profile}",
+    )
+
+    mock_response = MagicMock(spec=AgentResult)
+    mock_response.structured_output = CustomOutput(answer="test", confidence=0.9, stop=False, message="hi")
+    simulator.agent = MagicMock(return_value=mock_response)
+
+    result = simulator.act("Test message", structured_output_model=CustomOutput)
+
+    call_kwargs = simulator.agent.call_args[1]
+    assert call_kwargs["structured_output_model"] == CustomOutput
+    assert result.structured_output.answer == "test"
+
+
+def test_act_custom_model_without_stop_raises(sample_actor_profile):
+    """Test act raises ValueError if custom model has no stop field."""
+
+    class NoStopModel(BaseModel):
+        message: str | None = None
+
+    simulator = ActorSimulator(
+        actor_profile=sample_actor_profile,
+        initial_query="Hello",
+        system_prompt_template="Test: {actor_profile}",
+    )
+
+    with pytest.raises(ValueError, match="must have a 'stop' field"):
+        simulator.act("Test message", structured_output_model=NoStopModel)
+
+
+def test_act_custom_model_without_message_raises(sample_actor_profile):
+    """Test act raises ValueError if custom model has no message field."""
+
+    class NoMessageModel(BaseModel):
+        answer: str = ""
+        stop: bool = False
+
+    simulator = ActorSimulator(
+        actor_profile=sample_actor_profile,
+        initial_query="Hello",
+        system_prompt_template="Test: {actor_profile}",
+    )
+
+    with pytest.raises(ValueError, match="must have a 'message' field"):
+        simulator.act("Test message", structured_output_model=NoMessageModel)
 
 
 def test_has_next_returns_true_initially(sample_actor_profile):
@@ -179,35 +234,270 @@ def test_has_next_respects_max_turns(sample_actor_profile):
         max_turns=3,
     )
 
-    # Mock responses
     mock_response = MagicMock(spec=AgentResult)
-    mock_actor_response = ActorResponse(reasoning="Test", message="Continue")
+    mock_actor_response = ActorResponse(reasoning="Test", message="Continue", stop=False)
     mock_response.structured_output = mock_actor_response
     simulator.agent = MagicMock(return_value=mock_response)
 
-    # Simulate 3 turns with max_turns=3
     for _ in range(3):
         assert simulator.has_next() is True
         simulator.act("Test message")
 
-    # After 3 turns, should return False
     assert simulator.has_next() is False
 
 
-def test_has_next_detects_stop_token(sample_actor_profile):
-    """Test has_next returns False when stop token is present."""
+def test_has_next_detects_stop(sample_actor_profile):
+    """Test has_next returns False when actor signals stop."""
     simulator = ActorSimulator(
         actor_profile=sample_actor_profile,
         initial_query="Hello",
         system_prompt_template="Test: {actor_profile}",
     )
 
-    # Mock response with stop token
     mock_response = MagicMock(spec=AgentResult)
-    mock_actor_response = ActorResponse(reasoning="Done", message="Thanks! <stop/>")
+    mock_actor_response = ActorResponse(reasoning="Done", message=None, stop=True)
     mock_response.structured_output = mock_actor_response
     simulator.agent = MagicMock(return_value=mock_response)
 
-    # After act with stop token, has_next should return False
     simulator.act("Test message")
     assert simulator.has_next() is False
+
+
+def test_act_sets_stop_reason_goal_completed(sample_actor_profile):
+    """Test act sets stop_reason to 'goal_completed' when actor signals stop."""
+    simulator = ActorSimulator(
+        actor_profile=sample_actor_profile,
+        initial_query="Hello",
+        system_prompt_template="Test: {actor_profile}",
+    )
+
+    mock_response = MagicMock(spec=AgentResult)
+    mock_actor_response = ActorResponse(reasoning="Done", message=None, stop=True)
+    mock_response.structured_output = mock_actor_response
+    simulator.agent = MagicMock(return_value=mock_response)
+
+    result = simulator.act("Test message")
+
+    assert result.structured_output.stop_reason == "goal_completed"
+
+
+def test_act_sets_stop_reason_max_turns(sample_actor_profile):
+    """Test act sets stop_reason to 'max_turns' when turn cap is reached."""
+    simulator = ActorSimulator(
+        actor_profile=sample_actor_profile,
+        initial_query="Hello",
+        system_prompt_template="Test: {actor_profile}",
+        max_turns=1,
+    )
+
+    mock_response = MagicMock(spec=AgentResult)
+    mock_actor_response = ActorResponse(reasoning="r", message="more please", stop=False)
+    mock_response.structured_output = mock_actor_response
+    simulator.agent = MagicMock(return_value=mock_response)
+
+    result = simulator.act("agent reply")
+
+    assert result.structured_output.stop is True
+    assert result.structured_output.stop_reason == "max_turns"
+
+
+def test_act_continuing_turn_no_stop_reason(sample_actor_profile):
+    """Test act leaves stop_reason as None for normal continuing turns."""
+    simulator = ActorSimulator(
+        actor_profile=sample_actor_profile,
+        initial_query="Hello",
+        system_prompt_template="Test: {actor_profile}",
+    )
+
+    mock_response = MagicMock(spec=AgentResult)
+    mock_actor_response = ActorResponse(reasoning="thinking", message="keep going", stop=False)
+    mock_response.structured_output = mock_actor_response
+    simulator.agent = MagicMock(return_value=mock_response)
+
+    result = simulator.act("agent reply")
+
+    assert result.structured_output.stop is False
+    assert result.structured_output.stop_reason is None
+    assert result.structured_output.message == "keep going"
+
+
+def test_act_custom_model_manages_stop(sample_actor_profile):
+    """When structured_output_model is provided, act() still manages stop via the stop field."""
+
+    class CustomOutput(BaseModel):
+        stop: bool = False
+        message: str | None = None
+
+    simulator = ActorSimulator(
+        actor_profile=sample_actor_profile,
+        initial_query="Hello",
+        system_prompt_template="Test: {actor_profile}",
+    )
+
+    mock_response = MagicMock(spec=AgentResult)
+    mock_response.structured_output = CustomOutput(message="done", stop=True)
+    simulator.agent = MagicMock(return_value=mock_response)
+
+    simulator.act("agent reply", structured_output_model=CustomOutput)
+
+    assert simulator.stop is True
+    assert simulator.has_next() is False
+
+
+def test_act_custom_model_max_turns(sample_actor_profile):
+    """Custom model path still enforces max_turns."""
+
+    class CustomOutput(BaseModel):
+        stop: bool = False
+        message: str | None = None
+
+    simulator = ActorSimulator(
+        actor_profile=sample_actor_profile,
+        initial_query="Hello",
+        system_prompt_template="Test: {actor_profile}",
+        max_turns=1,
+    )
+
+    mock_response = MagicMock(spec=AgentResult)
+    mock_response.structured_output = CustomOutput(message="hi", stop=False)
+    simulator.agent = MagicMock(return_value=mock_response)
+
+    simulator.act("agent reply", structured_output_model=CustomOutput)
+
+    assert simulator.stop is True
+    assert simulator.has_next() is False
+
+
+def test_system_prompt_template_none_uses_default(sample_actor_profile):
+    """When system_prompt_template is None, the default template is rendered with the profile."""
+    from strands_evals.simulation.prompt_templates.actor_system_prompt import (
+        DEFAULT_USER_SIMULATOR_PROMPT_TEMPLATE,
+    )
+
+    simulator = ActorSimulator(
+        actor_profile=sample_actor_profile,
+        initial_query="Hello",
+    )
+
+    expected = DEFAULT_USER_SIMULATOR_PROMPT_TEMPLATE.format(actor_profile=sample_actor_profile.model_dump())
+    assert simulator.agent.system_prompt == expected
+
+
+def test_system_prompt_template_prerendered_passes_through(sample_actor_profile):
+    """A template with no {actor_profile} placeholder is passed through verbatim."""
+    prerendered = "You are simulating Alice, a beginner user. Keep replies short."
+
+    simulator = ActorSimulator(
+        actor_profile=sample_actor_profile,
+        initial_query="Hello",
+        system_prompt_template=prerendered,
+    )
+
+    assert simulator.agent.system_prompt == prerendered
+
+
+def test_system_prompt_contains_stop_instruction(sample_actor_profile):
+    """Default prompt instructs the actor to set stop=true."""
+    simulator = ActorSimulator(
+        actor_profile=sample_actor_profile,
+        initial_query="Hello",
+    )
+
+    assert "stop=true" in simulator.agent.system_prompt
+
+
+def test_explicit_template_overrides_default(sample_actor_profile):
+    """Explicit system_prompt_template is used instead of the default."""
+    custom = "Custom prompt for {actor_profile}"
+    simulator = ActorSimulator(
+        actor_profile=sample_actor_profile,
+        initial_query="Hello",
+        system_prompt_template=custom,
+    )
+
+    assert simulator.agent.system_prompt == custom.format(actor_profile=sample_actor_profile.model_dump())
+
+
+def test_init_structured_output_model_used_by_act(sample_actor_profile):
+    """structured_output_model set at init is used as default for act()."""
+
+    class CustomOutput(BaseModel):
+        stop: bool = False
+        message: str | None = None
+        extra: str = "default"
+
+    simulator = ActorSimulator(
+        actor_profile=sample_actor_profile,
+        initial_query="Hello",
+        system_prompt_template="Test: {actor_profile}",
+        structured_output_model=CustomOutput,
+    )
+
+    mock_response = MagicMock(spec=AgentResult)
+    mock_response.structured_output = CustomOutput(message="hi", stop=False)
+    simulator.agent = MagicMock(return_value=mock_response)
+
+    simulator.act("agent reply")
+
+    call_kwargs = simulator.agent.call_args[1]
+    assert call_kwargs["structured_output_model"] == CustomOutput
+
+
+def test_init_structured_output_model_overridden_per_call(sample_actor_profile):
+    """Per-call structured_output_model overrides the init-level default."""
+
+    class InitModel(BaseModel):
+        stop: bool = False
+        message: str | None = None
+
+    class CallModel(BaseModel):
+        stop: bool = False
+        message: str | None = None
+        priority: int = 0
+
+    simulator = ActorSimulator(
+        actor_profile=sample_actor_profile,
+        initial_query="Hello",
+        system_prompt_template="Test: {actor_profile}",
+        structured_output_model=InitModel,
+    )
+
+    mock_response = MagicMock(spec=AgentResult)
+    mock_response.structured_output = CallModel(message="hi", stop=False)
+    simulator.agent = MagicMock(return_value=mock_response)
+
+    simulator.act("agent reply", structured_output_model=CallModel)
+
+    call_kwargs = simulator.agent.call_args[1]
+    assert call_kwargs["structured_output_model"] == CallModel
+
+
+def test_init_structured_output_model_validates_stop_field(sample_actor_profile):
+    """Init raises ValueError if structured_output_model has no stop field."""
+
+    class NoStopModel(BaseModel):
+        message: str | None = None
+
+    with pytest.raises(ValueError, match="must have a 'stop' field"):
+        ActorSimulator(
+            actor_profile=sample_actor_profile,
+            initial_query="Hello",
+            system_prompt_template="Test: {actor_profile}",
+            structured_output_model=NoStopModel,
+        )
+
+
+def test_init_structured_output_model_validates_message_field(sample_actor_profile):
+    """Init raises ValueError if structured_output_model has no message field."""
+
+    class NoMessageModel(BaseModel):
+        answer: str = ""
+        stop: bool = False
+
+    with pytest.raises(ValueError, match="must have a 'message' field"):
+        ActorSimulator(
+            actor_profile=sample_actor_profile,
+            initial_query="Hello",
+            system_prompt_template="Test: {actor_profile}",
+            structured_output_model=NoMessageModel,
+        )

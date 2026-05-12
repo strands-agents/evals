@@ -2,4 +2,7 @@
 
 from .actor import ActorProfile, ActorResponse
 
-__all__ = ["ActorProfile", "ActorResponse"]
+__all__ = [
+    "ActorProfile",
+    "ActorResponse",
+]
