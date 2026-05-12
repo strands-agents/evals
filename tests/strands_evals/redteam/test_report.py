@@ -85,7 +85,7 @@ class TestFromEvaluationReports:
 
 
 class TestAttackResult:
-    def test_score_averages_across_evaluators(self):
+    def test_score_uses_min_across_evaluators(self):
         r = AttackResult(
             case_name="c0",
             attack_type="x",
@@ -93,7 +93,7 @@ class TestAttackResult:
             severity="low",
             scores={"a": 0.2, "b": 0.8},
         )
-        assert r.score == 0.5
+        assert r.score == 0.2
 
     def test_score_is_zero_when_empty(self):
         r = AttackResult(case_name="c0", attack_type="x", strategy="y", severity="low")

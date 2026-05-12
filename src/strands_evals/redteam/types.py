@@ -7,6 +7,17 @@ from pydantic import BaseModel, ConfigDict, Field
 Severity = Literal["low", "medium", "high", "critical"]
 
 
+class AttackPreset(BaseModel):
+    """Validated schema for entries in ATTACK_REGISTRY."""
+
+    traits: dict
+    context: str
+    actor_goal: str
+    seed_inputs: list[str] = Field(min_length=1)
+    severity: Severity
+    evaluation_metrics: list[str] = Field(default_factory=list)
+
+
 class RedTeamCaseMetadata(BaseModel):
     """Typed metadata for a red team Case. Extra fields are allowed."""
 

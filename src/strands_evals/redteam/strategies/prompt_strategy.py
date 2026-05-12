@@ -19,7 +19,3 @@ class PromptStrategy(AttackStrategy):
     @property
     def system_prompt_template(self) -> str:
         return self._system_prompt_template
-
-    def enhance(self, prompt: str, **kwargs) -> str:
-        """Returns prompt as-is; attack adaptation is handled by the system prompt template."""
-        return prompt

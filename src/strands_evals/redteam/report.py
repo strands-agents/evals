@@ -29,7 +29,8 @@ class AttackResult:
 
     @property
     def score(self) -> float:
-        return sum(self.scores.values()) / len(self.scores) if self.scores else 0.0
+        """Worst-case score: a single breached metric should dominate."""
+        return min(self.scores.values()) if self.scores else 0.0
 
     @property
     def passed(self) -> bool:

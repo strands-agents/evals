@@ -3,7 +3,7 @@ from .presets import ATTACK_REGISTRY, HARMFUL_CONTENT, JAILBREAK, PROMPT_EXTRACT
 from .report import RedTeamReport
 from .runner import generate_cases, red_team
 from .strategies import AttackStrategy, PromptStrategy
-from .types import RedTeamCaseMetadata
+from .types import AttackPreset, RedTeamCaseMetadata
 
 __all__ = [
     "ATTACK_REGISTRY",
@@ -17,5 +17,6 @@ __all__ = [
     "AttackSuccessEvaluator",
     "AttackStrategy",
     "PromptStrategy",
+    "AttackPreset",
     "RedTeamCaseMetadata",
 ]

@@ -38,7 +38,7 @@ def extract_tool_info(agent: Agent) -> dict:
                     "parameters": input_schema.get("properties", {}),
                 }
             )
-    except Exception as e:
+    except (AttributeError, KeyError, TypeError) as e:
         logger.warning("Failed to extract tools from agent: %s", e)
 
     return {
@@ -48,41 +48,45 @@ def extract_tool_info(agent: Agent) -> dict:
     }
 
 
-def wrap_agent_with_trace(agent: Agent) -> tuple[Callable[[str], str], list[dict]]:
+def wrap_agent_with_trace(agent: Agent) -> Callable[[str, list[dict] | None], str]:
     """Wrap an Agent as a Callable that captures tool execution traces.
 
     The returned Callable behaves like ``lambda msg: str(agent(msg))`` but
-    additionally records tool calls into the trace list as a side channel.
-    Only new messages produced by each call are scanned, so traces remain
-    accurate even when the Agent's message history persists across calls.
+    also appends any new tool calls to a caller-supplied list. Only new
+    messages produced by each call are scanned, so traces stay accurate
+    when the Agent's message history persists across calls.
+
+    The trace list is owned by the caller (typically one list per case),
+    so concurrent calls on independent lists do not share mutable state.
 
     Args:
         agent: A Strands Agent instance.
 
     Returns:
-        Tuple of (callable, trace_list). trace_list is mutated in-place
-        on each call with dicts of ``{"name": ..., "input": ...}``.
+        Callable ``(message, trace) -> response``. When ``trace`` is a list,
+        tool uses from this call are appended as ``{"name": ..., "input": ...}``.
+        When ``trace`` is None, tool calls are not recorded.
     """
-    trace: list[dict] = []
 
-    def _call(message: str) -> str:
+    def _call(message: str, trace: list[dict] | None = None) -> str:
         messages_before = len(agent.messages)
         result = agent(message)
 
-        try:
-            for msg in agent.messages[messages_before:]:
-                for block in msg.get("content", []):
-                    if "toolUse" in block:
-                        tool_use = block["toolUse"]
-                        trace.append(
-                            {
-                                "name": tool_use.get("name", ""),
-                                "input": tool_use.get("input", {}),
-                            }
-                        )
-        except Exception as e:
-            logger.debug("Failed to extract tool trace: %s", e)
+        if trace is not None:
+            try:
+                for msg in agent.messages[messages_before:]:
+                    for block in msg.get("content", []):
+                        if "toolUse" in block:
+                            tool_use = block["toolUse"]
+                            trace.append(
+                                {
+                                    "name": tool_use.get("name", ""),
+                                    "input": tool_use.get("input", {}),
+                                }
+                            )
+            except (AttributeError, KeyError, TypeError) as e:
+                logger.debug("Failed to extract tool trace: %s", e)
 
         return str(result)
 
-    return _call, trace
+    return _call

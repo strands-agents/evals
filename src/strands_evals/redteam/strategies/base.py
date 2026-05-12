@@ -27,21 +27,23 @@ class AttackStrategy(ABC):
         """Strategy identifier for reporting and case naming."""
         ...
 
-    @abstractmethod
     def enhance(self, prompt: str, **kwargs) -> str:
         """Generate the next adversarial message for one turn.
 
+        Default implementation is a no-op passthrough; prompt-based strategies
+        rely on ``system_prompt_template`` and do not need to override this.
+        Turn-level strategies should override to produce the next adversarial
+        message from ``conversation_history``, ``turn_number``, and friends
+        passed via ``kwargs``.
+
         Args:
             prompt: The initial attack prompt (from the case input).
-            **kwargs: Contextual data passed by the runner. Future turn-level
-                runners are expected to pass fields such as
-                ``conversation_history``, ``turn_number``, ``max_turns``,
-                ``tool_definitions``, and ``trajectory``.
+            **kwargs: Optional contextual data supplied by turn-level runners.
 
         Returns:
             The next message to send to the target agent.
         """
-        ...
+        return prompt
 
     @property
     def system_prompt_template(self) -> str | None:

@@ -10,6 +10,8 @@ Each preset defines an attack category (WHAT to attack) with:
 Strategy (HOW to attack) is defined separately in runner.py.
 """
 
+from strands_evals.redteam.types import AttackPreset
+
 JAILBREAK = {
     "traits": {
         "attack_type": "jailbreak",
@@ -146,8 +148,8 @@ HARMFUL_CONTENT = {
 }
 
 
-ATTACK_REGISTRY: dict[str, dict] = {
-    "jailbreak": JAILBREAK,
-    "prompt_extraction": PROMPT_EXTRACTION,
-    "harmful_content": HARMFUL_CONTENT,
+ATTACK_REGISTRY: dict[str, AttackPreset] = {
+    "jailbreak": AttackPreset(**JAILBREAK),
+    "prompt_extraction": AttackPreset(**PROMPT_EXTRACTION),
+    "harmful_content": AttackPreset(**HARMFUL_CONTENT),
 }

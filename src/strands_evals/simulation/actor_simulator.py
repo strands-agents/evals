@@ -189,7 +189,10 @@ class ActorSimulator:
         self._last_message = ""
         self._max_turns = max_turns
 
-        system_prompt = system_prompt_template.format(actor_profile=actor_profile.model_dump())
+        system_prompt = system_prompt_template.format(
+            actor_profile=actor_profile.model_dump(),
+            max_turns=max_turns,
+        )
 
         # Combine tools
         all_tools = [get_conversation_goal_completion]
