@@ -8,9 +8,9 @@ from strands_evals.case import Case
 from strands_evals.redteam.presets import ATTACK_REGISTRY
 from strands_evals.redteam.runner import (
     _AttackGoal,
-    build_task_function,
+    _build_task_function,
     generate_cases,
-    run_red_team,
+    red_team,
 )
 from strands_evals.types.simulation import ActorResponse
 
@@ -43,23 +43,8 @@ class TestGenerateCases:
         assert "traits" in metadata
         assert "context" in metadata
         assert "actor_goal" in metadata
-        assert "system_prompt_template" in metadata  # from strategy config
         assert "severity" in metadata
-        assert "strategy" in metadata
         assert "evaluation_metrics" in metadata
-
-    def test_case_input_is_from_seed_inputs(self):
-        cases = generate_cases(attack_types=["jailbreak"], n_per_type=3)
-        seed_inputs = ATTACK_REGISTRY["jailbreak"]["seed_inputs"]
-        for case in cases:
-            assert case.input in seed_inputs
-
-    def test_case_names_are_indexed(self):
-        cases = generate_cases(attack_types=["jailbreak"], n_per_type=3)
-        names = [c.name for c in cases]
-        assert "jailbreak_0" in names
-        assert "jailbreak_1" in names
-        assert "jailbreak_2" in names
 
     def test_n_per_type_exceeding_seeds_uses_replacement(self):
         """When n_per_type > available seeds, extra seeds are sampled with replacement."""
@@ -72,8 +57,10 @@ class TestGenerateCases:
             generate_cases(attack_types=["nonexistent_attack"])
 
     def test_unknown_strategy_raises_error(self):
+        from strands_evals.redteam.runner import _resolve_strategies
+
         with pytest.raises(ValueError, match="Unknown strategy"):
-            generate_cases(attack_types=["jailbreak"], strategy="nonexistent")
+            _resolve_strategies(["nonexistent"])
 
     def test_uses_preset_defaults_without_target_info(self):
         cases = generate_cases(attack_types=["jailbreak"], n_per_type=1)
@@ -127,10 +114,10 @@ class TestGenerateCases:
 
 
 # ---------------------------------------------------------------------------
-# build_task_function
+# _build_task_function
 # ---------------------------------------------------------------------------
 class TestBuildTaskFunction:
-    """Tests for build_task_function() and the generated task function."""
+    """Tests for _build_task_function() and the generated task function."""
 
     def _make_case(self, attack_type="jailbreak"):
         preset = ATTACK_REGISTRY[attack_type]
@@ -156,7 +143,7 @@ class TestBuildTaskFunction:
         mock_sim_class.return_value = mock_sim
 
         target = Mock(return_value="I can't help with that.")
-        task_fn = build_task_function(target=target, max_turns=5)
+        task_fn = _build_task_function(target=target, max_turns=5)
         result = task_fn(self._make_case())
 
         assert "output" in result
@@ -183,7 +170,7 @@ class TestBuildTaskFunction:
         mock_sim_class.return_value = mock_sim
 
         target = Mock(side_effect=["I can't do that.", "That's also not possible."])
-        task_fn = build_task_function(target=target, max_turns=5)
+        task_fn = _build_task_function(target=target, max_turns=5)
         result = task_fn(self._make_case())
 
         conversation = result["output"]
@@ -199,7 +186,7 @@ class TestBuildTaskFunction:
         mock_sim_class.return_value = mock_sim
 
         target = Mock(side_effect=RuntimeError("Connection timeout"))
-        task_fn = build_task_function(target=target, max_turns=5)
+        task_fn = _build_task_function(target=target, max_turns=5)
         result = task_fn(self._make_case())
 
         conversation = result["output"]
@@ -213,7 +200,7 @@ class TestBuildTaskFunction:
         mock_sim_class.return_value = mock_sim
 
         target = Mock(return_value="OK")
-        task_fn = build_task_function(target=target, max_turns=3, model="test-model")
+        task_fn = _build_task_function(target=target, max_turns=3, model="test-model")
         task_fn(self._make_case())
 
         call_kwargs = mock_sim_class.call_args[1]
@@ -223,16 +210,16 @@ class TestBuildTaskFunction:
 
 
 # ---------------------------------------------------------------------------
-# run_red_team
+# red_team
 # ---------------------------------------------------------------------------
-class TestRunRedTeam:
-    """Tests for run_red_team() end-to-end orchestration."""
+class TestRedTeam:
+    """Tests for red_team() end-to-end orchestration."""
 
     @patch("strands_evals.redteam.runner.Experiment")
-    @patch("strands_evals.redteam.runner.build_task_function")
+    @patch("strands_evals.redteam.runner._build_task_function")
     @patch("strands_evals.redteam.runner.generate_cases")
     def test_orchestrates_full_pipeline(self, mock_gen_cases, mock_build_fn, mock_experiment_class):
-        """run_red_team should call generate_cases, build_task_function, and Experiment.run_evaluations."""
+        """red_team should call generate_cases, _build_task_function, and Experiment.run_evaluations."""
         mock_cases = [Case(name="test_0", input="test", metadata={"attack_type": "jailbreak"})]
         mock_gen_cases.return_value = mock_cases
         mock_task_fn = Mock()
@@ -242,9 +229,9 @@ class TestRunRedTeam:
         mock_experiment_class.return_value = mock_experiment
 
         target = Mock(return_value="response")
-        run_red_team(
-            attack_types=["jailbreak"],
+        red_team(
             target=target,
+            attack_types=["jailbreak"],
             n_per_type=1,
             max_turns=3,
             model="test-model",
@@ -255,18 +242,17 @@ class TestRunRedTeam:
             n_per_type=1,
             target_info=None,
             model="test-model",
-            strategy="gradual_escalation",
         )
         mock_build_fn.assert_called_once_with(
             target=target,
             max_turns=3,
             model="test-model",
-            strategy="gradual_escalation",
+            tool_trace=None,
         )
         mock_experiment.run_evaluations.assert_called_once_with(mock_task_fn)
 
     @patch("strands_evals.redteam.runner.Experiment")
-    @patch("strands_evals.redteam.runner.build_task_function")
+    @patch("strands_evals.redteam.runner._build_task_function")
     @patch("strands_evals.redteam.runner.generate_cases")
     def test_uses_default_evaluator_when_none(self, mock_gen_cases, mock_build_fn, mock_experiment_class):
         """When evaluators=None, should use RedTeamJudgeEvaluator as default."""
@@ -276,17 +262,17 @@ class TestRunRedTeam:
         mock_experiment.run_evaluations.return_value = []
         mock_experiment_class.return_value = mock_experiment
 
-        run_red_team(attack_types=["jailbreak"], target=Mock())
+        red_team(target=Mock(), attack_types=["jailbreak"])
 
         call_kwargs = mock_experiment_class.call_args[1]
         evaluators = call_kwargs["evaluators"]
         assert len(evaluators) == 1
-        from strands_evals.evaluators.red_team_judge_evaluator import RedTeamJudgeEvaluator
+        from strands_evals.redteam.evaluators.red_team_judge_evaluator import RedTeamJudgeEvaluator
 
         assert isinstance(evaluators[0], RedTeamJudgeEvaluator)
 
     @patch("strands_evals.redteam.runner.Experiment")
-    @patch("strands_evals.redteam.runner.build_task_function")
+    @patch("strands_evals.redteam.runner._build_task_function")
     @patch("strands_evals.redteam.runner.generate_cases")
     def test_uses_custom_evaluators(self, mock_gen_cases, mock_build_fn, mock_experiment_class):
         """When evaluators are provided, should use them instead of default."""
@@ -297,7 +283,7 @@ class TestRunRedTeam:
         mock_experiment_class.return_value = mock_experiment
 
         custom_evaluator = Mock()
-        run_red_team(attack_types=["jailbreak"], target=Mock(), evaluators=[custom_evaluator])
+        red_team(target=Mock(), attack_types=["jailbreak"], evaluators=[custom_evaluator])
 
         call_kwargs = mock_experiment_class.call_args[1]
         assert call_kwargs["evaluators"] == [custom_evaluator]

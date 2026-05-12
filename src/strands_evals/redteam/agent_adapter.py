@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 def extract_tool_info(agent: Agent) -> dict:
     """Extract tool definitions and system prompt from an Agent as target_info.
 
-    Returns a dict compatible with run_red_team(target_info=...) so existing
+    Returns a dict compatible with red_team(target_info=...) so existing
     goal generation works transparently with Agent targets.
 
     Args:
@@ -29,12 +29,13 @@ def extract_tool_info(agent: Agent) -> dict:
     tools: list[dict[str, Any]] = []
     try:
         all_configs: Any = agent.tool_registry.get_all_tools_config()
-        for tool_config in all_configs:
+        for tool_config in all_configs.values():
+            input_schema = tool_config.get("inputSchema", {}).get("json", {})
             tools.append(
                 {
                     "name": tool_config["name"],
                     "description": tool_config.get("description", ""),
-                    "parameters": tool_config.get("inputSchema", {}).get("properties", {}),
+                    "parameters": input_schema.get("properties", {}),
                 }
             )
     except Exception as e:

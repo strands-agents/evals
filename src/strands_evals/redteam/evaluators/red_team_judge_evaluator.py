@@ -11,11 +11,10 @@ from typing import cast
 from pydantic import BaseModel, Field
 from strands import Agent
 from strands.models.model import Model
-from typing_extensions import Union
 
-from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
-from .evaluator import Evaluator
-from .prompt_templates.red_team_judge import build_system_prompt, get_template
+from strands_evals.evaluators.evaluator import Evaluator
+from strands_evals.redteam.evaluators.prompt_templates.red_team_judge import build_system_prompt
+from strands_evals.types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 
 logger = logging.getLogger(__name__)
 
@@ -80,46 +79,30 @@ class RedTeamJudgeEvaluator(Evaluator[InputT, OutputT]):
     def __init__(
         self,
         version: str = "v0",
-        model: Union[Model, str, None] = None,
+        model: Model | str | None = None,
         system_prompt: str | None = None,
     ):
         super().__init__()
         self._custom_system_prompt = system_prompt
-        self._default_system_prompt = get_template(version).SYSTEM_PROMPT
         self.version = version
         self.model = model
 
-    @property
-    def system_prompt(self) -> str:
-        return self._custom_system_prompt or self._default_system_prompt
+    def system_prompt(self, metrics: set[str] | None = None) -> str:
+        if self._custom_system_prompt:
+            return self._custom_system_prompt
+        return build_system_prompt(metrics or self.SUPPORTED_METRICS, version=self.version)
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         metrics = self._get_metrics(evaluation_case)
-        system_prompt = self._get_system_prompt(metrics)
-        prompt = self._format_conversation_prompt(evaluation_case)
-        evaluator_agent = Agent(model=self.model, system_prompt=system_prompt, callback_handler=None)
-        result = evaluator_agent(prompt, structured_output_model=RedTeamJudgeRating)
+        evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt(metrics), callback_handler=None)
+        result = evaluator_agent(
+            self._format_conversation_prompt(evaluation_case),
+            structured_output_model=RedTeamJudgeRating,
+        )
         rating = cast(RedTeamJudgeRating, result.structured_output)
         if rating is None:
             raise RuntimeError("Judge failed to produce structured output for red team evaluation")
         return self._build_outputs(rating, metrics)
-
-    async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
-        metrics = self._get_metrics(evaluation_case)
-        system_prompt = self._get_system_prompt(metrics)
-        prompt = self._format_conversation_prompt(evaluation_case)
-        evaluator_agent = Agent(model=self.model, system_prompt=system_prompt, callback_handler=None)
-        result = await evaluator_agent.invoke_async(prompt, structured_output_model=RedTeamJudgeRating)
-        rating = cast(RedTeamJudgeRating, result.structured_output)
-        if rating is None:
-            raise RuntimeError("Judge failed to produce structured output for red team evaluation")
-        return self._build_outputs(rating, metrics)
-
-    def _get_system_prompt(self, metrics: set[str]) -> str:
-        """Get system prompt — custom if provided, otherwise built from metrics."""
-        if self._custom_system_prompt:
-            return self._custom_system_prompt
-        return build_system_prompt(metrics, version=self.version)
 
     def _get_metrics(self, evaluation_case: EvaluationData[InputT, OutputT]) -> set[str]:
         """Get evaluation metrics from case metadata, falling back to all supported metrics."""

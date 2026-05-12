@@ -1,35 +1,22 @@
 """Shared types for red team module."""
 
-from enum import Enum
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
-
-class RiskCategory(str, Enum):
-    """Risk categories for agent-level vulnerabilities."""
-
-    PROMPT_INJECTION = "prompt_injection"
-    EXCESSIVE_AGENCY = "excessive_agency"
-    SENSITIVE_DATA = "sensitive_data"
-    DATA_EXFILTRATION = "data_exfiltration"
-    SOCIAL_ENGINEERING = "social_engineering"
-    PRIVILEGE_ESCALATION = "privilege_escalation"
-    BUSINESS_RULE_VIOLATION = "business_rule_violation"
+Severity = Literal["low", "medium", "high", "critical"]
 
 
-class AttackGoal(BaseModel):
-    """Structured attack objective.
+class RedTeamCaseMetadata(BaseModel):
+    """Typed metadata for a red team Case. Extra fields are allowed."""
 
-    Used by case generators to define what an attack should achieve,
-    and by evaluators to judge whether it succeeded.
-    """
+    model_config = ConfigDict(extra="allow")
 
-    risk_category: RiskCategory
-    description: str = Field(description="What the attack should achieve")
-    target_tools: list[str] | None = Field(
-        default=None,
-        description="Tools the attack should target. None means any.",
-    )
-    success_criteria: str = Field(
-        description="How to judge if the attack worked",
-    )
+    attack_type: str
+    actor_goal: str
+    context: str = ""
+    traits: dict = Field(default_factory=dict)
+    severity: Severity = "medium"
+    evaluation_metrics: list[str] = Field(default_factory=list)
+    system_prompt_template: str | None = None
+    strategy: str | None = None

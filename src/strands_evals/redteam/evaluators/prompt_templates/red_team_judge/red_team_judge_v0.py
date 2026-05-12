@@ -40,7 +40,3 @@ def build_system_prompt(metrics: set[str]) -> str:
     """Build a system prompt containing only the requested evaluation dimensions."""
     metric_sections = [METRIC_PROMPTS[m] for m in ["guardrail_breach", "harmfulness", "prompt_leakage"] if m in metrics]
     return "\n\n".join([PREAMBLE, "# Evaluation Dimensions", *metric_sections, INSTRUCTIONS])
-
-
-# Full prompt with all metrics (backward compatibility)
-SYSTEM_PROMPT = build_system_prompt({"guardrail_breach", "harmfulness", "prompt_leakage"})

@@ -1,13 +1,4 @@
-"""Base class for attack strategies.
-
-Defines the interface that all attack strategies implement. The interface
-is designed so that:
-- enhance() receives kwargs that grow over time without breaking
-  existing strategies (forward-compatible via **kwargs)
-- reset() lets the experiment runner reuse strategy instances across
-  cases without leaking state
-- Strategies are stateful per-case but stateless across cases
-"""
+"""Base class for attack strategies."""
 
 from abc import ABC, abstractmethod
 
@@ -15,13 +6,19 @@ from abc import ABC, abstractmethod
 class AttackStrategy(ABC):
     """Base class for multi-turn attack strategies.
 
-    Subclasses implement enhance() to produce the next adversarial
-    message given a prompt and conversation context.
+    Two extension paths are supported:
 
-    The runner calls enhance() once per turn, passing the growing
-    conversation_history so the strategy can adapt. Additional
-    context (attack_goal, tool_definitions, etc.) is passed via
-    kwargs — strategies take what they need and ignore the rest.
+    - Prompt-based strategies expose ``system_prompt_template`` and delegate
+      turn-by-turn adaptation to ``ActorSimulator``. ``enhance()`` is not
+      invoked by the current runner for these. ``PromptStrategy`` is the
+      built-in implementation.
+    - Turn-level strategies implement ``enhance()`` to produce the next
+      adversarial message given the growing conversation. A runner path
+      for these lands alongside the strategies that need it.
+
+    ``enhance()`` receives additional context via ``**kwargs`` so the
+    interface can grow without breaking existing subclasses. ``reset()``
+    lets strategies clear per-case state when a runner reuses instances.
     """
 
     @property
@@ -36,18 +33,20 @@ class AttackStrategy(ABC):
 
         Args:
             prompt: The initial attack prompt (from the case input).
-            **kwargs: Contextual data passed by the runner:
-                - conversation_history: list[dict] — turns so far
-                - attack_goal: AttackGoal — structured objective
-                - turn_number: int — current turn index
-                - max_turns: int — turn budget
-                - tool_definitions: list[dict] — target agent's tools
-                - trajectory: list[dict] — tool calls observed so far
+            **kwargs: Contextual data passed by the runner. Future turn-level
+                runners are expected to pass fields such as
+                ``conversation_history``, ``turn_number``, ``max_turns``,
+                ``tool_definitions``, and ``trajectory``.
 
         Returns:
             The next message to send to the target agent.
         """
         ...
+
+    @property
+    def system_prompt_template(self) -> str | None:
+        """Optional ActorSimulator system-prompt template. None for turn-level strategies."""
+        return None
 
     def reset(self) -> None:  # noqa: B027 - intentionally not abstract; override is optional
         """Reset internal state between cases."""
