@@ -1,7 +1,7 @@
 """Shared constants for detectors."""
 
 # Default model for all detectors
-DEFAULT_DETECTOR_MODEL = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+DEFAULT_DETECTOR_MODEL = "global.anthropic.claude-sonnet-4-6"
 
 # Token estimation and context window
 CHARS_PER_TOKEN = 3
