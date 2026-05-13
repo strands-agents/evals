@@ -20,7 +20,7 @@ class ChaosEffect(BaseModel):
     """Base for all chaos effects.
 
     Attributes:
-        apply_rate: Probability that this effect fires.
+        apply_rate: Probability that this effect fires, defaults to 1 (always fire).
         hook: Whether this effect fires pre-call ("pre") or post-call ("post").
     """
 
@@ -40,10 +40,11 @@ class ChaosEffect(BaseModel):
 
 
 class ToolEffect(ChaosEffect):
-    """Effect valid at the tool invocation boundary.
+    """Effect that operates at the tool invocation boundary.
 
-    - "pre": effect fires before tool execution (cancels the call with an error)
-    - "post": effect fires after tool execution (corrupts the response)
+    This intermediate class enables type-based dispatch so the plugin can
+    distinguish tool-level effects from other planned effect categories
+    (e.g., upcoming ``ModelEffect`` for LLM input and output chaos injection).
     """
 
 

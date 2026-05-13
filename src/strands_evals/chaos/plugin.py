@@ -9,12 +9,13 @@ time. The ChaosExperiment manages the ContextVar lifecycle.
 
 import json
 import logging
+import random
 
 from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent
 from strands.plugins import Plugin, hook
 
 from ._context import _current_scenario
-from .effects import ChaosEffect
+from .effects import ChaosEffect, TruncateFields
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +55,9 @@ class ChaosPlugin(Plugin):
     def before_tool_call(self, event: BeforeToolCallEvent) -> None:
         """Intercept tool calls to inject pre-hook (error) effects.
 
-        For error effects (Timeout, NetworkError, etc.), cancels the tool call
-        with the effect's error_message before the tool executes.
+        For ToolCallFailure effects (with error_type='timeout', 'network_error',
+        etc.), cancels the tool call with the effect's error_message before the
+        tool executes.
         """
         scenario = _current_scenario.get()
         if scenario is None:
@@ -69,8 +71,10 @@ class ChaosPlugin(Plugin):
         # First pre-hook effect wins (tool is cancelled once)
         for effect in effects:
             if effect.hook == "pre":
+                if random.random() > effect.apply_rate:
+                    continue
                 event.cancel_tool = effect.apply()
-                logger.info(f"[Chaos] Injected {type(effect).__name__} on tool '{tool_name}'")
+                logger.info("effect=<%s>, tool=<%s> | injected chaos pre-hook", type(effect).__name__, tool_name)
                 return
 
     @hook  # type: ignore[call-overload]
@@ -94,6 +98,9 @@ class ChaosPlugin(Plugin):
             if effect.hook != "post":
                 continue
 
+            if random.random() > effect.apply_rate:
+                continue
+
             if event.result is None:
                 continue
 
@@ -103,7 +110,7 @@ class ChaosPlugin(Plugin):
             if isinstance(content, list):
                 result["content"] = self._apply_to_blocks(effect, content)  # type: ignore[assignment]
 
-            logger.info(f"[Chaos] Applied {type(effect).__name__} on tool '{tool_name}'")
+            logger.info("effect=<%s>, tool=<%s> | applied chaos post-hook", type(effect).__name__, tool_name)
 
     def _apply_to_blocks(self, effect: ChaosEffect, blocks: list) -> list:
         """Apply effect to text blocks in a content list."""
@@ -118,8 +125,8 @@ class ChaosPlugin(Plugin):
                             corrupted = effect.apply(parsed)
                             block = {**block, "text": json.dumps(corrupted)}
                     except (json.JSONDecodeError, ValueError):
-                        # Plain text — apply truncation via effect if applicable
-                        if hasattr(effect, "max_length"):
+                        # Plain text — apply truncation if effect is TruncateFields
+                        if isinstance(effect, TruncateFields):
                             block = {**block, "text": text_data[: effect.max_length]}
             corrupted_blocks.append(block)
         return corrupted_blocks

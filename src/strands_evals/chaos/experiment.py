@@ -152,6 +152,44 @@ class ChaosExperiment:
         """
         return self._original_case_name_by_session.get(session_id)
 
+    def _wrap_task(self, task: Callable[[Case], Any]) -> Callable[[Case], Any]:
+        """Wrap a task function to activate the correct scenario via ContextVar.
+
+        Handles both sync and async tasks — returns a sync wrapper for sync tasks
+        and an async wrapper for async tasks, so the base Experiment dispatches
+        correctly.
+
+        Args:
+            task: The original task function (sync or async).
+
+        Returns:
+            A wrapped callable that sets/resets the ContextVar around each invocation.
+        """
+        import asyncio
+
+        if asyncio.iscoroutinefunction(task):
+
+            async def chaos_aware_task_async(case: Case) -> Any:
+                scenario = self._scenario_by_session.get(case.session_id)
+                token = _current_scenario.set(scenario)
+                try:
+                    return await task(case)
+                finally:
+                    _current_scenario.reset(token)
+
+            return chaos_aware_task_async
+        else:
+
+            def chaos_aware_task(case: Case) -> Any:
+                scenario = self._scenario_by_session.get(case.session_id)
+                token = _current_scenario.set(scenario)
+                try:
+                    return task(case)
+                finally:
+                    _current_scenario.reset(token)
+
+            return chaos_aware_task
+
     def run_evaluations(
         self,
         task: Callable[[Case], Any],
@@ -159,37 +197,29 @@ class ChaosExperiment:
     ) -> list[EvaluationReport]:
         """Run evaluations across all (case × scenario) combinations.
 
-        Wraps the user's task function to set the ContextVar before each
-        case execution, so the ChaosPlugin sees the correct scenario.
+        Delegates to run_evaluations_async with max_workers=1, mirroring the
+        base Experiment pattern.
 
         Args:
             task: The task function to evaluate. Takes a Case and returns output.
                 The task body should contain zero chaos concepts — just construct
                 the agent with plugins=[chaos] and call it.
-            **kwargs: Additional kwargs passed to the base Experiment.run_evaluations.
+            **kwargs: Additional kwargs passed to the base Experiment.run_evaluations_async.
 
         Returns:
             List of EvaluationReport objects covering all scenarios.
+
+        Raises:
+            ValueError: If an async task is passed (use run_evaluations_async instead).
         """
+        import asyncio
 
-        def chaos_aware_task(case: Case) -> Any:
-            """Wrapper that activates the correct scenario via ContextVar."""
-            scenario = self._scenario_by_session.get(case.session_id)
-            token = _current_scenario.set(scenario)
-            try:
-                return task(case)
-            finally:
-                _current_scenario.reset(token)
+        if asyncio.iscoroutinefunction(task):
+            raise ValueError(
+                "Async task is not supported in run_evaluations. Please use run_evaluations_async instead."
+            )
 
-        reports = self._experiment.run_evaluations(chaos_aware_task, **kwargs)
-
-        num_scenarios = len(self._scenarios) + (1 if self._include_baseline else 0)
-        logger.info(
-            f"Chaos experiment complete: {len(reports)} reports "
-            f"({len(self._original_cases)} cases × {num_scenarios} scenarios)"
-        )
-
-        return reports
+        return asyncio.run(self.run_evaluations_async(task, max_workers=1, **kwargs))
 
     async def run_evaluations_async(
         self,
@@ -199,8 +229,8 @@ class ChaosExperiment:
     ) -> list[EvaluationReport]:
         """Run evaluations asynchronously across all (case × scenario) combinations.
 
-        Same as run_evaluations but uses the async worker pool for parallelism.
-        ContextVar ensures each case sees its own scenario even under concurrency.
+        Wraps the user's task to set the ContextVar before each case execution.
+        The base Experiment handles sync-to-async dispatch internally.
 
         Args:
             task: The task function (sync or async).
@@ -210,34 +240,15 @@ class ChaosExperiment:
         Returns:
             List of EvaluationReport objects covering all scenarios.
         """
-        import asyncio
+        wrapped = self._wrap_task(task)
+        reports = await self._experiment.run_evaluations_async(wrapped, max_workers=max_workers, **kwargs)
 
-        def chaos_aware_task(case: Case) -> Any:
-            """Wrapper that activates the correct scenario via ContextVar."""
-            scenario = self._scenario_by_session.get(case.session_id)
-            token = _current_scenario.set(scenario)
-            try:
-                return task(case)
-            finally:
-                _current_scenario.reset(token)
-
-        async def chaos_aware_task_async(case: Case) -> Any:
-            """Async wrapper that activates the correct scenario via ContextVar."""
-            scenario = self._scenario_by_session.get(case.session_id)
-            token = _current_scenario.set(scenario)
-            try:
-                if asyncio.iscoroutinefunction(task):
-                    return await task(case)
-                else:
-                    return task(case)
-            finally:
-                _current_scenario.reset(token)
-
-        if asyncio.iscoroutinefunction(task):
-            reports = await self._experiment.run_evaluations_async(
-                chaos_aware_task_async, max_workers=max_workers, **kwargs
-            )
-        else:
-            reports = await self._experiment.run_evaluations_async(chaos_aware_task, max_workers=max_workers, **kwargs)
+        num_scenarios = len(self._scenarios) + (1 if self._include_baseline else 0)
+        logger.info(
+            "cases=<%d>, scenarios=<%d>, reports=<%d> | chaos experiment complete",
+            len(self._original_cases),
+            num_scenarios,
+            len(reports),
+        )
 
         return reports

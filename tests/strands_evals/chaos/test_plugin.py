@@ -192,3 +192,64 @@ class TestChaosPluginAfterToolCall:
             assert event.result["content"][0]["text"] == "This"
         finally:
             _current_scenario.reset(token)
+
+
+class TestApplyRate:
+    """Tests for the apply_rate probability check in ChaosPlugin."""
+
+    def test_apply_rate_zero_skips_pre_hook_effect(self, chaos_plugin, before_event):
+        """Effect with apply_rate=0.0 should never fire."""
+        scenario = ChaosScenario(
+            name="never_fires",
+            effects={"search_tool": [ToolCallFailure(error_type="timeout", apply_rate=0.0)]},
+        )
+        token = _current_scenario.set(scenario)
+        try:
+            # Run multiple times to confirm it never fires
+            for _ in range(20):
+                before_event.cancel_tool = None
+                chaos_plugin.before_tool_call(before_event)
+                assert before_event.cancel_tool is None
+        finally:
+            _current_scenario.reset(token)
+
+    def test_apply_rate_one_always_fires_pre_hook(self, chaos_plugin, before_event):
+        """Effect with apply_rate=1.0 should always fire."""
+        scenario = ChaosScenario(
+            name="always_fires",
+            effects={"search_tool": [ToolCallFailure(error_type="timeout", apply_rate=1.0)]},
+        )
+        token = _current_scenario.set(scenario)
+        try:
+            chaos_plugin.before_tool_call(before_event)
+            assert before_event.cancel_tool == "Tool call timed out"
+        finally:
+            _current_scenario.reset(token)
+
+    def test_apply_rate_zero_skips_post_hook_effect(self, chaos_plugin, after_event):
+        """Post-hook effect with apply_rate=0.0 should never fire."""
+        scenario = ChaosScenario(
+            name="never_truncates",
+            effects={"search_tool": [TruncateFields(max_length=3, apply_rate=0.0)]},
+        )
+        token = _current_scenario.set(scenario)
+        try:
+            original_content = after_event.result["content"][0]["text"]
+            chaos_plugin.after_tool_call(after_event)
+            assert after_event.result["content"][0]["text"] == original_content
+        finally:
+            _current_scenario.reset(token)
+
+    def test_apply_rate_one_always_fires_post_hook(self, chaos_plugin, after_event):
+        """Post-hook effect with apply_rate=1.0 should always fire."""
+        scenario = ChaosScenario(
+            name="always_truncates",
+            effects={"search_tool": [TruncateFields(max_length=3, apply_rate=1.0)]},
+        )
+        token = _current_scenario.set(scenario)
+        try:
+            chaos_plugin.after_tool_call(after_event)
+            corrupted = json.loads(after_event.result["content"][0]["text"])
+            assert corrupted["title"] == "Lon"
+        finally:
+            _current_scenario.reset(token)

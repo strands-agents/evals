@@ -22,7 +22,7 @@ class ChaosScenario(BaseModel):
     Example::
 
         from strands_evals.chaos import ChaosScenario
-        from strands_evals.chaos.effects import Timeout, NetworkError, CorruptValues
+        from strands_evals.chaos.effects import ToolCallFailure, CorruptValues
 
         # Baseline — no chaos
         ChaosScenario(name="baseline")
@@ -30,7 +30,7 @@ class ChaosScenario(BaseModel):
         # Single-fault: one tool fails
         ChaosScenario(
             name="search_timeout",
-            effects={"search_tool": [Timeout()]},
+            effects={"search_tool": [ToolCallFailure(error_type="timeout")]},
         )
 
         # Compound: multiple tools/models fail simultaneously
@@ -41,7 +41,7 @@ class ChaosScenario(BaseModel):
                 "recovery path silently returns bad data."
             ),
             effects={
-                "search_tool": [Timeout()],
+                "search_tool": [ToolCallFailure(error_type="timeout")],
                 "book_tool": [CorruptValues(corrupt_ratio=0.8)],
             },
         )
