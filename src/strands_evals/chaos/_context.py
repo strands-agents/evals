@@ -1,4 +1,4 @@
-"""Internal context variable for tracking the active chaos scenario.
+"""Internal context variable for tracking the active chaos case.
 
 The ChaosPlugin reads from this ContextVar at hook time.
 The ChaosExperiment sets and resets it around each case's task invocation.
@@ -13,9 +13,9 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .scenario import ChaosScenario
+    from .case import ChaosCase
 
-_current_scenario: ContextVar["ChaosScenario | None"] = ContextVar(
-    "chaos_current_scenario",
+_current_chaos_case: ContextVar["ChaosCase | None"] = ContextVar(
+    "chaos_current_case",
     default=None,
 )

@@ -3,7 +3,7 @@
 Implements chaos injection as a standard Strands Plugin using the SDK's
 native hook system (BeforeToolCallEvent / AfterToolCallEvent).
 
-The plugin reads the active scenario from a module-level ContextVar at hook
+The plugin reads the active ChaosCase from a module-level ContextVar at hook
 time. The ChaosExperiment manages the ContextVar lifecycle.
 """
 
@@ -14,21 +14,21 @@ import random
 from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent
 from strands.plugins import Plugin, hook
 
-from ._context import _current_scenario
+from ._context import _current_chaos_case
 from .effects import ChaosEffect, TruncateFields
 
 logger = logging.getLogger(__name__)
 
 
 class ChaosPlugin(Plugin):
-    """Strands Plugin that injects deterministic chaos based on the active scenario.
+    """Strands Plugin that injects deterministic chaos based on the active ChaosCase.
 
     The plugin intercepts tool calls via Strands' native hook system:
     - BeforeToolCallEvent: cancels tool calls for pre-hook effects (ToolCallFailure)
     - AfterToolCallEvent: corrupts tool responses for post-hook effects (TruncateFields, etc.)
 
-    The active scenario is managed via a ContextVar (set by ChaosExperiment).
-    When no scenario is active, all tools behave normally.
+    The active ChaosCase is managed via a ContextVar (set by ChaosExperiment).
+    When no ChaosCase is active or the case has no effects, all tools behave normally.
 
     Example::
 
@@ -42,7 +42,7 @@ class ChaosPlugin(Plugin):
             plugins=[chaos],
         )
 
-        # The ChaosExperiment handles scenario activation via ContextVar.
+        # The ChaosExperiment handles ChaosCase activation via ContextVar.
         # The user's task body contains zero chaos concepts.
     """
 
@@ -59,12 +59,12 @@ class ChaosPlugin(Plugin):
         etc.), cancels the tool call with the effect's error_message before the
         tool executes.
         """
-        scenario = _current_scenario.get()
-        if scenario is None:
+        chaos_case = _current_chaos_case.get()
+        if chaos_case is None or not chaos_case.effects:
             return
 
         tool_name = event.tool_use.get("name", "")
-        effects = scenario.effects.get(tool_name, [])
+        effects = chaos_case.effects.get(tool_name, [])
         if not effects:
             return
 
@@ -84,12 +84,12 @@ class ChaosPlugin(Plugin):
         For corruption effects (TruncateFields, RemoveFields, CorruptValues),
         applies effect.apply() to JSON content blocks in the tool response.
         """
-        scenario = _current_scenario.get()
-        if scenario is None:
+        chaos_case = _current_chaos_case.get()
+        if chaos_case is None or not chaos_case.effects:
             return
 
         tool_name = event.tool_use.get("name", "")
-        effects = scenario.effects.get(tool_name, [])
+        effects = chaos_case.effects.get(tool_name, [])
         if not effects:
             return
 

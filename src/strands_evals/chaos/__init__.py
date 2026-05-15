@@ -4,6 +4,7 @@ Provides deterministic fault injection for evaluating agent resilience
 under tool failures and response corruption scenarios.
 """
 
+from .case import ChaosCase
 from .effects import (
     ChaosEffect,
     CorruptValues,
@@ -14,13 +15,12 @@ from .effects import (
 )
 from .experiment import ChaosExperiment
 from .plugin import ChaosPlugin
-from .scenario import ChaosScenario
 
 __all__ = [
     # Core classes
+    "ChaosCase",
     "ChaosExperiment",
     "ChaosPlugin",
-    "ChaosScenario",
     # Effect hierarchy
     "ChaosEffect",
     "ToolEffect",

@@ -67,13 +67,15 @@ class ToolCallFailure(ToolEffect):
 
     Example::
 
-        ChaosScenario(
+        ChaosCase(
             name="search_timeout",
+            input="Find flights",
             effects={"search_tool": [ToolCallFailure(error_type="timeout")]},
         )
 
-        ChaosScenario(
+        ChaosCase(
             name="db_network_error",
+            input="Query database",
             effects={"database_tool": [ToolCallFailure(
                 error_type="network_error",
                 error_message="Connection refused on port 5432",
@@ -106,8 +108,9 @@ class TruncateFields(ToolEffect):
 
     Example::
 
-        ChaosScenario(
+        ChaosCase(
             name="search_truncated",
+            input="Find flights",
             effects={
                 "search_tool": [TruncateFields(max_length=5)],
             },
@@ -147,8 +150,9 @@ class RemoveFields(ToolEffect):
 
     Example::
 
-        ChaosScenario(
+        ChaosCase(
             name="db_remove_fields",
+            input="Query database",
             effects={
                 "database_tool": [RemoveFields(remove_ratio=0.5)],
             },
@@ -193,8 +197,9 @@ class CorruptValues(ToolEffect):
 
     Example::
 
-        ChaosScenario(
+        ChaosCase(
             name="db_corrupt",
+            input="Query database",
             effects={
                 "database_tool": [CorruptValues(corrupt_ratio=0.8)],
             },
