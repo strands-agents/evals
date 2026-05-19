@@ -1,23 +1,20 @@
-"""General-purpose aggregator for per-trial evaluation reports."""
+"""Aggregators for evaluation reports.
 
-from .base import (
-    DEFAULT_SUMMARY_PROMPT,
-    Aggregator,
-    render_display,
-)
-from .types import (
-    AggregationReport,
-    AggregationResult,
-    EfficiencyStats,
-    PairedComparisonStats,
-)
+Public API:
+
+- ``Aggregator``: rolls up per-trial ``EvaluationReport`` objects into an
+  ``AggregationReport``. Subclasses can override the grouping, filtering,
+  and result-building hooks to add project-specific behavior.
+- ``AggregationResult``: per-group aggregated result.
+- ``AggregationReport``: top-level report with display and JSON serialization.
+"""
+
+from .base import Aggregator, DEFAULT_SUMMARY_PROMPT
+from .types import AggregationReport, AggregationResult
 
 __all__ = [
     "Aggregator",
     "AggregationReport",
     "AggregationResult",
-    "EfficiencyStats",
-    "PairedComparisonStats",
     "DEFAULT_SUMMARY_PROMPT",
-    "render_display",
 ]

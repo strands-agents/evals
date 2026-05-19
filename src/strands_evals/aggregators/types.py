@@ -4,60 +4,22 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
 
 from pydantic import BaseModel, Field
-
-
-class EfficiencyStats(BaseModel):
-    """Per-group rollup of efficiency metrics across N trials.
-
-    All means are computed over trials that reported the metric. Trials
-    missing a particular metric are excluded from that metric's mean only.
-    """
-
-    mean_tokens_in: Optional[float] = None
-    mean_tokens_out: Optional[float] = None
-    mean_wall_clock_s: Optional[float] = None
-    mean_cost_usd: Optional[float] = None
-    mean_tool_calls: Optional[float] = None
-    n_samples: int = 0
-
-
-class PairedComparisonStats(BaseModel):
-    """Paired comparison of one metric between two conditions.
-
-    Populated only when the aggregator detects exactly two conditions with
-    a shared pairing key (``trial_idx``).
-    """
-
-    metric_name: str
-    baseline_label: str
-    variant_label: str
-    baseline_mean: float
-    variant_mean: float
-    delta: float
-    delta_pct: Optional[float] = None
-    test_used: str
-    p_value: float
-    ci_low: float
-    ci_high: float
-    n_used: int
-    n_corrupted: int = 0
 
 
 class AggregationResult(BaseModel):
     """Aggregated result for one logical group.
 
     A "group" is what the aggregator chose to roll up over — typically
-    ``(case_key, evaluator_name)`` for the default aggregator. Subclasses
-    may group differently via overriding ``_group_key``.
+    ``(case_key, evaluator_name)`` for the default ``Aggregator``. Subclasses
+    can group differently by overriding ``Aggregator._group_key``.
     """
 
     group_key: str
     evaluator_name: str
 
-    # Descriptive stats over the trials in this group.
+    # Descriptive stats over the entries in this group.
     mean_score: float
     min_score: float
     max_score: float
@@ -66,29 +28,15 @@ class AggregationResult(BaseModel):
     num_passed: int
     num_failed: int
 
-    # Sample counts after corruption filtering. n_total = n_used + n_corrupted.
-    n_total: int = 0
-    n_corrupted: int = 0
-    n_used: int = 0
-
-    # Efficiency rollup. None when no trial reported efficiency metrics.
-    efficiency: Optional[EfficiencyStats] = None
+    # Aggregated free-text reasons from per-trial evaluations.
+    reasons: list[str] = Field(default_factory=list)
 
     # LLM-generated summary string. Empty when no summarizer was provided.
     summary: str = ""
 
-    # Populated when exactly two conditions are detected for this group.
-    paired_stats: list[PairedComparisonStats] = Field(default_factory=list)
-
-    # Raw per-trial values keyed by metric name. Preserved for downstream
-    # diagnostic layers that do not want to re-parse trajectories.
-    raw_values: dict[str, list[float]] = Field(default_factory=dict)
-
-    # Per-trial trajectory pointers (e.g. session_ids), in trial order.
-    trajectory_pointers: list[str] = Field(default_factory=list)
-
-    # Free-form extension point for subclasses.
-    metadata: dict = Field(default_factory=dict)
+    # Free-form extension point for subclasses that need to attach
+    # project-specific stats (e.g. paired comparisons, win-rate CIs).
+    extra: dict = Field(default_factory=dict)
 
 
 class AggregationReport(BaseModel):
