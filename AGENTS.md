@@ -234,7 +234,8 @@ Shared helpers live in `detectors/utils.py`. Types live in `types/detector.py`. 
 ### Type Annotations
 
 - Type annotations are required on all public signatures.
-- Use `typing` / `typing_extensions` for complex types.
+- **Use Python built-in generic types and PEP 604 unions.** Prefer `list[X]`, `dict[K, V]`, `tuple[X, ...]`, `set[X]`, `type[X]`, and `X | None` over `typing.List`, `typing.Dict`, `typing.Tuple`, `typing.Set`, `typing.Type`, `typing.Optional[X]`, and `typing.Union[X, Y]`. The repo targets Python >=3.10, so PEP 585 (built-in generics) and PEP 604 (`|` unions) are available without `from __future__ import annotations`.
+- Only fall back to `typing` / `typing_extensions` for symbols that have no built-in equivalent: `Any`, `Callable`, `Iterable`, `Sequence`, `Mapping`, `Protocol`, `TypedDict`, `TypeVar`, `Generic`, `Literal`, `cast`, `overload`, `Self` (3.11+ via `typing`, 3.10 via `typing_extensions`).
 - Mypy runs via `hatch fmt --linter`. Strict checks disabled selectively in `pyproject.toml` for Generic-class patterns; see `[tool.mypy]` overrides.
 
 ### Docstrings
@@ -337,6 +338,7 @@ pre-commit run --all-files
 ## Things to Do
 
 - Use explicit return types for all functions.
+- Use built-in generics (`list`, `dict`, `tuple`, `set`, `type`) and PEP 604 unions (`X | None`, `A | B`) in annotations.
 - Write Google-style docstrings for public APIs.
 - Use structured logging format.
 - Mirror `src/` structure in `tests/`.
@@ -350,6 +352,7 @@ pre-commit run --all-files
 - Don't create `_internal/` directories — this is open source.
 - Don't introduce litellm or wrap model providers outside `strands.Agent`.
 - Don't use Jinja2 for prompts; use Python string constants.
+- Don't use `typing.List`, `typing.Dict`, `typing.Tuple`, `typing.Set`, `typing.Type`, `typing.Optional`, or `typing.Union` in annotations. Use built-in generics and `|` instead.
 - Don't use f-strings in logging calls.
 - Don't add punctuation or capital letters to log messages.
 - Don't rely on private SDK internals (`strands._*`).
