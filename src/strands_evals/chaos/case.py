@@ -12,7 +12,7 @@ from typing_extensions import Generic
 
 from ..case import Case
 from ..types.evaluation import InputT, OutputT
-from .effects import ChaosEffect
+from .effects import ToolEffectUnion
 
 
 class ChaosCase(Case, Generic[InputT, OutputT]):
@@ -26,20 +26,20 @@ class ChaosCase(Case, Generic[InputT, OutputT]):
     ChaosExperiment.
 
     Attributes:
-        effects: Mapping of tool_name -> list of effects to inject for this case.
-            Tools not listed behave normally. Empty dict means baseline (no chaos).
+        effects: A dict keyed by effect category. Currently supports
+            ``"tool_effects"`` mapping tool_name -> list of effects.
 
     Example::
 
         from strands_evals import Case
         from strands_evals.chaos import ChaosCase
-        from strands_evals.chaos.effects import ToolCallFailure, TruncateFields
+        from strands_evals.chaos.effects import Timeout, TruncateFields
 
         # Direct construction
         chaos_case = ChaosCase(
             name="search_timeout",
             input="Find flights to Tokyo",
-            effects={"search_tool": [ToolCallFailure(error_type="timeout")]},
+            effects={"tool_effects": {"search_tool": [Timeout()]}},
         )
 
         # Expansion from base cases × named effect maps
@@ -48,24 +48,24 @@ class ChaosCase(Case, Generic[InputT, OutputT]):
             Case(name="hotel_search", input="Find hotels in Tokyo"),
         ]
         effect_maps = {
-            "search_timeout": {"search_tool": [ToolCallFailure(error_type="timeout")]},
-            "search_truncated": {"search_tool": [TruncateFields(max_length=5)]},
+            "search_timeout": {"tool_effects": {"search_tool": [Timeout()]}},
+            "search_truncated": {"tool_effects": {"search_tool": [TruncateFields(max_length=5)]}},
         }
         chaos_cases = ChaosCase.expand(cases, effect_maps, include_no_effect_baseline=True)
         # Produces 6 ChaosCase objects: 2 cases × (2 effect maps + 1 baseline)
     """
 
-    effects: dict[str, list[ChaosEffect]] = Field(
+    effects: dict[str, dict[str, list[ToolEffectUnion]]] = Field(
         default_factory=dict,
-        description="Mapping of tool_name -> list of effects to inject for this case. "
-        "Empty dict means baseline (no chaos).",
+        description="Effect categories. Currently supports 'tool_effects' mapping "
+        "tool_name -> list of effects. Empty dict means baseline (no chaos).",
     )
 
     @classmethod
     def expand(
         cls,
         cases: list[Case],
-        effect_maps: dict[str, dict[str, list[ChaosEffect]]],
+        effect_maps: dict[str, dict[str, dict[str, list[ToolEffectUnion]]]],
         include_no_effect_baseline: bool = False,
     ) -> list["ChaosCase"]:
         """Generate the Cartesian product of cases × named effect maps.
@@ -77,8 +77,16 @@ class ChaosCase(Case, Generic[InputT, OutputT]):
         Args:
             cases: Base test cases to expand.
             effect_maps: Named effect configurations. Keys are short human-readable
-                names (used in the composite case name); values are mappings of
-                tool_name -> list of ChaosEffect instances.
+                names (used in the composite case name); values are dicts keyed by
+                effect category (e.g. ``"tool_effects"``) mapping tool_name -> list
+                of effect instances.
+                Example::
+
+                    {
+                        "search_timeout": {
+                            "tool_effects": {"search_tool": [Timeout()]}
+                        },
+                    }
             include_no_effect_baseline: If True, includes a baseline (no chaos)
                 variant for each case. Defaults to False.
 
@@ -86,19 +94,20 @@ class ChaosCase(Case, Generic[InputT, OutputT]):
             Flat list of ChaosCase objects with composite names like
             "flight_search|baseline" or "flight_search|search_timeout".
         """
-        all_entries: list[tuple[str, dict[str, list[ChaosEffect]]]] = []
+        all_entries: list[tuple[str, dict[str, dict[str, list[ToolEffectUnion]]]]] = []
 
         if include_no_effect_baseline:
             all_entries.append(("baseline", {}))
 
-        for name, effects in effect_maps.items():
-            all_entries.append((name, effects))
+        for name, effects_config in effect_maps.items():
+            all_entries.append((name, effects_config))
 
         expanded: list[ChaosCase] = []
         for case in cases:
-            for condition_name, effects in all_entries:
+            for condition_name, effects_config in all_entries:
                 session_id = str(uuid.uuid4())
                 expanded_name = f"{case.name}|{condition_name}" if case.name else condition_name
+
                 expanded.append(
                     cls(
                         name=expanded_name,
@@ -110,14 +119,19 @@ class ChaosCase(Case, Generic[InputT, OutputT]):
                         expected_interactions=case.expected_interactions,
                         expected_environment_state=case.expected_environment_state,
                         metadata=case.metadata,
-                        effects=effects,
+                        effects=effects_config,
                     )
                 )
 
         return expanded
 
+    @property
+    def tool_effects(self) -> dict[str, list[ToolEffectUnion]]:
+        """Convenience accessor for effects['tool_effects']."""
+        return self.effects.get("tool_effects", {})
+
     def __repr__(self) -> str:
         effects_str = ", ".join(
-            f"{target}: [{', '.join(type(e).__name__ for e in effs)}]" for target, effs in self.effects.items()
+            f"{target}: [{', '.join(type(e).__name__ for e in effs)}]" for target, effs in self.tool_effects.items()
         )
         return f"ChaosCase(name='{self.name}', effects={{{effects_str}}})"

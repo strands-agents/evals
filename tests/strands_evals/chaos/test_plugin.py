@@ -8,7 +8,8 @@ import pytest
 from strands_evals.chaos import ChaosCase, ChaosPlugin
 from strands_evals.chaos._context import _current_chaos_case
 from strands_evals.chaos.effects import (
-    ToolCallFailure,
+    NetworkError,
+    Timeout,
     TruncateFields,
 )
 
@@ -55,7 +56,7 @@ class TestChaosPluginBeforeToolCall:
         case = ChaosCase(
             name="other_tool_fails",
             input="test",
-            effects={"other_tool": [ToolCallFailure(error_type="timeout")]},
+            effects={"tool_effects": {"other_tool": [Timeout()]}},
         )
         token = _current_chaos_case.set(case)
         try:
@@ -68,7 +69,7 @@ class TestChaosPluginBeforeToolCall:
         case = ChaosCase(
             name="search_timeout",
             input="test",
-            effects={"search_tool": [ToolCallFailure(error_type="timeout")]},
+            effects={"tool_effects": {"search_tool": [Timeout()]}},
         )
         token = _current_chaos_case.set(case)
         try:
@@ -81,7 +82,7 @@ class TestChaosPluginBeforeToolCall:
         case = ChaosCase(
             name="search_truncated",
             input="test",
-            effects={"search_tool": [TruncateFields(max_length=5)]},
+            effects={"tool_effects": {"search_tool": [TruncateFields(max_length=5)]}},
         )
         token = _current_chaos_case.set(case)
         try:
@@ -95,10 +96,12 @@ class TestChaosPluginBeforeToolCall:
             name="multi_pre",
             input="test",
             effects={
-                "search_tool": [
-                    ToolCallFailure(error_type="timeout"),
-                    ToolCallFailure(error_type="network_error"),
-                ]
+                "tool_effects": {
+                    "search_tool": [
+                        Timeout(),
+                        NetworkError(),
+                    ]
+                }
             },
         )
         token = _current_chaos_case.set(case)
@@ -125,7 +128,7 @@ class TestChaosPluginAfterToolCall:
         case = ChaosCase(
             name="other_tool",
             input="test",
-            effects={"other_tool": [TruncateFields(max_length=3)]},
+            effects={"tool_effects": {"other_tool": [TruncateFields(max_length=3)]}},
         )
         token = _current_chaos_case.set(case)
         try:
@@ -139,7 +142,7 @@ class TestChaosPluginAfterToolCall:
         case = ChaosCase(
             name="truncate",
             input="test",
-            effects={"search_tool": [TruncateFields(max_length=3)]},
+            effects={"tool_effects": {"search_tool": [TruncateFields(max_length=3)]}},
         )
         token = _current_chaos_case.set(case)
         try:
@@ -154,7 +157,7 @@ class TestChaosPluginAfterToolCall:
         case = ChaosCase(
             name="pre_only",
             input="test",
-            effects={"search_tool": [ToolCallFailure(error_type="timeout")]},
+            effects={"tool_effects": {"search_tool": [Timeout()]}},
         )
         token = _current_chaos_case.set(case)
         try:
@@ -172,7 +175,7 @@ class TestChaosPluginAfterToolCall:
         case = ChaosCase(
             name="truncate",
             input="test",
-            effects={"search_tool": [TruncateFields(max_length=3)]},
+            effects={"tool_effects": {"search_tool": [TruncateFields(max_length=3)]}},
         )
         token = _current_chaos_case.set(case)
         try:
@@ -193,7 +196,7 @@ class TestChaosPluginAfterToolCall:
         case = ChaosCase(
             name="truncate",
             input="test",
-            effects={"search_tool": [TruncateFields(max_length=4)]},
+            effects={"tool_effects": {"search_tool": [TruncateFields(max_length=4)]}},
         )
         token = _current_chaos_case.set(case)
         try:
@@ -211,7 +214,7 @@ class TestApplyRate:
         case = ChaosCase(
             name="never_fires",
             input="test",
-            effects={"search_tool": [ToolCallFailure(error_type="timeout", apply_rate=0.0)]},
+            effects={"tool_effects": {"search_tool": [Timeout(apply_rate=0.0)]}},
         )
         token = _current_chaos_case.set(case)
         try:
@@ -228,7 +231,7 @@ class TestApplyRate:
         case = ChaosCase(
             name="always_fires",
             input="test",
-            effects={"search_tool": [ToolCallFailure(error_type="timeout", apply_rate=1.0)]},
+            effects={"tool_effects": {"search_tool": [Timeout(apply_rate=1.0)]}},
         )
         token = _current_chaos_case.set(case)
         try:
@@ -242,7 +245,7 @@ class TestApplyRate:
         case = ChaosCase(
             name="never_truncates",
             input="test",
-            effects={"search_tool": [TruncateFields(max_length=3, apply_rate=0.0)]},
+            effects={"tool_effects": {"search_tool": [TruncateFields(max_length=3, apply_rate=0.0)]}},
         )
         token = _current_chaos_case.set(case)
         try:
@@ -257,7 +260,7 @@ class TestApplyRate:
         case = ChaosCase(
             name="always_truncates",
             input="test",
-            effects={"search_tool": [TruncateFields(max_length=3, apply_rate=1.0)]},
+            effects={"tool_effects": {"search_tool": [TruncateFields(max_length=3, apply_rate=1.0)]}},
         )
         token = _current_chaos_case.set(case)
         try:

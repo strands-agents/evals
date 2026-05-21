@@ -1,19 +1,22 @@
 """Chaos effect definitions.
 
 Effects are first-class parameterized classes organized in a hierarchy:
-    ChaosEffect → ToolEffect → concrete effects (ToolCallFailure, TruncateFields, etc.)
+    ChaosEffect → ToolEffect → concrete effects (Timeout, NetworkError, etc.)
 
 Each concrete effect carries only the parameters meaningful to it.
 The `hook` class variable indicates whether the effect fires pre-tool-call
 (error effects) or post-tool-call (corruption effects).
+
+Each concrete effect has an `effect_type` discriminator field for Pydantic
+discriminated-union serialization, ensuring full round-trip fidelity.
 """
 
 import math
 import random
 from abc import abstractmethod
-from typing import Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Discriminator, Field, Tag
 
 
 class ChaosEffect(BaseModel):
@@ -48,56 +51,118 @@ class ToolEffect(ChaosEffect):
     """
 
 
-# All supported failure types
-ToolCallFailureType = Literal["timeout", "network_error", "execution_error", "validation_error"]
-
-# Default error messages per failure type
-_DEFAULT_ERROR_MESSAGES: dict[str, str] = {
-    "timeout": "Tool call timed out",
-    "network_error": "Network unreachable",
-    "execution_error": "Tool execution failed",
-    "validation_error": "Tool input validation failed",
-}
+# ---------------------------------------------------------------------------
+# Pre-hook effects: cancel the tool call before execution
+# ---------------------------------------------------------------------------
 
 
-class ToolCallFailure(ToolEffect):
-    """Simulates a tool call failure that prevents the tool from executing.
+class Timeout(ToolEffect):
+    """Simulates a tool call timeout.
 
-    The tool call is cancelled before execution with a simulated error message.
+    The tool call is cancelled before execution with a timeout error message.
 
     Example::
 
         ChaosCase(
             name="search_timeout",
             input="Find flights",
-            effects={"search_tool": [ToolCallFailure(error_type="timeout")]},
-        )
-
-        ChaosCase(
-            name="db_network_error",
-            input="Query database",
-            effects={"database_tool": [ToolCallFailure(
-                error_type="network_error",
-                error_message="Connection refused on port 5432",
-            )]},
+            effects={"tool_effects": {"search_tool": [Timeout()]}},
         )
     """
 
     hook: ClassVar[Literal["pre", "post"]] = "pre"
-    error_type: ToolCallFailureType = Field(
-        default="execution_error",
-        description="Type of failure to simulate.",
-    )
-    error_message: str | None = Field(
-        default=None,
-        description="Custom error message. If None, uses a default for the error_type.",
+    effect_type: Literal["timeout"] = "timeout"
+    error_message: str = Field(
+        default="Tool call timed out",
+        description="Error message returned to the agent.",
     )
 
     def apply(self, context: Any = None) -> str:
         """Return the error message to cancel the tool call with."""
-        if self.error_message is not None:
-            return self.error_message
-        return _DEFAULT_ERROR_MESSAGES[self.error_type]
+        return self.error_message
+
+
+class NetworkError(ToolEffect):
+    """Simulates a network error during tool invocation.
+
+    The tool call is cancelled before execution with a network error message.
+
+    Example::
+
+        ChaosCase(
+            name="db_network_error",
+            input="Query database",
+            effects={"tool_effects": {"database_tool": [NetworkError()]}},
+        )
+    """
+
+    hook: ClassVar[Literal["pre", "post"]] = "pre"
+    effect_type: Literal["network_error"] = "network_error"
+    error_message: str = Field(
+        default="Network unreachable",
+        description="Error message returned to the agent.",
+    )
+
+    def apply(self, context: Any = None) -> str:
+        """Return the error message to cancel the tool call with."""
+        return self.error_message
+
+
+class ExecutionError(ToolEffect):
+    """Simulates a tool execution failure.
+
+    The tool call is cancelled before execution with an execution error message.
+
+    Example::
+
+        ChaosCase(
+            name="tool_exec_error",
+            input="Run analysis",
+            effects={"tool_effects": {"analysis_tool": [ExecutionError()]}},
+        )
+    """
+
+    hook: ClassVar[Literal["pre", "post"]] = "pre"
+    effect_type: Literal["execution_error"] = "execution_error"
+    error_message: str = Field(
+        default="Tool execution failed",
+        description="Error message returned to the agent.",
+    )
+
+    def apply(self, context: Any = None) -> str:
+        """Return the error message to cancel the tool call with."""
+        return self.error_message
+
+
+class ValidationError(ToolEffect):
+    """Simulates a tool input validation failure.
+
+    The tool call is cancelled before execution with a validation error message.
+
+    Example::
+
+        ChaosCase(
+            name="bad_input",
+            input="Search with invalid params",
+            effects={"tool_effects": {"search_tool": [ValidationError()]}},
+        )
+    """
+
+    hook: ClassVar[Literal["pre", "post"]] = "pre"
+    effect_type: Literal["validation_error"] = "validation_error"
+    error_message: str = Field(
+        default="Tool input validation failed",
+        description="Error message returned to the agent.",
+    )
+
+    def apply(self, context: Any = None) -> str:
+        """Return the error message to cancel the tool call with."""
+        return self.error_message
+
+
+# ---------------------------------------------------------------------------
+# Post-hook effects: corrupt the tool response after execution
+# ---------------------------------------------------------------------------
 
 
 class TruncateFields(ToolEffect):
@@ -112,12 +177,13 @@ class TruncateFields(ToolEffect):
             name="search_truncated",
             input="Find flights",
             effects={
-                "search_tool": [TruncateFields(max_length=5)],
+                "tool_effects": {"search_tool": [TruncateFields(max_length=5)]},
             },
         )
     """
 
     hook: ClassVar[Literal["pre", "post"]] = "post"
+    effect_type: Literal["truncate_fields"] = "truncate_fields"
     max_length: int = Field(default=10, ge=0, description="Maximum length to truncate string values to")
 
     def apply(self, response: Any = None) -> Any:
@@ -154,12 +220,13 @@ class RemoveFields(ToolEffect):
             name="db_remove_fields",
             input="Query database",
             effects={
-                "database_tool": [RemoveFields(remove_ratio=0.5)],
+                "tool_effects": {"database_tool": [RemoveFields(remove_ratio=0.5)]},
             },
         )
     """
 
     hook: ClassVar[Literal["pre", "post"]] = "post"
+    effect_type: Literal["remove_fields"] = "remove_fields"
     remove_ratio: float = Field(
         default=0.5,
         ge=0.0,
@@ -201,12 +268,13 @@ class CorruptValues(ToolEffect):
             name="db_corrupt",
             input="Query database",
             effects={
-                "database_tool": [CorruptValues(corrupt_ratio=0.8)],
+                "tool_effects": {"database_tool": [CorruptValues(corrupt_ratio=0.8)]},
             },
         )
     """
 
     hook: ClassVar[Literal["pre", "post"]] = "post"
+    effect_type: Literal["corrupt_values"] = "corrupt_values"
     corrupt_ratio: float = Field(
         default=0.5,
         ge=0.0,
@@ -246,3 +314,26 @@ class CorruptValues(ToolEffect):
             else:
                 result[key] = value
         return result
+
+
+# ---------------------------------------------------------------------------
+# Discriminated union type for Pydantic serialization
+# ---------------------------------------------------------------------------
+
+ToolEffectUnion = Annotated[
+    Union[
+        Annotated[Timeout, Tag("timeout")],
+        Annotated[NetworkError, Tag("network_error")],
+        Annotated[ExecutionError, Tag("execution_error")],
+        Annotated[ValidationError, Tag("validation_error")],
+        Annotated[TruncateFields, Tag("truncate_fields")],
+        Annotated[RemoveFields, Tag("remove_fields")],
+        Annotated[CorruptValues, Tag("corrupt_values")],
+    ],
+    Discriminator("effect_type"),
+]
+"""Discriminated union of all concrete tool effects.
+
+Used in ChaosCase.effects to ensure full round-trip serialization fidelity
+with Pydantic's model_dump() / model_validate().
+"""

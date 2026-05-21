@@ -5,7 +5,7 @@ import pytest
 from strands_evals import Case
 from strands_evals.chaos import ChaosCase, ChaosExperiment
 from strands_evals.chaos._context import _current_chaos_case
-from strands_evals.chaos.effects import CorruptValues, ToolCallFailure
+from strands_evals.chaos.effects import CorruptValues, Timeout
 from strands_evals.evaluators.evaluator import Evaluator
 from strands_evals.types import EvaluationData, EvaluationOutput
 
@@ -28,8 +28,8 @@ def cases():
 @pytest.fixture
 def effect_maps():
     return {
-        "search_timeout": {"search_tool": [ToolCallFailure(error_type="timeout")]},
-        "db_corrupt": {"db_tool": [CorruptValues(corrupt_ratio=0.8)]},
+        "search_timeout": {"tool_effects": {"search_tool": [Timeout()]}},
+        "db_corrupt": {"tool_effects": {"db_tool": [CorruptValues(corrupt_ratio=0.8)]}},
     }
 
 
@@ -94,7 +94,7 @@ class TestChaosExperiment:
     def test_context_var_reset_on_task_exception(self, evaluator):
         """Verify the ContextVar is reset even if the task raises."""
         cases = [Case(name="failing", input="x")]
-        effect_maps = {"chaos": {"t": [ToolCallFailure()]}}
+        effect_maps = {"chaos": {"tool_effects": {"t": [Timeout()]}}}
         chaos_cases = ChaosCase.expand(cases, effect_maps, include_no_effect_baseline=True)
 
         call_count = [0]
@@ -130,3 +130,51 @@ class TestChaosExperiment:
         report = reports[0]
         # 2 cases × 3 conditions = 6 scores
         assert len(report.scores) == 6
+
+    def test_run_evaluations_rejects_async_task(self, cases, effect_maps, evaluator):
+        """Verify run_evaluations raises ValueError for async tasks."""
+
+        async def async_task(case: ChaosCase):
+            return "output"
+
+        chaos_cases = ChaosCase.expand(cases, effect_maps)
+        experiment = ChaosExperiment(cases=chaos_cases, evaluators=[evaluator])
+
+        with pytest.raises(ValueError, match="Async task is not supported"):
+            experiment.run_evaluations(task=async_task)
+
+    @pytest.mark.asyncio
+    async def test_run_evaluations_async_with_async_task(self, cases, effect_maps, evaluator):
+        """Verify run_evaluations_async works with an actual async task."""
+        chaos_cases = ChaosCase.expand(cases, effect_maps)
+        experiment = ChaosExperiment(cases=chaos_cases, evaluators=[evaluator])
+
+        async def async_task(case: ChaosCase):
+            active = _current_chaos_case.get()
+            assert active is case
+            return "async_output"
+
+        reports = await experiment.run_evaluations_async(task=async_task, max_workers=2)
+        assert len(reports) >= 1
+
+    @pytest.mark.asyncio
+    async def test_run_evaluations_async_context_var_reset(self, cases, effect_maps, evaluator):
+        """Verify the ContextVar is properly reset after async execution."""
+        chaos_cases = ChaosCase.expand(cases, effect_maps, include_no_effect_baseline=True)
+        experiment = ChaosExperiment(cases=chaos_cases, evaluators=[evaluator])
+
+        observed_cases = []
+
+        async def async_capturing_task(case: ChaosCase):
+            active_case = _current_chaos_case.get()
+            observed_cases.append((case.name, active_case.name if active_case else None))
+            return "output"
+
+        await experiment.run_evaluations_async(task=async_capturing_task, max_workers=1)
+
+        # All observations should have matching case names
+        for case_name, active_name in observed_cases:
+            assert case_name == active_name
+
+        # ContextVar should be reset
+        assert _current_chaos_case.get() is None

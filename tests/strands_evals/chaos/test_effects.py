@@ -2,39 +2,95 @@
 
 import random
 
-import pytest
-
 from strands_evals.chaos.effects import (
     CorruptValues,
+    ExecutionError,
+    NetworkError,
     RemoveFields,
-    ToolCallFailure,
+    Timeout,
     TruncateFields,
+    ValidationError,
 )
 
 
-class TestToolCallFailure:
-    """Tests for the ToolCallFailure pre-hook effect."""
+class TestTimeout:
+    """Tests for the Timeout pre-hook effect."""
 
-    @pytest.mark.parametrize(
-        "error_type,expected_message",
-        [
-            ("timeout", "Tool call timed out"),
-            ("network_error", "Network unreachable"),
-            ("execution_error", "Tool execution failed"),
-            ("validation_error", "Tool input validation failed"),
-        ],
-    )
-    def test_apply_returns_default_message(self, error_type, expected_message):
-        effect = ToolCallFailure(error_type=error_type)
-        assert effect.apply() == expected_message
+    def test_apply_returns_default_message(self):
+        effect = Timeout()
+        assert effect.apply() == "Tool call timed out"
 
-    def test_apply_returns_custom_message_when_provided(self):
-        effect = ToolCallFailure(error_type="timeout", error_message="Custom timeout msg")
+    def test_apply_returns_custom_message(self):
+        effect = Timeout(error_message="Custom timeout msg")
         assert effect.apply() == "Custom timeout msg"
 
+    def test_hook_is_pre(self):
+        assert Timeout.hook == "pre"
+
+    def test_effect_type(self):
+        effect = Timeout()
+        assert effect.effect_type == "timeout"
+
     def test_apply_rate_defaults_to_one(self):
-        effect = ToolCallFailure()
+        effect = Timeout()
         assert effect.apply_rate == 1.0
+
+
+class TestNetworkError:
+    """Tests for the NetworkError pre-hook effect."""
+
+    def test_apply_returns_default_message(self):
+        effect = NetworkError()
+        assert effect.apply() == "Network unreachable"
+
+    def test_apply_returns_custom_message(self):
+        effect = NetworkError(error_message="Connection refused on port 5432")
+        assert effect.apply() == "Connection refused on port 5432"
+
+    def test_hook_is_pre(self):
+        assert NetworkError.hook == "pre"
+
+    def test_effect_type(self):
+        effect = NetworkError()
+        assert effect.effect_type == "network_error"
+
+
+class TestExecutionError:
+    """Tests for the ExecutionError pre-hook effect."""
+
+    def test_apply_returns_default_message(self):
+        effect = ExecutionError()
+        assert effect.apply() == "Tool execution failed"
+
+    def test_apply_returns_custom_message(self):
+        effect = ExecutionError(error_message="Segfault in native code")
+        assert effect.apply() == "Segfault in native code"
+
+    def test_hook_is_pre(self):
+        assert ExecutionError.hook == "pre"
+
+    def test_effect_type(self):
+        effect = ExecutionError()
+        assert effect.effect_type == "execution_error"
+
+
+class TestValidationError:
+    """Tests for the ValidationError pre-hook effect."""
+
+    def test_apply_returns_default_message(self):
+        effect = ValidationError()
+        assert effect.apply() == "Tool input validation failed"
+
+    def test_apply_returns_custom_message(self):
+        effect = ValidationError(error_message="Missing required field: origin")
+        assert effect.apply() == "Missing required field: origin"
+
+    def test_hook_is_pre(self):
+        assert ValidationError.hook == "pre"
+
+    def test_effect_type(self):
+        effect = ValidationError()
+        assert effect.effect_type == "validation_error"
 
 
 class TestTruncateFields:
@@ -76,6 +132,10 @@ class TestTruncateFields:
         result = effect.apply(response)
         assert result["text"] == ""
 
+    def test_effect_type(self):
+        effect = TruncateFields()
+        assert effect.effect_type == "truncate_fields"
+
 
 class TestRemoveFields:
     """Tests for the RemoveFields post-hook effect."""
@@ -116,6 +176,10 @@ class TestRemoveFields:
         response = {"only_key": "value"}
         result = effect.apply(response)
         assert len(result) == 0
+
+    def test_effect_type(self):
+        effect = RemoveFields()
+        assert effect.effect_type == "remove_fields"
 
 
 class TestCorruptValues:
@@ -161,3 +225,7 @@ class TestCorruptValues:
         response = {"key": "unique_original_value"}
         result = effect.apply(response)
         assert result["key"] != "unique_original_value"
+
+    def test_effect_type(self):
+        effect = CorruptValues()
+        assert effect.effect_type == "corrupt_values"

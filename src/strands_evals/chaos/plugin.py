@@ -55,16 +55,16 @@ class ChaosPlugin(Plugin):
     def before_tool_call(self, event: BeforeToolCallEvent) -> None:
         """Intercept tool calls to inject pre-hook (error) effects.
 
-        For ToolCallFailure effects (with error_type='timeout', 'network_error',
-        etc.), cancels the tool call with the effect's error_message before the
-        tool executes.
+        For pre-hook effects (Timeout, NetworkError, ExecutionError,
+        ValidationError), cancels the tool call with the effect's error_message
+        before the tool executes.
         """
         chaos_case = _current_chaos_case.get()
-        if chaos_case is None or not chaos_case.effects:
+        if chaos_case is None or not chaos_case.tool_effects:
             return
 
         tool_name = event.tool_use.get("name", "")
-        effects = chaos_case.effects.get(tool_name, [])
+        effects = chaos_case.tool_effects.get(tool_name, [])
         if not effects:
             return
 
@@ -85,11 +85,11 @@ class ChaosPlugin(Plugin):
         applies effect.apply() to JSON content blocks in the tool response.
         """
         chaos_case = _current_chaos_case.get()
-        if chaos_case is None or not chaos_case.effects:
+        if chaos_case is None or not chaos_case.tool_effects:
             return
 
         tool_name = event.tool_use.get("name", "")
-        effects = chaos_case.effects.get(tool_name, [])
+        effects = chaos_case.tool_effects.get(tool_name, [])
         if not effects:
             return
 

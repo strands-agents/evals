@@ -36,16 +36,16 @@ class ChaosExperiment:
             ChaosExperiment,
             ChaosPlugin,
         )
-        from strands_evals.chaos.effects import ToolCallFailure
+        from strands_evals.chaos.effects import Timeout, NetworkError
 
         chaos = ChaosPlugin()
 
         cases = [Case(input="Find flights to Tokyo", name="flight_search")]
-        effect_sets = [
-            {"search_tool": [ToolCallFailure(error_type="timeout")]},
-            {"database_tool": [ToolCallFailure(error_type="network_error")]},
-        ]
-        chaos_cases = ChaosCase.expand(cases, effect_sets)
+        effect_maps = {
+            "search_timeout": {"tool_effects": {"search_tool": [Timeout()]}},
+            "db_network_error": {"tool_effects": {"database_tool": [NetworkError()]}},
+        }
+        chaos_cases = ChaosCase.expand(cases, effect_maps)
 
         def my_task(case):
             agent = Agent(tools=[search_tool, database_tool], plugins=[chaos])

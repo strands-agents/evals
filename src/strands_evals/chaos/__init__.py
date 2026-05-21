@@ -8,10 +8,14 @@ from .case import ChaosCase
 from .effects import (
     ChaosEffect,
     CorruptValues,
+    ExecutionError,
+    NetworkError,
     RemoveFields,
-    ToolCallFailure,
+    Timeout,
     ToolEffect,
+    ToolEffectUnion,
     TruncateFields,
+    ValidationError,
 )
 from .experiment import ChaosExperiment
 from .plugin import ChaosPlugin
@@ -24,8 +28,13 @@ __all__ = [
     # Effect hierarchy
     "ChaosEffect",
     "ToolEffect",
-    # Concrete effects
-    "ToolCallFailure",
+    "ToolEffectUnion",
+    # Pre-hook effects (tool call failures)
+    "Timeout",
+    "NetworkError",
+    "ExecutionError",
+    "ValidationError",
+    # Post-hook effects (response corruption)
     "TruncateFields",
     "RemoveFields",
     "CorruptValues",
