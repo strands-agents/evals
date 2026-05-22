@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing_extensions import Any, Generic, TypedDict, TypeVar
 
 from .trace import Session
@@ -93,7 +93,14 @@ class EvaluationData(BaseModel, Generic[InputT, OutputT]):
         metadata: Additional information about the test case.
         actual_interactions: The actual interaction sequence given the input.
         expected_interactions: The expected interaction sequence given the input.
+
+    Extra fields from `Case` subclasses are preserved as model attributes (e.g. a typed
+    `config` field on a `Case` subclass passes through to the evaluator with its type intact).
+    Note: `extra="allow"` means misspelled field names will be silently accepted rather than
+    rejected — the tradeoff for supporting subclass passthrough.
     """
+
+    model_config = ConfigDict(extra="allow")
 
     input: InputT
     actual_output: OutputT | None = None

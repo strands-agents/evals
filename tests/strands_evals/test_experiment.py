@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from botocore.exceptions import ClientError
+from pydantic import BaseModel
 from strands.models.model import Model
 from strands.types.exceptions import EventLoopException, ModelThrottledException
 
@@ -21,6 +22,7 @@ from strands_evals.evaluators.evaluator import DEFAULT_BEDROCK_MODEL_ID
 from strands_evals.experiment import is_throttling_error
 from strands_evals.providers.trace_provider import TraceProvider
 from strands_evals.types import EvaluationData, EvaluationOutput
+from strands_evals.types.evaluation_report import EvaluationReport
 
 
 class MockEvaluator(Evaluator[str, str]):
@@ -2041,3 +2043,105 @@ class TestDiagnoseOnFailure:
         assert len(reports) == 1
         assert reports[0].diagnoses == [None]
         assert reports[0].recommendations == [None]
+
+
+# ---------------------------------------------------------------------------
+# Extension-point tests: Case-subclass extras pass through, and Experiment
+# subclasses can swap the report element type via ReportT + report_cls.
+# ---------------------------------------------------------------------------
+
+
+class _NestedConfig(BaseModel):
+    """Typed nested object used to verify it survives the Case -> EvaluationData hop."""
+
+    label: str
+    weight: float
+
+
+class _CaseWithExtras(Case[str, str]):
+    """Case subclass that adds a typed field beyond the base Case schema."""
+
+    config: _NestedConfig
+    tag: str | None = None
+
+
+@pytest.mark.asyncio
+async def test_evaluation_data_preserves_subclass_extra_fields():
+    """Subclass-only Case fields reach EvaluationData with their types intact."""
+    case = _CaseWithExtras(
+        name="extras",
+        input="hi",
+        config=_NestedConfig(label="phishing", weight=0.7),
+        tag="redteam",
+    )
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
+
+    evaluation_context = await experiment._run_task_async(lambda c: c.input, case)
+
+    # Nested BaseModel survives as an object (not a dict from model_dump).
+    assert isinstance(evaluation_context.config, _NestedConfig)
+    assert evaluation_context.config.label == "phishing"
+    assert evaluation_context.config.weight == 0.7
+    assert evaluation_context.tag == "redteam"
+    # Base fields still populated as before.
+    assert evaluation_context.input == "hi"
+    assert evaluation_context.actual_output == "hi"
+
+
+def test_evaluation_data_evaluator_can_read_subclass_extras():
+    """An evaluator reading a typed subclass field via getattr works end-to-end."""
+
+    class ConfigReadingEvaluator(Evaluator[str, str]):
+        def evaluate(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
+            cfg = getattr(evaluation_case, "config", None)
+            assert isinstance(cfg, _NestedConfig)
+            return [EvaluationOutput(score=cfg.weight, test_pass=True, reason=cfg.label)]
+
+    case = _CaseWithExtras(name="x", input="hi", config=_NestedConfig(label="bypass", weight=0.42))
+    experiment = Experiment(cases=[case], evaluators=[ConfigReadingEvaluator()])
+
+    reports = experiment.run_evaluations(lambda c: c.input)
+
+    assert len(reports) == 1
+    assert reports[0].scores == [0.42]
+    assert reports[0].reasons == ["bypass"]
+
+
+def test_experiment_default_report_cls_is_evaluation_report():
+    """Without subclassing, run_evaluations still returns plain EvaluationReport."""
+    case = Case(name="t", input="hi", expected_output="hi")
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
+
+    reports = experiment.run_evaluations(lambda c: c.input)
+
+    assert len(reports) == 1
+    assert type(reports[0]) is EvaluationReport
+
+
+class _CustomReport(EvaluationReport):
+    """Subclass report type — the existence of the type is enough for this test."""
+
+    def headline(self) -> str:
+        return f"{self.evaluator_name}: {self.overall_score:.2f}"
+
+
+class _CustomExperiment(Experiment[str, str, _CustomReport]):
+    report_cls = _CustomReport
+
+
+def test_experiment_subclass_can_swap_report_cls():
+    """Binding ReportT and setting report_cls produces list[ReportT] at runtime."""
+    cases = [
+        Case(name="a", input="hi", expected_output="hi"),
+        Case(name="b", input="hi", expected_output="bye"),
+    ]
+    experiment = _CustomExperiment(cases=cases, evaluators=[MockEvaluator()])
+
+    reports = experiment.run_evaluations(lambda c: c.input)
+
+    assert len(reports) == 1
+    assert type(reports[0]) is _CustomReport
+    # Subclass-only method works because the runtime object is the right class.
+    assert reports[0].headline().startswith("MockEvaluator:")
+    # Base fields still populated.
+    assert reports[0].scores == [1.0, 0.0]

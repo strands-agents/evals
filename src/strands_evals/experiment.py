@@ -14,7 +14,7 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
-from typing_extensions import Any, Generic
+from typing_extensions import Any, Generic, TypeVar
 
 from .case import Case
 from .detectors.diagnosis import diagnose_session
@@ -39,6 +39,10 @@ logger.setLevel(logging.INFO)
 _MAX_RETRY_ATTEMPTS = 6
 _INITIAL_RETRY_DELAY = 4
 _MAX_RETRY_DELAY = 240  # 4 minutes
+
+# Subclasses can bind ReportT to a custom report element type and set `report_cls` to
+# the matching class. run_evaluations* always returns list[ReportT].
+ReportT = TypeVar("ReportT", bound=EvaluationReport, default=EvaluationReport)
 
 
 def _get_label_from_score(evaluator: Evaluator, score: float) -> str:
@@ -65,7 +69,7 @@ def _get_label_from_score(evaluator: Evaluator, score: float) -> str:
     return "YES" if score >= 0.5 else "NO"
 
 
-class Experiment(Generic[InputT, OutputT]):
+class Experiment(Generic[InputT, OutputT, ReportT]):
     """
     An evaluation experiment containing test cases and evaluators.
 
@@ -99,6 +103,12 @@ class Experiment(Generic[InputT, OutputT]):
             ]
         )
     """
+
+    # Subclasses bind ReportT and set report_cls to construct that type per evaluator.
+    # type: ignore[assignment]: at the base-class definition site, mypy can't prove
+    # `type[EvaluationReport]` satisfies `type[ReportT]` for arbitrary ReportT bindings.
+    # Subclasses override report_cls with their bound type, where the substitution holds.
+    report_cls: type[ReportT] = EvaluationReport  # type: ignore[assignment]
 
     def __init__(
         self,
@@ -187,7 +197,15 @@ class Experiment(Generic[InputT, OutputT]):
         Return:
             An EvaluationData record containing the input and actual output, name, expected output, and metadata.
         """
-        # Create evaluation context
+        # Fields declared on Case subclasses (e.g. a typed `config`) pass through
+        # to the evaluator via EvaluationData's extra="allow". getattr preserves nested BaseModels.
+        # Filter out names that collide with base Case fields (already passed explicitly below)
+        # and EvaluationData fields (would silently overwrite the explicit kwargs).
+        extra_fields = {
+            name: getattr(case, name)
+            for name in type(case).model_fields
+            if name not in Case.model_fields and name not in EvaluationData.model_fields
+        }
         evaluation_context = EvaluationData(
             name=case.name,
             input=case.input,
@@ -197,6 +215,7 @@ class Experiment(Generic[InputT, OutputT]):
             expected_interactions=case.expected_interactions,
             expected_environment_state=case.expected_environment_state,
             metadata=case.metadata,
+            **extra_fields,
         )
 
         # Handle both async and sync tasks
@@ -544,7 +563,7 @@ class Experiment(Generic[InputT, OutputT]):
         self,
         task: Callable[[Case[InputT, OutputT]], OutputT | dict[str, Any]],
         evaluation_data_store: EvaluationDataStore | None = None,
-    ) -> list[EvaluationReport]:
+    ) -> list[ReportT]:
         """
         Run the evaluations for all of the test cases with all evaluators.
 
@@ -557,8 +576,8 @@ class Experiment(Generic[InputT, OutputT]):
                 results are loaded instead of running the task, and new results are saved after task execution.
 
         Return:
-            A list of EvaluationReport objects, one for each evaluator, containing the overall score,
-            individual case results, and basic feedback for each test case.
+            A list of report objects, one per evaluator. The element type defaults to
+            EvaluationReport; subclasses bind ReportT to a subclass and set `report_cls`.
         """
         if asyncio.iscoroutinefunction(task):
             raise ValueError("Async task is not supported. Please use run_evaluations_async instead.")
@@ -570,7 +589,7 @@ class Experiment(Generic[InputT, OutputT]):
         task: Callable,
         max_workers: int = 10,
         evaluation_data_store: EvaluationDataStore | None = None,
-    ) -> list[EvaluationReport]:
+    ) -> list[ReportT]:
         """
         Run evaluations asynchronously using a queue for parallel processing.
 
@@ -583,7 +602,8 @@ class Experiment(Generic[InputT, OutputT]):
                 results are loaded instead of running the task, and new results are saved after task execution.
 
         Returns:
-            List of EvaluationReport objects, one for each evaluator, containing evaluation results
+            A list of report objects, one per evaluator. The element type defaults to
+            EvaluationReport; subclasses bind ReportT to a subclass and set `report_cls`.
         """
         if evaluation_data_store is not None:
             self._validate_case_names()
@@ -638,7 +658,7 @@ class Experiment(Generic[InputT, OutputT]):
             eval_name = evaluator.get_type_name()
             data = evaluator_data[eval_name]
             scores = data["scores"]
-            report = EvaluationReport(
+            report = self.report_cls(
                 evaluator_name=eval_name,
                 overall_score=sum(scores) / len(scores) if scores else 0,
                 scores=scores,
