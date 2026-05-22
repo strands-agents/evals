@@ -105,9 +105,9 @@ class Experiment(Generic[InputT, OutputT, ReportT]):
     """
 
     # Subclasses bind ReportT and set report_cls to construct that type per evaluator.
-    # type: ignore[assignment]: at the base-class definition site, mypy can't prove
-    # `type[EvaluationReport]` satisfies `type[ReportT]` for arbitrary ReportT bindings.
-    # Subclasses override report_cls with their bound type, where the substitution holds.
+    # The ignore is needed because at the base-class definition site mypy can't prove
+    # type[EvaluationReport] satisfies type[ReportT] for every ReportT binding; subclasses
+    # override report_cls with their bound type, where the substitution holds.
     report_cls: type[ReportT] = EvaluationReport  # type: ignore[assignment]
 
     def __init__(
