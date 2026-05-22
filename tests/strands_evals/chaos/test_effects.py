@@ -31,10 +31,6 @@ class TestTimeout:
         effect = Timeout()
         assert effect.effect_type == "timeout"
 
-    def test_apply_rate_defaults_to_one(self):
-        effect = Timeout()
-        assert effect.apply_rate == 1.0
-
 
 class TestNetworkError:
     """Tests for the NetworkError pre-hook effect."""

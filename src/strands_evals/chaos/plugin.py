@@ -9,7 +9,6 @@ time. The ChaosExperiment manages the ContextVar lifecycle.
 
 import json
 import logging
-import random
 
 from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent
 from strands.plugins import Plugin, hook
@@ -71,8 +70,6 @@ class ChaosPlugin(Plugin):
         # First pre-hook effect wins (tool is cancelled once)
         for effect in effects:
             if effect.hook == "pre":
-                if random.random() > effect.apply_rate:
-                    continue
                 event.cancel_tool = effect.apply()
                 logger.info("effect=<%s>, tool=<%s> | injected chaos pre-hook", type(effect).__name__, tool_name)
                 return
@@ -96,9 +93,6 @@ class ChaosPlugin(Plugin):
         # Apply all post-hook effects sequentially (they compose)
         for effect in effects:
             if effect.hook != "post":
-                continue
-
-            if random.random() > effect.apply_rate:
                 continue
 
             if event.result is None:

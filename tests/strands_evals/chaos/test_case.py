@@ -1,5 +1,7 @@
 """Unit tests for ChaosCase."""
 
+import pytest
+
 from strands_evals import Case
 from strands_evals.chaos import ChaosCase
 from strands_evals.chaos.effects import CorruptValues, Timeout, TruncateFields
@@ -35,19 +37,20 @@ class TestChaosCase:
         assert len(case.tool_effects) == 2
 
     def test_case_with_multiple_effects_per_tool(self):
-        case = ChaosCase(
-            name="multi_effect",
-            input="hello",
-            effects={
-                "tool_effects": {
-                    "tool_a": [
-                        TruncateFields(max_length=5),
-                        CorruptValues(corrupt_ratio=0.3),
-                    ],
-                }
-            },
-        )
-        assert len(case.tool_effects["tool_a"]) == 2
+        """Multiple effects for one tool should be rejected."""
+        with pytest.raises(ValueError, match="only 1 is allowed"):
+            ChaosCase(
+                name="multi_effect",
+                input="hello",
+                effects={
+                    "tool_effects": {
+                        "tool_a": [
+                            TruncateFields(max_length=5),
+                            CorruptValues(corrupt_ratio=0.3),
+                        ],
+                    }
+                },
+            )
 
     def test_inherits_case_fields(self):
         case = ChaosCase(
@@ -84,7 +87,6 @@ class TestChaosCase:
         effect_data = dumped["effects"]["tool_effects"]["search_tool"][0]
         assert effect_data["effect_type"] == "timeout"
         assert effect_data["error_message"] == "custom timeout"
-        assert effect_data["apply_rate"] == 1.0
 
     def test_model_dump_roundtrip(self):
         """Verify full round-trip serialization/deserialization."""
@@ -94,7 +96,7 @@ class TestChaosCase:
             effects={
                 "tool_effects": {
                     "tool_a": [Timeout()],
-                    "tool_b": [TruncateFields(max_length=5), CorruptValues(corrupt_ratio=0.7)],
+                    "tool_b": [TruncateFields(max_length=5)],
                 }
             },
         )
@@ -103,8 +105,6 @@ class TestChaosCase:
         assert isinstance(restored.tool_effects["tool_a"][0], Timeout)
         assert isinstance(restored.tool_effects["tool_b"][0], TruncateFields)
         assert restored.tool_effects["tool_b"][0].max_length == 5
-        assert isinstance(restored.tool_effects["tool_b"][1], CorruptValues)
-        assert restored.tool_effects["tool_b"][1].corrupt_ratio == 0.7
 
 
 class TestChaosCaseExpand:

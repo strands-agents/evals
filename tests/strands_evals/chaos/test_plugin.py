@@ -91,25 +91,21 @@ class TestChaosPluginBeforeToolCall:
         finally:
             _current_chaos_case.reset(token)
 
-    def test_first_pre_hook_effect_wins(self, chaos_plugin, before_event):
-        case = ChaosCase(
-            name="multi_pre",
-            input="test",
-            effects={
-                "tool_effects": {
-                    "search_tool": [
-                        Timeout(),
-                        NetworkError(),
-                    ]
-                }
-            },
-        )
-        token = _current_chaos_case.set(case)
-        try:
-            chaos_plugin.before_tool_call(before_event)
-            assert before_event.cancel_tool == "Tool call timed out"
-        finally:
-            _current_chaos_case.reset(token)
+    def test_multiple_pre_hook_effects(self, chaos_plugin, before_event):
+        """Multiple effects per tool should be rejected."""
+        with pytest.raises(ValueError, match="only 1 is allowed"):
+            ChaosCase(
+                name="multi_pre",
+                input="test",
+                effects={
+                    "tool_effects": {
+                        "search_tool": [
+                            Timeout(),
+                            NetworkError(),
+                        ]
+                    }
+                },
+            )
 
 
 class TestChaosPluginAfterToolCall:
@@ -202,70 +198,5 @@ class TestChaosPluginAfterToolCall:
         try:
             chaos_plugin.after_tool_call(event)
             assert event.result["content"][0]["text"] == "This"
-        finally:
-            _current_chaos_case.reset(token)
-
-
-class TestApplyRate:
-    """Tests for the apply_rate probability check in ChaosPlugin."""
-
-    def test_apply_rate_zero_skips_pre_hook_effect(self, chaos_plugin, before_event):
-        """Effect with apply_rate=0.0 should never fire."""
-        case = ChaosCase(
-            name="never_fires",
-            input="test",
-            effects={"tool_effects": {"search_tool": [Timeout(apply_rate=0.0)]}},
-        )
-        token = _current_chaos_case.set(case)
-        try:
-            # Run multiple times to confirm it never fires
-            for _ in range(20):
-                before_event.cancel_tool = None
-                chaos_plugin.before_tool_call(before_event)
-                assert before_event.cancel_tool is None
-        finally:
-            _current_chaos_case.reset(token)
-
-    def test_apply_rate_one_always_fires_pre_hook(self, chaos_plugin, before_event):
-        """Effect with apply_rate=1.0 should always fire."""
-        case = ChaosCase(
-            name="always_fires",
-            input="test",
-            effects={"tool_effects": {"search_tool": [Timeout(apply_rate=1.0)]}},
-        )
-        token = _current_chaos_case.set(case)
-        try:
-            chaos_plugin.before_tool_call(before_event)
-            assert before_event.cancel_tool == "Tool call timed out"
-        finally:
-            _current_chaos_case.reset(token)
-
-    def test_apply_rate_zero_skips_post_hook_effect(self, chaos_plugin, after_event):
-        """Post-hook effect with apply_rate=0.0 should never fire."""
-        case = ChaosCase(
-            name="never_truncates",
-            input="test",
-            effects={"tool_effects": {"search_tool": [TruncateFields(max_length=3, apply_rate=0.0)]}},
-        )
-        token = _current_chaos_case.set(case)
-        try:
-            original_content = after_event.result["content"][0]["text"]
-            chaos_plugin.after_tool_call(after_event)
-            assert after_event.result["content"][0]["text"] == original_content
-        finally:
-            _current_chaos_case.reset(token)
-
-    def test_apply_rate_one_always_fires_post_hook(self, chaos_plugin, after_event):
-        """Post-hook effect with apply_rate=1.0 should always fire."""
-        case = ChaosCase(
-            name="always_truncates",
-            input="test",
-            effects={"tool_effects": {"search_tool": [TruncateFields(max_length=3, apply_rate=1.0)]}},
-        )
-        token = _current_chaos_case.set(case)
-        try:
-            chaos_plugin.after_tool_call(after_event)
-            corrupted = json.loads(after_event.result["content"][0]["text"])
-            assert corrupted["title"] == "Lon"
         finally:
             _current_chaos_case.reset(token)

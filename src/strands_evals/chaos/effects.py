@@ -23,18 +23,10 @@ class ChaosEffect(BaseModel):
     """Base for all chaos effects.
 
     Attributes:
-        apply_rate: Probability that this effect fires, defaults to 1 (always fire).
         hook: Whether this effect fires pre-call ("pre") or post-call ("post").
     """
 
     hook: ClassVar[Literal["pre", "post"]]
-
-    apply_rate: float = Field(
-        default=1.0,
-        ge=0.0,
-        le=1.0,
-        description="Probability that this effect fires (1.0 = always).",
-    )
 
     @abstractmethod
     def apply(self, context: Any = None) -> Any:

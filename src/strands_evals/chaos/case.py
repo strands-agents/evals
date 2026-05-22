@@ -7,7 +7,7 @@ base Case class.
 
 import uuid
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from typing_extensions import Generic
 
 from ..case import Case
@@ -60,6 +60,17 @@ class ChaosCase(Case, Generic[InputT, OutputT]):
         description="Effect categories. Currently supports 'tool_effects' mapping "
         "tool_name -> list of effects. Empty dict means baseline (no chaos).",
     )
+
+    @model_validator(mode="after")
+    def _validate_tool_effects(self) -> "ChaosCase":
+        """Validate tool effects configuration."""
+        for tool_name, effects_list in self.tool_effects.items():
+            if len(effects_list) > 1:
+                raise ValueError(
+                    f"Tool '{tool_name}' has {len(effects_list)} effects — only 1 is allowed per "
+                    f"ChaosCase. Use separate ChaosCase instances to test effects independently."
+                )
+        return self
 
     @classmethod
     def expand(
