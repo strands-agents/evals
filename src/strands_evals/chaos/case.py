@@ -64,6 +64,14 @@ class ChaosCase(Case, Generic[InputT, OutputT]):
     @model_validator(mode="after")
     def _validate_tool_effects(self) -> "ChaosCase":
         """Validate tool effects configuration."""
+        allowed_categories = {"tool_effects"}
+        unknown = set(self.effects.keys()) - allowed_categories
+        if unknown:
+            raise ValueError(
+                f"Unknown effect categories: {sorted(unknown)}. "
+                f"Allowed categories: {sorted(allowed_categories)}."
+            )
+
         for tool_name, effects_list in self.tool_effects.items():
             if len(effects_list) > 1:
                 raise ValueError(

@@ -1,8 +1,7 @@
-from . import partial_completion_v0, partial_completion_v1
+from . import partial_completion_v0
 
 VERSIONS = {
     "v0": partial_completion_v0,
-    "v1": partial_completion_v1,
 }
 
 DEFAULT_VERSION = "v0"

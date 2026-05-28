@@ -1,8 +1,7 @@
-from . import failure_communication_v0, failure_communication_v1
+from . import failure_communication_v0
 
 VERSIONS = {
     "v0": failure_communication_v0,
-    "v1": failure_communication_v1,
 }
 
 DEFAULT_VERSION = "v0"

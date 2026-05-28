@@ -6,7 +6,7 @@ providing deterministic evaluation of agent resilience under tool failures.
 
 import logging
 from collections.abc import Callable
-from typing import Any, Optional
+from typing import Any
 
 from ..evaluators.evaluator import Evaluator
 from ..experiment import Experiment
@@ -62,7 +62,7 @@ class ChaosExperiment:
     def __init__(
         self,
         cases: list[ChaosCase],
-        evaluators: Optional[list[Evaluator]] = None,
+        evaluators: list[Evaluator] | None = None,
     ):
         """Initialize a ChaosExperiment.
 
