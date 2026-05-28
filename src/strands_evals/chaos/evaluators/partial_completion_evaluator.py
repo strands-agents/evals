@@ -5,9 +5,9 @@ from strands import Agent
 from strands.models.model import Model
 from typing_extensions import Union
 
+from ...evaluators.evaluator import Evaluator
 from ...types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from ...types.trace import EvaluationLevel
-from ...evaluators.evaluator import Evaluator
 from .prompt_templates.partial_completion import get_template
 
 
@@ -15,11 +15,7 @@ class PartialCompletionRating(BaseModel):
     """Structured output for partial completion evaluation."""
 
     reasoning: str = Field(description="Step by step reasoning to derive the final score")
-    completion_percentage: float = Field(
-        description="Completion percentage from 0.0 to 1.0",
-        ge=0.0,
-        le=1.0
-    )
+    completion_percentage: float = Field(description="Completion percentage from 0.0 to 1.0", ge=0.0, le=1.0)
 
 
 class PartialCompletionEvaluator(Evaluator[InputT, OutputT]):

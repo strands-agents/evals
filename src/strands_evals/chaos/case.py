@@ -68,8 +68,7 @@ class ChaosCase(Case, Generic[InputT, OutputT]):
         unknown = set(self.effects.keys()) - allowed_categories
         if unknown:
             raise ValueError(
-                f"Unknown effect categories: {sorted(unknown)}. "
-                f"Allowed categories: {sorted(allowed_categories)}."
+                f"Unknown effect categories: {sorted(unknown)}. Allowed categories: {sorted(allowed_categories)}."
             )
 
         for tool_name, effects_list in self.tool_effects.items():

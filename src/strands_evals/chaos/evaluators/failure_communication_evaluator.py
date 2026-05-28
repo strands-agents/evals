@@ -6,9 +6,9 @@ from strands import Agent
 from strands.models.model import Model
 from typing_extensions import Union
 
+from ...evaluators.evaluator import Evaluator
 from ...types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from ...types.trace import EvaluationLevel
-from ...evaluators.evaluator import Evaluator
 from .prompt_templates.failure_communication import get_template
 
 
