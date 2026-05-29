@@ -3,7 +3,6 @@ from typing import cast
 from pydantic import BaseModel, Field
 from strands import Agent
 from strands.models.model import Model
-from typing_extensions import Union
 
 from ...evaluators.evaluator import Evaluator
 from ...types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
@@ -26,7 +25,7 @@ class PartialCompletionEvaluator(Evaluator[InputT, OutputT]):
     def __init__(
         self,
         version: str = "v0",
-        model: Union[Model, str, None] = None,
+        model: Model | str | None = None,
         system_prompt: str | None = None,
     ):
         super().__init__()
@@ -35,13 +34,7 @@ class PartialCompletionEvaluator(Evaluator[InputT, OutputT]):
         self.system_prompt = system_prompt if system_prompt is not None else default_prompt
         self.model = model
 
-    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
-        parsed_input = self._get_last_turn(evaluation_case)
-        prompt = self._format_trace_level_prompt(parsed_input)
-        evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
-        result = evaluator_agent(prompt, structured_output_model=PartialCompletionRating)
-        rating = cast(PartialCompletionRating, result.structured_output)
-
+    def _build_output(self, rating: PartialCompletionRating) -> list[EvaluationOutput]:
         return [
             EvaluationOutput(
                 score=rating.completion_percentage,
@@ -50,6 +43,14 @@ class PartialCompletionEvaluator(Evaluator[InputT, OutputT]):
                 label=f"{rating.completion_percentage:.2f}",
             )
         ]
+
+    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
+        parsed_input = self._get_last_turn(evaluation_case)
+        prompt = self._format_trace_level_prompt(parsed_input)
+        evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
+        result = evaluator_agent(prompt, structured_output_model=PartialCompletionRating)
+        rating = cast(PartialCompletionRating, result.structured_output)
+        return self._build_output(rating)
 
     async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         parsed_input = self._get_last_turn(evaluation_case)
@@ -57,12 +58,4 @@ class PartialCompletionEvaluator(Evaluator[InputT, OutputT]):
         evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
         result = await evaluator_agent.invoke_async(prompt, structured_output_model=PartialCompletionRating)
         rating = cast(PartialCompletionRating, result.structured_output)
-
-        return [
-            EvaluationOutput(
-                score=rating.completion_percentage,
-                test_pass=rating.completion_percentage >= 0.5,
-                reason=rating.reasoning,
-                label=f"{rating.completion_percentage:.2f}",
-            )
-        ]
+        return self._build_output(rating)

@@ -4,7 +4,6 @@ from typing import cast
 from pydantic import BaseModel, Field
 from strands import Agent
 from strands.models.model import Model
-from typing_extensions import Union
 
 from ...evaluators.evaluator import Evaluator
 from ...types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
@@ -45,7 +44,7 @@ class FailureCommunicationEvaluator(Evaluator[InputT, OutputT]):
     def __init__(
         self,
         version: str = "v0",
-        model: Union[Model, str, None] = None,
+        model: Model | str | None = None,
         system_prompt: str | None = None,
     ):
         super().__init__()
@@ -54,12 +53,7 @@ class FailureCommunicationEvaluator(Evaluator[InputT, OutputT]):
         self.system_prompt = system_prompt if system_prompt is not None else default_prompt
         self.model = model
 
-    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
-        parsed_input = self._get_last_turn(evaluation_case)
-        prompt = self._format_trace_level_prompt(parsed_input)
-        evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
-        result = evaluator_agent(prompt, structured_output_model=FailureCommunicationRating)
-        rating = cast(FailureCommunicationRating, result.structured_output)
+    def _build_output(self, rating: FailureCommunicationRating) -> list[EvaluationOutput]:
         normalized_score = self._score_mapping[rating.score]
         return [
             EvaluationOutput(
@@ -70,18 +64,18 @@ class FailureCommunicationEvaluator(Evaluator[InputT, OutputT]):
             )
         ]
 
+    def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
+        parsed_input = self._get_last_turn(evaluation_case)
+        prompt = self._format_trace_level_prompt(parsed_input)
+        evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
+        result = evaluator_agent(prompt, structured_output_model=FailureCommunicationRating)
+        rating = cast(FailureCommunicationRating, result.structured_output)
+        return self._build_output(rating)
+
     async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         parsed_input = self._get_last_turn(evaluation_case)
         prompt = self._format_trace_level_prompt(parsed_input)
         evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
         result = await evaluator_agent.invoke_async(prompt, structured_output_model=FailureCommunicationRating)
         rating = cast(FailureCommunicationRating, result.structured_output)
-        normalized_score = self._score_mapping[rating.score]
-        return [
-            EvaluationOutput(
-                score=normalized_score,
-                test_pass=normalized_score >= 0.5,
-                reason=rating.reasoning,
-                label=rating.score,
-            )
-        ]
+        return self._build_output(rating)

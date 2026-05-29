@@ -52,6 +52,15 @@ class TestChaosCase:
                 },
             )
 
+    def test_unknown_effect_category_raises(self):
+        """Unknown effect category keys should be rejected."""
+        with pytest.raises(ValueError, match="Unknown effect categories"):
+            ChaosCase(
+                name="bad_category",
+                input="hello",
+                effects={"invalid_category": {"tool_a": [Timeout()]}},
+            )
+
     def test_inherits_case_fields(self):
         case = ChaosCase(
             name="with_expected",
