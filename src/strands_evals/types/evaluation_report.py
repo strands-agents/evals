@@ -5,9 +5,9 @@ from pydantic import BaseModel
 
 from ..display.display_console import CollapsibleTableReportDisplay
 from ..types.evaluation import EvaluationOutput
+from ..aggregation import DataFrameMixin
 
-
-class EvaluationReport(BaseModel):
+class EvaluationReport(DataFrameMixin, BaseModel):
     """
     A report of the evaluation of a task.
 
