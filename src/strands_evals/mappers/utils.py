@@ -2,10 +2,46 @@
 Utility functions for mapper selection and detection.
 """
 
+import json
 from typing import Any
 
 from .constants import SCOPE_LANGCHAIN_OTEL, SCOPE_OPENINFERENCE, SCOPE_STRANDS
 from .session_mapper import SessionMapper
+
+
+def join_tool_result_content(content: Any) -> str:
+    """Join all blocks in a Bedrock-style toolResult content list into one string.
+
+    Bedrock toolResult.content is a list of typed blocks:
+      {"text": "..."}           -> pass through as-is
+      {"json": {...}}           -> json.dumps(value)
+      {"image": ...}            -> "[image]"
+      {"document": ...}         -> "[document]"
+      {"video": ...}            -> "[video]"
+
+    Non-list values are coerced to str.
+    """
+    if not content:
+        return ""
+    if not isinstance(content, list):
+        return str(content)
+
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            parts.append(str(block))
+            continue
+        if "text" in block:
+            parts.append(block["text"])
+        elif "json" in block:
+            parts.append(json.dumps(block["json"]))
+        elif "image" in block:
+            parts.append("[image]")
+        elif "document" in block:
+            parts.append("[document]")
+        elif "video" in block:
+            parts.append("[video]")
+    return " ".join(parts)
 
 
 def detect_otel_mapper(spans: list[Any]) -> SessionMapper:

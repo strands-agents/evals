@@ -573,3 +573,147 @@ def test_session_id_filtering_gen_ai_conversation_id_takes_precedence(provider):
     # Should NOT match on session.id when gen_ai.conversation.id is present
     session2 = mapper.map_to_session([span], "session-456")
     assert len(session2.traces) == 0
+
+
+# --- Regression tests: multi-part toolResult.content ---
+
+
+import json as _json
+
+
+def test_legacy_process_tool_results_multi_text(provider):
+    """Legacy _process_tool_results joins all text blocks, not just content[0]."""
+    payload = _json.dumps(
+        [
+            {
+                "toolResult": {
+                    "toolUseId": "tr1",
+                    "content": [{"text": "first"}, {"text": "second"}],
+                }
+            }
+        ]
+    )
+    span = make_span(
+        provider,
+        0xAAA,
+        0xBBB,
+        0xCCC,
+        "chat",
+        {"gen_ai.operation.name": "chat"},
+        lambda s: (
+            s.add_event("gen_ai.tool.message", {"content": payload}),
+            s.add_event("gen_ai.choice", {"message": '[{"text": "ok"}]'}),
+        ),
+    )
+
+    session = StrandsInMemorySessionMapper().map_to_session([span], "sid")
+    tool_msg = session.traces[0].spans[0].messages[0]
+    assert tool_msg.content[0].content == "first second"
+
+
+def test_legacy_process_tool_results_text_and_json(provider):
+    """Legacy _process_tool_results handles mixed text+json blocks."""
+    payload = _json.dumps(
+        [
+            {
+                "toolResult": {
+                    "toolUseId": "tr2",
+                    "content": [{"text": "label:"}, {"json": {"value": 42}}],
+                }
+            }
+        ]
+    )
+    span = make_span(
+        provider,
+        0xAAA,
+        0xBBB,
+        0xCCC,
+        "chat",
+        {"gen_ai.operation.name": "chat"},
+        lambda s: (
+            s.add_event("gen_ai.tool.message", {"content": payload}),
+            s.add_event("gen_ai.choice", {"message": '[{"text": "ok"}]'}),
+        ),
+    )
+
+    session = StrandsInMemorySessionMapper().map_to_session([span], "sid")
+    tool_msg = session.traces[0].spans[0].messages[0]
+    assert tool_msg.content[0].content == 'label: {"value": 42}'
+
+
+def test_latest_convention_inference_multi_text_tool_result(provider):
+    """Latest _convert_inference_messages joins all blocks in tool_call_response."""
+    input_msg = _json.dumps(
+        [
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "type": "tool_call_response",
+                        "id": "t1",
+                        "response": [{"text": "alpha"}, {"text": "beta"}],
+                    }
+                ],
+            }
+        ]
+    )
+    span = make_span(
+        provider,
+        0xAAA,
+        0xBBB,
+        0xCCC,
+        "chat",
+        {"gen_ai.operation.name": "chat", "gen_ai.provider.name": "strands-agents"},
+        lambda s: s.add_event(
+            "gen_ai.client.inference.operation.details",
+            {
+                "gen_ai.input.messages": input_msg,
+                "gen_ai.output.messages": '[{"role": "assistant", "parts": [{"type": "text", "content": "done"}]}]',
+            },
+        ),
+    )
+
+    session = StrandsInMemorySessionMapper().map_to_session([span], "sid")
+    inference = session.traces[0].spans[0]
+    assert inference.messages[0].content[0].content == "alpha beta"
+
+
+def test_latest_convention_tool_execution_multi_text(provider):
+    """Latest _convert_tool_execution_span joins all blocks in tool_call_response."""
+    output_msg = _json.dumps(
+        [
+            {
+                "role": "tool",
+                "parts": [
+                    {
+                        "type": "tool_call_response",
+                        "id": "t1",
+                        "response": [{"text": "part1"}, {"text": "part2"}],
+                    }
+                ],
+            }
+        ]
+    )
+    span = make_span(
+        provider,
+        0xAAA,
+        0xBBB,
+        0xCCC,
+        "execute_tool",
+        {
+            "gen_ai.operation.name": "execute_tool",
+            "gen_ai.provider.name": "strands-agents",
+            "gen_ai.tool.name": "search",
+            "gen_ai.tool.call.id": "t1",
+            "gen_ai.tool.status": "success",
+        },
+        lambda s: s.add_event(
+            "gen_ai.client.inference.operation.details",
+            {"gen_ai.output.messages": output_msg},
+        ),
+    )
+
+    session = StrandsInMemorySessionMapper().map_to_session([span], "sid")
+    tool = session.traces[0].spans[0]
+    assert isinstance(tool, ToolExecutionSpan)
+    assert tool.tool_result.content == "part1 part2"

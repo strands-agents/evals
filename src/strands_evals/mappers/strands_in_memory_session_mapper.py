@@ -24,6 +24,7 @@ from ..types.trace import (
     UserMessage,
 )
 from .session_mapper import SessionMapper
+from .utils import join_tool_result_content
 
 logger = logging.getLogger(__name__)
 
@@ -194,10 +195,7 @@ class StrandsInMemorySessionMapper(SessionMapper):
                 continue
 
             tool_result = item["toolResult"]
-            result_text = ""
-            if "content" in tool_result and tool_result["content"]:
-                content = tool_result["content"]
-                result_text = content[0].get("text", "") if isinstance(content, list) else str(content)
+            result_text = join_tool_result_content(tool_result.get("content"))
 
             result.append(
                 ToolResultContent(
@@ -324,17 +322,12 @@ class StrandsInMemorySessionMapper(SessionMapper):
                     content.append(TextContent(text=part.get("content", "")))
 
                 if part_type == "tool_call_response":
-                    # Extract text from response array if present
                     response = part.get("response", [])
-                    response_text = ""
-
-                    ## To-do: Compare the differences for multiple toolResults
-                    if isinstance(response, list) and response:
-                        response_text = (
-                            response[0].get("text", "") if isinstance(response[0], dict) else str(response[0])
-                        )
-                    elif isinstance(response, str):
-                        response_text = response
+                    response_text = (
+                        join_tool_result_content(response)
+                        if isinstance(response, list)
+                        else (response if isinstance(response, str) else "")
+                    )
 
                     content.append(
                         ToolResultContent(
@@ -381,14 +374,11 @@ class StrandsInMemorySessionMapper(SessionMapper):
                                 part = output_messages[0]["parts"][0]
                                 if part.get("type") == "tool_call_response":
                                     response = part.get("response", [])
-                                    if isinstance(response, list) and response:
-                                        tool_result_content = (
-                                            response[0].get("text", "")
-                                            if isinstance(response[0], dict)
-                                            else str(response[0])
-                                        )
-                                    elif isinstance(response, str):
-                                        tool_result_content = response
+                                    tool_result_content = (
+                                        join_tool_result_content(response)
+                                        if isinstance(response, list)
+                                        else (response if isinstance(response, str) else "")
+                                    )
                 except Exception as e:
                     logger.warning(f"Failed to process tool event {event.name}: {e}")
         else:
