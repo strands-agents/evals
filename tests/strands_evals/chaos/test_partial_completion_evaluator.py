@@ -5,8 +5,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from strands_evals.chaos.evaluators import PartialCompletionEvaluator
-from strands_evals.chaos.evaluators.partial_completion_evaluator import (
+from strands_evals.evaluators.chaos import PartialCompletionEvaluator
+from strands_evals.evaluators.chaos.partial_completion_evaluator import (
     PartialCompletionRating,
 )
 from strands_evals.types import EvaluationData
@@ -84,7 +84,7 @@ def test_init_with_custom_values():
     assert evaluator.system_prompt == "Custom"
 
 
-@patch("strands_evals.chaos.evaluators.partial_completion_evaluator.Agent")
+@patch("strands_evals.evaluators.chaos.partial_completion_evaluator.Agent")
 def test_evaluate(mock_agent_class, evaluation_data):
     mock_agent = Mock()
     mock_result = Mock()
@@ -114,7 +114,7 @@ def test_evaluate(mock_agent_class, evaluation_data):
         (1.0, True),
     ],
 )
-@patch("strands_evals.chaos.evaluators.partial_completion_evaluator.Agent")
+@patch("strands_evals.evaluators.chaos.partial_completion_evaluator.Agent")
 def test_pass_threshold(mock_agent_class, evaluation_data, completion, expected_pass):
     mock_agent = Mock()
     mock_result = Mock()
@@ -130,7 +130,7 @@ def test_pass_threshold(mock_agent_class, evaluation_data, completion, expected_
 
 
 @pytest.mark.asyncio
-@patch("strands_evals.chaos.evaluators.partial_completion_evaluator.Agent")
+@patch("strands_evals.evaluators.chaos.partial_completion_evaluator.Agent")
 async def test_evaluate_async(mock_agent_class, evaluation_data):
     mock_agent = Mock()
     mock_result = Mock()

@@ -5,8 +5,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from strands_evals.chaos.evaluators import FailureCommunicationEvaluator
-from strands_evals.chaos.evaluators.failure_communication_evaluator import (
+from strands_evals.evaluators.chaos import FailureCommunicationEvaluator
+from strands_evals.evaluators.chaos.failure_communication_evaluator import (
     FailureCommunicationRating,
     FailureCommunicationScore,
 )
@@ -72,7 +72,7 @@ def test_init_with_custom_values():
     assert evaluator.system_prompt == "Custom"
 
 
-@patch("strands_evals.chaos.evaluators.failure_communication_evaluator.Agent")
+@patch("strands_evals.evaluators.chaos.failure_communication_evaluator.Agent")
 def test_evaluate(mock_agent_class, evaluation_data):
     mock_agent = Mock()
     mock_result = Mock()
@@ -103,7 +103,7 @@ def test_evaluate(mock_agent_class, evaluation_data):
         (FailureCommunicationScore.FAILURE, 0.0, False),
     ],
 )
-@patch("strands_evals.chaos.evaluators.failure_communication_evaluator.Agent")
+@patch("strands_evals.evaluators.chaos.failure_communication_evaluator.Agent")
 def test_score_mapping(mock_agent_class, evaluation_data, score, expected_value, expected_pass):
     mock_agent = Mock()
     mock_result = Mock()
@@ -121,7 +121,7 @@ def test_score_mapping(mock_agent_class, evaluation_data, score, expected_value,
 
 
 @pytest.mark.asyncio
-@patch("strands_evals.chaos.evaluators.failure_communication_evaluator.Agent")
+@patch("strands_evals.evaluators.chaos.failure_communication_evaluator.Agent")
 async def test_evaluate_async(mock_agent_class, evaluation_data):
     mock_agent = Mock()
     mock_result = Mock()

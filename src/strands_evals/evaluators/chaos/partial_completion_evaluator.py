@@ -4,9 +4,9 @@ from pydantic import BaseModel, Field
 from strands import Agent
 from strands.models.model import Model
 
-from ...evaluators.evaluator import Evaluator
 from ...types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from ...types.trace import EvaluationLevel
+from ..evaluator import Evaluator
 from .prompt_templates.partial_completion import get_template
 
 
