@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.trace import SpanContext, SpanKind, TraceFlags
@@ -578,12 +580,9 @@ def test_session_id_filtering_gen_ai_conversation_id_takes_precedence(provider):
 # --- Regression tests: multi-part toolResult.content ---
 
 
-import json as _json
-
-
 def test_legacy_process_tool_results_multi_text(provider):
     """Legacy _process_tool_results joins all text blocks, not just content[0]."""
-    payload = _json.dumps(
+    payload = json.dumps(
         [
             {
                 "toolResult": {
@@ -608,12 +607,12 @@ def test_legacy_process_tool_results_multi_text(provider):
 
     session = StrandsInMemorySessionMapper().map_to_session([span], "sid")
     tool_msg = session.traces[0].spans[0].messages[0]
-    assert tool_msg.content[0].content == "first second"
+    assert tool_msg.content[0].content == "first\nsecond"
 
 
 def test_legacy_process_tool_results_text_and_json(provider):
     """Legacy _process_tool_results handles mixed text+json blocks."""
-    payload = _json.dumps(
+    payload = json.dumps(
         [
             {
                 "toolResult": {
@@ -638,12 +637,12 @@ def test_legacy_process_tool_results_text_and_json(provider):
 
     session = StrandsInMemorySessionMapper().map_to_session([span], "sid")
     tool_msg = session.traces[0].spans[0].messages[0]
-    assert tool_msg.content[0].content == 'label: {"value": 42}'
+    assert tool_msg.content[0].content == 'label:\n{"value": 42}'
 
 
 def test_latest_convention_inference_multi_text_tool_result(provider):
     """Latest _convert_inference_messages joins all blocks in tool_call_response."""
-    input_msg = _json.dumps(
+    input_msg = json.dumps(
         [
             {
                 "role": "user",
@@ -675,12 +674,12 @@ def test_latest_convention_inference_multi_text_tool_result(provider):
 
     session = StrandsInMemorySessionMapper().map_to_session([span], "sid")
     inference = session.traces[0].spans[0]
-    assert inference.messages[0].content[0].content == "alpha beta"
+    assert inference.messages[0].content[0].content == "alpha\nbeta"
 
 
 def test_latest_convention_tool_execution_multi_text(provider):
     """Latest _convert_tool_execution_span joins all blocks in tool_call_response."""
-    output_msg = _json.dumps(
+    output_msg = json.dumps(
         [
             {
                 "role": "tool",
@@ -716,4 +715,4 @@ def test_latest_convention_tool_execution_multi_text(provider):
     session = StrandsInMemorySessionMapper().map_to_session([span], "sid")
     tool = session.traces[0].spans[0]
     assert isinstance(tool, ToolExecutionSpan)
-    assert tool.tool_result.content == "part1 part2"
+    assert tool.tool_result.content == "part1\npart2"

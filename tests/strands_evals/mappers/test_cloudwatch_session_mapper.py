@@ -254,9 +254,7 @@ def _make_multi_block_tool_result_message(tool_use_id, content_blocks):
     """Build a tool result message with arbitrary content blocks."""
     return {
         "role": "tool",
-        "content": {
-            "content": json.dumps([{"toolResult": {"content": content_blocks, "toolUseId": tool_use_id}}])
-        },
+        "content": {"content": json.dumps([{"toolResult": {"content": content_blocks, "toolUseId": tool_use_id}}])},
     }
 
 
@@ -283,7 +281,7 @@ class TestMultiBlockToolResult:
         session = mapper.map_to_session([record1, record2], "sess-1")
         tool_spans = [s for s in session.traces[0].spans if isinstance(s, ToolExecutionSpan)]
         assert len(tool_spans) == 1
-        assert tool_spans[0].tool_result.content == "first second"
+        assert tool_spans[0].tool_result.content == "first\nsecond"
 
     def test_text_and_json_blocks_joined(self, mapper):
         """Mixed text+json blocks are both included in the joined string."""
@@ -307,4 +305,4 @@ class TestMultiBlockToolResult:
         session = mapper.map_to_session([record1, record2], "sess-1")
         tool_spans = [s for s in session.traces[0].spans if isinstance(s, ToolExecutionSpan)]
         assert len(tool_spans) == 1
-        assert tool_spans[0].tool_result.content == 'val: {"x": 1}'
+        assert tool_spans[0].tool_result.content == 'val:\n{"x": 1}'

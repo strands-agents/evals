@@ -26,6 +26,14 @@ from ..types.trace import (
 from .session_mapper import SessionMapper
 from .utils import join_tool_result_content
 
+
+def _response_to_text(response: Any) -> str:
+    """Normalize a tool_call_response value to a plain string."""
+    if isinstance(response, list):
+        return join_tool_result_content(response)
+    return response if isinstance(response, str) else ""
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -322,12 +330,7 @@ class StrandsInMemorySessionMapper(SessionMapper):
                     content.append(TextContent(text=part.get("content", "")))
 
                 if part_type == "tool_call_response":
-                    response = part.get("response", [])
-                    response_text = (
-                        join_tool_result_content(response)
-                        if isinstance(response, list)
-                        else (response if isinstance(response, str) else "")
-                    )
+                    response_text = _response_to_text(part.get("response", []))
 
                     content.append(
                         ToolResultContent(
@@ -373,14 +376,9 @@ class StrandsInMemorySessionMapper(SessionMapper):
                             if output_messages and output_messages[0].get("parts"):
                                 part = output_messages[0]["parts"][0]
                                 if part.get("type") == "tool_call_response":
-                                    response = part.get("response", [])
-                                    tool_result_content = (
-                                        join_tool_result_content(response)
-                                        if isinstance(response, list)
-                                        else (response if isinstance(response, str) else "")
-                                    )
+                                    tool_result_content = _response_to_text(part.get("response", []))
                 except Exception as e:
-                    logger.warning(f"Failed to process tool event {event.name}: {e}")
+                    logger.warning("Failed to process tool event %s: %s", event.name, e)
         else:
             for event in span.events:
                 try:
@@ -393,7 +391,7 @@ class StrandsInMemorySessionMapper(SessionMapper):
                         message_list = self._parse_json_attr(event_attributes, "message")
                         tool_result_content = message_list[0].get("text", "") if message_list else ""
                 except Exception as e:
-                    logger.warning(f"Failed to process tool event {event.name}: {e}")
+                    logger.warning("Failed to process tool event %s: %s", event.name, e)
 
         tool_call = ToolCall(name=tool_name, arguments=tool_arguments, tool_call_id=tool_call_id)
         tool_result = ToolResult(content=tool_result_content, error=tool_error, tool_call_id=tool_call_id)
