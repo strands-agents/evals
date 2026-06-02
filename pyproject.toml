@@ -140,6 +140,7 @@ select = [
 "src/strands_evals/evaluators/prompt_templates/*" = ["E501"] # line-length
 "src/strands_evals/detectors/prompt_templates/*" = ["E501"] # line-length
 "src/strands_evals/generators/prompt_template/*" = ["E501"] # line-length
+"src/strands_evals/experimental/redteam/**/prompt_templates/**" = ["E501"] # line-length
 
 [tool.mypy]
 # Disable strict checks that cause false positives with Generic classes
