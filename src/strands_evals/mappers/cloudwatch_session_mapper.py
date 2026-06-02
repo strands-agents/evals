@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..mappers.session_mapper import SessionMapper
-from ..mappers.utils import get_body
+from ..mappers.utils import get_body, join_tool_result_content
 from ..types.trace import (
     AgentInvocationSpan,
     AssistantMessage,
@@ -305,24 +305,15 @@ class CloudWatchSessionMapper(SessionMapper):
             for item in parsed:
                 if isinstance(item, dict) and "toolResult" in item:
                     tr_data = item["toolResult"]
-                    result_text = self._extract_tool_result_text(tr_data.get("content"))
                     tool_results.append(
                         ToolResult(
-                            content=result_text,
+                            content=join_tool_result_content(tr_data.get("content")),
                             error=tr_data.get("error"),
                             tool_call_id=tr_data.get("toolUseId"),
                         )
                     )
 
         return tool_results
-
-    def _extract_tool_result_text(self, content: Any) -> str:
-        """Extract text from tool result content."""
-        if not content:
-            return ""
-        if isinstance(content, list) and content:
-            return content[0].get("text", "")
-        return str(content)
 
     # --- Body-to-messages conversion ---
 
@@ -392,10 +383,9 @@ class CloudWatchSessionMapper(SessionMapper):
             if "toolResult" not in item:
                 continue
             tool_result = item["toolResult"]
-            result_text = self._extract_tool_result_text(tool_result.get("content"))
             result.append(
                 ToolResultContent(
-                    content=result_text,
+                    content=join_tool_result_content(tool_result.get("content")),
                     error=tool_result.get("error"),
                     tool_call_id=tool_result.get("toolUseId"),
                 )

@@ -2,10 +2,48 @@
 Utility functions for mapper selection and detection.
 """
 
+import json
 from typing import Any
 
 from .constants import SCOPE_LANGCHAIN_OTEL, SCOPE_OPENINFERENCE, SCOPE_STRANDS
 from .session_mapper import SessionMapper
+
+
+def serialize_tool_result_block(block: Any) -> str:
+    """Serialize a single Bedrock-style tool result content block to text.
+
+    Handles text, json, image, document, and video block types so values in
+    any block are visible to evaluators (not just block[0]).
+    """
+    if not isinstance(block, dict):
+        return str(block) if block is not None else ""
+    if "text" in block:
+        return block["text"] or ""
+    if "json" in block:
+        try:
+            return json.dumps(block["json"], default=str)
+        except (TypeError, ValueError):
+            return str(block["json"])
+    for key in ("image", "document", "video"):
+        if key in block:
+            return f"[{key} content]"
+    return ""
+
+
+def join_tool_result_content(content: Any) -> str:
+    """Join every block of a tool result's content into a single string.
+
+    Replaces the prior `content[0]`-only behavior that hid values in
+    subsequent blocks from faithfulness/correctness judges.
+    """
+    if not content:
+        return ""
+    if isinstance(content, list):
+        parts = [serialize_tool_result_block(b) for b in content]
+        return "\n".join(p for p in parts if p)
+    if isinstance(content, str):
+        return content
+    return str(content)
 
 
 def detect_otel_mapper(spans: list[Any]) -> SessionMapper:

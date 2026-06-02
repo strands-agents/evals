@@ -24,6 +24,7 @@ from ..types.trace import (
     UserMessage,
 )
 from .session_mapper import SessionMapper
+from .utils import join_tool_result_content
 
 logger = logging.getLogger(__name__)
 
@@ -194,14 +195,9 @@ class StrandsInMemorySessionMapper(SessionMapper):
                 continue
 
             tool_result = item["toolResult"]
-            result_text = ""
-            if "content" in tool_result and tool_result["content"]:
-                content = tool_result["content"]
-                result_text = content[0].get("text", "") if isinstance(content, list) else str(content)
-
             result.append(
                 ToolResultContent(
-                    content=result_text,
+                    content=join_tool_result_content(tool_result.get("content")),
                     error=tool_result.get("error"),
                     tool_call_id=tool_result.get("toolUseId"),
                 )
@@ -324,21 +320,9 @@ class StrandsInMemorySessionMapper(SessionMapper):
                     content.append(TextContent(text=part.get("content", "")))
 
                 if part_type == "tool_call_response":
-                    # Extract text from response array if present
-                    response = part.get("response", [])
-                    response_text = ""
-
-                    ## To-do: Compare the differences for multiple toolResults
-                    if isinstance(response, list) and response:
-                        response_text = (
-                            response[0].get("text", "") if isinstance(response[0], dict) else str(response[0])
-                        )
-                    elif isinstance(response, str):
-                        response_text = response
-
                     content.append(
                         ToolResultContent(
-                            content=response_text,
+                            content=join_tool_result_content(part.get("response")),
                             tool_call_id=part.get("id"),
                         )
                     )
@@ -380,15 +364,7 @@ class StrandsInMemorySessionMapper(SessionMapper):
                             if output_messages and output_messages[0].get("parts"):
                                 part = output_messages[0]["parts"][0]
                                 if part.get("type") == "tool_call_response":
-                                    response = part.get("response", [])
-                                    if isinstance(response, list) and response:
-                                        tool_result_content = (
-                                            response[0].get("text", "")
-                                            if isinstance(response[0], dict)
-                                            else str(response[0])
-                                        )
-                                    elif isinstance(response, str):
-                                        tool_result_content = response
+                                    tool_result_content = join_tool_result_content(part.get("response"))
                 except Exception as e:
                     logger.warning(f"Failed to process tool event {event.name}: {e}")
         else:

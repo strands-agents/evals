@@ -573,3 +573,134 @@ def test_session_id_filtering_gen_ai_conversation_id_takes_precedence(provider):
     # Should NOT match on session.id when gen_ai.conversation.id is present
     session2 = mapper.map_to_session([span], "session-456")
     assert len(session2.traces) == 0
+
+
+# Regression tests for issue #235: multi-block toolResult.content was dropped
+
+
+def test_legacy_tool_result_preserves_all_text_blocks(provider):
+    """Legacy convention: every text block in toolResult.content is included."""
+    span = make_span(
+        provider,
+        0xAAA,
+        0xBBB,
+        0xCCC,
+        "chat",
+        {"gen_ai.operation.name": "chat"},
+        lambda s: s.add_event(
+            "gen_ai.tool.message",
+            {
+                "content": (
+                    '[{"toolResult": {"toolUseId": "t1", "content": [{"text": "summary line"},{"text": "Output: 2"}]}}]'
+                )
+            },
+        ),
+    )
+
+    session = StrandsInMemorySessionMapper().map_to_session([span], "sid")
+
+    tool_result = session.traces[0].spans[0].messages[0].content[0]
+    assert "summary line" in tool_result.content
+    assert "Output: 2" in tool_result.content
+
+
+def test_legacy_tool_result_serializes_json_block(provider):
+    """Legacy convention: json blocks are serialized so values stay visible."""
+    span = make_span(
+        provider,
+        0xAAA,
+        0xBBB,
+        0xCCC,
+        "chat",
+        {"gen_ai.operation.name": "chat"},
+        lambda s: s.add_event(
+            "gen_ai.tool.message",
+            {
+                "content": (
+                    '[{"toolResult": {"toolUseId": "t1", "content": [{"text": "see data"},{"json": {"answer": 42}}]}}]'
+                )
+            },
+        ),
+    )
+
+    session = StrandsInMemorySessionMapper().map_to_session([span], "sid")
+
+    tool_result = session.traces[0].spans[0].messages[0].content[0]
+    assert "see data" in tool_result.content
+    assert '"answer": 42' in tool_result.content
+
+
+def test_latest_convention_tool_result_preserves_all_blocks(provider):
+    """Latest convention inference span: all response blocks join into content."""
+    span = make_span(
+        provider,
+        0xAAA,
+        0xBBB,
+        0xCCC,
+        "chat",
+        {"gen_ai.operation.name": "chat", "gen_ai.provider.name": "strands-agents"},
+        lambda s: s.add_event(
+            "gen_ai.client.inference.operation.details",
+            {
+                "gen_ai.input.messages": """
+                    [
+                        {"role": "user", "parts": [
+                            {"type": "tool_call_response", "id": "t1", "response": [
+                                {"text": "summary"},
+                                {"text": "Output: 2"}
+                            ]}
+                        ]}
+                    ]
+                """,
+                "gen_ai.output.messages": """
+                    [{"role": "assistant", "parts": [
+                        {"type": "text", "content": "done"}
+                    ], "finish_reason": "stop"}]
+                """,
+            },
+        ),
+    )
+
+    session = StrandsInMemorySessionMapper().map_to_session([span], "sid")
+
+    tool_result = session.traces[0].spans[0].messages[0].content[0]
+    assert "summary" in tool_result.content
+    assert "Output: 2" in tool_result.content
+
+
+def test_latest_convention_tool_execution_span_preserves_all_blocks(provider):
+    """Latest convention tool execution span: all response blocks join into content."""
+    span = make_span(
+        provider,
+        0xAAA,
+        0xBBB,
+        0xCCC,
+        "execute_tool",
+        {
+            "gen_ai.operation.name": "execute_tool",
+            "gen_ai.provider.name": "strands-agents",
+            "gen_ai.tool.name": "calc",
+            "gen_ai.tool.call.id": "t1",
+            "gen_ai.tool.status": "success",
+        },
+        lambda s: s.add_event(
+            "gen_ai.client.inference.operation.details",
+            {
+                "gen_ai.output.messages": """[
+                    {"role": "tool", "parts": [
+                        {"type": "tool_call_response", "id": "t1", "response": [
+                            {"text": "summary"},
+                            {"text": "Output: 2"}
+                        ]}
+                    ], "finish_reason": "stop"}
+                ]"""
+            },
+        ),
+    )
+
+    session = StrandsInMemorySessionMapper().map_to_session([span], "sid")
+
+    tool = session.traces[0].spans[0]
+    assert isinstance(tool, ToolExecutionSpan)
+    assert "summary" in tool.tool_result.content
+    assert "Output: 2" in tool.tool_result.content

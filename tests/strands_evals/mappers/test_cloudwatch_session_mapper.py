@@ -245,3 +245,41 @@ class TestSessionBuilding:
         session = mapper.map_to_session(records, "sess-1")
         assert len(session.traces) == 1
         assert len(session.traces[0].spans) > 0
+
+    def test_multi_block_tool_result_preserves_all_blocks(self, mapper):
+        """Regression for #235: every block of toolResult.content reaches the evaluator."""
+        multi_block_msg = {
+            "role": "tool",
+            "content": {
+                "content": json.dumps(
+                    [
+                        {
+                            "toolResult": {
+                                "content": [{"text": "summary"}, {"text": "Output: 2"}],
+                                "toolUseId": "tu-1",
+                            }
+                        }
+                    ]
+                )
+            },
+        }
+        record1 = make_log_record(
+            trace_id="t1",
+            span_id="s1",
+            input_messages=[make_user_message("run it")],
+            output_messages=[_make_assistant_tool_use_message("runner", {}, "tu-1")],
+            time_nano=1000,
+        )
+        record2 = make_log_record(
+            trace_id="t1",
+            span_id="s2",
+            input_messages=[make_user_message("run it"), multi_block_msg],
+            output_messages=[make_assistant_text_message("done")],
+            time_nano=2000,
+        )
+
+        session = mapper.map_to_session([record1, record2], "sess-1")
+        tool_spans = [s for s in session.traces[0].spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+        assert "summary" in tool_spans[0].tool_result.content
+        assert "Output: 2" in tool_spans[0].tool_result.content
