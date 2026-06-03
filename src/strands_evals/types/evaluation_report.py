@@ -1,13 +1,200 @@
 import json
 from pathlib import Path
+from typing import Any, Callable
 
+import pandas as pd
 from pydantic import BaseModel
+from rich.console import Console
+from rich.table import Table
 
 from ..display.display_console import CollapsibleTableReportDisplay
 from ..types.evaluation import EvaluationOutput
-from ..aggregation import DataFrameMixin
 
-class EvaluationReport(DataFrameMixin, BaseModel):
+# Stable column names for the tabular view of a report.
+CASE = "case"
+EVALUATOR = "evaluator"
+SCORE = "score"
+PASSED = "passed"
+REASON = "reason"
+METADATA_PREFIX = "metadata."
+
+_BASE_COLUMNS = [CASE, EVALUATOR, SCORE, PASSED, REASON]
+
+
+def _case_key(case: dict, index: int) -> str:
+    """Resolve a case's grouping key: metadata case_key, else name, else index."""
+    metadata = case.get("metadata") or {}
+    return metadata.get("case_key") or case.get("name") or f"case#{index}"
+
+
+def _format_cell(value: Any) -> str:
+    if isinstance(value, float):
+        return f"{value:.3f}"
+    return str(value)
+
+
+class ReportGroupBy:
+    """Thin wrapper over a pandas ``DataFrameGroupBy``.
+
+    Aggregating calls (``agg`` and any pandas groupby method that returns a
+    ``DataFrame``) are re-wrapped as a ``ReportFrame`` so the result keeps the
+    display and serialization helpers.
+    """
+
+    def __init__(self, groupby: "pd.core.groupby.DataFrameGroupBy") -> None:
+        self._groupby = groupby
+
+    def agg(self, *args: Any, **kwargs: Any) -> "ReportFrame":
+        """Aggregate. Accepts the same arguments as ``DataFrameGroupBy.agg``.
+
+        Named aggregation reads cleanly, e.g.::
+
+            report.group_by("evaluator").agg(
+                mean_score=("score", "mean"),
+                pass_rate=("passed", "mean"),
+                n=("score", "count"),
+            )
+        """
+        result = self._groupby.agg(*args, **kwargs)
+        return ReportFrame(result.reset_index())
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._groupby, name)
+        if not callable(attr):
+            return attr
+
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            result = attr(*args, **kwargs)
+            if isinstance(result, pd.DataFrame):
+                return ReportFrame(result.reset_index())
+            return result
+
+        return wrapper
+
+
+class ReportFrame:
+    """A pandas-backed view over evaluation rows.
+
+    Construct via ``EvaluationReport.to_dataframe()`` / ``.frame()`` or the
+    ``EvaluationReport`` methods that delegate here. Wrap an existing frame
+    directly with ``ReportFrame(df)``.
+
+    Any method not defined here delegates to the underlying frame and a
+    ``DataFrame`` result is re-wrapped, so the full pandas vocabulary is
+    available. Use ``.df`` for the raw pandas object.
+
+    Note: ``ReportFrame.filter`` filters *rows* by a boolean mask or predicate,
+    which is what evaluation users want; this differs from
+    ``pandas.DataFrame.filter`` (which selects columns by label).
+    """
+
+    def __init__(self, df: pd.DataFrame) -> None:
+        self._df = df
+
+    # -- access ---------------------------------------------------------
+
+    @property
+    def df(self) -> pd.DataFrame:
+        """The underlying pandas ``DataFrame`` (no copy)."""
+        return self._df
+
+    def to_pandas(self) -> pd.DataFrame:
+        """Return a copy of the underlying frame."""
+        return self._df.copy()
+
+    # -- core operations ------------------------------------------------
+
+    def group_by(self, by: str | list[str], **kwargs: Any) -> ReportGroupBy:
+        """Group rows by one or more columns. Mirrors ``DataFrame.groupby``."""
+        return ReportGroupBy(self._df.groupby(by, **kwargs))
+
+    def filter(
+        self, predicate: pd.Series | Callable[[pd.DataFrame], pd.Series]
+    ) -> "ReportFrame":
+        """Filter *rows* by a boolean mask or a callable returning one.
+
+        Examples::
+
+            frame.filter(frame.df["passed"])
+            frame.filter(lambda d: d["score"] >= 0.5)
+        """
+        mask = predicate(self._df) if callable(predicate) else predicate
+        return ReportFrame(self._df[mask].reset_index(drop=True))
+
+    def describe(self, *args: Any, **kwargs: Any) -> "ReportFrame":
+        """Descriptive statistics over numeric columns. Mirrors ``describe``."""
+        return ReportFrame(self._df.describe(*args, **kwargs).reset_index())
+
+    # -- serialization --------------------------------------------------
+
+    def to_file(self, path: str) -> None:
+        """Write the frame to a JSON file (records orientation).
+
+        Args:
+            path: Output path. ``.json`` is appended when no suffix is given.
+
+        Raises:
+            ValueError: If the path has a non-``.json`` extension.
+        """
+        file_path = Path(path)
+        if file_path.suffix:
+            if file_path.suffix != ".json":
+                raise ValueError(
+                    f"Only .json is supported. Got path with extension: {path}."
+                )
+        else:
+            file_path = file_path.with_suffix(".json")
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        self._df.to_json(file_path, orient="records", indent=2)
+
+    @classmethod
+    def from_file(cls, path: str) -> "ReportFrame":
+        """Load a frame previously written by :meth:`to_file`."""
+        file_path = Path(path)
+        if file_path.suffix != ".json":
+            raise ValueError(f"Only .json is supported. Got file: {path}.")
+        return cls(pd.read_json(file_path, orient="records"))
+
+    # -- display --------------------------------------------------------
+
+    def display(self, title: str = "Evaluation Results") -> None:
+        """Render the frame to the terminal as a rich table."""
+        console = Console()
+        if self._df.empty:
+            console.print("[dim]No rows to display.[/dim]")
+            return
+
+        table = Table(title=title, show_lines=False)
+        for col in self._df.columns:
+            justify = "right" if pd.api.types.is_numeric_dtype(self._df[col]) else "left"
+            table.add_column(str(col), justify=justify)
+        for _, row in self._df.iterrows():
+            table.add_row(*[_format_cell(v) for v in row])
+        console.print(table)
+
+    # -- passthrough ----------------------------------------------------
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._df, name)
+        if not callable(attr):
+            return attr
+
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            result = attr(*args, **kwargs)
+            if isinstance(result, pd.DataFrame):
+                return ReportFrame(result)
+            return result
+
+        return wrapper
+
+    def __len__(self) -> int:
+        return len(self._df)
+
+    def __repr__(self) -> str:
+        return f"ReportFrame(rows={len(self._df)}, columns={list(self._df.columns)})"
+
+
+class EvaluationReport(BaseModel):
     """
     A report of the evaluation of a task.
 
@@ -32,7 +219,14 @@ class EvaluationReport(DataFrameMixin, BaseModel):
 
     @classmethod
     def flatten(cls, reports: list["EvaluationReport"]) -> "EvaluationReport":
-        """Flatten multiple evaluation reports into a single report."""
+        """Flatten multiple evaluation reports into a single report.
+
+        Each case is stamped with its source ``evaluator`` so that the tabular
+        view (:meth:`to_dataframe`) preserves per-report evaluator identity even
+        though the combined report's own ``evaluator_name`` is ``"Combined"``.
+        That is what makes ``EvaluationReport.flatten(reports).group_by(
+        "evaluator")`` group by the original evaluators.
+        """
         if not reports:
             return cls(overall_score=0.0, scores=[], cases=[], test_passes=[])
 
@@ -60,6 +254,86 @@ class EvaluationReport(DataFrameMixin, BaseModel):
             diagnoses=diags,
             recommendations=recs,
         )
+
+    # ------------------------------------------------------------------
+    # DataFrame surface
+    #
+    # An EvaluationReport behaves like a pandas DataFrame: a single
+    # `to_dataframe` touch point coerces it to a frame, and grouping /
+    # aggregation / filtering / description piggyback on pandas. Comparison
+    # (deltas, A/B, statistical tests) is a separate, composable layer that
+    # operates on the frame these produce.
+    # ------------------------------------------------------------------
+
+    def to_dataframe(self) -> pd.DataFrame:
+        """Coerce this report into a one-row-per-case ``DataFrame``.
+
+        Columns: ``case``, ``evaluator``, ``score``, ``passed``, ``reason``,
+        plus one ``metadata.<key>`` column per metadata key. The ``evaluator``
+        column prefers a case-level ``evaluator`` (set by :meth:`flatten`),
+        falling back to this report's ``evaluator_name``. A report with no
+        cases yields an empty frame with the base columns present.
+        """
+        cases = self.cases or []
+        scores = self.scores or []
+        passes = self.test_passes or []
+        reasons = self.reasons or []
+
+        rows: list[dict] = []
+        for i, case in enumerate(cases):
+            metadata = case.get("metadata") or {}
+            row = {
+                CASE: _case_key(case, i),
+                EVALUATOR: case.get("evaluator") or self.evaluator_name or "Unknown",
+                SCORE: float(scores[i]) if i < len(scores) else float("nan"),
+                PASSED: bool(passes[i]) if i < len(passes) else False,
+                REASON: reasons[i] if i < len(reasons) else "",
+            }
+            for key, value in metadata.items():
+                # case_key is already promoted to the `case` column; don't duplicate.
+                if key == "case_key":
+                    continue
+                row[f"{METADATA_PREFIX}{key}"] = value
+            rows.append(row)
+
+        if not rows:
+            return pd.DataFrame(columns=_BASE_COLUMNS)
+
+        frame = pd.DataFrame(rows)
+        meta_cols = [c for c in frame.columns if c.startswith(METADATA_PREFIX)]
+        ordered = [c for c in _BASE_COLUMNS if c in frame.columns] + sorted(meta_cols)
+        return frame[ordered]
+
+    def frame(self) -> ReportFrame:
+        """Return this report as a :class:`ReportFrame`."""
+        return ReportFrame(self.to_dataframe())
+
+    def group_by(self, by: str | list[str], **kwargs: Any) -> ReportGroupBy:
+        """Group this report's rows. See :meth:`ReportFrame.group_by`.
+
+        Single report::
+
+            report.group_by("evaluator").agg(mean_score=("score", "mean"))
+
+        Across reports, flatten first::
+
+            EvaluationReport.flatten(reports).group_by("evaluator").agg(...)
+        """
+        return self.frame().group_by(by, **kwargs)
+
+    def agg(self, *args: Any, **kwargs: Any) -> ReportFrame:
+        """Aggregate this report's rows without grouping (whole-frame agg)."""
+        result = self.to_dataframe().agg(*args, **kwargs)
+        frame = result.to_frame().T if isinstance(result, pd.Series) else result
+        return ReportFrame(frame.reset_index(drop=True))
+
+    def filter(self, predicate: Any) -> ReportFrame:
+        """Filter this report's rows. See :meth:`ReportFrame.filter`."""
+        return self.frame().filter(predicate)
+
+    def describe(self, *args: Any, **kwargs: Any) -> ReportFrame:
+        """Describe this report's numeric columns."""
+        return self.frame().describe(*args, **kwargs)
 
     @staticmethod
     def _format_input_for_display(input_value: object) -> str:
