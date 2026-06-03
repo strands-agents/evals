@@ -56,7 +56,7 @@ class ChaosExperiment:
             evaluators=[my_evaluator],
         )
 
-        reports = experiment.run_evaluations(task=my_task)
+        report = experiment.run_evaluations(task=my_task)
     """
 
     def __init__(
@@ -125,7 +125,7 @@ class ChaosExperiment:
         self,
         task: Callable[[ChaosCase], Any],
         **kwargs,
-    ) -> list[EvaluationReport]:
+    ) -> EvaluationReport:
         """Run evaluations across all ChaosCase objects.
 
         Delegates to run_evaluations_async with max_workers=1, mirroring the
@@ -138,7 +138,7 @@ class ChaosExperiment:
             **kwargs: Additional kwargs passed to the base Experiment.run_evaluations_async.
 
         Returns:
-            List of EvaluationReport objects.
+            A single flattened EvaluationReport.
 
         Raises:
             ValueError: If an async task is passed (use run_evaluations_async instead).
@@ -157,7 +157,7 @@ class ChaosExperiment:
         task: Callable[[ChaosCase], Any],
         max_workers: int = 10,
         **kwargs,
-    ) -> list[EvaluationReport]:
+    ) -> EvaluationReport:
         """Run evaluations asynchronously across all ChaosCase objects.
 
         Wraps the user's task to set the ContextVar before each case execution.
@@ -169,15 +169,15 @@ class ChaosExperiment:
             **kwargs: Additional kwargs passed to the base Experiment.run_evaluations_async.
 
         Returns:
-            List of EvaluationReport objects.
+            A single flattened EvaluationReport.
         """
         wrapped = self._wrap_task(task)
-        reports = await self._experiment.run_evaluations_async(wrapped, max_workers=max_workers, **kwargs)
+        report = await self._experiment.run_evaluations_async(wrapped, max_workers=max_workers, **kwargs)
 
         logger.info(
-            "cases=<%d>, reports=<%d> | chaos experiment complete",
+            "cases=<%d>, scores=<%d> | chaos experiment complete",
             len(self._cases),
-            len(reports),
+            len(report.scores),
         )
 
-        return reports
+        return report

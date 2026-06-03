@@ -93,8 +93,8 @@ def get_response(case: Case) -> str:
     return str(agent(case.input))
 
 # Run evaluations
-reports = experiment.run_evaluations(get_response)
-reports[0].run_display()
+report = experiment.run_evaluations(get_response)
+report.run_display()
 ```
 
 ## Installation
@@ -194,8 +194,8 @@ evaluators = [HelpfulnessEvaluator()]
 experiment = Experiment[str, str](cases=test_cases, evaluators=evaluators)
 
 # Run evaluations
-reports = experiment.run_evaluations(user_task_function)
-reports[0].run_display()
+report = experiment.run_evaluations(user_task_function)
+report.run_display()
 ```
 
 ### Multi-turn Conversation Simulation
@@ -255,7 +255,7 @@ evaluators = [
 ]
 
 experiment = Experiment(cases=test_cases, evaluators=evaluators)
-reports = experiment.run_evaluations(task_function)
+report = experiment.run_evaluations(task_function)
 ```
 
 **Key Benefits:**
@@ -310,7 +310,7 @@ def task_function(case: Case) -> dict:
 
 cases = [Case(name="heat_control", input="Turn on the heat to 72 degrees")]
 experiment = Experiment(cases=cases, evaluators=[GoalSuccessRateEvaluator()])
-reports = experiment.run_evaluations(task_function)
+report = experiment.run_evaluations(task_function)
 ```
 
 **Key Benefits:**
@@ -369,10 +369,10 @@ experiment = Experiment(
     ),
 )
 
-reports = experiment.run_evaluations(task_function)
+report = experiment.run_evaluations(task_function)
 
 # Display results with recommendations
-reports[0].display(include_recommendations=True)
+report.display(include_recommendations=True)
 ```
 
 You can also use the detectors standalone on any `Session` object (`strands_evals.types.trace.Session`):
@@ -498,8 +498,8 @@ def get_response(case: Case) -> str:
         {"text": case.input.instruction}
     ]))
 
-reports = experiment.run_evaluations(get_response)
-reports[0].run_display()
+report = experiment.run_evaluations(get_response)
+report.run_display()
 ```
 
 ## Available Evaluators
@@ -586,14 +586,13 @@ metrics = {
     "user_satisfaction": "Subjective helpfulness ratings"
 }
 
-# Generate analysis reports
-reports = experiment.run_evaluations(task_function)
-reports[0].run_display()  # Interactive display with metrics breakdown
+# Generate analysis report
+report = experiment.run_evaluations(task_function)
+report.run_display()  # Interactive display with metrics breakdown
 
-# Flatten multiple evaluator reports into a single combined view
-from strands_evals.types.evaluation_report import EvaluationReport
-combined = EvaluationReport.flatten(reports)
-combined.display(include_recommendations=True)
+# Multi-evaluator runs return a single flattened report; each row is tagged with its evaluator
+# via cases[i]["evaluator"], so you can filter or group without an extra flatten step.
+report.display(include_recommendations=True)
 ```
 
 ## Best Practices

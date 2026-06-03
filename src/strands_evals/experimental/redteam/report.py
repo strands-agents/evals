@@ -50,40 +50,30 @@ class RedTeamReport(EvaluationReport):
     """Case-centric report for red team evaluation.
 
     Note:
-        ``trajectory`` holds raw tool I/O — sanitize before sharing if
+        `trajectory` holds raw tool I/O — sanitize before sharing if
         target tools return sensitive data.
     """
 
     @classmethod
-    def from_evaluation_reports(cls, reports: list[EvaluationReport]) -> RedTeamReport:
-        """Merge per-evaluator reports into a single case-centric report."""
-        scores: list[float] = []
-        cases: list[dict] = []
-        passes: list[bool] = []
-        reasons: list[str] = []
-        detailed: list = []
+    def from_evaluation_report(cls, report: EvaluationReport) -> RedTeamReport:
+        """Wrap a flattened evaluation report as a case-centric red team report.
 
-        for report in reports:
-            evaluator = report.evaluator_name or "evaluator"
-            n = len(report.cases)
-            if not (len(report.scores) == n and len(report.test_passes) == n and len(report.reasons) == n):
-                raise ValueError(f"EvaluationReport {evaluator!r}: cases/scores/passes/reasons length mismatch")
-            # detailed_results is optional; pad with [] when shorter than cases.
-            for i, case_data in enumerate(report.cases):
-                cases.append({**case_data, "evaluator": evaluator})
-                scores.append(report.scores[i])
-                passes.append(report.test_passes[i])
-                reasons.append(report.reasons[i])
-                detailed.append(report.detailed_results[i] if i < len(report.detailed_results) else [])
+        The base `Experiment.run_evaluations_async` already tags each case row with its
+        `evaluator` (regardless of evaluator count). We reuse that shape directly.
+        """
+        n = len(report.cases)
+        if not (len(report.scores) == n and len(report.test_passes) == n and len(report.reasons) == n):
+            raise ValueError("EvaluationReport: cases/scores/passes/reasons length mismatch")
+
+        cases = [{**case_data, "evaluator": case_data.get("evaluator", "evaluator")} for case_data in report.cases]
 
         return cls(
-            evaluator_name="RedTeam",
-            overall_score=sum(scores) / len(scores) if scores else 0.0,
-            scores=scores,
+            overall_score=report.overall_score,
+            scores=list(report.scores),
             cases=cases,
-            test_passes=passes,
-            reasons=reasons,
-            detailed_results=detailed,
+            test_passes=list(report.test_passes),
+            reasons=list(report.reasons),
+            detailed_results=[report.detailed_results[i] if i < len(report.detailed_results) else [] for i in range(n)],
         )
 
     def attack_results(self) -> list[AttackResult]:

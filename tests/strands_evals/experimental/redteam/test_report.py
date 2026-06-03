@@ -16,19 +16,26 @@ def _case(name: str, risk_category: str, strategy: str, severity: str) -> dict:
 
 
 def _eval_report(evaluator: str, cases: list[dict], scores: list[float], passes: list[bool], reasons: list[str]):
+    # Mirror what Experiment.run_evaluations does: tag each case row with its evaluator.
+    tagged = [{**c, "evaluator": evaluator} for c in cases]
     return EvaluationReport(
-        evaluator_name=evaluator,
         overall_score=sum(scores) / len(scores) if scores else 0.0,
         scores=scores,
-        cases=cases,
+        cases=tagged,
         test_passes=passes,
         reasons=reasons,
     )
 
 
+def _flatten(*reports: EvaluationReport) -> EvaluationReport:
+    """Match what Experiment.run_evaluations now hands to RedTeamReport.from_evaluation_report."""
+    if len(reports) == 1:
+        return reports[0]
+    return EvaluationReport.flatten(list(reports))
+
+
 def _empty_report() -> RedTeamReport:
     return RedTeamReport(
-        evaluator_name="RedTeam",
         overall_score=0.0,
         scores=[],
         cases=[],
@@ -36,9 +43,10 @@ def _empty_report() -> RedTeamReport:
     )
 
 
-class TestFromEvaluationReports:
-    def test_empty_reports(self):
-        report = RedTeamReport.from_evaluation_reports([])
+class TestFromEvaluationReport:
+    def test_empty_report(self):
+        empty = EvaluationReport(overall_score=0.0, scores=[], cases=[], test_passes=[])
+        report = RedTeamReport.from_evaluation_report(empty)
         assert report.attack_results() == []
         assert report.overall_score == 0.0
         assert report.failed_cases == []
@@ -51,7 +59,7 @@ class TestFromEvaluationReports:
             passes=[False],
             reasons=["bypassed"],
         )
-        report = RedTeamReport.from_evaluation_reports([eval_report])
+        report = RedTeamReport.from_evaluation_report(_flatten(eval_report))
 
         results = report.attack_results()
         assert len(results) == 1
@@ -69,7 +77,7 @@ class TestFromEvaluationReports:
         r1 = _eval_report("judge", cases, scores=[0.0], passes=[False], reasons=["bypassed"])
         r2 = _eval_report("attack_success", cases, scores=[0.9], passes=[False], reasons=["full compromise"])
 
-        report = RedTeamReport.from_evaluation_reports([r1, r2])
+        report = RedTeamReport.from_evaluation_report(_flatten(r1, r2))
 
         results = report.attack_results()
         assert len(results) == 1
@@ -86,7 +94,7 @@ class TestFromEvaluationReports:
             passes=[True],
             reasons=[""],
         )
-        report = RedTeamReport.from_evaluation_reports([eval_report])
+        report = RedTeamReport.from_evaluation_report(_flatten(eval_report))
 
         r = report.attack_results()[0]
         assert r.risk_category == "unknown"
@@ -152,12 +160,12 @@ class TestAggregations:
             _case("c1", "guideline_bypass", "gradual_escalation", "high"),
             _case("c2", "system_prompt_leak", "gradual_escalation", "high"),
         ]
-        return RedTeamReport.from_evaluation_reports(
-            [
+        return RedTeamReport.from_evaluation_report(
+            _flatten(
                 _eval_report(
                     "judge", cases_a, scores=[1.0, 0.0, 0.0], passes=[True, False, False], reasons=["", "", ""]
                 ),
-            ]
+            )
         )
 
     def test_failed_cases_sorted_by_score(self):
@@ -204,7 +212,7 @@ class TestDisplay:
 
     def test_with_results_does_not_raise(self):
         cases = [_case("c0", "guideline_bypass", "gradual_escalation", "high")]
-        report = RedTeamReport.from_evaluation_reports(
-            [_eval_report("judge", cases, scores=[0.0], passes=[False], reasons=["bypassed"])]
+        report = RedTeamReport.from_evaluation_report(
+            _flatten(_eval_report("judge", cases, scores=[0.0], passes=[False], reasons=["bypassed"]))
         )
         report.display()

@@ -124,10 +124,8 @@ class TestChaosExperiment:
 
         chaos_cases = ChaosCase.expand(cases, effect_maps, include_no_effect_baseline=True)
         experiment = ChaosExperiment(cases=chaos_cases, evaluators=[evaluator])
-        reports = experiment.run_evaluations(task=task)
+        report = experiment.run_evaluations(task=task)
 
-        assert len(reports) >= 1
-        report = reports[0]
         # 2 cases × 3 conditions = 6 scores
         assert len(report.scores) == 6
 
@@ -154,8 +152,8 @@ class TestChaosExperiment:
             assert active is case
             return "async_output"
 
-        reports = await experiment.run_evaluations_async(task=async_task, max_workers=2)
-        assert len(reports) >= 1
+        report = await experiment.run_evaluations_async(task=async_task, max_workers=2)
+        assert len(report.scores) >= 1
 
     @pytest.mark.asyncio
     async def test_run_evaluations_async_context_var_reset(self, cases, effect_maps, evaluator):

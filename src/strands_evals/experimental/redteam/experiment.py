@@ -75,10 +75,10 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
     ) -> RedTeamReport:
         # max_workers=1: parallel runs would interleave on the shared target Agent.
         task = task or self._default_task()
-        reports = await super().run_evaluations_async(
+        report = await super().run_evaluations_async(
             task, max_workers=max_workers, evaluation_data_store=evaluation_data_store
         )
-        return RedTeamReport.from_evaluation_reports(reports)
+        return RedTeamReport.from_evaluation_report(report)
 
     def _default_task(self) -> Callable[[Case[InputT, OutputT]], Any]:
         if self._target is None:
