@@ -1,4 +1,5 @@
 from .base import AttackStrategy
+from .crescendo import CrescendoStrategy
 from .prompt_strategy import PromptStrategy
 from .prompt_strategy.gradual_escalation import get_template as _gradual_escalation_template
 
@@ -24,6 +25,7 @@ __all__ = [
     "BUILTIN_STRATEGIES",
     "DEFAULT_STRATEGY",
     "AttackStrategy",
+    "CrescendoStrategy",
     "PromptStrategy",
     "resolve_strategy",
 ]
