@@ -15,9 +15,9 @@ def test_report_json_to_stdout(reports_file: Path, capsys):
 
     assert exit_code == 0
     payload = json.loads(captured.out)
-    assert payload["evaluator_name"] == "OutputEvaluator"
     assert payload["overall_score"] == 0.75
     assert payload["scores"] == [1.0, 0.5]
+    assert payload["cases"][0]["evaluator"] == "OutputEvaluator"
 
 
 def test_report_output_file_always_json(reports_file: Path, tmp_path: Path):
@@ -43,6 +43,41 @@ def test_report_recommendations_flag_threads_through(reports_file: Path):
 
     assert exit_code == 0
     mock_display.assert_called_once_with(include_recommendations=True)
+
+
+def test_report_interactive_calls_run_display(reports_file: Path):
+    with patch("strands_evals.types.evaluation_report.EvaluationReport.run_display") as mock_run:
+        exit_code = main(["report", str(reports_file), "--interactive"])
+
+    assert exit_code == 0
+    mock_run.assert_called_once_with(include_recommendations=False)
+
+
+def test_report_interactive_short_flag_with_recommendations(reports_file: Path):
+    with patch("strands_evals.types.evaluation_report.EvaluationReport.run_display") as mock_run:
+        exit_code = main(["report", str(reports_file), "-i", "--recommendations"])
+
+    assert exit_code == 0
+    mock_run.assert_called_once_with(include_recommendations=True)
+
+
+def test_report_interactive_overrides_json(reports_file: Path):
+    with patch("strands_evals.types.evaluation_report.EvaluationReport.run_display") as mock_run:
+        exit_code = main(["--json", "report", str(reports_file), "--interactive"])
+
+    assert exit_code == 0
+    mock_run.assert_called_once_with(include_recommendations=False)
+
+
+def test_report_output_file_skips_interactive(reports_file: Path, tmp_path: Path):
+    out_path = tmp_path / "out.json"
+    with patch("strands_evals.types.evaluation_report.EvaluationReport.run_display") as mock_run:
+        exit_code = main(["report", str(reports_file), "-i", "-o", str(out_path)])
+
+    assert exit_code == 0
+    mock_run.assert_not_called()
+    payload = json.loads(out_path.read_text())
+    assert payload["overall_score"] == 0.75
 
 
 def test_report_stdin(reports_file: Path, capsys, monkeypatch):

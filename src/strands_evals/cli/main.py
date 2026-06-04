@@ -10,7 +10,6 @@ from .commands import diagnose as diagnose_cmd
 from .commands import report as report_cmd
 from .commands import run as run_cmd
 from .commands import validate as validate_cmd
-from .commands import version as version_cmd
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -24,7 +23,6 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
     subparsers.required = True
 
-    version_cmd.add_subparser(subparsers, parent)
     validate_cmd.add_subparser(subparsers, parent)
     report_cmd.add_subparser(subparsers, parent)
     diagnose_cmd.add_subparser(subparsers, parent)

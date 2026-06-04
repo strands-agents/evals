@@ -130,7 +130,7 @@ def test_strands_evals_telemetry_setup_console_exporter_handles_exception():
 
 
 def test_strands_evals_telemetry_setup_in_memory_exporter(mock_telemetry_patches, mock_tracer_provider):
-    """Test setup_in_memory_exporter configures in-memory exporter"""
+    """Test setup_in_memory_exporter configures in-memory exporter and baggage processor"""
     mock_processor = MagicMock()
     mock_telemetry_patches["simple_processor"].return_value = mock_processor
     mock_exporter = MagicMock()
@@ -143,8 +143,12 @@ def test_strands_evals_telemetry_setup_in_memory_exporter(mock_telemetry_patches
     mock_telemetry_patches["memory_exporter"].assert_called_once_with()
     mock_telemetry_patches["simple_processor"].assert_called_once_with(mock_exporter)
 
-    # Verify processor was added to tracer provider
-    mock_tracer_provider.add_span_processor.assert_called_once_with(mock_processor)
+    # Two processors registered: baggage stamper (first, so it runs before
+    # the exporter sees the span) then the SimpleSpanProcessor wrapping the
+    # in-memory exporter.
+    assert mock_tracer_provider.add_span_processor.call_count == 2
+    second_call_arg = mock_tracer_provider.add_span_processor.call_args_list[1].args[0]
+    assert second_call_arg is mock_processor
 
     # Verify exporter is stored in instance variable
     assert telemetry._in_memory_exporter == mock_exporter
@@ -303,3 +307,39 @@ def test_strands_evals_telemetry_propagators_configured():
 
         # Verify global textmap was set
         mock_set_propagator.assert_called_once()
+
+
+def test_baggage_span_processor_stamps_baggage_on_spans():
+    """End-to-end: spans started inside a context with baggage carry the
+    baggage entries as attributes once the BaggageSpanProcessor sees them.
+    """
+    from opentelemetry import baggage, context, trace
+    from opentelemetry.sdk.trace import TracerProvider as RealTracerProvider
+
+    real_provider = RealTracerProvider()
+    telemetry = StrandsEvalsTelemetry(tracer_provider=real_provider)
+    telemetry.setup_in_memory_exporter()
+
+    tracer = trace.get_tracer("test", tracer_provider=real_provider)
+
+    ctx = baggage.set_baggage("session.id", "abc")
+    ctx = baggage.set_baggage("gen_ai.conversation.id", "abc", ctx)
+    token = context.attach(ctx)
+    try:
+        with tracer.start_as_current_span("inside-baggage"):
+            pass
+    finally:
+        context.detach(token)
+
+    with tracer.start_as_current_span("outside-baggage"):
+        pass
+
+    spans = telemetry.in_memory_exporter.get_finished_spans()
+    by_name = {s.name: s for s in spans}
+
+    inside = by_name["inside-baggage"]
+    assert inside.attributes["session.id"] == "abc"
+    assert inside.attributes["gen_ai.conversation.id"] == "abc"
+
+    outside = by_name["outside-baggage"]
+    assert "session.id" not in (outside.attributes or {})

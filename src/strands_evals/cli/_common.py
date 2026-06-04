@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
-from typing import Any, TextIO
+from collections.abc import Callable
+from typing import TextIO
+
+from pydantic import ValidationError
+
+from ._entrypoint import EntryPointError
 
 EXIT_OK = 0
 EXIT_FAILURES = 1
@@ -91,7 +97,6 @@ def configure_logging(args: argparse.Namespace) -> None:
         handler = logging.StreamHandler(sys.stderr)
         handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
         logger.addHandler(handler)
-        logger.propagate = False
 
 
 def emit_error(message: str, *, debug: bool = False, exc: BaseException | None = None) -> None:
@@ -103,21 +108,18 @@ def emit_error(message: str, *, debug: bool = False, exc: BaseException | None =
         traceback.print_exception(exc.__class__, exc, exc.__traceback__, file=sys.stderr)
 
 
-def run_command(func: Any, args: argparse.Namespace) -> int:
+def run_command(func: Callable[[argparse.Namespace], int | None], args: argparse.Namespace) -> int:
     """Invoke a command callback, mapping exceptions to standard exit codes.
 
-    - `FileNotFoundError` / `json.JSONDecodeError` / pydantic `ValidationError` → 2
+    - `FileNotFoundError` / `json.JSONDecodeError` / pydantic `ValidationError` /
+      `EntryPointError` → 2
     - other exceptions → 3
-    - command may also return an int directly
+    - command may also return an int directly (`None` is treated as `EXIT_OK`).
     """
-    import json as _json
-
-    from pydantic import ValidationError
-
     debug = getattr(args, "debug", False)
     try:
         result = func(args)
-    except (FileNotFoundError, _json.JSONDecodeError, ValidationError) as e:
+    except (FileNotFoundError, json.JSONDecodeError, ValidationError, EntryPointError) as e:
         emit_error(str(e), debug=debug, exc=e)
         return EXIT_BAD_INPUT
     except SystemExit:

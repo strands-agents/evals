@@ -52,6 +52,32 @@ def test_validate_malformed_json_exits_2(tmp_path: Path, capsys):
     assert "error" in captured.err.lower()
 
 
+def test_validate_custom_evaluator(tmp_path: Path, capsys):
+    """validate also accepts --custom-evaluator."""
+    tweaked = tmp_path / "experiment.json"
+    tweaked.write_text(
+        json.dumps(
+            {
+                "cases": [{"input": "x", "expected_output": "y"}],
+                "evaluators": [{"evaluator_type": "AlwaysPasses"}],
+            }
+        )
+    )
+    exit_code = main(
+        [
+            "--json",
+            "validate",
+            str(tweaked),
+            "--custom-evaluator",
+            "tests.strands_evals.cli.fixtures.evaluators:AlwaysPasses",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    payload = json.loads(captured.out)
+    assert payload["evaluators"] == ["AlwaysPasses"]
+
+
 def test_validate_unknown_evaluator_exits_3(tmp_path: Path, capsys):
     """A serialized experiment referring to an unknown evaluator type raises a
     plain Exception inside Experiment.from_dict; the CLI maps it to exit 3."""

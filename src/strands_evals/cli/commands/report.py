@@ -13,9 +13,22 @@ def _run(args: argparse.Namespace) -> int:
     raw = read_text_input(args.reports_file)
     report = EvaluationReport.model_validate_json(raw)
 
-    fmt = resolve_format(args)
-    if fmt == "json" or args.output is not None:
+    # `-o PATH` always writes JSON to disk regardless of --interactive/--rich,
+    # so callers piping through `report` to persist a file get a stable format.
+    if args.output is not None:
         write_text_output(report.model_dump_json(indent=2), args.output)
+        return EXIT_OK
+
+    # --interactive forces the interactive rich path (run_display), overriding
+    # an explicit --json since the two are incompatible — interactive mode owns
+    # stdout for the live table.
+    if args.interactive:
+        report.run_display(include_recommendations=args.recommendations)
+        return EXIT_OK
+
+    fmt = resolve_format(args)
+    if fmt == "json":
+        write_text_output(report.model_dump_json(indent=2), None)
     else:
         report.display(include_recommendations=args.recommendations)
 
@@ -44,6 +57,15 @@ def add_subparser(
         "--recommendations",
         action="store_true",
         help="include diagnosis recommendations in the rich-rendered table",
+    )
+    parser.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        help=(
+            "render an interactive rich table where rows can be expanded/collapsed "
+            "(EvaluationReport.run_display). Implies rich format; ignored when -o is set."
+        ),
     )
     parser.add_argument(
         "-o",

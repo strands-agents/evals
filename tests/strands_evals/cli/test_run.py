@@ -29,8 +29,8 @@ def test_run_with_task_smoke(experiment_file: Path, capsys, tmp_path: Path):
 
     assert exit_code == 0
     payload = json.loads(out_path.read_text())
-    assert payload["evaluator_name"] == "Combined"
     assert len(payload["cases"]) == 1
+    assert payload["cases"][0]["evaluator"]
     summary = capsys.readouterr().err
     assert "strands-evals run" in summary
     assert "overall:" in summary
@@ -74,6 +74,76 @@ def test_run_display_flag_renders_with_rows_expanded(experiment_file: Path, tmp_
         assert "input" in details
         assert "actual_output" in details
         assert "expected_output" in details
+
+
+def test_run_interactive_renders_collapsed(experiment_file: Path, monkeypatch):
+    """`--interactive` should hand a collapsed items dict to the renderer in interactive mode."""
+    from strands_evals.cli.commands import run as run_module
+
+    captured: dict = {}
+
+    class _FakeDisplay:
+        def __init__(self, items: dict, overall_score: float) -> None:
+            captured["items"] = items
+            captured["overall_score"] = overall_score
+
+        def run(self, static: bool = True) -> None:
+            captured["static"] = static
+
+    monkeypatch.setattr(run_module, "CollapsibleTableReportDisplay", _FakeDisplay)
+
+    exit_code = main(
+        [
+            "run",
+            str(experiment_file),
+            "--task",
+            "tests.strands_evals.cli.fixtures.tasks:answer",
+            "--fail-on",
+            "none",
+            "--interactive",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["static"] is False
+    items = captured["items"]
+    assert items, "expected at least one row in the items dict"
+    for row in items.values():
+        assert row["expanded"] is False
+
+
+def test_run_display_and_interactive_combined(experiment_file: Path, monkeypatch):
+    """`--display --interactive` is allowed; interactive wins (collapsed + interactive run)."""
+    from strands_evals.cli.commands import run as run_module
+
+    captured: dict = {}
+
+    class _FakeDisplay:
+        def __init__(self, items: dict, overall_score: float) -> None:
+            captured["items"] = items
+
+        def run(self, static: bool = True) -> None:
+            captured["static"] = static
+
+    monkeypatch.setattr(run_module, "CollapsibleTableReportDisplay", _FakeDisplay)
+
+    exit_code = main(
+        [
+            "run",
+            str(experiment_file),
+            "--task",
+            "tests.strands_evals.cli.fixtures.tasks:answer",
+            "--fail-on",
+            "none",
+            "--display",
+            "-i",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["static"] is False
+    for row in captured["items"].values():
+        assert row["expanded"] is False
 
 
 def test_run_without_display_does_not_render(experiment_file: Path, tmp_path: Path, monkeypatch):
@@ -153,7 +223,8 @@ def test_run_agent_and_task_mutually_exclusive(experiment_file: Path):
         )
 
 
-def test_run_invalid_entry_point_exits_3(experiment_file: Path, capsys):
+def test_run_invalid_entry_point_exits_bad_input(experiment_file: Path, capsys):
+    """Bad --task spec is a user input error, so the CLI exits 2 (EXIT_BAD_INPUT)."""
     exit_code = main(
         [
             "run",
@@ -163,7 +234,7 @@ def test_run_invalid_entry_point_exits_3(experiment_file: Path, capsys):
         ]
     )
     captured = capsys.readouterr()
-    assert exit_code == 3
+    assert exit_code == 2
     assert "cannot import module" in captured.err
 
 
@@ -289,29 +360,3 @@ def test_run_custom_evaluator_threading(experiment_file: Path, tmp_path: Path):
     payload = json.loads(out_path.read_text())
     assert payload["cases"][0]["evaluator"] == "AlwaysPasses"
     assert payload["test_passes"] == [True]
-
-
-def test_validate_custom_evaluator(tmp_path: Path, capsys):
-    """validate also accepts --custom-evaluator."""
-    tweaked = tmp_path / "experiment.json"
-    tweaked.write_text(
-        json.dumps(
-            {
-                "cases": [{"input": "x", "expected_output": "y"}],
-                "evaluators": [{"evaluator_type": "AlwaysPasses"}],
-            }
-        )
-    )
-    exit_code = main(
-        [
-            "--json",
-            "validate",
-            str(tweaked),
-            "--custom-evaluator",
-            "tests.strands_evals.cli.fixtures.evaluators:AlwaysPasses",
-        ]
-    )
-    captured = capsys.readouterr()
-    assert exit_code == 0
-    payload = json.loads(captured.out)
-    assert payload["evaluators"] == ["AlwaysPasses"]

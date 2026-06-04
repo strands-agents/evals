@@ -777,6 +777,7 @@ def test_experiment_from_dict_InteractionsEvaluator_defaults():
 )
 def test_experiment_from_dict_builtin_evaluators_round_trip(evaluator_type):
     """Built-in evaluators serialized via to_dict round-trip through from_dict without custom_evaluators."""
+
     cls = getattr(builtin_evaluators, evaluator_type)
     sig = inspect.signature(cls.__init__)
     kwargs = {

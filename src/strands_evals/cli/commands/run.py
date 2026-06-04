@@ -9,7 +9,6 @@ import sys
 from typing import Any
 
 from ...display.display_console import CollapsibleTableReportDisplay
-from ...evaluators.evaluator import Evaluator
 from ...experiment import Experiment
 from ...local_file_task_result_store import LocalFileTaskResultStore
 from ...types.detector import ConfidenceLevel, DiagnosisConfig, DiagnosisTrigger
@@ -17,9 +16,8 @@ from ...types.evaluation_report import EvaluationReport
 from .._agent_task import synthesize_task_function
 from .._common import EXIT_FAILURES, EXIT_OK, resolve_format
 from .._entrypoint import (
-    EntryPointError,
-    import_attr,
     resolve_agent,
+    resolve_custom_evaluators,
     resolve_task,
 )
 from .._io import write_text_output
@@ -52,19 +50,6 @@ def _parse_fail_on(raw: str) -> tuple[str, float | None]:
     raise argparse.ArgumentTypeError(f"--fail-on must be 'any', 'none', or 'threshold:0.X' (got '{raw}')")
 
 
-def _resolve_custom_evaluators(specs: list[str]) -> list[type[Evaluator]]:
-    classes: list[type[Evaluator]] = []
-    for spec in specs:
-        obj = import_attr(spec)
-        if not isinstance(obj, type) or not issubclass(obj, Evaluator):
-            raise EntryPointError(
-                f"--custom-evaluator '{spec}' must reference a subclass of "
-                f"strands_evals.evaluators.Evaluator (got {type(obj).__name__})"
-            )
-        classes.append(obj)
-    return classes
-
-
 def _build_diagnosis_config(args: argparse.Namespace) -> DiagnosisConfig | None:
     if args.diagnose is None:
         return None
@@ -74,31 +59,44 @@ def _build_diagnosis_config(args: argparse.Namespace) -> DiagnosisConfig | None:
     )
 
 
-def _decide_exit_code(reports: list[EvaluationReport], fail_on: tuple[str, float | None]) -> int:
-    """Map `--fail-on` to an exit code based on the flattened reports."""
+def _decide_exit_code(report: EvaluationReport, fail_on: tuple[str, float | None]) -> int:
+    """Map `--fail-on` to an exit code based on the flattened report."""
     mode, threshold = fail_on
     if mode == "none":
         return EXIT_OK
 
-    flattened = EvaluationReport.flatten(reports)
     if mode == "any":
-        return EXIT_FAILURES if any(not p for p in flattened.test_passes) else EXIT_OK
+        return EXIT_FAILURES if any(not p for p in report.test_passes) else EXIT_OK
 
     # mode == "threshold"
-    assert threshold is not None
-    return EXIT_FAILURES if flattened.overall_score < threshold else EXIT_OK
+    if threshold is None:
+        raise ValueError("--fail-on=threshold:X requires a numeric threshold")
+    return EXIT_FAILURES if report.overall_score < threshold else EXIT_OK
 
 
-def _print_summary(reports: list[EvaluationReport]) -> None:
-    """Emit the stable per-evaluator summary line on stderr."""
+def _print_summary(report: EvaluationReport) -> None:
+    """Emit the stable per-evaluator summary line on stderr.
+
+    `run_evaluations_async` returns a single flattened report whose `cases`
+    rows are tagged with an `evaluator` key; regroup by that tag so the
+    summary still reads `<evaluator>: P/T passed (avg)` per evaluator.
+    """
+    by_eval: dict[str, list[int]] = {}
+    by_eval_scores: dict[str, list[float]] = {}
+    for i, case in enumerate(report.cases):
+        name = case.get("evaluator", "unknown")
+        by_eval.setdefault(name, []).append(int(report.test_passes[i]))
+        by_eval_scores.setdefault(name, []).append(report.scores[i])
+
     parts: list[str] = ["strands-evals run"]
-    for report in reports:
-        passed = sum(1 for p in report.test_passes if p)
-        total = len(report.test_passes)
-        parts.append(f"{report.evaluator_name}: {passed}/{total} passed ({report.overall_score:.2f})")
+    for name, passes in by_eval.items():
+        passed = sum(passes)
+        total = len(passes)
+        scores = by_eval_scores[name]
+        avg = sum(scores) / len(scores) if scores else 0.0
+        parts.append(f"{name}: {passed}/{total} passed ({avg:.2f})")
 
-    flattened = EvaluationReport.flatten(reports)
-    parts.append(f"overall: {flattened.overall_score:.2f}")
+    parts.append(f"overall: {report.overall_score:.2f}")
     print(" | ".join(parts), file=sys.stderr)  # noqa: T201
 
 
@@ -111,13 +109,19 @@ def _trace_attrs_dict(pairs: list[tuple[str, str]] | None) -> dict[str, Any]:
     return merged
 
 
-def _display_expanded(report: EvaluationReport, *, include_recommendations: bool) -> None:
-    """Render the flattened report with every row pre-expanded.
+def _display_expanded(
+    report: EvaluationReport,
+    *,
+    include_recommendations: bool,
+    interactive: bool = False,
+) -> None:
+    """Render the flattened report as a Rich table.
 
-    `EvaluationReport.display()` collapses non-core columns to literal "..."
-    in static mode. For `run --display` we want the values visible without
-    requiring the user to drop into the interactive prompt, so we build the
-    same items dict the library does and flip `expanded=True`.
+    Static mode (default) pre-expands every row so values are visible without
+    dropping into a prompt — `EvaluationReport.display()` would collapse the
+    non-core columns to literal "...". Interactive mode (`--interactive`) seeds
+    rows collapsed and hands control to `CollapsibleTableReportDisplay.run`'s
+    expand/collapse loop, matching `EvaluationReport.run_display()`.
     """
     items: dict[str, dict[str, Any]] = {}
     for i in range(len(report.scores)):
@@ -128,7 +132,7 @@ def _display_expanded(report: EvaluationReport, *, include_recommendations: bool
         details["score"] = f"{report.scores[i]:.2f}"
         details["test_pass"] = report.test_passes[i] if i < len(report.test_passes) else False
         details["reason"] = report.reasons[i] if i < len(report.reasons) else ""
-        details["input"] = EvaluationReport._format_input_for_display(case.get("input"))
+        details["input"] = EvaluationReport.format_input_for_display(case.get("input"))
         details["actual_output"] = str(case.get("actual_output"))
         details["expected_output"] = str(case.get("expected_output"))
         if include_recommendations:
@@ -139,14 +143,14 @@ def _display_expanded(report: EvaluationReport, *, include_recommendations: bool
         items[str(i)] = {
             "details": details,
             "detailed_results": report.detailed_results[i] if i < len(report.detailed_results) else [],
-            "expanded": True,
+            "expanded": not interactive,
         }
 
-    CollapsibleTableReportDisplay(items=items, overall_score=report.overall_score).run(static=True)
+    CollapsibleTableReportDisplay(items=items, overall_score=report.overall_score).run(static=not interactive)
 
 
 def _run(args: argparse.Namespace) -> int:
-    custom_evaluators = _resolve_custom_evaluators(args.custom_evaluator or [])
+    custom_evaluators = resolve_custom_evaluators(args.custom_evaluator or [])
     loaded = Experiment.from_file(args.experiment_file, custom_evaluators=custom_evaluators)
 
     diagnosis_config = _build_diagnosis_config(args)
@@ -161,11 +165,6 @@ def _run(args: argparse.Namespace) -> int:
 
     if args.agent is not None:
         entry = resolve_agent(args.agent)
-        if entry.kind == "agent_instance" and args.trace_attributes:
-            logger.warning(
-                "trace_attributes=<%s> | --trace-attributes ignored: --agent resolved to a prebuilt Agent instance",
-                args.trace_attributes,
-            )
         task_function = synthesize_task_function(
             entry,
             extra_trace_attributes=_trace_attrs_dict(args.trace_attributes),
@@ -173,12 +172,16 @@ def _run(args: argparse.Namespace) -> int:
     else:
         entry = resolve_task(args.task)
         if args.trace_attributes:
-            logger.warning("--trace-attributes is ignored when using --task; the user owns agent instantiation")
+            logger.warning(
+                "trace_attributes=<%s> | --trace-attributes ignored when using --task; "
+                "the user owns agent instantiation",
+                args.trace_attributes,
+            )
         task_function = entry.obj
 
     data_store = LocalFileTaskResultStore(args.data_store) if args.data_store else None
 
-    reports = asyncio.run(
+    report = asyncio.run(
         experiment.run_evaluations_async(
             task_function,
             max_workers=args.max_workers,
@@ -186,24 +189,30 @@ def _run(args: argparse.Namespace) -> int:
         )
     )
 
-    flattened = EvaluationReport.flatten(reports)
-
     if args.output is not None:
-        write_text_output(flattened.model_dump_json(indent=2), args.output)
+        write_text_output(report.model_dump_json(indent=2), args.output)
 
-    if args.display:
-        _display_expanded(flattened, include_recommendations=args.diagnose is not None)
+    if args.display or args.interactive:
+        _display_expanded(
+            report,
+            include_recommendations=args.diagnose is not None,
+            interactive=args.interactive,
+        )
     elif args.output is None:
+        # `run` intentionally only emits JSON to stdout (or nothing, when -o is set).
+        # Rich rendering is opt-in via `--display`: building the table eagerly walks
+        # every case row and is wasteful on large experiments where users typically
+        # pipe to `strands-evals report` or a file.
         fmt = resolve_format(args)
         if fmt == "json":
-            sys.stdout.write(flattened.model_dump_json(indent=2))
+            sys.stdout.write(report.model_dump_json(indent=2))
             sys.stdout.write("\n")
 
-    _print_summary(reports)
+    _print_summary(report)
 
     if args.exit_zero:
         return EXIT_OK
-    return _decide_exit_code(reports, args.fail_on)
+    return _decide_exit_code(report, args.fail_on)
 
 
 def add_subparser(
@@ -231,7 +240,12 @@ def add_subparser(
     target.add_argument(
         "--agent",
         metavar="MODULE:ATTR",
-        help="entry point for a strands.Agent instance, subclass, or factory callable",
+        help=(
+            "entry point for a factory callable that returns a strands.Agent. "
+            "Zero-arg ('def build_agent() -> Agent: ...') or one-arg "
+            "('def build_agent(case: Case) -> Agent: ...'). The factory is "
+            "invoked once per case so each case runs against a fresh Agent."
+        ),
     )
     target.add_argument(
         "--task",
@@ -245,7 +259,13 @@ def add_subparser(
         action="append",
         type=_parse_trace_attribute,
         default=None,
-        help="extra OTel trace attributes (repeatable). No-op for --agent <instance> and --task.",
+        help=(
+            "extra OTel trace attributes (repeatable). Set as W3C Baggage on "
+            "the per-case context and stamped on every span emitted by the "
+            "agent. session.id and gen_ai.conversation.id are always set "
+            "from the case; --trace-attributes is for additional keys. "
+            "No-op when --task is used (the user owns agent instantiation)."
+        ),
     )
     parser.add_argument(
         "--max-workers",
@@ -303,6 +323,15 @@ def add_subparser(
             "render the flattened report as a Rich table on stdout "
             "(includes input, expected_output, actual_output; recommendations "
             "when --diagnose is set)"
+        ),
+    )
+    parser.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        help=(
+            "render the flattened report as an interactive Rich table where "
+            "rows can be expanded/collapsed (implies --display)"
         ),
     )
 

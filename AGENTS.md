@@ -131,6 +131,21 @@ strands-evals/
 │   ├── tools/
 │   │   └── evaluation_tools.py               # Helpers used by evaluators
 │   │
+│   ├── cli/                                  # `strands-evals` console script
+│   │   ├── __main__.py                       # `python -m strands_evals.cli` entry
+│   │   ├── main.py                           # argparse dispatch
+│   │   ├── _common.py                        # exit codes, format/verbosity, run_command
+│   │   ├── _entrypoint.py                    # `module:attr` resolver + classifier
+│   │   ├── _agent_task.py                    # synthesize_task_function (baggage-tagged)
+│   │   ├── _io.py                            # stdin/stdout/file helpers
+│   │   └── commands/                         # subcommand implementations
+│   │       ├── run.py
+│   │       ├── validate.py
+│   │       ├── report.py
+│   │       └── diagnose.py
+│   │
+│   ├── __main__.py                           # `python -m strands_evals` shim → cli.main
+│   │
 │   └── types/                                # Public type definitions
 │       ├── evaluation.py                     # EvaluationData / EvaluationOutput
 │       ├── evaluation_report.py
@@ -152,6 +167,8 @@ strands-evals/
 │   ├── providers/
 │   ├── telemetry/
 │   ├── tools/
+│   ├── cli/
+│   │   └── fixtures/                         # local agent / task / evaluator fixtures
 │   └── types/
 │
 ├── tests_integ/                              # Integration tests (real providers)
@@ -166,7 +183,9 @@ strands-evals/
 ### Directory Purposes
 
 - **`src/strands_evals/`**: All production code
+- **`src/strands_evals/cli/`**: `strands-evals` console script — four subcommands (`run`, `validate`, `report`, `diagnose`) plus the `module:attr` resolver and synthesized task wrapper used by `--agent`
 - **`tests/strands_evals/`**: Unit tests mirroring src/ structure
+- **`tests/strands_evals/cli/`**: CLI tests; fixtures live under `cli/fixtures/` and are referenced by tests via `tests.strands_evals.cli.fixtures.*:attr` specs
 - **`tests_integ/`**: Integration tests using real trace providers and model endpoints
 - **`docs are not vendored yet`**: CONTRIBUTING.md and STYLE_GUIDE.md are the canonical references
 

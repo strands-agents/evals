@@ -22,13 +22,24 @@ def test_import_attr_resolves_module_function():
 
 
 def test_import_attr_invalid_format_no_colon():
-    with pytest.raises(EntryPointError, match="exactly one ':'"):
+    with pytest.raises(EntryPointError, match="expected 'module:attr'"):
         import_attr("not_a_valid_spec")
 
 
-def test_import_attr_invalid_format_too_many_colons():
-    with pytest.raises(EntryPointError, match="exactly one ':'"):
-        import_attr("a:b:c")
+def test_import_attr_path_absolute_windows_drive_letter(tmp_path):
+    """Spec splits on the last ':' so Windows absolute paths
+    (C:\\path\\to\\agent.py:attr) — which contain a drive-letter colon —
+    still resolve correctly. We can't synthesize a real C: path on POSIX,
+    but the rsplit semantics are exercised by any spec with multiple ':'.
+    """
+    f = tmp_path / "drive_like_agent.py"
+    f.write_text("attr = 99\n")
+    # Build a spec with a leading dummy 'drive:' segment to confirm rsplit.
+    spec = f"fake:{f}:attr"
+    # The 'fake:<abs path>' module-half won't resolve; the failure comes from
+    # import resolution, not from a colon-count guard.
+    with pytest.raises(EntryPointError):
+        import_attr(spec)
 
 
 def test_import_attr_empty_module():
@@ -168,23 +179,24 @@ def test_classify_agent_rejects_two_arg_callable():
 
 
 def test_classify_agent_rejects_non_callable():
-    with pytest.raises(EntryPointError, match="is neither"):
+    with pytest.raises(EntryPointError, match="is not callable"):
         classify_agent(42, "x:y")
 
 
-def test_classify_agent_strands_instance_when_available():
-    """If real strands.Agent is importable, an instance is classified as agent_instance."""
+def test_classify_agent_rejects_strands_instance():
+    """A prebuilt strands.Agent instance is unsafe (shared conversation state) and rejected."""
     pytest.importorskip("strands")
     from unittest.mock import MagicMock
 
     from strands import Agent
 
     fake = MagicMock(spec=Agent)
-    resolved = classify_agent(fake, "x:y")
-    assert resolved.kind == "agent_instance"
+    with pytest.raises(EntryPointError, match="prebuilt strands.Agent instance"):
+        classify_agent(fake, "x:y")
 
 
-def test_classify_agent_strands_subclass_when_available():
+def test_classify_agent_rejects_strands_subclass():
+    """A strands.Agent subclass is rejected — --agent is factory-callable only."""
     pytest.importorskip("strands")
     from strands import Agent
 
@@ -192,8 +204,8 @@ def test_classify_agent_strands_subclass_when_available():
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
 
-    resolved = classify_agent(MyAgent, "x:y")
-    assert resolved.kind == "agent_class"
+    with pytest.raises(EntryPointError, match="strands.Agent subclass"):
+        classify_agent(MyAgent, "x:y")
 
 
 def test_classify_task_callable():
@@ -207,3 +219,19 @@ def test_classify_task_callable():
 def test_classify_task_rejects_non_callable():
     with pytest.raises(EntryPointError, match="not callable"):
         classify_task(42, "x:y")
+
+
+def test_classify_task_rejects_zero_arg_callable():
+    def no_args():
+        return {"output": "x"}
+
+    with pytest.raises(EntryPointError, match="0 positional arguments"):
+        classify_task(no_args, "x:y")
+
+
+def test_classify_task_rejects_two_arg_callable():
+    def too_many(case, extra):
+        return {"output": "x"}
+
+    with pytest.raises(EntryPointError, match="2 positional arguments"):
+        classify_task(too_many, "x:y")

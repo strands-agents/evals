@@ -67,12 +67,11 @@ def _build_experiment() -> Experiment:
 
 def _build_report() -> EvaluationReport:
     return EvaluationReport(
-        evaluator_name="OutputEvaluator",
         overall_score=0.75,
         scores=[1.0, 0.5],
         cases=[
-            {"name": "c1", "input": "q1", "actual_output": "a1"},
-            {"name": "c2", "input": "q2", "actual_output": "a2"},
+            {"name": "c1", "input": "q1", "actual_output": "a1", "evaluator": "OutputEvaluator"},
+            {"name": "c2", "input": "q2", "actual_output": "a2", "evaluator": "OutputEvaluator"},
         ],
         test_passes=[True, False],
         reasons=["good", "wrong answer"],

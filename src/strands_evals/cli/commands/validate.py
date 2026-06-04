@@ -6,27 +6,13 @@ import argparse
 import json
 import sys
 
-from ...evaluators.evaluator import Evaluator
 from ...experiment import Experiment
 from .._common import EXIT_OK, resolve_format
-from .._entrypoint import EntryPointError, import_attr
-
-
-def _resolve_custom_evaluators(specs: list[str]) -> list[type[Evaluator]]:
-    classes: list[type[Evaluator]] = []
-    for spec in specs:
-        obj = import_attr(spec)
-        if not isinstance(obj, type) or not issubclass(obj, Evaluator):
-            raise EntryPointError(
-                f"--custom-evaluator '{spec}' must reference a subclass of "
-                f"strands_evals.evaluators.Evaluator (got {type(obj).__name__})"
-            )
-        classes.append(obj)
-    return classes
+from .._entrypoint import resolve_custom_evaluators
 
 
 def _run(args: argparse.Namespace) -> int:
-    custom_evaluators = _resolve_custom_evaluators(args.custom_evaluator or [])
+    custom_evaluators = resolve_custom_evaluators(args.custom_evaluator or [])
     experiment: Experiment = Experiment.from_file(args.experiment_file, custom_evaluators=custom_evaluators)
 
     case_count = len(experiment.cases)
