@@ -84,6 +84,39 @@ def test_task_fn_handles_target_exception(mock_simulator_cls):
 
 
 @patch("strands_evals.experimental.redteam.task.ActorSimulator")
+def test_task_fn_dict_target_extends_trace_and_extracts_output(mock_simulator_cls):
+    """A callable target returning {"output", "trace"} feeds the trajectory and the conversation."""
+    mock_sim = MagicMock()
+    mock_sim.has_next.side_effect = [True, False]
+    mock_simulator_cls.return_value = mock_sim
+
+    def dict_target(_msg):
+        return {"output": "dict reply", "trace": [{"name": "lookup", "input": {"id": "1"}}]}
+
+    task = _build_attacker_task(target=dict_target)
+    result = task(_case())
+
+    # output extracted from the dict and placed in the conversation
+    assert result["output"][1]["content"] == "dict reply"
+    # trace from the dict surfaced as the trajectory
+    assert result["trajectory"] == [{"name": "lookup", "input": {"id": "1"}}]
+
+
+@patch("strands_evals.experimental.redteam.task.ActorSimulator")
+def test_task_fn_dict_target_without_trace_key(mock_simulator_cls):
+    """A dict target lacking a "trace" key still extracts output and emits no trajectory."""
+    mock_sim = MagicMock()
+    mock_sim.has_next.side_effect = [True, False]
+    mock_simulator_cls.return_value = mock_sim
+
+    task = _build_attacker_task(target=lambda _msg: {"output": "no trace here"})
+    result = task(_case())
+
+    assert result["output"][1]["content"] == "no trace here"
+    assert "trajectory" not in result
+
+
+@patch("strands_evals.experimental.redteam.task.ActorSimulator")
 def test_task_fn_clears_agent_messages_per_case(mock_simulator_cls):
     """Agent target's message history is cleared at the start of each case."""
     from strands import Agent

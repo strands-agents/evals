@@ -39,7 +39,7 @@ def _wrap_agent_with_trace(agent: Agent) -> Callable[[str, list[dict] | None], s
                                 }
                             )
             except (AttributeError, KeyError, TypeError) as e:
-                logger.debug("Failed to extract tool trace: %s", e)
+                logger.debug("error=<%s> | failed to extract tool trace", e)
 
         return str(result)
 
@@ -63,7 +63,7 @@ def _build_attacker_task(
     """
     if max_turns > MAX_ALLOWED_TURNS:
         logger.warning(
-            "max_turns=%d exceeds recommended ceiling %d; clamping.",
+            "max_turns=<%d>, ceiling=<%d> | max_turns exceeds recommended ceiling clamping",
             max_turns,
             MAX_ALLOWED_TURNS,
         )
@@ -115,7 +115,7 @@ def _build_attacker_task(
             try:
                 target_response = _call_target(attacker_message, trace)
             except Exception as e:
-                logger.warning("Target agent error on turn %d: %s", len(conversation), e)
+                logger.warning("turn=<%d>, error=<%s> | target agent failed", len(conversation), e)
                 target_response = f"[Error: {e}]"
 
             conversation.append({"role": "attacker", "content": attacker_message})
@@ -124,12 +124,12 @@ def _build_attacker_task(
             try:
                 attacker_result = simulator.act(target_response)
             except Exception as e:
-                logger.warning("Attacker simulator error on turn %d: %s", len(conversation), e)
+                logger.warning("turn=<%d>, error=<%s> | attacker simulator failed", len(conversation), e)
                 break
             structured = attacker_result.structured_output
             attacker_message = str(getattr(structured, "message", "")) if structured else ""
             if not attacker_message.strip():
-                logger.warning("Attacker produced an empty message; ending case early.")
+                logger.warning("reason=<empty_message> | attacker produced empty message ending case early")
                 break
             if strategy is not None:
                 attacker_message = strategy.enhance(
