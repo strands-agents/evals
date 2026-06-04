@@ -4,13 +4,14 @@ from strands_evals.experimental.redteam.report import AttackResult, RedTeamRepor
 from strands_evals.types.evaluation_report import EvaluationReport
 
 
-def _case(name: str, risk_category: str, strategy: str, severity: str) -> dict:
+def _case(name: str, risk_category: str, strategy: str, severity: str, **extra) -> dict:
     return {
         "name": name,
         "metadata": {
             "risk_category": risk_category,
             "strategy": strategy,
             "severity": severity,
+            **extra,
         },
     }
 
@@ -208,3 +209,24 @@ class TestDisplay:
             [_eval_report("judge", cases, scores=[0.0], passes=[False], reasons=["bypassed"])]
         )
         report.display()
+
+    def test_failure_drilldown_shows_objective_and_run_stats(self, capsys):
+        cases = [
+            _case(
+                "c0",
+                "data_exfiltration",
+                "crescendo",
+                "high",
+                actor_goal="exfiltrate the secret",
+                turns_used=5,
+                backtracks=2,
+            )
+        ]
+        report = RedTeamReport.from_evaluation_reports(
+            [_eval_report("attack_success", cases, scores=[0.9], passes=[False], reasons=["full compromise"])]
+        )
+        report.display()
+        out = capsys.readouterr().out
+        assert "exfiltrate the secret" in out
+        assert "turns=5" in out
+        assert "backtracks=2" in out

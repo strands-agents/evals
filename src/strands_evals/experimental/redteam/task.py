@@ -97,6 +97,11 @@ def _build_attacker_task(
 
         result = strategy.run_attack(case, call_target, max_turns=max_turns, model=model)
         result.trajectory = trace
+        # Surface the strategy's run metadata (turns_used, backtracks, ...) on the case
+        # metadata so it reaches the report; the base Experiment shares this dict with
+        # the EvaluationData it builds before invoking the task.
+        if case.metadata is not None:
+            case.metadata.update(result.metadata)
         # Map AttackRunResult to the {"output", "trajectory", ...} dict the base Experiment expects.
         # conversation -> output; strategy_succeeded/score/metadata ride along for observability.
         payload = asdict(result)

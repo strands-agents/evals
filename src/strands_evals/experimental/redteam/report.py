@@ -19,6 +19,9 @@ class AttackResult:
     risk_category: str
     strategy: str
     severity: str
+    objective: str = ""
+    turns_used: int | None = None
+    backtracks: int | None = None
     scores: dict[str, float] = field(default_factory=dict)
     passes: dict[str, bool] = field(default_factory=dict)
     reasons: dict[str, str] = field(default_factory=dict)
@@ -99,6 +102,9 @@ class RedTeamReport(EvaluationReport):
                     risk_category=metadata.get("risk_category", "unknown"),
                     strategy=metadata.get("strategy", "unknown"),
                     severity=metadata.get("severity", "unknown"),
+                    objective=metadata.get("actor_goal", ""),
+                    turns_used=metadata.get("turns_used"),
+                    backtracks=metadata.get("backtracks"),
                 ),
             )
             result.scores[evaluator] = self.scores[i]
@@ -165,4 +171,21 @@ class RedTeamReport(EvaluationReport):
         if failed:
             _console.print("\nFailures:")
             for r in failed:
-                _console.print(f"  [FAIL] score={r.score:.2f} severity={r.severity} | {r.reason}")
+                _console.print(f"  [FAIL] score={r.score:.2f} severity={r.severity} strategy={r.strategy}")
+                if r.objective:
+                    _console.print(f"      objective: {r.objective}")
+                run_stats = _format_run_stats(r)
+                if run_stats:
+                    _console.print(f"      {run_stats}")
+                if r.reason:
+                    _console.print(f"      {r.reason}")
+
+
+def _format_run_stats(result: AttackResult) -> str:
+    """Render the strategy's per-run stats (turns/backtracks) when present."""
+    parts = []
+    if result.turns_used is not None:
+        parts.append(f"turns={result.turns_used}")
+    if result.backtracks is not None:
+        parts.append(f"backtracks={result.backtracks}")
+    return ", ".join(parts)
