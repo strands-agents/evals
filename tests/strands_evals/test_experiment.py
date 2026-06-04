@@ -1,4 +1,7 @@
 import asyncio
+import inspect
+import random
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -7,6 +10,7 @@ from strands.models.model import Model
 from strands.types.exceptions import EventLoopException, ModelThrottledException
 
 from strands_evals import Case, DiagnosisConfig, Experiment
+from strands_evals import evaluators as builtin_evaluators
 from strands_evals.evaluators import (
     Contains,
     Equals,
@@ -21,6 +25,13 @@ from strands_evals.evaluators.evaluator import DEFAULT_BEDROCK_MODEL_ID
 from strands_evals.experiment import is_throttling_error
 from strands_evals.providers.trace_provider import TraceProvider
 from strands_evals.types import EvaluationData, EvaluationOutput
+from strands_evals.types.trace import (
+    AgentInvocationSpan,
+    Session,
+    SpanInfo,
+    ToolConfig,
+    Trace,
+)
 
 
 class MockEvaluator(Evaluator[str, str]):
@@ -737,6 +748,44 @@ def test_experiment_from_dict_InteractionsEvaluator_defaults():
     assert experiment.evaluators[0].include_inputs is True
 
 
+@pytest.mark.parametrize(
+    "evaluator_type",
+    [
+        "CoherenceEvaluator",
+        "ConcisenessEvaluator",
+        "CorrectnessEvaluator",
+        "FaithfulnessEvaluator",
+        "GoalSuccessRateEvaluator",
+        "HarmfulnessEvaluator",
+        "HelpfulnessEvaluator",
+        "InstructionFollowingEvaluator",
+        "RefusalEvaluator",
+        "ResponseRelevanceEvaluator",
+        "StereotypingEvaluator",
+        "ToolParameterAccuracyEvaluator",
+        "ToolSelectionAccuracyEvaluator",
+        "MultimodalCorrectnessEvaluator",
+        "MultimodalFaithfulnessEvaluator",
+        "MultimodalInstructionFollowingEvaluator",
+        "MultimodalOutputEvaluator",
+        "MultimodalOverallQualityEvaluator",
+    ],
+)
+def test_experiment_from_dict_builtin_evaluators_round_trip(evaluator_type):
+    """Built-in evaluators serialized via to_dict round-trip through from_dict without custom_evaluators."""
+    cls = getattr(builtin_evaluators, evaluator_type)
+    sig = inspect.signature(cls.__init__)
+    kwargs = {
+        name: "rubric"
+        for name, param in sig.parameters.items()
+        if name != "self" and param.default is inspect.Parameter.empty
+    }
+    serialized = cls(**kwargs).to_dict()
+    experiment = Experiment.from_dict({"cases": [], "evaluators": [serialized]})
+    assert len(experiment.evaluators) == 1
+    assert isinstance(experiment.evaluators[0], cls)
+
+
 @pytest.mark.asyncio
 async def test_experiment_run_evaluations_async():
     """Test run_evaluations_async with a simple task"""
@@ -789,8 +838,6 @@ async def test_experiment_run_evaluations_async_with_async_task():
 @pytest.mark.asyncio
 async def test_experiment_run_evaluations_async_preserves_input_order():
     """Test that run_evaluations_async returns results in input order regardless of completion order"""
-    import random
-
     cases = [Case(name=f"case_{i}", input=f"input_{i}", expected_output=f"input_{i}") for i in range(10)]
     experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
 
@@ -1887,16 +1934,6 @@ class TestProviderIntegration:
 
 class TestDiagnoseOnFailure:
     def _make_session(self):
-        from datetime import datetime
-
-        from strands_evals.types.trace import (
-            AgentInvocationSpan,
-            Session,
-            SpanInfo,
-            ToolConfig,
-            Trace,
-        )
-
         now = datetime.now()
         info = SpanInfo(session_id="sess_1", span_id="span_1", trace_id="trace_1", start_time=now, end_time=now)
         spans = [

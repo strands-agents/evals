@@ -19,10 +19,28 @@ from typing_extensions import Any, Generic
 from .case import Case
 from .detectors.diagnosis import diagnose_session
 from .evaluation_data_store import EvaluationDataStore
+from .evaluators.coherence_evaluator import CoherenceEvaluator
+from .evaluators.conciseness_evaluator import ConcisenessEvaluator
+from .evaluators.correctness_evaluator import CorrectnessEvaluator
 from .evaluators.deterministic import Contains, Equals, StartsWith, StateEquals, ToolCalled
 from .evaluators.evaluator import Evaluator
+from .evaluators.faithfulness_evaluator import FaithfulnessEvaluator
+from .evaluators.goal_success_rate_evaluator import GoalSuccessRateEvaluator
+from .evaluators.harmfulness_evaluator import HarmfulnessEvaluator
+from .evaluators.helpfulness_evaluator import HelpfulnessEvaluator
+from .evaluators.instruction_following_evaluator import InstructionFollowingEvaluator
 from .evaluators.interactions_evaluator import InteractionsEvaluator
+from .evaluators.multimodal_correctness_evaluator import MultimodalCorrectnessEvaluator
+from .evaluators.multimodal_faithfulness_evaluator import MultimodalFaithfulnessEvaluator
+from .evaluators.multimodal_instruction_following_evaluator import MultimodalInstructionFollowingEvaluator
+from .evaluators.multimodal_output_evaluator import MultimodalOutputEvaluator
+from .evaluators.multimodal_overall_quality_evaluator import MultimodalOverallQualityEvaluator
 from .evaluators.output_evaluator import OutputEvaluator
+from .evaluators.refusal_evaluator import RefusalEvaluator
+from .evaluators.response_relevance_evaluator import ResponseRelevanceEvaluator
+from .evaluators.stereotyping_evaluator import StereotypingEvaluator
+from .evaluators.tool_parameter_accuracy_evaluator import ToolParameterAccuracyEvaluator
+from .evaluators.tool_selection_accuracy_evaluator import ToolSelectionAccuracyEvaluator
 from .evaluators.trajectory_evaluator import TrajectoryEvaluator
 from .telemetry import get_tracer, serialize
 from .telemetry._cloudwatch_logger import _send_to_cloudwatch
@@ -716,6 +734,24 @@ class Experiment(Generic[InputT, OutputT]):
             "OutputEvaluator": OutputEvaluator,
             "TrajectoryEvaluator": TrajectoryEvaluator,
             "InteractionsEvaluator": InteractionsEvaluator,
+            "CoherenceEvaluator": CoherenceEvaluator,
+            "ConcisenessEvaluator": ConcisenessEvaluator,
+            "CorrectnessEvaluator": CorrectnessEvaluator,
+            "FaithfulnessEvaluator": FaithfulnessEvaluator,
+            "GoalSuccessRateEvaluator": GoalSuccessRateEvaluator,
+            "HarmfulnessEvaluator": HarmfulnessEvaluator,
+            "HelpfulnessEvaluator": HelpfulnessEvaluator,
+            "InstructionFollowingEvaluator": InstructionFollowingEvaluator,
+            "RefusalEvaluator": RefusalEvaluator,
+            "ResponseRelevanceEvaluator": ResponseRelevanceEvaluator,
+            "StereotypingEvaluator": StereotypingEvaluator,
+            "ToolParameterAccuracyEvaluator": ToolParameterAccuracyEvaluator,
+            "ToolSelectionAccuracyEvaluator": ToolSelectionAccuracyEvaluator,
+            "MultimodalCorrectnessEvaluator": MultimodalCorrectnessEvaluator,
+            "MultimodalFaithfulnessEvaluator": MultimodalFaithfulnessEvaluator,
+            "MultimodalInstructionFollowingEvaluator": MultimodalInstructionFollowingEvaluator,
+            "MultimodalOutputEvaluator": MultimodalOutputEvaluator,
+            "MultimodalOverallQualityEvaluator": MultimodalOverallQualityEvaluator,
             "Equals": Equals,
             "Contains": Contains,
             "StartsWith": StartsWith,
