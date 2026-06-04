@@ -63,6 +63,10 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
         self._by_label = self._build_by_label(self._attack_strategies)
         self._max_turns = max_turns
         self._model = model
+        # case name -> strategy run metadata (turns_used, backtracks, ...); the
+        # default task records into this and we join it onto the report, since the
+        # base Experiment doesn't carry task-returned metadata into EvaluationData.
+        self._run_meta: dict[str, dict[str, Any]] = {}
 
     @staticmethod
     def _build_by_label(strategies: list[AttackStrategy]) -> dict[str, AttackStrategy]:
@@ -114,12 +118,13 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
     ) -> RedTeamReport:
         # max_workers=1: parallel runs would interleave on the shared target Agent.
         self._expand_cross_product()
+        self._run_meta.clear()
         if task is None:
             task = self._default_task()
         reports = await super().run_evaluations_async(
             task, max_workers=max_workers, evaluation_data_store=evaluation_data_store
         )
-        return RedTeamReport.from_evaluation_reports(reports)
+        return RedTeamReport.from_evaluation_reports(reports, run_meta=self._run_meta)
 
     def _default_task(self) -> Callable[[Case[InputT, OutputT]], Any]:
         if self._agent is None:
@@ -134,5 +139,6 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
                 self._by_label,
                 max_turns=self._max_turns,
                 model=self._model,
+                run_meta=self._run_meta,
             ),
         )

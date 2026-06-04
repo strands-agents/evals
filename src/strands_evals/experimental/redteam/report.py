@@ -58,8 +58,20 @@ class RedTeamReport(EvaluationReport):
     """
 
     @classmethod
-    def from_evaluation_reports(cls, reports: list[EvaluationReport]) -> RedTeamReport:
-        """Merge per-evaluator reports into a single case-centric report."""
+    def from_evaluation_reports(
+        cls, reports: list[EvaluationReport], run_meta: dict[str, dict] | None = None
+    ) -> RedTeamReport:
+        """Merge per-evaluator reports into a single case-centric report.
+
+        Args:
+            reports: One EvaluationReport per evaluator.
+            run_meta: Optional per-case strategy run metadata (turns_used,
+                backtracks, ...) keyed by case name, merged onto each case's
+                metadata so it surfaces in the report. Supplied by
+                ``RedTeamExperiment`` because the base ``Experiment`` does not
+                carry task-returned metadata into the ``EvaluationData``.
+        """
+        run_meta = run_meta or {}
         scores: list[float] = []
         cases: list[dict] = []
         passes: list[bool] = []
@@ -73,7 +85,8 @@ class RedTeamReport(EvaluationReport):
                 raise ValueError(f"EvaluationReport {evaluator!r}: cases/scores/passes/reasons length mismatch")
             # detailed_results is optional; pad with [] when shorter than cases.
             for i, case_data in enumerate(report.cases):
-                cases.append({**case_data, "evaluator": evaluator})
+                merged_metadata = {**(case_data.get("metadata") or {}), **run_meta.get(case_data.get("name", ""), {})}
+                cases.append({**case_data, "evaluator": evaluator, "metadata": merged_metadata})
                 scores.append(report.scores[i])
                 passes.append(report.test_passes[i])
                 reasons.append(report.reasons[i])

@@ -64,6 +64,7 @@ def _build_attacker_task(
     *,
     max_turns: int = 10,
     model: Model | str | None = None,
+    run_meta: dict[str, dict[str, Any]] | None = None,
 ) -> Callable[[RedTeamCase], dict]:
     """Build a red team task function for ``Experiment.run_evaluations``.
 
@@ -73,6 +74,11 @@ def _build_attacker_task(
     loop to ``strategy.run_attack``, injecting a ``call_target`` that handles
     target invocation, tool-trace capture, and per-case isolation. When
     ``agent`` is an ``Agent``, its message history is reset between cases.
+
+    The strategy's run metadata (turns_used, backtracks, ...) is recorded into
+    ``run_meta`` keyed by case name; the experiment owns that dict and joins it
+    onto the report (the base ``Experiment`` copies ``metadata`` into a fresh
+    ``EvaluationData``, so the strategy can't reach the report through it).
     """
     if max_turns > MAX_ALLOWED_TURNS:
         logger.warning(
@@ -97,11 +103,8 @@ def _build_attacker_task(
 
         result = strategy.run_attack(case, call_target, max_turns=max_turns, model=model)
         result.trajectory = trace
-        # Surface the strategy's run metadata (turns_used, backtracks, ...) on the case
-        # metadata so it reaches the report; the base Experiment shares this dict with
-        # the EvaluationData it builds before invoking the task.
-        if case.metadata is not None:
-            case.metadata.update(result.metadata)
+        if run_meta is not None and case.name is not None:
+            run_meta[case.name] = dict(result.metadata)
         # Map AttackRunResult to the {"output", "trajectory", ...} dict the base Experiment expects.
         # conversation -> output; strategy_succeeded/score/metadata ride along for observability.
         payload = asdict(result)
