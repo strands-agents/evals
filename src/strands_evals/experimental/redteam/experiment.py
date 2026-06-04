@@ -17,24 +17,28 @@ from ...experiment import Experiment
 from ...types import InputT, OutputT
 from .evaluators import AttackSuccessEvaluator
 from .report import RedTeamReport
+from .strategies import AttackStrategy
 from .task import _build_attacker_task
 
 
 class RedTeamExperiment(Experiment[InputT, OutputT]):
     """Experiment specialized for red team evaluation.
 
-    When ``target`` is supplied, ``run_evaluations()`` builds a default
-    multi-turn attacker task internally; pass an explicit ``task`` to
-    customize. Returns a :class:`RedTeamReport`.
+    Holds the attack strategies and runs the case × strategy cross-product:
+    every case is attacked by every strategy. When ``agent`` is supplied,
+    ``run_evaluations()`` builds a default multi-turn attacker task internally;
+    pass an explicit ``task`` to customize. Returns a :class:`RedTeamReport`.
 
     Example:
         ```python
         from strands_evals.experimental.redteam import (
-            AdversarialCaseGenerator, RedTeamExperiment,
+            AdversarialCaseGenerator, RedTeamExperiment, CrescendoStrategy,
         )
 
-        cases = AdversarialCaseGenerator(model=model).generate_cases(target=agent)
-        experiment = RedTeamExperiment(cases=cases, target=agent, max_turns=10)
+        cases = AdversarialCaseGenerator(model=model).generate_cases(agent=agent)
+        experiment = RedTeamExperiment(
+            cases=cases, agent=agent, attack_strategies=[CrescendoStrategy(max_turns=10)]
+        )
         report = experiment.run_evaluations()
         report.display()
         ```
@@ -44,7 +48,8 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
         self,
         cases: list[Case[InputT, OutputT]] | None = None,
         *,
-        target: Agent | Callable[[str], Any] | None = None,
+        agent: Agent | Callable[[str], Any] | None = None,
+        attack_strategies: list[AttackStrategy] | None = None,
         evaluators: list[Evaluator[InputT, OutputT]] | None = None,
         max_turns: int = 10,
         model: Model | str | None = None,
@@ -53,16 +58,50 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
             cases=cases,
             evaluators=evaluators or [AttackSuccessEvaluator(model=model)],
         )
-        self._target = target
+        self._agent = agent
+        self._attack_strategies = attack_strategies or []
+        self._by_label = self._build_by_label(self._attack_strategies)
         self._max_turns = max_turns
         self._model = model
+
+    @staticmethod
+    def _build_by_label(strategies: list[AttackStrategy]) -> dict[str, AttackStrategy]:
+        by_label: dict[str, AttackStrategy] = {}
+        for strategy in strategies:
+            if strategy.label in by_label:
+                raise ValueError(
+                    f"Duplicate strategy label {strategy.label!r}. "
+                    "Pass distinct label= values to compare same-type strategies."
+                )
+            by_label[strategy.label] = strategy
+        return by_label
+
+    def _expand_cross_product(self) -> None:
+        """Expand held cases into the case × strategy cross-product, in place.
+
+        Each work item is a copy of the case tagged with one strategy's label in
+        ``metadata["strategy"]`` and a unique name ``"{case}__{label}"`` (so the
+        evaluation_data_store cache keys stay unique). The base worker still sees
+        a plain case queue.
+        """
+        if not self._attack_strategies:
+            return
+        expanded: list[Case[InputT, OutputT]] = []
+        for case in self._cases:
+            for strategy in self._attack_strategies:
+                item = case.model_copy(deep=True)
+                item.name = f"{case.name}__{strategy.label}"
+                metadata = dict(item.metadata or {})
+                metadata["strategy"] = strategy.label
+                item.metadata = metadata
+                expanded.append(item)
+        self._cases = expanded
 
     def run_evaluations(  # type: ignore[override]
         self,
         task: Callable[[Case[InputT, OutputT]], Any] | None = None,
         evaluation_data_store: EvaluationDataStore | None = None,
     ) -> RedTeamReport:
-        task = task or self._default_task()
         if inspect.iscoroutinefunction(task):
             raise ValueError("Async task is not supported. Please use run_evaluations_async instead.")
         return asyncio.run(self.run_evaluations_async(task, max_workers=1, evaluation_data_store=evaluation_data_store))
@@ -74,22 +113,25 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
         evaluation_data_store: EvaluationDataStore | None = None,
     ) -> RedTeamReport:
         # max_workers=1: parallel runs would interleave on the shared target Agent.
-        task = task or self._default_task()
+        self._expand_cross_product()
+        if task is None:
+            task = self._default_task()
         reports = await super().run_evaluations_async(
             task, max_workers=max_workers, evaluation_data_store=evaluation_data_store
         )
         return RedTeamReport.from_evaluation_reports(reports)
 
     def _default_task(self) -> Callable[[Case[InputT, OutputT]], Any]:
-        if self._target is None:
+        if self._agent is None:
             raise ValueError(
-                "RedTeamExperiment requires either `target` at construction "
+                "RedTeamExperiment requires either `agent` at construction "
                 "or an explicit `task` argument to run_evaluations()."
             )
         return cast(
             Callable[[Case[InputT, OutputT]], Any],
             _build_attacker_task(
-                target=self._target,
+                self._agent,
+                self._by_label,
                 max_turns=self._max_turns,
                 model=self._model,
             ),

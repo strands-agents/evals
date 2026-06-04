@@ -1,32 +1,73 @@
 """Tests for AttackStrategy implementations."""
 
+from unittest.mock import MagicMock, patch
+
 from strands_evals.experimental.redteam.case import RedTeamCase
-from strands_evals.experimental.redteam.strategies import BUILTIN_STRATEGIES, DEFAULT_STRATEGY
+from strands_evals.experimental.redteam.strategies import BUILTIN_STRATEGIES, DEFAULT_STRATEGY, PromptStrategy
+from strands_evals.experimental.redteam.strategies.base import AttackRunResult
 from strands_evals.experimental.redteam.types import AttackGoal, RedTeamConfig
 
 
-def test_redteam_config_resolves_default_template_for_custom_case():
-    """Custom case with bare AttackGoal auto-fills template + strategy from default."""
-    config = RedTeamConfig(attack_goal=AttackGoal(risk_category="guideline_bypass", actor_goal="g"))
-    assert config.strategy == DEFAULT_STRATEGY
-    assert config.system_prompt_template == BUILTIN_STRATEGIES[DEFAULT_STRATEGY].system_prompt_template
-
-
-def test_redteam_config_resolves_template_for_named_strategy():
-    """Naming an existing strategy fills its template even if user omits it."""
-    config = RedTeamConfig(
-        attack_goal=AttackGoal(risk_category="guideline_bypass", actor_goal="g"),
-        strategy=DEFAULT_STRATEGY,
-    )
-    assert config.system_prompt_template == BUILTIN_STRATEGIES[DEFAULT_STRATEGY].system_prompt_template
-
-
-def test_redteam_case_with_minimal_config():
-    """Custom RedTeamCase construction works with just AttackGoal in config."""
-    case = RedTeamCase(
-        name="custom_0",
+def _case(name: str = "c0") -> RedTeamCase:
+    return RedTeamCase(
+        name=name,
         input="hello",
-        config=RedTeamConfig(attack_goal=AttackGoal(risk_category="guideline_bypass", actor_goal="g")),
+        config=RedTeamConfig(attack_goal=AttackGoal(risk_category="guideline_bypass", actor_goal="goal")),
     )
-    assert case.config.system_prompt_template is not None
-    assert case.config.strategy == DEFAULT_STRATEGY
+
+
+def test_redteam_config_is_strategy_agnostic():
+    """RedTeamConfig no longer carries strategy/template; cases are strategy-agnostic."""
+    config = RedTeamConfig(attack_goal=AttackGoal(risk_category="guideline_bypass", actor_goal="g"))
+    assert not hasattr(config, "strategy")
+    assert not hasattr(config, "system_prompt_template")
+    assert "strategy" not in RedTeamConfig.model_fields
+    assert "system_prompt_template" not in RedTeamConfig.model_fields
+
+
+def test_prompt_strategy_label_defaults_to_name():
+    strategy = BUILTIN_STRATEGIES[DEFAULT_STRATEGY]
+    assert strategy.label == strategy.name == DEFAULT_STRATEGY
+
+
+def test_prompt_strategy_label_override():
+    strategy = PromptStrategy("gradual_escalation", "tmpl {max_turns}", label="grad-5")
+    assert strategy.name == "gradual_escalation"
+    assert strategy.label == "grad-5"
+
+
+@patch("strands_evals.experimental.redteam.strategies.prompt_strategy.ActorSimulator")
+def test_prompt_strategy_run_attack_drives_loop(mock_simulator_cls):
+    """PromptStrategy.run_attack drives the ActorSimulator loop via the injected call_target."""
+    mock_sim = MagicMock()
+    mock_sim.has_next.side_effect = [True, True, False]
+    act_result = MagicMock()
+    act_result.structured_output.message = "follow-up attack"
+    mock_sim.act.return_value = act_result
+    mock_simulator_cls.return_value = mock_sim
+
+    strategy = PromptStrategy("gradual_escalation", "prompt {actor_profile} {max_turns}")
+    call_target = MagicMock(return_value="target reply")
+
+    result = strategy.run_attack(_case(), call_target, max_turns=7)
+
+    assert isinstance(result, AttackRunResult)
+    assert len(result.conversation) == 4
+    assert result.conversation[0]["role"] == "attacker"
+    assert result.conversation[1]["content"] == "target reply"
+    # max_turns placeholder substituted into the simulator's system prompt
+    template = mock_simulator_cls.call_args.kwargs["system_prompt_template"]
+    assert "{max_turns}" not in template and "7" in template
+
+
+@patch("strands_evals.experimental.redteam.strategies.prompt_strategy.ActorSimulator")
+def test_prompt_strategy_run_attack_handles_target_exception(mock_simulator_cls):
+    mock_sim = MagicMock()
+    mock_sim.has_next.side_effect = [True, False]
+    mock_simulator_cls.return_value = mock_sim
+
+    def broken(_msg):
+        raise RuntimeError("boom")
+
+    result = PromptStrategy("gradual_escalation", "p {max_turns}").run_attack(_case(), broken, max_turns=3)
+    assert "[Error: boom]" in result.conversation[1]["content"]

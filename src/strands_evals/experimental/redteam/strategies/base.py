@@ -3,34 +3,105 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
+
+from strands.models.model import Model
+
+if TYPE_CHECKING:
+    from ..case import RedTeamCase
+
+
+@dataclass
+class AttackRunResult:
+    """Result of a single ``AttackStrategy.run_attack`` execution.
+
+    The strategy owns the multi-turn loop and returns this rich object; the
+    task runner converts it (via ``asdict``) into the ``{"output", "trajectory",
+    ...}`` dict the base ``Experiment`` expects. The authoritative success
+    verdict is re-computed independently by ``AttackSuccessEvaluator`` over the
+    trace, so ``strategy_succeeded``/``strategy_score`` are observability only.
+
+    Attributes:
+        conversation: Ordered attacker/target turns; mapped to ``output``.
+        trajectory: Tool-use trace; populated by the task runner, not the strategy.
+        strategy_succeeded: The strategy's own "early-stop fired" signal, NOT the
+            verdict (the evaluator decides pass/fail).
+        strategy_score: The strategy's internal stop-decision score, if any.
+        metadata: Free-form run details (e.g. ``turns_used``, ``backtracks``).
+    """
+
+    conversation: list[dict[str, Any]]
+    trajectory: list[dict[str, Any]] = field(default_factory=list)
+    strategy_succeeded: bool = False
+    strategy_score: float | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class AttackStrategy(ABC):
     """Base class for red team attack strategies.
 
-    Prompt-based strategies expose ``system_prompt_template``; turn-level
-    strategies override ``enhance()`` to adapt per turn.
+    Every strategy owns its own multi-turn loop via ``run_attack``. The task
+    runner injects a ``call_target`` callable (which already handles target
+    invocation, tool-trace capture, and per-case isolation), so strategies
+    never build target-calling themselves.
     """
+
+    def __init__(self, *, label: str | None = None) -> None:
+        """Initialize the strategy.
+
+        Args:
+            label: Instance identifier used for cross-product case naming, cache
+                keys, and report grouping. Defaults to ``name`` (the type id).
+                Pass distinct labels to compare instances of the same strategy
+                (e.g. different ``max_turns``) in one experiment.
+        """
+        self._label = label
 
     @property
     @abstractmethod
-    def name(self) -> str: ...
+    def name(self) -> str:
+        """Type identifier for the strategy (e.g. ``"crescendo"``)."""
+        ...
+
+    @property
+    def label(self) -> str:
+        """Instance identifier; defaults to ``name`` when none was provided."""
+        return self._label or self.name
 
     @property
     def system_prompt_template(self) -> str | None:
         """System prompt template if prompt-driven, else None."""
         return None
 
-    def enhance(self, prompt: str, **kwargs: Any) -> str:
-        """Return the next adversarial message. Default: passthrough.
+    @abstractmethod
+    def run_attack(
+        self,
+        case: RedTeamCase,
+        call_target: Callable[[str], str],
+        *,
+        max_turns: int,
+        model: Model | str | None = None,
+        **kwargs: Any,
+    ) -> AttackRunResult:
+        """Run the full multi-turn attack and return its result.
 
-        Called once per turn by the task runner with ``target_response``,
-        ``conversation``, and ``attack_goal`` in ``kwargs``. Algorithmic
-        strategies (e.g., PAIR, TAP) override this and may hold an
-        ``Evaluator`` on the instance to score turn-level candidates.
+        Args:
+            case: The red team case carrying the attack goal.
+            call_target: Injected callable mapping an attacker message to the
+                target's response. Already captures the tool trace and applies
+                per-case isolation; strategies must not build their own.
+            max_turns: Upper bound on attacker/target turns.
+            model: Model for any strategy-internal LLM calls (e.g. the attacker
+                agent). Strategies resolve this against their own ``__init__``
+                model, ctor value taking precedence.
+            **kwargs: Reserved for forward compatibility.
+
+        Returns:
+            An :class:`AttackRunResult` capturing the conversation and metadata.
         """
-        return prompt
+        ...
 
     def reset(self) -> None:  # noqa: B027
         """Clear runtime state between cases.
