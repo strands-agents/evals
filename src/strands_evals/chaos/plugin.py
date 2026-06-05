@@ -23,7 +23,7 @@ class ChaosPlugin(Plugin):
     """Strands Plugin that injects deterministic chaos based on the active ChaosCase.
 
     The plugin intercepts tool calls via Strands' native hook system:
-    - BeforeToolCallEvent: cancels tool calls for pre-hook effects (ToolCallFailure)
+    - BeforeToolCallEvent: cancels tool calls for pre-hook effects (Timeout, NetworkError, etc.)
     - AfterToolCallEvent: corrupts tool responses for post-hook effects (TruncateFields, etc.)
 
     The active ChaosCase is managed via a ContextVar (set by ChaosExperiment).
