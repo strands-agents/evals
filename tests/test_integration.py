@@ -61,11 +61,9 @@ def test_integration_dataset_with_simple_evaluator(cases):
     def echo_task(case):
         return case.input
 
-    reports = experiment.run_evaluations(echo_task)
+    report = experiment.run_evaluations(echo_task)
 
     # Verify complete workflow
-    assert len(reports) == 1
-    report = reports[0]
     assert len(report.scores) == 3
     assert report.scores[0] == 1.0  # exact match
     assert report.scores[1] == 0.0  # no match
@@ -86,10 +84,8 @@ def test_integration_dataset_with_dict_output_task(cases):
             interactions=[Interaction(node_name="agent1", dependencies=[], messages=["processing hello"])],
         )
 
-    reports = experiment.run_evaluations(dict_task)
+    report = experiment.run_evaluations(dict_task)
 
-    assert len(reports) == 1
-    report = reports[0]
     assert len(report.scores) == 3
     assert report.scores[0] == 1.0  # exact match
     assert report.scores[1] == 0.0  # no match
@@ -110,12 +106,10 @@ def test_integration_dataset_with_output_evaluator(mock_agent_class, cases, mock
     def simple_task(case):
         return f"processed_{case.input}"
 
-    reports = experiment.run_evaluations(simple_task)
+    report = experiment.run_evaluations(simple_task)
 
     # Verify LLM evaluator was called for each test case
     assert mock_agent.invoke_async.call_count == 3
-    assert len(reports) == 1
-    report = reports[0]
     assert len(report.scores) == 3
     assert all(abs(score - mock_score) <= 0.00001 for score in report.scores)
     assert abs(report.overall_score - mock_score) <= 0.00001
@@ -130,11 +124,9 @@ def test_integration_evaluation_report_display(cases):
             return "hello"
         return "different"
 
-    reports = experiment.run_evaluations(mixed_task)
+    report = experiment.run_evaluations(mixed_task)
 
     # Test that display method doesn't crash
-    assert len(reports) == 1
-    report = reports[0]
     try:
         report.display()
         display_success = True
@@ -155,11 +147,9 @@ def test_integration_dataset_with_trajectory_evaluator(mock_agent_class, cases, 
     def simple_task(case):
         return {"output": f"processed_{case.input}", "trajectory": ["step1", "step2"]}
 
-    reports = experiment.run_evaluations(simple_task)
+    report = experiment.run_evaluations(simple_task)
 
     # Verify the evaluator was called for each test case
-    assert len(reports) == 1
-    report = reports[0]
     assert len(report.scores) == 3
     assert all(abs(score - mock_score) <= 0.00001 for score in report.scores)
     assert abs(report.overall_score - mock_score) <= 0.00001
@@ -176,10 +166,8 @@ def test_integration_dataset_with_list_inputs():
     def list_task(case):
         return case.input
 
-    reports = experiment.run_evaluations(list_task)
+    report = experiment.run_evaluations(list_task)
 
-    assert len(reports) == 1
-    report = reports[0]
     # no error in display
     report.display()
     assert len(report.scores) == 2
@@ -198,11 +186,9 @@ async def test_integration_async_dataset_with_simple_evaluator(cases):
     def echo_task(case):
         return case.input
 
-    reports = await experiment.run_evaluations_async(echo_task)
+    report = await experiment.run_evaluations_async(echo_task)
 
     # Verify complete workflow
-    assert len(reports) == 1
-    report = reports[0]
     assert len(report.scores) == 3
     assert sorted(report.scores, reverse=True) == [1.0, 0.0, 0.0]
     assert report.overall_score == 1.0 / 3
@@ -219,11 +205,9 @@ async def test_integration_async_dataset_with_async_task(cases):
         await asyncio.sleep(0.01)  # Simulate async work
         return case.input
 
-    reports = await experiment.run_evaluations_async(async_echo_task)
+    report = await experiment.run_evaluations_async(async_echo_task)
 
     # Verify complete workflow
-    assert len(reports) == 1
-    report = reports[0]
     assert len(report.scores) == 3
     assert report.scores[0] == 1.0  # exact match
     assert report.scores[1] == 0.0  # no match
@@ -245,11 +229,9 @@ async def test_integration_async_dataset_with_output_evaluator(mock_agent_class,
     def simple_task(case):
         return f"processed_{case.input}"
 
-    reports = await experiment.run_evaluations_async(simple_task)
+    report = await experiment.run_evaluations_async(simple_task)
 
     # Verify results
-    assert len(reports) == 1
-    report = reports[0]
     assert len(report.scores) == 3
     assert all(abs(score - mock_score) <= 0.00001 for score in report.scores)
     assert abs(report.overall_score - mock_score) <= 0.00001
@@ -269,7 +251,7 @@ async def test_integration_async_dataset_concurrency():
 
     # Time the execution
     start_time = asyncio.get_event_loop().time()
-    reports = await experiment.run_evaluations_async(slow_task, max_workers=5)
+    report = await experiment.run_evaluations_async(slow_task, max_workers=5)
     end_time = asyncio.get_event_loop().time()
 
     # With 10 tasks taking 0.1s each and 5 workers, should take ~0.2s
@@ -277,8 +259,6 @@ async def test_integration_async_dataset_concurrency():
     assert end_time - start_time < 0.5  # Allow some overhead
 
     # Verify results
-    assert len(reports) == 1
-    report = reports[0]
     assert len(report.scores) == 10
     assert all(score == 1.0 for score in report.scores)
     assert report.overall_score == 1.0
@@ -300,12 +280,10 @@ def test_experiment_with_interactions_evaluator(mock_agent_class, interaction_ca
             ],
         }
 
-    reports = experiment.run_evaluations(task_with_interactions)
+    report = experiment.run_evaluations(task_with_interactions)
 
     # Verify the evaluator was called (once per interaction, so 2 times)
     assert mock_agent.invoke_async.call_count == 2
-    assert len(reports) == 1
-    report = reports[0]
     assert len(report.scores) == 1
     assert abs(report.scores[0] - mock_score) <= 0.00001
     assert abs(report.overall_score - mock_score) <= 0.00001
@@ -326,10 +304,8 @@ async def test_async_dataset_with_interactions(interaction_case):
             ],
         }
 
-    reports = await experiment.run_evaluations_async(async_interactions_task)
+    report = await experiment.run_evaluations_async(async_interactions_task)
 
-    assert len(reports) == 1
-    report = reports[0]
     assert len(report.scores) == 1
     assert len(report.cases) == 1
     assert report.cases[0].get("actual_interactions") is not None

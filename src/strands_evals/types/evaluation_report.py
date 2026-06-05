@@ -12,15 +12,14 @@ class EvaluationReport(BaseModel):
     A report of the evaluation of a task.
 
     Attributes:
-        evaluator_name: The name of the evaluator that produced this report.
         overall_score: The overall score of the task.
         scores: A list of the score for each test case in order.
-        cases: A list of records for each test case.
+        cases: A list of records for each test case. Each record carries an `evaluator` key naming
+            the evaluator that produced that row.
         test_passes: A list of booleans indicating whether the test pass or fail.
         reasons: A list of reason for each test case.
     """
 
-    evaluator_name: str = ""
     overall_score: float
     scores: list[float]
     cases: list[dict]
@@ -32,16 +31,20 @@ class EvaluationReport(BaseModel):
 
     @classmethod
     def flatten(cls, reports: list["EvaluationReport"]) -> "EvaluationReport":
-        """Flatten multiple evaluation reports into a single report."""
+        """Concatenate multiple evaluation reports into one.
+
+        The base `Experiment` already returns a flattened report; this helper exists for callers
+        that built reports separately (e.g., across multiple experiments) and want to merge them.
+        Each row's `evaluator` tag is preserved as-is.
+        """
         if not reports:
             return cls(overall_score=0.0, scores=[], cases=[], test_passes=[])
 
         scores, cases, passes, reasons, detailed, diags, recs = [], [], [], [], [], [], []
 
         for report in reports:
-            evaluator = report.evaluator_name or "Unknown"
             for i, case in enumerate(report.cases):
-                cases.append({**case, "evaluator": evaluator})
+                cases.append(dict(case))
                 scores.append(report.scores[i] if i < len(report.scores) else 0.0)
                 passes.append(report.test_passes[i] if i < len(report.test_passes) else False)
                 reasons.append(report.reasons[i] if i < len(report.reasons) else "")
@@ -50,7 +53,6 @@ class EvaluationReport(BaseModel):
                 recs.append(report.recommendations[i] if i < len(report.recommendations) else None)
 
         return cls(
-            evaluator_name="Combined",
             overall_score=sum(scores) / len(scores) if scores else 0.0,
             scores=scores,
             cases=cases,

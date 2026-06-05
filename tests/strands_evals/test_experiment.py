@@ -1,4 +1,7 @@
 import asyncio
+import inspect
+import random
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -7,6 +10,7 @@ from strands.models.model import Model
 from strands.types.exceptions import EventLoopException, ModelThrottledException
 
 from strands_evals import Case, DiagnosisConfig, Experiment
+from strands_evals import evaluators as builtin_evaluators
 from strands_evals.evaluators import (
     Contains,
     Equals,
@@ -21,6 +25,13 @@ from strands_evals.evaluators.evaluator import DEFAULT_BEDROCK_MODEL_ID
 from strands_evals.experiment import is_throttling_error
 from strands_evals.providers.trace_provider import TraceProvider
 from strands_evals.types import EvaluationData, EvaluationOutput
+from strands_evals.types.trace import (
+    AgentInvocationSpan,
+    Session,
+    SpanInfo,
+    ToolConfig,
+    Trace,
+)
 
 
 class MockEvaluator(Evaluator[str, str]):
@@ -223,11 +234,10 @@ def test_experiment_run_evaluations(mock_evaluator):
     def echo_task(c):
         return c.input
 
-    reports = experiment.run_evaluations(echo_task)
+    report = experiment.run_evaluations(echo_task)
 
-    # Returns list of reports, one per evaluator
-    assert len(reports) == 1
-    report = reports[0]
+    # Single-evaluator runs tag every case row with the evaluator name.
+    assert {row["evaluator"] for row in report.cases} == {"MockEvaluator"}
     assert len(report.scores) == 2
     assert report.scores[0] == 1.0  # match
     assert report.scores[1] == 0.0  # no match
@@ -236,12 +246,17 @@ def test_experiment_run_evaluations(mock_evaluator):
     assert report.overall_score == 0.5
     assert len(report.cases) == 2
 
-    # Test with multiple evaluators - each gets its own report
+    # Multi-evaluator runs flatten across evaluators; each row is tagged with its evaluator.
     experiment2 = Experiment(cases=cases, evaluators=[mock_evaluator, MockEvaluator2()])
-    reports2 = experiment2.run_evaluations(echo_task)
-    assert len(reports2) == 2
-    assert reports2[0].scores[0] == 1.0  # MockEvaluator on match
-    assert reports2[1].scores[0] == 0.5  # MockEvaluator2 always returns 0.5
+    report2 = experiment2.run_evaluations(echo_task)
+    assert {row["evaluator"] for row in report2.cases} == {"MockEvaluator", "MockEvaluator2"}
+    assert len(report2.scores) == 4
+
+    by_evaluator: dict[str, list[float]] = {"MockEvaluator": [], "MockEvaluator2": []}
+    for row, score in zip(report2.cases, report2.scores, strict=True):
+        by_evaluator[row["evaluator"]].append(score)
+    assert by_evaluator["MockEvaluator"] == [1.0, 0.0]  # match, no_match
+    assert by_evaluator["MockEvaluator2"] == [0.5, 0.5]  # always 0.5
 
 
 def test_experiment_run_evaluations_task_executed_once():
@@ -737,6 +752,44 @@ def test_experiment_from_dict_InteractionsEvaluator_defaults():
     assert experiment.evaluators[0].include_inputs is True
 
 
+@pytest.mark.parametrize(
+    "evaluator_type",
+    [
+        "CoherenceEvaluator",
+        "ConcisenessEvaluator",
+        "CorrectnessEvaluator",
+        "FaithfulnessEvaluator",
+        "GoalSuccessRateEvaluator",
+        "HarmfulnessEvaluator",
+        "HelpfulnessEvaluator",
+        "InstructionFollowingEvaluator",
+        "RefusalEvaluator",
+        "ResponseRelevanceEvaluator",
+        "StereotypingEvaluator",
+        "ToolParameterAccuracyEvaluator",
+        "ToolSelectionAccuracyEvaluator",
+        "MultimodalCorrectnessEvaluator",
+        "MultimodalFaithfulnessEvaluator",
+        "MultimodalInstructionFollowingEvaluator",
+        "MultimodalOutputEvaluator",
+        "MultimodalOverallQualityEvaluator",
+    ],
+)
+def test_experiment_from_dict_builtin_evaluators_round_trip(evaluator_type):
+    """Built-in evaluators serialized via to_dict round-trip through from_dict without custom_evaluators."""
+    cls = getattr(builtin_evaluators, evaluator_type)
+    sig = inspect.signature(cls.__init__)
+    kwargs = {
+        name: "rubric"
+        for name, param in sig.parameters.items()
+        if name != "self" and param.default is inspect.Parameter.empty
+    }
+    serialized = cls(**kwargs).to_dict()
+    experiment = Experiment.from_dict({"cases": [], "evaluators": [serialized]})
+    assert len(experiment.evaluators) == 1
+    assert isinstance(experiment.evaluators[0], cls)
+
+
 @pytest.mark.asyncio
 async def test_experiment_run_evaluations_async():
     """Test run_evaluations_async with a simple task"""
@@ -748,21 +801,20 @@ async def test_experiment_run_evaluations_async():
     case1 = Case(name="test1", input="world", expected_output="world")
     experiment = Experiment(cases=[case, case1], evaluators=[MockEvaluator()])
 
-    reports = await experiment.run_evaluations_async(task)
+    report = await experiment.run_evaluations_async(task)
 
-    assert len(reports) == 1
-    report = reports[0]
+    assert {row["evaluator"] for row in report.cases} == {"MockEvaluator"}
     assert len(report.scores) == 2
     assert all(score == 1.0 for score in report.scores)
     assert all(test_pass for test_pass in report.test_passes)
     assert report.overall_score == 1.0
 
-    # Test with multiple evaluators
+    # Multi-evaluator runs flatten across evaluators.
     experiment2 = Experiment(cases=[case], evaluators=[MockEvaluator(), MockEvaluator2()])
-    reports2 = await experiment2.run_evaluations_async(task)
-    assert len(reports2) == 2
-    assert reports2[0].scores[0] == 1.0  # MockEvaluator
-    assert reports2[1].scores[0] == 0.5  # MockEvaluator2
+    report2 = await experiment2.run_evaluations_async(task)
+    by_evaluator = {row["evaluator"]: report2.scores[i] for i, row in enumerate(report2.cases)}
+    assert by_evaluator["MockEvaluator"] == 1.0
+    assert by_evaluator["MockEvaluator2"] == 0.5
 
 
 @pytest.mark.asyncio
@@ -776,10 +828,8 @@ async def test_experiment_run_evaluations_async_with_async_task():
     case = Case(name="test", input="hello", expected_output="hello")
     case1 = Case(name="test1", input="world", expected_output="world")
     experiment = Experiment(cases=[case, case1], evaluators=[MockEvaluator()])
-    reports = await experiment.run_evaluations_async(async_task)
+    report = await experiment.run_evaluations_async(async_task)
 
-    assert len(reports) == 1
-    report = reports[0]
     assert len(report.scores) == 2
     assert all(score == 1.0 for score in report.scores)
     assert all(test_pass for test_pass in report.test_passes)
@@ -789,8 +839,6 @@ async def test_experiment_run_evaluations_async_with_async_task():
 @pytest.mark.asyncio
 async def test_experiment_run_evaluations_async_preserves_input_order():
     """Test that run_evaluations_async returns results in input order regardless of completion order"""
-    import random
-
     cases = [Case(name=f"case_{i}", input=f"input_{i}", expected_output=f"input_{i}") for i in range(10)]
     experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
 
@@ -798,10 +846,8 @@ async def test_experiment_run_evaluations_async_preserves_input_order():
         await asyncio.sleep(random.uniform(0.01, 0.1))
         return c.input
 
-    reports = await experiment.run_evaluations_async(variable_delay_task, max_workers=5)
+    report = await experiment.run_evaluations_async(variable_delay_task, max_workers=5)
 
-    assert len(reports) == 1
-    report = reports[0]
     for i, case_data in enumerate(report.cases):
         assert case_data["name"] == f"case_{i}", (
             f"report.cases[{i}] has name '{case_data['name']}', expected 'case_{i}'"
@@ -821,10 +867,8 @@ async def test_experiment_run_evaluations_async_with_errors():
     case = Case(name="test", input="hello", expected_output="hello")
     case1 = Case(name="test1", input="world", expected_output="world")
     experiment = Experiment(cases=[case, case1], evaluators=[MockEvaluator()])
-    reports = await experiment.run_evaluations_async(failing_task)
+    report = await experiment.run_evaluations_async(failing_task)
 
-    assert len(reports) == 1
-    report = reports[0]
     assert len(report.scores) == 2
     # One of the cases should have failed (score 0) and one passed (score 1)
     assert 0.0 in report.scores
@@ -843,10 +887,8 @@ def test_experiment_run_evaluations_with_interactions():
     def task_with_interactions(c):
         return {"output": c.input, "interactions": interactions}
 
-    reports = experiment.run_evaluations(task_with_interactions)
+    report = experiment.run_evaluations(task_with_interactions)
 
-    assert len(reports) == 1
-    report = reports[0]
     assert len(report.cases) == 1
     assert report.cases[0]["actual_interactions"] == interactions
     assert report.cases[0]["expected_interactions"] == interactions
@@ -919,11 +961,9 @@ def test_experiment_run_evaluations_records_exception_in_span(mock_span):
     def failing_task(c):
         raise ValueError("Test error")
 
-    reports = experiment.run_evaluations(failing_task)
+    report = experiment.run_evaluations(failing_task)
 
     # Verify error was handled and report contains error info
-    assert len(reports) == 1
-    report = reports[0]
     assert len(report.scores) == 1
     assert report.scores[0] == 0
     assert report.test_passes[0] is False
@@ -937,11 +977,10 @@ def test_experiment_run_evaluations_with_unnamed_case(mock_span, simple_task):
 
     with patch.object(experiment._tracer, "start_as_current_span", return_value=mock_span):
         with patch("strands_evals.experiment.format_trace_id", return_value="mock_trace_id"):
-            reports = experiment.run_evaluations(simple_task)
+            report = experiment.run_evaluations(simple_task)
 
             # Should complete successfully
-            assert len(reports) == 1
-            assert reports[0].scores[0] == 1.0
+            assert report.scores[0] == 1.0
 
 
 @pytest.mark.asyncio
@@ -1038,11 +1077,9 @@ async def test_experiment_run_evaluations_async_records_exception(mock_span):
         async def failing_async_task(c):
             raise ValueError("Async test error")
 
-        reports = await experiment.run_evaluations_async(failing_async_task)
+        report = await experiment.run_evaluations_async(failing_async_task)
 
         # Verify the error was handled gracefully
-        assert len(reports) == 1
-        report = reports[0]
         assert len(report.scores) == 1
         assert report.scores[0] == 0
         assert "Async test error" in report.reasons[0]
@@ -1087,11 +1124,10 @@ def test_experiment_run_evaluations_multiple_cases(mock_span, simple_task):
 
     with patch.object(experiment._tracer, "start_as_current_span", return_value=mock_span):
         with patch("strands_evals.experiment.format_trace_id", return_value="mock_trace_id"):
-            reports = experiment.run_evaluations(simple_task)
+            report = experiment.run_evaluations(simple_task)
 
-            assert len(reports) == 1
-            assert len(reports[0].scores) == 2
-            assert all(score == 1.0 for score in reports[0].scores)
+            assert len(report.scores) == 2
+            assert all(score == 1.0 for score in report.scores)
 
 
 def test_experiment_run_evaluations_evaluator_error_isolated():
@@ -1104,20 +1140,25 @@ def test_experiment_run_evaluations_evaluator_error_isolated():
     def echo_task(c):
         return c.input
 
-    reports = experiment.run_evaluations(echo_task)
+    report = experiment.run_evaluations(echo_task)
 
-    assert len(reports) == 2
+    # Multi-evaluator runs return one flattened report; rows are tagged by evaluator.
+    assert len(report.scores) == 2
 
-    # First evaluator (MockEvaluator) should succeed
-    assert reports[0].scores[0] == 1.0
-    assert reports[0].test_passes[0] is True
-    assert reports[0].reasons[0] == "Mock evaluation"
+    rows_by_evaluator = {row["evaluator"]: i for i, row in enumerate(report.cases)}
+    mock_idx = rows_by_evaluator["MockEvaluator"]
+    throwing_idx = rows_by_evaluator["ThrowingEvaluator"]
 
-    # Second evaluator (ThrowingEvaluator) should fail with error message
-    assert reports[1].scores[0] == 0
-    assert reports[1].test_passes[0] is False
-    assert "Evaluator error" in reports[1].reasons[0]
-    assert "Evaluator exploded" in reports[1].reasons[0]
+    # MockEvaluator should succeed
+    assert report.scores[mock_idx] == 1.0
+    assert report.test_passes[mock_idx] is True
+    assert report.reasons[mock_idx] == "Mock evaluation"
+
+    # ThrowingEvaluator should fail with error message
+    assert report.scores[throwing_idx] == 0
+    assert report.test_passes[throwing_idx] is False
+    assert "Evaluator error" in report.reasons[throwing_idx]
+    assert "Evaluator exploded" in report.reasons[throwing_idx]
 
 
 def testis_throttling_error_detects_model_throttled_exception():
@@ -1193,13 +1234,12 @@ def test_experiment_run_evaluations_retries_on_throttling():
 
     with patch("strands_evals.experiment._INITIAL_RETRY_DELAY", 0.01):
         with patch("strands_evals.experiment._MAX_RETRY_DELAY", 0.02):
-            reports = experiment.run_evaluations(throttling_task)
+            report = experiment.run_evaluations(throttling_task)
 
     # Task should have been retried
     assert call_count == 3
-    assert len(reports) == 1
-    assert reports[0].scores[0] == 1.0
-    assert reports[0].test_passes[0] is True
+    assert report.scores[0] == 1.0
+    assert report.test_passes[0] is True
 
 
 def test_experiment_run_evaluations_fails_after_max_retries():
@@ -1217,14 +1257,13 @@ def test_experiment_run_evaluations_fails_after_max_retries():
     with patch("strands_evals.experiment._MAX_RETRY_ATTEMPTS", 3):
         with patch("strands_evals.experiment._INITIAL_RETRY_DELAY", 0.01):
             with patch("strands_evals.experiment._MAX_RETRY_DELAY", 0.02):
-                reports = experiment.run_evaluations(always_throttling_task)
+                report = experiment.run_evaluations(always_throttling_task)
 
     # Should have retried max times
     assert call_count == 3
-    assert len(reports) == 1
-    assert reports[0].scores[0] == 0
-    assert reports[0].test_passes[0] is False
-    assert "An error occurred" in reports[0].reasons[0]
+    assert report.scores[0] == 0
+    assert report.test_passes[0] is False
+    assert "An error occurred" in report.reasons[0]
 
 
 def test_experiment_run_evaluations_no_retry_on_non_throttling():
@@ -1239,13 +1278,12 @@ def test_experiment_run_evaluations_no_retry_on_non_throttling():
     case = Case(name="test", input="hello", expected_output="hello")
     experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
 
-    reports = experiment.run_evaluations(non_throttling_error_task)
+    report = experiment.run_evaluations(non_throttling_error_task)
 
     # Should NOT have retried
     assert call_count == 1
-    assert len(reports) == 1
-    assert reports[0].scores[0] == 0
-    assert "Invalid input" in reports[0].reasons[0]
+    assert report.scores[0] == 0
+    assert "Invalid input" in report.reasons[0]
 
 
 def test_experiment_run_evaluations_exponential_backoff():
@@ -1302,13 +1340,12 @@ def test_experiment_run_evaluations_evaluator_retries_on_throttling():
 
     with patch("strands_evals.experiment._INITIAL_RETRY_DELAY", 0.01):
         with patch("strands_evals.experiment._MAX_RETRY_DELAY", 0.02):
-            reports = experiment.run_evaluations(simple_task)
+            report = experiment.run_evaluations(simple_task)
 
     # Evaluator should have been retried
     assert evaluator.call_count == 3
-    assert len(reports) == 1
-    assert reports[0].scores[0] == 1.0
-    assert reports[0].test_passes[0] is True
+    assert report.scores[0] == 1.0
+    assert report.test_passes[0] is True
 
 
 @pytest.mark.asyncio
@@ -1328,13 +1365,12 @@ async def test_experiment_run_evaluations_async_retries_on_throttling():
 
     with patch("strands_evals.experiment._INITIAL_RETRY_DELAY", 0.01):
         with patch("strands_evals.experiment._MAX_RETRY_DELAY", 0.02):
-            reports = await experiment.run_evaluations_async(throttling_task, max_workers=1)
+            report = await experiment.run_evaluations_async(throttling_task, max_workers=1)
 
     # Task should have been retried
     assert call_count == 3
-    assert len(reports) == 1
-    assert reports[0].scores[0] == 1.0
-    assert reports[0].test_passes[0] is True
+    assert report.scores[0] == 1.0
+    assert report.test_passes[0] is True
 
 
 @pytest.mark.asyncio
@@ -1353,14 +1389,13 @@ async def test_experiment_run_evaluations_async_fails_after_max_retries():
     with patch("strands_evals.experiment._MAX_RETRY_ATTEMPTS", 3):
         with patch("strands_evals.experiment._INITIAL_RETRY_DELAY", 0.01):
             with patch("strands_evals.experiment._MAX_RETRY_DELAY", 0.02):
-                reports = await experiment.run_evaluations_async(always_throttling_task, max_workers=1)
+                report = await experiment.run_evaluations_async(always_throttling_task, max_workers=1)
 
     # Should have retried max times
     assert call_count == 3
-    assert len(reports) == 1
-    assert reports[0].scores[0] == 0
-    assert reports[0].test_passes[0] is False
-    assert "An error occurred" in reports[0].reasons[0]
+    assert report.scores[0] == 0
+    assert report.test_passes[0] is False
+    assert "An error occurred" in report.reasons[0]
 
 
 @pytest.mark.asyncio
@@ -1376,13 +1411,12 @@ async def test_experiment_run_evaluations_async_no_retry_on_non_throttling():
     case = Case(name="test", input="hello", expected_output="hello")
     experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
 
-    reports = await experiment.run_evaluations_async(non_throttling_error_task, max_workers=1)
+    report = await experiment.run_evaluations_async(non_throttling_error_task, max_workers=1)
 
     # Should NOT have retried
     assert call_count == 1
-    assert len(reports) == 1
-    assert reports[0].scores[0] == 0
-    assert "Invalid input" in reports[0].reasons[0]
+    assert report.scores[0] == 0
+    assert "Invalid input" in report.reasons[0]
 
 
 @pytest.mark.asyncio
@@ -1442,13 +1476,12 @@ async def test_experiment_run_evaluations_async_evaluator_retries():
 
     with patch("strands_evals.experiment._INITIAL_RETRY_DELAY", 0.01):
         with patch("strands_evals.experiment._MAX_RETRY_DELAY", 0.02):
-            reports = await experiment.run_evaluations_async(simple_task, max_workers=1)
+            report = await experiment.run_evaluations_async(simple_task, max_workers=1)
 
     # Evaluator should have been retried
     assert evaluator.call_count == 3
-    assert len(reports) == 1
-    assert reports[0].scores[0] == 1.0
-    assert reports[0].test_passes[0] is True
+    assert report.scores[0] == 1.0
+    assert report.test_passes[0] is True
 
 
 @pytest.mark.asyncio
@@ -1506,20 +1539,17 @@ def test_deterministic_evaluator_alongside_mock_evaluator():
         cases=cases,
         evaluators=[Equals(), MockEvaluator()],
     )
-    reports = experiment.run_evaluations(_simulate_agent)
+    report = experiment.run_evaluations(_simulate_agent)
 
-    assert len(reports) == 2
+    # Multi-evaluator runs flatten across (case, evaluator) pairs.
+    assert len(report.scores) == 4
+    assert report.overall_score == 1.0
 
-    # Equals: both cases match expected_output exactly
-    equals_report = reports[0]
-    assert equals_report.scores == [1.0, 1.0]
-    assert equals_report.test_passes == [True, True]
-    assert equals_report.overall_score == 1.0
-
-    # MockEvaluator: also matches (actual==expected)
-    mock_report = reports[1]
-    assert mock_report.scores == [1.0, 1.0]
-    assert mock_report.test_passes == [True, True]
+    by_evaluator: dict[str, list[tuple[float, bool]]] = {"Equals": [], "MockEvaluator": []}
+    for row, score, test_pass in zip(report.cases, report.scores, report.test_passes, strict=True):
+        by_evaluator[row["evaluator"]].append((score, test_pass))
+    assert by_evaluator["Equals"] == [(1.0, True), (1.0, True)]
+    assert by_evaluator["MockEvaluator"] == [(1.0, True), (1.0, True)]
 
 
 @pytest.mark.asyncio
@@ -1537,13 +1567,11 @@ async def test_deterministic_evaluator_alongside_mock_evaluator_async():
         cases=cases,
         evaluators=[Equals(), MockEvaluator()],
     )
-    reports = await experiment.run_evaluations_async(_simulate_agent)
+    report = await experiment.run_evaluations_async(_simulate_agent)
 
-    assert len(reports) == 2
-    assert reports[0].scores == [1.0]
-    assert reports[0].test_passes == [True]
-    assert reports[1].scores == [1.0]
-    assert reports[1].test_passes == [True]
+    assert len(report.scores) == 2
+    assert report.scores == [1.0, 1.0]
+    assert report.test_passes == [True, True]
 
 
 def test_multiple_deterministic_evaluators_in_experiment():
@@ -1562,12 +1590,12 @@ def test_multiple_deterministic_evaluators_in_experiment():
             StartsWith(value="The capital"),
         ],
     )
-    reports = experiment.run_evaluations(_simulate_agent)
+    report = experiment.run_evaluations(_simulate_agent)
 
-    assert len(reports) == 3
-    for report in reports:
-        assert report.scores == [1.0]
-        assert report.test_passes == [True]
+    assert len(report.scores) == 3
+    assert report.scores == [1.0, 1.0, 1.0]
+    assert report.test_passes == [True, True, True]
+    assert {row["evaluator"] for row in report.cases} == {"Equals", "Contains", "StartsWith"}
 
 
 def test_tool_called_evaluator_with_trajectory_task():
@@ -1588,17 +1616,17 @@ def test_tool_called_evaluator_with_trajectory_task():
             Contains(value="4"),
         ],
     )
-    reports = experiment.run_evaluations(_simulate_agent)
+    report = experiment.run_evaluations(_simulate_agent)
 
-    assert len(reports) == 2
+    assert len(report.scores) == 2
 
+    rows_by_evaluator = {row["evaluator"]: i for i, row in enumerate(report.cases)}
     # calculator was called in trajectory
-    assert reports[0].scores == [1.0]
-    assert reports[0].test_passes == [True]
-
+    assert report.scores[rows_by_evaluator["ToolCalled"]] == 1.0
+    assert report.test_passes[rows_by_evaluator["ToolCalled"]] is True
     # output contains "4"
-    assert reports[1].scores == [1.0]
-    assert reports[1].test_passes == [True]
+    assert report.scores[rows_by_evaluator["Contains"]] == 1.0
+    assert report.test_passes[rows_by_evaluator["Contains"]] is True
 
 
 def test_tool_called_evaluator_tool_not_found():
@@ -1615,12 +1643,11 @@ def test_tool_called_evaluator_tool_not_found():
         cases=cases,
         evaluators=[ToolCalled(tool_name="calculator")],
     )
-    reports = experiment.run_evaluations(_simulate_agent)
+    report = experiment.run_evaluations(_simulate_agent)
 
-    assert len(reports) == 1
     # Agent used knowledge_base and formatter, not calculator
-    assert reports[0].scores == [0.0]
-    assert reports[0].test_passes == [False]
+    assert report.scores == [0.0]
+    assert report.test_passes == [False]
 
 
 def test_deterministic_evaluator_from_dict_round_trip():
@@ -1656,12 +1683,11 @@ def test_deterministic_evaluator_from_dict_round_trip():
     assert restored.evaluators[3].tool_name == "knowledge_base"
 
     # Run restored experiment against the same agent — results should be identical
-    original_reports = experiment.run_evaluations(_simulate_agent)
-    restored_reports = restored.run_evaluations(_simulate_agent)
+    original_report = experiment.run_evaluations(_simulate_agent)
+    restored_report = restored.run_evaluations(_simulate_agent)
 
-    for orig, rest in zip(original_reports, restored_reports, strict=True):
-        assert orig.scores == rest.scores
-        assert orig.test_passes == rest.test_passes
+    assert original_report.scores == restored_report.scores
+    assert original_report.test_passes == restored_report.test_passes
 
 
 def test_deterministic_evaluator_error_isolation():
@@ -1679,18 +1705,20 @@ def test_deterministic_evaluator_error_isolation():
             Equals(),
         ],
     )
-    reports = experiment.run_evaluations(_simulate_agent)
+    report = experiment.run_evaluations(_simulate_agent)
 
-    assert len(reports) == 2
+    rows_by_evaluator = {row["evaluator"]: i for i, row in enumerate(report.cases)}
+    throw = rows_by_evaluator["ThrowingEvaluator"]
+    eq = rows_by_evaluator["Equals"]
 
     # ThrowingEvaluator failed with error isolation
-    assert reports[0].scores == [0]
-    assert reports[0].test_passes == [False]
-    assert "Evaluator exploded" in reports[0].reasons[0]
+    assert report.scores[throw] == 0
+    assert report.test_passes[throw] is False
+    assert "Evaluator exploded" in report.reasons[throw]
 
     # Equals still ran successfully despite the ThrowingEvaluator failure
-    assert reports[1].scores == [1.0]
-    assert reports[1].test_passes == [True]
+    assert report.scores[eq] == 1.0
+    assert report.test_passes[eq] is True
 
 
 class DictEvaluationDataStore:
@@ -1751,13 +1779,12 @@ class TestEvaluationDataStore:
         cases = [Case(name="case1", input="hello", expected_output="hello")]
         experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
 
-        reports = experiment.run_evaluations(counting_task, evaluation_data_store=store)
+        report = experiment.run_evaluations(counting_task, evaluation_data_store=store)
 
         # Task should NOT have been called
         assert task_call_count == 0
         # Evaluators should still run on cached data
-        assert len(reports) == 1
-        assert reports[0].scores[0] == 1.0
+        assert report.scores[0] == 1.0
 
     def test_run_evaluations_with_store_requires_case_names(self):
         """Should raise ValueError if any case lacks a name when store is provided."""
@@ -1785,10 +1812,9 @@ class TestEvaluationDataStore:
         cases = [Case(name="case1", input="hello", expected_output="hello")]
         experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
 
-        reports = experiment.run_evaluations(lambda c: c.input)
+        report = experiment.run_evaluations(lambda c: c.input)
 
-        assert len(reports) == 1
-        assert reports[0].scores[0] == 1.0
+        assert report.scores[0] == 1.0
 
 
 class MockTraceProvider(TraceProvider):
@@ -1820,12 +1846,11 @@ class TestProviderIntegration:
         )
         experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
 
-        reports = experiment.run_evaluations(provider.as_task())
+        report = experiment.run_evaluations(provider.as_task())
 
         assert provider.call_count == 2
         assert set(provider.called_session_ids) == {"sess-1", "sess-2"}
-        assert len(reports) == 1
-        assert reports[0].scores == [1.0, 1.0]
+        assert report.scores == [1.0, 1.0]
 
     @pytest.mark.asyncio
     async def test_run_evaluations_async_with_provider(self):
@@ -1840,12 +1865,11 @@ class TestProviderIntegration:
         )
         experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
 
-        reports = await experiment.run_evaluations_async(provider.as_task())
+        report = await experiment.run_evaluations_async(provider.as_task())
 
         assert provider.call_count == 1
         assert provider.called_session_ids == ["sess-1"]
-        assert len(reports) == 1
-        assert reports[0].scores == [1.0]
+        assert report.scores == [1.0]
 
     def test_run_evaluations_with_provider_and_data_store_caches(self):
         """When data store has cached data, provider should not be called for that case."""
@@ -1866,12 +1890,11 @@ class TestProviderIntegration:
         cases = [Case(name="c1", session_id="sess-1", input="hello", expected_output="hello")]
         experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
 
-        reports = experiment.run_evaluations(provider.as_task(), evaluation_data_store=store)
+        report = experiment.run_evaluations(provider.as_task(), evaluation_data_store=store)
 
         # Provider should NOT have been called - data was cached
         assert provider.call_count == 0
-        assert len(reports) == 1
-        assert reports[0].scores == [1.0]
+        assert report.scores == [1.0]
 
     def test_run_evaluations_with_task_positional_arg_unchanged(self):
         """Existing positional task argument should continue to work."""
@@ -1879,24 +1902,13 @@ class TestProviderIntegration:
         experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
 
         # Positional arg - existing behavior
-        reports = experiment.run_evaluations(lambda c: c.input)
+        report = experiment.run_evaluations(lambda c: c.input)
 
-        assert len(reports) == 1
-        assert reports[0].scores == [1.0]
+        assert report.scores == [1.0]
 
 
 class TestDiagnoseOnFailure:
     def _make_session(self):
-        from datetime import datetime
-
-        from strands_evals.types.trace import (
-            AgentInvocationSpan,
-            Session,
-            SpanInfo,
-            ToolConfig,
-            Trace,
-        )
-
         now = datetime.now()
         info = SpanInfo(session_id="sess_1", span_id="span_1", trace_id="trace_1", start_time=now, end_time=now)
         spans = [
@@ -1917,11 +1929,10 @@ class TestDiagnoseOnFailure:
         cases = [Case(name="fail", input="foo", expected_output="bar")]
         experiment = Experiment(cases=cases, evaluators=[MockEvaluator()])
 
-        reports = experiment.run_evaluations(lambda c: c.input)
+        report = experiment.run_evaluations(lambda c: c.input)
 
-        assert len(reports) == 1
-        assert reports[0].diagnoses == [None]
-        assert reports[0].recommendations == [None]
+        assert report.diagnoses == [None]
+        assert report.recommendations == [None]
 
     @patch("strands_evals.experiment.Experiment._run_diagnosis")
     def test_diagnosis_config_on_failure_calls_diagnosis_for_failing_case(self, mock_run_diag):
@@ -1946,12 +1957,11 @@ class TestDiagnoseOnFailure:
         def task_returning_session(c):
             return {"output": c.input, "trajectory": session}
 
-        reports = experiment.run_evaluations(task_returning_session)
+        report = experiment.run_evaluations(task_returning_session)
 
-        assert len(reports) == 1
-        assert reports[0].diagnoses[0] is not None
-        assert reports[0].diagnoses[0]["session_id"] == "sess_1"
-        assert reports[0].recommendations[0] == "Add disambiguation instructions"
+        assert report.diagnoses[0] is not None
+        assert report.diagnoses[0]["session_id"] == "sess_1"
+        assert report.recommendations[0] == "Add disambiguation instructions"
         mock_run_diag.assert_called_once()
 
     @patch("strands_evals.experiment.Experiment._run_diagnosis")
@@ -1964,11 +1974,10 @@ class TestDiagnoseOnFailure:
             diagnosis_config=DiagnosisConfig(),
         )
 
-        reports = experiment.run_evaluations(lambda c: c.input)
+        report = experiment.run_evaluations(lambda c: c.input)
 
-        assert len(reports) == 1
-        assert reports[0].diagnoses == [None]
-        assert reports[0].recommendations == [None]
+        assert report.diagnoses == [None]
+        assert report.recommendations == [None]
         mock_run_diag.assert_not_called()
 
     def test_diagnosis_config_returns_none_for_non_session_trajectory(self):
@@ -1983,11 +1992,10 @@ class TestDiagnoseOnFailure:
         def task_with_list_trajectory(c):
             return {"output": c.input, "trajectory": ["step1", "step2"]}
 
-        reports = experiment.run_evaluations(task_with_list_trajectory)
+        report = experiment.run_evaluations(task_with_list_trajectory)
 
-        assert len(reports) == 1
-        assert reports[0].diagnoses == [None]
-        assert reports[0].recommendations == [None]
+        assert report.diagnoses == [None]
+        assert report.recommendations == [None]
 
     @patch("strands_evals.experiment.Experiment._run_diagnosis")
     def test_diagnosis_config_with_multiple_evaluators(self, mock_run_diag):
@@ -2012,12 +2020,15 @@ class TestDiagnoseOnFailure:
         def task_with_session(c):
             return {"output": c.input, "trajectory": session}
 
-        reports = experiment.run_evaluations(task_with_session)
+        report = experiment.run_evaluations(task_with_session)
 
-        assert len(reports) == 2
-        # Both reports share the same diagnosis and recommendation
-        assert reports[0].diagnoses[0] == reports[1].diagnoses[0]
-        assert reports[0].recommendations[0] == reports[1].recommendations[0] == "Fix the prompt"
+        # Multi-evaluator runs flatten across evaluators; one row per evaluator, same diagnosis.
+        assert len(report.scores) == 2
+        rows_by_evaluator = {row["evaluator"]: i for i, row in enumerate(report.cases)}
+        af = rows_by_evaluator["AlwaysFailEvaluator"]
+        m2 = rows_by_evaluator["MockEvaluator2"]
+        assert report.diagnoses[af] == report.diagnoses[m2]
+        assert report.recommendations[af] == report.recommendations[m2] == "Fix the prompt"
         mock_run_diag.assert_called_once()
 
     @patch("strands_evals.experiment.diagnose_session")
@@ -2036,8 +2047,7 @@ class TestDiagnoseOnFailure:
         def task_with_session(c):
             return {"output": c.input, "trajectory": session}
 
-        reports = experiment.run_evaluations(task_with_session)
+        report = experiment.run_evaluations(task_with_session)
 
-        assert len(reports) == 1
-        assert reports[0].diagnoses == [None]
-        assert reports[0].recommendations == [None]
+        assert report.diagnoses == [None]
+        assert report.recommendations == [None]

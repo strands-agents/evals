@@ -139,12 +139,14 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
         original_cases = self._cases
         self._cases = self._expand_cross_product()
         try:
-            reports = await super().run_evaluations_async(
+            # base now returns a single flattened EvaluationReport (#241), each case row
+            # tagged with its evaluator; RedTeamReport wraps that and joins run_meta.
+            report = await super().run_evaluations_async(
                 task, max_workers=max_workers, evaluation_data_store=evaluation_data_store
             )
         finally:
             self._cases = original_cases
-        return RedTeamReport.from_evaluation_reports(reports, run_meta=self._run_meta)
+        return RedTeamReport.from_evaluation_report(report, run_meta=self._run_meta)
 
     def _default_task(self) -> Callable[[Case[InputT, OutputT]], Any]:
         if self._agent is None:

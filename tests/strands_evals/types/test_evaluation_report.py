@@ -7,87 +7,23 @@ import pytest
 from strands_evals.types.evaluation_report import EvaluationReport
 
 
-class TestEvaluationReportEvaluatorName:
-    """Tests for the evaluator_name field on EvaluationReport."""
-
-    def test_evaluator_name_default_empty(self):
-        """Test that evaluator_name defaults to empty string."""
-        report = EvaluationReport(
-            overall_score=0.5,
-            scores=[0.5],
-            cases=[{"name": "test"}],
-            test_passes=[True],
-        )
-        assert report.evaluator_name == ""
-
-    def test_evaluator_name_set(self):
-        """Test that evaluator_name can be set."""
-        report = EvaluationReport(
-            evaluator_name="ResponseRelevance",
-            overall_score=0.5,
-            scores=[0.5],
-            cases=[{"name": "test"}],
-            test_passes=[True],
-        )
-        assert report.evaluator_name == "ResponseRelevance"
-
-    def test_evaluator_name_serialization(self):
-        """Test that evaluator_name is included in serialization."""
-        report = EvaluationReport(
-            evaluator_name="TestEvaluator",
-            overall_score=0.5,
-            scores=[0.5],
-            cases=[{"name": "test"}],
-            test_passes=[True],
-        )
-        data = report.to_dict()
-        assert data["evaluator_name"] == "TestEvaluator"
-
-    def test_evaluator_name_deserialization(self):
-        """Test that evaluator_name is restored from dict."""
-        data = {
-            "evaluator_name": "TestEvaluator",
-            "overall_score": 0.5,
-            "scores": [0.5],
-            "cases": [{"name": "test"}],
-            "test_passes": [True],
-        }
-        report = EvaluationReport.from_dict(data)
-        assert report.evaluator_name == "TestEvaluator"
-
-    def test_evaluator_name_backward_compatible(self):
-        """Test that reports without evaluator_name can still be loaded."""
-        data = {
-            "overall_score": 0.5,
-            "scores": [0.5],
-            "cases": [{"name": "test"}],
-            "test_passes": [True],
-        }
-        report = EvaluationReport.from_dict(data)
-        assert report.evaluator_name == ""
-
-
 class TestEvaluationReportFlatten:
     """Tests for the flatten() classmethod."""
 
     def test_flatten_empty_list(self):
-        """Test flattening an empty list returns empty report."""
         flattened = EvaluationReport.flatten([])
-        assert flattened.evaluator_name == ""
         assert flattened.overall_score == 0.0
         assert flattened.scores == []
         assert flattened.cases == []
         assert flattened.test_passes == []
 
     def test_flatten_single_report(self):
-        """Test flattening a single report."""
         report = EvaluationReport(
-            evaluator_name="Evaluator1",
             overall_score=0.8,
             scores=[0.9, 0.7],
             cases=[
-                {"name": "case-1", "input": "input1"},
-                {"name": "case-2", "input": "input2"},
+                {"name": "case-1", "input": "input1", "evaluator": "Evaluator1"},
+                {"name": "case-2", "input": "input2", "evaluator": "Evaluator1"},
             ],
             test_passes=[True, True],
             reasons=["reason1", "reason2"],
@@ -95,33 +31,29 @@ class TestEvaluationReportFlatten:
 
         flattened = EvaluationReport.flatten([report])
 
-        assert flattened.evaluator_name == "Combined"
         assert flattened.overall_score == 0.8
         assert len(flattened.cases) == 2
         assert flattened.cases[0]["evaluator"] == "Evaluator1"
         assert flattened.cases[1]["evaluator"] == "Evaluator1"
 
     def test_flatten_multiple_reports(self):
-        """Test flattening multiple reports."""
         report1 = EvaluationReport(
-            evaluator_name="ResponseRelevance",
             overall_score=0.85,
             scores=[0.9, 0.8],
             cases=[
-                {"name": "case-1", "input": "input1"},
-                {"name": "case-2", "input": "input2"},
+                {"name": "case-1", "input": "input1", "evaluator": "ResponseRelevance"},
+                {"name": "case-2", "input": "input2", "evaluator": "ResponseRelevance"},
             ],
             test_passes=[True, True],
             reasons=["relevant", "relevant"],
         )
 
         report2 = EvaluationReport(
-            evaluator_name="Equals",
             overall_score=0.0,
             scores=[0.0, 0.0],
             cases=[
-                {"name": "case-1", "input": "input1"},
-                {"name": "case-2", "input": "input2"},
+                {"name": "case-1", "input": "input1", "evaluator": "Equals"},
+                {"name": "case-2", "input": "input2", "evaluator": "Equals"},
             ],
             test_passes=[False, False],
             reasons=["not equal", "not equal"],
@@ -129,20 +61,30 @@ class TestEvaluationReportFlatten:
 
         flattened = EvaluationReport.flatten([report1, report2])
 
-        assert flattened.evaluator_name == "Combined"
         assert flattened.overall_score == pytest.approx(0.425)
         assert len(flattened.cases) == 4
         assert len(flattened.scores) == 4
         assert len(flattened.test_passes) == 4
         assert len(flattened.reasons) == 4
+        assert [c["evaluator"] for c in flattened.cases] == [
+            "ResponseRelevance",
+            "ResponseRelevance",
+            "Equals",
+            "Equals",
+        ]
 
     def test_flatten_preserves_case_data(self):
-        """Test that flattening preserves all case data."""
         report = EvaluationReport(
-            evaluator_name="Test",
             overall_score=0.5,
             scores=[0.5],
-            cases=[{"name": "case-1", "input": "test input", "metadata": {"key": "value"}}],
+            cases=[
+                {
+                    "name": "case-1",
+                    "input": "test input",
+                    "metadata": {"key": "value"},
+                    "evaluator": "Test",
+                }
+            ],
             test_passes=[True],
             reasons=["test reason"],
         )
@@ -154,42 +96,17 @@ class TestEvaluationReportFlatten:
         assert flattened.cases[0]["metadata"] == {"key": "value"}
         assert flattened.cases[0]["evaluator"] == "Test"
 
-    def test_flatten_adds_evaluator_field(self):
-        """Test that flatten adds evaluator field to each case."""
-        report1 = EvaluationReport(
-            evaluator_name="Eval1",
-            overall_score=1.0,
-            scores=[1.0],
-            cases=[{"name": "case-1"}],
-            test_passes=[True],
-        )
-        report2 = EvaluationReport(
-            evaluator_name="Eval2",
-            overall_score=0.0,
-            scores=[0.0],
-            cases=[{"name": "case-1"}],
-            test_passes=[False],
-        )
-
-        flattened = EvaluationReport.flatten([report1, report2])
-
-        assert flattened.cases[0]["evaluator"] == "Eval1"
-        assert flattened.cases[1]["evaluator"] == "Eval2"
-
     def test_flatten_averages_scores(self):
-        """Test that overall_score is the average of all scores."""
         report1 = EvaluationReport(
-            evaluator_name="Eval1",
             overall_score=1.0,
             scores=[1.0, 1.0],
-            cases=[{"name": "c1"}, {"name": "c2"}],
+            cases=[{"name": "c1", "evaluator": "Eval1"}, {"name": "c2", "evaluator": "Eval1"}],
             test_passes=[True, True],
         )
         report2 = EvaluationReport(
-            evaluator_name="Eval2",
             overall_score=0.0,
             scores=[0.0, 0.0],
-            cases=[{"name": "c1"}, {"name": "c2"}],
+            cases=[{"name": "c1", "evaluator": "Eval2"}, {"name": "c2", "evaluator": "Eval2"}],
             test_passes=[False, False],
         )
 
@@ -198,23 +115,8 @@ class TestEvaluationReportFlatten:
         # (1.0 + 1.0 + 0.0 + 0.0) / 4 = 0.5
         assert flattened.overall_score == pytest.approx(0.5)
 
-    def test_flatten_handles_missing_evaluator_name(self):
-        """Test that flatten handles reports without evaluator_name."""
-        report = EvaluationReport(
-            overall_score=0.5,
-            scores=[0.5],
-            cases=[{"name": "case-1"}],
-            test_passes=[True],
-        )
-
-        flattened = EvaluationReport.flatten([report])
-
-        assert flattened.cases[0]["evaluator"] == "Unknown"
-
     def test_flatten_handles_mismatched_lengths(self):
-        """Test that flatten handles reports with mismatched array lengths gracefully."""
         report = EvaluationReport(
-            evaluator_name="Test",
             overall_score=0.5,
             scores=[0.5],  # Only 1 score
             cases=[{"name": "c1"}, {"name": "c2"}],  # 2 cases
@@ -233,15 +135,13 @@ class TestEvaluationReportFlatten:
         assert flattened.reasons[1] == ""
 
     def test_flatten_preserves_detailed_results(self):
-        """Test that flatten preserves detailed_results."""
         from strands_evals.types.evaluation import EvaluationOutput
 
         detailed = [EvaluationOutput(score=0.5, test_pass=True, reason="detail")]
         report = EvaluationReport(
-            evaluator_name="Test",
             overall_score=0.5,
             scores=[0.5],
-            cases=[{"name": "case-1"}],
+            cases=[{"name": "case-1", "evaluator": "Test"}],
             test_passes=[True],
             detailed_results=[detailed],
         )
@@ -252,21 +152,18 @@ class TestEvaluationReportFlatten:
         assert flattened.detailed_results[0] == detailed
 
     def test_flatten_preserves_diagnoses_and_recommendations(self):
-        """Test that flatten preserves diagnoses and recommendations."""
         report1 = EvaluationReport(
-            evaluator_name="Eval1",
             overall_score=0.0,
             scores=[0.0],
-            cases=[{"name": "case-1"}],
+            cases=[{"name": "case-1", "evaluator": "Eval1"}],
             test_passes=[False],
             diagnoses=[{"session_id": "s1", "failures": [], "root_causes": []}],
             recommendations=["Fix the prompt"],
         )
         report2 = EvaluationReport(
-            evaluator_name="Eval2",
             overall_score=1.0,
             scores=[1.0],
-            cases=[{"name": "case-2"}],
+            cases=[{"name": "case-2", "evaluator": "Eval2"}],
             test_passes=[True],
             diagnoses=[None],
             recommendations=[None],
@@ -281,10 +178,8 @@ class TestEvaluationReportFlatten:
         assert flattened.recommendations[1] is None
 
     def test_flatten_does_not_modify_original(self):
-        """Test that flatten does not modify the original reports."""
-        original_case = {"name": "case-1", "input": "test"}
+        original_case = {"name": "case-1", "input": "test", "evaluator": "Test"}
         report = EvaluationReport(
-            evaluator_name="Test",
             overall_score=0.5,
             scores=[0.5],
             cases=[original_case],
@@ -293,10 +188,9 @@ class TestEvaluationReportFlatten:
 
         flattened = EvaluationReport.flatten([report])
 
-        # Original should not have evaluator field
-        assert "evaluator" not in original_case
-        # Flattened should have it
-        assert "evaluator" in flattened.cases[0]
+        # Mutate flattened row; original should be untouched.
+        flattened.cases[0]["mutated"] = True
+        assert "mutated" not in original_case
 
 
 class TestFormatInputForDisplay:
@@ -388,61 +282,20 @@ class TestFormatInputForDisplay:
 
 
 class TestEvaluationReportFileOperations:
-    """Tests for file save/load with evaluator_name."""
-
-    def test_to_file_includes_evaluator_name(self):
-        """Test that to_file includes evaluator_name in JSON."""
-        report = EvaluationReport(
-            evaluator_name="TestEval",
-            overall_score=0.5,
-            scores=[0.5],
-            cases=[{"name": "test"}],
-            test_passes=[True],
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "report.json"
-            report.to_file(str(path))
-
-            with open(path) as f:
-                data = json.load(f)
-
-            assert data["evaluator_name"] == "TestEval"
-
-    def test_from_file_loads_evaluator_name(self):
-        """Test that from_file loads evaluator_name."""
-        data = {
-            "evaluator_name": "LoadedEval",
-            "overall_score": 0.5,
-            "scores": [0.5],
-            "cases": [{"name": "test"}],
-            "test_passes": [True],
-        }
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "report.json"
-            with open(path, "w") as f:
-                json.dump(data, f)
-
-            report = EvaluationReport.from_file(str(path))
-
-            assert report.evaluator_name == "LoadedEval"
+    """Tests for file save/load roundtripping."""
 
     def test_flattened_report_roundtrip(self):
-        """Test that a flattened report can be saved and loaded."""
         report1 = EvaluationReport(
-            evaluator_name="Eval1",
             overall_score=1.0,
             scores=[1.0],
-            cases=[{"name": "case-1"}],
+            cases=[{"name": "case-1", "evaluator": "Eval1"}],
             test_passes=[True],
             reasons=["pass"],
         )
         report2 = EvaluationReport(
-            evaluator_name="Eval2",
             overall_score=0.0,
             scores=[0.0],
-            cases=[{"name": "case-1"}],
+            cases=[{"name": "case-1", "evaluator": "Eval2"}],
             test_passes=[False],
             reasons=["fail"],
         )
@@ -454,8 +307,27 @@ class TestEvaluationReportFileOperations:
             flattened.to_file(str(path))
             loaded = EvaluationReport.from_file(str(path))
 
-            assert loaded.evaluator_name == "Combined"
             assert loaded.overall_score == pytest.approx(0.5)
             assert len(loaded.cases) == 2
             assert loaded.cases[0]["evaluator"] == "Eval1"
             assert loaded.cases[1]["evaluator"] == "Eval2"
+
+    def test_legacy_evaluator_name_field_ignored(self):
+        """Older saved reports may have evaluator_name; loading must not raise."""
+        data = {
+            "evaluator_name": "LegacyEval",
+            "overall_score": 0.5,
+            "scores": [0.5],
+            "cases": [{"name": "test", "evaluator": "LegacyEval"}],
+            "test_passes": [True],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "report.json"
+            with open(path, "w") as f:
+                json.dump(data, f)
+
+            report = EvaluationReport.from_file(str(path))
+
+            assert report.overall_score == 0.5
+            assert report.cases[0]["evaluator"] == "LegacyEval"

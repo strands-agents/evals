@@ -140,13 +140,11 @@ class TestEndToEnd:
         )
 
         experiment = Experiment(cases=cases, evaluators=[evaluator])
-        reports = experiment.run_evaluations(task)
+        report = experiment.run_evaluations(task)
 
-        assert len(reports) == 1
-        report = reports[0]
-        assert report.score is not None
-        assert 0.0 <= report.score <= 1.0
-        assert len(report.case_results) == 1
+        assert report.overall_score is not None
+        assert 0.0 <= report.overall_score <= 1.0
+        assert len(report.cases) == 1
 
     def test_coherence_evaluator_on_remote_trace(self, provider, session_id):
         """CoherenceEvaluator produces a valid score from a Langfuse session."""
@@ -165,12 +163,10 @@ class TestEndToEnd:
         evaluator = CoherenceEvaluator()
 
         experiment = Experiment(cases=cases, evaluators=[evaluator])
-        reports = experiment.run_evaluations(task)
+        report = experiment.run_evaluations(task)
 
-        assert len(reports) == 1
-        report = reports[0]
-        assert report.score is not None
-        assert 0.0 <= report.score <= 1.0
+        assert report.overall_score is not None
+        assert 0.0 <= report.overall_score <= 1.0
 
     def test_multiple_evaluators_on_remote_trace(self, provider, session_id):
         """Multiple evaluators can all run on the same Langfuse session data."""
@@ -193,10 +189,13 @@ class TestEndToEnd:
         ]
 
         experiment = Experiment(cases=cases, evaluators=evaluators)
-        reports = experiment.run_evaluations(task)
+        report = experiment.run_evaluations(task)
 
-        assert len(reports) == 3
-        for report in reports:
-            assert report.score is not None
-            assert 0.0 <= report.score <= 1.0
-            assert len(report.case_results) == 1
+        # Three evaluators × one case = three flattened rows.
+        assert len(report.scores) == 3
+        assert {row["evaluator"] for row in report.cases} == {
+            "OutputEvaluator",
+            "CoherenceEvaluator",
+            "HelpfulnessEvaluator",
+        }
+        assert all(0.0 <= s <= 1.0 for s in report.scores)

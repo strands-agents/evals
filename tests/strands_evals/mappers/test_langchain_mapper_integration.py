@@ -316,11 +316,10 @@ class TestTraceloopMapperIntegration:
             }
 
         experiment = Experiment(cases=test_cases, evaluators=[TrajectoryCheckEvaluator()])
-        reports = experiment.run_evaluations(task_function)
+        report = experiment.run_evaluations(task_function)
 
-        assert len(reports) == 1
-        assert reports[0].scores[0] == 1.0
-        assert reports[0].test_passes[0] is True
+        assert report.scores[0] == 1.0
+        assert report.test_passes[0] is True
 
     def test_traceloop_mapper_extracts_tools(self):
         """Verify that available tools are extracted from inference spans."""
@@ -388,11 +387,10 @@ class TestOpenInferenceMapperIntegration:
             }
 
         experiment = Experiment(cases=test_cases, evaluators=[TrajectoryCheckEvaluator()])
-        reports = experiment.run_evaluations(task_function)
+        report = experiment.run_evaluations(task_function)
 
-        assert len(reports) == 1
-        assert reports[0].scores[0] == 1.0
-        assert reports[0].test_passes[0] is True
+        assert report.scores[0] == 1.0
+        assert report.test_passes[0] is True
 
     def test_openinference_mapper_extracts_tools(self):
         """Verify that available tools are extracted from LLM spans."""
@@ -452,13 +450,12 @@ class TestMultipleCasesEvaluation:
             }
 
         experiment = Experiment(cases=test_cases, evaluators=[TrajectoryCheckEvaluator()])
-        reports = experiment.run_evaluations(task_function)
+        report = experiment.run_evaluations(task_function)
 
-        assert len(reports) == 1
-        assert len(reports[0].scores) == 2
-        assert all(score == 1.0 for score in reports[0].scores)
-        assert all(reports[0].test_passes)
-        assert reports[0].overall_score == 1.0
+        assert len(report.scores) == 2
+        assert all(score == 1.0 for score in report.scores)
+        assert all(report.test_passes)
+        assert report.overall_score == 1.0
 
     def test_multiple_openinference_cases(self):
         """Evaluate multiple cases using OpenInference mapper."""
@@ -497,12 +494,11 @@ class TestMultipleCasesEvaluation:
             }
 
         experiment = Experiment(cases=test_cases, evaluators=[TrajectoryCheckEvaluator()])
-        reports = experiment.run_evaluations(task_function)
+        report = experiment.run_evaluations(task_function)
 
-        assert len(reports) == 1
-        assert len(reports[0].scores) == 2
-        assert all(score == 1.0 for score in reports[0].scores)
-        assert all(reports[0].test_passes)
+        assert len(report.scores) == 2
+        assert all(score == 1.0 for score in report.scores)
+        assert all(report.test_passes)
 
 
 @pytest.mark.asyncio
@@ -531,8 +527,7 @@ async def test_async_evaluation_with_langchain_mappers():
         }
 
     experiment = Experiment(cases=test_cases, evaluators=[TrajectoryCheckEvaluator()])
-    reports = await experiment.run_evaluations_async(async_task)
+    report = await experiment.run_evaluations_async(async_task)
 
-    assert len(reports) == 1
-    assert reports[0].scores[0] == 1.0
-    assert reports[0].test_passes[0] is True
+    assert report.scores[0] == 1.0
+    assert report.test_passes[0] is True

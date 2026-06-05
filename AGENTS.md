@@ -202,7 +202,7 @@ All evaluators subclass `strands_evals.evaluators.Evaluator[InputT, OutputT]`:
 
 - `Case[InputT, OutputT]`: one test scenario (`input`, `expected_output`, optional `trajectory`, `metadata`)
 - `Experiment[InputT, OutputT]`: collection of Cases plus evaluators
-- Entry point: `experiment.run_evaluations(task_function)` returns a list of reports
+- Entry point: `experiment.run_evaluations(task_function)` returns a single `EvaluationReport`. With multiple evaluators, results are flattened across (case, evaluator) pairs and each row is tagged via `cases[i]["evaluator"]`.
 
 ### Session / Trace Types
 
@@ -262,6 +262,15 @@ Auto-organized by ruff/isort:
 3. Local
 
 Imports must live at the top of the file.
+
+**No unnecessary dynamic imports.** Do not move an import inside a function or guard it with `try/except ImportError` unless one of the following is true:
+- The dependency is an **optional extra** (e.g., `langfuse`, `opensearch`, `langchain`) declared under `[project.optional-dependencies]`.
+- The import is genuinely **expensive** and only used on a rare code path (justify in a one-line comment).
+- It breaks a real **circular import** that cannot be resolved by restructuring.
+
+In particular: hard runtime deps declared in `pyproject.toml` (`pydantic`, `strands-agents`, `boto3`, `tenacity`, `rich`, etc.) and stdlib modules (`json`, `inspect`, `random`, `datetime`) must be imported at module top. `try: import x except ImportError` around a hard dep is dead error handling. Lazy imports inside test bodies hide collection-time errors and are not allowed.
+
+When a lazy import is justified, leave a one-line comment naming the reason (e.g. `# optional extra: langfuse`).
 
 ### Naming
 

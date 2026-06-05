@@ -54,55 +54,44 @@ class RedTeamReport(EvaluationReport):
     """Case-centric report for red team evaluation.
 
     Note:
-        ``trajectory`` holds raw tool I/O — sanitize before sharing if
+        `trajectory` holds raw tool I/O — sanitize before sharing if
         target tools return sensitive data.
     """
 
     @classmethod
-    def from_evaluation_reports(
-        cls, reports: list[EvaluationReport], run_meta: dict[str, dict] | None = None
-    ) -> RedTeamReport:
-        """Merge per-evaluator reports into a single case-centric report.
+    def from_evaluation_report(cls, report: EvaluationReport, run_meta: dict[str, dict] | None = None) -> RedTeamReport:
+        """Wrap a flattened evaluation report as a case-centric red team report.
+
+        The base `Experiment.run_evaluations_async` already returns a single flattened
+        report (#241) and tags each case row with its `evaluator` (regardless of evaluator
+        count). We reuse that shape directly.
 
         Args:
-            reports: One EvaluationReport per evaluator.
-            run_meta: Optional per-case strategy run metadata (turns_used,
-                backtracks, ...) keyed by case name, merged onto each case's
-                metadata so it surfaces in the report. Supplied by
-                ``RedTeamExperiment`` because the base ``Experiment`` does not
-                carry task-returned metadata into the ``EvaluationData``.
+            report: The single flattened EvaluationReport from the base experiment.
+            run_meta: Optional per-case strategy run metadata (turns_used, backtracks, ...)
+                keyed by case name, merged onto each case's metadata so it surfaces in the
+                report. Supplied by ``RedTeamExperiment`` because the base ``Experiment``
+                does not carry task-returned metadata into the ``EvaluationData``.
         """
         run_meta = run_meta or {}
-        scores: list[float] = []
-        cases: list[dict] = []
-        passes: list[bool] = []
-        reasons: list[str] = []
-        detailed: list = []
+        n = len(report.cases)
+        if not (len(report.scores) == n and len(report.test_passes) == n and len(report.reasons) == n):
+            raise ValueError("EvaluationReport: cases/scores/passes/reasons length mismatch")
 
-        for report in reports:
-            evaluator = report.evaluator_name or "evaluator"
-            n = len(report.cases)
-            if not (len(report.scores) == n and len(report.test_passes) == n and len(report.reasons) == n):
-                raise ValueError(f"EvaluationReport {evaluator!r}: cases/scores/passes/reasons length mismatch")
-            # detailed_results is optional; pad with [] when shorter than cases.
-            for i, case_data in enumerate(report.cases):
-                case_meta = case_data.get("metadata") or {}
-                case_name = case_data.get("name", "")
-                merged_metadata = {**case_meta, **run_meta.get(case_name, {})}
-                cases.append({**case_data, "evaluator": evaluator, "metadata": merged_metadata})
-                scores.append(report.scores[i])
-                passes.append(report.test_passes[i])
-                reasons.append(report.reasons[i])
-                detailed.append(report.detailed_results[i] if i < len(report.detailed_results) else [])
+        cases = []
+        for case_data in report.cases:
+            case_meta = case_data.get("metadata") or {}
+            merged_metadata = {**case_meta, **run_meta.get(case_data.get("name", ""), {})}
+            evaluator = case_data.get("evaluator", "evaluator")
+            cases.append({**case_data, "evaluator": evaluator, "metadata": merged_metadata})
 
         return cls(
-            evaluator_name="RedTeam",
-            overall_score=sum(scores) / len(scores) if scores else 0.0,
-            scores=scores,
+            overall_score=report.overall_score,
+            scores=list(report.scores),
             cases=cases,
-            test_passes=passes,
-            reasons=reasons,
-            detailed_results=detailed,
+            test_passes=list(report.test_passes),
+            reasons=list(report.reasons),
+            detailed_results=[report.detailed_results[i] if i < len(report.detailed_results) else [] for i in range(n)],
         )
 
     def attack_results(self) -> list[AttackResult]:

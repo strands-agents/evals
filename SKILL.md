@@ -34,19 +34,13 @@ case = Case[str, str](
     metadata={"category": "knowledge"},
 )
 experiment = Experiment[str, str](cases=[case], evaluators=[...])
-reports = experiment.run_evaluations(task_function)
-reports[0].run_display()
+report = experiment.run_evaluations(task_function)
+report.run_display()
 ```
 
 `task_function(case: Case)` returns either a string output or, for trace-based evaluators, a dict like `{"output": ..., "trajectory": Session}`.
 
-Multiple reports can be flattened:
-
-```python
-from strands_evals.types.evaluation_report import EvaluationReport
-combined = EvaluationReport.flatten(reports)
-combined.display(include_recommendations=True)
-```
+`run_evaluations()` always returns a single `EvaluationReport`. With one evaluator, the report is keyed to that evaluator. With multiple, results are flattened into one report and each row is tagged via `report.cases[i]["evaluator"]`.
 
 Persist experiments:
 
@@ -249,7 +243,7 @@ rca = analyze_root_cause(session)
 Display recommendations on the report:
 
 ```python
-reports[0].display(include_recommendations=True)
+report.display(include_recommendations=True)
 ```
 
 ## ExperimentGenerator (auto test-case generation)
