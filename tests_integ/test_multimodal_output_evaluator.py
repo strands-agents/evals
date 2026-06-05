@@ -97,11 +97,11 @@ async def test_multimodal_evaluator_basic_integration(city_image):
     )
 
     experiment = Experiment(cases=[test_case], evaluators=[evaluator])
-    reports = await experiment.run_evaluations_async(multimodal_task)
+    report = await experiment.run_evaluations_async(multimodal_task)
 
-    assert len(reports[0].scores) == 1
-    assert isinstance(reports[0].test_passes[0], bool)
-    assert 0.0 <= reports[0].scores[0] <= 1.0
+    assert len(report.scores) == 1
+    assert isinstance(report.test_passes[0], bool)
+    assert 0.0 <= report.scores[0] <= 1.0
 
 
 @pytest.mark.asyncio
@@ -128,10 +128,10 @@ async def test_multimodal_evaluator_reference_based(flower_image):
     )
 
     experiment = Experiment(cases=[test_case], evaluators=[evaluator])
-    reports = await experiment.run_evaluations_async(multimodal_task)
+    report = await experiment.run_evaluations_async(multimodal_task)
 
-    assert len(reports[0].scores) == 1
-    assert reports[0].scores[0] >= 0.5
+    assert len(report.scores) == 1
+    assert report.scores[0] >= 0.5
 
 
 @pytest.mark.asyncio
@@ -163,10 +163,10 @@ async def test_multimodal_evaluator_reference_free(city_image):
     )
 
     experiment = Experiment(cases=[test_case], evaluators=[evaluator])
-    reports = await experiment.run_evaluations_async(multimodal_task)
+    report = await experiment.run_evaluations_async(multimodal_task)
 
-    assert len(reports[0].scores) == 1
-    assert isinstance(reports[0].test_passes[0], bool)
+    assert len(report.scores) == 1
+    assert isinstance(report.test_passes[0], bool)
 
 
 # =============================================================================
@@ -197,10 +197,10 @@ async def test_multimodal_evaluator_text_only_input():
     )
 
     experiment = Experiment(cases=[test_case], evaluators=[evaluator])
-    reports = await experiment.run_evaluations_async(text_task)
+    report = await experiment.run_evaluations_async(text_task)
 
-    assert len(reports[0].scores) == 1
-    assert reports[0].scores[0] >= 0.5
+    assert len(report.scores) == 1
+    assert report.scores[0] >= 0.5
 
 
 # =============================================================================
@@ -239,9 +239,9 @@ async def test_multimodal_evaluator_multiple_images(city_image, flower_image):
     )
 
     experiment = Experiment(cases=[test_case], evaluators=[evaluator])
-    reports = await experiment.run_evaluations_async(multi_image_task)
+    report = await experiment.run_evaluations_async(multi_image_task)
 
-    assert len(reports[0].scores) == 1
+    assert len(report.scores) == 1
 
 
 # =============================================================================
@@ -271,9 +271,9 @@ async def test_multimodal_evaluator_with_file_path(temp_image_file):
     )
 
     experiment = Experiment(cases=[test_case], evaluators=[evaluator])
-    reports = await experiment.run_evaluations_async(file_task)
+    report = await experiment.run_evaluations_async(file_task)
 
-    assert len(reports[0].scores) == 1
+    assert len(report.scores) == 1
 
 
 # =============================================================================
@@ -301,10 +301,10 @@ def test_multimodal_evaluator_sync(flower_image):
     )
 
     experiment = Experiment(cases=[test_case], evaluators=[evaluator])
-    reports = experiment.run_evaluations(multimodal_task)
+    report = experiment.run_evaluations(multimodal_task)
 
-    assert len(reports[0].scores) == 1
-    assert reports[0].scores[0] >= 0.5
+    assert len(report.scores) == 1
+    assert report.scores[0] >= 0.5
 
 
 # =============================================================================
@@ -342,9 +342,9 @@ async def test_multimodal_evaluator_with_context(flower_image):
     )
 
     experiment = Experiment(cases=[test_case], evaluators=[evaluator])
-    reports = await experiment.run_evaluations_async(contextual_task)
+    report = await experiment.run_evaluations_async(contextual_task)
 
-    assert len(reports[0].scores) == 1
+    assert len(report.scores) == 1
 
 
 # =============================================================================
@@ -387,7 +387,7 @@ async def test_multimodal_evaluator_batch_processing(city_image, flower_image):
     )
 
     experiment = Experiment(cases=test_cases, evaluators=[evaluator])
-    reports = await experiment.run_evaluations_async(batch_task)
+    report = await experiment.run_evaluations_async(batch_task)
 
-    assert len(reports[0].scores) == 2
-    assert len(reports[0].test_passes) == 2
+    assert len(report.scores) == 2
+    assert len(report.test_passes) == 2

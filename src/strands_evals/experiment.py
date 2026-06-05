@@ -562,7 +562,7 @@ class Experiment(Generic[InputT, OutputT]):
         self,
         task: Callable[[Case[InputT, OutputT]], OutputT | dict[str, Any]],
         evaluation_data_store: EvaluationDataStore | None = None,
-    ) -> list[EvaluationReport]:
+    ) -> EvaluationReport:
         """
         Run the evaluations for all of the test cases with all evaluators.
 
@@ -575,8 +575,8 @@ class Experiment(Generic[InputT, OutputT]):
                 results are loaded instead of running the task, and new results are saved after task execution.
 
         Return:
-            A list of EvaluationReport objects, one for each evaluator, containing the overall score,
-            individual case results, and basic feedback for each test case.
+            A single EvaluationReport containing every (case, evaluator) result. Each case row is
+            tagged with its evaluator via the `evaluator` field on `cases`.
         """
         if asyncio.iscoroutinefunction(task):
             raise ValueError("Async task is not supported. Please use run_evaluations_async instead.")
@@ -588,7 +588,7 @@ class Experiment(Generic[InputT, OutputT]):
         task: Callable,
         max_workers: int = 10,
         evaluation_data_store: EvaluationDataStore | None = None,
-    ) -> list[EvaluationReport]:
+    ) -> EvaluationReport:
         """
         Run evaluations asynchronously using a queue for parallel processing.
 
@@ -601,7 +601,8 @@ class Experiment(Generic[InputT, OutputT]):
                 results are loaded instead of running the task, and new results are saved after task execution.
 
         Returns:
-            List of EvaluationReport objects, one for each evaluator, containing evaluation results
+            A single EvaluationReport flattened across every evaluator. Each row in `cases` carries
+            an `evaluator` key naming which evaluator produced it.
         """
         if evaluation_data_store is not None:
             self._validate_case_names()
@@ -643,7 +644,7 @@ class Experiment(Generic[InputT, OutputT]):
             recommendation = result.get("recommendation")
             for eval_result in result["evaluator_results"]:
                 eval_name = eval_result["evaluator_name"]
-                evaluator_data[eval_name]["cases"].append(case_data)
+                evaluator_data[eval_name]["cases"].append({**case_data, "evaluator": eval_name})
                 evaluator_data[eval_name]["scores"].append(eval_result["score"])
                 evaluator_data[eval_name]["test_passes"].append(eval_result["test_pass"])
                 evaluator_data[eval_name]["reasons"].append(eval_result["reason"])
@@ -657,7 +658,6 @@ class Experiment(Generic[InputT, OutputT]):
             data = evaluator_data[eval_name]
             scores = data["scores"]
             report = EvaluationReport(
-                evaluator_name=eval_name,
                 overall_score=sum(scores) / len(scores) if scores else 0,
                 scores=scores,
                 test_passes=data["test_passes"],
@@ -669,7 +669,11 @@ class Experiment(Generic[InputT, OutputT]):
             )
             reports.append(report)
 
-        return reports
+        # Each case row already carries its evaluator tag (see worker aggregation above), so
+        # single-evaluator runs return as-is and multi-evaluator runs simply concatenate.
+        if len(reports) == 1:
+            return reports[0]
+        return EvaluationReport.flatten(reports)
 
     def to_dict(self) -> dict:
         """

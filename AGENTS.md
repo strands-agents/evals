@@ -202,7 +202,7 @@ All evaluators subclass `strands_evals.evaluators.Evaluator[InputT, OutputT]`:
 
 - `Case[InputT, OutputT]`: one test scenario (`input`, `expected_output`, optional `trajectory`, `metadata`)
 - `Experiment[InputT, OutputT]`: collection of Cases plus evaluators
-- Entry point: `experiment.run_evaluations(task_function)` returns a list of reports
+- Entry point: `experiment.run_evaluations(task_function)` returns a single `EvaluationReport`. With multiple evaluators, results are flattened across (case, evaluator) pairs and each row is tagged via `cases[i]["evaluator"]`.
 
 ### Session / Trace Types
 

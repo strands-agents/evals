@@ -107,8 +107,8 @@ class TestEvalTaskDecorator:
             cases=[Case(name="test", input="hi")],
             evaluators=[PassingEvaluator()],
         )
-        reports = experiment.run_evaluations(my_task)
-        assert reports[0].scores[0] == 1.0
+        report = experiment.run_evaluations(my_task)
+        assert report.scores[0] == 1.0
 
 
 class TestEvalTaskHandler:

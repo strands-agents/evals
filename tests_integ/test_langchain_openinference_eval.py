@@ -172,13 +172,12 @@ def test_openinference_evaluation_pipeline(telemetry, create_agent_func):
         }
 
     experiment = Experiment(cases=test_cases, evaluators=[ToolUsageEvaluator()])
-    reports = experiment.run_evaluations(task_function)
+    report = experiment.run_evaluations(task_function)
 
-    assert len(reports) == 1
-    assert len(reports[0].scores) == 1
+    assert len(report.scores) == 1
     # The tool should have been used
-    assert reports[0].scores[0] == 1.0
-    assert reports[0].test_passes[0] is True
+    assert report.scores[0] == 1.0
+    assert report.test_passes[0] is True
 
 
 def test_openinference_multiple_cases(telemetry, create_agent_func):
@@ -215,9 +214,8 @@ def test_openinference_multiple_cases(telemetry, create_agent_func):
         }
 
     experiment = Experiment(cases=test_cases, evaluators=[ToolUsageEvaluator()])
-    reports = experiment.run_evaluations(task_function)
+    report = experiment.run_evaluations(task_function)
 
-    assert len(reports) == 1
-    assert len(reports[0].scores) == 2
-    assert reports[0].overall_score == 1.0
-    assert all(reports[0].test_passes)
+    assert len(report.scores) == 2
+    assert report.overall_score == 1.0
+    assert all(report.test_passes)
