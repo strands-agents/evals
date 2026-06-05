@@ -86,7 +86,9 @@ class RedTeamReport(EvaluationReport):
                 raise ValueError(f"EvaluationReport {evaluator!r}: cases/scores/passes/reasons length mismatch")
             # detailed_results is optional; pad with [] when shorter than cases.
             for i, case_data in enumerate(report.cases):
-                merged_metadata = {**(case_data.get("metadata") or {}), **run_meta.get(case_data.get("name", ""), {})}
+                case_meta = case_data.get("metadata") or {}
+                case_name = case_data.get("name", "")
+                merged_metadata = {**case_meta, **run_meta.get(case_name, {})}
                 cases.append({**case_data, "evaluator": evaluator, "metadata": merged_metadata})
                 scores.append(report.scores[i])
                 passes.append(report.test_passes[i])

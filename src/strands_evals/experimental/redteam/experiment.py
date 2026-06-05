@@ -128,8 +128,14 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
         self._run_meta.clear()
         if task is None:
             task = self._default_task()
-        # Run the base worker over the expanded cross-product without mutating the
-        # held cases, so the experiment can be re-run without re-expanding.
+        # Swap self._cases to the expanded cross-product only for the duration of the
+        # base run, then restore it, so the experiment can be re-run without re-expanding
+        # (validated by test_run_evaluations_twice_is_idempotent). This temporary mutation
+        # is safe ONLY because max_workers=1 is enforced above: no other worker or
+        # event-loop task reads self._cases concurrently. Passing the expanded list down
+        # without mutating self is cleaner and is part of the standalone (composition)
+        # refactor tracked in the fast-follow plan; the base API doesn't accept an
+        # explicit case list today.
         original_cases = self._cases
         self._cases = self._expand_cross_product()
         try:

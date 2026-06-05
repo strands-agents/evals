@@ -2,9 +2,16 @@
 
 Crescendo escalates gradually across turns, each attacker message building on the
 target's previous answer. On a refusal it backtracks: the refused (question,
-response) pair is simply not appended to the conversation and a fresh question is
-tried, so the refused turn never enters the history (a simpler equivalent of
-PyRIT's ``duplicate_conversation_excluding_last_turn``).
+response) pair is not appended to the reported conversation and a fresh question
+is tried, so the refused turn never enters the trace that gets scored.
+
+Backtracking is currently report-scope only: the refused turn is dropped from the
+conversation we return, but the injected ``call_target`` wraps a stateful target
+whose own message history we cannot roll back, so the refusal still sits in the
+target's context and can bias later turns. A stronger backtrack would rebuild the
+target conversation without the refused turn; that needs a ``call_target`` contract
+that can reset/fork target state — the same capability PAIR and TAP require — and is
+tracked as a follow-up.
 
 The refusal / success / question-generation helpers are module-level functions
 (not methods) so future strategies (PAIR, TAP) can reuse them without importing a
@@ -95,10 +102,13 @@ def is_refusal(response: str, judge: Agent | None = None) -> bool:
         return False
     if judge is None:
         return True
+    # The judge scores each response independently; clear any prior-turn history so
+    # earlier responses don't bias this verdict (and so context doesn't grow per turn).
+    judge.messages.clear()
     result = judge(f"# Target Response\n{response}", structured_output_model=_RefusalRating)
     rating = result.structured_output
     if rating is None:
-        logger.warning("reason=<parse_failure> | refusal judge produced no structured output keeping turn")
+        logger.warning("reason=<parse_failure> | refusal judge produced no structured output | keeping turn")
         return False
     return bool(rating.is_refusal)
 
@@ -122,11 +132,14 @@ def success_score(judge: Agent, response: str, success_criteria: str | None) -> 
     """
     if not success_criteria:
         return 0.0
+    # Score this response on its own; clear prior-turn history so earlier responses
+    # don't bias the score (and so the judge's context doesn't grow every turn).
+    judge.messages.clear()
     prompt = f"# Success Criteria\n{success_criteria}\n\n# Target Response\n{response}"
     result = judge(prompt, structured_output_model=_SuccessRating)
     rating = result.structured_output
     if rating is None:
-        logger.warning("reason=<parse_failure> | success judge produced no structured output defaulting to 0")
+        logger.warning("reason=<parse_failure> | success judge produced no structured output | defaulting to 0")
         return 0.0
     return float(rating.score)
 
@@ -228,7 +241,7 @@ class CrescendoStrategy(AttackStrategy):
             question = gen_escalating_question(attacker, goal, conversation, last_response)
             if question is None or not question.strip():
                 parse_failures += 1
-                logger.warning("reason=<parse_failure> | attacker produced no question ending case early")
+                logger.warning("reason=<parse_failure> | attacker produced no question | ending case early")
                 break
 
             response = call_target(question)
@@ -267,6 +280,12 @@ class CrescendoStrategy(AttackStrategy):
         self._refusal_judge = None
 
     def _attacker_agent(self, goal: AttackGoal, model: Model | str | None) -> Agent:
+        # The attacker is lazily built once per case and its system prompt bakes in
+        # goal.actor_goal. Correctness relies on the task runner calling reset() before
+        # each case (see reset() above and AttackStrategy.reset's contract); under the
+        # experiment's max_workers=1 that holds. A future parallelization must rebuild
+        # per case rather than reuse a stale attacker -- see the standalone refactor in
+        # the fast-follow plan.
         if self._attacker is None:
             system_prompt = crescendo_v0.ATTACKER_SYSTEM_PROMPT.replace("{actor_goal}", goal.actor_goal)
             self._attacker = Agent(model=model, system_prompt=system_prompt, callback_handler=None)

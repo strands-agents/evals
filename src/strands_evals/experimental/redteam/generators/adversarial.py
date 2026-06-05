@@ -185,11 +185,11 @@ class AdversarialCaseGenerator:
         response = await agent.invoke_async(prompt, structured_output_model=_RiskCategorySelection)
         result = cast(_RiskCategorySelection, response.structured_output)
         if result is None:
-            logger.warning("reason=<no_structured_output> | risk-category inference empty using all")
+            logger.warning("reason=<no_structured_output> | risk-category inference empty | using all")
             return list(RISK_CATEGORIES.keys())
         valid = [c for c in result.categories if c in RISK_CATEGORIES]
         if not valid:
-            logger.warning("got=<%s> | no recognized risk categories inferred using all", result.categories)
+            logger.warning("got=<%s> | no recognized risk categories inferred | using all", result.categories)
             return list(RISK_CATEGORIES.keys())
         return valid
 

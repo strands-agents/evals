@@ -90,7 +90,7 @@ class PromptStrategy(AttackStrategy):
             structured = attacker_result.structured_output
             attacker_message = str(getattr(structured, "message", "")) if structured else ""
             if not attacker_message.strip():
-                logger.warning("reason=<empty_message> | attacker produced empty message ending case early")
+                logger.warning("reason=<empty_message> | attacker produced empty message | ending case early")
                 break
 
         return AttackRunResult(conversation=conversation, metadata={"turns_used": len(conversation) // 2})

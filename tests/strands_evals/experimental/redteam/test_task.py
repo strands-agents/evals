@@ -70,10 +70,21 @@ def test_task_fn_calls_run_attack_and_maps_result():
 
     result = task(_case())
 
-    assert "output" in result
+    # Only the keys the base Experiment reads are returned; run stats flow via run_meta.
+    assert set(result) == {"output", "trajectory"}
     assert result["output"][1]["content"] == "target reply"
-    assert result["metadata"]["turns_used"] == 1
     assert strat.reset_count == 1
+
+
+def test_task_fn_records_run_stats_into_run_meta():
+    """Strategy metadata reaches the experiment via run_meta, not the returned dict."""
+    strat = _StubStrategy()
+    run_meta: dict[str, dict] = {}
+    task = _build_attacker_task(lambda _msg: "target reply", _by_label(strat), run_meta=run_meta)
+
+    task(_case("c0"))
+
+    assert run_meta["c0"]["turns_used"] == 1
 
 
 def test_task_fn_resets_strategy_each_case():

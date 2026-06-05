@@ -67,6 +67,13 @@ class TestIsRefusal:
         judge.return_value.structured_output = None
         assert is_refusal("I apologize, but here is the answer:", judge) is False
 
+    def test_clears_judge_history_before_confirming(self):
+        """A marker hit clears the judge's prior-turn history before disambiguating."""
+        judge = MagicMock()
+        judge.return_value.structured_output = MagicMock(is_refusal=True)
+        is_refusal("I cannot help with that.", judge)
+        judge.messages.clear.assert_called_once()
+
     def test_engagement_with_refusal_substring_not_called_to_judge_when_no_marker(self):
         judge = MagicMock()
         assert not is_refusal("Absolutely, here you go.", judge)
@@ -88,6 +95,13 @@ class TestSuccessScore:
         judge = MagicMock()
         judge.return_value.structured_output = None
         assert success_score(judge, "resp", "criteria") == 0.0
+
+    def test_clears_judge_history_before_scoring(self):
+        """Each response is scored independently: prior-turn history is cleared first."""
+        judge = MagicMock()
+        judge.return_value.structured_output = MagicMock(score=0.5)
+        success_score(judge, "resp", "criteria")
+        judge.messages.clear.assert_called_once()
 
 
 class TestGenEscalatingQuestion:
@@ -264,6 +278,66 @@ def test_reset_nulls_agents():
 
 def test_crescendo_not_in_builtin_strategies():
     assert "crescendo" not in BUILTIN_STRATEGIES
+
+
+# ---------------------------------------------------------------------------
+# backtrack scope: the refused turn leaves the *conversation* list but NOT the
+# target's own message history. This documents the current (limited) behavior.
+# ---------------------------------------------------------------------------
+
+
+class _FakeAgent:
+    """Minimal stand-in for a strands Agent that accrues message history per call.
+
+    Each call appends a (user, assistant) pair to ``messages``, mirroring how a
+    real Agent retains conversational context across turns.
+    """
+
+    def __init__(self, replies):
+        self._replies = iter(replies)
+        self.messages: list[dict] = []
+
+    def __call__(self, message: str) -> str:
+        reply = next(self._replies)
+        self.messages.append({"role": "user", "content": [{"text": message}]})
+        self.messages.append({"role": "assistant", "content": [{"text": reply}]})
+        return reply
+
+
+def test_backtrack_does_not_roll_back_target_message_history():
+    """BUG 1 / extensibility wall: backtrack drops the refused turn from the
+    reported conversation, but the injected call_target (wrapping a stateful
+    target) has no way to roll back the target's own messages — the refused
+    (q, r) stays in the target's context and biases later turns.
+
+    This is the shared root of (a) Crescendo backtrack being weaker than a true
+    rebuild of the target conversation without the refused turn, and (b) PAIR/TAP
+    being inexpressible: the call_target contract cannot reset or fork target state.
+    """
+    from strands_evals.experimental.redteam.task import _wrap_agent_with_trace
+
+    agent = _FakeAgent(replies=["I can't help with that.", "here is the answer"])
+    call_target = _wrap_agent_with_trace(agent, [])
+
+    strat = _strategy(max_turns=2, max_backtracks=5)
+    refusals = iter([True, False])
+    with (
+        patch(f"{_CRESCENDO}.gen_escalating_question", return_value="q"),
+        patch(f"{_CRESCENDO}.is_refusal", side_effect=lambda *_a, **_k: next(refusals)),
+        patch(f"{_CRESCENDO}.success_score", return_value=0.0),
+    ):
+        result = strat.run_attack(_case(), call_target, max_turns=10)
+
+    # The reported conversation correctly drops the refused turn ...
+    assert result.conversation == [
+        {"role": "attacker", "content": "q"},
+        {"role": "target", "content": "here is the answer"},
+    ]
+    # ... but the target itself still has BOTH calls in its history: the refusal
+    # was NOT rolled back. 2 calls x (user + assistant) = 4 messages, and the
+    # refused reply is still present.
+    assert len(agent.messages) == 4
+    assert any("I can't help" in block["text"] for m in agent.messages for block in m["content"])
 
 
 def test_name_and_default_label():

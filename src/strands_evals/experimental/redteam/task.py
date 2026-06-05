@@ -98,15 +98,14 @@ def _build_attacker_task(
         result = strategy.run_attack(case, call_target, max_turns=MAX_ALLOWED_TURNS, model=model)
         if run_meta is not None and case.name is not None:
             run_meta[case.name] = dict(result.metadata)
-        # Assemble the {"output", "trajectory", ...} dict the base Experiment expects:
-        # the strategy's conversation becomes output; the trace captured by call_target
-        # (which the task owns) becomes the trajectory.
+        # Assemble only the keys the base Experiment reads: the strategy's conversation
+        # becomes the output, and the trace captured by call_target (which the task owns)
+        # becomes the trajectory. The strategy's own success/score/metadata are NOT
+        # returned here -- the base copies metadata into a fresh EvaluationData and drops
+        # the rest, so run stats reach the report via run_meta instead.
         return {
             "output": result.conversation,
             "trajectory": trace,
-            "strategy_succeeded": result.strategy_succeeded,
-            "strategy_score": result.strategy_score,
-            "metadata": result.metadata,
         }
 
     return task_fn

@@ -73,11 +73,6 @@ class AttackStrategy(ABC):
         """Instance identifier; defaults to ``name`` when none was provided."""
         return self._label or self.name
 
-    @property
-    def system_prompt_template(self) -> str | None:
-        """System prompt template if prompt-driven, else None."""
-        return None
-
     @abstractmethod
     def run_attack(
         self,
