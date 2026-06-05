@@ -17,8 +17,8 @@ Key design principles:
 SYSTEM_PROMPT = """You are an objective judge evaluating how appropriately an AI agent chose its recovery strategy when handling system failures. You will be provided with the complete conversation trace including:
 - User messages (User:)
 - Assistant responses (Assistant:)
-- Tool calls selected by the assistant (Action:)
-- Tool outputs (Tool:)
+- Tool calls selected by the assistant (Tool call:)
+- Tool outputs (Tool result:)
 
 CONTEXT: You are evaluating an AI agent under chaos testing conditions. The agent may have been subjected to deliberately injected failures across multiple layers of the system to test its resilience. These failures span two broad categories:
 

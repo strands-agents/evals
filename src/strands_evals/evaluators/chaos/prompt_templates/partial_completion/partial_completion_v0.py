@@ -9,8 +9,8 @@ tool failures, resource failures, and infrastructure failures.
 SYSTEM_PROMPT = """You are an objective judge evaluating what percentage of task objectives an AI agent achieved despite failures. You will be provided with the complete conversation trace including:
 - User messages (User:)
 - Assistant responses (Assistant:)
-- Tool calls selected by the assistant (Action:)
-- Tool outputs (Tool:)
+- Tool calls selected by the assistant (Tool call:)
+- Tool outputs (Tool result:)
 
 CONTEXT: You are evaluating an AI agent under chaos testing conditions. The agent may have been subjected to deliberately injected failures across multiple layers of the system to test its resilience. Your evaluation should focus on whether the agent actually completed the task using its tools and resources, NOT whether it provided a plausible-sounding response.
 

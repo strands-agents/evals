@@ -9,8 +9,8 @@ tool failures, resource failures, and infrastructure failures.
 SYSTEM_PROMPT = """You are an objective judge evaluating how well an AI agent communicated with the user during a failure. You will be provided with the complete conversation trace including:
 - User messages (User:)
 - Assistant responses (Assistant:)
-- Tool calls selected by the assistant (Action:)
-- Tool outputs (Tool:)
+- Tool calls selected by the assistant (Tool call:)
+- Tool outputs (Tool result:)
 
 CONTEXT: You are evaluating an AI agent under chaos testing conditions. The agent may have been subjected to deliberately injected failures across multiple layers of the system to test its resilience. Your evaluation should assess how well the agent handled and communicated these failures, NOT whether the agent is generally competent.
 
