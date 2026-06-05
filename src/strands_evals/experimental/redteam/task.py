@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import asdict
 from typing import Any
 
 from strands import Agent
@@ -102,14 +101,18 @@ def _build_attacker_task(
             call_target = _wrap_callable_with_trace(agent, trace)
 
         result = strategy.run_attack(case, call_target, max_turns=max_turns, model=model)
-        result.trajectory = trace
         if run_meta is not None and case.name is not None:
             run_meta[case.name] = dict(result.metadata)
-        # Map AttackRunResult to the {"output", "trajectory", ...} dict the base Experiment expects.
-        # conversation -> output; strategy_succeeded/score/metadata ride along for observability.
-        payload = asdict(result)
-        payload["output"] = payload.pop("conversation")
-        return payload
+        # Assemble the {"output", "trajectory", ...} dict the base Experiment expects:
+        # the strategy's conversation becomes output; the trace captured by call_target
+        # (which the task owns) becomes the trajectory.
+        return {
+            "output": result.conversation,
+            "trajectory": trace,
+            "strategy_succeeded": result.strategy_succeeded,
+            "strategy_score": result.strategy_score,
+            "metadata": result.metadata,
+        }
 
     return task_fn
 

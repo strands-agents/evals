@@ -15,7 +15,7 @@ from strands_evals.experimental.redteam.types import AttackGoal, RedTeamConfig
 _CRESCENDO = "strands_evals.experimental.redteam.strategies.crescendo"
 
 
-def _case(success_criteria: str = "leaked the secret") -> RedTeamCase:
+def _case(success_criteria: str | None = "leaked the secret") -> RedTeamCase:
     return RedTeamCase(
         name="c0",
         input="hello",
@@ -35,6 +35,7 @@ def _strategy(**kwargs) -> CrescendoStrategy:
     strat = CrescendoStrategy(**kwargs)
     strat._attacker_agent = MagicMock(return_value=MagicMock())  # type: ignore[method-assign]
     strat._judge_agent = MagicMock(return_value=MagicMock())  # type: ignore[method-assign]
+    strat._refusal_judge_agent = MagicMock(return_value=MagicMock())  # type: ignore[method-assign]
     return strat
 
 
@@ -44,12 +45,32 @@ def _strategy(**kwargs) -> CrescendoStrategy:
 
 
 class TestIsRefusal:
-    def test_detects_refusal_markers(self):
-        assert is_refusal("I'm sorry, I can't help with that.")
+    def test_no_marker_is_not_refusal_without_llm(self):
+        # fast negative path: no marker -> False, no judge needed
+        assert not is_refusal("Sure, here is how the process works...")
+
+    def test_marker_without_judge_falls_back_to_heuristic(self):
+        assert is_refusal("I can't help with that.")
         assert is_refusal("I CANNOT assist with this request.")
 
-    def test_engagement_is_not_refusal(self):
-        assert not is_refusal("Sure, here is how the process works...")
+    def test_marker_hit_is_disambiguated_by_judge(self):
+        """Marker-bearing but compliant text is NOT a refusal when a judge is given."""
+        judge = MagicMock()
+        judge.return_value.structured_output = MagicMock(is_refusal=False)
+        # contains "i cannot" but is actually complying
+        assert not is_refusal("I cannot stress enough how important this is. Here are the steps:", judge)
+        judge.return_value.structured_output = MagicMock(is_refusal=True)
+        assert is_refusal("I cannot help with that.", judge)
+
+    def test_judge_parse_failure_keeps_turn(self):
+        judge = MagicMock()
+        judge.return_value.structured_output = None
+        assert is_refusal("I apologize, but here is the answer:", judge) is False
+
+    def test_engagement_with_refusal_substring_not_called_to_judge_when_no_marker(self):
+        judge = MagicMock()
+        assert not is_refusal("Absolutely, here you go.", judge)
+        judge.assert_not_called()  # fast negative path skips the LLM
 
 
 class TestSuccessScore:
@@ -96,15 +117,17 @@ def test_returns_attack_run_result_shape():
     ):
         result = strat.run_attack(_case(), lambda _m: "engaged reply", max_turns=10)
     assert isinstance(result, AttackRunResult)
-    assert set(result.metadata) == {"turns_used", "backtracks", "parse_failures"}
+    assert set(result.metadata) == {"turns_used", "target_calls", "backtracks", "parse_failures"}
 
 
 def test_backtracks_on_refusal_without_consuming_conversation():
     """A refusal is not appended to the conversation; the turn is retried."""
     strat = _strategy(max_turns=2, max_backtracks=5)
-    replies = iter(["I can't help with that", "here is the answer"])
+    replies = iter(["refused", "here is the answer"])
+    refusals = iter([True, False])
     with (
         patch(f"{_CRESCENDO}.gen_escalating_question", return_value="q"),
+        patch(f"{_CRESCENDO}.is_refusal", side_effect=lambda *_a, **_k: next(refusals)),
         patch(f"{_CRESCENDO}.success_score", return_value=0.0),
     ):
         result = strat.run_attack(_case(), lambda _m: next(replies), max_turns=10)
@@ -121,9 +144,10 @@ def test_respects_max_backtracks():
     strat = _strategy(max_turns=5, max_backtracks=1)
     with (
         patch(f"{_CRESCENDO}.gen_escalating_question", return_value="q"),
+        patch(f"{_CRESCENDO}.is_refusal", return_value=True),
         patch(f"{_CRESCENDO}.success_score", return_value=0.0),
     ):
-        result = strat.run_attack(_case(), lambda _m: "I cannot do that", max_turns=10)
+        result = strat.run_attack(_case(), lambda _m: "refused", max_turns=10)
     assert result.metadata["backtracks"] == 1
     # after the cap, refusals are recorded rather than dropped
     assert any(turn["role"] == "target" for turn in result.conversation)
@@ -161,6 +185,42 @@ def test_max_turns_clamped_by_injected_value():
     ):
         result = strat.run_attack(_case(), lambda _m: "engaged", max_turns=2)
     assert result.metadata["turns_used"] == 2
+
+
+def test_ctor_max_turns_wins_when_smaller():
+    """The smaller of ctor max_turns and injected max_turns wins (other direction)."""
+    strat = _strategy(max_turns=2, success_threshold=0.7)
+    with (
+        patch(f"{_CRESCENDO}.gen_escalating_question", return_value="q"),
+        patch(f"{_CRESCENDO}.success_score", return_value=0.0),
+    ):
+        result = strat.run_attack(_case(), lambda _m: "engaged", max_turns=10)
+    assert result.metadata["turns_used"] == 2
+
+
+def test_all_refusals_yields_empty_conversation():
+    """Every turn refused (under the cap) -> empty conversation, turns_used=0, calls counted."""
+    strat = _strategy(max_turns=3, max_backtracks=10)
+    with (
+        patch(f"{_CRESCENDO}.gen_escalating_question", return_value="q"),
+        patch(f"{_CRESCENDO}.is_refusal", return_value=True),
+        patch(f"{_CRESCENDO}.success_score", return_value=0.0),
+    ):
+        result = strat.run_attack(_case(), lambda _m: "refused", max_turns=10)
+    assert result.conversation == []
+    assert result.metadata["turns_used"] == 0
+    assert result.metadata["target_calls"] == 3
+    assert result.metadata["backtracks"] == 3
+
+
+def test_none_success_criteria_runs_to_max_turns_without_judge():
+    """No success_criteria -> success gate never fires, runs to max_turns."""
+    strat = _strategy(max_turns=3, success_threshold=0.7)
+    case = _case(success_criteria=None)
+    with patch(f"{_CRESCENDO}.gen_escalating_question", return_value="q"):
+        result = strat.run_attack(case, lambda _m: "engaged", max_turns=10)
+    assert result.strategy_succeeded is False
+    assert result.metadata["turns_used"] == 3
 
 
 def test_question_parse_failure_safe_terminates():

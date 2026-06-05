@@ -80,16 +80,23 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
             by_label[strategy.label] = strategy
         return by_label
 
-    def _expand_cross_product(self) -> None:
-        """Expand held cases into the case × strategy cross-product, in place.
+    def _expand_cross_product(self) -> list[Case[InputT, OutputT]]:
+        """Expand held cases into the case × strategy cross-product.
 
         Each work item is a copy of the case tagged with one strategy's label in
         ``metadata["strategy"]`` and a unique name ``"{case}__{label}"`` (so the
         evaluation_data_store cache keys stay unique). The base worker still sees
         a plain case queue.
+
+        Pure: returns a new list and never mutates ``self._cases``, so reusing
+        the experiment across runs does not re-expand an already-expanded list.
+
+        Returns:
+            The expanded case list, or the held cases unchanged when no
+            strategies were supplied.
         """
         if not self._attack_strategies:
-            return
+            return list(self._cases)
         expanded: list[Case[InputT, OutputT]] = []
         for case in self._cases:
             for strategy in self._attack_strategies:
@@ -99,7 +106,7 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
                 metadata["strategy"] = strategy.label
                 item.metadata = metadata
                 expanded.append(item)
-        self._cases = expanded
+        return expanded
 
     def run_evaluations(  # type: ignore[override]
         self,
@@ -116,14 +123,23 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
         max_workers: int = 1,
         evaluation_data_store: EvaluationDataStore | None = None,
     ) -> RedTeamReport:
-        # max_workers=1: parallel runs would interleave on the shared target Agent.
-        self._expand_cross_product()
+        # Parallel workers would interleave on the shared target Agent and on each
+        # strategy instance's per-case state, so red team runs are strictly sequential.
+        if max_workers != 1:
+            raise ValueError("RedTeamExperiment requires max_workers=1 (shared target Agent and strategy state).")
         self._run_meta.clear()
         if task is None:
             task = self._default_task()
-        reports = await super().run_evaluations_async(
-            task, max_workers=max_workers, evaluation_data_store=evaluation_data_store
-        )
+        # Run the base worker over the expanded cross-product without mutating the
+        # held cases, so the experiment can be re-run without re-expanding.
+        original_cases = self._cases
+        self._cases = self._expand_cross_product()
+        try:
+            reports = await super().run_evaluations_async(
+                task, max_workers=max_workers, evaluation_data_store=evaluation_data_store
+            )
+        finally:
+            self._cases = original_cases
         return RedTeamReport.from_evaluation_reports(reports, run_meta=self._run_meta)
 
     def _default_task(self) -> Callable[[Case[InputT, OutputT]], Any]:

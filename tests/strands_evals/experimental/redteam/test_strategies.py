@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from strands_evals.experimental.redteam.case import RedTeamCase
-from strands_evals.experimental.redteam.strategies import BUILTIN_STRATEGIES, DEFAULT_STRATEGY, PromptStrategy
+from strands_evals.experimental.redteam.strategies import BUILTIN_STRATEGIES, PromptStrategy
 from strands_evals.experimental.redteam.strategies.base import AttackRunResult
 from strands_evals.experimental.redteam.types import AttackGoal, RedTeamConfig
 
@@ -26,8 +26,8 @@ def test_redteam_config_is_strategy_agnostic():
 
 
 def test_prompt_strategy_label_defaults_to_name():
-    strategy = BUILTIN_STRATEGIES[DEFAULT_STRATEGY]
-    assert strategy.label == strategy.name == DEFAULT_STRATEGY
+    strategy = BUILTIN_STRATEGIES["gradual_escalation"]
+    assert strategy.label == strategy.name == "gradual_escalation"
 
 
 def test_prompt_strategy_label_override():

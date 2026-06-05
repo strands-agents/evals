@@ -42,8 +42,11 @@ def _stub_crescendo() -> CrescendoStrategy:
     attacker.return_value.structured_output = MagicMock(message="escalating question")
     judge = MagicMock()
     judge.return_value.structured_output = MagicMock(score=0.1)
+    refusal_judge = MagicMock()
+    refusal_judge.return_value.structured_output = MagicMock(is_refusal=False)
     strat._attacker_agent = MagicMock(return_value=attacker)  # type: ignore[method-assign]
     strat._judge_agent = MagicMock(return_value=judge)  # type: ignore[method-assign]
+    strat._refusal_judge_agent = MagicMock(return_value=refusal_judge)  # type: ignore[method-assign]
     return strat
 
 
@@ -59,7 +62,7 @@ def test_handcrafted_cases_end_to_end():
     """Path B: hand-written cases (no generator) run through the full pipeline."""
     exp = RedTeamExperiment(
         cases=_handcrafted_cases(),
-        agent=lambda _msg: "I will not help with that",
+        agent=lambda _msg: "sure, here is some detail you asked for",  # engaging (non-refusal)
         attack_strategies=[_stub_crescendo()],
         max_turns=2,
     )
@@ -74,9 +77,10 @@ def test_handcrafted_cases_end_to_end():
     # the evaluator's 0.9 (>= 0.3 pass_threshold inverted) marks the attack as succeeded
     assert results[0].score == 0.9
     # strategy run metadata is joined onto the report by the experiment (not via the
-    # base EvaluationData, which drops task-returned metadata)
-    assert results[0].turns_used is not None
-    assert results[0].backtracks is not None
+    # base EvaluationData, which drops task-returned metadata). Exact values, not just
+    # not-None, so a wrong-key or off-by-one join fails the test.
+    assert results[0].turns_used == 2
+    assert results[0].backtracks == 0
 
 
 def test_generated_cases_end_to_end():

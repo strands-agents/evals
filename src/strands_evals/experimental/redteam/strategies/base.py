@@ -17,15 +17,19 @@ if TYPE_CHECKING:
 class AttackRunResult:
     """Result of a single ``AttackStrategy.run_attack`` execution.
 
-    The strategy owns the multi-turn loop and returns this rich object; the
-    task runner converts it (via ``asdict``) into the ``{"output", "trajectory",
-    ...}`` dict the base ``Experiment`` expects. The authoritative success
-    verdict is re-computed independently by ``AttackSuccessEvaluator`` over the
-    trace, so ``strategy_succeeded``/``strategy_score`` are observability only.
+    The strategy owns the multi-turn loop and returns this object; the task
+    runner assembles the ``{"output", "trajectory", ...}`` dict the base
+    ``Experiment`` expects, pairing this conversation with the tool trace it
+    captured via ``call_target``. The authoritative success verdict is
+    re-computed independently by ``AttackSuccessEvaluator`` over the trace, so
+    ``strategy_succeeded``/``strategy_score`` are observability only.
+
+    The tool trace is deliberately NOT a field here: it is captured by the
+    injected ``call_target`` closure that the task runner owns, so a strategy
+    has no role in producing it.
 
     Attributes:
         conversation: Ordered attacker/target turns; mapped to ``output``.
-        trajectory: Tool-use trace; populated by the task runner, not the strategy.
         strategy_succeeded: The strategy's own "early-stop fired" signal, NOT the
             verdict (the evaluator decides pass/fail).
         strategy_score: The strategy's internal stop-decision score, if any.
@@ -33,7 +37,6 @@ class AttackRunResult:
     """
 
     conversation: list[dict[str, Any]]
-    trajectory: list[dict[str, Any]] = field(default_factory=list)
     strategy_succeeded: bool = False
     strategy_score: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -92,7 +95,10 @@ class AttackStrategy(ABC):
             call_target: Injected callable mapping an attacker message to the
                 target's response. Already captures the tool trace and applies
                 per-case isolation; strategies must not build their own.
-            max_turns: Upper bound on attacker/target turns.
+            max_turns: Experiment-level ceiling on attacker/target turns. A
+                strategy with its own ``max_turns`` should run the smaller of the
+                two (the ceiling never lets a strategy exceed the experiment
+                budget, but a strategy may choose to stop sooner).
             model: Model for any strategy-internal LLM calls (e.g. the attacker
                 agent). Strategies resolve this against their own ``__init__``
                 model, ctor value taking precedence.

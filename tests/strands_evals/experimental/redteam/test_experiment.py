@@ -96,3 +96,57 @@ def test_cross_product_expands_cases():
     exp.run_evaluations(task=task)
 
     assert sorted(captured) == ["c0__cre-10", "c0__cre-30", "c1__cre-10", "c1__cre-30"]
+
+
+async def test_run_evaluations_async_returns_report():
+    exp = RedTeamExperiment(
+        cases=[_case()],
+        agent=lambda _msg: "ok",
+        attack_strategies=[_StubStrategy()],
+        max_turns=2,
+    )
+    report = await exp.run_evaluations_async()
+    assert isinstance(report, RedTeamReport)
+
+
+async def test_max_workers_must_be_one():
+    exp = RedTeamExperiment(cases=[_case()], agent=lambda _msg: "ok", attack_strategies=[_StubStrategy()])
+    with pytest.raises(ValueError, match="max_workers=1"):
+        await exp.run_evaluations_async(max_workers=4)
+
+
+def test_async_task_rejected():
+    async def _async_task(case):
+        return {"output": []}
+
+    exp = RedTeamExperiment(cases=[_case()], agent=lambda _msg: "ok", attack_strategies=[_StubStrategy()])
+    with pytest.raises(ValueError, match="Async task is not supported"):
+        exp.run_evaluations(task=_async_task)
+
+
+def test_run_evaluations_twice_is_idempotent():
+    """Re-running must not re-expand an already-expanded case list (no c0__cre__cre)."""
+    runs: list[list[str]] = []
+
+    def task(case):
+        return {"output": []}
+
+    exp = RedTeamExperiment(
+        cases=[_case("c0")],
+        agent=lambda _msg: "ok",
+        attack_strategies=[_StubStrategy(label="a"), _StubStrategy(label="b")],
+    )
+    for _ in range(2):
+        captured: list[str] = []
+
+        def _task(case, _cap=captured):
+            _cap.append(case.name)
+            return {"output": []}
+
+        exp.run_evaluations(task=_task)
+        runs.append(sorted(captured))
+
+    assert runs[0] == ["c0__a", "c0__b"]
+    assert runs[0] == runs[1]  # second run identical, not squared
+    # held cases were never mutated
+    assert [c.name for c in exp.cases] == ["c0"]
