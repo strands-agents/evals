@@ -51,7 +51,6 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
         agent: Agent | Callable[[str], Any] | None = None,
         attack_strategies: list[AttackStrategy] | None = None,
         evaluators: list[Evaluator[InputT, OutputT]] | None = None,
-        max_turns: int = 10,
         model: Model | str | None = None,
     ):
         super().__init__(
@@ -61,7 +60,6 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
         self._agent = agent
         self._attack_strategies = attack_strategies or []
         self._by_label = self._build_by_label(self._attack_strategies)
-        self._max_turns = max_turns
         self._model = model
         # case name -> strategy run metadata (turns_used, backtracks, ...); the
         # default task records into this and we join it onto the report, since the
@@ -153,7 +151,6 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
             _build_attacker_task(
                 self._agent,
                 self._by_label,
-                max_turns=self._max_turns,
                 model=self._model,
                 run_meta=self._run_meta,
             ),

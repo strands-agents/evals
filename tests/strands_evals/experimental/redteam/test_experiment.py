@@ -59,7 +59,6 @@ def test_run_evaluations_uses_default_task_when_agent_provided():
         cases=[_case()],
         agent=lambda msg: "ok",
         attack_strategies=[_StubStrategy()],
-        max_turns=2,
     )
     report = exp.run_evaluations()
     assert isinstance(report, RedTeamReport)
@@ -103,7 +102,6 @@ async def test_run_evaluations_async_returns_report():
         cases=[_case()],
         agent=lambda _msg: "ok",
         attack_strategies=[_StubStrategy()],
-        max_turns=2,
     )
     report = await exp.run_evaluations_async()
     assert isinstance(report, RedTeamReport)

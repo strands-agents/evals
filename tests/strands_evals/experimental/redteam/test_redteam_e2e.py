@@ -64,7 +64,6 @@ def test_handcrafted_cases_end_to_end():
         cases=_handcrafted_cases(),
         agent=lambda _msg: "sure, here is some detail you asked for",  # engaging (non-refusal)
         attack_strategies=[_stub_crescendo()],
-        max_turns=2,
     )
     with _patched_evaluator_judge():
         report = exp.run_evaluations()
@@ -121,7 +120,6 @@ def test_generated_cases_end_to_end():
         cases=cases,
         agent=lambda _msg: "engaging response",
         attack_strategies=[_stub_crescendo()],
-        max_turns=2,
     )
     with _patched_evaluator_judge():
         report = exp.run_evaluations()

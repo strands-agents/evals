@@ -61,6 +61,19 @@ def test_prompt_strategy_run_attack_drives_loop(mock_simulator_cls):
 
 
 @patch("strands_evals.experimental.redteam.strategies.prompt_strategy.ActorSimulator")
+def test_prompt_strategy_ctor_max_turns_caps_below_ceiling(mock_simulator_cls):
+    """The strategy's own max_turns wins when smaller than the injected ceiling."""
+    mock_sim = MagicMock()
+    mock_sim.has_next.return_value = False
+    mock_simulator_cls.return_value = mock_sim
+
+    strategy = PromptStrategy("gradual_escalation", "p {max_turns}", max_turns=3)
+    strategy.run_attack(_case(), MagicMock(return_value="r"), max_turns=50)  # ceiling 50
+
+    assert mock_simulator_cls.call_args.kwargs["max_turns"] == 3
+
+
+@patch("strands_evals.experimental.redteam.strategies.prompt_strategy.ActorSimulator")
 def test_prompt_strategy_run_attack_handles_target_exception(mock_simulator_cls):
     mock_sim = MagicMock()
     mock_sim.has_next.side_effect = [True, False]

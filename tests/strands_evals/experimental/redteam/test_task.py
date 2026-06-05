@@ -22,12 +22,14 @@ class _StubStrategy(AttackStrategy):
         self._result = result
         self.reset_count = 0
         self.calls = calls if calls is not None else []
+        self.received_max_turns: int | None = None
 
     @property
     def name(self) -> str:
         return "stub"
 
     def run_attack(self, case, call_target, *, max_turns, model=None, **kwargs) -> AttackRunResult:
+        self.received_max_turns = max_turns
         # exercise the injected call_target so trace/output wiring is covered
         reply = call_target("ping")
         self.calls.append(reply)
@@ -53,10 +55,13 @@ def _by_label(*strategies: AttackStrategy) -> dict[str, AttackStrategy]:
     return {s.label: s for s in strategies}
 
 
-def test_max_turns_clamped_above_ceiling(caplog):
-    with caplog.at_level("WARNING"):
-        _build_attacker_task(lambda msg: "ok", _by_label(_StubStrategy()), max_turns=999)
-    assert any("clamping" in rec.message for rec in caplog.records)
+def test_run_attack_receives_max_allowed_turns_ceiling():
+    """task_fn passes MAX_ALLOWED_TURNS as the hard ceiling; the strategy owns its budget."""
+    from strands_evals.experimental.redteam.task import MAX_ALLOWED_TURNS
+
+    strat = _StubStrategy()
+    _build_attacker_task(lambda _msg: "ok", _by_label(strat))(_case())
+    assert strat.received_max_turns == MAX_ALLOWED_TURNS
 
 
 def test_task_fn_calls_run_attack_and_maps_result():

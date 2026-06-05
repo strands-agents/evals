@@ -61,7 +61,6 @@ def _build_attacker_task(
     agent: Agent | Callable[[str], Any],
     by_label: dict[str, AttackStrategy],
     *,
-    max_turns: int = 10,
     model: Model | str | None = None,
     run_meta: dict[str, dict[str, Any]] | None = None,
 ) -> Callable[[RedTeamCase], dict]:
@@ -74,18 +73,14 @@ def _build_attacker_task(
     target invocation, tool-trace capture, and per-case isolation. When
     ``agent`` is an ``Agent``, its message history is reset between cases.
 
+    Each strategy owns its own turn budget; ``MAX_ALLOWED_TURNS`` is passed as a
+    hard ceiling so no strategy can run unbounded.
+
     The strategy's run metadata (turns_used, backtracks, ...) is recorded into
     ``run_meta`` keyed by case name; the experiment owns that dict and joins it
     onto the report (the base ``Experiment`` copies ``metadata`` into a fresh
     ``EvaluationData``, so the strategy can't reach the report through it).
     """
-    if max_turns > MAX_ALLOWED_TURNS:
-        logger.warning(
-            "max_turns=<%d>, ceiling=<%d> | max_turns exceeds recommended ceiling clamping",
-            max_turns,
-            MAX_ALLOWED_TURNS,
-        )
-        max_turns = MAX_ALLOWED_TURNS
 
     def task_fn(case: RedTeamCase) -> dict:
         if isinstance(agent, Agent):
@@ -100,7 +95,7 @@ def _build_attacker_task(
         else:
             call_target = _wrap_callable_with_trace(agent, trace)
 
-        result = strategy.run_attack(case, call_target, max_turns=max_turns, model=model)
+        result = strategy.run_attack(case, call_target, max_turns=MAX_ALLOWED_TURNS, model=model)
         if run_meta is not None and case.name is not None:
             run_meta[case.name] = dict(result.metadata)
         # Assemble the {"output", "trajectory", ...} dict the base Experiment expects:
