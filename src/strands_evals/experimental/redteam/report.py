@@ -22,6 +22,7 @@ class AttackResult:
     objective: str = ""
     turns_used: int | None = None
     backtracks: int | None = None
+    conversation: list[dict] = field(default_factory=list)
     scores: dict[str, float] = field(default_factory=dict)
     passes: dict[str, bool] = field(default_factory=dict)
     reasons: dict[str, str] = field(default_factory=dict)
@@ -118,6 +119,7 @@ class RedTeamReport(EvaluationReport):
                     objective=metadata.get("actor_goal", ""),
                     turns_used=metadata.get("turns_used"),
                     backtracks=metadata.get("backtracks"),
+                    conversation=case_data.get("actual_output") or [],
                 ),
             )
             result.scores[evaluator] = self.scores[i]
@@ -155,7 +157,15 @@ class RedTeamReport(EvaluationReport):
     def failed_cases(self) -> list[AttackResult]:
         return sorted([r for r in self.attack_results() if not r.passed], key=lambda r: r.score)
 
-    def display(self, **_kwargs) -> None:  # type: ignore[override]
+    def display(self, *, verbose: bool = False, **_kwargs) -> None:  # type: ignore[override]
+        """Print the red team report.
+
+        Args:
+            verbose: When True, also print each failed case's full attacker/target
+                conversation. Use this to verify a verdict by eye — an LLM judge can
+                be fooled by a target that *claims* to leak (e.g. hallucinating a
+                "system prompt"), so the conversation is the ground truth.
+        """
         results = self.attack_results()
         total = len(results)
         if total == 0:
@@ -192,6 +202,12 @@ class RedTeamReport(EvaluationReport):
                     _console.print(f"      {run_stats}")
                 if r.reason:
                     _console.print(f"      {r.reason}")
+                if verbose and r.conversation:
+                    _console.print("      conversation:")
+                    for turn in r.conversation:
+                        role = str(turn.get("role", "?"))
+                        content = str(turn.get("content", ""))
+                        _console.print(f"        [{role}] {content}")
 
 
 def _format_run_stats(result: AttackResult) -> str:
