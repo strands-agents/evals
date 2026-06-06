@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..mappers.session_mapper import SessionMapper
-from ..mappers.utils import get_body
+from ..mappers.utils import get_body, join_tool_result_content
 from ..types.trace import (
     AgentInvocationSpan,
     AssistantMessage,
@@ -318,11 +318,7 @@ class CloudWatchSessionMapper(SessionMapper):
 
     def _extract_tool_result_text(self, content: Any) -> str:
         """Extract text from tool result content."""
-        if not content:
-            return ""
-        if isinstance(content, list) and content:
-            return content[0].get("text", "")
-        return str(content)
+        return join_tool_result_content(content)
 
     # --- Body-to-messages conversion ---
 
