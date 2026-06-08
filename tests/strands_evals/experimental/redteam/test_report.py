@@ -239,6 +239,24 @@ class TestDisplay:
         )
         report.display()
 
+    def test_matrix_falls_back_to_full_names_on_base_case_collision(self, capsys):
+        """If stripping the cross-product suffix would collapse two distinct results onto
+        the same cell, the matrix keeps full names so neither result is hidden."""
+        # "a__b" under strategy "b" strips to "a"; a real case "a" under strategy "b" also
+        # keys to ("a", "b") — a collision. Both must remain visible.
+        cases = [
+            {"name": "a", "metadata": {"risk_category": "x", "strategy": "b", "severity": "low"}},
+            {"name": "a__b", "metadata": {"risk_category": "x", "strategy": "b", "severity": "low"}},
+        ]
+        report = RedTeamReport.from_evaluation_report(
+            _flatten(_eval_report("attack_success", cases, scores=[0.1, 0.2], passes=[True, True], reasons=["", ""]))
+        )
+        report.display()
+        matrix = capsys.readouterr().out.split("All attacks")[0]
+        # both rows present under their full names (no silent drop)
+        assert "  a " in matrix or "\n  a\n" in matrix or "  a  " in matrix
+        assert "a__b" in matrix
+
     def test_failure_drilldown_shows_objective_and_run_stats(self, capsys):
         cases = [
             _case(

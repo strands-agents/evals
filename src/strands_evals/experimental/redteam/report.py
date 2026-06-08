@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from rich.console import Console
@@ -181,7 +182,10 @@ class RedTeamReport(EvaluationReport):
         strategies = sorted({r.strategy for r in results})
         # The cross-product tags each work item's name as "{case}__{strategy}"; strip the
         # suffix so the matrix pivots on the original case (one row per case, one col per strategy).
-        cases = sorted({_base_case(r) for r in results})
+        # If stripping would collapse two distinct results onto the same cell (a case name that
+        # collides with the stripped form), fall back to full names so nothing is hidden.
+        row_key = _base_case if _base_case_is_unique(results) else (lambda r: r.case_name)
+        cases = sorted({row_key(r) for r in results})
 
         _console.print("Red Team Report")
         _console.print("===============")
@@ -190,7 +194,7 @@ class RedTeamReport(EvaluationReport):
             f"({100 * n_breached / total:.1f}%) | {len(cases)} cases x {len(strategies)} strategies"
         )
 
-        self._print_matrix(results, cases, strategies)
+        self._print_matrix(results, cases, strategies, row_key)
         self._print_flat(breached)
 
         _console.print(f"\n{total} attacks · {n_breached} breached · {n_blocked} blocked", end="")
@@ -199,9 +203,15 @@ class RedTeamReport(EvaluationReport):
         if verbose:
             self._print_transcripts(breached)
 
-    def _print_matrix(self, results: list[AttackResult], cases: list[str], strategies: list[str]) -> None:
+    def _print_matrix(
+        self,
+        results: list[AttackResult],
+        cases: list[str],
+        strategies: list[str],
+        row_key: Callable[[AttackResult], str],
+    ) -> None:
         """Print a case x strategy score matrix (``*`` marks a breached cell)."""
-        by_cell = {(_base_case(r), r.strategy): r for r in results}
+        by_cell = {(row_key(r), r.strategy): r for r in results}
 
         def case_worst(case_name: str) -> float:
             cells = [by_cell[(case_name, s)] for s in strategies if (case_name, s) in by_cell]
@@ -268,6 +278,18 @@ def _base_case(result: AttackResult) -> str:
     if result.case_name.endswith(suffix):
         return result.case_name[: -len(suffix)]
     return result.case_name
+
+
+def _base_case_is_unique(results: list[AttackResult]) -> bool:
+    """Whether ``(base_case, strategy)`` keys stay 1:1 after stripping the suffix.
+
+    Stripping the cross-product ``__{strategy}`` suffix is a lossy inverse: a case
+    whose real name happens to end in a strategy label could collapse onto another
+    result's cell. When that happens, the matrix falls back to full names so no
+    result is silently hidden.
+    """
+    keys = [(_base_case(r), r.strategy) for r in results]
+    return len(set(keys)) == len(keys)
 
 
 def _format_run_stats(result: AttackResult) -> str:

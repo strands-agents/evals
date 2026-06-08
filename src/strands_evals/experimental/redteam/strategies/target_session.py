@@ -15,6 +15,8 @@ a third implementation; because the contract is a ``Protocol``, a customer can
 also supply their own without subclassing anything here.
 """
 
+from __future__ import annotations
+
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -33,6 +35,12 @@ class TargetCheckpoint:
     time, so :meth:`TargetSession.restore` can roll back both the target's
     conversation and the tool trace together. Strategies treat it as opaque —
     take one, pass it back to ``restore``.
+
+    Restore is sound for the snapshot/restore-the-immediately-preceding-turn
+    pattern Crescendo uses (one live checkpoint at a time). Non-monotonic restores
+    across multiple outstanding checkpoints (e.g. a future PAIR/TAP tree search)
+    would need the checkpoint to carry the trace slice rather than just its length;
+    revisit ``trace_len`` then.
 
     Attributes:
         agent_snapshot: The SDK ``Snapshot`` of the target agent's state.
@@ -65,7 +73,7 @@ class TargetSession(Protocol):
         ...
 
     @property
-    def trace(self) -> list[dict]:
+    def trace(self) -> list[dict[str, Any]]:
         """Tool-use entries captured across this session's :meth:`invoke` calls."""
         ...
 
@@ -130,14 +138,14 @@ class AgentTargetSession:
             agent: The target agent to drive and snapshot.
         """
         self._agent = agent
-        self._trace: list[dict] = []
+        self._trace: list[dict[str, Any]] = []
 
     @property
     def supports_rewind(self) -> bool:
         return True
 
     @property
-    def trace(self) -> list[dict]:
+    def trace(self) -> list[dict[str, Any]]:
         return self._trace
 
     def invoke(self, message: str) -> str:
@@ -184,7 +192,7 @@ class CallableTargetSession:
     the refused turn from the reported conversation) for these targets.
 
     The callable may return either a plain string or a
-    ``{"output": str, "trace": list[dict]}`` mapping; in the latter case the
+    ``{"output": str, "trace": list[dict[str, Any]]}`` mapping; in the latter case the
     trace entries are merged into :attr:`trace`.
     """
 
@@ -195,14 +203,14 @@ class CallableTargetSession:
             target: The callable target mapping a message to a response.
         """
         self._target = target
-        self._trace: list[dict] = []
+        self._trace: list[dict[str, Any]] = []
 
     @property
     def supports_rewind(self) -> bool:
         return False
 
     @property
-    def trace(self) -> list[dict]:
+    def trace(self) -> list[dict[str, Any]]:
         return self._trace
 
     def invoke(self, message: str) -> str:

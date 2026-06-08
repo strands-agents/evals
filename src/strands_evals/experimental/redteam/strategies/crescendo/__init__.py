@@ -9,17 +9,12 @@ How strong the backtrack is depends on the target session's ``supports_rewind``:
 
 - Rewindable target (``AgentTargetSession``): the strategy snapshots before each
   turn and ``restore``s on a refusal, so the target genuinely forgets the refused
-  turn — a true state rollback.
+  turn — a true rollback of the *target's* state. (The attacker agent keeps its own
+  history, so successive backtracks still escalate from accumulated context.)
 - Non-rewindable target (``CallableTargetSession``, an opaque callable): we cannot
   see or reset the target's internal state, so the backtrack is report-scope only
   (the refused turn is dropped from the reported conversation and its trace
   entries trimmed, but the callable may still carry the refusal internally).
-
-The refusal / success / question-generation helpers are module-level functions
-(not methods) so future strategies (PAIR, TAP) can reuse them without importing a
-strategy class. They power the strategy's cheap in-loop "should I stop?" gate; the
-authoritative success verdict is re-computed independently by
-``AttackSuccessEvaluator`` over the full trace.
 
 The refusal / success / question-generation helpers are module-level functions
 (not methods) so future strategies (PAIR, TAP) can reuse them without importing a
@@ -271,7 +266,7 @@ class CrescendoStrategy(AttackStrategy):
                 pruned_branches.append({"role": "attacker", "content": question})
                 pruned_branches.append({"role": "target", "content": response})
                 if snap is not None:
-                    target_session.restore(snap)  # rolls back agent messages + trace
+                    target_session.restore(snap)  # rolls back the target's messages + trace
                 else:
                     del target_session.trace[trace_len:]  # callable: trim the refused turn's trace
                 continue
