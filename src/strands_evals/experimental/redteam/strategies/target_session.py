@@ -17,11 +17,30 @@ also supply their own without subclassing anything here.
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from strands import Agent, Snapshot
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TargetCheckpoint:
+    """An opaque rewind point returned by :meth:`TargetSession.snapshot`.
+
+    Bundles the SDK agent snapshot with the session's trace length at capture
+    time, so :meth:`TargetSession.restore` can roll back both the target's
+    conversation and the tool trace together. Strategies treat it as opaque —
+    take one, pass it back to ``restore``.
+
+    Attributes:
+        agent_snapshot: The SDK ``Snapshot`` of the target agent's state.
+        trace_len: ``len(session.trace)`` when the checkpoint was taken.
+    """
+
+    agent_snapshot: Snapshot
+    trace_len: int
 
 
 class TargetSession(Protocol):
@@ -63,11 +82,15 @@ class TargetSession(Protocol):
         """
         ...
 
-    def snapshot(self) -> Snapshot:
+    def reset(self) -> None:
+        """Clear per-case state so the session starts a fresh conversation."""
+        ...
+
+    def snapshot(self) -> TargetCheckpoint:
         """Capture the target's current state for a later :meth:`restore`.
 
         Returns:
-            A snapshot of the target's conversation/state.
+            An opaque checkpoint to pass back to :meth:`restore`.
 
         Raises:
             NotImplementedError: If this session is not rewindable
@@ -75,14 +98,14 @@ class TargetSession(Protocol):
         """
         ...
 
-    def restore(self, snapshot: Snapshot) -> None:
-        """Roll the target back to a previously captured ``snapshot``.
+    def restore(self, checkpoint: TargetCheckpoint) -> None:
+        """Roll the target back to a previously captured ``checkpoint``.
 
-        Also rolls :attr:`trace` back to its length at snapshot time, so tool
+        Also rolls :attr:`trace` back to its length at checkpoint time, so tool
         uses from rolled-back turns do not linger in the trajectory.
 
         Args:
-            snapshot: A snapshot previously returned by :meth:`snapshot`.
+            checkpoint: A checkpoint previously returned by :meth:`snapshot`.
 
         Raises:
             NotImplementedError: If this session is not rewindable
@@ -137,19 +160,19 @@ class AgentTargetSession:
 
         return str(result)
 
-    def snapshot(self) -> Snapshot:
-        snap = self._agent.take_snapshot(preset="session")
-        # Stash the trace length alongside the SDK snapshot so restore() can trim
-        # tool uses recorded after this point (the SDK snapshot covers agent
-        # messages but not our separate trace list).
-        snap.app_data["_trace_len"] = len(self._trace)
-        return snap
+    def reset(self) -> None:
+        self._agent.messages.clear()
+        self._trace.clear()
 
-    def restore(self, snapshot: Snapshot) -> None:
-        self._agent.load_snapshot(snapshot)
-        trace_len = snapshot.app_data.get("_trace_len")
-        if trace_len is not None:
-            del self._trace[trace_len:]
+    def snapshot(self) -> TargetCheckpoint:
+        return TargetCheckpoint(
+            agent_snapshot=self._agent.take_snapshot(preset="session"),
+            trace_len=len(self._trace),
+        )
+
+    def restore(self, checkpoint: TargetCheckpoint) -> None:
+        self._agent.load_snapshot(checkpoint.agent_snapshot)
+        del self._trace[checkpoint.trace_len :]
 
 
 class CallableTargetSession:
@@ -190,11 +213,14 @@ class CallableTargetSession:
             return str(raw.get("output", ""))
         return str(raw)
 
-    def snapshot(self) -> Snapshot:
+    def reset(self) -> None:
+        self._trace.clear()
+
+    def snapshot(self) -> TargetCheckpoint:
         raise NotImplementedError("callable target is not rewindable; guard on supports_rewind")
 
-    def restore(self, snapshot: Snapshot) -> None:
+    def restore(self, checkpoint: TargetCheckpoint) -> None:
         raise NotImplementedError("callable target is not rewindable; guard on supports_rewind")
 
 
-__all__ = ["AgentTargetSession", "CallableTargetSession", "TargetSession"]
+__all__ = ["AgentTargetSession", "CallableTargetSession", "TargetCheckpoint", "TargetSession"]

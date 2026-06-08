@@ -89,6 +89,14 @@ class TestAgentTargetSessionRewind:
         # only the pre-snapshot trace entry survives; the ghost tool-call is gone
         assert session.trace == [{"name": "before", "input": {}}]
 
+    def test_reset_clears_agent_history_and_trace(self):
+        session = AgentTargetSession(self._real_agent())
+        session._trace.append({"name": "leftover", "input": {}})
+        assert len(session._agent.messages) == 1  # seeded
+        session.reset()
+        assert session._agent.messages == []
+        assert session.trace == []
+
 
 # ---------------------------------------------------------------------------
 # CallableTargetSession
@@ -117,3 +125,9 @@ class TestCallableTargetSession:
         session = CallableTargetSession(lambda _m: "x")
         with pytest.raises(NotImplementedError):
             session.restore(MagicMock())
+
+    def test_reset_clears_trace(self):
+        session = CallableTargetSession(lambda _m: "x")
+        session._trace.append({"name": "leftover", "input": {}})
+        session.reset()
+        assert session.trace == []

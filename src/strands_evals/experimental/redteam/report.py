@@ -179,7 +179,9 @@ class RedTeamReport(EvaluationReport):
         n_blocked = sum(len(r.pruned_branches) // 2 for r in results)
         verdict = "PASS" if n_breached == 0 else "FAIL"
         strategies = sorted({r.strategy for r in results})
-        cases = sorted({r.case_name for r in results})
+        # The cross-product tags each work item's name as "{case}__{strategy}"; strip the
+        # suffix so the matrix pivots on the original case (one row per case, one col per strategy).
+        cases = sorted({_base_case(r) for r in results})
 
         _console.print("Red Team Report")
         _console.print("===============")
@@ -199,7 +201,7 @@ class RedTeamReport(EvaluationReport):
 
     def _print_matrix(self, results: list[AttackResult], cases: list[str], strategies: list[str]) -> None:
         """Print a case x strategy score matrix (``*`` marks a breached cell)."""
-        by_cell = {(r.case_name, r.strategy): r for r in results}
+        by_cell = {(_base_case(r), r.strategy): r for r in results}
 
         def case_worst(case_name: str) -> float:
             cells = [by_cell[(case_name, s)] for s in strategies if (case_name, s) in by_cell]
@@ -254,6 +256,18 @@ class RedTeamReport(EvaluationReport):
                 _console.print("  conversation:")
                 for turn in r.conversation:
                     _console.print(f"    [{turn.get('role', '?')}] {turn.get('content', '')}")
+
+
+def _base_case(result: AttackResult) -> str:
+    """The original case name with the cross-product ``__{strategy}`` suffix removed.
+
+    Work items are named ``"{case}__{strategy}"`` by the cross-product expansion; the
+    matrix pivots on the original case so each case is one row across all strategies.
+    """
+    suffix = f"__{result.strategy}"
+    if result.case_name.endswith(suffix):
+        return result.case_name[: -len(suffix)]
+    return result.case_name
 
 
 def _format_run_stats(result: AttackResult) -> str:

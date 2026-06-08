@@ -44,13 +44,11 @@ def _build_attacker_task(
     """
 
     def task_fn(case: RedTeamCase) -> dict:
-        if isinstance(agent, Agent):
-            agent.messages.clear()
-
         strategy = _resolve_case_strategy(case, by_label)
         strategy.reset()
 
         session = AgentTargetSession(agent) if isinstance(agent, Agent) else CallableTargetSession(agent)
+        session.reset()  # clear any prior-case state (e.g. a reused Agent's message history)
 
         result = strategy.run_attack(case, session, max_turns=MAX_ALLOWED_TURNS, model=model)
         if run_meta is not None and case.name is not None:

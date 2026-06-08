@@ -212,6 +212,26 @@ class TestDisplay:
     def test_no_results_does_not_raise(self):
         _empty_report().display()
 
+    def test_matrix_pivots_cross_product_on_base_case(self, capsys):
+        """A case run under 2 strategies is ONE matrix row with 2 score columns, not
+        two rows. The cross-product names work items '{case}__{strategy}', so the matrix
+        must strip the suffix to pivot correctly."""
+        cases = [
+            {"name": "exfil__cre-3", "metadata": {"risk_category": "x", "strategy": "cre-3", "severity": "high"}},
+            {"name": "exfil__cre-5", "metadata": {"risk_category": "x", "strategy": "cre-5", "severity": "high"}},
+        ]
+        report = RedTeamReport.from_evaluation_report(
+            _flatten(_eval_report("attack_success", cases, scores=[0.2, 0.1], passes=[True, True], reasons=["", ""]))
+        )
+        report.display()
+        out = capsys.readouterr().out
+        matrix = out.split("All attacks")[0]  # matrix section only
+        # one row for the base case "exfil" (not "exfil__cre-3" / "exfil__cre-5")
+        assert "exfil__" not in matrix
+        assert matrix.count("\n  exfil ") == 1 or "  exfil " in matrix
+        # both strategy columns present in the header
+        assert "cre-3" in matrix and "cre-5" in matrix
+
     def test_with_results_does_not_raise(self):
         cases = [_case("c0", "guideline_bypass", "gradual_escalation", "high")]
         report = RedTeamReport.from_evaluation_report(
