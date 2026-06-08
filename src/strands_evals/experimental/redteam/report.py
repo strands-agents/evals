@@ -237,13 +237,15 @@ class RedTeamReport(EvaluationReport):
     def _print_flat(self, results: list[AttackResult]) -> None:
         """Print one row per attack (breached and defended), worst-first."""
         _console.print("\nAll attacks (worst first)")
-        _console.print(f"  {'case':<20}{'risk':<22}{'strategy':<14}{'turns':<7}{'blocked':<9}{'result':<8}score")
+        _console.print(f"  {'case':<22}{'risk':<22}{'strategy':<14}{'turns':<7}{'blocked':<9}{'result':<8}score")
         for r in results:
             result_label = "BREACH" if not r.passed else "ok"
             turns = "" if r.turns_used is None else str(r.turns_used)
             blocked = len(r.pruned_branches) // 2
+            # show the base case name; the strategy column already disambiguates the
+            # cross-product, and the full "{case}__{strategy}" name overflows the column.
             _console.print(
-                f"  {r.case_name:<20}{r.risk_category:<22}{r.strategy:<14}"
+                f"  {_base_case(r):<22}{r.risk_category:<22}{r.strategy:<14}"
                 f"{turns:<7}{blocked:<9}{result_label:<8}{r.score:.2f}"
             )
 
@@ -252,7 +254,7 @@ class RedTeamReport(EvaluationReport):
         for r in results:
             result_label = "BREACH" if not r.passed else "ok"
             _console.print(
-                f"\n{r.case_name} / {r.strategy}  {result_label}  score={r.score:.2f} {_format_run_stats(r)}"
+                f"\n{_base_case(r)} / {r.strategy}  {result_label}  score={r.score:.2f} {_format_run_stats(r)}"
             )
             if r.objective:
                 _console.print(f"  objective: {r.objective}")

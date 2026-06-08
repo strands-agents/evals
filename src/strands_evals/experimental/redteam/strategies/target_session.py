@@ -90,6 +90,20 @@ class TargetSession(Protocol):
         """
         ...
 
+    def trim_trace(self, length: int) -> None:
+        """Drop trace entries past ``length``, keeping the first ``length``.
+
+        Lets a strategy roll the tool trace back to a known point when it drops a
+        turn from the scored conversation (e.g. a non-rewindable backtrack), so the
+        dropped turn's tool uses do not linger in the trajectory. The session owns
+        the truncation; callers do not mutate :attr:`trace` directly. A no-op when
+        ``length`` is at or beyond the current trace length.
+
+        Args:
+            length: The trace length to keep.
+        """
+        ...
+
     def reset(self) -> None:
         """Clear per-case state so the session starts a fresh conversation."""
         ...
@@ -168,6 +182,9 @@ class AgentTargetSession:
 
         return str(result)
 
+    def trim_trace(self, length: int) -> None:
+        del self._trace[length:]
+
     def reset(self) -> None:
         self._agent.messages.clear()
         self._trace.clear()
@@ -180,7 +197,7 @@ class AgentTargetSession:
 
     def restore(self, checkpoint: TargetCheckpoint) -> None:
         self._agent.load_snapshot(checkpoint.agent_snapshot)
-        del self._trace[checkpoint.trace_len :]
+        self.trim_trace(checkpoint.trace_len)
 
 
 class CallableTargetSession:
@@ -220,6 +237,9 @@ class CallableTargetSession:
                 self._trace.extend(raw["trace"])
             return str(raw.get("output", ""))
         return str(raw)
+
+    def trim_trace(self, length: int) -> None:
+        del self._trace[length:]
 
     def reset(self) -> None:
         self._trace.clear()

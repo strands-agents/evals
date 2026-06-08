@@ -97,6 +97,15 @@ class TestAgentTargetSessionRewind:
         assert session._agent.messages == []
         assert session.trace == []
 
+    def test_trim_trace_drops_entries_past_length(self):
+        session = AgentTargetSession(self._real_agent())
+        session._trace.extend([{"name": "a", "input": {}}, {"name": "b", "input": {}}])
+        session.trim_trace(1)
+        assert session.trace == [{"name": "a", "input": {}}]
+        # no-op when length is at or beyond current
+        session.trim_trace(5)
+        assert session.trace == [{"name": "a", "input": {}}]
+
 
 # ---------------------------------------------------------------------------
 # CallableTargetSession
@@ -131,3 +140,9 @@ class TestCallableTargetSession:
         session._trace.append({"name": "leftover", "input": {}})
         session.reset()
         assert session.trace == []
+
+    def test_trim_trace_drops_entries_past_length(self):
+        session = CallableTargetSession(lambda _m: "x")
+        session._trace.extend([{"name": "a", "input": {}}, {"name": "b", "input": {}}])
+        session.trim_trace(1)
+        assert session.trace == [{"name": "a", "input": {}}]

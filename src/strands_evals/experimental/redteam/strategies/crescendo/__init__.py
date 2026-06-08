@@ -268,7 +268,7 @@ class CrescendoStrategy(AttackStrategy):
                 if snap is not None:
                     target_session.restore(snap)  # rolls back the target's messages + trace
                 else:
-                    del target_session.trace[trace_len:]  # callable: trim the refused turn's trace
+                    target_session.trim_trace(trace_len)  # callable: drop the refused turn's trace
                 continue
 
             conversation.append({"role": "attacker", "content": question})
