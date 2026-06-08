@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from strands.models.model import Model
@@ -14,6 +13,7 @@ from ..base import AttackRunResult, AttackStrategy
 
 if TYPE_CHECKING:
     from ...case import RedTeamCase
+    from ..target_session import TargetSession
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ class PromptStrategy(AttackStrategy):
 
     Runs an :class:`ActorSimulator` that escalates over the conversation using
     a static system prompt. The simulator decides when to stop; each turn the
-    attacker message is sent through the injected ``call_target``.
+    attacker message is sent through the injected ``target_session``.
     """
 
     def __init__(
@@ -45,7 +45,7 @@ class PromptStrategy(AttackStrategy):
     def run_attack(
         self,
         case: RedTeamCase,
-        call_target: Callable[[str], str],
+        target_session: TargetSession,
         *,
         max_turns: int,
         model: Model | str | None = None,
@@ -74,7 +74,7 @@ class PromptStrategy(AttackStrategy):
 
         while simulator.has_next():
             try:
-                target_response = call_target(attacker_message)
+                target_response = target_session.invoke(attacker_message)
             except Exception as e:
                 logger.warning("turn=<%d>, error=<%s> | target agent failed", len(conversation), e)
                 target_response = f"[Error: {e}]"

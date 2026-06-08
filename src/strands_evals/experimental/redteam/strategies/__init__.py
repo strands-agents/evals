@@ -2,6 +2,7 @@ from .base import AttackRunResult, AttackStrategy
 from .crescendo import CrescendoStrategy
 from .prompt_strategy import PromptStrategy
 from .prompt_strategy.gradual_escalation import get_template as _gradual_escalation_template
+from .target_session import TargetSession
 
 # Ready-made strategy instances users can pass to RedTeamExperiment(attack_strategies=[...]).
 # Strategy instances are shared across cases, so each must keep `__init__` for static
@@ -17,4 +18,5 @@ __all__ = [
     "AttackStrategy",
     "CrescendoStrategy",
     "PromptStrategy",
+    "TargetSession",
 ]

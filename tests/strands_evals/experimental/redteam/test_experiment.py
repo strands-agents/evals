@@ -19,7 +19,7 @@ class _StubStrategy(AttackStrategy):
     def name(self) -> str:
         return self._name
 
-    def run_attack(self, case, call_target, *, max_turns, model=None, **kwargs) -> AttackRunResult:
+    def run_attack(self, case, target_session, *, max_turns, model=None, **kwargs) -> AttackRunResult:
         return AttackRunResult(conversation=[], metadata={})
 
     def reset(self) -> None:

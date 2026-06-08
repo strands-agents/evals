@@ -9,13 +9,12 @@ from strands_evals.experimental.redteam.strategies.base import AttackRunResult, 
 from strands_evals.experimental.redteam.task import (
     MAX_ALLOWED_TURNS,
     _build_attacker_task,
-    _wrap_agent_with_trace,
 )
 from strands_evals.experimental.redteam.types import AttackGoal, RedTeamConfig
 
 
 class _StubStrategy(AttackStrategy):
-    """Records the injected call_target and returns a canned result."""
+    """Records the injected target session and returns a canned result."""
 
     def __init__(self, label="stub", *, result=None, calls=None):
         super().__init__(label=label)
@@ -28,10 +27,10 @@ class _StubStrategy(AttackStrategy):
     def name(self) -> str:
         return "stub"
 
-    def run_attack(self, case, call_target, *, max_turns, model=None, **kwargs) -> AttackRunResult:
+    def run_attack(self, case, target_session, *, max_turns, model=None, **kwargs) -> AttackRunResult:
         self.received_max_turns = max_turns
-        # exercise the injected call_target so trace/output wiring is covered
-        reply = call_target("ping")
+        # exercise the injected session so trace/output wiring is covered
+        reply = target_session.invoke("ping")
         self.calls.append(reply)
         return self._result or AttackRunResult(
             conversation=[{"role": "attacker", "content": "ping"}, {"role": "target", "content": reply}],
@@ -149,50 +148,3 @@ def test_task_fn_clears_agent_messages_per_case():
 
 def test_max_allowed_turns_constant_present():
     assert MAX_ALLOWED_TURNS >= 50
-
-
-# ---------------------------------------------------------------------------
-# _wrap_agent_with_trace (inlined helper)
-# ---------------------------------------------------------------------------
-
-
-def _make_agent_for_wrap(messages=None):
-    agent = MagicMock()
-    agent.messages = messages if messages is not None else []
-    return agent
-
-
-class TestWrapAgentWithTrace:
-    def test_returns_string_response(self):
-        agent = _make_agent_for_wrap()
-        agent.return_value = "hello back"
-        wrapped = _wrap_agent_with_trace(agent, [])
-        assert wrapped("hi") == "hello back"
-
-    def test_appends_tool_uses_to_trace(self):
-        agent = _make_agent_for_wrap(messages=[])
-        new_msg = {"content": [{"toolUse": {"name": "search", "input": {"q": "x"}}}]}
-
-        def _call_side_effect(_msg):
-            agent.messages.append(new_msg)
-            return "ok"
-
-        agent.side_effect = _call_side_effect
-        trace: list[dict] = []
-        _wrap_agent_with_trace(agent, trace)("hi")
-        assert trace == [{"name": "search", "input": {"q": "x"}}]
-
-    def test_only_new_messages_are_scanned(self):
-        old_msg = {"content": [{"toolUse": {"name": "old", "input": {}}}]}
-        agent = _make_agent_for_wrap(messages=[old_msg])
-        agent.return_value = "ok"
-        trace: list[dict] = []
-        _wrap_agent_with_trace(agent, trace)("hi")
-        assert trace == []
-
-    def test_swallows_message_format_errors(self):
-        agent = _make_agent_for_wrap(messages=[])
-        agent.side_effect = lambda _msg: agent.messages.append("not a dict") or "ok"
-        trace: list[dict] = []
-        _wrap_agent_with_trace(agent, trace)("hi")
-        assert trace == []

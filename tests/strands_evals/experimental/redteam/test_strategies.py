@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from strands_evals.experimental.redteam.case import RedTeamCase
 from strands_evals.experimental.redteam.strategies import BUILTIN_STRATEGIES, PromptStrategy
 from strands_evals.experimental.redteam.strategies.base import AttackRunResult
+from strands_evals.experimental.redteam.strategies.target_session import CallableTargetSession
 from strands_evals.experimental.redteam.types import AttackGoal, RedTeamConfig
 
 
@@ -47,9 +48,9 @@ def test_prompt_strategy_run_attack_drives_loop(mock_simulator_cls):
     mock_simulator_cls.return_value = mock_sim
 
     strategy = PromptStrategy("gradual_escalation", "prompt {actor_profile} {max_turns}")
-    call_target = MagicMock(return_value="target reply")
+    session = CallableTargetSession(lambda _m: "target reply")
 
-    result = strategy.run_attack(_case(), call_target, max_turns=7)
+    result = strategy.run_attack(_case(), session, max_turns=7)
 
     assert isinstance(result, AttackRunResult)
     assert len(result.conversation) == 4
@@ -68,7 +69,7 @@ def test_prompt_strategy_ctor_max_turns_caps_below_ceiling(mock_simulator_cls):
     mock_simulator_cls.return_value = mock_sim
 
     strategy = PromptStrategy("gradual_escalation", "p {max_turns}", max_turns=3)
-    strategy.run_attack(_case(), MagicMock(return_value="r"), max_turns=50)  # ceiling 50
+    strategy.run_attack(_case(), CallableTargetSession(lambda _m: "r"), max_turns=50)  # ceiling 50
 
     assert mock_simulator_cls.call_args.kwargs["max_turns"] == 3
 
@@ -82,5 +83,7 @@ def test_prompt_strategy_run_attack_handles_target_exception(mock_simulator_cls)
     def broken(_msg):
         raise RuntimeError("boom")
 
-    result = PromptStrategy("gradual_escalation", "p {max_turns}").run_attack(_case(), broken, max_turns=3)
+    result = PromptStrategy("gradual_escalation", "p {max_turns}").run_attack(
+        _case(), CallableTargetSession(broken), max_turns=3
+    )
     assert "[Error: boom]" in result.conversation[1]["content"]

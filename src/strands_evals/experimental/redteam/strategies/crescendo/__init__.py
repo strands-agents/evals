@@ -2,16 +2,24 @@
 
 Crescendo escalates gradually across turns, each attacker message building on the
 target's previous answer. On a refusal it backtracks: the refused (question,
-response) pair is not appended to the reported conversation and a fresh question
-is tried, so the refused turn never enters the trace that gets scored.
+response) pair is dropped from the scored conversation (kept in
+``pruned_branches`` as evidence) and a fresh question is tried.
 
-Backtracking is currently report-scope only: the refused turn is dropped from the
-conversation we return, but the injected ``call_target`` wraps a stateful target
-whose own message history we cannot roll back, so the refusal still sits in the
-target's context and can bias later turns. A stronger backtrack would rebuild the
-target conversation without the refused turn; that needs a ``call_target`` contract
-that can reset/fork target state — the same capability PAIR and TAP require — and is
-tracked as a follow-up.
+How strong the backtrack is depends on the target session's ``supports_rewind``:
+
+- Rewindable target (``AgentTargetSession``): the strategy snapshots before each
+  turn and ``restore``s on a refusal, so the target genuinely forgets the refused
+  turn — a true state rollback.
+- Non-rewindable target (``CallableTargetSession``, an opaque callable): we cannot
+  see or reset the target's internal state, so the backtrack is report-scope only
+  (the refused turn is dropped from the reported conversation and its trace
+  entries trimmed, but the callable may still carry the refusal internally).
+
+The refusal / success / question-generation helpers are module-level functions
+(not methods) so future strategies (PAIR, TAP) can reuse them without importing a
+strategy class. They power the strategy's cheap in-loop "should I stop?" gate; the
+authoritative success verdict is re-computed independently by
+``AttackSuccessEvaluator`` over the full trace.
 
 The refusal / success / question-generation helpers are module-level functions
 (not methods) so future strategies (PAIR, TAP) can reuse them without importing a
@@ -23,7 +31,6 @@ authoritative success verdict is re-computed independently by
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
@@ -36,6 +43,7 @@ from . import crescendo_v0
 if TYPE_CHECKING:
     from ...case import RedTeamCase
     from ...types import AttackGoal
+    from ..target_session import TargetSession
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +224,7 @@ class CrescendoStrategy(AttackStrategy):
     def run_attack(
         self,
         case: RedTeamCase,
-        call_target: Callable[[str], str],
+        target_session: TargetSession,
         *,
         max_turns: int,
         model: Model | str | None = None,
@@ -230,6 +238,7 @@ class CrescendoStrategy(AttackStrategy):
         turn_cap = min(self._max_turns, max_turns)
 
         conversation: list[dict[str, Any]] = []
+        pruned_branches: list[dict[str, Any]] = []
         last_response = ""
         backtracks = 0
         parse_failures = 0
@@ -244,12 +253,28 @@ class CrescendoStrategy(AttackStrategy):
                 logger.warning("reason=<parse_failure> | attacker produced no question | ending case early")
                 break
 
-            response = call_target(question)
+            # Snapshot before the risky turn so a refusal can be rolled back. For a
+            # rewindable (Agent) target this is a true state rollback; an opaque
+            # callable can't snapshot, so we fall back to report-scope backtracking
+            # (drop the refused turn from the reported conversation) and trim the
+            # trace by hand.
+            snap = target_session.snapshot() if target_session.supports_rewind else None
+            trace_len = len(target_session.trace)
+
+            response = target_session.invoke(question)
             target_calls += 1
 
             if is_refusal(response, refusal_judge) and backtracks < self._max_backtracks:
                 backtracks += 1
-                continue  # backtrack: refused (q, r) not appended, turn retried
+                # Keep the refused (q, r) as evidence, then drop it: a backtracked
+                # turn never enters the scored conversation.
+                pruned_branches.append({"role": "attacker", "content": question})
+                pruned_branches.append({"role": "target", "content": response})
+                if snap is not None:
+                    target_session.restore(snap)  # rolls back agent messages + trace
+                else:
+                    del target_session.trace[trace_len:]  # callable: trim the refused turn's trace
+                continue
 
             conversation.append({"role": "attacker", "content": question})
             conversation.append({"role": "target", "content": response})
@@ -264,6 +289,7 @@ class CrescendoStrategy(AttackStrategy):
             conversation=conversation,
             strategy_succeeded=succeeded,
             strategy_score=score,
+            pruned_branches=pruned_branches,
             # turns_used = turns kept in the conversation (consistent across strategies);
             # target_calls additionally counts refused calls dropped by backtracking.
             metadata={

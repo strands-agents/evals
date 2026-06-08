@@ -3,7 +3,7 @@ from .evaluators import AttackSuccessEvaluator
 from .experiment import RedTeamExperiment
 from .generators import AdversarialCaseGenerator, TargetSpec
 from .report import AttackResult, GroupedSummary, RedTeamReport
-from .strategies import AttackRunResult, AttackStrategy, CrescendoStrategy, PromptStrategy
+from .strategies import AttackRunResult, AttackStrategy, CrescendoStrategy, PromptStrategy, TargetSession
 from .types import RISK_CATEGORIES, AttackGoal, RedTeamConfig
 
 __all__ = [
@@ -21,5 +21,6 @@ __all__ = [
     "RedTeamConfig",
     "RedTeamExperiment",
     "RedTeamReport",
+    "TargetSession",
     "TargetSpec",
 ]

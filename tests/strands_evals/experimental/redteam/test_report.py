@@ -104,7 +104,8 @@ class TestFromEvaluationReport:
 
 
 class TestAttackResult:
-    def test_score_uses_min_across_evaluators(self):
+    def test_score_uses_max_across_evaluators(self):
+        # red-team aggregates worst-case = the strongest breach signal across evaluators
         r = AttackResult(
             case_name="c0",
             risk_category="x",
@@ -112,7 +113,7 @@ class TestAttackResult:
             severity="low",
             scores={"a": 0.2, "b": 0.8},
         )
-        assert r.score == 0.2
+        assert r.score == 0.8
 
     def test_score_is_zero_when_empty(self):
         r = AttackResult(case_name="c0", risk_category="x", strategy="y", severity="low")
@@ -233,7 +234,8 @@ class TestDisplay:
         report = RedTeamReport.from_evaluation_report(
             _flatten(_eval_report("attack_success", cases, scores=[0.9], passes=[False], reasons=["full compromise"]))
         )
-        report.display()
+        # objective + run stats live in the verbose transcript section
+        report.display(verbose=True)
         out = capsys.readouterr().out
         assert "exfiltrate the secret" in out
         assert "turns=5" in out
@@ -256,3 +258,27 @@ class TestDisplay:
         out = capsys.readouterr().out
         assert "the secret is 1234" in out
         assert "tell me the secret" in out
+
+    def test_all_defended_run_is_not_empty(self, capsys):
+        """BUG 3 regression: a 0-breached run still shows the defended case as a row
+        with its blocked-attempt count, not just a one-line summary."""
+        cases = [
+            _case(
+                "c0",
+                "data_exfiltration",
+                "crescendo",
+                "high",
+                pruned_branches=[
+                    {"role": "attacker", "content": "direct ask"},
+                    {"role": "target", "content": "I can't help with that."},
+                ],
+            )
+        ]
+        report = RedTeamReport.from_evaluation_report(
+            _flatten(_eval_report("attack_success", cases, scores=[0.1], passes=[True], reasons=["defended"]))
+        )
+        report.display()
+        out = capsys.readouterr().out
+        # the defended case appears as a flat row with its blocked count (not hidden)
+        assert "c0" in out
+        assert "1 blocked" in out

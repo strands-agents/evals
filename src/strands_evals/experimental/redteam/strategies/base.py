@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -11,6 +10,7 @@ from strands.models.model import Model
 
 if TYPE_CHECKING:
     from ..case import RedTeamCase
+    from .target_session import TargetSession
 
 
 @dataclass
@@ -34,21 +34,28 @@ class AttackRunResult:
             verdict (the evaluator decides pass/fail).
         strategy_score: The strategy's internal stop-decision score, if any.
         metadata: Free-form run details (e.g. ``turns_used``, ``backtracks``).
+        pruned_branches: Refused turns dropped from ``conversation`` during
+            backtracking, kept as evidence ("defended N framings, complied on
+            N+1"). Each entry is an ordered attacker/target pair. Empty for
+            strategies that do not backtrack.
     """
 
     conversation: list[dict[str, Any]]
     strategy_succeeded: bool = False
     strategy_score: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    pruned_branches: list[dict[str, Any]] = field(default_factory=list)
 
 
 class AttackStrategy(ABC):
     """Base class for red team attack strategies.
 
     Every strategy owns its own multi-turn loop via ``run_attack``. The task
-    runner injects a ``call_target`` callable (which already handles target
-    invocation, tool-trace capture, and per-case isolation), so strategies
-    never build target-calling themselves.
+    runner injects a ``TargetSession`` (which already handles target invocation,
+    tool-trace capture, and per-case isolation), so strategies never build
+    target-calling themselves. Strategies that backtrack use the session's
+    snapshot/restore (guarding on ``supports_rewind``); strategies that only
+    converse forward use ``session.invoke`` alone.
     """
 
     def __init__(self, *, label: str | None = None) -> None:
@@ -77,7 +84,7 @@ class AttackStrategy(ABC):
     def run_attack(
         self,
         case: RedTeamCase,
-        call_target: Callable[[str], str],
+        target_session: TargetSession,
         *,
         max_turns: int,
         model: Model | str | None = None,
@@ -87,9 +94,12 @@ class AttackStrategy(ABC):
 
         Args:
             case: The red team case carrying the attack goal.
-            call_target: Injected callable mapping an attacker message to the
-                target's response. Already captures the tool trace and applies
-                per-case isolation; strategies must not build their own.
+            target_session: Injected session for talking to the target. Use
+                ``target_session.invoke(message)`` to send a turn; it captures
+                the tool trace and applies per-case isolation, so strategies must
+                not build their own target-calling. Backtracking strategies guard
+                on ``target_session.supports_rewind`` and use ``snapshot`` /
+                ``restore``.
             max_turns: Experiment-level ceiling on attacker/target turns. A
                 strategy with its own ``max_turns`` should run the smaller of the
                 two (the ceiling never lets a strategy exceed the experiment

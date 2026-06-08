@@ -23,13 +23,17 @@ class AttackResult:
     turns_used: int | None = None
     backtracks: int | None = None
     conversation: list[dict] = field(default_factory=list)
+    pruned_branches: list[dict] = field(default_factory=list)
     scores: dict[str, float] = field(default_factory=dict)
     passes: dict[str, bool] = field(default_factory=dict)
     reasons: dict[str, str] = field(default_factory=dict)
 
     @property
     def score(self) -> float:
-        return min(self.scores.values()) if self.scores else 0.0
+        # Worst-case across evaluators: for red teaming the strongest attack signal
+        # (the highest score = most successful breach) is what matters, so aggregate
+        # with max(), not min().
+        return max(self.scores.values()) if self.scores else 0.0
 
     @property
     def passed(self) -> bool:
@@ -111,6 +115,7 @@ class RedTeamReport(EvaluationReport):
                     turns_used=metadata.get("turns_used"),
                     backtracks=metadata.get("backtracks"),
                     conversation=case_data.get("actual_output") or [],
+                    pruned_branches=metadata.get("pruned_branches") or [],
                 ),
             )
             result.scores[evaluator] = self.scores[i]
@@ -149,13 +154,19 @@ class RedTeamReport(EvaluationReport):
         return sorted([r for r in self.attack_results() if not r.passed], key=lambda r: r.score)
 
     def display(self, *, verbose: bool = False, **_kwargs) -> None:  # type: ignore[override]
-        """Print the red team report.
+        """Print the red team report as a flat, denormalized view.
+
+        The output leads with a cross-product matrix (case x strategy) and a flat
+        per-attack table — every attack, breached and defended, one row each —
+        rather than grouped summaries. Defended attacks stay visible (with the
+        count of blocked attempts), so a strong defense is not mistaken for an
+        attack that did nothing.
 
         Args:
-            verbose: When True, also print each failed case's full attacker/target
-                conversation. Use this to verify a verdict by eye — an LLM judge can
-                be fooled by a target that *claims* to leak (e.g. hallucinating a
-                "system prompt"), so the conversation is the ground truth.
+            verbose: When True, also print each attack's full attacker/target
+                conversation and its blocked (refused) attempts. Use this to
+                verify a verdict by eye — an LLM judge can be fooled by a target
+                that *claims* to leak, so the conversation is the ground truth.
         """
         results = self.attack_results()
         total = len(results)
@@ -163,49 +174,95 @@ class RedTeamReport(EvaluationReport):
             _console.print("Red Team Report\n===============\nNo results.")
             return
 
-        failed = self.failed_cases
-        verdict = "PASS" if not failed else "FAIL"
+        breached = sorted(results, key=lambda r: r.score, reverse=True)
+        n_breached = sum(1 for r in results if not r.passed)
+        n_blocked = sum(len(r.pruned_branches) // 2 for r in results)
+        verdict = "PASS" if n_breached == 0 else "FAIL"
+        strategies = sorted({r.strategy for r in results})
+        cases = sorted({r.case_name for r in results})
+
         _console.print("Red Team Report")
         _console.print("===============")
         _console.print(
-            f"Result: {verdict} -- {len(failed)} of {total} attacks succeeded ({100 * len(failed) / total:.1f}%)"
+            f"Result: {verdict} -- {n_breached} of {total} attacks breached "
+            f"({100 * n_breached / total:.1f}%) | {len(cases)} cases x {len(strategies)} strategies"
         )
 
-        _console.print("\nBy risk category:")
-        for s in self.by_risk_category():
-            succeeded = s.count - round(s.pass_rate * s.count)
-            _console.print(f"  {s.group_name:<20} {succeeded}/{s.count} succeeded ({100 * (1 - s.pass_rate):.1f}%)")
+        self._print_matrix(results, cases, strategies)
+        self._print_flat(breached)
 
-        if len(self.by_strategy()) > 1:
-            _console.print("\nBy strategy:")
-            for s in self.by_strategy():
-                succeeded = s.count - round(s.pass_rate * s.count)
-                _console.print(f"  {s.group_name:<20} {succeeded}/{s.count} succeeded ({100 * (1 - s.pass_rate):.1f}%)")
+        _console.print(f"\n{total} attacks · {n_breached} breached · {n_blocked} blocked", end="")
+        _console.print("" if verbose else "  [verbose for transcripts]")
 
-        if failed:
-            _console.print("\nFailures:")
-            for r in failed:
-                _console.print(f"  [FAIL] score={r.score:.2f} severity={r.severity} strategy={r.strategy}")
-                if r.objective:
-                    _console.print(f"      objective: {r.objective}")
-                run_stats = _format_run_stats(r)
-                if run_stats:
-                    _console.print(f"      {run_stats}")
-                if r.reason:
-                    _console.print(f"      {r.reason}")
-                if verbose and r.conversation:
-                    _console.print("      conversation:")
-                    for turn in r.conversation:
-                        role = str(turn.get("role", "?"))
-                        content = str(turn.get("content", ""))
-                        _console.print(f"        [{role}] {content}")
+        if verbose:
+            self._print_transcripts(breached)
+
+    def _print_matrix(self, results: list[AttackResult], cases: list[str], strategies: list[str]) -> None:
+        """Print a case x strategy score matrix (``*`` marks a breached cell)."""
+        by_cell = {(r.case_name, r.strategy): r for r in results}
+
+        def case_worst(case_name: str) -> float:
+            cells = [by_cell[(case_name, s)] for s in strategies if (case_name, s) in by_cell]
+            return max((r.score for r in cells), default=0.0)
+
+        def case_breached(case_name: str) -> bool:
+            return any((case_name, s) in by_cell and not by_cell[(case_name, s)].passed for s in strategies)
+
+        _console.print("\nAttack matrix (score, * = breached)")
+        _console.print(f"  {'case':<24}" + "".join(f"{s:<14}" for s in strategies) + "worst")
+        for case_name in sorted(cases, key=lambda c: -case_worst(c)):
+            cells = ""
+            for s in strategies:
+                r = by_cell.get((case_name, s))
+                if r is None:
+                    cells += f"{'-':<14}"
+                else:
+                    mark = " *" if not r.passed else ""
+                    cells += f"{f'{r.score:.2f}{mark}':<14}"
+            verdict = "BREACH" if case_breached(case_name) else "ok"
+            _console.print(f"  {case_name:<24}{cells}{case_worst(case_name):.2f} {verdict}")
+
+    def _print_flat(self, results: list[AttackResult]) -> None:
+        """Print one row per attack (breached and defended), worst-first."""
+        _console.print("\nAll attacks (worst first)")
+        _console.print(f"  {'case':<20}{'risk':<22}{'strategy':<14}{'turns':<7}{'blocked':<9}{'result':<8}score")
+        for r in results:
+            result_label = "BREACH" if not r.passed else "ok"
+            turns = "" if r.turns_used is None else str(r.turns_used)
+            blocked = len(r.pruned_branches) // 2
+            _console.print(
+                f"  {r.case_name:<20}{r.risk_category:<22}{r.strategy:<14}"
+                f"{turns:<7}{blocked:<9}{result_label:<8}{r.score:.2f}"
+            )
+
+    def _print_transcripts(self, results: list[AttackResult]) -> None:
+        """Print full conversations and blocked attempts for every attack (verbose)."""
+        for r in results:
+            result_label = "BREACH" if not r.passed else "ok"
+            _console.print(
+                f"\n{r.case_name} / {r.strategy}  {result_label}  score={r.score:.2f} {_format_run_stats(r)}"
+            )
+            if r.objective:
+                _console.print(f"  objective: {r.objective}")
+            if r.reason:
+                _console.print(f"  {r.reason}")
+            if r.pruned_branches:
+                _console.print(f"  blocked attempts ({len(r.pruned_branches) // 2}):")
+                for turn in r.pruned_branches:
+                    _console.print(f"    [{turn.get('role', '?')}] {turn.get('content', '')}")
+            if r.conversation:
+                _console.print("  conversation:")
+                for turn in r.conversation:
+                    _console.print(f"    [{turn.get('role', '?')}] {turn.get('content', '')}")
 
 
 def _format_run_stats(result: AttackResult) -> str:
-    """Render the strategy's per-run stats (turns/backtracks) when present."""
+    """Render the strategy's per-run stats (turns/backtracks/blocked) when present."""
     parts = []
     if result.turns_used is not None:
         parts.append(f"turns={result.turns_used}")
     if result.backtracks is not None:
         parts.append(f"backtracks={result.backtracks}")
+    if result.pruned_branches:
+        parts.append(f"blocked={len(result.pruned_branches) // 2}")
     return ", ".join(parts)
