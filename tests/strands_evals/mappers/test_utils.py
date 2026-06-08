@@ -9,6 +9,97 @@ from strands_evals.mappers import (
     get_scope_name,
     readable_spans_to_dicts,
 )
+from strands_evals.mappers.utils import join_tool_result_content
+
+
+class TestJoinToolResultContent:
+    def test_empty_list(self):
+        assert join_tool_result_content([]) == ""
+
+    def test_none_input(self):
+        assert join_tool_result_content(None) == ""
+
+    def test_non_list_input(self):
+        assert join_tool_result_content("raw string") == "raw string"
+
+    def test_single_text_block(self):
+        assert join_tool_result_content([{"text": "hello"}]) == "hello"
+
+    def test_multi_text_blocks(self):
+        assert join_tool_result_content([{"text": "a"}, {"text": "b"}]) == "a\nb"
+
+    def test_json_block(self):
+        assert join_tool_result_content([{"json": {"k": 1}}]) == '{"k": 1}'
+
+    def test_json_block_sort_keys(self):
+        assert join_tool_result_content([{"json": {"b": 2, "a": 1}}]) == '{"a": 1, "b": 2}'
+
+    def test_image_placeholder(self):
+        assert join_tool_result_content([{"image": {}}]) == "[image]"
+
+    def test_document_placeholder(self):
+        assert join_tool_result_content([{"document": {}}]) == "[document]"
+
+    def test_video_placeholder(self):
+        assert join_tool_result_content([{"video": {}}]) == "[video]"
+
+    def test_unknown_key_silently_dropped(self):
+        assert join_tool_result_content([{"unknown_type": "value"}]) == ""
+
+    def test_text_none_value_no_crash(self):
+        assert join_tool_result_content([{"text": None}]) == ""
+
+    def test_text_none_value_with_sibling(self):
+        assert join_tool_result_content([{"text": None}, {"text": "ok"}]) == "ok"
+
+    def test_text_non_str_coerced(self):
+        assert join_tool_result_content([{"text": 123}]) == "123"
+
+    def test_non_dict_block(self):
+        assert join_tool_result_content([42]) == "42"
+
+    def test_mixed_blocks(self):
+        result = join_tool_result_content([{"text": "label:"}, {"json": {"v": 1}}, {"image": {}}])
+        assert result == 'label:\n{"v": 1}\n[image]'
+
+    def test_empty_string_input(self):
+        assert join_tool_result_content("") == ""
+
+    def test_integer_zero_input(self):
+        # int 0 is not None and not an empty list, so it coerces to "0"
+        assert join_tool_result_content(0) == "0"
+
+    def test_false_input(self):
+        # False is not None and not an empty list, so it coerces to "False"
+        assert join_tool_result_content(False) == "False"
+
+    def test_block_with_multiple_keys_prefers_text(self):
+        # When a block has multiple keys, 'text' wins (first match in if/elif chain)
+        result = join_tool_result_content([{"text": "hello", "json": {"x": 1}}])
+        assert result == "hello"
+
+    def test_json_block_none_value(self):
+        # json.dumps(None) == 'null', included in output
+        assert join_tool_result_content([{"json": None}]) == "null"
+
+    def test_json_block_inf_serialized(self):
+        import math
+
+        # Python's json.dumps may serialize inf as "Infinity" or raise; either way no crash
+        result = join_tool_result_content([{"json": math.inf}, {"text": "after"}])
+        assert "after" in result or result in ("Infinity\nafter", "after")
+
+    def test_text_empty_string_block_filtered(self):
+        # An empty-string text block is silently filtered by the join guard
+        assert join_tool_result_content([{"text": ""}]) == ""
+
+    def test_text_empty_string_block_with_sibling(self):
+        assert join_tool_result_content([{"text": ""}, {"text": "ok"}]) == "ok"
+
+    def test_bare_dict_not_in_list(self):
+        # A bare dict (not wrapped in a list) is coerced to str
+        result = join_tool_result_content({"text": "hello"})
+        assert result == str({"text": "hello"})
 
 
 def make_span_dict(scope_name="test.scope", attributes=None, span_events=None):

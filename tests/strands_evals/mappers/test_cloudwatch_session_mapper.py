@@ -245,3 +245,64 @@ class TestSessionBuilding:
         session = mapper.map_to_session(records, "sess-1")
         assert len(session.traces) == 1
         assert len(session.traces[0].spans) > 0
+
+
+# --- Regression tests: multi-block toolResult.content ---
+
+
+def _make_multi_block_tool_result_message(tool_use_id, content_blocks):
+    """Build a tool result message with arbitrary content blocks."""
+    return {
+        "role": "tool",
+        "content": {"content": json.dumps([{"toolResult": {"content": content_blocks, "toolUseId": tool_use_id}}])},
+    }
+
+
+class TestMultiBlockToolResult:
+    def test_multi_text_blocks_joined(self, mapper):
+        """Multiple text blocks in toolResult.content are joined, not truncated to [0]."""
+        record1 = make_log_record(
+            trace_id="t1",
+            span_id="s1",
+            input_messages=[make_user_message("hi")],
+            output_messages=[_make_assistant_tool_use_message("tool_x", {}, "tu-1")],
+            time_nano=1000,
+        )
+        record2 = make_log_record(
+            trace_id="t1",
+            span_id="s2",
+            input_messages=[
+                make_user_message("hi"),
+                _make_multi_block_tool_result_message("tu-1", [{"text": "first"}, {"text": "second"}]),
+            ],
+            output_messages=[make_assistant_text_message("ok")],
+            time_nano=2000,
+        )
+        session = mapper.map_to_session([record1, record2], "sess-1")
+        tool_spans = [s for s in session.traces[0].spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+        assert tool_spans[0].tool_result.content == "first\nsecond"
+
+    def test_text_and_json_blocks_joined(self, mapper):
+        """Mixed text+json blocks are both included in the joined string."""
+        record1 = make_log_record(
+            trace_id="t1",
+            span_id="s1",
+            input_messages=[make_user_message("hi")],
+            output_messages=[_make_assistant_tool_use_message("tool_y", {}, "tu-2")],
+            time_nano=1000,
+        )
+        record2 = make_log_record(
+            trace_id="t1",
+            span_id="s2",
+            input_messages=[
+                make_user_message("hi"),
+                _make_multi_block_tool_result_message("tu-2", [{"text": "val:"}, {"json": {"x": 1}}]),
+            ],
+            output_messages=[make_assistant_text_message("ok")],
+            time_nano=2000,
+        )
+        session = mapper.map_to_session([record1, record2], "sess-1")
+        tool_spans = [s for s in session.traces[0].spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+        assert tool_spans[0].tool_result.content == 'val:\n{"x": 1}'

@@ -2,10 +2,62 @@
 Utility functions for mapper selection and detection.
 """
 
+import json
+import logging
 from typing import Any
 
 from .constants import SCOPE_LANGCHAIN_OTEL, SCOPE_OPENINFERENCE, SCOPE_STRANDS
 from .session_mapper import SessionMapper
+
+logger = logging.getLogger(__name__)
+
+
+def join_tool_result_content(content: Any) -> str:
+    """Join all blocks in a Bedrock-style toolResult content list into one string.
+
+    Bedrock toolResult.content is a list of typed blocks that are joined with a
+    newline separator so multi-paragraph tool outputs stay readable for downstream
+    LLM judges. text blocks pass through as-is, json blocks are serialized via
+    json.dumps, and image/document/video blocks become placeholder markers.
+
+    Args:
+        content: A Bedrock-style toolResult content value. May be a list of typed
+            block dicts, a non-list value (coerced to str), or None/empty.
+
+    Returns:
+        A single string with all block values newline-joined, or empty string for
+        empty/None input. Note: empty-string text block values are excluded from
+        the join (they contribute no visible content), so a list containing only
+        empty-text blocks returns an empty string.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, list) and len(content) == 0:
+        return ""
+    if not isinstance(content, list):
+        return str(content)
+
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            parts.append(str(block))
+            continue
+        if "text" in block:
+            parts.append(str(block["text"]) if block["text"] is not None else "")
+        elif "json" in block:
+            try:
+                parts.append(json.dumps(block["json"], sort_keys=True))
+            except (TypeError, ValueError) as exc:
+                logger.debug("json_error=<%s> | join_tool_result_content: could not serialize json block", exc)
+        elif "image" in block:
+            parts.append("[image]")
+        elif "document" in block:
+            parts.append("[document]")
+        elif "video" in block:
+            parts.append("[video]")
+        else:
+            logger.debug("block_keys=<%s> | join_tool_result_content: unknown block type, skipping", list(block.keys()))
+    return "\n".join(p for p in parts if p)
 
 
 def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
