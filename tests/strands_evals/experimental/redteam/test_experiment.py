@@ -26,6 +26,26 @@ class _StubStrategy(AttackStrategy):
         pass
 
 
+class _FakeSession:
+    """Minimal TargetSession standing in for a real target in wiring tests."""
+
+    def __init__(self, reply="ok"):
+        self._reply = reply
+        self.trace: list[dict] = []
+
+    def invoke(self, _message):
+        return self._reply
+
+    def reset(self):
+        self.trace.clear()
+
+    def snapshot(self):
+        return None
+
+    def restore(self, checkpoint):
+        pass
+
+
 def _case(name: str = "c0") -> RedTeamCase:
     return RedTeamCase(
         name=name,
@@ -57,7 +77,7 @@ def test_run_evaluations_uses_default_task_when_agent_provided():
     """Agent on construction enables run_evaluations() with no explicit task."""
     exp = RedTeamExperiment(
         cases=[_case()],
-        agent=lambda msg: "ok",
+        agent=_FakeSession(),
         attack_strategies=[_StubStrategy()],
     )
     report = exp.run_evaluations()
@@ -89,7 +109,7 @@ def test_cross_product_expands_cases():
 
     exp = RedTeamExperiment(
         cases=[_case("c0"), _case("c1")],
-        agent=lambda msg: "ok",
+        agent=_FakeSession(),
         attack_strategies=[_StubStrategy(label="cre-10"), _StubStrategy(label="cre-30")],
     )
     exp.run_evaluations(task=task)
@@ -100,7 +120,7 @@ def test_cross_product_expands_cases():
 async def test_run_evaluations_async_returns_report():
     exp = RedTeamExperiment(
         cases=[_case()],
-        agent=lambda _msg: "ok",
+        agent=_FakeSession(),
         attack_strategies=[_StubStrategy()],
     )
     report = await exp.run_evaluations_async()
@@ -108,7 +128,7 @@ async def test_run_evaluations_async_returns_report():
 
 
 async def test_max_workers_must_be_one():
-    exp = RedTeamExperiment(cases=[_case()], agent=lambda _msg: "ok", attack_strategies=[_StubStrategy()])
+    exp = RedTeamExperiment(cases=[_case()], agent=_FakeSession(), attack_strategies=[_StubStrategy()])
     with pytest.raises(ValueError, match="max_workers=1"):
         await exp.run_evaluations_async(max_workers=4)
 
@@ -117,7 +137,7 @@ def test_async_task_rejected():
     async def _async_task(case):
         return {"output": []}
 
-    exp = RedTeamExperiment(cases=[_case()], agent=lambda _msg: "ok", attack_strategies=[_StubStrategy()])
+    exp = RedTeamExperiment(cases=[_case()], agent=_FakeSession(), attack_strategies=[_StubStrategy()])
     with pytest.raises(ValueError, match="Async task is not supported"):
         exp.run_evaluations(task=_async_task)
 
@@ -131,7 +151,7 @@ def test_run_evaluations_twice_is_idempotent():
 
     exp = RedTeamExperiment(
         cases=[_case("c0")],
-        agent=lambda _msg: "ok",
+        agent=_FakeSession(),
         attack_strategies=[_StubStrategy(label="a"), _StubStrategy(label="b")],
     )
     for _ in range(2):
