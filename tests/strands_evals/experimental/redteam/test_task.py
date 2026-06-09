@@ -54,18 +54,38 @@ def _by_label(*strategies: AttackStrategy) -> dict[str, AttackStrategy]:
     return {s.label: s for s in strategies}
 
 
+class _FakeSession:
+    """Minimal TargetSession a test can pass straight to _build_attacker_task."""
+
+    def __init__(self, reply_fn):
+        self._reply_fn = reply_fn
+        self.trace: list[dict] = []
+
+    def invoke(self, message):
+        return self._reply_fn(message)
+
+    def reset(self):
+        self.trace.clear()
+
+    def snapshot(self):
+        return None
+
+    def restore(self, checkpoint):
+        pass
+
+
 def test_run_attack_receives_max_allowed_turns_ceiling():
     """task_fn passes MAX_ALLOWED_TURNS as the hard ceiling; the strategy owns its budget."""
     from strands_evals.experimental.redteam.task import MAX_ALLOWED_TURNS
 
     strat = _StubStrategy()
-    _build_attacker_task(lambda _msg: "ok", _by_label(strat))(_case())
+    _build_attacker_task(_FakeSession(lambda _msg: "ok"), _by_label(strat))(_case())
     assert strat.received_max_turns == MAX_ALLOWED_TURNS
 
 
 def test_task_fn_calls_run_attack_and_maps_result():
     strat = _StubStrategy()
-    task = _build_attacker_task(lambda _msg: "target reply", _by_label(strat))
+    task = _build_attacker_task(_FakeSession(lambda _msg: "target reply"), _by_label(strat))
 
     result = task(_case())
 
@@ -79,7 +99,7 @@ def test_task_fn_records_run_stats_into_run_meta():
     """Strategy metadata reaches the experiment via run_meta, not the returned dict."""
     strat = _StubStrategy()
     run_meta: dict[str, dict] = {}
-    task = _build_attacker_task(lambda _msg: "target reply", _by_label(strat), run_meta=run_meta)
+    task = _build_attacker_task(_FakeSession(lambda _msg: "target reply"), _by_label(strat), run_meta=run_meta)
 
     task(_case("c0"))
 
@@ -88,14 +108,14 @@ def test_task_fn_records_run_stats_into_run_meta():
 
 def test_task_fn_resets_strategy_each_case():
     strat = _StubStrategy()
-    task = _build_attacker_task(lambda _msg: "ok", _by_label(strat))
+    task = _build_attacker_task(_FakeSession(lambda _msg: "ok"), _by_label(strat))
     task(_case("c0"))
     task(_case("c1"))
     assert strat.reset_count == 2
 
 
 def test_task_fn_missing_strategy_label_raises():
-    task = _build_attacker_task(lambda _msg: "ok", _by_label(_StubStrategy()))
+    task = _build_attacker_task(_FakeSession(lambda _msg: "ok"), _by_label(_StubStrategy()))
     case = _case()
     case.metadata = {}  # no strategy label
     with pytest.raises(ValueError, match="strategy"):
@@ -103,31 +123,74 @@ def test_task_fn_missing_strategy_label_raises():
 
 
 def test_task_fn_unknown_strategy_label_raises():
-    task = _build_attacker_task(lambda _msg: "ok", _by_label(_StubStrategy(label="stub")))
+    task = _build_attacker_task(_FakeSession(lambda _msg: "ok"), _by_label(_StubStrategy(label="stub")))
     with pytest.raises(ValueError, match="missing"):
         task(_case(label="missing"))
 
 
-def test_task_fn_dict_target_extends_trace_and_extracts_output():
-    """A callable target returning {"output", "trace"} feeds the trajectory and the conversation."""
+def test_task_fn_session_trace_becomes_trajectory():
+    """The session's tool trace is returned as the trajectory."""
 
-    def dict_target(_msg):
-        return {"output": "dict reply", "trace": [{"name": "lookup", "input": {"id": "1"}}]}
+    def reply(_msg):
+        session.trace.append({"name": "lookup", "input": {"id": "1"}})
+        return "reply"
 
-    task = _build_attacker_task(dict_target, _by_label(_StubStrategy()))
+    session = _FakeSession(reply)
+    task = _build_attacker_task(session, _by_label(_StubStrategy()))
     result = task(_case())
 
-    assert result["output"][1]["content"] == "dict reply"
     assert result["trajectory"] == [{"name": "lookup", "input": {"id": "1"}}]
 
 
-def test_task_fn_dict_target_without_trace_key():
-    """A dict target lacking a "trace" key still extracts output and emits an empty trajectory."""
-    task = _build_attacker_task(lambda _msg: {"output": "no trace here"}, _by_label(_StubStrategy()))
-    result = task(_case())
+def test_task_fn_trajectory_is_a_copy_not_the_live_trace():
+    """A passed-in session is reused across cases, and each case's reset() clears
+    its trace in place. The returned trajectory must be a copy, so a later case's
+    reset() does not retroactively empty a prior case's recorded trajectory."""
 
-    assert result["output"][1]["content"] == "no trace here"
-    assert result["trajectory"] == []
+    def reply(_msg):
+        session.trace.append({"name": "lookup", "input": {}})
+        return "reply"
+
+    session = _FakeSession(reply)
+    task = _build_attacker_task(session, _by_label(_StubStrategy()))
+
+    result0 = task(_case("c0"))
+    assert result0["trajectory"] == [{"name": "lookup", "input": {}}]
+    # second case resets (clears) the same session's trace in place ...
+    task(_case("c1"))
+    # ... but case 0's recorded trajectory must be untouched, and a distinct object
+    assert result0["trajectory"] == [{"name": "lookup", "input": {}}]
+    assert result0["trajectory"] is not session.trace
+
+
+def test_task_fn_bare_callable_target_raises_type_error():
+    """A bare callable can't snapshot/restore, so it is rejected up front."""
+    task = _build_attacker_task(lambda _msg: "reply", _by_label(_StubStrategy()))
+    with pytest.raises(TypeError, match="TargetSession"):
+        task(_case())
+
+
+def test_task_fn_session_missing_trace_raises_type_error():
+    """A session with all four methods but no ``trace`` is rejected up front, not
+    accepted and then crashed on ``session.trace`` (which the engine would swallow
+    into a misleading 'defended' verdict)."""
+
+    class _NoTrace:
+        def invoke(self, _m):
+            return "r"
+
+        def reset(self):
+            pass
+
+        def snapshot(self):
+            return None
+
+        def restore(self, _c):
+            pass
+
+    task = _build_attacker_task(_NoTrace(), _by_label(_StubStrategy()))
+    with pytest.raises(TypeError, match="TargetSession"):
+        task(_case())
 
 
 def test_task_fn_clears_agent_messages_per_case():

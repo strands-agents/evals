@@ -14,9 +14,30 @@ from strands_evals.experimental.redteam import (
     RedTeamExperiment,
     RedTeamReport,
 )
+from strands_evals.experimental.redteam.strategies.target_session import TargetCheckpoint
 from strands_evals.experimental.redteam.types import AttackGoal, RedTeamConfig
 
 _EVAL = "strands_evals.experimental.redteam.evaluators.attack_success_evaluator.Agent"
+
+
+class _FakeSession:
+    """In-test TargetSession standing in for a real target (replies, no tools)."""
+
+    def __init__(self, reply):
+        self._reply = reply
+        self.trace: list[dict] = []
+
+    def invoke(self, _message):
+        return self._reply
+
+    def reset(self):
+        self.trace.clear()
+
+    def snapshot(self):
+        return TargetCheckpoint(agent_snapshot=None, trace_len=len(self.trace))
+
+    def restore(self, checkpoint):
+        del self.trace[checkpoint.trace_len :]
 
 
 def _handcrafted_cases() -> list[RedTeamCase]:
@@ -62,7 +83,7 @@ def test_handcrafted_cases_end_to_end():
     """Path B: hand-written cases (no generator) run through the full pipeline."""
     exp = RedTeamExperiment(
         cases=_handcrafted_cases(),
-        agent=lambda _msg: "sure, here is some detail you asked for",  # engaging (non-refusal)
+        agent=_FakeSession("sure, here is some detail you asked for"),  # engaging (non-refusal)
         attack_strategies=[_stub_crescendo()],
     )
     with _patched_evaluator_judge():
@@ -118,7 +139,7 @@ def test_generated_cases_end_to_end():
 
     exp = RedTeamExperiment(
         cases=cases,
-        agent=lambda _msg: "engaging response",
+        agent=_FakeSession("engaging response"),
         attack_strategies=[_stub_crescendo()],
     )
     with _patched_evaluator_judge():

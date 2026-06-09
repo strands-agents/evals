@@ -2,12 +2,12 @@
 
 from unittest.mock import MagicMock
 
-import pytest
 from strands import Agent
 
 from strands_evals.experimental.redteam.strategies.target_session import (
-    AgentTargetSession,
-    CallableTargetSession,
+    MALFORMED_TOOL_NAME,
+    StrandsAgentSession,
+    _tool_uses_in,
 )
 
 
@@ -18,21 +18,72 @@ def _mock_agent(messages=None):
 
 
 # ---------------------------------------------------------------------------
-# AgentTargetSession — invoke + trace
+# _tool_uses_in — the single place that knows the SDK message schema (J7)
 # ---------------------------------------------------------------------------
 
 
-class TestAgentTargetSessionInvoke:
+class TestToolUsesIn:
+    def test_extracts_tool_use_blocks(self):
+        messages = [{"content": [{"toolUse": {"name": "search", "input": {"q": "x"}}}]}]
+        assert _tool_uses_in(messages) == [{"name": "search", "input": {"q": "x"}}]
+
+    def test_ignores_non_tool_use_blocks(self):
+        messages = [{"content": [{"text": "just text"}]}]
+        assert _tool_uses_in(messages) == []
+
+    def test_defaults_missing_name_and_input(self):
+        messages = [{"content": [{"toolUse": {}}]}]
+        assert _tool_uses_in(messages) == [{"name": "", "input": {}}]
+
+    def test_multiple_blocks_across_messages_in_order(self):
+        messages = [
+            {"content": [{"toolUse": {"name": "a", "input": {}}}]},
+            {"content": [{"text": "x"}, {"toolUse": {"name": "b", "input": {}}}]},
+        ]
+        assert _tool_uses_in(messages) == [{"name": "a", "input": {}}, {"name": "b", "input": {}}]
+
+    def test_malformed_tool_use_block_recorded_as_placeholder(self):
+        # A toolUse that isn't the expected mapping is recorded as a distinguishable
+        # placeholder (with a warning), not skipped or raised: it must not discard
+        # the case's trace, and the trace length must stay honest so a backtracking
+        # strategy still sees that a tool call happened this turn.
+        messages = [
+            {"content": [{"toolUse": "not a dict"}]},
+            {"content": [{"toolUse": {"name": "good", "input": {}}}]},
+        ]
+        result = _tool_uses_in(messages)
+        # length stays honest (2, not 1) -- this is what the J4 tool-call gate keys on
+        assert len(result) == 2
+        assert result == [{"name": MALFORMED_TOOL_NAME, "input": {}}, {"name": "good", "input": {}}]
+
+    def test_missing_content_key_is_skipped(self):
+        assert _tool_uses_in([{"role": "user"}]) == []
+
+    def test_does_not_raise_on_malformed_message_or_block(self):
+        # Schema drift in the message/block shape (not just the toolUse value) must
+        # be tolerated, never raised: a raise would propagate to the experiment's
+        # per-case catch and mislabel a possible breach as defended.
+        assert _tool_uses_in(["not a dict"]) == []  # non-dict message
+        assert _tool_uses_in([{"content": [None]}]) == []  # non-dict block
+        assert _tool_uses_in([{"content": None}]) == []  # content is None
+
+
+# ---------------------------------------------------------------------------
+# StrandsAgentSession — invoke + trace
+# ---------------------------------------------------------------------------
+
+
+class TestStrandsAgentSessionInvoke:
     def test_returns_string_response(self):
         agent = _mock_agent()
         agent.return_value = "hello back"
-        assert AgentTargetSession(agent).invoke("hi") == "hello back"
+        assert StrandsAgentSession(agent).invoke("hi") == "hello back"
 
     def test_appends_tool_uses_to_trace(self):
         agent = _mock_agent(messages=[])
         new_msg = {"content": [{"toolUse": {"name": "search", "input": {"q": "x"}}}]}
         agent.side_effect = lambda _m: (agent.messages.append(new_msg), "ok")[1]
-        session = AgentTargetSession(agent)
+        session = StrandsAgentSession(agent)
         session.invoke("hi")
         assert session.trace == [{"name": "search", "input": {"q": "x"}}]
 
@@ -40,27 +91,17 @@ class TestAgentTargetSessionInvoke:
         old_msg = {"content": [{"toolUse": {"name": "old", "input": {}}}]}
         agent = _mock_agent(messages=[old_msg])
         agent.return_value = "ok"
-        session = AgentTargetSession(agent)
+        session = StrandsAgentSession(agent)
         session.invoke("hi")
         assert session.trace == []
 
-    def test_swallows_message_format_errors(self):
-        agent = _mock_agent(messages=[])
-        agent.side_effect = lambda _m: (agent.messages.append("not a dict"), "ok")[1]
-        session = AgentTargetSession(agent)
-        session.invoke("hi")  # must not raise
-        assert session.trace == []
-
-    def test_supports_rewind_is_true(self):
-        assert AgentTargetSession(_mock_agent()).supports_rewind is True
-
 
 # ---------------------------------------------------------------------------
-# AgentTargetSession — snapshot / restore (real Agent, the proof test)
+# StrandsAgentSession — snapshot / restore (real Agent, the proof test)
 # ---------------------------------------------------------------------------
 
 
-class TestAgentTargetSessionRewind:
+class TestStrandsAgentSessionRewind:
     def _real_agent(self):
         # A real Agent (no model needed) so take_snapshot/load_snapshot exercise the
         # SDK's actual deepcopy rollback rather than a mock.
@@ -71,7 +112,7 @@ class TestAgentTargetSessionRewind:
         )
 
     def test_restore_rolls_back_agent_messages(self):
-        session = AgentTargetSession(self._real_agent())
+        session = StrandsAgentSession(self._real_agent())
         snap = session.snapshot()
         # mutate the agent's history past the snapshot
         session._agent.messages.append({"role": "user", "content": [{"text": "refused turn"}]})
@@ -81,68 +122,18 @@ class TestAgentTargetSessionRewind:
         assert session._agent.messages[0]["content"][0]["text"] == "seed"
 
     def test_restore_truncates_trace(self):
-        session = AgentTargetSession(self._real_agent())
-        session._trace.append({"name": "before", "input": {}})
+        session = StrandsAgentSession(self._real_agent())
+        session.trace.append({"name": "before", "input": {}})
         snap = session.snapshot()
-        session._trace.append({"name": "after_snapshot", "input": {}})
+        session.trace.append({"name": "after_snapshot", "input": {}})
         session.restore(snap)
         # only the pre-snapshot trace entry survives; the ghost tool-call is gone
         assert session.trace == [{"name": "before", "input": {}}]
 
     def test_reset_clears_agent_history_and_trace(self):
-        session = AgentTargetSession(self._real_agent())
-        session._trace.append({"name": "leftover", "input": {}})
+        session = StrandsAgentSession(self._real_agent())
+        session.trace.append({"name": "leftover", "input": {}})
         assert len(session._agent.messages) == 1  # seeded
         session.reset()
         assert session._agent.messages == []
         assert session.trace == []
-
-    def test_trim_trace_drops_entries_past_length(self):
-        session = AgentTargetSession(self._real_agent())
-        session._trace.extend([{"name": "a", "input": {}}, {"name": "b", "input": {}}])
-        session.trim_trace(1)
-        assert session.trace == [{"name": "a", "input": {}}]
-        # no-op when length is at or beyond current
-        session.trim_trace(5)
-        assert session.trace == [{"name": "a", "input": {}}]
-
-
-# ---------------------------------------------------------------------------
-# CallableTargetSession
-# ---------------------------------------------------------------------------
-
-
-class TestCallableTargetSession:
-    def test_invoke_plain_string(self):
-        session = CallableTargetSession(lambda m: f"echo:{m}")
-        assert session.invoke("hi") == "echo:hi"
-
-    def test_invoke_dict_merges_trace_and_returns_output(self):
-        payload = {"output": "done", "trace": [{"name": "t", "input": {}}]}
-        session = CallableTargetSession(lambda _m: payload)
-        assert session.invoke("hi") == "done"
-        assert session.trace == [{"name": "t", "input": {}}]
-
-    def test_supports_rewind_is_false(self):
-        assert CallableTargetSession(lambda _m: "x").supports_rewind is False
-
-    def test_snapshot_raises(self):
-        with pytest.raises(NotImplementedError):
-            CallableTargetSession(lambda _m: "x").snapshot()
-
-    def test_restore_raises(self):
-        session = CallableTargetSession(lambda _m: "x")
-        with pytest.raises(NotImplementedError):
-            session.restore(MagicMock())
-
-    def test_reset_clears_trace(self):
-        session = CallableTargetSession(lambda _m: "x")
-        session._trace.append({"name": "leftover", "input": {}})
-        session.reset()
-        assert session.trace == []
-
-    def test_trim_trace_drops_entries_past_length(self):
-        session = CallableTargetSession(lambda _m: "x")
-        session._trace.extend([{"name": "a", "input": {}}, {"name": "b", "input": {}}])
-        session.trim_trace(1)
-        assert session.trace == [{"name": "a", "input": {}}]

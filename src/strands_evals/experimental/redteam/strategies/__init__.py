@@ -2,7 +2,7 @@ from .base import AttackRunResult, AttackStrategy
 from .crescendo import CrescendoStrategy
 from .prompt_strategy import PromptStrategy
 from .prompt_strategy.gradual_escalation import get_template as _gradual_escalation_template
-from .target_session import AgentTargetSession, CallableTargetSession, TargetCheckpoint, TargetSession
+from .target_session import StrandsAgentSession, TargetCheckpoint, TargetSession, ToolUseEntry
 
 # Ready-made strategy instances users can pass to RedTeamExperiment(attack_strategies=[...]).
 # Strategy instances are shared across cases, so each must keep `__init__` for static
@@ -14,12 +14,12 @@ BUILTIN_STRATEGIES: dict[str, AttackStrategy] = {
 
 __all__ = [
     "BUILTIN_STRATEGIES",
-    "AgentTargetSession",
     "AttackRunResult",
     "AttackStrategy",
-    "CallableTargetSession",
     "CrescendoStrategy",
     "PromptStrategy",
+    "StrandsAgentSession",
     "TargetCheckpoint",
     "TargetSession",
+    "ToolUseEntry",
 ]

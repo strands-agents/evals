@@ -11,7 +11,7 @@ from strands.models.model import Model
 
 from .case import RedTeamCase
 from .strategies import AttackStrategy
-from .strategies.target_session import AgentTargetSession, CallableTargetSession
+from .strategies.target_session import StrandsAgentSession, TargetSession
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ MAX_ALLOWED_TURNS = 50
 
 
 def _build_attacker_task(
-    agent: Agent | Callable[[str], Any],
+    agent: Agent | TargetSession,
     by_label: dict[str, AttackStrategy],
     *,
     model: Model | str | None = None,
@@ -31,8 +31,9 @@ def _build_attacker_task(
     -> {"output": conversation, "trajectory": tool_uses}`` that looks up the
     case's strategy (by ``metadata["strategy"]``) and delegates the multi-turn
     loop to ``strategy.run_attack``, injecting a ``TargetSession`` that handles
-    target invocation, tool-trace capture, and per-case isolation. When
-    ``agent`` is an ``Agent``, its message history is reset between cases.
+    target invocation, tool-trace capture, and per-case isolation. An ``Agent``
+    is wrapped in a ``StrandsAgentSession``; a ``TargetSession`` is used as-is.
+    Either way the session is reset between cases.
 
     Each strategy owns its own turn budget; ``MAX_ALLOWED_TURNS`` is passed as a
     hard ceiling so no strategy can run unbounded.
@@ -47,7 +48,7 @@ def _build_attacker_task(
         strategy = _resolve_case_strategy(case, by_label)
         strategy.reset()
 
-        session = AgentTargetSession(agent) if isinstance(agent, Agent) else CallableTargetSession(agent)
+        session = _build_session(agent)
         session.reset()  # clear any prior-case state (e.g. a reused Agent's message history)
 
         result = strategy.run_attack(case, session, max_turns=MAX_ALLOWED_TURNS, model=model)
@@ -62,10 +63,40 @@ def _build_attacker_task(
         # the rest, so run stats reach the report via run_meta instead.
         return {
             "output": result.conversation,
-            "trajectory": session.trace,
+            # Copy: a passed-in TargetSession is reused across cases, and the next
+            # case's session.reset() clears this same list in place. The base engine
+            # holds the trajectory by reference until it model_dumps it, so hand it a
+            # snapshot rather than the live trace.
+            "trajectory": list(session.trace),
         }
 
     return task_fn
+
+
+def _build_session(agent: Agent | TargetSession) -> TargetSession:
+    """Wrap an ``Agent`` in a ``StrandsAgentSession``, or pass a ``TargetSession`` through.
+
+    Raises:
+        TypeError: If ``agent`` is neither an ``Agent`` nor a ``TargetSession``
+            (e.g. a bare callable -- a strategy needs snapshot/restore to manage
+            the target's state, which an opaque callable cannot provide).
+    """
+    if isinstance(agent, Agent):
+        return StrandsAgentSession(agent)
+    # Structural (not isinstance) check: TargetSession is a Protocol, and the method
+    # set is checked by hand. The `trace` check is separate and load-bearing -- it's
+    # the one member the task runner dereferences directly (it becomes the
+    # trajectory), and a @runtime_checkable isinstance would only verify method
+    # presence, not that `trace` is a list. Without it a session missing `trace`
+    # would pass and later die with an AttributeError the experiment swallows into a
+    # misleading "defended" verdict.
+    has_methods = all(callable(getattr(agent, method, None)) for method in ("invoke", "reset", "snapshot", "restore"))
+    if has_methods and isinstance(getattr(agent, "trace", None), list):
+        return agent
+    raise TypeError(
+        f"agent must be a strands.Agent or a TargetSession, got {type(agent).__name__!r}; "
+        "wrap a custom target in a TargetSession so the strategy can snapshot/restore its state."
+    )
 
 
 def _resolve_case_strategy(case: RedTeamCase, by_label: dict[str, AttackStrategy]) -> AttackStrategy:

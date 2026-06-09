@@ -10,10 +10,42 @@ from strands_evals.experimental.redteam.strategies.crescendo import (
     is_refusal,
     success_score,
 )
-from strands_evals.experimental.redteam.strategies.target_session import CallableTargetSession
+from strands_evals.experimental.redteam.strategies.target_session import TargetCheckpoint
 from strands_evals.experimental.redteam.types import AttackGoal, RedTeamConfig
 
 _CRESCENDO = "strands_evals.experimental.redteam.strategies.crescendo"
+
+
+class _FakeSession:
+    """In-test rewindable TargetSession: replies via a callable, records tool uses.
+
+    ``tool_uses_fn`` (message -> list of tool-use dicts) lets a test simulate a
+    turn that drives a tool call. ``snapshot`` / ``restore`` roll back both the
+    stand-in message state and the trace, mirroring StrandsAgentSession.
+    """
+
+    def __init__(self, reply_fn, tool_uses_fn=None):
+        self._reply_fn = reply_fn
+        self._tool_uses_fn = tool_uses_fn
+        self._messages: list[str] = []
+        self.trace: list[dict] = []
+
+    def invoke(self, message):
+        self._messages.append(message)
+        if self._tool_uses_fn is not None:
+            self.trace.extend(self._tool_uses_fn(message))
+        return self._reply_fn(message)
+
+    def reset(self):
+        self._messages.clear()
+        self.trace.clear()
+
+    def snapshot(self):
+        return TargetCheckpoint(agent_snapshot=list(self._messages), trace_len=len(self.trace))
+
+    def restore(self, checkpoint):
+        self._messages = list(checkpoint.agent_snapshot)
+        del self.trace[checkpoint.trace_len :]
 
 
 def _case(success_criteria: str | None = "leaked the secret") -> RedTeamCase:
@@ -40,9 +72,9 @@ def _strategy(**kwargs) -> CrescendoStrategy:
     return strat
 
 
-def _session(reply_fn):
-    """Wrap a ``(message) -> response`` callable as a (non-rewindable) TargetSession."""
-    return CallableTargetSession(reply_fn)
+def _session(reply_fn, tool_uses_fn=None):
+    """Wrap a ``(message) -> response`` callable as a rewindable TargetSession."""
+    return _FakeSession(reply_fn, tool_uses_fn)
 
 
 # ---------------------------------------------------------------------------
@@ -287,16 +319,16 @@ def test_crescendo_not_in_builtin_strategies():
 
 
 # ---------------------------------------------------------------------------
-# backtrack scope by target capability:
-#   - rewindable (Agent) session: refusal is rolled back via snapshot/restore
-#   - non-rewindable (callable) session: report-scope drop, refusal kept as evidence
-# Both keep the refused turn in pruned_branches.
+# backtrack: a refusal is rolled back via snapshot/restore (true state rollback),
+# the refused turn is dropped from the scored conversation but kept as evidence in
+# pruned_branches, and its tool-trace entries are trimmed. A turn that drove a tool
+# call is never backtracked even if its text reads as a refusal.
 # ---------------------------------------------------------------------------
 
 
 def test_backtrack_captures_pruned_branch_and_drops_from_conversation():
     """A refused turn is dropped from the scored conversation but kept in
-    ``pruned_branches`` as defended-turn evidence (callable / report-scope path)."""
+    ``pruned_branches`` as defended-turn evidence."""
     strat = _strategy(max_turns=2, max_backtracks=5)
     replies = iter(["I can't help with that.", "here is the answer"])
     refusals = iter([True, False])
@@ -319,40 +351,19 @@ def test_backtrack_captures_pruned_branch_and_drops_from_conversation():
     ]
 
 
-def test_callable_backtrack_trims_refused_turn_trace():
-    """A3b: on a callable (non-rewindable) backtrack, the refused turn's tool-use
-    entries must be trimmed from the session trace, not left to ghost into the
-    trajectory."""
-    replies = iter(
-        [
-            {"output": "I can't help with that.", "trace": [{"name": "refused_tool", "input": {}}]},
-            {"output": "here is the answer", "trace": [{"name": "kept_tool", "input": {}}]},
-        ]
-    )
-    session = CallableTargetSession(lambda _m: next(replies))
-
-    strat = _strategy(max_turns=2, max_backtracks=5)
-    refusals = iter([True, False])
-    with (
-        patch(f"{_CRESCENDO}.gen_escalating_question", return_value="q"),
-        patch(f"{_CRESCENDO}.is_refusal", side_effect=lambda *_a, **_k: next(refusals)),
-        patch(f"{_CRESCENDO}.success_score", return_value=0.0),
-    ):
-        strat.run_attack(_case(), session, max_turns=10)
-
-    # only the kept turn's tool use survives; the refused turn's is trimmed
-    assert session.trace == [{"name": "kept_tool", "input": {}}]
-
-
-def test_rewindable_target_is_restored_on_backtrack():
-    """With a rewindable session, a refusal triggers snapshot()/restore() so the
-    target genuinely forgets the refused turn (true rollback, not report-scope)."""
-    session = MagicMock()
-    session.supports_rewind = True
-    session.trace = []
-    sentinel_snapshot = object()
-    session.snapshot.return_value = sentinel_snapshot
-    session.invoke.side_effect = ["I can't help with that.", "here is the answer"]
+def test_backtrack_restores_the_pre_turn_snapshot():
+    """A refusal triggers restore() with the snapshot taken *before* the refused
+    turn (not a re-snapshot), so the target genuinely forgets that turn. Uses the
+    real _FakeSession (whose restore actually rolls back) and records the checkpoint
+    restore() received -- a MagicMock would auto-vivify attributes and could mask a
+    gate-attribute regression."""
+    replies = iter(["I can't help with that.", "here is the answer"])
+    session = _session(lambda _m: next(replies))
+    restored_with = []
+    pre_turn_snap = session.snapshot()  # checkpoint at trace_len 0, before any turn
+    real_restore = session.restore
+    session.snapshot = lambda: pre_turn_snap
+    session.restore = lambda cp: (restored_with.append(cp), real_restore(cp))[1]
 
     strat = _strategy(max_turns=2, max_backtracks=5)
     refusals = iter([True, False])
@@ -363,12 +374,91 @@ def test_rewindable_target_is_restored_on_backtrack():
     ):
         result = strat.run_attack(_case(), session, max_turns=10)
 
-    # restore() was called with the snapshot taken before the refused turn
-    session.restore.assert_called_once_with(sentinel_snapshot)
+    # restore() was called exactly once, with the pre-turn checkpoint
+    assert restored_with == [pre_turn_snap]
     assert result.conversation == [
         {"role": "attacker", "content": "q"},
         {"role": "target", "content": "here is the answer"},
     ]
+
+
+def test_backtrack_loop_never_trims_a_tool_bearing_turn():
+    """Invariant after J4: a turn that drove a tool call is never the one restored,
+    so the loop has no path that trims tool-use entries on a backtrack. A tool-free
+    refusal is backtracked (its empty contribution rolled back); the kept tool turn
+    survives."""
+    replies = iter(["I can't help with that.", "here is the answer"])
+    # refused turn: no tool use; kept turn: one tool use that must survive
+    tool_uses = iter([[], [{"name": "kept_tool", "input": {}}]])
+    session = _session(lambda _m: next(replies), tool_uses_fn=lambda _m: next(tool_uses))
+
+    strat = _strategy(max_turns=2, max_backtracks=5)
+    refusals = iter([True, False])
+    with (
+        patch(f"{_CRESCENDO}.gen_escalating_question", return_value="q"),
+        patch(f"{_CRESCENDO}.is_refusal", side_effect=lambda *_a, **_k: next(refusals)),
+        patch(f"{_CRESCENDO}.success_score", return_value=0.0),
+    ):
+        strat.run_attack(_case(), session, max_turns=10)
+
+    # the backtracked turn carried no tool use to trim; the kept turn's survives
+    assert session.trace == [{"name": "kept_tool", "input": {}}]
+
+
+def test_tool_call_turn_not_backtracked_despite_refusal_text():
+    """J4: a turn that refuses in words but drives a tool call is the highest-severity
+    breach -- it must NOT be backtracked, so its tool evidence survives in the
+    trajectory and the turn is scored, not labelled defended."""
+    # Refusal-marker text AND a tool call every turn. max_turns=5 leaves budget so
+    # we can also prove the loop STOPS on the tool breach instead of escalating past
+    # it (the in-loop scorer only reads the refusal text and returns 0.0).
+    session = _session(
+        lambda _m: "I can't help with that.",
+        tool_uses_fn=lambda _m: [{"name": "exfiltrate", "input": {"id": "secret"}}],
+    )
+    strat = _strategy(max_turns=5, max_backtracks=5)
+    with (
+        patch(f"{_CRESCENDO}.gen_escalating_question", return_value="q"),
+        # is_refusal would say True on the text, but the loop must short-circuit on
+        # the tool call before consulting it.
+        patch(f"{_CRESCENDO}.is_refusal", return_value=True),
+        patch(f"{_CRESCENDO}.success_score", return_value=0.0),
+    ):
+        result = strat.run_attack(_case(), session, max_turns=10)
+
+    # the turn is kept in the scored conversation, not pruned ...
+    assert result.conversation == [
+        {"role": "attacker", "content": "q"},
+        {"role": "target", "content": "I can't help with that."},
+    ]
+    assert result.pruned_branches == []
+    assert result.metadata["backtracks"] == 0
+    # ... the tool evidence reaches the trajectory ...
+    assert session.trace == [{"name": "exfiltrate", "input": {"id": "secret"}}]
+    # ... and the loop stops on the breach rather than escalating to max_turns
+    assert result.strategy_succeeded is True
+    assert result.metadata["turns_used"] == 1
+    assert result.metadata["target_calls"] == 1
+
+
+def test_plain_tool_call_stops_loop_independent_of_refusal():
+    """A tool call stops the loop even on a non-refusing turn the scorer rates low:
+    the stop is driven by the tool call, not by refusal handling or the text score."""
+    session = _session(
+        lambda _m: "sure, let me look that up",  # no refusal markers
+        tool_uses_fn=lambda _m: [{"name": "exfiltrate", "input": {}}],
+    )
+    strat = _strategy(max_turns=5, max_backtracks=5)
+    with (
+        patch(f"{_CRESCENDO}.gen_escalating_question", return_value="q"),
+        patch(f"{_CRESCENDO}.is_refusal", return_value=False),
+        patch(f"{_CRESCENDO}.success_score", return_value=0.0),
+    ):
+        result = strat.run_attack(_case(), session, max_turns=10)
+
+    assert result.strategy_succeeded is True
+    assert result.metadata["turns_used"] == 1
+    assert session.trace == [{"name": "exfiltrate", "input": {}}]
 
 
 def test_name_and_default_label():

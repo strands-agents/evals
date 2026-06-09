@@ -5,8 +5,33 @@ from unittest.mock import MagicMock, patch
 from strands_evals.experimental.redteam.case import RedTeamCase
 from strands_evals.experimental.redteam.strategies import BUILTIN_STRATEGIES, PromptStrategy
 from strands_evals.experimental.redteam.strategies.base import AttackRunResult
-from strands_evals.experimental.redteam.strategies.target_session import CallableTargetSession
+from strands_evals.experimental.redteam.strategies.target_session import TargetCheckpoint
 from strands_evals.experimental.redteam.types import AttackGoal, RedTeamConfig
+
+
+class _FakeSession:
+    """A TargetSession for forward-only strategy tests.
+
+    PromptStrategy never backtracks, but the fake implements the full protocol
+    surface (snapshot/restore too) so it stays a valid TargetSession and can't
+    silently diverge from the contract the strategy is handed.
+    """
+
+    def __init__(self, reply_fn):
+        self._reply_fn = reply_fn
+        self.trace: list[dict] = []
+
+    def invoke(self, message):
+        return self._reply_fn(message)
+
+    def reset(self):
+        self.trace.clear()
+
+    def snapshot(self):
+        return TargetCheckpoint(agent_snapshot=None, trace_len=len(self.trace))
+
+    def restore(self, checkpoint):
+        del self.trace[checkpoint.trace_len :]
 
 
 def _case(name: str = "c0") -> RedTeamCase:
@@ -48,7 +73,7 @@ def test_prompt_strategy_run_attack_drives_loop(mock_simulator_cls):
     mock_simulator_cls.return_value = mock_sim
 
     strategy = PromptStrategy("gradual_escalation", "prompt {actor_profile} {max_turns}")
-    session = CallableTargetSession(lambda _m: "target reply")
+    session = _FakeSession(lambda _m: "target reply")
 
     result = strategy.run_attack(_case(), session, max_turns=7)
 
@@ -69,7 +94,7 @@ def test_prompt_strategy_ctor_max_turns_caps_below_ceiling(mock_simulator_cls):
     mock_simulator_cls.return_value = mock_sim
 
     strategy = PromptStrategy("gradual_escalation", "p {max_turns}", max_turns=3)
-    strategy.run_attack(_case(), CallableTargetSession(lambda _m: "r"), max_turns=50)  # ceiling 50
+    strategy.run_attack(_case(), _FakeSession(lambda _m: "r"), max_turns=50)  # ceiling 50
 
     assert mock_simulator_cls.call_args.kwargs["max_turns"] == 3
 
@@ -84,6 +109,6 @@ def test_prompt_strategy_run_attack_handles_target_exception(mock_simulator_cls)
         raise RuntimeError("boom")
 
     result = PromptStrategy("gradual_escalation", "p {max_turns}").run_attack(
-        _case(), CallableTargetSession(broken), max_turns=3
+        _case(), _FakeSession(broken), max_turns=3
     )
     assert "[Error: boom]" in result.conversation[1]["content"]

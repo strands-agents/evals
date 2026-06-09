@@ -19,14 +19,14 @@ class AttackRunResult:
 
     The strategy owns the multi-turn loop and returns this object; the task
     runner assembles the ``{"output", "trajectory", ...}`` dict the base
-    ``Experiment`` expects, pairing this conversation with the tool trace it
-    captured via ``call_target``. The authoritative success verdict is
+    ``Experiment`` expects, pairing this conversation with the tool trace the
+    injected ``TargetSession`` captured. The authoritative success verdict is
     re-computed independently by ``AttackSuccessEvaluator`` over the trace, so
     ``strategy_succeeded``/``strategy_score`` are observability only.
 
-    The tool trace is deliberately NOT a field here: it is captured by the
-    injected ``call_target`` closure that the task runner owns, so a strategy
-    has no role in producing it.
+    The tool trace is deliberately NOT a field here: it lives on the
+    ``TargetSession`` the task runner owns, so a strategy has no role in
+    producing it.
 
     Attributes:
         conversation: Ordered attacker/target turns; mapped to ``output``.
@@ -54,8 +54,8 @@ class AttackStrategy(ABC):
     runner injects a ``TargetSession`` (which already handles target invocation,
     tool-trace capture, and per-case isolation), so strategies never build
     target-calling themselves. Strategies that backtrack use the session's
-    snapshot/restore (guarding on ``supports_rewind``); strategies that only
-    converse forward use ``session.invoke`` alone.
+    snapshot/restore; strategies that only converse forward use
+    ``session.invoke`` alone.
     """
 
     def __init__(self, *, label: str | None = None) -> None:
@@ -97,9 +97,8 @@ class AttackStrategy(ABC):
             target_session: Injected session for talking to the target. Use
                 ``target_session.invoke(message)`` to send a turn; it captures
                 the tool trace and applies per-case isolation, so strategies must
-                not build their own target-calling. Backtracking strategies guard
-                on ``target_session.supports_rewind`` and use ``snapshot`` /
-                ``restore``.
+                not build their own target-calling. Backtracking strategies use
+                ``target_session.snapshot`` / ``restore``.
             max_turns: Experiment-level ceiling on attacker/target turns. A
                 strategy with its own ``max_turns`` should run the smaller of the
                 two (the ceiling never lets a strategy exceed the experiment

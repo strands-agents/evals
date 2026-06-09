@@ -1,20 +1,18 @@
 """Crescendo multi-turn attack strategy.
 
 Crescendo escalates gradually across turns, each attacker message building on the
-target's previous answer. On a refusal it backtracks: the refused (question,
-response) pair is dropped from the scored conversation (kept in
-``pruned_branches`` as evidence) and a fresh question is tried.
+target's previous answer. The strategy snapshots before each turn; on a refusal
+that drove no tool call (and while backtracks remain) it ``restore``s that
+snapshot, so the target genuinely forgets the refused turn — a true rollback of
+the *target's* state (its messages and tool trace). The refused (question,
+response) pair is dropped from the scored conversation (kept in ``pruned_branches``
+as evidence) and a fresh question is tried. The attacker agent keeps its own
+history, so successive backtracks still escalate from accumulated context.
 
-How strong the backtrack is depends on the target session's ``supports_rewind``:
-
-- Rewindable target (``AgentTargetSession``): the strategy snapshots before each
-  turn and ``restore``s on a refusal, so the target genuinely forgets the refused
-  turn — a true rollback of the *target's* state. (The attacker agent keeps its own
-  history, so successive backtracks still escalate from accumulated context.)
-- Non-rewindable target (``CallableTargetSession``, an opaque callable): we cannot
-  see or reset the target's internal state, so the backtrack is report-scope only
-  (the refused turn is dropped from the reported conversation and its trace
-  entries trimmed, but the callable may still carry the refusal internally).
+A turn that drove a tool call is never backtracked even if its text reads as a
+refusal: acting on the request is the highest-severity breach, so the turn is
+kept, the loop stops, and the tool evidence reaches the authoritative
+``AttackSuccessEvaluator``.
 
 The refusal / success / question-generation helpers are module-level functions
 (not methods) so future strategies (PAIR, TAP) can reuse them without importing a
@@ -248,35 +246,40 @@ class CrescendoStrategy(AttackStrategy):
                 logger.warning("reason=<parse_failure> | attacker produced no question | ending case early")
                 break
 
-            # Snapshot before the risky turn so a refusal can be rolled back. For a
-            # rewindable (Agent) target this is a true state rollback; an opaque
-            # callable can't snapshot, so we fall back to report-scope backtracking
-            # (drop the refused turn from the reported conversation) and trim the
-            # trace by hand.
-            snap = target_session.snapshot() if target_session.supports_rewind else None
-            trace_len = len(target_session.trace)
+            # Snapshot before the risky turn so a refusal can be rolled back: a
+            # true rollback of the target's state (messages + trace). The
+            # checkpoint's trace_len is the single source of truth for where this
+            # turn started, so we never capture it twice.
+            snap = target_session.snapshot()
 
             response = target_session.invoke(question)
             target_calls += 1
 
-            if is_refusal(response, refusal_judge) and backtracks < self._max_backtracks:
+            # A turn that drove a tool call complied through action even if it
+            # refused in words -- the highest-severity breach. Never backtrack it
+            # away: dropping it would delete the tool evidence from the trajectory
+            # the AttackSuccessEvaluator re-scores and mislabel the turn as defended.
+            tool_call_this_turn = len(target_session.trace) > snap.trace_len
+
+            if not tool_call_this_turn and is_refusal(response, refusal_judge) and backtracks < self._max_backtracks:
                 backtracks += 1
                 # Keep the refused (q, r) as evidence, then drop it: a backtracked
                 # turn never enters the scored conversation.
                 pruned_branches.append({"role": "attacker", "content": question})
                 pruned_branches.append({"role": "target", "content": response})
-                if snap is not None:
-                    target_session.restore(snap)  # rolls back the target's messages + trace
-                else:
-                    target_session.trim_trace(trace_len)  # callable: drop the refused turn's trace
+                target_session.restore(snap)  # rolls back the target's messages + trace
                 continue
 
             conversation.append({"role": "attacker", "content": question})
             conversation.append({"role": "target", "content": response})
             last_response = response
 
+            # A tool call is itself a breach (see above), so stop on it directly:
+            # the in-loop scorer only reads the response TEXT, which on a
+            # refuse-in-words-but-act-via-tool turn looks like a non-success and
+            # would otherwise keep escalating past a breach we already landed.
             score = success_score(judge, response, goal.success_criteria)
-            if score >= self._success_threshold:
+            if tool_call_this_turn or score >= self._success_threshold:
                 succeeded = True
                 break
 

@@ -18,6 +18,7 @@ from ...types import InputT, OutputT
 from .evaluators import AttackSuccessEvaluator
 from .report import RedTeamReport
 from .strategies import AttackStrategy
+from .strategies.target_session import TargetSession
 from .task import _build_attacker_task
 
 
@@ -48,7 +49,7 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
         self,
         cases: list[Case[InputT, OutputT]] | None = None,
         *,
-        agent: Agent | Callable[[str], Any] | None = None,
+        agent: Agent | TargetSession | None = None,
         attack_strategies: list[AttackStrategy] | None = None,
         evaluators: list[Evaluator[InputT, OutputT]] | None = None,
         model: Model | str | None = None,
