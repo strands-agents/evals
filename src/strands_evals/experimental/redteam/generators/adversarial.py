@@ -12,12 +12,6 @@ from strands import Agent
 from strands.models.model import Model
 
 from ..case import RedTeamCase
-from ..strategies import (
-    BUILTIN_STRATEGIES,
-    DEFAULT_STRATEGY,
-    AttackStrategy,
-    resolve_strategy,
-)
 from ..types import DEFAULT_SEVERITY, RISK_CATEGORIES, AttackGoal, RedTeamConfig
 from .prompt_templates import get_template as _get_prompt_template
 
@@ -47,12 +41,6 @@ class _RiskCategorySelection(BaseModel):
     categories: list[str] = Field(description="Selected risk category keys relevant to the target")
 
 
-def _resolve_strategies(strategies: list[AttackStrategy | str] | None) -> list[AttackStrategy]:
-    if not strategies:
-        return [BUILTIN_STRATEGIES[DEFAULT_STRATEGY]]
-    return [resolve_strategy(s) for s in strategies]
-
-
 _REQUIRED_TARGET_KEYS = ("system_prompt", "tools")
 
 
@@ -71,7 +59,7 @@ def _extract_tool_info(agent: Agent) -> dict:
                 }
             )
     except (AttributeError, KeyError, TypeError) as e:
-        logger.warning("Failed to extract tools from agent: %s", e)
+        logger.warning("error=<%s> | failed to extract tools from agent", e)
 
     return {
         "system_prompt": agent.system_prompt or "",
@@ -95,7 +83,7 @@ class AdversarialCaseGenerator:
     Example:
         ```python
         cases = AdversarialCaseGenerator(model=model).generate_cases(
-            target=agent,
+            agent=agent,
             risk_categories=["guideline_bypass", "data_exfiltration"],
             num_cases=3,
         )
@@ -113,37 +101,33 @@ class AdversarialCaseGenerator:
     def generate_cases(
         self,
         *,
-        target: Agent | TargetSpec,
+        agent: Agent | TargetSpec,
         risk_categories: list[str] | None = None,
         num_cases: int = 5,
-        attack_strategies: list[AttackStrategy | str] | None = None,
     ) -> list[RedTeamCase]:
-        """Generate cases without building an experiment. Use with TargetSpec or for case reuse."""
+        """Generate strategy-agnostic cases for an agent. Use with TargetSpec or for case reuse."""
         return asyncio.run(
             self.generate_cases_async(
-                target=target,
+                agent=agent,
                 risk_categories=risk_categories,
                 num_cases=num_cases,
-                attack_strategies=attack_strategies,
             )
         )
 
     async def generate_cases_async(
         self,
         *,
-        target: Agent | TargetSpec,
+        agent: Agent | TargetSpec,
         risk_categories: list[str] | None = None,
         num_cases: int = 5,
-        attack_strategies: list[AttackStrategy | str] | None = None,
     ) -> list[RedTeamCase]:
         """Async variant of :meth:`generate_cases`."""
-        target_info = _coerce_target(target)
+        target_info = _coerce_target(agent)
         resolved_categories = risk_categories or await self._infer_risk_categories(target_info)
         return await self._generate_cases(
             target_info=target_info,
             risk_categories=resolved_categories,
             num_cases=num_cases,
-            attack_strategies=attack_strategies,
         )
 
     async def _generate_cases(
@@ -152,15 +136,12 @@ class AdversarialCaseGenerator:
         target_info: dict,
         risk_categories: list[str],
         num_cases: int = 5,
-        attack_strategies: list[AttackStrategy | str] | None = None,
     ) -> list[RedTeamCase]:
         for risk_category in risk_categories:
             if risk_category not in RISK_CATEGORIES:
                 raise ValueError(
                     f"Unknown risk category: '{risk_category}'. Available categories: {list(RISK_CATEGORIES)}"
                 )
-
-        resolved_strategies = _resolve_strategies(attack_strategies)
 
         cases: list[RedTeamCase] = []
         for risk_category in risk_categories:
@@ -172,32 +153,23 @@ class AdversarialCaseGenerator:
 
             severity = DEFAULT_SEVERITY.get(risk_category, "medium")
             for i, attack in enumerate(generated):
-                for strategy in resolved_strategies:
-                    template = strategy.system_prompt_template
-                    if template is None:
-                        raise NotImplementedError(
-                            f"Strategy {type(strategy).__name__!r} does not expose system_prompt_template. "
-                            "Only system-prompt-based strategies are currently supported."
-                        )
-                    config = RedTeamConfig(
-                        attack_goal=AttackGoal(
-                            risk_category=risk_category,
-                            actor_goal=attack.actor_goal,
-                            context=attack.target_context,
-                            severity=severity,
-                            success_criteria=attack.success_criteria,
-                        ),
-                        traits=attack.traits,
-                        system_prompt_template=template,
-                        strategy=strategy.name,
+                config = RedTeamConfig(
+                    attack_goal=AttackGoal(
+                        risk_category=risk_category,
+                        actor_goal=attack.actor_goal,
+                        context=attack.target_context,
+                        severity=severity,
+                        success_criteria=attack.success_criteria,
+                    ),
+                    traits=attack.traits,
+                )
+                cases.append(
+                    RedTeamCase(
+                        name=f"{risk_category}_{i}",
+                        input=attack.opening_message,
+                        config=config,
                     )
-                    cases.append(
-                        RedTeamCase(
-                            name=f"{risk_category}_{i}__{strategy.name}",
-                            input=attack.opening_message,
-                            config=config,
-                        )
-                    )
+                )
 
         return cases
 
@@ -213,11 +185,11 @@ class AdversarialCaseGenerator:
         response = await agent.invoke_async(prompt, structured_output_model=_RiskCategorySelection)
         result = cast(_RiskCategorySelection, response.structured_output)
         if result is None:
-            logger.warning("Risk-category inference returned no structured output; using all categories.")
+            logger.warning("reason=<no_structured_output> | risk-category inference empty | using all")
             return list(RISK_CATEGORIES.keys())
         valid = [c for c in result.categories if c in RISK_CATEGORIES]
         if not valid:
-            logger.warning("No recognized risk categories inferred (got %s); using all.", result.categories)
+            logger.warning("got=<%s> | no recognized risk categories inferred | using all", result.categories)
             return list(RISK_CATEGORIES.keys())
         return valid
 

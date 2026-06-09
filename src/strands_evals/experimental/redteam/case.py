@@ -15,10 +15,7 @@ class RedTeamCase(Case[InputT, OutputT]):
 
     @model_validator(mode="after")
     def _sync_metadata_from_config(self) -> Self:
-        dump = {
-            **self.config.attack_goal.model_dump(),
-            "strategy": self.config.strategy,
-        }
+        dump = dict(self.config.attack_goal.model_dump())
         if self.metadata is None:
             self.metadata = dump
         else:

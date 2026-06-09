@@ -6,142 +6,120 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from strands import Agent
+from strands import Agent, Snapshot
 from strands.models.model import Model
 
-from ...simulation.actor_simulator import ActorSimulator
-from ...types.simulation import ActorProfile
 from .case import RedTeamCase
-from .strategies import BUILTIN_STRATEGIES, AttackStrategy
+from .strategies import AttackStrategy
+from .strategies.target_session import StrandsAgentSession, TargetSession
 
 logger = logging.getLogger(__name__)
 
 MAX_ALLOWED_TURNS = 50
 
 
-def _wrap_agent_with_trace(agent: Agent) -> Callable[[str, list[dict] | None], str]:
-    """Wrap an Agent as ``(message, trace) -> response``; appends tool uses to ``trace``."""
-
-    def _call(message: str, trace: list[dict] | None = None) -> str:
-        messages_before = len(agent.messages)
-        result = agent(message)
-
-        if trace is not None:
-            try:
-                for msg in agent.messages[messages_before:]:
-                    for block in msg.get("content", []):
-                        if "toolUse" in block:
-                            tool_use = block["toolUse"]
-                            trace.append(
-                                {
-                                    "name": tool_use.get("name", ""),
-                                    "input": tool_use.get("input", {}),
-                                }
-                            )
-            except (AttributeError, KeyError, TypeError) as e:
-                logger.debug("Failed to extract tool trace: %s", e)
-
-        return str(result)
-
-    return _call
-
-
 def _build_attacker_task(
-    target: Agent | Callable[[str], Any],
+    agent: Agent | TargetSession,
+    by_label: dict[str, AttackStrategy],
     *,
-    max_turns: int = 10,
     model: Model | str | None = None,
+    run_meta: dict[str, dict[str, Any]] | None = None,
 ) -> Callable[[RedTeamCase], dict]:
-    """Build a multi-turn red team task function for ``Experiment.run_evaluations``.
+    """Build a red team task function for ``Experiment.run_evaluations``.
 
-    Internal helper used by :class:`RedTeamExperiment` when no explicit task is
-    supplied. Returns a ``task(case) -> {"output": conversation, "trajectory":
-    tool_uses}`` that drives the attacker/target conversation. When ``target``
-    is an ``Agent``, its message history is reset between cases for isolation.
-    Callable targets are assumed stateless; if your callable wraps a stateful
-    object, reset that state inside the callable yourself.
+    Internal helper used by :class:`RedTeamExperiment`. Returns a ``task(case)
+    -> {"output": conversation, "trajectory": tool_uses}`` that looks up the
+    case's strategy (by ``metadata["strategy"]``) and delegates the multi-turn
+    loop to ``strategy.run_attack``, injecting a ``TargetSession`` that handles
+    target invocation, tool-trace capture, and per-case isolation. An ``Agent``
+    is wrapped in a ``StrandsAgentSession``; a ``TargetSession`` is used as-is.
+    Either way the session is reset between cases.
+
+    Each strategy owns its own turn budget; ``MAX_ALLOWED_TURNS`` is passed as a
+    hard ceiling so no strategy can run unbounded.
+
+    The strategy's run metadata (turns_used, backtracks, ...) is recorded into
+    ``run_meta`` keyed by case name; the experiment owns that dict and joins it
+    onto the report (the base ``Experiment`` copies ``metadata`` into a fresh
+    ``EvaluationData``, so the strategy can't reach the report through it).
     """
-    if max_turns > MAX_ALLOWED_TURNS:
-        logger.warning(
-            "max_turns=%d exceeds recommended ceiling %d; clamping.",
-            max_turns,
-            MAX_ALLOWED_TURNS,
-        )
-        max_turns = MAX_ALLOWED_TURNS
 
-    agent_fn = _wrap_agent_with_trace(target) if isinstance(target, Agent) else None
-
-    def _call_target(message: str, trace: list[dict]) -> str:
-        if agent_fn is not None:
-            return agent_fn(message, trace)
-        raw = target(message)  # type: ignore[operator]
-        if isinstance(raw, dict):
-            if "trace" in raw:
-                trace.extend(raw["trace"])
-            return str(raw.get("output", ""))
-        return str(raw)
+    # Capture the target's clean state ONCE, before the first case, so every case
+    # resets to the same as-constructed baseline. Must be here (build time), not in
+    # the session __init__: the agent is shared and reused, so by the time case N's
+    # session is built the agent already carries case N-1's conversation -- snapshotting
+    # then would bake a dirty baseline. Only an Agent is rewindable this way; a
+    # passed-in TargetSession owns its own reset.
+    initial_snapshot = agent.take_snapshot(preset="session") if isinstance(agent, Agent) else None
 
     def task_fn(case: RedTeamCase) -> dict:
-        if isinstance(target, Agent):
-            target.messages.clear()
-        config = case.config
-        goal = config.attack_goal
-        strategy: AttackStrategy | None = BUILTIN_STRATEGIES.get(config.strategy) if config.strategy else None
-        if strategy is not None:
-            strategy.reset()
-        actor_profile = ActorProfile(
-            traits=config.traits,
-            context=goal.context,
-            actor_goal=goal.actor_goal,
-        )
-        if not config.system_prompt_template:
-            raise ValueError(f"RedTeamCase {case.name!r}: config.system_prompt_template is empty.")
-        system_prompt_template = config.system_prompt_template.replace("{max_turns}", str(max_turns))
+        strategy = _resolve_case_strategy(case, by_label)
+        strategy.reset()
 
-        initial_query = str(case.input)
-        simulator = ActorSimulator(
-            actor_profile=actor_profile,
-            initial_query=initial_query,
-            system_prompt_template=system_prompt_template,
-            model=model,  # type: ignore[arg-type]
-            max_turns=max_turns,
-        )
+        session = _build_session(agent, baseline=initial_snapshot)
+        session.reset()  # roll the target back to the clean baseline before this case
 
-        trace: list[dict] = []
-        conversation: list[dict[str, str]] = []
-        attacker_message: str = initial_query
-
-        while simulator.has_next():
-            try:
-                target_response = _call_target(attacker_message, trace)
-            except Exception as e:
-                logger.warning("Target agent error on turn %d: %s", len(conversation), e)
-                target_response = f"[Error: {e}]"
-
-            conversation.append({"role": "attacker", "content": attacker_message})
-            conversation.append({"role": "target", "content": target_response})
-
-            try:
-                attacker_result = simulator.act(target_response)
-            except Exception as e:
-                logger.warning("Attacker simulator error on turn %d: %s", len(conversation), e)
-                break
-            structured = attacker_result.structured_output
-            attacker_message = str(getattr(structured, "message", "")) if structured else ""
-            if not attacker_message.strip():
-                logger.warning("Attacker produced an empty message; ending case early.")
-                break
-            if strategy is not None:
-                attacker_message = strategy.enhance(
-                    attacker_message,
-                    target_response=target_response,
-                    conversation=conversation,
-                    attack_goal=goal,
-                )
-
-        result: dict = {"output": conversation}
-        if trace:
-            result["trajectory"] = trace
-        return result
+        result = strategy.run_attack(case, session, max_turns=MAX_ALLOWED_TURNS, model=model)
+        if run_meta is not None and case.name is not None:
+            # run stats reach the report via run_meta (see below); pruned_branches
+            # rides the same channel so defended-turn evidence survives to display().
+            run_meta[case.name] = {**result.metadata, "pruned_branches": result.pruned_branches}
+        # Assemble only the keys the base Experiment reads: the strategy's conversation
+        # becomes the output, and the trace captured by the session (which the task owns)
+        # becomes the trajectory. The strategy's own success/score/metadata are NOT
+        # returned here -- the base copies metadata into a fresh EvaluationData and drops
+        # the rest, so run stats reach the report via run_meta instead.
+        return {
+            "output": result.conversation,
+            # Copy: a passed-in TargetSession is reused across cases, and the next
+            # case's session.reset() clears this same list in place. The base engine
+            # holds the trajectory by reference until it model_dumps it, so hand it a
+            # snapshot rather than the live trace.
+            "trajectory": list(session.trace),
+        }
 
     return task_fn
+
+
+def _build_session(agent: Agent | TargetSession, *, baseline: Snapshot | None = None) -> TargetSession:
+    """Wrap an ``Agent`` in a ``StrandsAgentSession``, or pass a ``TargetSession`` through.
+
+    Args:
+        agent: An ``Agent`` to wrap, or a ready ``TargetSession`` to use as-is.
+        baseline: A clean ``Snapshot`` the wrapped ``StrandsAgentSession`` resets to
+            between cases (ignored for a passed-in ``TargetSession``, which owns its
+            own reset).
+
+    Raises:
+        TypeError: If ``agent`` is neither an ``Agent`` nor a ``TargetSession``
+            (e.g. a bare callable -- a strategy needs snapshot/restore to manage
+            the target's state, which an opaque callable cannot provide).
+    """
+    if isinstance(agent, Agent):
+        return StrandsAgentSession(agent, baseline=baseline)
+    # Structural (not isinstance) check: TargetSession is a Protocol, and the method
+    # set is checked by hand. The `trace` check is separate and load-bearing -- it's
+    # the one member the task runner dereferences directly (it becomes the
+    # trajectory), and a @runtime_checkable isinstance would only verify method
+    # presence, not that `trace` is a list. Without it a session missing `trace`
+    # would pass and later die with an AttributeError the experiment swallows into a
+    # misleading "defended" verdict.
+    has_methods = all(callable(getattr(agent, method, None)) for method in ("invoke", "reset", "snapshot", "restore"))
+    if has_methods and isinstance(getattr(agent, "trace", None), list):
+        return agent
+    raise TypeError(
+        f"agent must be a strands.Agent or a TargetSession, got {type(agent).__name__!r}; "
+        "wrap a custom target in a TargetSession so the strategy can snapshot/restore its state."
+    )
+
+
+def _resolve_case_strategy(case: RedTeamCase, by_label: dict[str, AttackStrategy]) -> AttackStrategy:
+    """Look up the strategy instance for a case from its ``metadata["strategy"]`` label."""
+    metadata = case.metadata or {}
+    label = metadata.get("strategy")
+    if label is None:
+        raise ValueError(f"RedTeamCase {case.name!r}: metadata is missing the 'strategy' label.")
+    strategy = by_label.get(label)
+    if strategy is None:
+        raise ValueError(f"RedTeamCase {case.name!r}: no strategy registered for label {label!r}.")
+    return strategy
