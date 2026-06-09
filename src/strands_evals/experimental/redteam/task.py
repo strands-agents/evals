@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from strands import Agent
+from strands import Agent, Snapshot
 from strands.models.model import Model
 
 from .case import RedTeamCase
@@ -81,7 +81,7 @@ def _build_attacker_task(
     return task_fn
 
 
-def _build_session(agent: Agent | TargetSession, *, baseline: Any = None) -> TargetSession:
+def _build_session(agent: Agent | TargetSession, *, baseline: Snapshot | None = None) -> TargetSession:
     """Wrap an ``Agent`` in a ``StrandsAgentSession``, or pass a ``TargetSession`` through.
 
     Args:

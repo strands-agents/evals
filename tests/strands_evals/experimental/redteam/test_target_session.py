@@ -160,3 +160,29 @@ class TestStrandsAgentSessionRewind:
         # stale agent state cleared too (the leak poshin flagged)
         assert session._agent.state.get("exfiltrated") is None
         assert session.trace == []
+
+    def test_baseline_survives_repeated_resets(self):
+        # The baseline is captured ONCE and replayed every case, so it must not be
+        # corrupted by a case mutating the agent (load_snapshot must copy out of the
+        # snapshot, not alias it). Replay 3x with a mutation between each reset.
+        agent = self._real_agent()
+        baseline = agent.take_snapshot(preset="session")
+        session = StrandsAgentSession(agent, baseline=baseline)
+        for i in range(3):
+            agent.messages.append({"role": "user", "content": [{"text": f"case{i}"}]})
+            agent.state.set("leak", i)
+            session.reset()
+            assert session._agent.messages == [{"role": "user", "content": [{"text": "seed"}]}]
+            assert session._agent.state.get("leak") is None
+
+    def test_no_baseline_does_not_isolate_non_message_state(self):
+        # Documented limitation: a session built without a baseline (e.g. a
+        # user-supplied StrandsAgentSession) falls back to messages-only reset, so
+        # agent state does NOT roll back across cases. Locked here so the gap is
+        # visible if the fallback ever silently changes.
+        agent = self._real_agent()
+        session = StrandsAgentSession(agent)  # no baseline
+        agent.state.set("leak", True)
+        session.reset()
+        assert session._agent.messages == []  # messages cleared
+        assert session._agent.state.get("leak") is True  # but state persists
