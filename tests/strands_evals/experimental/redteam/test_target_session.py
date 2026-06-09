@@ -130,10 +130,33 @@ class TestStrandsAgentSessionRewind:
         # only the pre-snapshot trace entry survives; the ghost tool-call is gone
         assert session.trace == [{"name": "before", "input": {}}]
 
-    def test_reset_clears_agent_history_and_trace(self):
+    def test_reset_without_baseline_clears_messages_and_trace(self):
+        # No baseline supplied (e.g. a directly-constructed session): reset falls
+        # back to clearing messages.
         session = StrandsAgentSession(self._real_agent())
         session.trace.append({"name": "leftover", "input": {}})
         assert len(session._agent.messages) == 1  # seeded
         session.reset()
         assert session._agent.messages == []
+        assert session.trace == []
+
+    def test_reset_to_baseline_restores_as_constructed_state(self):
+        # With a baseline, reset rolls the target back to its as-constructed state:
+        # seeded history is PRESERVED (it's part of the target definition), and any
+        # state written during a case is cleared -- not just messages.
+        agent = self._real_agent()
+        baseline = agent.take_snapshot(preset="session")
+        session = StrandsAgentSession(agent, baseline=baseline)
+
+        # simulate a case mutating the target: extra turn + agent state + trace
+        agent.messages.append({"role": "user", "content": [{"text": "case turn"}]})
+        agent.state.set("exfiltrated", True)
+        session.trace.append({"name": "leftover", "input": {}})
+
+        session.reset()
+
+        # seeded history preserved (not emptied); the case's extra turn is gone
+        assert session._agent.messages == [{"role": "user", "content": [{"text": "seed"}]}]
+        # stale agent state cleared too (the leak poshin flagged)
+        assert session._agent.state.get("exfiltrated") is None
         assert session.trace == []

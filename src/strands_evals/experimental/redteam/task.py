@@ -44,12 +44,20 @@ def _build_attacker_task(
     ``EvaluationData``, so the strategy can't reach the report through it).
     """
 
+    # Capture the target's clean state ONCE, before the first case, so every case
+    # resets to the same as-constructed baseline. Must be here (build time), not in
+    # the session __init__: the agent is shared and reused, so by the time case N's
+    # session is built the agent already carries case N-1's conversation -- snapshotting
+    # then would bake a dirty baseline. Only an Agent is rewindable this way; a
+    # passed-in TargetSession owns its own reset.
+    initial_snapshot = agent.take_snapshot(preset="session") if isinstance(agent, Agent) else None
+
     def task_fn(case: RedTeamCase) -> dict:
         strategy = _resolve_case_strategy(case, by_label)
         strategy.reset()
 
-        session = _build_session(agent)
-        session.reset()  # clear any prior-case state (e.g. a reused Agent's message history)
+        session = _build_session(agent, baseline=initial_snapshot)
+        session.reset()  # roll the target back to the clean baseline before this case
 
         result = strategy.run_attack(case, session, max_turns=MAX_ALLOWED_TURNS, model=model)
         if run_meta is not None and case.name is not None:
@@ -73,8 +81,14 @@ def _build_attacker_task(
     return task_fn
 
 
-def _build_session(agent: Agent | TargetSession) -> TargetSession:
+def _build_session(agent: Agent | TargetSession, *, baseline: Any = None) -> TargetSession:
     """Wrap an ``Agent`` in a ``StrandsAgentSession``, or pass a ``TargetSession`` through.
+
+    Args:
+        agent: An ``Agent`` to wrap, or a ready ``TargetSession`` to use as-is.
+        baseline: A clean ``Snapshot`` the wrapped ``StrandsAgentSession`` resets to
+            between cases (ignored for a passed-in ``TargetSession``, which owns its
+            own reset).
 
     Raises:
         TypeError: If ``agent`` is neither an ``Agent`` nor a ``TargetSession``
@@ -82,7 +96,7 @@ def _build_session(agent: Agent | TargetSession) -> TargetSession:
             the target's state, which an opaque callable cannot provide).
     """
     if isinstance(agent, Agent):
-        return StrandsAgentSession(agent)
+        return StrandsAgentSession(agent, baseline=baseline)
     # Structural (not isinstance) check: TargetSession is a Protocol, and the method
     # set is checked by hand. The `trace` check is separate and load-bearing -- it's
     # the one member the task runner dereferences directly (it becomes the

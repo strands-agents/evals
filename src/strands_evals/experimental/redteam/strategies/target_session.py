@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Protocol, TypedDict
 
-from strands import Agent
+from strands import Agent, Snapshot
 from strands.types.content import Message
 
 logger = logging.getLogger(__name__)
@@ -179,13 +179,19 @@ class StrandsAgentSession:
     truncates :attr:`trace` back to its snapshot-time length.
     """
 
-    def __init__(self, agent: Agent) -> None:
+    def __init__(self, agent: Agent, *, baseline: Snapshot | None = None) -> None:
         """Initialize the session.
 
         Args:
             agent: The target agent to drive and snapshot.
+            baseline: A clean snapshot of the agent to roll back to in :meth:`reset`.
+                The task runner captures this once, before the first case, so every
+                case starts from the same as-constructed target state (system prompt
+                plus any seeded history). When ``None`` (e.g. a directly-constructed
+                session), :meth:`reset` falls back to clearing messages only.
         """
         self._agent = agent
+        self._baseline = baseline
         self.trace: list[ToolUseEntry] = []
 
     def invoke(self, message: str) -> str:
@@ -200,7 +206,15 @@ class StrandsAgentSession:
         return result, self._agent.messages[messages_before:]
 
     def reset(self) -> None:
-        self._agent.messages.clear()
+        # Roll back through the same load_snapshot path restore() uses, so reset
+        # covers every field snapshot() captures (messages, state,
+        # conversation_manager_state, interrupt_state) rather than just messages --
+        # otherwise stale agent state leaks across cases. Falls back to clearing
+        # messages when no baseline was supplied.
+        if self._baseline is not None:
+            self._agent.load_snapshot(self._baseline)
+        else:
+            self._agent.messages.clear()
         self.trace.clear()
 
     def snapshot(self) -> TargetCheckpoint:

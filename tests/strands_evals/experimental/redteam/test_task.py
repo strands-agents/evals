@@ -193,20 +193,29 @@ def test_task_fn_session_missing_trace_raises_type_error():
         task(_case())
 
 
-def test_task_fn_clears_agent_messages_per_case():
-    """Agent target's message history is cleared at the start of each case."""
+def test_task_fn_resets_agent_to_clean_baseline_per_case():
+    """Agent target is rolled back to its as-constructed baseline before each case.
+
+    The baseline is snapshotted ONCE at task-build time, then every case resets via
+    load_snapshot(baseline) -- covering all session fields, not just messages."""
     from strands import Agent
 
     agent = MagicMock(spec=Agent)
     agent.messages = MagicMock()
     agent.messages.__len__.return_value = 0
     agent.return_value = "ok"
+    baseline = agent.take_snapshot.return_value
     task = _build_attacker_task(agent, _by_label(_StubStrategy()))
+
+    # baseline captured exactly once, before any case
+    assert agent.take_snapshot.call_count == 1
 
     task(_case("c0"))
     task(_case("c1"))
 
-    assert agent.messages.clear.call_count == 2
+    # each case rolls the target back to that same baseline
+    assert agent.load_snapshot.call_count == 2
+    agent.load_snapshot.assert_called_with(baseline)
 
 
 def test_max_allowed_turns_constant_present():
