@@ -23,6 +23,7 @@ class MultimodalInstructionFollowingEvaluator(MultimodalOutputEvaluator):
         system_prompt: str | None = None,
         reference_suffix: str | None = None,
         uses_environment_state: bool = False,
+        name: str | None = None,
     ):
         super().__init__(
             rubric=rubric if rubric is not None else INSTRUCTION_FOLLOWING_RUBRIC_V0,
@@ -31,4 +32,5 @@ class MultimodalInstructionFollowingEvaluator(MultimodalOutputEvaluator):
             system_prompt=system_prompt,
             reference_suffix=reference_suffix,
             uses_environment_state=uses_environment_state,
+            name=name,
         )

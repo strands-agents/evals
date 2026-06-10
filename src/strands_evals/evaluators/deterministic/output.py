@@ -7,8 +7,8 @@ from ..evaluator import Evaluator
 class Equals(Evaluator[InputT, OutputT]):
     """Checks if actual_output equals an expected value."""
 
-    def __init__(self, value: Any | None = None):
-        super().__init__()
+    def __init__(self, value: Any | None = None, name: str | None = None):
+        super().__init__(name=name)
         self.value = value
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
@@ -29,8 +29,8 @@ class Equals(Evaluator[InputT, OutputT]):
 class Contains(Evaluator[InputT, OutputT]):
     """Checks if actual_output contains a substring."""
 
-    def __init__(self, value: str, case_sensitive: bool = True):
-        super().__init__()
+    def __init__(self, value: str, case_sensitive: bool = True, name: str | None = None):
+        super().__init__(name=name)
         self.value = value
         self.case_sensitive = case_sensitive
 
@@ -56,8 +56,8 @@ class Contains(Evaluator[InputT, OutputT]):
 class StartsWith(Evaluator[InputT, OutputT]):
     """Checks if actual_output starts with a prefix."""
 
-    def __init__(self, value: str, case_sensitive: bool = True):
-        super().__init__()
+    def __init__(self, value: str, case_sensitive: bool = True, name: str | None = None):
+        super().__init__(name=name)
         self.value = value
         self.case_sensitive = case_sensitive
 

@@ -288,3 +288,18 @@ def test_extract_text_content_user_message_with_tool_result():
 
     result = evaluator._extract_text_content(msg)
     assert result == "Here's the result"
+
+
+def test_get_name_defaults_to_class_name():
+    """Without a name kwarg, get_name() falls back to the class name."""
+    evaluator = SimpleEvaluator()
+    assert evaluator.get_name() == "SimpleEvaluator"
+    assert evaluator.get_name() == evaluator.get_type_name()
+
+
+def test_get_name_uses_explicit_name():
+    """An explicit name kwarg overrides the class-name fallback."""
+    evaluator = SimpleEvaluator(name="my_simple_check")
+    assert evaluator.get_name() == "my_simple_check"
+    # get_type_name() still reports the class for from_dict registry lookups.
+    assert evaluator.get_type_name() == "SimpleEvaluator"

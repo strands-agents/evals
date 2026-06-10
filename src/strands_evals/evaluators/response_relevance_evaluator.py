@@ -48,8 +48,9 @@ class ResponseRelevanceEvaluator(Evaluator[InputT, OutputT]):
         model: Model | str | None = None,
         system_prompt: str | None = None,
         include_inputs: bool = True,
+        name: str | None = None,
     ):
-        super().__init__()
+        super().__init__(name=name)
         self.system_prompt = system_prompt or get_template(version).SYSTEM_PROMPT
         self.version = version
         self.model = model

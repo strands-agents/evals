@@ -13,11 +13,18 @@ def _find_state_by_name(states: list[EnvironmentState], name: str) -> Environmen
 
 
 class StateEquals(Evaluator[InputT, OutputT]):
-    """Checks if a named environment state matches an expected value."""
+    """Checks if a named environment state matches an expected value.
+
+    The `name` arg doubles as the state key in `EnvironmentState` and the
+    instance-level evaluator name surfaced through `get_name()`, so two
+    `StateEquals(name="cart")` / `StateEquals(name="balance")` instances
+    are naturally distinguishable in `EvaluationReport.cases`.
+    """
+
+    name: str  # required, not Optional — narrows the base class annotation
 
     def __init__(self, name: str, value: Any | None = None):
-        super().__init__()
-        self.name = name
+        super().__init__(name=name)
         self.value = value
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:

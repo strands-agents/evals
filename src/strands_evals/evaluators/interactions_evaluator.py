@@ -32,8 +32,9 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
         model: Model | str | None = None,
         system_prompt: str = SYSTEM_PROMPT,
         include_inputs: bool = True,
+        name: str | None = None,
     ):
-        super().__init__()
+        super().__init__(name=name)
         self.rubric = rubric
         self.interaction_description = interaction_description
         self.model = model

@@ -6,8 +6,8 @@ from ..evaluator import Evaluator
 class ToolCalled(Evaluator[InputT, OutputT]):
     """Checks if a specific tool was called in the trajectory."""
 
-    def __init__(self, tool_name: str):
-        super().__init__()
+    def __init__(self, tool_name: str, name: str | None = None):
+        super().__init__(name=name)
         self.tool_name = tool_name
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
