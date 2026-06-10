@@ -1,5 +1,6 @@
 from .base import AttackRunResult, AttackStrategy
 from .crescendo import CrescendoStrategy
+from .goat import GoatStrategy
 from .prompt_strategy import PromptStrategy
 from .prompt_strategy.gradual_escalation import get_template as _gradual_escalation_template
 from .target_session import StrandsAgentSession, TargetCheckpoint, TargetSession, ToolUseEntry
@@ -17,6 +18,7 @@ __all__ = [
     "AttackRunResult",
     "AttackStrategy",
     "CrescendoStrategy",
+    "GoatStrategy",
     "PromptStrategy",
     "StrandsAgentSession",
     "TargetCheckpoint",
