@@ -334,6 +334,394 @@ def test_run_exit_zero_overrides_fail_on(experiment_file: Path, tmp_path: Path):
     assert exit_code == 0
 
 
+def test_run_ad_hoc_with_expected_output_passes(capsys, tmp_path: Path):
+    """Ad-hoc mode: --input + --expected-output defaults to Contains and passes."""
+    out_path = tmp_path / "reports.json"
+    exit_code = main(
+        [
+            "--json",
+            "run",
+            "--task",
+            "tests.strands_evals.cli.fixtures.tasks:answer_string",
+            "--input",
+            "hi",
+            "--expected-output",
+            "answered: hi",
+            "-o",
+            str(out_path),
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(out_path.read_text())
+    assert len(payload["cases"]) == 1
+    assert payload["cases"][0]["name"] == "ad_hoc"
+    assert payload["cases"][0]["input"] == "hi"
+    assert payload["cases"][0]["evaluator"] == "Contains"
+    assert payload["test_passes"] == [True]
+
+
+def test_run_ad_hoc_explicit_evaluator_shortname(tmp_path: Path):
+    """Ad-hoc mode: --evaluator equals (shortname) wires up Equals against expected_output."""
+    out_path = tmp_path / "reports.json"
+    exit_code = main(
+        [
+            "--json",
+            "run",
+            "--task",
+            "tests.strands_evals.cli.fixtures.tasks:answer_string",
+            "--input",
+            "hi",
+            "--expected-output",
+            "answered: hi",
+            "--evaluator",
+            "equals",
+            "-o",
+            str(out_path),
+        ]
+    )
+    assert exit_code == 0
+    payload = json.loads(out_path.read_text())
+    assert payload["cases"][0]["evaluator"] == "Equals"
+    assert payload["test_passes"] == [True]
+
+
+def test_run_ad_hoc_custom_evaluator_via_module_class(tmp_path: Path):
+    """Ad-hoc mode: --evaluator MODULE:CLASS resolves a custom Evaluator subclass."""
+    out_path = tmp_path / "reports.json"
+    exit_code = main(
+        [
+            "--json",
+            "run",
+            "--task",
+            "tests.strands_evals.cli.fixtures.tasks:answer_string",
+            "--input",
+            "hi",
+            "--evaluator",
+            "tests.strands_evals.cli.fixtures.evaluators:AlwaysPasses",
+            "-o",
+            str(out_path),
+        ]
+    )
+    assert exit_code == 0
+    payload = json.loads(out_path.read_text())
+    assert payload["cases"][0]["evaluator"] == "AlwaysPasses"
+    assert payload["test_passes"] == [True]
+
+
+def test_run_ad_hoc_input_file_from_stdin(monkeypatch, tmp_path: Path):
+    """Ad-hoc mode: --input-file - reads case input from stdin."""
+    import io
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("hi"))
+    out_path = tmp_path / "reports.json"
+    exit_code = main(
+        [
+            "--json",
+            "run",
+            "--task",
+            "tests.strands_evals.cli.fixtures.tasks:answer_string",
+            "--input-file",
+            "-",
+            "--expected-output",
+            "answered: hi",
+            "-o",
+            str(out_path),
+        ]
+    )
+    assert exit_code == 0
+    payload = json.loads(out_path.read_text())
+    assert payload["cases"][0]["input"] == "hi"
+
+
+def test_run_ad_hoc_name_override(tmp_path: Path):
+    """Ad-hoc mode: --name overrides the default 'ad_hoc' case name."""
+    out_path = tmp_path / "reports.json"
+    exit_code = main(
+        [
+            "--json",
+            "run",
+            "--task",
+            "tests.strands_evals.cli.fixtures.tasks:answer_string",
+            "--input",
+            "hi",
+            "--expected-output",
+            "answered: hi",
+            "--name",
+            "smoke",
+            "-o",
+            str(out_path),
+        ]
+    )
+    assert exit_code == 0
+    payload = json.loads(out_path.read_text())
+    assert payload["cases"][0]["name"] == "smoke"
+
+
+def test_run_experiment_file_and_ad_hoc_flags_conflict(experiment_file: Path, capsys):
+    """EXPERIMENT_FILE and ad-hoc flags are mutually exclusive — exit 2 with a clear error."""
+    exit_code = main(
+        [
+            "run",
+            str(experiment_file),
+            "--task",
+            "tests.strands_evals.cli.fixtures.tasks:answer_string",
+            "--input",
+            "hi",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "mutually exclusive" in captured.err
+    assert "--input" in captured.err
+
+
+def test_run_no_experiment_file_and_no_input_errors(capsys):
+    """Without EXPERIMENT_FILE or --input, the run has nothing to execute — exit 2."""
+    exit_code = main(
+        [
+            "run",
+            "--task",
+            "tests.strands_evals.cli.fixtures.tasks:answer_string",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "EXPERIMENT_FILE or --input" in captured.err
+
+
+def test_run_ad_hoc_input_without_evaluator_errors(capsys):
+    """--input alone (no --evaluator, --expected-output, or --rubric) is invalid — exit 2."""
+    exit_code = main(
+        [
+            "run",
+            "--task",
+            "tests.strands_evals.cli.fixtures.tasks:answer_string",
+            "--input",
+            "hi",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "--evaluator" in captured.err
+    assert "--expected-output" in captured.err
+    assert "--rubric" in captured.err
+
+
+def test_run_ad_hoc_rubric_auto_wires_output_evaluator(monkeypatch, tmp_path: Path):
+    """--rubric TEXT alone is enough; auto-wires OutputEvaluator(rubric=TEXT)."""
+    from strands_evals.cli.commands import run as run_module
+    from strands_evals.evaluators.output_evaluator import OutputEvaluator
+    from strands_evals.types.evaluation import EvaluationOutput
+
+    captured: dict = {}
+
+    async def _fake_evaluate(self, evaluation_case):
+        captured["rubric"] = self.rubric
+        return [EvaluationOutput(score=1.0, test_pass=True, reason="ok")]
+
+    monkeypatch.setattr(OutputEvaluator, "evaluate_async", _fake_evaluate)
+    monkeypatch.setattr(run_module.OutputEvaluator, "evaluate_async", _fake_evaluate)
+
+    out_path = tmp_path / "reports.json"
+    exit_code = main(
+        [
+            "--json",
+            "run",
+            "--task",
+            "tests.strands_evals.cli.fixtures.tasks:answer_string",
+            "--input",
+            "hi",
+            "--rubric",
+            "Output should be cheerful.",
+            "-o",
+            str(out_path),
+        ]
+    )
+    assert exit_code == 0
+    assert captured["rubric"] == "Output should be cheerful."
+    payload = json.loads(out_path.read_text())
+    assert payload["cases"][0]["evaluator"] == "OutputEvaluator"
+    assert payload["test_passes"] == [True]
+
+
+def test_run_ad_hoc_rubric_and_expected_output_compose(monkeypatch, tmp_path: Path):
+    """--rubric + --expected-output (no --evaluator) auto-wires BOTH evaluators."""
+    from strands_evals.cli.commands import run as run_module
+    from strands_evals.evaluators.output_evaluator import OutputEvaluator
+    from strands_evals.types.evaluation import EvaluationOutput
+
+    async def _fake_evaluate(self, evaluation_case):
+        return [EvaluationOutput(score=1.0, test_pass=True, reason="ok")]
+
+    monkeypatch.setattr(OutputEvaluator, "evaluate_async", _fake_evaluate)
+    monkeypatch.setattr(run_module.OutputEvaluator, "evaluate_async", _fake_evaluate)
+
+    out_path = tmp_path / "reports.json"
+    exit_code = main(
+        [
+            "--json",
+            "run",
+            "--task",
+            "tests.strands_evals.cli.fixtures.tasks:answer_string",
+            "--input",
+            "hi",
+            "--expected-output",
+            "answered: hi",
+            "--rubric",
+            "Output should mirror the input.",
+            "-o",
+            str(out_path),
+        ]
+    )
+    assert exit_code == 0
+    payload = json.loads(out_path.read_text())
+    evaluators = sorted(c["evaluator"] for c in payload["cases"])
+    assert evaluators == ["Contains", "OutputEvaluator"]
+
+
+def test_run_ad_hoc_explicit_evaluator_suppresses_rubric_auto_wire(tmp_path: Path):
+    """--evaluator wins over --rubric: the explicit list is never silently extended."""
+    out_path = tmp_path / "reports.json"
+    exit_code = main(
+        [
+            "--json",
+            "run",
+            "--task",
+            "tests.strands_evals.cli.fixtures.tasks:answer_string",
+            "--input",
+            "hi",
+            "--rubric",
+            "ignored",
+            "--evaluator",
+            "tests.strands_evals.cli.fixtures.evaluators:AlwaysPasses",
+            "-o",
+            str(out_path),
+        ]
+    )
+    assert exit_code == 0
+    payload = json.loads(out_path.read_text())
+    evaluators = [c["evaluator"] for c in payload["cases"]]
+    assert evaluators == ["AlwaysPasses"]
+
+
+def test_run_ad_hoc_unknown_evaluator_shortname_exits_bad_input(capsys):
+    """Unknown shortname surfaces an EntryPointError message and exit 2."""
+    exit_code = main(
+        [
+            "run",
+            "--task",
+            "tests.strands_evals.cli.fixtures.tasks:answer_string",
+            "--input",
+            "hi",
+            "--evaluator",
+            "not-a-real-evaluator",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "not a known built-in shortname" in captured.err
+
+
+def test_run_input_and_input_file_mutually_exclusive(experiment_file: Path):
+    """argparse enforces --input vs --input-file mutual exclusion (exits via SystemExit)."""
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "run",
+                "--task",
+                "tests.strands_evals.cli.fixtures.tasks:answer_string",
+                "--input",
+                "hi",
+                "--input-file",
+                "-",
+                "--expected-output",
+                "x",
+            ]
+        )
+
+
+def test_run_ad_hoc_trace_level_evaluator_with_task_errors(capsys):
+    """Trace-level shortnames (faithfulness, helpfulness, ...) need --agent's Session — fail fast under --task."""
+    exit_code = main(
+        [
+            "run",
+            "--task",
+            "tests.strands_evals.cli.fixtures.tasks:answer_string",
+            "--input",
+            "hi",
+            "--evaluator",
+            "faithfulness",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "FaithfulnessEvaluator" in captured.err
+    assert "--agent" in captured.err
+
+
+def test_run_ad_hoc_tool_level_evaluator_with_task_errors(capsys):
+    """Tool-level shortnames also need a Session — fail fast under --task."""
+    exit_code = main(
+        [
+            "run",
+            "--task",
+            "tests.strands_evals.cli.fixtures.tasks:answer_string",
+            "--input",
+            "hi",
+            "--evaluator",
+            "tool-selection-accuracy",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "ToolSelectionAccuracyEvaluator" in captured.err
+
+
+def test_run_ad_hoc_equals_without_expected_output_errors(capsys):
+    """`--evaluator equals` without `--expected-output` would compare against None — reject up front."""
+    exit_code = main(
+        [
+            "run",
+            "--task",
+            "tests.strands_evals.cli.fixtures.tasks:answer_string",
+            "--input",
+            "hi",
+            "--evaluator",
+            "equals",
+            "--rubric",
+            "anything",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "--expected-output" in captured.err
+
+
+def test_run_ad_hoc_equals_with_expected_output_passes(tmp_path: Path):
+    """`equals` paired with `--expected-output` is the supported one-liner shape."""
+    out_path = tmp_path / "reports.json"
+    exit_code = main(
+        [
+            "--json",
+            "run",
+            "--task",
+            "tests.strands_evals.cli.fixtures.tasks:answer_string",
+            "--input",
+            "hi",
+            "--evaluator",
+            "equals",
+            "--expected-output",
+            "answered: hi",
+            "-o",
+            str(out_path),
+        ]
+    )
+    assert exit_code == 0
+    payload = json.loads(out_path.read_text())
+    assert payload["test_passes"] == [True]
+
+
 def test_run_custom_evaluator_threading(experiment_file: Path, tmp_path: Path):
     """--custom-evaluator lets from_file resolve user-defined evaluator types."""
     # Author a tweaked experiment that references the AlwaysPasses evaluator.
