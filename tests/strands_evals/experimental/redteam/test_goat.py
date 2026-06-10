@@ -277,12 +277,26 @@ def test_empty_reply_ends_early_without_invoking():
 
 
 def test_empty_target_response_ends_early():
-    # target_calls counts the call, but the empty pair is not appended -> turns_used trails by one
-    turns = [_turn(reply="r1"), _turn(reply="r2")]
-    result = _run(_strategy(), _case(), _FakeSession(lambda m: ""), turns=turns)
+    # target_calls counts the call, but the empty pair is not appended -> turns_used trails by one.
+    # All-or-nothing: a turn that produced no real pair contributes nothing to attacks_used either.
+    turns = [_turn(reply="r1", attacks=["hypothetical"]), _turn(reply="r2")]
+    result = _run(_strategy(store_reasoning=True), _case(), _FakeSession(lambda m: ""), turns=turns)
     assert result.metadata["target_calls"] == 1
     assert result.metadata["turns_used"] == 0
     assert result.conversation == []
+    assert result.metadata["attacks_used"] == []
+    assert result.metadata["reasoning_trace"] == []
+
+
+def test_first_turn_breach_records_pair_and_attacks():
+    # mirror image: a turn with a real pair records its attacks AND reasoning in lockstep
+    turns = [_turn(reply="r1", attacks=["hypothetical"], observation="o1", thought="t1", strategy="s1")]
+    result = _run(
+        _strategy(store_reasoning=True), _case(), _FakeSession(lambda m: "resp"), turns=turns, score_fn=lambda r: 1.0
+    )
+    assert result.metadata["turns_used"] == 1
+    assert result.metadata["attacks_used"] == ["hypothetical"]
+    assert result.metadata["reasoning_trace"] == [{"observation": "o1", "thought": "t1", "strategy": "s1"}]
 
 
 # ---------------------------------------------------------------------------

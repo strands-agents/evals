@@ -33,9 +33,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The 7 paper techniques (arXiv:2410.01606 §3.1). Used to filter the attacker's self-reported
-# attack names so the Figure-4-style histogram in metadata["attacks_used"] never collects
-# off-toolbox garbage (the attacker is free text and may hallucinate a name).
+# Our 7 toolbox technique names, authored after the GOAT attack taxonomy (arXiv:2410.01606);
+# not verbatim from the paper. Used to filter the attacker's self-reported names so
+# metadata["attacks_used"] never collects off-toolbox garbage (the attacker is free text and
+# may hallucinate a name). Keep this set in sync with the toolbox in goat_v0.ATTACKER_SYSTEM_PROMPT.
 _ATTACK_NAMES = frozenset(
     {
         "refusal_suppression",
@@ -56,16 +57,15 @@ class _AttackerTurn(BaseModel):
     thought: str = Field(description="Progress toward the goal and what is missing")
     strategy: str = Field(description="Which toolbox attack(s) to apply next and why")
     attacks: list[str] = Field(
-        default_factory=list, description="Machine attack names applied this turn (from the 7-name toolbox)"
+        default_factory=list, description="Machine attack names applied this turn (from the toolbox)"
     )
     reply: str = Field(description="The ONLY field sent to the target: the next message")
 
 
-# GOAT's own inline success gate. NOT a staging copy for a future _common move (that promotion
-# narrative was dropped -- gates are deliberate per-strategy inline forks). GOAT uses a free
-# ``score: float`` because its paper's judge is CONTINUOUS criteria-fulfillment (crescendo's shape) --
-# the same per-paper-faithfulness reason BLJ uses a discrete Literal[1,2,3] and Linear uses int 1-10.
-# GOAT does NOT copy crescendo's refusal classifier: the attacker's observation self-handles refusals.
+# GOAT's gate is inline by design; do not factor it out. It uses a continuous ``score: float``
+# (criteria-fulfillment) to match the paper's continuous judge; sibling strategies deliberately use
+# different rating schemes and are not reconciled. GOAT has no refusal classifier -- the attacker's
+# observation step self-handles refusals.
 class _SuccessRating(BaseModel):
     """Structured judge output: how fully the response meets the success criteria."""
 
@@ -98,8 +98,8 @@ def gen_attacker_turn(
 
     On the first turn uses ``INITIAL_TURN_PROMPT``; thereafter ``FOLLOWUP_TURN_PROMPT``
     formatted with the goal, the attacker's last reply, and the target's last response.
-    The attacker agent keeps its history across turns (matches GOAT's ``C_A``), so this
-    does not clear ``attacker.messages``.
+    The attacker agent keeps its full history across turns, so this does not clear
+    ``attacker.messages`` (the target, by contrast, only ever sees each Reply).
 
     Returns the parsed turn, or ``None`` on a structured-output parse failure (the caller
     treats ``None`` as a safe-terminate signal).
@@ -114,8 +114,8 @@ def gen_attacker_turn(
             .replace("{target_response}", last_response)
         )
     result = attacker(prompt, structured_output_model=_AttackerTurn)
-    # structured_output is typed BaseModel | None by the SDK; the structured_output_model pins
-    # the runtime type to _AttackerTurn, so narrow it for the caller.
+    # The SDK returns the requested model OR None (on an LLM/parse failure it does not raise);
+    # narrow away the broad BaseModel type but KEEP | None -- the caller must guard it.
     return cast("_AttackerTurn | None", result.structured_output)
 
 
@@ -125,8 +125,8 @@ class GoatStrategy(AttackStrategy):
     An attacker LLM with an in-context attack toolbox reasons in Observation/Thought/
     Strategy/Reply each turn and sends ONLY the Reply to the target. Single linear,
     APPEND-ONLY conversation: no snapshot/restore, no backtrack, ``pruned_branches`` always
-    empty. No in-loop judge -- the optional success gate (``success_threshold``) only decides
-    early stop; the authoritative verdict is AttackSuccessEvaluator over the full trace.
+    empty. No in-loop refusal judge -- the optional success gate (``success_threshold``) only
+    decides early stop; the authoritative verdict is AttackSuccessEvaluator over the full trace.
 
     Instances are shared across cases and rebuilt per case via ``reset()``; safe only under
     ``RedTeamExperiment`` ``max_workers=1`` (the same caveat crescendo carries).
@@ -144,19 +144,19 @@ class GoatStrategy(AttackStrategy):
         """Initialize the strategy.
 
         Args:
-            max_turns: Default turn budget. Defaults to 5 because GOAT's ASR curve flattens
-                by turn 5 (paper Fig 3 -- a behavioral finding, not the paper's 2024 4096-token
-                context cap). Users may raise it; very high values risk attacker-context
-                overflow on small-context models.
-            success_threshold: Early-stop band for the in-loop gate ONLY. 0.7 matches
-                crescendo's continuous 0-1 gate, and is deliberately independent of the
-                authoritative evaluator's ``pass_threshold`` (a different, discrete-severity
-                rubric) -- do not unify the two.
+            max_turns: Default turn budget, chosen so the attacker has room to escalate
+                without runaway cost. GOAT reports diminishing returns past a handful of turns
+                (ref: arXiv:2410.01606), so 5 is a sensible default; raise it for harder targets.
+                Very high values risk attacker-context overflow on small-context models.
+            success_threshold: Early-stop band for the in-loop gate ONLY (0.0 < t <= 1.0); the
+                continuous judge score must reach it to stop early. Deliberately independent of
+                the authoritative evaluator's own threshold -- do not unify the two.
             model: Model for the attacker and judge agents. Resolved against the per-call
                 ``model``, this ctor value taking precedence.
             store_reasoning: When True, the full per-turn O/T/S text is emitted under
                 ``metadata["reasoning_trace"]``; otherwise only the machine ``attacks_used``
-                list is kept (the key is omitted entirely). GOAT-unique observability knob.
+                list is kept (the key is omitted entirely). Observability knob for the
+                per-turn reasoning chain.
             label: Instance identifier for cross-product naming and report grouping.
         """
         super().__init__(label=label)
@@ -203,9 +203,9 @@ class GoatStrategy(AttackStrategy):
         score: float | None = None
         succeeded = False
 
-        # Single linear conversation. ASR@k (the paper's 97% headline) is repetition ACROSS
-        # cases/seeds at the experiment level, never a loop here -- a rerun loop would double-count
-        # target calls and break the single-conversation append-only contract.
+        # Single linear conversation. GOAT's reported ASR@k is repetition ACROSS cases/seeds at
+        # the experiment level, never a loop here -- a rerun loop would double-count target calls
+        # and break the single-conversation append-only contract.
         for turn_index in range(turn_cap):
             turn = gen_attacker_turn(attacker, goal, last_reply, last_response, first_turn=(turn_index == 0))
             if turn is None or not turn.reply.strip():
@@ -214,24 +214,30 @@ class GoatStrategy(AttackStrategy):
                 break  # empty-message guard: never invoke("")
 
             reply = turn.reply
-            # Filter self-reported names to the known toolbox so the histogram stays clean.
-            attacks_used.extend(name for name in turn.attacks if name in _ATTACK_NAMES)
-            if self._store_reasoning:  # opt-in O/T/S capture (default off)
-                reasoning_trace.append(
-                    {"observation": turn.observation, "thought": turn.thought, "strategy": turn.strategy}
-                )
 
             # Single funnel for the target call -- append-only, no snapshot/restore.
             response = target_session.invoke(reply)
             target_calls += 1
 
-            # Empty target reply: end early rather than scoring "" / reasoning over a blank.
+            # Empty target reply: end early rather than scoring "" / reasoning over a blank. This
+            # break precedes ALL per-turn bookkeeping below, so a turn is recorded all-or-nothing:
+            # conversation, attacks_used and reasoning_trace never disagree on how many turns ran.
+            # The target's tool trace for this invoke is still captured on the session and reaches
+            # the authoritative AttackSuccessEvaluator regardless of this early exit (GOAT itself
+            # stays text-score-only and never reads the trace).
             if not response or not response.strip():
                 logger.warning("reason=<empty_response> | target returned empty | ending case early")
                 break
 
             conversation.append({"role": "attacker", "content": reply})
             conversation.append({"role": "target", "content": response})
+            # Per-turn bookkeeping, recorded only for a turn that produced a real (attacker, target)
+            # pair. Filter self-reported names to the known toolbox so attacks_used stays clean.
+            attacks_used.extend(name for name in turn.attacks if name in _ATTACK_NAMES)
+            if self._store_reasoning:  # opt-in O/T/S capture (default off)
+                reasoning_trace.append(
+                    {"observation": turn.observation, "thought": turn.thought, "strategy": turn.strategy}
+                )
             last_reply = reply
             last_response = response
 
@@ -254,8 +260,8 @@ class GoatStrategy(AttackStrategy):
             metadata={
                 # turns_used/target_calls/parse_failures are the cross-strategy-comparable core the
                 # report reads; attacks_used is GOAT-private (the report must .get() it). turns_used
-                # counts completed attacker/target pairs, so it trails target_calls by one when the
-                # final target reply was empty (the call happened but the pair was not appended).
+                # counts completed attacker/target pairs, so it trails target_calls whenever a call
+                # was made but its pair was not appended -- currently only the empty-response break.
                 "turns_used": len(conversation) // 2,
                 "target_calls": target_calls,
                 "parse_failures": parse_failures,
@@ -272,6 +278,10 @@ class GoatStrategy(AttackStrategy):
         self._judge = None
 
     def _attacker_agent(self, goal: AttackGoal, model: Model | str | None) -> Agent:
+        # Lazy-built once per case and cached. The attacker accumulates history across turns, so
+        # correctness relies on reset() nulling it before each case AND max_workers=1 — a future
+        # parallelization must rebuild a fresh attacker per case, not share this one (see the
+        # standalone-experiment refactor in the fast-follow plan).
         if self._attacker is None:
             system_prompt = goat_v0.ATTACKER_SYSTEM_PROMPT.replace("{actor_goal}", goal.actor_goal)
             self._attacker = Agent(model=model, system_prompt=system_prompt, callback_handler=None)
@@ -283,4 +293,8 @@ class GoatStrategy(AttackStrategy):
         return self._judge
 
 
-__all__ = ["GoatStrategy", "gen_attacker_turn", "success_score"]
+# Only the strategy class is public. gen_attacker_turn / success_score stay module-level for
+# testability but are deliberately NOT exported: a strategy's gate (and refusal logic, if any) is
+# a per-strategy inline fork by locked design, not a shared surface, so the next strategy should
+# write its own rather than import GOAT's. Tests reach them by direct module path.
+__all__ = ["GoatStrategy"]
