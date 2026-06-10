@@ -42,7 +42,7 @@ class _FakeSession:
 
 def _case(success_criteria: str | None = "leaked the secret") -> RedTeamCase:
     return RedTeamCase(
-        name="l0",
+        name="p0",
         input="hello",
         config=RedTeamConfig(
             attack_goal=AttackGoal(
@@ -82,7 +82,7 @@ class TestCtor:
         assert strat.label == "pair"
 
     def test_label_override(self):
-        assert PairStrategy(label="lin-3").label == "lin-3"
+        assert PairStrategy(label="pair-k10").label == "pair-k10"
 
     def test_max_turns_below_one_raises(self):
         with pytest.raises(ValueError, match="max_turns"):

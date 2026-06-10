@@ -13,8 +13,9 @@ Scope: this is the single-stream (N=1) form. The paper's headline ASR used N>>K 
 (N=30 parallel streams, K=3 depth; §3.3 frames N<<K as the deep-refinement regime), so
 single-stream is a structurally weaker baseline by construction -- but it is the
 canonical, most-cited automated-jailbreak ASR baseline the other strategies are reported
-against. Multi-stream (N>1) is a future extension on the same contract (a ``n_streams``
-parameter) once the experiment loop supports per-case parallelism. Naming note: PyRIT
+against. Multi-stream (N>1) is NOT this class -- it needs parallel streams (and TAP needs
+fork/prune), which break this strategy's append-only invariant; it is a separate future
+strategy that waits on the experiment loop gaining per-case fork/store. Naming note: PyRIT
 implements PAIR as TAP-width-1; DeepTeam calls the single-stream form "Linear". We use
 "pair" and keep the helpers append-only with no abort step (Algorithm 1 has none; an
 abort-on-predicted-refusal heuristic, as in DeepTeam's "Linear", only cuts attempts early
@@ -158,10 +159,11 @@ class PairStrategy(AttackStrategy):
     early-stop or K-exhaustion -- plus two safe-terminate guards (empty attacker
     prompt, empty target response). PAIR Algorithm 1 itself has no abort/refusal step.
 
-    The early-stop gate reads the response against ``case.config.attack_goal``
-    (``success_criteria or actor_goal``). The authoritative verdict always comes from
-    ``AttackSuccessEvaluator`` over the full trace; this gate is only the strategy's
-    own stop signal.
+    The early-stop gate scores the response against the case's ``success_criteria``;
+    when that is absent the gate never fires (no judge call, runs to ``max_turns``) so
+    turn counts stay comparable with Crescendo. The authoritative verdict always comes
+    from ``AttackSuccessEvaluator`` over the full trace; this gate is only the
+    strategy's own stop signal.
 
     Instances are shared across cases and rebuilt per case via ``reset()``; this is
     safe only because ``RedTeamExperiment`` runs with ``max_workers=1``.
