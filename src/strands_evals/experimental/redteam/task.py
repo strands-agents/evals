@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from strands import Agent, Snapshot
+from strands import Agent
 from strands.models.model import Model
 from strands.multiagent.base import MultiAgentBase
 
@@ -99,7 +99,7 @@ def _build_attacker_task(
 def _build_session(
     agent: Agent | MultiAgentBase | TargetSession,
     *,
-    baseline: Snapshot | Any | None = None,
+    baseline: Any = None,
 ) -> TargetSession:
     """Wrap an `Agent` or `MultiAgentBase`, or pass a `TargetSession` through.
 
@@ -112,7 +112,9 @@ def _build_session(
             For an `Agent` this is a `Snapshot`; for a `MultiAgentBase`
             it's the opaque composite returned by
             :meth:`StrandsMultiAgentSession.snapshot`. Ignored for a passed-in
-            `TargetSession`, which owns its own reset.
+            `TargetSession`, which owns its own reset. Typed `Any` because
+            this is the boundary that fans into two session types whose
+            baseline shapes are distinct (and one is private).
 
     Raises:
         TypeError: If `agent` is none of the supported types (e.g. a bare

@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, TypedDict
 
 from strands import Agent, Snapshot
-from strands.multiagent.base import MultiAgentBase
+from strands.multiagent.base import MultiAgentBase, Status
 from strands.types.content import Message
 
 logger = logging.getLogger(__name__)
@@ -321,6 +321,14 @@ class StrandsMultiAgentSession:
         revisited graph node) contributes every new message in order. The exact
         across-leaves order is implementation-defined when leaves run
         concurrently, but each leaf's own tool-use order is preserved.
+
+        Out of scope: a single `Agent` instance reused as the executor for
+        multiple distinct node paths. The diff is keyed by path, so a shared
+        instance's tail would be scanned once per path and its tool uses
+        double-counted. `Graph` and `Swarm` give each node its own executor, so
+        this only affects hand-built `MultiAgentBase` subclasses that
+        deliberately share instances; rebuild distinct executors per node if
+        accurate trace counts matter there.
         """
         before = {path: len(agent.messages) for path, agent in self._agent_index.items()}
         result = self._root(message)
@@ -365,13 +373,43 @@ class StrandsMultiAgentSession:
     def _restore(self, snapshot: _MultiAgentSnapshot) -> None:
         """Push a composite snapshot back into the tree.
 
-        Deep-copies once at the boundary -- the same pattern
-        :class:`StrandsAgentSession._restore_state` uses -- so a stored or
-        baseline snapshot can be replayed across cases without being mutated by
-        the load. We clone the whole composite once to share the deepcopy cost
-        across leaves and orchestrators rather than copying piecewise.
+        Deep-copies the composite once at the boundary so a stored or baseline
+        snapshot can be replayed across cases without being mutated by the load.
+        Cloning the whole composite once shares the deepcopy cost across leaves
+        and orchestrators rather than copying piecewise.
+
+        Orchestrators are restored FIRST, leaves LAST. `Graph.deserialize_state`
+        and `Swarm.deserialize_state` reset every node's executor state to
+        graph-build-time values when the payload has no ``next_nodes_to_execute``
+        (the common case between attack turns: the orchestrator is PENDING or
+        COMPLETED). Running the orchestrator load AFTER the leaf loads would wipe
+        the leaves we just restored back to build-time, silently breaking
+        backtracking. Doing orchestrators first lets the per-leaf snapshots be
+        the final writers; for interrupted payloads the order is irrelevant
+        because `deserialize_state` does not touch leaves.
+
+        After each `deserialize_state`, settled-status payloads get the
+        orchestrator's resume bookkeeping forced back to a fresh-invoke state.
+        Settled covers PENDING/COMPLETED/FAILED; in practice you'll see
+        COMPLETED between attack turns and FAILED on a target that errored
+        mid-attack, with PENDING included for completeness (a snapshot of a
+        never-invoked orchestrator). `Swarm.deserialize_state` always takes
+        the resume branch because `Swarm.serialize_state` always emits the
+        `next_nodes_to_execute` key (empty list for a settled swarm) and the
+        deserialize side checks key presence, not truthiness; without this
+        forcing, `_resume_from_session` stays True with `current_node=None`
+        and the next invoke crashes with `AttributeError`. The same forcing
+        is a no-op-or-better for `Graph` (which already takes the reset branch
+        for empty next-nodes) and any other `MultiAgentBase`.
         """
         clone = copy.deepcopy(snapshot)
+        for path, orch_state in clone.orchestrators.items():
+            orch = self._orch_index.get(path)
+            if orch is None:
+                logger.warning("path=<%s> | orchestrator path missing at restore, skipping", "/".join(path))
+                continue
+            orch.deserialize_state(orch_state)
+            self._force_fresh_invoke_if_settled(orch, orch_state)
         for path, agent_snap in clone.agents.items():
             agent = self._agent_index.get(path)
             if agent is None:
@@ -381,12 +419,38 @@ class StrandsMultiAgentSession:
                 logger.warning("path=<%s> | agent path missing at restore, skipping", "/".join(path))
                 continue
             agent.load_snapshot(agent_snap)
-        for path, orch_state in clone.orchestrators.items():
-            orch = self._orch_index.get(path)
-            if orch is None:
-                logger.warning("path=<%s> | orchestrator path missing at restore, skipping", "/".join(path))
-                continue
-            orch.deserialize_state(orch_state)
+
+    @staticmethod
+    def _force_fresh_invoke_if_settled(orch: MultiAgentBase, orch_state: dict[str, Any]) -> None:
+        """Clear `_resume_from_session` for a settled-status payload.
+
+        Settled = PENDING/COMPLETED/FAILED in the just-restored payload. For a
+        Swarm this is the load-bearing fix (see :meth:`_restore`); for a Graph
+        it's redundant with `deserialize_state`'s own reset path but harmless;
+        for any third-party `MultiAgentBase` it provides the same between-turn
+        guarantee.
+
+        `_resume_from_session` is a private SDK attribute we deliberately reach
+        into. If it's missing on an orchestrator that returned a settled-status
+        payload, the SDK has likely renamed/restructured it -- log a warning
+        rather than silently no-op'ing, because the original Swarm bug
+        (silent score=0 / "defended" mislabels) is exactly what comes back when
+        this guard goes stale unnoticed. Custom `MultiAgentBase` subclasses
+        without the attribute trigger the same warning once per restore; tag
+        them with `_resume_from_session = False` to opt out.
+        """
+        status = orch_state.get("status")
+        if status not in {Status.PENDING.value, Status.COMPLETED.value, Status.FAILED.value}:
+            return
+        if hasattr(orch, "_resume_from_session"):
+            orch._resume_from_session = False
+            return
+        logger.warning(
+            "orchestrator=<%s> | settled-status payload but no `_resume_from_session` attribute; "
+            "SDK may have renamed it -- update StrandsMultiAgentSession or strategy backtracks may "
+            "silently mislabel cases as defended",
+            type(orch).__name__,
+        )
 
 
 def _multi_agent_result_text(result: Any) -> str:
