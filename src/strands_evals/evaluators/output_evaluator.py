@@ -29,8 +29,9 @@ class OutputEvaluator(Evaluator[InputT, OutputT]):
         system_prompt: str = SYSTEM_PROMPT,
         include_inputs: bool = True,
         uses_environment_state: bool = False,
+        name: str | None = None,
     ):
-        super().__init__()
+        super().__init__(name=name)
         self.rubric = rubric
         self.model = model
         self.include_inputs = include_inputs

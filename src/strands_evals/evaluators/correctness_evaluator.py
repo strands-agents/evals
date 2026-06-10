@@ -75,8 +75,9 @@ class CorrectnessEvaluator(Evaluator[InputT, OutputT]):
         model: Model | str | None = None,
         system_prompt: str | None = None,
         reference_system_prompt: str | None = None,
+        name: str | None = None,
     ):
-        super().__init__()
+        super().__init__(name=name)
         self.system_prompt = system_prompt if system_prompt is not None else get_template(version).SYSTEM_PROMPT
         self.reference_system_prompt = (
             reference_system_prompt

@@ -174,6 +174,24 @@ class Experiment(Generic[InputT, OutputT]):
         """
         self._evaluators = new_evaluators
 
+    def _validate_evaluator_names(self) -> None:
+        """Validate that all evaluators expose unique names.
+
+        Two instances of the same Evaluator subclass collide on the default
+        class-name fallback; pass `name="..."` to disambiguate.
+
+        Raises:
+            ValueError: If two evaluators resolve to the same `get_name()`.
+        """
+        names = [evaluator.get_name() for evaluator in self._evaluators]
+        duplicates = sorted({n for n in names if names.count(n) > 1})
+        if duplicates:
+            raise ValueError(
+                f"Evaluator names must be unique within an experiment. "
+                f"Duplicates: {duplicates}. Pass `name=...` when constructing "
+                f"multiple instances of the same Evaluator subclass."
+            )
+
     def _validate_case_names(self) -> None:
         """Validate that all cases have unique, non-None names.
 
@@ -334,9 +352,9 @@ class Experiment(Generic[InputT, OutputT]):
 
         try:
             with self._tracer.start_as_current_span(
-                f"evaluator {evaluator.get_type_name()}",
+                f"evaluator {evaluator.get_name()}",
                 attributes={
-                    "gen_ai.evaluation.name": evaluator.get_type_name(),
+                    "gen_ai.evaluation.name": evaluator.get_name(),
                     "gen_ai.evaluation.case.name": case_name,
                 },
             ) as eval_span:
@@ -363,7 +381,7 @@ class Experiment(Generic[InputT, OutputT]):
 
                 # CloudWatch logging for this evaluator
                 try:
-                    evaluator_full_name = f"Custom.{evaluator.get_type_name()}"
+                    evaluator_full_name = f"Custom.{evaluator.get_name()}"
                     region = os.environ.get("AWS_REGION", "us-east-1")
                     _config_arn = f"arn:aws:strands:{region}::strands-evaluation-empty-config/{self._config_id}"
                     _evaluator_arn = f"arn:aws:strands-evals:::evaluator/{evaluator_full_name}"
@@ -398,7 +416,8 @@ class Experiment(Generic[InputT, OutputT]):
                     logger.debug(f"Skipping CloudWatch logging: {str(e)}")
 
                 return {
-                    "evaluator_name": evaluator.get_type_name(),
+                    "evaluator_name": evaluator.get_name(),
+                    "evaluator_type": evaluator.get_type_name(),
                     "test_pass": aggregate_pass,
                     "score": aggregate_score,
                     "reason": aggregate_reason or "",
@@ -410,15 +429,16 @@ class Experiment(Generic[InputT, OutputT]):
             original_exception = e.last_attempt.exception()
             if original_exception is None:
                 original_exception = Exception(
-                    f"Evaluator {evaluator.get_type_name()} failed after {_MAX_RETRY_ATTEMPTS} retries"
+                    f"Evaluator {evaluator.get_name()} failed after {_MAX_RETRY_ATTEMPTS} retries"
                 )
             logger.error(
                 f"Max retry attempts ({_MAX_RETRY_ATTEMPTS}) exceeded for evaluator "
-                f"{evaluator.get_type_name()} on case {case_name}. "
+                f"{evaluator.get_name()} on case {case_name}. "
                 f"Last error: {str(original_exception)}"
             )
             return {
-                "evaluator_name": evaluator.get_type_name(),
+                "evaluator_name": evaluator.get_name(),
+                "evaluator_type": evaluator.get_type_name(),
                 "test_pass": False,
                 "score": 0,
                 "reason": f"Evaluator error: {str(original_exception)}",
@@ -427,7 +447,8 @@ class Experiment(Generic[InputT, OutputT]):
         except Exception as e:
             # Catch non-throttling errors and record as failure (error isolation)
             return {
-                "evaluator_name": evaluator.get_type_name(),
+                "evaluator_name": evaluator.get_name(),
+                "evaluator_type": evaluator.get_type_name(),
                 "test_pass": False,
                 "score": 0,
                 "reason": f"Evaluator error: {str(e)}",
@@ -542,7 +563,8 @@ class Experiment(Generic[InputT, OutputT]):
                         for evaluator in self._evaluators:
                             evaluator_results.append(
                                 {
-                                    "evaluator_name": evaluator.get_type_name(),
+                                    "evaluator_name": evaluator.get_name(),
+                                    "evaluator_type": evaluator.get_type_name(),
                                     "test_pass": False,
                                     "score": 0,
                                     "reason": f"An error occurred: {str(e)}",
@@ -604,6 +626,8 @@ class Experiment(Generic[InputT, OutputT]):
             A single EvaluationReport flattened across every evaluator. Each row in `cases` carries
             an `evaluator` key naming which evaluator produced it.
         """
+        self._validate_evaluator_names()
+
         if evaluation_data_store is not None:
             self._validate_case_names()
 
@@ -624,9 +648,10 @@ class Experiment(Generic[InputT, OutputT]):
             worker.cancel()
         await asyncio.gather(*workers, return_exceptions=True)
 
-        # Organize results by evaluator
+        # Organize results by evaluator (keyed on instance name so two instances
+        # of the same class with distinct `name=` kwargs do not collide).
         evaluator_data: dict[str, dict[str, list]] = {
-            evaluator.get_type_name(): {
+            evaluator.get_name(): {
                 "scores": [],
                 "test_passes": [],
                 "cases": [],
@@ -644,7 +669,9 @@ class Experiment(Generic[InputT, OutputT]):
             recommendation = result.get("recommendation")
             for eval_result in result["evaluator_results"]:
                 eval_name = eval_result["evaluator_name"]
-                evaluator_data[eval_name]["cases"].append({**case_data, "evaluator": eval_name})
+                evaluator_data[eval_name]["cases"].append(
+                    {**case_data, "evaluator": eval_name, "evaluator_type": eval_result["evaluator_type"]}
+                )
                 evaluator_data[eval_name]["scores"].append(eval_result["score"])
                 evaluator_data[eval_name]["test_passes"].append(eval_result["test_pass"])
                 evaluator_data[eval_name]["reasons"].append(eval_result["reason"])
@@ -654,7 +681,7 @@ class Experiment(Generic[InputT, OutputT]):
 
         reports = []
         for evaluator in self._evaluators:
-            eval_name = evaluator.get_type_name()
+            eval_name = evaluator.get_name()
             data = evaluator_data[eval_name]
             scores = data["scores"]
             report = EvaluationReport(

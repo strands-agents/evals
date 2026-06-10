@@ -36,14 +36,22 @@ class Evaluator(Generic[InputT, OutputT]):
     evaluation_level: EvaluationLevel | None = None
     _trace_extractor: TraceExtractor | None = None
 
-    def __init__(self, trace_extractor: TraceExtractor | None = None):
+    def __init__(self, trace_extractor: TraceExtractor | None = None, name: str | None = None):
         """Initialize evaluator with optional custom trace extractor.
 
         Args:
             trace_extractor: Custom trace extractor. If None and evaluation_level is set,
                            a default TraceExtractor will be created.
+            name: Instance-level identifier used as the evaluator tag in
+                `EvaluationReport.cases[i]["evaluator"]` and as
+                `gen_ai.evaluation.name` on emitted spans/logs. When two
+                instances of the same class run in one experiment (e.g.,
+                `Contains(value="x")` and `Contains(value="y")`), distinct
+                names keep their results from colliding. Defaults to the
+                class name when unset.
         """
         self.aggregator = self._default_aggregator
+        self.name = name
         if trace_extractor:
             self._trace_extractor = trace_extractor
         elif self.evaluation_level:
@@ -263,6 +271,18 @@ class Evaluator(Generic[InputT, OutputT]):
             str: The name of the evaluator type.
         """
         return cls.__name__
+
+    def get_name(self) -> str:
+        """Get the instance-level evaluator name, falling back to the class name.
+
+        Used for the per-row `evaluator` tag in `EvaluationReport` and the
+        `gen_ai.evaluation.name` OTel attribute. `get_type_name()` is still
+        used for class-keyed lookups such as `from_dict` registry resolution.
+
+        Returns:
+            str: The instance name if set, otherwise the class name.
+        """
+        return self.name or self.get_type_name()
 
     def to_dict(self) -> dict:
         """

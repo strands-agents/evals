@@ -16,7 +16,7 @@ def _run(args: argparse.Namespace) -> int:
     experiment: Experiment = Experiment.from_file(args.experiment_file, custom_evaluators=custom_evaluators)
 
     case_count = len(experiment.cases)
-    evaluator_names = [evaluator.get_type_name() for evaluator in experiment.evaluators]
+    evaluator_names = [evaluator.get_name() for evaluator in experiment.evaluators]
 
     fmt = resolve_format(args)
     if fmt == "json":

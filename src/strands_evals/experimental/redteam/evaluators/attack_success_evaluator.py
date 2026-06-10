@@ -33,8 +33,9 @@ class AttackSuccessEvaluator(Evaluator[InputT, OutputT]):
         model: Model | str | None = None,
         system_prompt: str | None = None,
         pass_threshold: float = 0.3,
+        name: str | None = None,
     ):
-        super().__init__()
+        super().__init__(name=name)
         template = get_template(version)
         self.version = version
         self.model = model

@@ -46,8 +46,9 @@ class RecoveryStrategyEvaluator(Evaluator[InputT, OutputT]):
         version: str = "v0",
         model: Model | str | None = None,
         system_prompt: str | None = None,
+        name: str | None = None,
     ):
-        super().__init__()
+        super().__init__(name=name)
         self.version = version
         default_prompt = get_template(version).SYSTEM_PROMPT
         self.system_prompt = system_prompt if system_prompt is not None else default_prompt

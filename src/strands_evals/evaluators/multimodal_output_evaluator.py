@@ -45,6 +45,7 @@ REFERENCE COMPARISON:
         system_prompt: str | None = None,
         reference_suffix: str | None = None,
         uses_environment_state: bool = False,
+        name: str | None = None,
     ):
         super().__init__(
             rubric=rubric,
@@ -52,6 +53,7 @@ REFERENCE COMPARISON:
             system_prompt=system_prompt if system_prompt is not None else MLLM_JUDGE_SYSTEM_PROMPT,
             include_inputs=include_inputs,
             uses_environment_state=uses_environment_state,
+            name=name,
         )
         self.reference_suffix = reference_suffix if reference_suffix is not None else self.DEFAULT_REFERENCE_SUFFIX
 

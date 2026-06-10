@@ -2052,3 +2052,74 @@ class TestDiagnoseOnFailure:
 
         assert report.diagnoses == [None]
         assert report.recommendations == [None]
+
+
+def test_run_evaluations_two_same_class_evaluators_with_distinct_names():
+    """Two instances of the same class with `name=...` produce distinct rows."""
+    cases = [
+        Case(name="france", input="france", expected_output="paris"),
+        Case(name="japan", input="japan", expected_output="tokyo"),
+    ]
+    experiment = Experiment(
+        cases=cases,
+        evaluators=[
+            Contains(value="paris", name="contains_paris"),
+            Contains(value="tokyo", name="contains_tokyo"),
+        ],
+    )
+
+    def task(case):
+        return {"france": "paris", "japan": "tokyo"}[case.input]
+
+    report = experiment.run_evaluations(task)
+
+    tags = [row["evaluator"] for row in report.cases]
+    assert sorted(tags) == ["contains_paris", "contains_paris", "contains_tokyo", "contains_tokyo"]
+
+    # Both instances share the class name, so consumers can group/aggregate by type
+    # even when instance names diverge.
+    assert {row["evaluator_type"] for row in report.cases} == {"Contains"}
+
+    rows = list(zip(report.cases, report.test_passes, strict=True))
+    paris_by_case = {row["name"]: passed for row, passed in rows if row["evaluator"] == "contains_paris"}
+    tokyo_by_case = {row["name"]: passed for row, passed in rows if row["evaluator"] == "contains_tokyo"}
+    assert paris_by_case == {"france": True, "japan": False}
+    assert tokyo_by_case == {"france": False, "japan": True}
+
+
+def test_run_evaluations_rejects_duplicate_evaluator_names():
+    """Two evaluators with the same effective name raise before running."""
+    experiment = Experiment(
+        cases=[Case(name="c1", input="x")],
+        evaluators=[Contains(value="a"), Contains(value="b")],
+    )
+
+    with pytest.raises(ValueError, match="Evaluator names must be unique"):
+        experiment.run_evaluations(lambda case: case.input)
+
+
+def test_evaluator_name_round_trips_through_to_dict_from_dict():
+    """to_dict emits `name` for explicitly-named evaluators, from_dict restores it."""
+    experiment = Experiment(
+        cases=[Case(name="c1", input="x")],
+        evaluators=[Contains(value="hello", name="contains_hello")],
+    )
+
+    payload = experiment.to_dict()
+    assert payload["evaluators"][0]["evaluator_type"] == "Contains"
+    assert payload["evaluators"][0]["name"] == "contains_hello"
+
+    restored = Experiment.from_dict(payload)
+    assert restored.evaluators[0].get_name() == "contains_hello"
+    assert restored.evaluators[0].get_type_name() == "Contains"
+
+
+def test_evaluator_name_default_omitted_from_to_dict():
+    """When no name is set, to_dict omits the field (matches existing default-stripping)."""
+    experiment = Experiment(
+        cases=[Case(name="c1", input="x")],
+        evaluators=[Contains(value="hello")],
+    )
+
+    payload = experiment.to_dict()
+    assert "name" not in payload["evaluators"][0]

@@ -34,6 +34,7 @@ class MultimodalOverallQualityEvaluator(MultimodalOutputEvaluator):
         system_prompt: str | None = None,
         reference_suffix: str | None = None,
         uses_environment_state: bool = False,
+        name: str | None = None,
     ):
         super().__init__(
             rubric=rubric if rubric is not None else OVERALL_QUALITY_RUBRIC_V0,
@@ -42,4 +43,5 @@ class MultimodalOverallQualityEvaluator(MultimodalOutputEvaluator):
             system_prompt=system_prompt,
             reference_suffix=reference_suffix if reference_suffix is not None else _OVERALL_QUALITY_REFERENCE_SUFFIX,
             uses_environment_state=uses_environment_state,
+            name=name,
         )
