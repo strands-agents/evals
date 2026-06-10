@@ -6,6 +6,7 @@ from .report import AttackResult, GroupedSummary, RedTeamReport
 from .strategies import (
     AttackRunResult,
     AttackStrategy,
+    BadLikertJudgeStrategy,
     CrescendoStrategy,
     PromptStrategy,
     TargetCheckpoint,
@@ -21,6 +22,7 @@ __all__ = [
     "AttackRunResult",
     "AttackStrategy",
     "AttackSuccessEvaluator",
+    "BadLikertJudgeStrategy",
     "CrescendoStrategy",
     "GroupedSummary",
     "PromptStrategy",
