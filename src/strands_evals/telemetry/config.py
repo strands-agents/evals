@@ -5,20 +5,52 @@ for OpenTelemetry tracing in evaluation workflows.
 """
 
 import logging
-from typing import Any
+from typing import Any, cast
 
+import opentelemetry.context as context_api
 import opentelemetry.trace as trace_api
-from opentelemetry import propagate
+from opentelemetry import baggage, propagate
 from opentelemetry.baggage.propagation import W3CBaggagePropagator
+from opentelemetry.context import Context
 from opentelemetry.propagators.composite import CompositePropagator
 from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter, SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import TracerProvider
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+from opentelemetry.util.types import AttributeValue
 
 logger = logging.getLogger(__name__)
+
+
+class _BaggageSpanProcessor(SpanProcessor):
+    """Copy entries from the active context's W3C Baggage onto each span on start.
+
+    Used by the CLI's per-case wrapper (see :mod:`strands_evals.cli._agent_task`)
+    to propagate `session.id` / `gen_ai.conversation.id` and any user-supplied
+    `--trace-attributes` to every span emitted inside the wrapper, regardless
+    of which `--agent` shape the user chose. The mapper's per-session filter
+    (`StrandsInMemorySessionMapper.map_to_session`) relies on these attributes
+    to split a shared in-memory span buffer back into per-case trajectories.
+    """
+
+    def on_start(self, span: Span, parent_context: Context | None = None) -> None:
+        ctx = parent_context if parent_context is not None else context_api.get_current()
+        for key, value in baggage.get_all(ctx).items():
+            # Baggage values are typed as `object`, but anything we put in
+            # via the CLI wrapper is a string; spans need an AttributeValue.
+            span.set_attribute(key, cast(AttributeValue, value))
+
+    def on_end(self, span: ReadableSpan) -> None:  # pragma: no cover - no-op
+        return None
+
+    def shutdown(self) -> None:  # pragma: no cover - no-op
+        return None
+
+    def force_flush(self, timeout_millis: int = 30_000) -> bool:  # pragma: no cover - no-op
+        return True
 
 
 def get_otel_resource() -> Resource:
@@ -175,10 +207,14 @@ class StrandsEvalsTelemetry:
         try:
             logger.info("Enabling in-memory export for strands-evals")
             self._in_memory_exporter = InMemorySpanExporter()
+            # Stamp baggage onto spans BEFORE they are exported, so the
+            # in-memory exporter (and any downstream mapper) sees session.id
+            # and other per-case identifiers.
+            self.tracer_provider.add_span_processor(_BaggageSpanProcessor())
             span_processor = SimpleSpanProcessor(self._in_memory_exporter)
             self.tracer_provider.add_span_processor(span_processor)
         except Exception as e:
-            logger.exception("error=<%s> | Failed to configure console exporter", e)
+            logger.exception("error=<%s> | Failed to configure in-memory exporter", e)
         return self
 
     def setup_otlp_exporter(self, **kwargs: Any) -> "StrandsEvalsTelemetry":

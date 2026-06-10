@@ -194,16 +194,16 @@ class TestEvaluationReportFlatten:
 
 
 class TestFormatInputForDisplay:
-    """Tests for _format_input_for_display static method."""
+    """Tests for format_input_for_display static method."""
 
     def test_non_multimodal_input_passthrough(self):
-        assert EvaluationReport._format_input_for_display("plain text") == "plain text"
+        assert EvaluationReport.format_input_for_display("plain text") == "plain text"
 
     def test_non_dict_input(self):
-        assert EvaluationReport._format_input_for_display(42) == "42"
+        assert EvaluationReport.format_input_for_display(42) == "42"
 
     def test_dict_without_media_key(self):
-        result = EvaluationReport._format_input_for_display({"instruction": "test"})
+        result = EvaluationReport.format_input_for_display({"instruction": "test"})
         assert result == "{'instruction': 'test'}"
 
     def test_multimodal_dict_with_list_media(self):
@@ -211,7 +211,7 @@ class TestFormatInputForDisplay:
             "media": [{"source": "a"}, {"source": "b"}],
             "instruction": "Describe these images",
         }
-        result = EvaluationReport._format_input_for_display(input_val)
+        result = EvaluationReport.format_input_for_display(input_val)
 
         assert "instruction: Describe these images" in result
         assert "[2 media item(s)]" in result
@@ -221,7 +221,7 @@ class TestFormatInputForDisplay:
             "media": {"source": "abc123", "format": "png"},
             "instruction": "Describe this image",
         }
-        result = EvaluationReport._format_input_for_display(input_val)
+        result = EvaluationReport.format_input_for_display(input_val)
 
         assert "instruction: Describe this image" in result
         assert "[1 media item]" in result
@@ -232,7 +232,7 @@ class TestFormatInputForDisplay:
             "media": long_base64,
             "instruction": "Describe",
         }
-        result = EvaluationReport._format_input_for_display(input_val)
+        result = EvaluationReport.format_input_for_display(input_val)
 
         assert "[media: " + "a" * 50 + "...]" in result
 
@@ -241,7 +241,7 @@ class TestFormatInputForDisplay:
             "media": "image.png",
             "instruction": "Describe",
         }
-        result = EvaluationReport._format_input_for_display(input_val)
+        result = EvaluationReport.format_input_for_display(input_val)
 
         assert "[media: image.png]" in result
 
@@ -251,7 +251,7 @@ class TestFormatInputForDisplay:
             "instruction": "Analyze",
             "context": "You are a botanist",
         }
-        result = EvaluationReport._format_input_for_display(input_val)
+        result = EvaluationReport.format_input_for_display(input_val)
 
         assert "instruction: Analyze" in result
         assert "context: You are a botanist" in result
@@ -262,7 +262,7 @@ class TestFormatInputForDisplay:
             "media": {"source": "abc"},
             "instruction": "Describe",
         }
-        result = EvaluationReport._format_input_for_display(input_val)
+        result = EvaluationReport.format_input_for_display(input_val)
 
         assert "context" not in result
 
@@ -272,7 +272,7 @@ class TestFormatInputForDisplay:
             "instruction": "Describe",
             "context": "Context here",
         }
-        result = EvaluationReport._format_input_for_display(input_val)
+        result = EvaluationReport.format_input_for_display(input_val)
 
         parts = result.split(" | ")
         assert len(parts) == 3

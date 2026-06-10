@@ -64,7 +64,7 @@ class EvaluationReport(BaseModel):
         )
 
     @staticmethod
-    def _format_input_for_display(input_value: object) -> str:
+    def format_input_for_display(input_value: object) -> str:
         """Format an input value for display, handling multimodal inputs gracefully.
 
         Detects serialized multimodal inputs (dicts with 'media' and 'instruction' keys)
@@ -136,7 +136,7 @@ class EvaluationReport(BaseModel):
             details_dict["test_pass"] = self.test_passes[i]
             details_dict["reason"] = reason
             if include_input:
-                details_dict["input"] = self._format_input_for_display(self.cases[i].get("input"))
+                details_dict["input"] = self.format_input_for_display(self.cases[i].get("input"))
             if include_actual_output:
                 details_dict["actual_output"] = str(self.cases[i].get("actual_output"))
             if include_expected_output:
