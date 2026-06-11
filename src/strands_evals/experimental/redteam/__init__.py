@@ -11,6 +11,7 @@ from .strategies import (
     GoatStrategy,
     PairStrategy,
     PromptStrategy,
+    SequentialBreakStrategy,
     TargetCheckpoint,
     TargetSession,
 )
@@ -34,6 +35,7 @@ __all__ = [
     "RedTeamConfig",
     "RedTeamExperiment",
     "RedTeamReport",
+    "SequentialBreakStrategy",
     "TargetCheckpoint",
     "TargetSession",
     "TargetSpec",
