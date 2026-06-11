@@ -12,6 +12,10 @@ on:
         description: 'Backfill all releases'
         type: boolean
         default: false
+      tag:
+        description: 'Single release tag to sync (ignored when backfill is checked)'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -24,7 +28,7 @@ jobs:
         with:
           source-repo: strands-agents/evals
           mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.backfill) && 'backfill' || 'single' }}
-          tag: ${{ github.event.release.tag_name }}
+          tag: ${{ github.event.release.tag_name || inputs.tag }}
           # Cross-repo: needs pull-requests:write + contents:write on harness-sdk.
           # Reuse the org's existing cross-repo automation token; do not provision
           # a new secret without confirming none exists.
