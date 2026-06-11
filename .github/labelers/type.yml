@@ -1,0 +1,26 @@
+# .github/labelers/type.yml
+# Classifies issues/PRs by type (bug, feature, etc.)
+# Use max_labels: 1 in the workflow since these are mutually exclusive.
+
+instructions: |
+  Choose exactly one type.
+  The conventional-commit prefix in the title is authoritative when present:
+  "feat:"/"feat(...)" is an enhancement; "fix:"/"fix(...)" is a bug;
+  "chore:", "ci:", "build:", "refactor:", "perf:", "style:", "test:" are chores;
+  "docs:" follows the documentation rules below.
+  Only treat a PR as a chore when its own changes are maintenance with no
+  user-facing impact (dependency bumps, CI config, internal refactors). A PR
+  that adds or changes user-facing functionality is an enhancement even if it
+  also touches build or CI files.
+  If the title starts with [BUG] it is a bug. If the title starts with [FEATURE] it is an enhancement.
+  Documentation improvements or corrections are bugs. Requests for new docs or content additions are enhancements. Documentation questions are questions.
+
+labels:
+  bug:
+    description: "Something is broken or not working as documented"
+  enhancement:
+    description: "New feature request or improvement to existing functionality"
+  question:
+    description: "User asking for help, clarification, or how to do something"
+  chore:
+    description: "Maintenance tasks, dependency updates, CI changes, refactoring with no user-facing impact"

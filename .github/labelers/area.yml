@@ -1,0 +1,44 @@
+# .github/labelers/area.yml
+# Classifies issues/PRs by technical area/subsystem of the Strands Evals SDK.
+
+instructions: |
+  This is the Strands Evals SDK repository (Python only).
+  Assign an area based on which subsystem the issue concerns. Each label below maps to a package under src/strands_evals/.
+
+  Precedence — chaos, redteam, and multimodal own their own evaluators, generators, and sessions, so the specialized area always wins over the general one:
+  - Anything about fault injection, recovery strategy, partial completion, or the chaos evaluators belongs to area-chaos (NOT area-evaluators).
+  - Anything about adversarial/attack generation, attack strategies, or the attack-success evaluator belongs to area-redteam (NOT area-evaluators or area-generators).
+  - Image/MLLM-as-judge and image-to-text evaluation belongs to area-multimodal (NOT area-evaluators).
+
+  General mappings (use only when the precedence rules above do not apply):
+  - General-purpose quality metrics (correctness, coherence, faithfulness, helpfulness, refusal, stereotyping, conciseness, relevance, instruction-following, goal success, harmfulness, tool selection/parameter, trajectory, output, interactions) belong to area-evaluators.
+  - Actor simulation, tool simulation, and multi-turn user simulation that the SDK generates belong to area-simulation.
+  - Failure detection and root cause analysis of a session belong to area-detectors.
+  - General experiment generation and topic planning belong to area-generators.
+  - Ingesting trace or session data that already exists elsewhere (CloudWatch, Langfuse, OpenSearch providers; session mappers; trace/tool/graph/swarm extractors; OTEL telemetry) belongs to area-tracing. This is about reading external data IN, as opposed to area-simulation which generates new conversations.
+  - CLI commands (run, report, validate, diagnose) and console output belong to area-cli. Use this only when the issue is about the command/console layer itself, not the underlying subsystem it invokes.
+  - Core framework primitives (Case, Experiment, task handling, result/data stores) belong to area-core. area-core is NOT a catch-all: use it only when the issue is genuinely about these shared primitives, not when it concerns a specific subsystem above.
+
+  Do not force an area: if no area clearly applies, assign no area label rather than guessing.
+
+labels:
+  area-evaluators:
+    description: "Evaluators: output, trajectory, tool use, interactions, and LLM-as-judge quality metrics (correctness, faithfulness, helpfulness, etc.)"
+  area-multimodal:
+    description: "Multimodal evaluation: MLLM-as-judge evaluators and image-to-text rubrics"
+  area-simulation:
+    description: "Conversation simulation: actor simulator, tool simulator, profiles, multi-turn interactions"
+  area-detectors:
+    description: "Failure detection and root cause analysis of agent sessions"
+  area-chaos:
+    description: "Chaos/fault injection: experiments, recovery strategy, partial completion, failure communication"
+  area-redteam:
+    description: "Red teaming: adversarial generation, attack strategies, attack success evaluation"
+  area-generators:
+    description: "Automated experiment generation and topic planning"
+  area-tracing:
+    description: "Trace/session ingestion: providers (CloudWatch, Langfuse, OpenSearch), session mappers, extractors, telemetry/OTEL"
+  area-cli:
+    description: "CLI commands (run, report, validate, diagnose) and console display"
+  area-core:
+    description: "Core eval framework: Case, Experiment, task handler, evaluation data stores"
