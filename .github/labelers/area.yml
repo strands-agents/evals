@@ -20,6 +20,7 @@ instructions: |
   - Core framework primitives (Case, Experiment, task handling, result/data stores) belong to area-core. area-core is NOT a catch-all: use it only when the issue is genuinely about these shared primitives, not when it concerns a specific subsystem above.
 
   Do not force an area: if no area clearly applies, assign no area label rather than guessing.
+  Order matters: list the most important label first, because at most 2 labels are kept. Rank by specificity — concrete subsystems (area-evaluators, area-detectors, area-simulation, area-tracing, etc.) come before the broader area-core, which is reserved for shared primitives. When an issue reports a bug in a concrete subsystem, that subsystem takes priority.
 
 labels:
   area-evaluators:
