@@ -370,7 +370,7 @@ If you are an agent opening a PR on behalf of a contributor, the human is the au
 ### Workflow
 
 1. **Scope it.** Confirm the change maps to one concern. Split anything that doesn't.
-2. **Follow the patterns in this file.** Built-in generics, structured logging, route LLM calls through `strands.Agent`, version prompts as `_v0.py` constants, mirror `src/` structure in `tests/`. See "Coding Patterns" and "Things NOT to Do" above.
+2. **Follow the patterns in this file.** Built-in generics, structured logging, route LLM calls through `strands.Agent`, version prompts as `_v0.py` constants, mirror `src/` structure in `tests/`. See the "Coding Patterns and Best Practices" and "Things NOT to Do" sections.
 3. **Add tests.** New code needs a mirrored test file under `tests/strands_evals/...`. Make sure tests exercise the behavior, not just pass.
 4. **Run the full readiness check** before opening the PR:
    ```bash
