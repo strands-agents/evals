@@ -1,0 +1,31 @@
+name: "Changelog: Sync"
+
+# Evals releases are surfaced on the changelog page that lives in
+# strands-agents/harness-sdk, so this workflow opens a cross-repo PR there.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      backfill:
+        description: 'Backfill all releases'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: strands-agents/devtools/changelog-release-pr@main
+        with:
+          source-repo: strands-agents/evals
+          mode: ${{ (github.event_name == 'workflow_dispatch' && inputs.backfill) && 'backfill' || 'single' }}
+          tag: ${{ github.event.release.tag_name }}
+          # Cross-repo: needs pull-requests:write + contents:write on harness-sdk.
+          # Reuse the org's existing cross-repo automation token; do not provision
+          # a new secret without confirming none exists.
+          github-token: ${{ secrets.CHANGELOG_PR_TOKEN }}
