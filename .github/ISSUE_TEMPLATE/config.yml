@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Strands Evals SDK Support
+    url: https://github.com/strands-agents/evals/discussions
+    about: Please ask and answer questions here
   - name: Strands Evals SDK Documentation
-    url: https://github.com/strands-agents/docs
+    url: https://strandsagents.com/docs/user-guide/evals-sdk/quickstart/
     about: Visit our documentation for help

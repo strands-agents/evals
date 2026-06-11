@@ -1,7 +1,7 @@
 name: Bug Report
 description: Report a bug in the Strands Agents Evals
 title: "[BUG] "
-labels: ["bug", "triage"]
+labels: ["triage", "python"]
 assignees: []
 body:
   - type: markdown
@@ -13,7 +13,7 @@ body:
     attributes:
       label: "Checks"
       options:
-        - label: "I have updated to the lastest minor and patch version of Strands and evals"
+        - label: "I have updated to the latest minor and patch version of Strands and evals"
           required: true
         - label: "I have checked the documentation and this is not expected behavior"
           required: true
@@ -59,7 +59,6 @@ body:
       options:
         - pip
         - git clone
-        - binary
         - other
   - type: textarea
     id: steps-to-reproduce
