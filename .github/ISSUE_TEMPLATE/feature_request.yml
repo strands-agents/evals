@@ -1,7 +1,7 @@
 name: Feature Request
 description: Suggest a new feature or enhancement for Strands Evals SDK
 title: "[FEATURE] "
-labels: ["enhancement", "triage"]
+labels: ["triage", "python"]
 assignees: []
 body:
   - type: markdown
