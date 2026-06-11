@@ -235,8 +235,13 @@ class TestRunAttack:
             result = strat.run_attack(_case(), session, max_turns=10)
         assert result.strategy_succeeded is True
         assert result.strategy_score == 0.9
-        assert result.metadata["breached_variant"] == "dc_t1"
-        assert result.metadata["variants_tried"] == ["dc_t1"]
+        # Full-dict equality catches a regression in ANY metadata field, not just the listed ones.
+        assert result.metadata == {
+            "turns_used": 1,
+            "target_calls": 1,
+            "variants_tried": ["dc_t1"],
+            "breached_variant": "dc_t1",
+        }
         assert len(session.sent) == 1  # stopped after first
 
     def test_runs_all_variants_when_none_breach(self):
@@ -245,10 +250,12 @@ class TestRunAttack:
         with patch(f"{_SB}.success_score", return_value=0.1):
             result = strat.run_attack(_case(), session, max_turns=10)
         assert result.strategy_succeeded is False
-        assert result.metadata["breached_variant"] is None
-        assert result.metadata["variants_tried"] == _ALL_VARIANTS
-        assert result.metadata["target_calls"] == 5
-        assert result.metadata["turns_used"] == 5
+        assert result.metadata == {
+            "turns_used": 5,
+            "target_calls": 5,
+            "variants_tried": _ALL_VARIANTS,
+            "breached_variant": None,
+        }
 
     def test_strategy_score_is_max_not_last(self):
         strat = _strategy()
@@ -267,9 +274,13 @@ class TestRunAttack:
         with patch(f"{_SB}.success_score", side_effect=lambda *_a, **_k: next(scores)):
             result = strat.run_attack(_case(), session, max_turns=10)
         assert result.strategy_succeeded is True
-        assert result.metadata["breached_variant"] == "dc_t2"
-        assert result.metadata["variants_tried"] == ["dc_t1", "dc_t2"]
         assert result.strategy_score == 0.7  # max(0.2, 0.7)
+        assert result.metadata == {
+            "turns_used": 2,
+            "target_calls": 2,
+            "variants_tried": ["dc_t1", "dc_t2"],
+            "breached_variant": "dc_t2",
+        }
 
     def test_conversation_shape(self):
         strat = _strategy()
@@ -335,6 +346,17 @@ class TestRunAttack:
         result = strat.run_attack(_case(success_criteria=None), session, max_turns=10)
         assert result.strategy_succeeded is False
         assert result.metadata["variants_tried"] == _ALL_VARIANTS
+
+    def test_no_criteria_does_not_build_judge(self):
+        # A no-criteria case never scores, so the judge Agent (and its model) must NOT be
+        # constructed -- a typo'd judge model on such a case would otherwise raise into the
+        # per-case score=0 swallow.
+        strat = SequentialBreakStrategy()
+        judge_builder = MagicMock(return_value=MagicMock())
+        strat._judge_agent = judge_builder  # type: ignore[method-assign]
+        session = _FakeSession(lambda m: "resp")
+        strat.run_attack(_case(success_criteria=None), session, max_turns=10)
+        judge_builder.assert_not_called()
 
     def test_does_not_snapshot_or_reset(self):
         # _FakeSession raises on snapshot/restore/reset; a clean run proves append-only.

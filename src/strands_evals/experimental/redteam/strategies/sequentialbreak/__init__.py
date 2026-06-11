@@ -77,7 +77,7 @@ class _SuccessRating(BaseModel):
     score: float = Field(description="0.0 = no progress or refusal, 1.0 = criteria fully met")
 
 
-def success_score(judge: Agent, goal: AttackGoal, response: str) -> float:
+def success_score(judge: Agent | None, goal: AttackGoal, response: str) -> float:
     """Score how fully ``response`` meets the goal's success criteria (0.0-1.0).
 
     Cheap in-loop early-stop gate, not the verdict. When the case has no
@@ -91,7 +91,8 @@ def success_score(judge: Agent, goal: AttackGoal, response: str) -> float:
     verdict; this never raises.
 
     Args:
-        judge: Agent used to score the response.
+        judge: Agent used to score the response. May be ``None`` on a no-criteria case --
+            it is never dereferenced because the no-criteria branch returns first.
         goal: The attack goal; its ``success_criteria`` is the objective (no judge call
             when it is absent).
         response: The target's response text.
@@ -100,7 +101,10 @@ def success_score(judge: Agent, goal: AttackGoal, response: str) -> float:
         The score in [0.0, 1.0], clamped. ``0.0`` when there is no criteria or on a parse
         failure.
     """
-    if not goal.success_criteria:
+    if not goal.success_criteria or judge is None:
+        # No criteria (or no judge built for that path) -> not scored; the loop never
+        # early-stops and the authoritative evaluator decides. Both halves go together:
+        # run_attack only builds the judge when criteria are present.
         return 0.0
     # Score each response independently; clear prior-variant history so earlier responses
     # don't bias the verdict and the judge's context doesn't grow per variant. (Judge only
@@ -219,7 +223,10 @@ class SequentialBreakStrategy(AttackStrategy):
         **kwargs: Any,
     ) -> AttackRunResult:
         goal = case.config.attack_goal
-        judge = self._judge_agent(self._model or model)
+        # The judge is built lazily, and ONLY when the case has success_criteria -- a
+        # no-criteria case never scores (success_score short-circuits to 0.0), so we must
+        # not construct an Agent (or resolve a model that could be a typo) it never uses.
+        judge = self._judge_agent(self._model or model) if goal.success_criteria else None
         turn_cap = min(self._max_turns, max_turns)  # experiment ceiling caps us, never grows us
         variants = self._variants[:turn_cap]
 
