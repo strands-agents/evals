@@ -269,6 +269,17 @@ def test_invalid_success_threshold_rejected_at_construction(bad_threshold):
         BadLikertJudgeStrategy(success_threshold=bad_threshold)
 
 
+@pytest.mark.parametrize("bad_rounds", [-1, -5])
+def test_negative_refine_rounds_rejected_at_construction(bad_rounds):
+    """A negative refine_rounds silently behaves as 0; reject loud, like the other config guards."""
+    with pytest.raises(ValueError, match="refine_rounds"):
+        BadLikertJudgeStrategy(refine_rounds=bad_rounds)
+
+
+def test_zero_refine_rounds_allowed():
+    assert BadLikertJudgeStrategy(refine_rounds=0)._refine_rounds == 0
+
+
 def test_ctor_model_takes_precedence():
     strat = BadLikertJudgeStrategy(model="ctor-model")
     captured = {}
@@ -276,6 +287,26 @@ def test_ctor_model_takes_precedence():
     with patch(f"{_BLJ}._success_score", return_value=0.0):
         strat.run_attack(_case(), _session(lambda _m: "r"), max_turns=10, model="experiment-model")
     assert captured["judge_model"] == "ctor-model"
+
+
+def test_run_model_used_when_no_ctor_model():
+    """model=None at ctor must fall through to the experiment-level model (the `or` fallback)."""
+    strat = BadLikertJudgeStrategy(model=None)
+    captured = {}
+    strat._judge_agent = lambda model: captured.setdefault("judge_model", model) or MagicMock()  # type: ignore[method-assign]
+    with patch(f"{_BLJ}._success_score", return_value=0.0):
+        strat.run_attack(_case(), _session(lambda _m: "r"), max_turns=10, model="experiment-model")
+    assert captured["judge_model"] == "experiment-model"
+
+
+def test_no_criteria_does_not_build_judge():
+    """A no-criteria case never scores, so the judge Agent must NOT be constructed (a typo'd
+    judge model on such a case would otherwise raise into the per-case score=0 swallow)."""
+    strat = BadLikertJudgeStrategy()
+    judge_builder = MagicMock(return_value=MagicMock())
+    strat._judge_agent = judge_builder  # type: ignore[method-assign]
+    strat.run_attack(_case(success_criteria=None), _session(lambda _m: "r"), max_turns=10)
+    judge_builder.assert_not_called()
 
 
 def test_reset_nulls_judge():
