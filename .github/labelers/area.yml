@@ -19,8 +19,12 @@ instructions: |
   - CLI commands (run, report, validate, diagnose) and terminal/console output belong to area-cli. area-cli is strictly the command-line and console layer. Do NOT use it for web-based UIs, GUIs, dashboards, hosting, or any non-terminal interface — those have no dedicated area, so assign no area label unless they clearly concern area-core primitives.
   - Core framework primitives (Case, Experiment, task handling, result/data stores) belong to area-core. area-core is NOT a catch-all: use it only when the issue is genuinely about these shared primitives, not when it concerns a specific subsystem above.
 
+  Cross-cutting labels (not tied to one subsystem):
+  - area-devx covers how it feels to use the SDK: papercuts, confusing or awkward public APIs, error-message quality, ergonomics, and surprising behavior that does not match what a developer would reasonably expect. It is appropriate even for a specific subsystem when the issue is about that subsystem's public API being confusing, awkward, or surprising to use (as opposed to a clear functional bug in its internal behavior). It is NOT a catch-all for any generic "make it better" request that lacks a concrete usability concern.
+  - area-community is NOT a catch-all. Use it only for repo health, governance, contributor process, release process, and CI dependency bumps. If no area clearly applies, assign no area label rather than defaulting to area-community.
+
   Do not force an area: if no area clearly applies, assign no area label rather than guessing.
-  Order matters: list the most important label first, because at most 2 labels are kept. Rank by specificity — concrete subsystems (area-evaluators, area-detectors, area-simulation, area-tracing, etc.) come before the broader area-core, which is reserved for shared primitives. When an issue reports a bug in a concrete subsystem, that subsystem takes priority.
+  Order matters: list the most important label first, because at most 2 labels are kept. Rank by specificity — concrete subsystems (area-evaluators, area-detectors, area-simulation, area-tracing, etc.) come first, then the broader area-core, and finally the softer cross-cutting labels (area-devx, area-community) which are not tied to a feature area. When an issue reports a bug in a concrete subsystem, that subsystem takes priority. Example: "the OutputEvaluator constructor args are confusing and its error message is unhelpful" -> area-evaluators, then area-devx (subsystem first, usability second).
 
 labels:
   area-evaluators:
@@ -43,3 +47,7 @@ labels:
     description: "CLI commands (run, report, validate, diagnose) and console display"
   area-core:
     description: "Core eval framework: Case, Experiment, task handler, evaluation data stores"
+  area-devx:
+    description: "Developer experience: papercuts, confusing or awkward public APIs, error messages, ergonomics, surprising behavior"
+  area-community:
+    description: "Repo health, governance, contributor process, release process, and CI dependency bumps. Not a fallback for issues that fit no other area."
