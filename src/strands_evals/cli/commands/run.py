@@ -8,19 +8,26 @@ import logging
 import sys
 from typing import Any
 
+from ...case import Case
 from ...display.display_console import CollapsibleTableReportDisplay
+from ...evaluators.deterministic import Contains, Equals
+from ...evaluators.evaluator import Evaluator
+from ...evaluators.output_evaluator import OutputEvaluator
 from ...experiment import Experiment
 from ...local_file_task_result_store import LocalFileTaskResultStore
 from ...types.detector import ConfidenceLevel, DiagnosisConfig, DiagnosisTrigger
 from ...types.evaluation_report import EvaluationReport
+from ...types.trace import EvaluationLevel
 from .._agent_task import synthesize_task_function
-from .._common import EXIT_FAILURES, EXIT_OK, resolve_format
+from .._common import EXIT_BAD_INPUT, EXIT_FAILURES, EXIT_OK, emit_error, resolve_format
 from .._entrypoint import (
+    EntryPointError,
     resolve_agent,
     resolve_custom_evaluators,
+    resolve_evaluator_spec,
     resolve_task,
 )
-from .._io import write_text_output
+from .._io import read_text_input, write_text_output
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +64,141 @@ def _build_diagnosis_config(args: argparse.Namespace) -> DiagnosisConfig | None:
         trigger=DiagnosisTrigger(args.diagnose),
         confidence_threshold=ConfidenceLevel(args.confidence),
     )
+
+
+def _ad_hoc_flags_set(args: argparse.Namespace) -> list[str]:
+    """Return the names of ad-hoc flags the user actually provided.
+
+    Used by `_validate_args` to enforce mutual exclusion with EXPERIMENT_FILE
+    and to format helpful error messages naming the conflicting flag.
+    """
+    set_flags: list[str] = []
+    if args.input is not None:
+        set_flags.append("--input")
+    if args.input_file is not None:
+        set_flags.append("--input-file")
+    if args.name is not None:
+        set_flags.append("--name")
+    if args.expected_output is not None:
+        set_flags.append("--expected-output")
+    if args.rubric is not None:
+        set_flags.append("--rubric")
+    if args.evaluator:
+        set_flags.append("--evaluator")
+    return set_flags
+
+
+def _read_input(args: argparse.Namespace) -> str:
+    """Resolve the case input text from `--input` or `--input-file`.
+
+    `--input-file -` reads stdin, mirroring `diagnose`/`report`. The two flags
+    are mutually exclusive; argparse enforces that via a group.
+    """
+    if args.input is not None:
+        return args.input
+    return read_text_input(args.input_file)
+
+
+def _build_ad_hoc_evaluators(args: argparse.Namespace) -> list[Evaluator]:
+    """Resolve `--evaluator` specs and apply auto-wiring rules.
+
+    Auto-wire convenience evaluators only when `--evaluator` is omitted, so an
+    explicit list is never silently extended. `--expected-output` → `Contains`
+    and `--rubric` → `OutputEvaluator` compose: passing both yields both checks.
+    """
+    evaluators: list[Evaluator] = [resolve_evaluator_spec(spec) for spec in (args.evaluator or [])]
+    if not evaluators:
+        if args.expected_output is not None:
+            evaluators.append(Contains(value=args.expected_output))
+        if args.rubric is not None:
+            evaluators.append(OutputEvaluator(rubric=args.rubric))
+    return evaluators
+
+
+def _build_ad_hoc_experiment(
+    args: argparse.Namespace,
+    evaluators: list[Evaluator],
+    diagnosis_config: DiagnosisConfig | None,
+) -> Experiment:
+    """Synthesize an in-memory Experiment from ad-hoc CLI flags.
+
+    Shape:
+      - one `Case` built from `--input`/`--input-file` + optional
+        `--name`/`--expected-output`
+      - evaluators are pre-resolved by `_build_ad_hoc_evaluators` so that
+        `_validate_args` can introspect them before construction.
+    """
+    case = Case[str, str](
+        name=args.name or "ad_hoc",
+        input=_read_input(args),
+        expected_output=args.expected_output,
+    )
+    return Experiment(cases=[case], evaluators=evaluators, diagnosis_config=diagnosis_config)
+
+
+_TRACE_DEPENDENT_LEVELS = {
+    EvaluationLevel.SESSION_LEVEL,
+    EvaluationLevel.TRACE_LEVEL,
+    EvaluationLevel.TOOL_LEVEL,
+}
+
+
+def _check_ad_hoc_evaluator_compat(args: argparse.Namespace, evaluators: list[Evaluator]) -> str | None:
+    """Reject ad-hoc evaluator/flag combinations that would always misfire.
+
+    Two checks:
+      1. Trace/Session/Tool-level evaluators need a `Session` trajectory, which
+         only `--agent` produces. With `--task` they raise inside `_run_evaluator`
+         and surface as a cryptic per-case `score=0`. Fail fast instead.
+      2. `Equals()` without `--expected-output` falls back to `case.expected_output`
+         which is `None` in ad-hoc mode, so the comparison can never pass.
+    """
+    if args.task is not None:
+        offenders = sorted({type(e).__name__ for e in evaluators if e.evaluation_level in _TRACE_DEPENDENT_LEVELS})
+        if offenders:
+            return (
+                f"--evaluator {', '.join(offenders)} requires a Session trajectory; "
+                f"use --agent instead of --task in ad-hoc mode."
+            )
+
+    if args.expected_output is None:
+        equals_offenders = [e for e in evaluators if isinstance(e, Equals) and e.value is None]
+        if equals_offenders:
+            return (
+                "--evaluator equals requires --expected-output in ad-hoc mode "
+                "(otherwise the comparison is against None)."
+            )
+
+    return None
+
+
+def _validate_args(args: argparse.Namespace) -> str | None:
+    """Return an error string if argument combinations are invalid, else None.
+
+    Three rules:
+      1. EXPERIMENT_FILE and any ad-hoc flag are mutually exclusive — pick a
+         mode.
+      2. Without EXPERIMENT_FILE the user must supply `--input` or
+         `--input-file`; otherwise there is nothing to evaluate.
+      3. In ad-hoc mode at least one evaluator must be derivable: an explicit
+         `--evaluator` or an `--expected-output` (which defaults to `Contains`).
+    """
+    ad_hoc = _ad_hoc_flags_set(args)
+    if args.experiment_file is not None and ad_hoc:
+        joined = ", ".join(ad_hoc)
+        return (
+            f"EXPERIMENT_FILE and ad-hoc flags ({joined}) are mutually exclusive; "
+            f"either pass an experiment file or use --input + --evaluator/--expected-output."
+        )
+    if args.experiment_file is None:
+        if args.input is None and args.input_file is None:
+            return "EXPERIMENT_FILE or --input/--input-file is required."
+        if not args.evaluator and args.expected_output is None and args.rubric is None:
+            return (
+                "ad-hoc mode requires --evaluator, --expected-output (auto-wires Contains), "
+                "or --rubric (auto-wires OutputEvaluator)."
+            )
+    return None
 
 
 def _decide_exit_code(report: EvaluationReport, fail_on: tuple[str, float | None]) -> int:
@@ -150,18 +292,39 @@ def _display_expanded(
 
 
 def _run(args: argparse.Namespace) -> int:
-    custom_evaluators = resolve_custom_evaluators(args.custom_evaluator or [])
-    loaded = Experiment.from_file(args.experiment_file, custom_evaluators=custom_evaluators)
+    error = _validate_args(args)
+    if error is not None:
+        emit_error(error)
+        return EXIT_BAD_INPUT
 
     diagnosis_config = _build_diagnosis_config(args)
-    # Experiment.from_file does not accept diagnosis_config; rebuild via the
-    # public constructor so we don't poke private attrs. Cases are deep-copied
-    # by the property accessor, which is fine for a one-shot CLI run.
-    experiment = Experiment(
-        cases=loaded.cases,
-        evaluators=loaded.evaluators,
-        diagnosis_config=diagnosis_config,
-    )
+
+    if args.experiment_file is not None:
+        custom_evaluators = resolve_custom_evaluators(args.custom_evaluator or [])
+        loaded = Experiment.from_file(args.experiment_file, custom_evaluators=custom_evaluators)
+        # Experiment.from_file does not accept diagnosis_config; rebuild via the
+        # public constructor so we don't poke private attrs. Cases are deep-copied
+        # by the property accessor, which is fine for a one-shot CLI run.
+        experiment = Experiment(
+            cases=loaded.cases,
+            evaluators=loaded.evaluators,
+            diagnosis_config=diagnosis_config,
+        )
+    else:
+        if args.custom_evaluator:
+            logger.warning(
+                "--custom-evaluator is ignored in ad-hoc mode; pass MODULE:CLASS directly to --evaluator instead"
+            )
+        try:
+            evaluators = _build_ad_hoc_evaluators(args)
+        except EntryPointError as e:
+            emit_error(str(e))
+            return EXIT_BAD_INPUT
+        compat_error = _check_ad_hoc_evaluator_compat(args, evaluators)
+        if compat_error is not None:
+            emit_error(compat_error)
+            return EXIT_BAD_INPUT
+        experiment = _build_ad_hoc_experiment(args, evaluators, diagnosis_config)
 
     if args.agent is not None:
         entry = resolve_agent(args.agent)
@@ -227,13 +390,76 @@ def add_subparser(
             "Load an Experiment, resolve --agent or --task, execute "
             "run_evaluations_async, and write a flattened EvaluationReport. "
             "--agent synthesizes the standard task wrapper (telemetry → invoke "
-            "→ Session mapping); --task is the escape hatch for custom shapes."
+            "→ Session mapping); --task is the escape hatch for custom shapes. "
+            "Pass EXPERIMENT_FILE to run a serialized experiment, or omit it "
+            "and supply --input + --evaluator/--expected-output for an ad-hoc "
+            "single-case run without authoring an experiment file."
         ),
     )
     parser.add_argument(
         "experiment_file",
         metavar="EXPERIMENT_FILE",
-        help="path to a serialized Experiment JSON file",
+        nargs="?",
+        default=None,
+        help=(
+            "path to a serialized Experiment JSON file. Omit to run in ad-hoc "
+            "single-case mode using --input + --evaluator/--expected-output."
+        ),
+    )
+
+    ad_hoc = parser.add_argument_group("ad-hoc case (no experiment file)")
+    ad_hoc_input = ad_hoc.add_mutually_exclusive_group()
+    ad_hoc_input.add_argument(
+        "--input",
+        metavar="TEXT",
+        default=None,
+        help="case input text (ad-hoc mode); pair with --evaluator or --expected-output",
+    )
+    ad_hoc_input.add_argument(
+        "--input-file",
+        metavar="PATH",
+        default=None,
+        help="read case input from PATH (or '-' for stdin); mutually exclusive with --input",
+    )
+    ad_hoc.add_argument(
+        "--name",
+        metavar="STR",
+        default=None,
+        help="case name in ad-hoc mode (default: 'ad_hoc')",
+    )
+    ad_hoc.add_argument(
+        "--expected-output",
+        metavar="TEXT",
+        default=None,
+        help=(
+            "expected output for the ad-hoc case. When --evaluator is omitted, "
+            "this also defaults to Contains(value=TEXT) so the run is a complete "
+            "one-liner."
+        ),
+    )
+    ad_hoc.add_argument(
+        "--rubric",
+        metavar="TEXT",
+        default=None,
+        help=(
+            "rubric for an LLM-as-judge OutputEvaluator. When --evaluator is "
+            "omitted, this auto-wires OutputEvaluator(rubric=TEXT). Composes "
+            "with --expected-output (both auto-evaluators are appended). For "
+            "richer config (model, system_prompt) use an experiment file."
+        ),
+    )
+    ad_hoc.add_argument(
+        "--evaluator",
+        metavar="SPEC",
+        action="append",
+        default=None,
+        help=(
+            "evaluator for the ad-hoc case (repeatable). SPEC is either a "
+            "built-in shortname (helpfulness, equals, faithfulness, ...) or "
+            "MODULE:CLASS for a custom Evaluator subclass. Built-in shortnames "
+            "instantiate with no arguments; richer config belongs in an "
+            "experiment file."
+        ),
     )
 
     target = parser.add_mutually_exclusive_group(required=True)
@@ -244,7 +470,11 @@ def add_subparser(
             "entry point for a factory callable that returns a strands.Agent. "
             "Zero-arg ('def build_agent() -> Agent: ...') or one-arg "
             "('def build_agent(case: Case) -> Agent: ...'). The factory is "
-            "invoked once per case so each case runs against a fresh Agent."
+            "invoked once per case so each case runs against a fresh Agent. "
+            "Per-case freshness is enforced for strands.Agent only — other "
+            "callables (custom agent classes, partials, instances with __call__) "
+            "are accepted but cross-case isolation becomes the factory's "
+            "responsibility. For non-standard task shapes use --task instead."
         ),
     )
     target.add_argument(

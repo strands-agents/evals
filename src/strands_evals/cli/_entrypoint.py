@@ -17,7 +17,46 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from ..evaluators import (
+    CoherenceEvaluator,
+    ConcisenessEvaluator,
+    CorrectnessEvaluator,
+    Equals,
+    FaithfulnessEvaluator,
+    GoalSuccessRateEvaluator,
+    HarmfulnessEvaluator,
+    HelpfulnessEvaluator,
+    InstructionFollowingEvaluator,
+    RefusalEvaluator,
+    ResponseRelevanceEvaluator,
+    StereotypingEvaluator,
+    ToolParameterAccuracyEvaluator,
+    ToolSelectionAccuracyEvaluator,
+)
 from ..evaluators.evaluator import Evaluator
+
+# Built-in evaluator shortnames for `--evaluator NAME`. Only evaluators that
+# instantiate cleanly with no required arguments are listed here — anything
+# requiring config (rubrics, target values, tool names) belongs in an
+# experiment file. `equals` is included because `Equals()` falls back to the
+# case's `expected_output` when no value is supplied, which is exactly what
+# `--expected-output` provides in ad-hoc mode.
+BUILTIN_EVALUATOR_SHORTNAMES: dict[str, type[Evaluator]] = {
+    "coherence": CoherenceEvaluator,
+    "conciseness": ConcisenessEvaluator,
+    "correctness": CorrectnessEvaluator,
+    "equals": Equals,
+    "faithfulness": FaithfulnessEvaluator,
+    "goal-success-rate": GoalSuccessRateEvaluator,
+    "harmfulness": HarmfulnessEvaluator,
+    "helpfulness": HelpfulnessEvaluator,
+    "instruction-following": InstructionFollowingEvaluator,
+    "refusal": RefusalEvaluator,
+    "response-relevance": ResponseRelevanceEvaluator,
+    "stereotyping": StereotypingEvaluator,
+    "tool-parameter-accuracy": ToolParameterAccuracyEvaluator,
+    "tool-selection-accuracy": ToolSelectionAccuracyEvaluator,
+}
 
 EntryPointKind = Literal[
     "callable_no_arg",
@@ -158,8 +197,11 @@ _FACTORY_HINT = (
     "--agent must reference a factory callable, e.g. "
     "'def build_agent() -> Agent: return Agent(...)' "
     "or 'def build_agent(case: Case) -> Agent: ...'. "
-    "Each case gets a fresh Agent so concurrent runs and "
-    "shared conversation state cannot leak between cases."
+    "Each call must return a fresh agent so concurrent runs and "
+    "shared conversation state cannot leak between cases. The CLI's "
+    "per-case freshness guarantee is enforced for strands.Agent only; "
+    "non-Strands callables are accepted but cross-case isolation is the "
+    "factory's responsibility."
 )
 
 
@@ -209,9 +251,9 @@ def _callable_arity(func: Callable[..., Any]) -> int:
 def classify_agent(obj: Any, spec: str) -> ResolvedEntryPoint:
     """Classify a resolved object passed as `--agent`.
 
-    Accepts only factory callables — the CLI invokes the factory once per case
-    so each case gets a fresh `Agent` instance. This rules out the two unsafe
-    shapes that were previously accepted:
+    Accepts callables — the CLI invokes the resolved object once per case and
+    uses the return value as the agent. Two shapes are explicitly rejected
+    because they break the per-case freshness guarantee for `strands.Agent`:
 
     - **Prebuilt `strands.Agent` instance**: would share `self.messages` and
       other mutable state across cases. Under `--max-workers > 1` this races;
@@ -224,10 +266,25 @@ def classify_agent(obj: Any, spec: str) -> ResolvedEntryPoint:
       - zero-arg callable → `callable_no_arg`
       - one-arg callable (`Case`) → `callable_one_arg`
 
+    **Scope of the freshness guarantee.** The instance/subclass rejections only
+    cover `strands.Agent` (the SDK type the CLI was designed around). A
+    *non-Strands* callable instance — e.g. `class MyAgent: __call__(self, prompt): ...`
+    exposed as a module-level instance — passes the `callable(obj)` check and
+    classifies as `callable_one_arg`. The CLI will call it as `obj(case)` once
+    per case (treating it as a factory) and then call its return value with
+    `case.input`. If that misuse happens to "work" mechanically, the same
+    instance is reused across cases and any per-call state it accumulates
+    leaks between them. There is no general way to detect this without a
+    catalog of every agent framework's base class, so the contract is:
+    `--agent` accepts a *factory* that returns a fresh agent per call. Pass a
+    function, lambda, `functools.partial`, or class object — not a prebuilt
+    instance whose `__call__` carries state.
+
     Raises:
-        EntryPointError: If the object is a prebuilt instance, an `Agent`
-            subclass, a callable with the wrong arity, or not callable at all.
-            The message points users at the factory pattern.
+        EntryPointError: If the object is a prebuilt `strands.Agent` instance,
+            a `strands.Agent` subclass, a callable with the wrong arity, or
+            not callable at all. The message points users at the factory
+            pattern.
     """
     if _is_strands_agent_instance(obj):
         raise EntryPointError(
@@ -278,6 +335,51 @@ def resolve_agent(spec: str) -> ResolvedEntryPoint:
 def resolve_task(spec: str) -> ResolvedEntryPoint:
     """Convenience: `import_attr` then `classify_task`."""
     return classify_task(import_attr(spec), spec)
+
+
+def resolve_evaluator_spec(spec: str) -> Evaluator:
+    """Resolve `--evaluator SPEC` into an instantiated `Evaluator`.
+
+    Two forms are accepted:
+
+    - **Built-in shortname** (e.g. `"helpfulness"`, `"equals"`): looked up in
+      :data:`BUILTIN_EVALUATOR_SHORTNAMES` and instantiated with no arguments.
+      `Contains` is a special case — it requires a `value=` and is not in the
+      shortname registry; users who want substring matching pass
+      `--expected-output TEXT` instead, which the caller turns into
+      `Contains(value=TEXT)`.
+    - **`MODULE:CLASS`** (contains `:`): resolved via :func:`import_attr` and
+      validated as an :class:`Evaluator` subclass, then instantiated with no
+      arguments. This is the escape hatch for custom evaluators in ad-hoc
+      mode; richer construction belongs in an experiment file.
+
+    Raises:
+        EntryPointError: When the spec is unknown, the resolved object isn't
+            an `Evaluator` subclass, or instantiation fails.
+    """
+    if ":" in spec:
+        cls = import_attr(spec)
+        if not isinstance(cls, type) or not issubclass(cls, Evaluator):
+            raise EntryPointError(
+                f"--evaluator '{spec}' must reference a subclass of "
+                f"strands_evals.evaluators.Evaluator (got {type(cls).__name__})"
+            )
+    else:
+        cls = BUILTIN_EVALUATOR_SHORTNAMES.get(spec)
+        if cls is None:
+            choices = ", ".join(sorted(BUILTIN_EVALUATOR_SHORTNAMES))
+            raise EntryPointError(
+                f"--evaluator '{spec}' is not a known built-in shortname. "
+                f"Choose from: {choices}, or pass MODULE:CLASS for a custom evaluator."
+            )
+
+    try:
+        return cls()
+    except TypeError as e:
+        raise EntryPointError(
+            f"--evaluator '{spec}' could not be instantiated with no arguments: {e}. "
+            f"Configure it in an experiment file instead."
+        ) from e
 
 
 def resolve_custom_evaluators(specs: list[str]) -> list[type[Evaluator]]:
