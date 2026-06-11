@@ -220,7 +220,9 @@ def test_returns_attack_run_result_shape():
     ):
         result = strat.run_attack(_case(), _session(lambda _m: "reply"), max_turns=10)
     assert isinstance(result, AttackRunResult)
-    assert set(result.metadata) == {"turns_used", "target_calls", "iterations", "parse_failures"}
+    # Full-dict equality pins the values, not just the keys -- notably parse_failures == 0, the
+    # signal of a real (non-swallowed) run.
+    assert result.metadata == {"turns_used": 1, "target_calls": 1, "iterations": 1, "parse_failures": 0}
     assert result.pruned_branches == []
 
 
@@ -249,6 +251,21 @@ def test_runs_to_cap_when_never_succeeds():
     assert result.strategy_succeeded is False
     assert result.metadata["turns_used"] == 3
     assert result.metadata["target_calls"] == 3
+
+
+def test_strategy_score_is_peak_not_last():
+    """strategy_score reports the PEAK normalized score across turns, not the last -- a refinement
+    run that climbs then dips should surface its closest approach, not the final dip."""
+    strat = _strategy(max_turns=4, success_threshold=0.8)
+    # climb to 0.6 then dip; none clears 0.8 so the loop runs to cap.
+    scores = iter([(0.2, 3), (0.6, 6), (0.3, 4), (0.1, 2)])
+    with (
+        patch(f"{_PAIR}.gen_refined_prompt", return_value="p"),
+        patch(f"{_PAIR}.success_score", side_effect=lambda *_a, **_k: next(scores)),
+    ):
+        result = strat.run_attack(_case(), _session(lambda _m: "engaged"), max_turns=10)
+    assert result.strategy_succeeded is False
+    assert result.strategy_score == 0.6  # peak, not the last turn's 0.1
 
 
 def test_max_turns_clamped_by_injected_value():

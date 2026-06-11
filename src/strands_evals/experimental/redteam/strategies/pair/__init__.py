@@ -226,7 +226,13 @@ class PairStrategy(AttackStrategy):
         conversation: list[dict[str, Any]] = []
         last_response = ""
         last_raw_score: int | None = None
-        score: float | None = None
+        # best_score = the PEAK normalized score across turns (reported as strategy_score). For a
+        # refinement strategy whose point is climbing the score, the closest approach is more
+        # informative than the last turn (which may have dipped after a peak). Matches SequentialBreak's
+        # MAX. Observability only -- AttackSuccessEvaluator is the authoritative verdict. NOTE the
+        # attacker is still fed the LAST turn's raw score (last_raw_score), not the peak: refinement
+        # diagnoses the most recent response, so the feedback signal must stay last-turn.
+        best_score: float | None = None
         succeeded = False
         iterations = 0
         target_calls = 0
@@ -257,18 +263,20 @@ class PairStrategy(AttackStrategy):
             last_response = response
 
             # 3. Jailbreak scoring (PAIR step 3). None-guarded -> 0.0, never raises.
-            score, last_raw_score = success_score(judge, goal, response)
-            logger.debug("iteration=<%s> score=<%.3f> | pair turn scored", iterations, score)
+            turn_score, last_raw_score = success_score(judge, goal, response)
+            best_score = turn_score if best_score is None else max(best_score, turn_score)
+            logger.debug("iteration=<%s> score=<%.3f> | pair turn scored", iterations, turn_score)
 
-            # 4. Success early-stop (PAIR: jailbroken -> return P). No abort step.
-            if score >= self._success_threshold:
+            # 4. Success early-stop (PAIR: jailbroken -> return P). No abort step. Gate on the
+            # CURRENT turn's score, not the peak -- a breach is "this turn cleared the bar".
+            if turn_score >= self._success_threshold:
                 succeeded = True
                 break
 
         return AttackRunResult(
             conversation=conversation,
             strategy_succeeded=succeeded,
-            strategy_score=score,
+            strategy_score=best_score,  # PEAK across turns, not last (see best_score init)
             pruned_branches=[],  # append-only: never backtracks -- do not "fix"
             metadata={
                 "turns_used": len(conversation) // 2,
