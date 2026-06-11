@@ -356,11 +356,34 @@ pre-commit install -t pre-commit -t commit-msg
 pre-commit run --all-files
 ```
 
-## PR and Commit Conventions
+## Creating a High-Quality PR
+
+If you are an agent opening a PR on behalf of a contributor, the human is the author and is accountable for everything you submit. Your job is to make the change easy for them to stand behind and easy for a maintainer to review. The single biggest predictor of a fast review and an accepted PR is a small, focused change that its author fully understands. (See [CONTRIBUTING.md](./CONTRIBUTING.md#using-ai-tools) for the human-facing version of this.)
+
+### Quality bar
+
+- **Understand before you submit.** The contributor should be able to explain why every line works and defend the design. If you generated code you cannot explain in plain terms, stop and explain it (or simplify it) before opening the PR.
+- **Keep it small and focused.** One logical change per PR. If you find yourself touching `evaluators/`, `detectors/`, and `cli/` in one branch, that is almost always several PRs. Smaller PRs are easier for maintainers to understand, guide, and merge.
+- **Open an issue first for anything significant.** Align on the approach before investing time — see "Finding contributions to work on" in CONTRIBUTING.md.
+- **Don't pad the change.** No drive-by reformatting, no unrelated refactors, no speculative abstractions or "while I'm here" cleanups. They make the diff hard to review and the change hard to trust.
+
+### Workflow
+
+1. **Scope it.** Confirm the change maps to one concern. Split anything that doesn't.
+2. **Follow the patterns in this file.** Built-in generics, structured logging, route LLM calls through `strands.Agent`, version prompts as `_v0.py` constants, mirror `src/` structure in `tests/`. See "Coding Patterns" and "Things NOT to Do" above.
+3. **Add tests.** New code needs a mirrored test file under `tests/strands_evals/...`. Make sure tests exercise the behavior, not just pass.
+4. **Run the full readiness check** before opening the PR:
+   ```bash
+   hatch run prepare   # lint + format + test-lint + test --all
+   ```
+   Don't open a PR with known lint, type, or test failures.
+5. **Self-review the diff.** Read it end to end as if you were the reviewer. Remove anything unrelated to the stated change. Confirm you can truthfully check every box in the PR template, including "I have reviewed and understand every line of code in this PR."
+6. **Write it up.** Conventional-commit title (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`), short title, body that explains the **why** more than the **what**.
+
+### Commit and title conventions
 
 - Conventional commits: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`.
-- Keep PRs focused. Describe the **why** more than the **what**.
-- Title should be short, body carries detail.
+- Title should be short; the body carries detail.
 - CI runs `test-lint` and the full test matrix; don't merge with failures.
 
 ## Things to Do
