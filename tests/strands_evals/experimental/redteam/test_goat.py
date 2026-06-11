@@ -218,8 +218,14 @@ def test_returns_attack_run_result_shape():
     ]
     assert result.pruned_branches == []
     assert result.strategy_succeeded is True
-    assert result.metadata["turns_used"] == 1
-    assert result.metadata["target_calls"] == 1
+    # Pin the full metadata dict (deterministic on the success path) so a new or
+    # dropped key is caught -- including that reasoning_trace is absent by default.
+    assert result.metadata == {
+        "turns_used": 1,
+        "target_calls": 1,
+        "parse_failures": 0,
+        "attacks_used": ["hypothetical"],  # _turn default attack
+    }
 
 
 def test_stops_on_success_threshold():
@@ -242,8 +248,14 @@ def test_runs_to_cap_when_never_succeeds():
     turns = [_turn(reply=f"r{i}") for i in range(10)]
     result = _run(_strategy(max_turns=3), _case(), _FakeSession(lambda m: "resp"), turns=turns)
     assert result.strategy_succeeded is False
-    assert result.metadata["target_calls"] == 3  # ctor max_turns wins (smaller)
-    assert result.metadata["turns_used"] == 3
+    # Full dict: ran to the (smaller) ctor cap of 3; each of the 3 turns carries
+    # the _turn default attack, so attacks_used accumulates one per turn.
+    assert result.metadata == {
+        "turns_used": 3,
+        "target_calls": 3,  # ctor max_turns wins (smaller)
+        "parse_failures": 0,
+        "attacks_used": ["hypothetical", "hypothetical", "hypothetical"],
+    }
 
 
 def test_max_turns_clamped_by_injected_value():
@@ -281,11 +293,16 @@ def test_empty_target_response_ends_early():
     # All-or-nothing: a turn that produced no real pair contributes nothing to attacks_used either.
     turns = [_turn(reply="r1", attacks=["hypothetical"]), _turn(reply="r2")]
     result = _run(_strategy(store_reasoning=True), _case(), _FakeSession(lambda m: ""), turns=turns)
-    assert result.metadata["target_calls"] == 1
-    assert result.metadata["turns_used"] == 0
     assert result.conversation == []
-    assert result.metadata["attacks_used"] == []
-    assert result.metadata["reasoning_trace"] == []
+    # Full dict (store_reasoning -> reasoning_trace key present); the empty pair
+    # contributes nothing to attacks_used / reasoning_trace.
+    assert result.metadata == {
+        "turns_used": 0,
+        "target_calls": 1,
+        "parse_failures": 0,
+        "attacks_used": [],
+        "reasoning_trace": [],
+    }
 
 
 def test_first_turn_breach_records_pair_and_attacks():
@@ -294,9 +311,14 @@ def test_first_turn_breach_records_pair_and_attacks():
     result = _run(
         _strategy(store_reasoning=True), _case(), _FakeSession(lambda m: "resp"), turns=turns, score_fn=lambda r: 1.0
     )
-    assert result.metadata["turns_used"] == 1
-    assert result.metadata["attacks_used"] == ["hypothetical"]
-    assert result.metadata["reasoning_trace"] == [{"observation": "o1", "thought": "t1", "strategy": "s1"}]
+    # Full dict: a real pair records its attacks AND reasoning in lockstep.
+    assert result.metadata == {
+        "turns_used": 1,
+        "target_calls": 1,
+        "parse_failures": 0,
+        "attacks_used": ["hypothetical"],
+        "reasoning_trace": [{"observation": "o1", "thought": "t1", "strategy": "s1"}],
+    }
 
 
 # ---------------------------------------------------------------------------
