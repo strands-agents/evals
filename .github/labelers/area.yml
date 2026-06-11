@@ -16,7 +16,7 @@ instructions: |
   - Failure detection and root cause analysis of a session belong to area-detectors.
   - General experiment generation and topic planning belong to area-generators.
   - Ingesting trace or session data that already exists elsewhere (CloudWatch, Langfuse, OpenSearch providers; session mappers; trace/tool/graph/swarm extractors; OTEL telemetry) belongs to area-tracing. This is about reading external data IN, as opposed to area-simulation which generates new conversations.
-  - CLI commands (run, report, validate, diagnose) and console output belong to area-cli. Use this only when the issue is about the command/console layer itself, not the underlying subsystem it invokes.
+  - CLI commands (run, report, validate, diagnose) and terminal/console output belong to area-cli. area-cli is strictly the command-line and console layer. Do NOT use it for web-based UIs, GUIs, dashboards, hosting, or any non-terminal interface — those have no dedicated area, so assign no area label unless they clearly concern area-core primitives.
   - Core framework primitives (Case, Experiment, task handling, result/data stores) belong to area-core. area-core is NOT a catch-all: use it only when the issue is genuinely about these shared primitives, not when it concerns a specific subsystem above.
 
   Do not force an area: if no area clearly applies, assign no area label rather than guessing.
