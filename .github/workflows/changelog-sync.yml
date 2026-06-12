@@ -23,6 +23,8 @@ permissions:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: strands-agents/devtools/changelog-release-pr@main
         with:
