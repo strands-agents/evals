@@ -1,3 +1,4 @@
+from .bad_likert_judge import BadLikertJudgeStrategy
 from .base import AttackRunResult, AttackStrategy
 from .crescendo import CrescendoStrategy
 from .prompt_strategy import PromptStrategy
@@ -16,6 +17,7 @@ __all__ = [
     "BUILTIN_STRATEGIES",
     "AttackRunResult",
     "AttackStrategy",
+    "BadLikertJudgeStrategy",
     "CrescendoStrategy",
     "PromptStrategy",
     "StrandsAgentSession",
