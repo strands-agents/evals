@@ -18,7 +18,7 @@ def _serialize_model(model: Model | str | None) -> str | None:
     `model=None` defers to the experiment-level model, and that semantic
     must survive a round-trip.
 
-    When a non-`None` `Model` instance does not expose a dict `config` with
+    When a non-`None` `Model` instance does not expose a dict config with
     a `model_id`, a warning is logged and `None` is returned. Returning `None`
     means the caller's `to_dict` will drop the field, so reload will fall
     back to the experiment-level model -- a visible behavior change, but the
@@ -26,10 +26,12 @@ def _serialize_model(model: Model | str | None) -> str | None:
     """
     if model is None or isinstance(model, str):
         return model
-    if isinstance(model, Model) and hasattr(model, "config") and isinstance(model.config, dict):
-        model_id = model.config.get("model_id")
-        if model_id is not None:
-            return str(model_id)
+    if isinstance(model, Model):
+        config = model.get_config()
+        if isinstance(config, dict):
+            model_id = config.get("model_id")
+            if model_id is not None:
+                return str(model_id)
     logger.warning(
         "type=<%s> | non-coercible Model: missing dict config with 'model_id'; dropping field",
         type(model).__name__,
