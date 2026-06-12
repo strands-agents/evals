@@ -11,23 +11,36 @@ on:
       tag:
         description: 'Single release tag to sync'
         type: string
-        default: ''
-
-permissions:
-  contents: read
+        required: true
 
 jobs:
   sync:
+    # Prereleases are skipped by the action too; gating here saves the run.
+    if: github.event_name != 'release' || !github.event.release.prerelease
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - uses: strands-agents/devtools/changelog-release-pr@main
+      # Cross-repo PR needs pull-requests:write + contents:write on
+      # harness-sdk. Reuse the org's existing cross-repo automation token; do
+      # not provision a new secret without confirming none exists. Until the
+      # secret is wired, skip cleanly instead of failing every release run —
+      # the daily cron in harness-sdk backstops evals syncs (≤24h latency).
+      - name: Check token configured
+        id: token
+        env:
+          HAS_TOKEN: ${{ secrets.CHANGELOG_PR_TOKEN != '' }}
+        run: |
+          echo "available=$HAS_TOKEN" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_TOKEN" != "true" ]; then
+            echo "::notice::CHANGELOG_PR_TOKEN not configured — skipping instant sync (harness-sdk daily cron will backstop this release)."
+          fi
+
+      - name: Sync release to harness-sdk changelog
+        if: steps.token.outputs.available == 'true'
+        uses: strands-agents/devtools/changelog-release-pr@main
         with:
           source-repo: strands-agents/evals
           mode: single
           tag: ${{ github.event.release.tag_name || inputs.tag }}
-          # Cross-repo: needs pull-requests:write + contents:write on harness-sdk.
-          # Reuse the org's existing cross-repo automation token; do not provision
-          # a new secret without confirming none exists.
           github-token: ${{ secrets.CHANGELOG_PR_TOKEN }}
