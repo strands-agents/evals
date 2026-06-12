@@ -120,3 +120,49 @@ class AttackStrategy(ABC):
         overrides must clear any per-case mutable state here. Called by
         the task runner before each case.
         """
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the strategy's static config.
+
+        The base only persists `strategy_type` (the class name, used as the
+        registry key in `from_dict`) and `label` when explicitly set.
+        Subclasses override to add their own ctor fields. Per-case runtime
+        state (cached attacker/judge agents, etc.) is intentionally dropped --
+        it is rebuilt on the first `run_attack` call after load.
+        """
+        out: dict[str, Any] = {"strategy_type": type(self).__name__}
+        if self._label is not None:
+            out["label"] = self._label
+        return out
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        custom_strategies: list[type[AttackStrategy]] | None = None,
+    ) -> AttackStrategy:
+        """Reconstruct a strategy from its `to_dict` payload.
+
+        Resolves `strategy_type` against the built-in subclasses plus any
+        `custom_strategies` the caller passes through. Mirrors the
+        `Experiment.from_dict` evaluator-registry pattern.
+        """
+        # Lazy import: subclasses inherit from AttackStrategy, so importing them at module top
+        # would cycle (base -> strategies/__init__ -> crescendo -> base).
+        from . import CrescendoStrategy, PromptStrategy
+
+        registry: dict[str, type[AttackStrategy]] = {
+            CrescendoStrategy.__name__: CrescendoStrategy,
+            PromptStrategy.__name__: PromptStrategy,
+        }
+        for custom in custom_strategies or []:
+            registry[custom.__name__] = custom
+
+        payload = dict(data)
+        type_name = payload.pop("strategy_type", None)
+        if type_name is None:
+            raise ValueError("Strategy dict is missing required key 'strategy_type'.")
+        if type_name not in registry:
+            raise ValueError(f"Cannot find strategy {type_name!r}. Pass `custom_strategies=[...]` to register it.")
+        target_cls = registry[type_name]
+        return target_cls(**payload)
