@@ -114,9 +114,13 @@ class AttackStrategy(ABC):
         ...
 
     def reset(self) -> None:  # noqa: B027
-        """Clear runtime state between cases.
+        """Optional per-case reset hook; a no-op by default.
 
-        Strategy instances are shared across cases via the registry, so
-        overrides must clear any per-case mutable state here. Called by
-        the task runner before each case.
+        The built-in strategies are STATELESS across cases: they hold only static
+        config on ``self`` and build their attacker/judge agents as run_attack-local
+        objects (the judge fresh per scoring call), so no per-case state can carry and
+        they do not override this. Statelessness is the primary isolation mechanism,
+        NOT this hook. The task runner still calls ``reset()`` before each case, so the
+        hook remains for the rare custom strategy that genuinely must hold cross-case
+        mutable state on ``self`` and scrub it here.
         """

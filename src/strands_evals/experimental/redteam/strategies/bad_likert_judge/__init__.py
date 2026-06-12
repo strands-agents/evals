@@ -74,10 +74,10 @@ def _success_score(make_judge: Callable[[], Agent] | None, response: str, succes
     trace, not this gate, decides the verdict) -- never a raise, which the per-case ``try/except``
     would turn into a silent ``score=0`` "defended".
 
-    A FRESH judge is built per call (via ``make_judge``) so no agent state -- ``messages``,
-    ``conversation_manager`` counters, ``state`` -- can carry from one turn's scoring into the next.
-    This is stronger than reusing one judge and clearing ``messages``: the clear only scrubbed the
-    message list, leaving any other accreting agent state intact and silently fed to the next call.
+    A FRESH judge is built per call (via ``make_judge``) so no accreting agent state -- message
+    history, conversation-manager counters, or per-agent state -- can carry from one turn's scoring
+    into the next. This is stronger than reusing one judge and clearing only its message history:
+    that clear left any other accreting agent state intact and silently fed to the next call.
 
     Args:
         make_judge: Zero-arg factory that builds a fresh scoring Agent. ``None`` on a no-criteria

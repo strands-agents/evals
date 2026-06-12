@@ -259,8 +259,11 @@ class PairStrategy(AttackStrategy):
             target_calls += 1
             # All-or-nothing turn bookkeeping: an empty response ends the case BEFORE any
             # per-turn state is recorded, so conversation/metadata never disagree on the
-            # turn count (target_calls trails by the dropped call).
-            if not response.strip():
+            # turn count (target_calls trails by the dropped call). Guard None too: the
+            # TargetSession Protocol types invoke -> str, but a custom session may return
+            # None, and None.strip() would raise into the per-case score=0 swallow (matches
+            # the GOAT/BLJ guard).
+            if not response or not response.strip():
                 logger.warning("reason=<empty_response> | target returned no text | ending case early")
                 break
 

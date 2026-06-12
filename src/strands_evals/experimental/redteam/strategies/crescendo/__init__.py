@@ -14,11 +14,14 @@ refusal: acting on the request is the highest-severity breach, so the turn is
 kept, the loop stops, and the tool evidence reaches the authoritative
 ``AttackSuccessEvaluator``.
 
-The refusal / success / question-generation helpers are module-level functions
-(not methods) so future strategies (PAIR, TAP) can reuse them without importing a
-strategy class. They power the strategy's cheap in-loop "should I stop?" gate; the
-authoritative success verdict is re-computed independently by
-``AttackSuccessEvaluator`` over the full trace.
+The refusal / success / question-generation helpers are module-level functions (not
+methods) purely for unit-testability (tests reach them by direct module path). They are
+NOT a cross-strategy reuse surface: by locked design each strategy inlines its OWN gate
+and refusal logic (the strategies use different rating schemes and a sibling must not
+import crescendo's -- see planning/future-modularization-notes), so these are not part of
+the public API. They power crescendo's cheap in-loop "should I stop?" gate; the
+authoritative success verdict is re-computed independently by ``AttackSuccessEvaluator``
+over the full trace.
 """
 
 from __future__ import annotations
@@ -90,8 +93,9 @@ def is_refusal(response: str, make_judge: Callable[[], Agent] | None = None) -> 
     fresh judge disambiguates refusal from marker-bearing compliance. Without a factory,
     markers alone never decide "refused" — the function returns False (keep the turn, let
     the success scorer decide) rather than dropping a possibly-compliant turn on a
-    substring match. The live ``run_attack`` always passes a factory, so this only affects
-    the exported-helper path that standalone callers (PAIR/TAP) might reuse.
+    substring match. The live ``run_attack`` always passes a factory, so the no-factory
+    branch only matters to crescendo's own unit tests (this helper is not a cross-strategy
+    reuse surface -- see module docstring).
 
     A FRESH judge is built per call (via ``make_judge``) so no agent state carries between
     refusal checks -- stronger than reusing one judge and clearing only its ``messages``.
@@ -263,6 +267,11 @@ class CrescendoStrategy(AttackStrategy):
 
             response = target_session.invoke(question)
             target_calls += 1
+            # The TargetSession Protocol types invoke -> str, but a custom session may return
+            # None; coerce to "" so the downstream is_refusal(response).lower() / success_score
+            # never raise into the per-case score=0 swallow. Crescendo deliberately keeps scoring
+            # an empty-string turn (no empty early-stop), so "" is a valid scored response here.
+            response = response or ""
 
             # A turn that drove a tool call complied through action even if it
             # refused in words -- the highest-severity breach. Never backtrack it
@@ -335,4 +344,7 @@ class CrescendoStrategy(AttackStrategy):
         return Agent(model=model, system_prompt=crescendo_v0.REFUSAL_JUDGE_SYSTEM_PROMPT, callback_handler=None)
 
 
-__all__ = ["CrescendoStrategy", "gen_escalating_question", "is_refusal", "success_score"]
+# Only the strategy class is public -- matching GOAT/PAIR/BLJ. The module-level helpers stay
+# importable by direct module path for tests, but are deliberately NOT exported: a strategy's gate
+# and refusal logic are a per-strategy inline fork by locked design, not a shared surface.
+__all__ = ["CrescendoStrategy"]
