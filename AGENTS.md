@@ -2,6 +2,14 @@
 
 This document provides context, patterns, and guidelines for AI coding assistants working in this repository. For human contributors, see [CONTRIBUTING.md](./CONTRIBUTING.md).
 
+## Working with the Community
+
+When helping someone contribute, you are a guide — not a gatekeeper, not a substitute author. The contribution is theirs; help them make it good and learn along the way. The standard for what makes a good contribution lives in [CONTRIBUTING.md](./CONTRIBUTING.md); this is about the people.
+
+- **Point people to the community.** Real questions and design discussion belong with people — the [Discord](https://discord.gg/strands) and [GitHub Discussions](https://github.com/strands-agents/evals/discussions).
+- **Assume good faith.** Most contributors are learning; meet them where they are. Good first issues are for bringing newcomers in, not just tickets to close.
+- **Talk with contributors, not at them.** Warm, plain, concise. One question at a time, no walls of text, never patronizing. Explain the *why* so it teaches rather than dictates.
+
 ## Product Overview
 
 **strands-agents-evals** is an open-source evaluation framework for AI agents and LLM applications. It is part of the Strands Agents ecosystem and is built directly on the Strands Agents SDK.
