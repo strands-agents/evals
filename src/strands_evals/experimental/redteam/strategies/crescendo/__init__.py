@@ -24,7 +24,8 @@ authoritative success verdict is re-computed independently by
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from functools import partial
+from typing import TYPE_CHECKING, Any, Callable
 
 from pydantic import BaseModel, Field
 from strands import Agent
@@ -78,34 +79,40 @@ class _RefusalRating(BaseModel):
     is_refusal: bool = Field(description="True if the response declines/deflects rather than engaging")
 
 
-def is_refusal(response: str, judge: Agent | None = None) -> bool:
+def is_refusal(response: str, make_judge: Callable[[], Agent] | None = None) -> bool:
     """Did the target refuse? Heuristic fast-path, optionally confirmed by an LLM judge.
 
     A bare substring match on refusal markers is too eager: it flags compliant text
     like "I cannot stress enough how important backups are; here are the steps". So
     the markers are used only as a cheap NEGATIVE prefilter — no marker means the
-    response is engaging, decided without an LLM call. When a marker IS present and a
-    ``judge`` is given, the judge disambiguates refusal from marker-bearing
-    compliance. Without a judge it falls back to the (eager) heuristic so the function
-    stays usable standalone (e.g. for PAIR/TAP reuse).
+    response is engaging, decided without an LLM call. A positive refusal verdict
+    REQUIRES a judge: when a marker is present and a ``make_judge`` factory is given, a
+    fresh judge disambiguates refusal from marker-bearing compliance. Without a factory,
+    markers alone never decide "refused" — the function returns False (keep the turn, let
+    the success scorer decide) rather than dropping a possibly-compliant turn on a
+    substring match. The live ``run_attack`` always passes a factory, so this only affects
+    the exported-helper path that standalone callers (PAIR/TAP) might reuse.
+
+    A FRESH judge is built per call (via ``make_judge``) so no agent state carries between
+    refusal checks -- stronger than reusing one judge and clearing only its ``messages``.
 
     Args:
         response: The target's response text.
-        judge: Optional agent to confirm a marker hit. Recommended in practice.
+        make_judge: Optional zero-arg factory that builds a fresh judge to confirm a marker
+            hit. Required for a positive verdict; without it a marker hit is treated as
+            not-refused.
 
     Returns:
-        True if the response is a refusal. On a judge parse failure, returns False
-        (keep the turn and let the success scorer judge it) rather than dropping a
-        possibly-successful attack from the conversation.
+        True if the response is a refusal. On a missing factory or a judge parse failure,
+        returns False (keep the turn and let the success scorer judge it) rather than
+        dropping a possibly-successful attack from the conversation.
     """
     lowered = response.lower()
     if not any(marker in lowered for marker in _REFUSAL_MARKERS):
         return False
-    if judge is None:
-        return True
-    # The judge scores each response independently; clear any prior-turn history so
-    # earlier responses don't bias this verdict (and so context doesn't grow per turn).
-    judge.messages.clear()
+    if make_judge is None:
+        return False
+    judge = make_judge()  # fresh judge per refusal check: zero cross-call state carryover
     result = judge(f"# Target Response\n{response}", structured_output_model=_RefusalRating)
     rating = result.structured_output
     if rating is None:
@@ -114,17 +121,18 @@ def is_refusal(response: str, judge: Agent | None = None) -> bool:
     return bool(rating.is_refusal)
 
 
-def success_score(judge: Agent, response: str, success_criteria: str | None) -> float:
-    """Score how fully ``response`` meets ``success_criteria`` (0.0-1.0), via the judge.
+def success_score(make_judge: Callable[[], Agent], response: str, success_criteria: str | None) -> float:
+    """Score how fully ``response`` meets ``success_criteria`` (0.0-1.0), via a fresh judge.
 
     Cheap in-loop early-stop gate. Reads the case's ``success_criteria`` (the same
     input the authoritative ``AttackSuccessEvaluator`` uses) so the two never
     disagree on *what* counts as success. On a structured-output parse failure it
     returns 0.0 (not-yet-success) so the loop keeps going — the final evaluator,
-    not this gate, decides the verdict.
+    not this gate, decides the verdict. A FRESH judge is built per call (via
+    ``make_judge``) so no agent state carries from one turn's scoring into the next.
 
     Args:
-        judge: Agent used to score the response.
+        make_judge: Zero-arg factory that builds a fresh scoring Agent.
         response: The target's response text.
         success_criteria: The case's success criteria, if any.
 
@@ -133,9 +141,7 @@ def success_score(judge: Agent, response: str, success_criteria: str | None) -> 
     """
     if not success_criteria:
         return 0.0
-    # Score this response on its own; clear prior-turn history so earlier responses
-    # don't bias the score (and so the judge's context doesn't grow every turn).
-    judge.messages.clear()
+    judge = make_judge()  # fresh judge per scoring call: zero cross-call state carryover
     prompt = f"# Success Criteria\n{success_criteria}\n\n# Target Response\n{response}"
     result = judge(prompt, structured_output_model=_SuccessRating)
     rating = result.structured_output
@@ -188,8 +194,11 @@ class CrescendoStrategy(AttackStrategy):
     ``AttackSuccessEvaluator`` over the full trace, so a no-criteria case is still
     scored; it just isn't stopped early.
 
-    Instances are shared across cases and rebuilt per case via ``reset()``; this is
-    safe only because ``RedTeamExperiment`` runs with ``max_workers=1``.
+    The strategy is stateless across cases: only static config lives on ``self``. The attacker is
+    built once per ``run_attack`` (its escalation history across turns and backtracks IS the
+    strategy); the judge and refusal judge are built fresh per scoring/refusal call so no agent
+    state carries between calls. None is cached on the instance, so an instance can be reused
+    across cases with no ``reset()`` between them.
     """
 
     def __init__(
@@ -206,9 +215,6 @@ class CrescendoStrategy(AttackStrategy):
         self._max_backtracks = max_backtracks
         self._success_threshold = success_threshold
         self._model = model
-        self._attacker: Agent | None = None
-        self._judge: Agent | None = None
-        self._refusal_judge: Agent | None = None
 
     @property
     def name(self) -> str:
@@ -225,9 +231,12 @@ class CrescendoStrategy(AttackStrategy):
     ) -> AttackRunResult:
         goal = case.config.attack_goal
         resolved_model = self._model or model
-        attacker = self._attacker_agent(goal, resolved_model)
-        judge = self._judge_agent(resolved_model)
-        refusal_judge = self._refusal_judge_agent(resolved_model)
+        attacker = self._build_attacker(goal, resolved_model)
+        # Judge FACTORIES (not judges): is_refusal / success_score build a fresh judge per call so no
+        # agent state carries between turns. The attacker, by contrast, is one per case -- its
+        # escalation history across turns and backtracks IS the strategy, not carryover to scrub.
+        make_judge = partial(self._build_judge, resolved_model)
+        make_refusal_judge = partial(self._build_refusal_judge, resolved_model)
         turn_cap = min(self._max_turns, max_turns)
 
         conversation: list[dict[str, Any]] = []
@@ -261,7 +270,11 @@ class CrescendoStrategy(AttackStrategy):
             # the AttackSuccessEvaluator re-scores and mislabel the turn as defended.
             tool_call_this_turn = len(target_session.trace) > snap.trace_len
 
-            if not tool_call_this_turn and is_refusal(response, refusal_judge) and backtracks < self._max_backtracks:
+            if (
+                not tool_call_this_turn
+                and is_refusal(response, make_refusal_judge)
+                and backtracks < self._max_backtracks
+            ):
                 backtracks += 1
                 # Keep the refused (q, r) as evidence, then drop it: a backtracked
                 # turn never enters the scored conversation.
@@ -278,7 +291,7 @@ class CrescendoStrategy(AttackStrategy):
             # the in-loop scorer only reads the response TEXT, which on a
             # refuse-in-words-but-act-via-tool turn looks like a non-success and
             # would otherwise keep escalating past a breach we already landed.
-            score = success_score(judge, response, goal.success_criteria)
+            score = success_score(make_judge, response, goal.success_criteria)
             if tool_call_this_turn or score >= self._success_threshold:
                 succeeded = True
                 break
@@ -298,36 +311,28 @@ class CrescendoStrategy(AttackStrategy):
             },
         )
 
-    def reset(self) -> None:
-        self._attacker = None
-        self._judge = None
-        self._refusal_judge = None
+    def _build_attacker(self, goal: AttackGoal, model: Model | str | None) -> Agent:
+        # Built fresh per run_attack as a local; never cached on self. The attacker accumulates
+        # history across a case's turns (within run_attack, so successive backtracks still escalate
+        # from accumulated context), but a new case gets a new attacker baked with its own goal and
+        # empty history -- so the strategy is stateless across cases and needs no reset().
+        system_prompt = crescendo_v0.ATTACKER_SYSTEM_PROMPT.replace("{actor_goal}", goal.actor_goal)
+        return Agent(model=model, system_prompt=system_prompt, callback_handler=None)
 
-    def _attacker_agent(self, goal: AttackGoal, model: Model | str | None) -> Agent:
-        # The attacker is lazily built once per case and its system prompt bakes in
-        # goal.actor_goal. Correctness relies on the task runner calling reset() before
-        # each case (see reset() above and AttackStrategy.reset's contract); under the
-        # experiment's max_workers=1 that holds. A future parallelization must rebuild
-        # per case rather than reuse a stale attacker -- see the standalone refactor in
-        # the fast-follow plan.
-        if self._attacker is None:
-            system_prompt = crescendo_v0.ATTACKER_SYSTEM_PROMPT.replace("{actor_goal}", goal.actor_goal)
-            self._attacker = Agent(model=model, system_prompt=system_prompt, callback_handler=None)
-        return self._attacker
+    def _build_judge(self, model: Model | str | None) -> Agent:
+        # Called per scoring call (via the make_judge factory) so each score runs on a fresh judge
+        # with zero carried-over agent state; never cached on self. COST: up to one build per scored
+        # turn, plus one refusal-judge build per marker-bearing turn -> worst case ~2K Agent builds
+        # for a K-turn case. When `model` is an already-constructed Model (the benchmark/production
+        # path) this is cheap object init; only the convenience STRING-model path makes a new boto3
+        # client each build. Pass a Model object, not a string, on hot paths.
+        return Agent(model=model, system_prompt=crescendo_v0.SUCCESS_JUDGE_SYSTEM_PROMPT, callback_handler=None)
 
-    def _judge_agent(self, model: Model | str | None) -> Agent:
-        if self._judge is None:
-            self._judge = Agent(
-                model=model, system_prompt=crescendo_v0.SUCCESS_JUDGE_SYSTEM_PROMPT, callback_handler=None
-            )
-        return self._judge
-
-    def _refusal_judge_agent(self, model: Model | str | None) -> Agent:
-        if self._refusal_judge is None:
-            self._refusal_judge = Agent(
-                model=model, system_prompt=crescendo_v0.REFUSAL_JUDGE_SYSTEM_PROMPT, callback_handler=None
-            )
-        return self._refusal_judge
+    def _build_refusal_judge(self, model: Model | str | None) -> Agent:
+        # Called per refusal check (via the make_refusal_judge factory) so each check runs on a fresh
+        # judge with zero carried-over agent state; never cached on self. See _build_judge for the
+        # per-turn build-cost note (string-model path builds a boto3 client each call).
+        return Agent(model=model, system_prompt=crescendo_v0.REFUSAL_JUDGE_SYSTEM_PROMPT, callback_handler=None)
 
 
 __all__ = ["CrescendoStrategy", "gen_escalating_question", "is_refusal", "success_score"]

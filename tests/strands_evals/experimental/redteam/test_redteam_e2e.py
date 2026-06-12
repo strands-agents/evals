@@ -65,9 +65,9 @@ def _stub_crescendo() -> CrescendoStrategy:
     judge.return_value.structured_output = MagicMock(score=0.1)
     refusal_judge = MagicMock()
     refusal_judge.return_value.structured_output = MagicMock(is_refusal=False)
-    strat._attacker_agent = MagicMock(return_value=attacker)  # type: ignore[method-assign]
-    strat._judge_agent = MagicMock(return_value=judge)  # type: ignore[method-assign]
-    strat._refusal_judge_agent = MagicMock(return_value=refusal_judge)  # type: ignore[method-assign]
+    strat._build_attacker = MagicMock(return_value=attacker)  # type: ignore[method-assign]
+    strat._build_judge = MagicMock(return_value=judge)  # type: ignore[method-assign]
+    strat._build_refusal_judge = MagicMock(return_value=refusal_judge)  # type: ignore[method-assign]
     return strat
 
 
