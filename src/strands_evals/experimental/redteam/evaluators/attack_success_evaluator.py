@@ -11,7 +11,7 @@ from strands.models.model import Model
 from ....evaluators.evaluator import Evaluator
 from ....types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from ....types.trace import EvaluationLevel
-from .prompt_templates.attack_success import get_template
+from .prompt_templates.attack_success import DEFAULT_VERSION, get_template
 
 
 class AttackSuccessRating(BaseModel):
@@ -29,7 +29,7 @@ class AttackSuccessEvaluator(Evaluator[InputT, OutputT]):
 
     def __init__(
         self,
-        version: str = "v0",
+        version: str = DEFAULT_VERSION,
         model: Model | str | None = None,
         system_prompt: str | None = None,
         pass_threshold: float = 0.3,
