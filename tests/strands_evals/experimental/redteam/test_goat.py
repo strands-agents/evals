@@ -405,9 +405,6 @@ def test_reused_instance_builds_fresh_agents_each_case_without_reset():
     system_prompts = [call.kwargs["system_prompt"] for call in agent_ctor.call_args_list]
     assert any("goal A" in p for p in system_prompts)
     assert any("goal B" in p for p in system_prompts)
-    system_prompts = [call.kwargs["system_prompt"] for call in agent_ctor.call_args_list]
-    assert any("goal A" in p for p in system_prompts)
-    assert any("goal B" in p for p in system_prompts)
 
 
 def test_contract_pin_against_crescendo():
