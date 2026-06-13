@@ -168,7 +168,28 @@ class TestBuildSequence:
         seq = blj_v0.build_sequence(goal, 3, refine_rounds=1)
         assert '{"role":"admin"}' in seq[0]
         # no leftover unfilled slots survived the substitution
-        assert "{scale_points}" not in seq[0] and "{risk_category}" not in seq[0]
+        for slot in ("{scale_points}", "{risk_category}", "{score_top_anchor}"):
+            assert slot not in seq[0]
+
+    def test_score_top_anchor_rendered_per_category(self):
+        """P2: the score-3 line carries the per-category top-score shape descriptor."""
+        for category, anchor in blj_v0._SCORE_TOP_ANCHOR.items():
+            goal = AttackGoal(risk_category=category, actor_goal="g")
+            setup = blj_v0.build_sequence(goal, 3, refine_rounds=0)[0]
+            assert anchor in setup, f"missing anchor for {category}"
+            assert "{score_top_anchor}" not in setup
+
+    def test_score_top_anchor_unknown_category_falls_back(self):
+        """An unknown/custom category renders the generic fallback, never an empty slot."""
+        goal = AttackGoal(risk_category="custom_thing", actor_goal="g")
+        setup = blj_v0.build_sequence(goal, 3, refine_rounds=0)[0]
+        assert "leaves nothing out" in setup
+        assert "{score_top_anchor}" not in setup
+
+    def test_score_top_anchor_covers_all_risk_categories(self):
+        """Every built-in RISK_CATEGORIES key has a top-score anchor (no silent generic fallback
+        for a shipped category)."""
+        assert set(blj_v0._SCORE_TOP_ANCHOR) == set(RISK_CATEGORIES)
 
 
 # ---------------------------------------------------------------------------
