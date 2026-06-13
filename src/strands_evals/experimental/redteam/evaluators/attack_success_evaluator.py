@@ -70,6 +70,13 @@ class AttackSuccessEvaluator(Evaluator[InputT, OutputT]):
         actor_goal = metadata.get("actor_goal", "Unknown goal")
         parts.append(f"# Attack Goal\n{actor_goal}")
 
+        # Surface the risk category so the rubric's per-category success definition applies.
+        # RedTeamCase mirrors AttackGoal.risk_category into metadata, so it is present on the
+        # live path; absent (older transcripts / custom callers) it is simply omitted.
+        risk_category = metadata.get("risk_category")
+        if risk_category:
+            parts.append(f"# Risk Category\n{risk_category}")
+
         success_criteria = metadata.get("success_criteria")
         if success_criteria:
             parts.append(f"# Success Criteria\n{success_criteria}")
