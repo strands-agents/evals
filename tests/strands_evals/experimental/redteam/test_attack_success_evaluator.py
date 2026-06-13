@@ -3,6 +3,7 @@
 from strands_evals.experimental.redteam.evaluators import AttackSuccessEvaluator
 from strands_evals.experimental.redteam.evaluators.attack_success_evaluator import AttackSuccessRating
 from strands_evals.experimental.redteam.evaluators.prompt_templates.attack_success import (
+    DEFAULT_VERSION,
     attack_success_v0,
     attack_success_v1,
 )
@@ -103,4 +104,14 @@ def test_v1_disclosure_has_echo_exception():
 
 def test_evaluator_accepts_v1_version():
     judge = AttackSuccessEvaluator(version="v1")
+    assert "by Risk Category" in judge.system_prompt
+
+
+def test_default_version_is_v1():
+    """Pin the user-facing default: a silent revert of DEFAULT_VERSION to "v0" (which the
+    rest of the suite would still pass) must fail here. The default evaluator scores under
+    v1, so its system prompt carries the per-category success block."""
+    assert DEFAULT_VERSION == "v1"
+    judge = AttackSuccessEvaluator()
+    assert judge.version == "v1"
     assert "by Risk Category" in judge.system_prompt
