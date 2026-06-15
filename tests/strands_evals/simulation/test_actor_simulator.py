@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from strands.agent.agent_result import AgentResult
 
 from strands_evals import Case
@@ -501,3 +501,32 @@ def test_init_structured_output_model_validates_message_field(sample_actor_profi
             system_prompt_template="Test: {actor_profile}",
             structured_output_model=NoMessageModel,
         )
+
+
+def test_init_rejects_non_str_initial_query(sample_actor_profile):
+    """v1 only supports `str` initial_query; other AgentInput variants raise."""
+    with pytest.raises(TypeError, match="initial_query must be a str"):
+        ActorSimulator(
+            actor_profile=sample_actor_profile,
+            initial_query=[{"text": "hi"}],
+            system_prompt_template="Test: {actor_profile}",
+        )
+
+
+@patch("strands_evals.simulation.actor_simulator.Agent")
+def test_from_case_rejects_non_str_case_input(mock_agent_class):
+    """v1 only supports `str` case.input; profile generation never runs for other variants."""
+    case = Case(input=[{"text": "hi"}])
+    with pytest.raises(TypeError, match="initial_query must be a str"):
+        ActorSimulator.from_case_for_user_simulator(case=case)
+    mock_agent_class.assert_not_called()
+
+
+def test_actor_response_rejects_list_message():
+    """v1 only supports `str | None` for ActorResponse.message; list[ContentBlock] raises.
+
+    Raised as `ValidationError` (not raw `TypeError`) so Strands' structured-output
+    retry path can recover when an LLM emits a list.
+    """
+    with pytest.raises(ValidationError, match="must be a str or None in v1"):
+        ActorResponse(reasoning="r", message=[{"text": "hi"}], stop=False)
