@@ -153,11 +153,22 @@ class AttackStrategy(ABC):
         """
         # Lazy import: subclasses inherit from AttackStrategy, so importing them at module top
         # would cycle (base -> strategies/__init__ -> crescendo -> base).
-        from . import CrescendoStrategy, PromptStrategy
+        from . import (
+            BadLikertJudgeStrategy,
+            CrescendoStrategy,
+            GoatStrategy,
+            PairStrategy,
+            PromptStrategy,
+            SequentialBreakStrategy,
+        )
 
         registry: dict[str, type[AttackStrategy]] = {
+            BadLikertJudgeStrategy.__name__: BadLikertJudgeStrategy,
             CrescendoStrategy.__name__: CrescendoStrategy,
+            GoatStrategy.__name__: GoatStrategy,
+            PairStrategy.__name__: PairStrategy,
             PromptStrategy.__name__: PromptStrategy,
+            SequentialBreakStrategy.__name__: SequentialBreakStrategy,
         }
         for custom in custom_strategies or []:
             registry[custom.__name__] = custom

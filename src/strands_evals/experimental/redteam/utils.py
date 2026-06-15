@@ -37,3 +37,15 @@ def _serialize_model(model: Model | str | None) -> str | None:
         type(model).__name__,
     )
     return None
+
+
+def _put_model_field(out: dict, model: Model | str | None) -> None:
+    """Coerce `model` via `_serialize_model` and write it onto `out["model"]` if non-None.
+
+    Centralizes the `to_dict` idiom shared by the experiment and every model-aware
+    strategy: when `_serialize_model` drops the field (None / non-coercible Model),
+    the key stays absent so reload falls back to the experiment-level model.
+    """
+    model_id = _serialize_model(model)
+    if model_id is not None:
+        out["model"] = model_id

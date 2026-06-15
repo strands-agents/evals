@@ -52,6 +52,7 @@ from pydantic import BaseModel, Field
 from strands import Agent
 from strands.models.model import Model
 
+from ...utils import _put_model_field
 from ..base import AttackRunResult, AttackStrategy
 from . import sequentialbreak_v0
 
@@ -214,6 +215,16 @@ class SequentialBreakStrategy(AttackStrategy):
     @property
     def name(self) -> str:
         return "sequentialbreak"
+
+    def to_dict(self) -> dict[str, Any]:
+        out = super().to_dict()
+        out.update(
+            variants=list(self._variants),
+            max_turns=self._max_turns,
+            success_threshold=self._success_threshold,
+        )
+        _put_model_field(out, self._model)
+        return out
 
     def run_attack(
         self,
