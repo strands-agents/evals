@@ -1,13 +1,35 @@
 """Tests for RedTeamExperiment."""
 
 import pytest
+from strands.models.model import Model
 
 from strands_evals.experimental.redteam.case import RedTeamCase
 from strands_evals.experimental.redteam.evaluators import AttackSuccessEvaluator
 from strands_evals.experimental.redteam.experiment import RedTeamExperiment
 from strands_evals.experimental.redteam.report import RedTeamReport
+from strands_evals.experimental.redteam.strategies import CrescendoStrategy, PromptStrategy
 from strands_evals.experimental.redteam.strategies.base import AttackRunResult, AttackStrategy
 from strands_evals.experimental.redteam.types import AttackGoal, RedTeamConfig
+
+
+class _StubModel(Model):
+    """Minimal Model subclass used to exercise the runtime-object branch of `_serialize_model`."""
+
+    def __init__(self, config: dict | None) -> None:
+        # `config` may be a non-dict (e.g. None) on purpose for the non-coercible branch.
+        self.config = config  # type: ignore[assignment]
+
+    def get_config(self):
+        return self.config
+
+    def update_config(self, **kwargs):
+        pass
+
+    def structured_output(self, *args, **kwargs):
+        raise NotImplementedError
+
+    async def stream(self, *args, **kwargs):
+        raise NotImplementedError
 
 
 class _StubStrategy(AttackStrategy):
@@ -140,6 +162,114 @@ def test_async_task_rejected():
     exp = RedTeamExperiment(cases=[_case()], agent=_FakeSession(), attack_strategies=[_StubStrategy()])
     with pytest.raises(ValueError, match="Async task is not supported"):
         exp.run_evaluations(task=_async_task)
+
+
+def test_agent_setter_round_trip():
+    """`exp.agent = ...` is the canonical way to attach a target after `from_file`."""
+    exp = RedTeamExperiment(cases=[_case()], attack_strategies=[_StubStrategy()])
+    assert exp.agent is None
+    sess = _FakeSession()
+    exp.agent = sess
+    assert exp.agent is sess
+
+
+def test_to_dict_persists_strategies_and_model():
+    exp = RedTeamExperiment(
+        cases=[_case()],
+        attack_strategies=[
+            CrescendoStrategy(max_turns=3, max_backtracks=2, success_threshold=0.6, label="cre-fast"),
+            PromptStrategy("gradual_escalation", "TPL", max_turns=4),
+        ],
+        model="claude-3-5",
+    )
+    out = exp.to_dict()
+    assert out["model"] == "claude-3-5"
+    assert "agent" not in out  # live target is never persisted
+    strategies = out["attack_strategies"]
+    assert strategies[0] == {
+        "strategy_type": "CrescendoStrategy",
+        "label": "cre-fast",
+        "max_turns": 3,
+        "max_backtracks": 2,
+        "success_threshold": 0.6,
+    }
+    assert strategies[1] == {
+        "strategy_type": "PromptStrategy",
+        "strategy_name": "gradual_escalation",
+        "system_prompt_template": "TPL",
+        "max_turns": 4,
+    }
+
+
+def test_from_dict_round_trip_runs_after_setting_agent(tmp_path):
+    """Reload via to_file/from_file, then attach an agent and run."""
+    exp = RedTeamExperiment(
+        cases=[_case("c0"), _case("c1")],
+        attack_strategies=[CrescendoStrategy(max_turns=3, label="cre")],
+        model="claude-3-5",
+    )
+    p = tmp_path / "rt.json"
+    exp.to_file(str(p))
+    loaded = RedTeamExperiment.from_file(str(p))
+
+    assert loaded.agent is None
+    assert loaded._model == "claude-3-5"
+    assert [type(c).__name__ for c in loaded.cases] == ["RedTeamCase", "RedTeamCase"]
+    assert loaded.cases[0].config.attack_goal.actor_goal == "goal"
+    assert [s.label for s in loaded.attack_strategies] == ["cre"]
+    assert isinstance(loaded.evaluators[0], AttackSuccessEvaluator)
+    # Symmetric: any field-level drift (added/dropped/reordered key, lossy coercion)
+    # would be caught here in one assertion, complementing the per-field checks above.
+    assert RedTeamExperiment.from_dict(exp.to_dict()).to_dict() == exp.to_dict()
+
+    # Without agent, run_evaluations raises the existing message.
+    with pytest.raises(ValueError, match="agent.*task"):
+        loaded.run_evaluations()
+
+    # Attach an agent and supply a stub task to skip real LLM calls.
+    loaded.agent = _FakeSession()
+    report = loaded.run_evaluations(task=lambda case: {"output": []})
+    assert isinstance(report, RedTeamReport)
+
+
+def test_from_dict_accepts_custom_strategies(tmp_path):
+    exp = RedTeamExperiment(cases=[_case()], attack_strategies=[_StubStrategy(label="stub-a")])
+    p = tmp_path / "rt.json"
+    exp.to_file(str(p))
+    loaded = RedTeamExperiment.from_file(str(p), custom_strategies=[_StubStrategy])
+    assert [type(s).__name__ for s in loaded.attack_strategies] == ["_StubStrategy"]
+    assert loaded.attack_strategies[0].label == "stub-a"
+
+
+def test_to_dict_serializes_model_instance():
+    """A Model instance with `config['model_id']` round-trips into out['model']."""
+    model = _StubModel(config={"model_id": "claude-stub"})
+    exp = RedTeamExperiment(
+        cases=[_case()],
+        attack_strategies=[CrescendoStrategy(model=model)],
+        model=model,
+    )
+    out = exp.to_dict()
+    assert out["model"] == "claude-stub"
+    assert out["attack_strategies"][0]["model"] == "claude-stub"
+
+
+def test_to_dict_drops_non_coercible_model_with_warning(caplog):
+    """A Model that doesn't expose dict config + model_id logs a warning and is dropped."""
+    model = _StubModel(config=None)
+    exp = RedTeamExperiment(cases=[_case()], model=model)
+    with caplog.at_level("WARNING"):
+        out = exp.to_dict()
+    assert "model" not in out
+    assert any("non-coercible Model" in record.message for record in caplog.records)
+
+
+def test_from_dict_unknown_strategy_raises(tmp_path):
+    exp = RedTeamExperiment(cases=[_case()], attack_strategies=[_StubStrategy()])
+    p = tmp_path / "rt.json"
+    exp.to_file(str(p))
+    with pytest.raises(ValueError, match="_StubStrategy"):
+        RedTeamExperiment.from_file(str(p))  # no custom_strategies
 
 
 def test_run_evaluations_twice_is_idempotent():

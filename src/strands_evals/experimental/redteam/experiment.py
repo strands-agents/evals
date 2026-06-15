@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, cast
 
 from strands import Agent
@@ -15,11 +17,13 @@ from ...evaluation_data_store import EvaluationDataStore
 from ...evaluators.evaluator import Evaluator
 from ...experiment import Experiment
 from ...types import InputT, OutputT
+from .case import RedTeamCase
 from .evaluators import AttackSuccessEvaluator
 from .report import RedTeamReport
 from .strategies import AttackStrategy
 from .strategies.target_session import TargetSession
 from .task import _build_attacker_task
+from .utils import _serialize_model
 
 
 class RedTeamExperiment(Experiment[InputT, OutputT]):
@@ -66,6 +70,32 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
         # default task records into this and we join it onto the report, since the
         # base Experiment doesn't carry task-returned metadata into EvaluationData.
         self._run_meta: dict[str, dict[str, Any]] = {}
+
+    @property
+    def agent(self) -> Agent | TargetSession | None:
+        """The target the default attacker task talks to.
+
+        Persisted experiments do not include the agent (live `Agent` /
+        `MultiAgentBase` / `TargetSession` instances are not JSON-serializable),
+        so the canonical load path is `from_file` followed by `exp.agent = ...`
+        before `run_evaluations`. Setting to `None` is allowed and restores the
+        "must supply explicit task" error path.
+        """
+        return self._agent
+
+    @agent.setter
+    def agent(self, value: Agent | TargetSession | None) -> None:
+        self._agent = value
+
+    @property
+    def attack_strategies(self) -> list[AttackStrategy]:
+        """The configured attack strategies (read-only view).
+
+        The experiment's `_by_label` index is built from this list at
+        construction; mutating the returned list will not re-index. Reload
+        with `from_dict` if you need to change strategies after construction.
+        """
+        return list(self._attack_strategies)
 
     @staticmethod
     def _build_by_label(strategies: list[AttackStrategy]) -> dict[str, AttackStrategy]:
@@ -163,4 +193,86 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
                 model=self._model,
                 run_meta=self._run_meta,
             ),
+        )
+
+    def to_dict(self) -> dict:  # type: ignore[override]
+        """Serialize the experiment without the live target agent.
+
+        Adds `attack_strategies` and `model` on top of the base shape. The
+        target `agent` is intentionally omitted — `Agent` / `MultiAgentBase` /
+        `TargetSession` instances are not JSON-serializable, so callers must
+        re-attach via the `agent` setter (or pass an explicit `task`) after
+        loading. `_run_meta` is per-run state and is not persisted.
+        """
+        out = super().to_dict()
+        out["attack_strategies"] = [strategy.to_dict() for strategy in self._attack_strategies]
+        # Coerce via the strategy helper for consistency with how strategies serialize their own model field.
+        model_id = _serialize_model(self._model)
+        if model_id is not None:
+            out["model"] = model_id
+        return out
+
+    @classmethod
+    def from_file(  # type: ignore[override]
+        cls,
+        path: str,
+        custom_evaluators: list[type[Evaluator]] | None = None,
+        custom_strategies: list[type[AttackStrategy]] | None = None,
+    ):
+        """Load a RedTeamExperiment from a JSON file.
+
+        Same contract as :meth:`from_dict`: the loaded experiment has no
+        `agent` attached, so set `exp.agent = ...` before `run_evaluations`.
+        """
+        file_path = Path(path)
+        if file_path.suffix != ".json":
+            raise ValueError(
+                f"Only .json format is supported. Got file: {path}. Please provide a path with .json extension."
+            )
+        with open(file_path, encoding="utf-8") as f:
+            data = json.load(f)
+        return cls.from_dict(
+            data,
+            custom_evaluators=custom_evaluators,
+            custom_strategies=custom_strategies,
+        )
+
+    @classmethod
+    def from_dict(  # type: ignore[override]
+        cls,
+        data: dict,
+        custom_evaluators: list[type[Evaluator]] | None = None,
+        custom_strategies: list[type[AttackStrategy]] | None = None,
+    ):
+        """Reconstruct a RedTeamExperiment from its serialized form.
+
+        The loaded experiment has no `agent` attached: set `exp.agent = ...`
+        before `run_evaluations`, or pass an explicit `task=`. Cases are
+        validated as `RedTeamCase` so the typed `config` survives reload.
+        `AttackSuccessEvaluator` is registered automatically; pass
+        `custom_evaluators` for user-defined evaluator subclasses and
+        `custom_strategies` for user-defined strategy subclasses.
+        """
+        merged_evaluators: list[type[Evaluator]] = [AttackSuccessEvaluator, *(custom_evaluators or [])]
+        # Reuse the base evaluator-resolving path (registry + custom merge), but skip
+        # its case parser: we want RedTeamCase, not Case.
+        payload = dict(data)
+        case_dicts = payload.pop("cases", [])
+        strategy_dicts = payload.pop("attack_strategies", [])
+        model = payload.pop("model", None)
+        # Drive the base only for evaluator resolution by giving it an empty case list.
+        base_for_evaluators = super().from_dict(
+            {"cases": [], "evaluators": payload.get("evaluators", [])},
+            custom_evaluators=merged_evaluators,
+        )
+        cases: list[Case[InputT, OutputT]] = [RedTeamCase.model_validate(case_data) for case_data in case_dicts]
+        strategies = [
+            AttackStrategy.from_dict(strategy_data, custom_strategies=custom_strategies)
+            for strategy_data in strategy_dicts
+        ]
+        return cls(
+            cases=cases,
+            attack_strategies=strategies,
+            evaluators=base_for_evaluators.evaluators,
+            model=model,
         )

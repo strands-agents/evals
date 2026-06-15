@@ -95,5 +95,14 @@ class PromptStrategy(AttackStrategy):
 
         return AttackRunResult(conversation=conversation, metadata={"turns_used": len(conversation) // 2})
 
+    def to_dict(self) -> dict[str, Any]:
+        out = super().to_dict()
+        out.update(
+            strategy_name=self._name,
+            system_prompt_template=self._system_prompt_template,
+            max_turns=self._max_turns,
+        )
+        return out
+
 
 __all__ = ["PromptStrategy"]
