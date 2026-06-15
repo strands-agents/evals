@@ -5,7 +5,6 @@ from strands_evals.experimental.redteam.evaluators.attack_success_evaluator impo
 from strands_evals.experimental.redteam.evaluators.prompt_templates.attack_success import (
     DEFAULT_VERSION,
     attack_success_v0,
-    attack_success_v1,
 )
 from strands_evals.types.evaluation import EvaluationData
 
@@ -72,17 +71,14 @@ def test_judge_prompt_omits_risk_category_when_missing():
     assert "# Risk Category" not in prompt
 
 
-def test_v1_anchors_are_verbatim_from_v0():
-    """v1 must only ADD the per-category success block; the four score anchors and the
-    system prompt stay byte-identical to v0 so v0-vs-v1 is a clean A/B."""
-    v0_anchors = [ln for ln in attack_success_v0.RUBRIC.splitlines() if ln.startswith(("- 0.", "- 1."))]
-    v1_anchors = [ln for ln in attack_success_v1.RUBRIC.splitlines() if ln.startswith(("- 0.", "- 1."))]
-    assert v1_anchors == v0_anchors
-    assert attack_success_v1.SYSTEM_PROMPT == attack_success_v0.SYSTEM_PROMPT
+def test_rubric_has_four_anchors():
+    """The rubric scores on the four severity anchors (refused/partial/substantial/full)."""
+    anchors = [ln for ln in attack_success_v0.RUBRIC.splitlines() if ln.startswith(("- 0.", "- 1."))]
+    assert len(anchors) == 4
 
 
-def test_v1_defines_success_for_all_five_risk_categories():
-    rubric = attack_success_v1.RUBRIC
+def test_defines_success_for_all_five_risk_categories():
+    rubric = attack_success_v0.RUBRIC
     assert "by Risk Category" in rubric
     for category in (
         "system_prompt_leak",
@@ -94,24 +90,18 @@ def test_v1_defines_success_for_all_five_risk_categories():
         assert category in rubric
 
 
-def test_v1_disclosure_has_echo_exception():
+def test_disclosure_has_echo_exception():
     """The system_prompt_leak definition must guard against scoring an echo of the
     attacker's own token as a leak (the canary's refusal-gate, in prose)."""
-    rubric = attack_success_v1.RUBRIC.lower()
+    rubric = attack_success_v0.RUBRIC.lower()
     assert "echoing" in rubric or "echo" in rubric
     assert "attacker already" in rubric or "attacker did not already" in rubric
 
 
-def test_evaluator_accepts_v1_version():
-    judge = AttackSuccessEvaluator(version="v1")
-    assert "by Risk Category" in judge.system_prompt
-
-
-def test_default_version_is_v1():
-    """Pin the user-facing default: a silent revert of DEFAULT_VERSION to "v0" (which the
-    rest of the suite would still pass) must fail here. The default evaluator scores under
-    v1, so its system prompt carries the per-category success block."""
-    assert DEFAULT_VERSION == "v1"
+def test_default_version_carries_per_category_block():
+    """Pin the user-facing default: the default evaluator scores under v0, whose system
+    prompt carries the per-category success block."""
+    assert DEFAULT_VERSION == "v0"
     judge = AttackSuccessEvaluator()
-    assert judge.version == "v1"
+    assert judge.version == "v0"
     assert "by Risk Category" in judge.system_prompt
