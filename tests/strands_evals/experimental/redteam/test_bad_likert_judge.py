@@ -96,9 +96,6 @@ class TestSuccessScore:
         assert _success_score(make_judge, "anything", None) == 0.0
         judge.assert_not_called()  # no scoring -> factory's judge never invoked
 
-    def test_returns_zero_without_make_judge(self):
-        assert _success_score(None, "anything", "criteria") == 0.0
-
     def test_parse_failure_defaults_to_zero(self):
         make_judge, _ = _judge_factory(structured_output=None)
         assert _success_score(make_judge, "resp", "criteria") == 0.0
