@@ -268,7 +268,7 @@ Shared helpers live in `detectors/utils.py`. Types live in `types/detector.py`. 
 
 ### Docstrings
 
-Use Google-style docstrings for public functions, classes, and modules.
+Use Google-style docstrings for public functions, classes, and modules. Use single backticks (`` `foo` ``) for inline code references, not RST-style double backticks (`` ``foo`` ``).
 
 ### Logging Style
 
