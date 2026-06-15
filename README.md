@@ -97,6 +97,43 @@ report = experiment.run_evaluations(get_response)
 report.run_display()
 ```
 
+## Command-Line Interface
+
+Installing `strands-agents-evals` also installs the `strands-evals` console script, a thin wrapper over the Python API for CI and one-off use. It has five subcommands:
+
+| Command | Purpose |
+| --- | --- |
+| `strands-evals run` | Execute an Experiment against an `--agent` factory or `--task` callable, or run a single ad-hoc case via `--input` + `--evaluator`/`--expected-output`/`--rubric`. |
+| `strands-evals validate` | Schema-check a serialized Experiment JSON file (CI gate before `run`). |
+| `strands-evals report` | Render an existing `EvaluationReport` JSON via Rich, or dump it as JSON. |
+| `strands-evals diagnose` | Run `detect_failures`, `analyze_root_cause`, or the full `diagnose_session` pipeline on a Session JSON file. |
+| `strands-evals generate` | Synthesize an Experiment via `ExperimentGenerator` from a free-form `--context` or an existing `--experiment` file. |
+
+Common flows:
+
+```bash
+# Schema-check, then run an experiment file against an agent factory
+strands-evals validate experiments/customer_service.json
+strands-evals run experiments/customer_service.json \
+  --agent my_pkg.agents:build_agent \
+  --display
+
+# One-off ad-hoc run with no experiment file
+strands-evals run \
+  --input "What is the capital of France?" \
+  --expected-output "Paris" \
+  --agent my_pkg.agents:build_agent
+
+# Diagnose a failing session captured to JSON
+strands-evals diagnose session.json --confidence medium
+
+# Generate a starter experiment from a tools description
+strands-evals generate --context "$(cat tools.txt)" --num-cases 10 \
+  --evaluator TrajectoryEvaluator -o experiments/generated.json
+```
+
+Run any subcommand with `--help` for the full flag set (custom evaluators via `MODULE:CLASS`, trace attributes, `--fail-on` exit-code rules, output formats, etc.).
+
 ## Installation
 
 Ensure you have Python 3.10+ installed, then:

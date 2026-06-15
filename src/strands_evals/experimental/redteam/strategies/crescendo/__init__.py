@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field
 from strands import Agent
 from strands.models.model import Model
 
+from ...utils import _serialize_model
 from ..base import AttackRunResult, AttackStrategy
 from . import crescendo_v0
 
@@ -327,6 +328,18 @@ class CrescendoStrategy(AttackStrategy):
         # empty history -- so the strategy is stateless across cases and needs no reset().
         system_prompt = crescendo_v0.ATTACKER_SYSTEM_PROMPT.replace("{actor_goal}", goal.actor_goal)
         return Agent(model=model, system_prompt=system_prompt, callback_handler=None)
+
+    def to_dict(self) -> dict[str, Any]:
+        out = super().to_dict()
+        out.update(
+            max_turns=self._max_turns,
+            max_backtracks=self._max_backtracks,
+            success_threshold=self._success_threshold,
+        )
+        model_id = _serialize_model(self._model)
+        if model_id is not None:
+            out["model"] = model_id
+        return out
 
     def _build_judge(self, model: Model | str | None) -> Agent:
         # Called per scoring call (via the make_judge factory) so each score runs on a fresh judge

@@ -1,5 +1,6 @@
 """Tests for _build_attacker_task."""
 
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -171,8 +172,8 @@ def test_task_fn_bare_callable_target_raises_type_error():
 
 
 def test_task_fn_session_missing_trace_raises_type_error():
-    """A session with all four methods but no ``trace`` is rejected up front, not
-    accepted and then crashed on ``session.trace`` (which the engine would swallow
+    """A session with all four methods but no `trace` is rejected up front, not
+    accepted and then crashed on `session.trace` (which the engine would swallow
     into a misleading 'defended' verdict)."""
 
     class _NoTrace:
@@ -220,3 +221,52 @@ def test_task_fn_resets_agent_to_clean_baseline_per_case():
 
 def test_max_allowed_turns_constant_present():
     assert MAX_ALLOWED_TURNS >= 50
+
+
+def test_task_fn_routes_multi_agent_base_to_multi_agent_session():
+    """A MultiAgentBase target is wrapped in StrandsMultiAgentSession (not
+    StrandsAgentSession) and the baseline is captured once at build time."""
+    from strands.multiagent.base import MultiAgentBase
+
+    from strands_evals.experimental.redteam.strategies.target_session import (
+        StrandsMultiAgentSession,
+        _MultiAgentSnapshot,
+    )
+
+    class _FakeOrch(MultiAgentBase):
+        id = "root"
+
+        def __init__(self):
+            self.nodes = {}  # no leaves -- the strategy stub never invokes
+            self.serialize_calls = 0
+            self.deserialize_calls = 0
+
+        async def invoke_async(self, task, invocation_state=None, **kwargs):
+            raise NotImplementedError
+
+        def __call__(self, task, invocation_state=None, **kwargs):
+            return MagicMock(results={}, __str__=lambda self=None: "ok")
+
+        def serialize_state(self):
+            self.serialize_calls += 1
+            return {"type": "fake"}
+
+        def deserialize_state(self, payload):
+            self.deserialize_calls += 1
+
+    root = _FakeOrch()
+    captured: dict[str, Any] = {}
+
+    class _CapturingStrategy(_StubStrategy):
+        def run_attack(self, case, target_session, *, max_turns, model=None, **kwargs):
+            captured["session"] = target_session
+            return AttackRunResult(conversation=[], metadata={"turns_used": 0})
+
+    task = _build_attacker_task(root, _by_label(_CapturingStrategy()))
+    # baseline serialize_state captured once before any case runs
+    assert root.serialize_calls == 1
+    task(_case("c0"))
+    # routed to the multi-agent session
+    assert isinstance(captured["session"], StrandsMultiAgentSession)
+    # baseline composite has the expected shape
+    assert isinstance(captured["session"]._baseline, _MultiAgentSnapshot)

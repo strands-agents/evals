@@ -150,7 +150,8 @@ strands-evals/
 │   │       ├── run.py
 │   │       ├── validate.py
 │   │       ├── report.py
-│   │       └── diagnose.py
+│   │       ├── diagnose.py
+│   │       └── generate.py
 │   │
 │   ├── __main__.py                           # `python -m strands_evals` shim → cli.main
 │   │
@@ -191,7 +192,7 @@ strands-evals/
 ### Directory Purposes
 
 - **`src/strands_evals/`**: All production code
-- **`src/strands_evals/cli/`**: `strands-evals` console script — four subcommands (`run`, `validate`, `report`, `diagnose`) plus the `module:attr` resolver and synthesized task wrapper used by `--agent`
+- **`src/strands_evals/cli/`**: `strands-evals` console script — five subcommands (`run`, `validate`, `report`, `diagnose`, `generate`) plus the `module:attr` resolver and synthesized task wrapper used by `--agent`
 - **`tests/strands_evals/`**: Unit tests mirroring src/ structure
 - **`tests/strands_evals/cli/`**: CLI tests; fixtures live under `cli/fixtures/` and are referenced by tests via `tests.strands_evals.cli.fixtures.*:attr` specs
 - **`tests_integ/`**: Integration tests using real trace providers and model endpoints
@@ -267,7 +268,7 @@ Shared helpers live in `detectors/utils.py`. Types live in `types/detector.py`. 
 
 ### Docstrings
 
-Use Google-style docstrings for public functions, classes, and modules.
+Use Google-style docstrings for public functions, classes, and modules. Use single backticks (`` `foo` ``) for inline code references, not RST-style double backticks (`` ``foo`` ``).
 
 ### Logging Style
 
