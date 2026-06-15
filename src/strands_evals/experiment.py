@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import traceback
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
@@ -50,8 +51,7 @@ from .types.evaluation_report import EvaluationReport
 from .types.trace import Session
 from .utils import is_throttling_error
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Retry configuration for handling throttling
 _MAX_RETRY_ATTEMPTS = 6
@@ -436,22 +436,30 @@ class Experiment(Generic[InputT, OutputT]):
                 f"{evaluator.get_name()} on case {case_name}. "
                 f"Last error: {str(original_exception)}"
             )
+            if logger.isEnabledFor(logging.DEBUG):
+                error_msg = f"Evaluator error:\n{traceback.format_exception(original_exception)}"
+            else:
+                error_msg = f"Evaluator error: {str(original_exception)}"
             return {
                 "evaluator_name": evaluator.get_name(),
                 "evaluator_type": evaluator.get_type_name(),
                 "test_pass": False,
                 "score": 0,
-                "reason": f"Evaluator error: {str(original_exception)}",
+                "reason": error_msg,
                 "detailed_results": [],
             }
         except Exception as e:
+            if logger.isEnabledFor(logging.DEBUG):
+                error_msg = f"Evaluator error:\n{traceback.format_exc()}"
+            else:
+                error_msg = f"Evaluator error: {str(e)}"
             # Catch non-throttling errors and record as failure (error isolation)
             return {
                 "evaluator_name": evaluator.get_name(),
                 "evaluator_type": evaluator.get_type_name(),
                 "test_pass": False,
                 "score": 0,
-                "reason": f"Evaluator error: {str(e)}",
+                "reason": error_msg,
                 "detailed_results": [],
             }
 
@@ -558,6 +566,11 @@ class Experiment(Generic[InputT, OutputT]):
 
                     except Exception as e:
                         case_span.record_exception(e)
+                        # Specify error string based on verbosity
+                        if logger.isEnabledFor(logging.DEBUG):
+                            error_msg = f"An error occurred:\n{traceback.format_exc()}"
+                        else:
+                            error_msg = f"An error occurred: {str(e)}"
                         # Handle task execution errors
                         evaluator_results = []
                         for evaluator in self._evaluators:
@@ -567,7 +580,7 @@ class Experiment(Generic[InputT, OutputT]):
                                     "evaluator_type": evaluator.get_type_name(),
                                     "test_pass": False,
                                     "score": 0,
-                                    "reason": f"An error occurred: {str(e)}",
+                                    "reason": error_msg,
                                     "detailed_results": [],
                                 }
                             )
