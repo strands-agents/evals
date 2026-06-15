@@ -45,14 +45,16 @@ class _FakeSession:
         raise AssertionError("GOAT must not restore (append-only)")
 
 
-def _case(success_criteria: str | None = "leaked the secret") -> RedTeamCase:
+def _case(
+    success_criteria: str | None = "leaked the secret", actor_goal: str = "get harmful instructions"
+) -> RedTeamCase:
     return RedTeamCase(
         name="g0",
         input="hello",
         config=RedTeamConfig(
             attack_goal=AttackGoal(
                 risk_category="harmful_content",
-                actor_goal="get harmful instructions",
+                actor_goal=actor_goal,
                 success_criteria=success_criteria,
             )
         ),
@@ -77,8 +79,8 @@ def _strategy(**kwargs) -> GoatStrategy:
     via ``_run`` below (the crescendo pattern), so the loop drives off test-supplied turns.
     """
     strat = GoatStrategy(**kwargs)
-    strat._attacker_agent = MagicMock(return_value=MagicMock())  # type: ignore[method-assign]
-    strat._judge_agent = MagicMock(return_value=MagicMock())  # type: ignore[method-assign]
+    strat._build_attacker = MagicMock(return_value=MagicMock())  # type: ignore[method-assign]
+    strat._build_judge = MagicMock(return_value=MagicMock())  # type: ignore[method-assign]
     return strat
 
 
@@ -144,24 +146,29 @@ class TestCtorGuards:
 class TestSuccessScore:
     def test_returns_zero_without_criteria(self):
         judge = MagicMock()
-        assert success_score(judge, "anything", None) == 0.0
-        judge.assert_not_called()
+        assert success_score(lambda: judge, "anything", None) == 0.0
+        judge.assert_not_called()  # no scoring -> factory's judge never invoked
 
     def test_parses_judge_score(self):
         judge = MagicMock()
         judge.return_value.structured_output = MagicMock(score=0.8)
-        assert success_score(judge, "resp", "criteria") == 0.8
+        assert success_score(lambda: judge, "resp", "criteria") == 0.8
 
     def test_parse_failure_defaults_to_zero(self):
         judge = MagicMock()
         judge.return_value.structured_output = None
-        assert success_score(judge, "resp", "criteria") == 0.0
+        assert success_score(lambda: judge, "resp", "criteria") == 0.0
 
-    def test_clears_judge_history_before_scoring(self):
+    def test_invokes_the_factorys_judge_once_per_score(self):
+        """Contract: success_score calls make_judge() once per invocation and uses the returned judge
+        (proves factory wiring, NOT production freshness -- that is proven by the Agent-ctor-count
+        test test_reused_instance_builds_fresh_agents_each_case_without_reset)."""
         judge = MagicMock()
         judge.return_value.structured_output = MagicMock(score=0.5)
-        success_score(judge, "resp", "criteria")
-        judge.messages.clear.assert_called_once()
+        make_judge = MagicMock(return_value=judge)
+        success_score(make_judge, "resp", "criteria")
+        make_judge.assert_called_once_with()
+        judge.assert_called_once()
 
 
 class TestGenAttackerTurn:
@@ -365,13 +372,39 @@ def test_reasoning_trace_present_when_opted_in():
 # ---------------------------------------------------------------------------
 
 
-def test_reset_clears_lazy_agents():
+def test_reset_is_noop_and_callable():
+    """reset() falls back to the base no-op (no per-instance agent state); must stay callable for
+    task.py interface compat and must NOT raise."""
+    GoatStrategy().reset()  # no-op, no AttributeError
+
+
+def test_reused_instance_builds_fresh_agents_each_case_without_reset():
+    """Stateless across cases: the attacker is built once per case (its O/T/S/R history is the
+    strategy) and the judge is built fresh per scoring call, with no reset() between cases. We patch
+    the SDK ``Agent`` ctor (NOT the _build_* methods) so the REAL build bodies run -- reintroducing
+    any instance/per-case judge cache OR a cross-case attacker cache drops the count and fails."""
     strat = GoatStrategy()
-    strat._attacker = MagicMock()
-    strat._judge = MagicMock()
-    strat.reset()
-    assert strat._attacker is None
-    assert strat._judge is None
+
+    def make_agent(**_kw):
+        # Each built Agent, when invoked, scores 0.0 (so success_score never early-stops and every
+        # turn scores -> a fresh judge each turn). The attacker mock is never invoked (gen is stubbed).
+        agent = MagicMock()
+        agent.return_value.structured_output = MagicMock(score=0.0)
+        return agent
+
+    with (
+        patch(f"{_GOAT}.Agent", side_effect=make_agent) as agent_ctor,
+        patch(f"{_GOAT}.gen_attacker_turn", return_value=_turn(reply="msg")),
+    ):
+        strat.run_attack(_case(actor_goal="goal A"), _FakeSession(lambda _m: "r"), max_turns=2)
+        strat.run_attack(_case(actor_goal="goal B"), _FakeSession(lambda _m: "r"), max_turns=2)  # no reset
+
+    # Per case: 1 attacker (built once for the case) + 1 judge per scored turn. score 0.0 never
+    # early-stops, so max_turns=2 -> 2 scored turns -> 2 judges, + 1 attacker = 3 per case, 6 total.
+    assert agent_ctor.call_count == 6
+    system_prompts = [call.kwargs["system_prompt"] for call in agent_ctor.call_args_list]
+    assert any("goal A" in p for p in system_prompts)
+    assert any("goal B" in p for p in system_prompts)
 
 
 def test_contract_pin_against_crescendo():

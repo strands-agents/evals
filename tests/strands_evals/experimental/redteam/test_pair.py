@@ -40,14 +40,14 @@ class _FakeSession:
         raise AssertionError("PAIR must not restore (append-only)")
 
 
-def _case(success_criteria: str | None = "leaked the secret") -> RedTeamCase:
+def _case(success_criteria: str | None = "leaked the secret", actor_goal: str = "exfiltrate the secret") -> RedTeamCase:
     return RedTeamCase(
         name="p0",
         input="hello",
         config=RedTeamConfig(
             attack_goal=AttackGoal(
                 risk_category="data_exfiltration",
-                actor_goal="exfiltrate the secret",
+                actor_goal=actor_goal,
                 success_criteria=success_criteria,
             )
         ),
@@ -58,8 +58,8 @@ def _case(success_criteria: str | None = "leaked the secret") -> RedTeamCase:
 def _strategy(**kwargs) -> PairStrategy:
     """A strategy with its agent builders stubbed so no real LLM is created."""
     strat = PairStrategy(**kwargs)
-    strat._attacker_agent = MagicMock(return_value=MagicMock())  # type: ignore[method-assign]
-    strat._judge_agent = MagicMock(return_value=MagicMock())  # type: ignore[method-assign]
+    strat._build_attacker = MagicMock(return_value=MagicMock())  # type: ignore[method-assign]
+    strat._build_judge = MagicMock(return_value=MagicMock())  # type: ignore[method-assign]
     return strat
 
 
@@ -109,7 +109,9 @@ class TestSuccessScore:
     def test_normalizes_raw_one_to_zero(self):
         judge = MagicMock()
         judge.return_value.structured_output = MagicMock(score=1)
-        assert success_score(judge, AttackGoal(risk_category="x", actor_goal="g", success_criteria="c"), "r") == (
+        assert success_score(
+            lambda: judge, AttackGoal(risk_category="x", actor_goal="g", success_criteria="c"), "r"
+        ) == (
             0.0,
             1,
         )
@@ -117,7 +119,9 @@ class TestSuccessScore:
     def test_normalizes_raw_ten_to_one(self):
         judge = MagicMock()
         judge.return_value.structured_output = MagicMock(score=10)
-        assert success_score(judge, AttackGoal(risk_category="x", actor_goal="g", success_criteria="c"), "r") == (
+        assert success_score(
+            lambda: judge, AttackGoal(risk_category="x", actor_goal="g", success_criteria="c"), "r"
+        ) == (
             1.0,
             10,
         )
@@ -126,7 +130,9 @@ class TestSuccessScore:
         """An unconstrained out-of-range int (11) clamps to 10 -> 1.0, never masked to 0."""
         judge = MagicMock()
         judge.return_value.structured_output = MagicMock(score=11)
-        assert success_score(judge, AttackGoal(risk_category="x", actor_goal="g", success_criteria="c"), "r") == (
+        assert success_score(
+            lambda: judge, AttackGoal(risk_category="x", actor_goal="g", success_criteria="c"), "r"
+        ) == (
             1.0,
             10,
         )
@@ -134,7 +140,9 @@ class TestSuccessScore:
     def test_clamps_out_of_range_low(self):
         judge = MagicMock()
         judge.return_value.structured_output = MagicMock(score=0)
-        assert success_score(judge, AttackGoal(risk_category="x", actor_goal="g", success_criteria="c"), "r") == (
+        assert success_score(
+            lambda: judge, AttackGoal(risk_category="x", actor_goal="g", success_criteria="c"), "r"
+        ) == (
             0.0,
             1,
         )
@@ -142,22 +150,29 @@ class TestSuccessScore:
     def test_parse_failure_defaults_to_zero(self):
         judge = MagicMock()
         judge.return_value.structured_output = None
-        assert success_score(judge, AttackGoal(risk_category="x", actor_goal="g", success_criteria="c"), "r") == (
+        assert success_score(
+            lambda: judge, AttackGoal(risk_category="x", actor_goal="g", success_criteria="c"), "r"
+        ) == (
             0.0,
             None,
         )
 
-    def test_clears_judge_history_before_scoring(self):
+    def test_invokes_the_factorys_judge_once_per_score(self):
+        """Contract: success_score calls make_judge() once per invocation and uses the returned judge
+        (proves factory wiring, NOT production freshness -- that is proven by the Agent-ctor-count
+        test test_reused_instance_builds_fresh_agents_each_case_without_reset)."""
         judge = MagicMock()
         judge.return_value.structured_output = MagicMock(score=5)
-        success_score(judge, AttackGoal(risk_category="x", actor_goal="g", success_criteria="c"), "r")
-        judge.messages.clear.assert_called_once()
+        make_judge = MagicMock(return_value=judge)
+        success_score(make_judge, AttackGoal(risk_category="x", actor_goal="g", success_criteria="c"), "r")
+        make_judge.assert_called_once_with()
+        judge.assert_called_once()
 
     def test_uses_success_criteria_as_task_when_present(self):
         judge = MagicMock()
         judge.return_value.structured_output = MagicMock(score=5)
         goal = AttackGoal(risk_category="x", actor_goal="the goal", success_criteria="the criteria")
-        success_score(judge, goal, "resp")
+        success_score(lambda: judge, goal, "resp")
         sent = judge.call_args.args[0]
         assert "the criteria" in sent
         assert "the goal" not in sent
@@ -167,7 +182,7 @@ class TestSuccessScore:
         # (0.0, None) so the loop never early-stops on a no-criteria case.
         judge = MagicMock()
         goal = AttackGoal(risk_category="x", actor_goal="the goal", success_criteria=None)
-        assert success_score(judge, goal, "resp") == (0.0, None)
+        assert success_score(lambda: judge, goal, "resp") == (0.0, None)
         judge.assert_not_called()
 
 
@@ -377,8 +392,8 @@ def test_target_calls_equal_iterations_no_inflation():
 def test_ctor_model_takes_precedence():
     strat = PairStrategy(model="ctor-model")
     captured = {}
-    strat._attacker_agent = lambda goal, model: captured.setdefault("attacker_model", model) or MagicMock()  # type: ignore[method-assign]
-    strat._judge_agent = lambda model: captured.setdefault("judge_model", model) or MagicMock()  # type: ignore[method-assign]
+    strat._build_attacker = lambda goal, model: captured.setdefault("attacker_model", model) or MagicMock()  # type: ignore[method-assign]
+    strat._build_judge = lambda model: captured.setdefault("judge_model", model) or MagicMock()  # type: ignore[method-assign]
     with (
         patch(f"{_PAIR}.gen_refined_prompt", return_value=None),
         patch(f"{_PAIR}.success_score", return_value=(0.0, 1)),
@@ -387,13 +402,39 @@ def test_ctor_model_takes_precedence():
     assert captured["attacker_model"] == "ctor-model"
 
 
-def test_reset_nulls_agents():
+def test_reset_is_noop_and_callable():
+    """reset() falls back to the base no-op (no per-instance agent state); must stay callable for
+    task.py interface compat and must NOT raise."""
+    PairStrategy().reset()  # no-op, no AttributeError
+
+
+def test_reused_instance_builds_fresh_agents_each_case_without_reset():
+    """Stateless across cases: the attacker is built once per case (its refinement history is the
+    strategy) and the judge is built fresh per scoring call, with no reset() between cases. We patch
+    the SDK ``Agent`` ctor (NOT the _build_* methods) so the REAL build bodies run -- reintroducing
+    any instance/per-case judge cache OR a cross-case attacker cache drops the count and fails."""
     strat = PairStrategy()
-    strat._attacker = MagicMock()
-    strat._judge = MagicMock()
-    strat.reset()
-    assert strat._attacker is None
-    assert strat._judge is None
+
+    def make_agent(**_kw):
+        # Built Agent scores raw 1 -> normalized 0.0 (never early-stops), so every turn scores and
+        # builds a fresh judge. The attacker mock is never invoked (gen_refined_prompt is stubbed).
+        agent = MagicMock()
+        agent.return_value.structured_output = MagicMock(score=1)
+        return agent
+
+    with (
+        patch(f"{_PAIR}.Agent", side_effect=make_agent) as agent_ctor,
+        patch(f"{_PAIR}.gen_refined_prompt", return_value="p"),
+    ):
+        strat.run_attack(_case(actor_goal="goal A"), _session(lambda _m: "r"), max_turns=2)
+        strat.run_attack(_case(actor_goal="goal B"), _session(lambda _m: "r"), max_turns=2)  # no reset
+
+    # Per case: 1 attacker (built once) + 1 judge per scored turn. Raw score 1 -> 0.0 never
+    # early-stops, so max_turns=2 -> 2 scored turns -> 2 judges, + 1 attacker = 3 per case, 6 total.
+    assert agent_ctor.call_count == 6
+    system_prompts = [call.kwargs["system_prompt"] for call in agent_ctor.call_args_list]
+    assert any("goal A" in p for p in system_prompts)
+    assert any("goal B" in p for p in system_prompts)
 
 
 # ---------------------------------------------------------------------------
