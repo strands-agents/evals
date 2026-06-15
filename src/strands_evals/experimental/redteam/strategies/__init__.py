@@ -5,6 +5,7 @@ from .goat import GoatStrategy
 from .pair import PairStrategy
 from .prompt_strategy import PromptStrategy
 from .prompt_strategy.gradual_escalation import get_template as _gradual_escalation_template
+from .sequentialbreak import SequentialBreakStrategy
 from .target_session import (
     StrandsAgentSession,
     StrandsMultiAgentSession,
@@ -30,6 +31,7 @@ __all__ = [
     "GoatStrategy",
     "PairStrategy",
     "PromptStrategy",
+    "SequentialBreakStrategy",
     "StrandsAgentSession",
     "StrandsMultiAgentSession",
     "TargetCheckpoint",
