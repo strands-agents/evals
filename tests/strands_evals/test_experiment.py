@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import logging
 import random
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -77,6 +78,16 @@ def simple_task():
         return case.input
 
     return task
+
+
+@pytest.fixture
+def debug_logging():
+    """Set up logger at debug level of verbosity"""
+    logger = logging.getLogger("strands_evals")
+    original_level = logger.level
+    logger.setLevel(logging.DEBUG)
+    yield
+    logger.setLevel(original_level)
 
 
 def test_experiment__init__full(mock_evaluator):
@@ -2123,3 +2134,25 @@ def test_evaluator_name_default_omitted_from_to_dict():
 
     payload = experiment.to_dict()
     assert "name" not in payload["evaluators"][0]
+
+
+def test_module_logger_inherits_debug_level_from_parent(debug_logging):
+    # child logger should inherit from package logger
+    child_logger = logging.getLogger("strands_evals.experiment")
+    assert child_logger.isEnabledFor(logging.DEBUG)
+
+
+@pytest.mark.asyncio
+async def test_worker_exception_includes_traceback_at_debug_level(debug_logging, mock_span):
+    case = Case(name="test1", input="hello", expected_output="world")
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
+    queue = asyncio.Queue()
+    queue.put_nowait((0, case))
+    results = [None]
+    with patch.object(experiment._tracer, "start_as_current_span", return_value=mock_span):
+
+        def failing_task(c):
+            raise RuntimeError("We had a simulated error ...")
+
+        await experiment._worker(queue, failing_task, results)
+        assert "Traceback" in results[0]["evaluator_results"][0]["reason"]
