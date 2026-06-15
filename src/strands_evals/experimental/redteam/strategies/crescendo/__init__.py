@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from strands import Agent
 from strands.models.model import Model
 
+from ...utils import _serialize_model
 from ..base import AttackRunResult, AttackStrategy
 from . import crescendo_v0
 
@@ -302,6 +303,18 @@ class CrescendoStrategy(AttackStrategy):
         self._attacker = None
         self._judge = None
         self._refusal_judge = None
+
+    def to_dict(self) -> dict[str, Any]:
+        out = super().to_dict()
+        out.update(
+            max_turns=self._max_turns,
+            max_backtracks=self._max_backtracks,
+            success_threshold=self._success_threshold,
+        )
+        model_id = _serialize_model(self._model)
+        if model_id is not None:
+            out["model"] = model_id
+        return out
 
     def _attacker_agent(self, goal: AttackGoal, model: Model | str | None) -> Agent:
         # The attacker is lazily built once per case and its system prompt bakes in
