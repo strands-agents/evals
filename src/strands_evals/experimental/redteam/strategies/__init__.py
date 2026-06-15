@@ -5,7 +5,13 @@ from .goat import GoatStrategy
 from .pair import PairStrategy
 from .prompt_strategy import PromptStrategy
 from .prompt_strategy.gradual_escalation import get_template as _gradual_escalation_template
-from .target_session import StrandsAgentSession, TargetCheckpoint, TargetSession, ToolUseEntry
+from .target_session import (
+    StrandsAgentSession,
+    StrandsMultiAgentSession,
+    TargetCheckpoint,
+    TargetSession,
+    ToolUseEntry,
+)
 
 # Ready-made strategy instances users can pass to RedTeamExperiment(attack_strategies=[...]).
 # Strategy instances are shared across cases, so each must keep `__init__` for static
@@ -25,6 +31,7 @@ __all__ = [
     "PairStrategy",
     "PromptStrategy",
     "StrandsAgentSession",
+    "StrandsMultiAgentSession",
     "TargetCheckpoint",
     "TargetSession",
     "ToolUseEntry",
