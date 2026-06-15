@@ -5,6 +5,7 @@ from typing import Any, cast
 from pydantic import BaseModel
 from strands import Agent
 from strands.agent.agent_result import AgentResult
+from strands.types.agent import AgentInput
 from strands.types.content import Message
 
 from strands_evals.case import Case
@@ -15,6 +16,23 @@ from strands_evals.simulation.tools.goal_completion import get_conversation_goal
 from strands_evals.types.simulation import ActorProfile, ActorResponse
 
 logger = logging.getLogger(__name__)
+
+
+def _require_str_initial_query(initial_query: AgentInput) -> str:
+    """Validate that an `AgentInput` initial query is a `str` for v1.
+
+    The signature is typed as `AgentInput` for forward compatibility with Strands,
+    but v1 only supports the `str` variant. Other variants (content blocks,
+    interrupt responses, prior messages) raise so callers don't silently get
+    the wrong behavior.
+    """
+    if not isinstance(initial_query, str):
+        raise TypeError(
+            f"initial_query must be a str in v1; got {type(initial_query).__name__}. "
+            "The type is annotated as AgentInput for forward compatibility, but only "
+            "str is supported today. Support for other AgentInput variants is planned."
+        )
+    return initial_query
 
 
 class ActorSimulator:
@@ -85,6 +103,7 @@ class ActorSimulator:
                 user_message = str(user_result.structured_output.message)
             ```
         """
+        _require_str_initial_query(case.input)
         actor_profile = cls._generate_profile_from_case(case)
 
         return cls(
@@ -123,7 +142,7 @@ class ActorSimulator:
     def __init__(
         self,
         actor_profile: ActorProfile,
-        initial_query: str,
+        initial_query: AgentInput,
         system_prompt_template: str | None = None,
         tools: list | None = None,
         model: str | None = None,
@@ -138,7 +157,9 @@ class ActorSimulator:
 
         Args:
             actor_profile: ActorProfile object containing traits, context, and actor_goal.
-            initial_query: The actor's first query or message.
+            initial_query: The actor's first query or message. Typed as `AgentInput` for
+                forward compatibility with Strands, but v1 only supports the `str` variant
+                — other variants raise `TypeError`.
             system_prompt_template: System prompt for the actor. Accepts two shapes:
 
                 - A template containing the `{actor_profile}` placeholder, which
@@ -192,7 +213,7 @@ class ActorSimulator:
             ```
         """
         self.actor_profile = actor_profile
-        self.initial_query = initial_query
+        self.initial_query = _require_str_initial_query(initial_query)
         self.conversation_history: list[Message] = []
         self.model_id = model
         self.stop = False
