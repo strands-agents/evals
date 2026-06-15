@@ -1,6 +1,7 @@
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from strands.types.content import ContentBlock
 
 
 class ActorProfile(BaseModel):
@@ -44,11 +45,26 @@ class ActorResponse(BaseModel):
         False,
         description="Set to true when the conversation goal is met or the conversation should end.",
     )
-    message: str | None = Field(
+    message: str | list[ContentBlock] | None = Field(
         None,
-        description="The actor's next message to the agent. Provide when stop=false; set to null when stop=true.",
+        description="The actor's next message to the agent. Provide when stop=false; set to null when stop=true. "
+        "Typed as `str | list[ContentBlock] | None` for forward compatibility, but v1 only supports the `str | None` "
+        "variants — `list[ContentBlock]` raises until multimodal simulator output is supported.",
     )
     stop_reason: str | None = Field(
         None,
         description='Populated by the simulator after the call. One of "goal_completed", "max_turns", or None.',
     )
+
+    @field_validator("message")
+    @classmethod
+    def _v1_only_str_message(cls, value: str | list[ContentBlock] | None) -> str | None:
+        if isinstance(value, list):
+            # Raise `ValueError` (not `TypeError`) so Pydantic wraps it into `ValidationError`,
+            # keeping the structured-output retry path intact.
+            raise ValueError(
+                "ActorResponse.message must be a str or None in v1; got list[ContentBlock]. "
+                "The annotation includes list[ContentBlock] for forward compatibility, but multimodal "
+                "simulator output is not yet supported."
+            )
+        return value
