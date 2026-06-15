@@ -23,7 +23,7 @@ from .report import RedTeamReport
 from .strategies import AttackStrategy
 from .strategies.target_session import TargetSession
 from .task import _build_attacker_task
-from .utils import _serialize_model
+from .utils import _put_model_field
 
 
 class RedTeamExperiment(Experiment[InputT, OutputT]):
@@ -207,9 +207,7 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
         out = super().to_dict()
         out["attack_strategies"] = [strategy.to_dict() for strategy in self._attack_strategies]
         # Coerce via the strategy helper for consistency with how strategies serialize their own model field.
-        model_id = _serialize_model(self._model)
-        if model_id is not None:
-            out["model"] = model_id
+        _put_model_field(out, self._model)
         return out
 
     @classmethod

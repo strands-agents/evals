@@ -7,7 +7,14 @@ from strands_evals.experimental.redteam.case import RedTeamCase
 from strands_evals.experimental.redteam.evaluators import AttackSuccessEvaluator
 from strands_evals.experimental.redteam.experiment import RedTeamExperiment
 from strands_evals.experimental.redteam.report import RedTeamReport
-from strands_evals.experimental.redteam.strategies import CrescendoStrategy, PromptStrategy
+from strands_evals.experimental.redteam.strategies import (
+    BadLikertJudgeStrategy,
+    CrescendoStrategy,
+    GoatStrategy,
+    PairStrategy,
+    PromptStrategy,
+    SequentialBreakStrategy,
+)
 from strands_evals.experimental.redteam.strategies.base import AttackRunResult, AttackStrategy
 from strands_evals.experimental.redteam.types import AttackGoal, RedTeamConfig
 
@@ -199,6 +206,106 @@ def test_to_dict_persists_strategies_and_model():
         "system_prompt_template": "TPL",
         "max_turns": 4,
     }
+
+
+def test_to_dict_persists_bad_likert_judge_strategy():
+    exp = RedTeamExperiment(
+        cases=[_case()],
+        attack_strategies=[
+            BadLikertJudgeStrategy(refine_rounds=1, success_threshold=0.6, model="claude-stub", label="blj-fast"),
+        ],
+    )
+    out = exp.to_dict()
+    assert out["attack_strategies"][0] == {
+        "strategy_type": "BadLikertJudgeStrategy",
+        "label": "blj-fast",
+        "refine_rounds": 1,
+        "success_threshold": 0.6,
+        "model": "claude-stub",
+    }
+
+
+def test_to_dict_persists_goat_strategy():
+    exp = RedTeamExperiment(
+        cases=[_case()],
+        attack_strategies=[
+            GoatStrategy(max_turns=4, success_threshold=0.6, model="claude-stub", store_reasoning=True, label="g"),
+        ],
+    )
+    out = exp.to_dict()
+    assert out["attack_strategies"][0] == {
+        "strategy_type": "GoatStrategy",
+        "label": "g",
+        "max_turns": 4,
+        "success_threshold": 0.6,
+        "store_reasoning": True,
+        "model": "claude-stub",
+    }
+
+
+def test_to_dict_persists_pair_strategy():
+    exp = RedTeamExperiment(
+        cases=[_case()],
+        attack_strategies=[
+            PairStrategy(max_turns=3, success_threshold=0.9, model="claude-stub", label="p"),
+        ],
+    )
+    out = exp.to_dict()
+    assert out["attack_strategies"][0] == {
+        "strategy_type": "PairStrategy",
+        "label": "p",
+        "max_turns": 3,
+        "success_threshold": 0.9,
+        "model": "claude-stub",
+    }
+
+
+def test_to_dict_persists_sequentialbreak_strategy():
+    exp = RedTeamExperiment(
+        cases=[_case()],
+        attack_strategies=[
+            SequentialBreakStrategy(
+                variants=["dc_t1"], max_turns=1, success_threshold=0.6, model="claude-stub", label="sb"
+            ),
+        ],
+    )
+    out = exp.to_dict()
+    assert out["attack_strategies"][0] == {
+        "strategy_type": "SequentialBreakStrategy",
+        "label": "sb",
+        "variants": ["dc_t1"],
+        "max_turns": 1,
+        "success_threshold": 0.6,
+        "model": "claude-stub",
+    }
+
+
+def test_round_trip_preserves_all_builtin_strategies(tmp_path):
+    """All built-ins resolve through the registry and survive a to_file/from_file cycle."""
+    exp = RedTeamExperiment(
+        cases=[_case()],
+        attack_strategies=[
+            CrescendoStrategy(label="cre"),
+            PromptStrategy("gradual_escalation", "TPL", label="prompt"),
+            BadLikertJudgeStrategy(label="blj"),
+            GoatStrategy(label="goat"),
+            PairStrategy(label="pair"),
+            SequentialBreakStrategy(label="sb"),
+        ],
+    )
+    p = tmp_path / "rt.json"
+    exp.to_file(str(p))
+    loaded = RedTeamExperiment.from_file(str(p))
+
+    assert [type(s).__name__ for s in loaded.attack_strategies] == [
+        "CrescendoStrategy",
+        "PromptStrategy",
+        "BadLikertJudgeStrategy",
+        "GoatStrategy",
+        "PairStrategy",
+        "SequentialBreakStrategy",
+    ]
+    assert [s.label for s in loaded.attack_strategies] == ["cre", "prompt", "blj", "goat", "pair", "sb"]
 
 
 def test_from_dict_round_trip_runs_after_setting_agent(tmp_path):

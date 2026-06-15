@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field
 from strands import Agent
 from strands.models.model import Model
 
+from ...utils import _put_model_field
 from ..base import AttackRunResult, AttackStrategy
 from . import bad_likert_judge_v0 as blj_v0
 
@@ -162,6 +163,15 @@ class BadLikertJudgeStrategy(AttackStrategy):
     @property
     def name(self) -> str:
         return "bad_likert_judge"
+
+    def to_dict(self) -> dict[str, Any]:
+        out = super().to_dict()
+        out.update(
+            refine_rounds=self._refine_rounds,
+            success_threshold=self._success_threshold,
+        )
+        _put_model_field(out, self._model)
+        return out
 
     def run_attack(
         self,

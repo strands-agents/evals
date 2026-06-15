@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field
 from strands import Agent
 from strands.models.model import Model
 
-from ...utils import _serialize_model
+from ...utils import _put_model_field
 from ..base import AttackRunResult, AttackStrategy
 from . import crescendo_v0
 
@@ -336,9 +336,7 @@ class CrescendoStrategy(AttackStrategy):
             max_backtracks=self._max_backtracks,
             success_threshold=self._success_threshold,
         )
-        model_id = _serialize_model(self._model)
-        if model_id is not None:
-            out["model"] = model_id
+        _put_model_field(out, self._model)
         return out
 
     def _build_judge(self, model: Model | str | None) -> Agent:

@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from strands import Agent
 from strands.models.model import Model
 
+from ...utils import _put_model_field
 from ..base import AttackRunResult, AttackStrategy
 from . import goat_v0
 
@@ -180,6 +181,16 @@ class GoatStrategy(AttackStrategy):
     @property
     def name(self) -> str:
         return "goat"
+
+    def to_dict(self) -> dict[str, Any]:
+        out = super().to_dict()
+        out.update(
+            max_turns=self._max_turns,
+            success_threshold=self._success_threshold,
+            store_reasoning=self._store_reasoning,
+        )
+        _put_model_field(out, self._model)
+        return out
 
     def run_attack(
         self,
