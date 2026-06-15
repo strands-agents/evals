@@ -62,7 +62,7 @@ def _case(success_criteria: str | None = "leaked the secret", actor_goal: str = 
 def _strategy(**kwargs) -> SequentialBreakStrategy:
     """A strategy with its judge builder stubbed so no real LLM is created."""
     strat = SequentialBreakStrategy(**kwargs)
-    strat._judge_agent = MagicMock(return_value=MagicMock())  # type: ignore[method-assign]
+    strat._build_judge = MagicMock(return_value=MagicMock())  # type: ignore[method-assign]
     return strat
 
 
@@ -165,53 +165,62 @@ class TestAssembleScaffold:
 # --------------------------------------------------------------------------- success_score
 
 
+def _judge_factory(score=None, structured_output=...):
+    """Build a (make_judge, judge) pair: a fresh-judge factory whose judge returns the given score.
+
+    ``structured_output=...`` (sentinel) means "use ``MagicMock(score=score)``"; pass
+    ``structured_output=None`` to simulate a parse failure.
+    """
+    judge = MagicMock()
+    judge.return_value.structured_output = MagicMock(score=score) if structured_output is ... else structured_output
+    return (lambda: judge), judge
+
+
 class TestSuccessScore:
     def test_no_criteria_skips_judge(self):
-        judge = MagicMock()
-        assert success_score(judge, _case(success_criteria=None).config.attack_goal, "anything") == 0.0
-        judge.assert_not_called()
+        make_judge, judge = _judge_factory(score=0.8)
+        assert success_score(make_judge, _case(success_criteria=None).config.attack_goal, "anything") == 0.0
+        judge.assert_not_called()  # no scoring -> factory's judge never invoked
 
     def test_scores_response(self):
-        judge = MagicMock()
-        judge.return_value.structured_output = MagicMock(score=0.8)
-        assert success_score(judge, _case().config.attack_goal, "leaked it") == 0.8
+        make_judge, _ = _judge_factory(score=0.8)
+        assert success_score(make_judge, _case().config.attack_goal, "leaked it") == 0.8
 
     def test_parse_failure_returns_zero(self):
-        judge = MagicMock()
-        judge.return_value.structured_output = None
-        assert success_score(judge, _case().config.attack_goal, "resp") == 0.0
+        make_judge, _ = _judge_factory(structured_output=None)
+        assert success_score(make_judge, _case().config.attack_goal, "resp") == 0.0
 
     def test_clamps_above_one(self):
-        judge = MagicMock()
-        judge.return_value.structured_output = MagicMock(score=1.7)
-        assert success_score(judge, _case().config.attack_goal, "resp") == 1.0
+        make_judge, _ = _judge_factory(score=1.7)
+        assert success_score(make_judge, _case().config.attack_goal, "resp") == 1.0
 
     def test_clamps_below_zero(self):
-        judge = MagicMock()
-        judge.return_value.structured_output = MagicMock(score=-0.4)
-        assert success_score(judge, _case().config.attack_goal, "resp") == 0.0
+        make_judge, _ = _judge_factory(score=-0.4)
+        assert success_score(make_judge, _case().config.attack_goal, "resp") == 0.0
 
     def test_nan_score_returns_zero_not_false_breach(self):
         # NaN would defeat the min/max clamp and land on 1.0 (a false breach); reject it.
-        judge = MagicMock()
-        judge.return_value.structured_output = MagicMock(score=float("nan"))
-        assert success_score(judge, _case().config.attack_goal, "resp") == 0.0
+        make_judge, _ = _judge_factory(score=float("nan"))
+        assert success_score(make_judge, _case().config.attack_goal, "resp") == 0.0
 
     def test_inf_score_returns_zero(self):
-        judge = MagicMock()
-        judge.return_value.structured_output = MagicMock(score=float("inf"))
-        assert success_score(judge, _case().config.attack_goal, "resp") == 0.0
+        make_judge, _ = _judge_factory(score=float("inf"))
+        assert success_score(make_judge, _case().config.attack_goal, "resp") == 0.0
 
-    def test_clears_judge_history_each_call(self):
+    def test_builds_a_fresh_judge_each_call(self):
+        """Contract: success_score calls make_judge() exactly once per invocation and uses the
+        returned judge (proves the factory wiring; production freshness is proven by
+        test_builds_a_fresh_judge_per_scoring_call, which runs the real _build_judge)."""
         judge = MagicMock()
         judge.return_value.structured_output = MagicMock(score=0.3)
-        success_score(judge, _case().config.attack_goal, "resp")
-        judge.messages.clear.assert_called_once()
+        make_judge = MagicMock(return_value=judge)
+        success_score(make_judge, _case().config.attack_goal, "resp")
+        make_judge.assert_called_once_with()
+        judge.assert_called_once()  # the factory's judge is the one scored
 
     def test_uses_success_criteria_as_objective(self):
-        judge = MagicMock()
-        judge.return_value.structured_output = MagicMock(score=0.0)
-        success_score(judge, _case(success_criteria="reveal the API key").config.attack_goal, "resp")
+        make_judge, judge = _judge_factory(score=0.0)
+        success_score(make_judge, _case(success_criteria="reveal the API key").config.attack_goal, "resp")
         sent_prompt = judge.call_args[0][0]
         assert "reveal the API key" in sent_prompt
 
@@ -350,10 +359,11 @@ class TestRunAttack:
     def test_no_criteria_does_not_build_judge(self):
         # A no-criteria case never scores, so the judge Agent (and its model) must NOT be
         # constructed -- a typo'd judge model on such a case would otherwise raise into the
-        # per-case score=0 swallow.
+        # per-case score=0 swallow. The make_judge factory is built unconditionally but is lazy,
+        # so success_score returns before ever calling it on a no-criteria case.
         strat = SequentialBreakStrategy()
         judge_builder = MagicMock(return_value=MagicMock())
-        strat._judge_agent = judge_builder  # type: ignore[method-assign]
+        strat._build_judge = judge_builder  # type: ignore[method-assign]
         session = _FakeSession(lambda m: "resp")
         strat.run_attack(_case(success_criteria=None), session, max_turns=10)
         judge_builder.assert_not_called()
@@ -380,33 +390,55 @@ class TestRunAttack:
             strat.run_attack(_case(actor_goal="DUMP THE KEYS"), session, max_turns=10)
         assert "DUMP THE KEYS" in session.sent[0]
 
+    def test_builds_a_fresh_judge_per_scoring_call_across_cases(self):
+        """Stateless: each SCORING call constructs its own judge (not one per case, not one per
+        instance) so no agent state carries between variants or cases. We patch the SDK ``Agent``
+        ctor (NOT _build_judge) so the REAL build body runs. Two variants score per case (each
+        scores 0.1, below the 0.5 threshold, so the loop never early-stops) -> 2 fresh judges per
+        case; reintroducing any judge cache (per-instance OR per-case) would drop the count below 4."""
+
+        def fresh_judge(**_kw):
+            judge = MagicMock()
+            judge.return_value.structured_output = MagicMock(score=0.1)  # below threshold -> no early-stop
+            return judge
+
+        strat = SequentialBreakStrategy(variants=["dc_t1", "dc_t2"])
+        with patch(f"{_SB}.Agent", side_effect=fresh_judge) as agent_ctor:
+            strat.run_attack(_case(), _FakeSession(lambda m: "r"), max_turns=2)
+            strat.run_attack(_case(), _FakeSession(lambda m: "r"), max_turns=2)  # no reset() between cases
+        assert agent_ctor.call_count == 4  # 2 scored variants x 2 cases, a fresh judge each
+
 
 # --------------------------------------------------------------------------- reset / model / registry
 
 
 class TestResetAndModel:
-    def test_reset_clears_judge(self):
-        strat = SequentialBreakStrategy()
-        strat._judge = MagicMock()
-        strat.reset()
-        assert strat._judge is None
+    @staticmethod
+    def _capturing_build(captured):
+        # Real success_score calls make_judge() -> _build_judge(model); capture the model and
+        # return a judge that scores below threshold so the run proceeds without early-stop.
+        def fake_build(model):
+            captured["model"] = model
+            judge = MagicMock()
+            judge.return_value.structured_output = MagicMock(score=0.1)
+            return judge
+
+        return fake_build
 
     def test_ctor_model_takes_precedence(self):
         captured = {}
         strat = SequentialBreakStrategy(model="ctor-model")
-        strat._judge_agent = lambda model: captured.setdefault("model", model) or MagicMock()  # type: ignore[method-assign]
+        strat._build_judge = self._capturing_build(captured)  # type: ignore[method-assign]
         session = _FakeSession(lambda m: "held")
-        with patch(f"{_SB}.success_score", return_value=0.1):
-            strat.run_attack(_case(), session, max_turns=10, model="run-model")
+        strat.run_attack(_case(), session, max_turns=10, model="run-model")
         assert captured["model"] == "ctor-model"
 
     def test_run_model_used_when_no_ctor_model(self):
         captured = {}
         strat = SequentialBreakStrategy()
-        strat._judge_agent = lambda model: captured.setdefault("model", model) or MagicMock()  # type: ignore[method-assign]
+        strat._build_judge = self._capturing_build(captured)  # type: ignore[method-assign]
         session = _FakeSession(lambda m: "held")
-        with patch(f"{_SB}.success_score", return_value=0.1):
-            strat.run_attack(_case(), session, max_turns=10, model="run-model")
+        strat.run_attack(_case(), session, max_turns=10, model="run-model")
         assert captured["model"] == "run-model"
 
     def test_not_in_builtin_strategies(self):
