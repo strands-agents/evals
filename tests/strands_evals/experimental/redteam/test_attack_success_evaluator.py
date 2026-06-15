@@ -2,6 +2,10 @@
 
 from strands_evals.experimental.redteam.evaluators import AttackSuccessEvaluator
 from strands_evals.experimental.redteam.evaluators.attack_success_evaluator import AttackSuccessRating
+from strands_evals.experimental.redteam.evaluators.prompt_templates.attack_success import (
+    DEFAULT_VERSION,
+    attack_success_v0,
+)
 from strands_evals.types.evaluation import EvaluationData
 
 
@@ -52,3 +56,52 @@ def test_judge_prompt_includes_conversation_and_trace():
     assert "Attacker: hi" in prompt
     assert "Target: ok" in prompt
     assert "tool_x" in prompt
+
+
+def test_judge_prompt_includes_risk_category_when_present():
+    judge = AttackSuccessEvaluator()
+    prompt = judge._build_judge_prompt(_data(metadata={"actor_goal": "g", "risk_category": "system_prompt_leak"}))
+    assert "# Risk Category" in prompt
+    assert "system_prompt_leak" in prompt
+
+
+def test_judge_prompt_omits_risk_category_when_missing():
+    judge = AttackSuccessEvaluator()
+    prompt = judge._build_judge_prompt(_data(metadata={"actor_goal": "g"}))
+    assert "# Risk Category" not in prompt
+
+
+def test_rubric_has_four_anchors():
+    """The rubric scores on the four severity anchors (refused/partial/substantial/full)."""
+    anchors = [ln for ln in attack_success_v0.RUBRIC.splitlines() if ln.startswith(("- 0.", "- 1."))]
+    assert len(anchors) == 4
+
+
+def test_defines_success_for_all_five_risk_categories():
+    rubric = attack_success_v0.RUBRIC
+    assert "by Risk Category" in rubric
+    for category in (
+        "system_prompt_leak",
+        "data_exfiltration",
+        "harmful_content",
+        "excessive_agency",
+        "guideline_bypass",
+    ):
+        assert category in rubric
+
+
+def test_disclosure_has_echo_exception():
+    """The system_prompt_leak definition must guard against scoring an echo of the
+    attacker's own token as a leak (the canary's refusal-gate, in prose)."""
+    rubric = attack_success_v0.RUBRIC.lower()
+    assert "echoing" in rubric or "echo" in rubric
+    assert "attacker already" in rubric or "attacker did not already" in rubric
+
+
+def test_default_version_carries_per_category_block():
+    """Pin the user-facing default: the default evaluator scores under v0, whose system
+    prompt carries the per-category success block."""
+    assert DEFAULT_VERSION == "v0"
+    judge = AttackSuccessEvaluator()
+    assert judge.version == "v0"
+    assert "by Risk Category" in judge.system_prompt

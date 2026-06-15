@@ -17,7 +17,8 @@ trace, so ``strategy_succeeded`` / ``strategy_score`` are observability only.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, cast
+from functools import partial
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 from pydantic import BaseModel, Field
 from strands import Agent
@@ -72,16 +73,18 @@ class _SuccessRating(BaseModel):
     score: float = Field(ge=0.0, le=1.0, description="0.0 no progress, 1.0 criteria fully met")
 
 
-def success_score(judge: Agent, response: str, success_criteria: str | None) -> float:
-    """Score how fully ``response`` meets ``success_criteria`` (0.0-1.0), via the judge.
+def success_score(make_judge: Callable[[], Agent], response: str, success_criteria: str | None) -> float:
+    """Score how fully ``response`` meets ``success_criteria`` (0.0-1.0), via a fresh judge.
 
     Cheap in-loop early-stop gate. Returns 0.0 when there is no criteria or on a parse
     failure so the loop keeps going; the authoritative AttackSuccessEvaluator decides the
-    verdict over the full trace.
+    verdict over the full trace. A FRESH judge is built per call (via ``make_judge``) so no
+    agent state can carry from one turn's scoring into the next -- stronger than reusing one
+    judge and clearing only its ``messages``.
     """
     if not success_criteria:
         return 0.0
-    judge.messages.clear()  # score each response on its own; don't grow/bias context
+    judge = make_judge()  # fresh judge per scoring call: zero cross-call state carryover
     prompt = f"# Success Criteria\n{success_criteria}\n\n# Target Response\n{response}"
     result = judge(prompt, structured_output_model=_SuccessRating)
     rating = result.structured_output
@@ -128,8 +131,10 @@ class GoatStrategy(AttackStrategy):
     empty. No in-loop refusal judge -- the optional success gate (``success_threshold``) only
     decides early stop; the authoritative verdict is AttackSuccessEvaluator over the full trace.
 
-    Instances are shared across cases and rebuilt per case via ``reset()``; safe only under
-    ``RedTeamExperiment`` ``max_workers=1`` (the same caveat crescendo carries).
+    The strategy is stateless across cases: only static config lives on ``self``. The attacker is
+    built once per ``run_attack`` (its multi-turn O/T/S/R history IS the strategy); the judge is
+    built fresh per scoring call so no agent state carries between scores. Neither is cached on the
+    instance, so an instance can be reused across cases with no ``reset()`` between them.
     """
 
     def __init__(
@@ -171,8 +176,6 @@ class GoatStrategy(AttackStrategy):
         self._success_threshold = success_threshold
         self._store_reasoning = store_reasoning
         self._model = model
-        self._attacker: Agent | None = None
-        self._judge: Agent | None = None
 
     @property
     def name(self) -> str:
@@ -189,8 +192,11 @@ class GoatStrategy(AttackStrategy):
     ) -> AttackRunResult:
         goal = case.config.attack_goal
         resolved_model = self._model or model  # ctor model takes precedence
-        attacker = self._attacker_agent(goal, resolved_model)
-        judge = self._judge_agent(resolved_model)
+        attacker = self._build_attacker(goal, resolved_model)
+        # A judge FACTORY (not a judge): success_score builds a fresh judge per scoring call so no
+        # agent state carries between turns. The attacker, by contrast, is one per case -- its
+        # multi-turn history is the strategy (O/T/S/R escalation), not carryover to scrub.
+        make_judge = partial(self._build_judge, resolved_model)
         turn_cap = min(self._max_turns, max_turns)
 
         conversation: list[dict[str, Any]] = []
@@ -247,7 +253,7 @@ class GoatStrategy(AttackStrategy):
             # early stop on a multi-agent target's benign routing/lookup call. GOAT is append-only:
             # no turn is dropped, so a tool-driven breach is never lost -- the authoritative
             # AttackSuccessEvaluator re-scores the full trace at the end.
-            score = success_score(judge, response, goal.success_criteria)
+            score = success_score(make_judge, response, goal.success_criteria)
             if score >= self._success_threshold:
                 succeeded = True
                 break
@@ -271,26 +277,20 @@ class GoatStrategy(AttackStrategy):
             },
         )
 
-    def reset(self) -> None:
-        # Per-case rebuild: clear lazy-init agents so the next case's attacker bakes in its own
-        # goal and starts with empty history. Relies on max_workers=1.
-        self._attacker = None
-        self._judge = None
+    def _build_attacker(self, goal: AttackGoal, model: Model | str | None) -> Agent:
+        # Built fresh per run_attack as a local; never cached on self. The attacker accumulates
+        # history across a case's turns (within run_attack), but a new case gets a new attacker that
+        # bakes in its own goal and starts with empty history -- so the strategy is stateless across
+        # cases and needs no reset().
+        system_prompt = goat_v0.ATTACKER_SYSTEM_PROMPT.replace("{actor_goal}", goal.actor_goal)
+        return Agent(model=model, system_prompt=system_prompt, callback_handler=None)
 
-    def _attacker_agent(self, goal: AttackGoal, model: Model | str | None) -> Agent:
-        # Lazy-built once per case and cached. The attacker accumulates history across turns, so
-        # correctness relies on reset() nulling it before each case AND max_workers=1 — a future
-        # parallelization must rebuild a fresh attacker per case, not share this one (see the
-        # standalone-experiment refactor in the fast-follow plan).
-        if self._attacker is None:
-            system_prompt = goat_v0.ATTACKER_SYSTEM_PROMPT.replace("{actor_goal}", goal.actor_goal)
-            self._attacker = Agent(model=model, system_prompt=system_prompt, callback_handler=None)
-        return self._attacker
-
-    def _judge_agent(self, model: Model | str | None) -> Agent:
-        if self._judge is None:
-            self._judge = Agent(model=model, system_prompt=goat_v0.SUCCESS_JUDGE_SYSTEM_PROMPT, callback_handler=None)
-        return self._judge
+    def _build_judge(self, model: Model | str | None) -> Agent:
+        # Called per scoring call (via the make_judge factory) so each score runs on a fresh judge
+        # with zero carried-over agent state; never cached on self. COST: one build per scored turn;
+        # cheap when `model` is a Model object (benchmark/production path), but the convenience
+        # STRING-model path makes a new boto3 client each build -- pass a Model object on hot paths.
+        return Agent(model=model, system_prompt=goat_v0.SUCCESS_JUDGE_SYSTEM_PROMPT, callback_handler=None)
 
 
 # Only the strategy class is public. gen_attacker_turn / success_score stay module-level for

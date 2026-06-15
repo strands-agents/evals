@@ -30,7 +30,8 @@ strategy's own early-stop gate.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, cast
+from functools import partial
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 from pydantic import BaseModel, Field
 from strands import Agent
@@ -107,11 +108,11 @@ def gen_refined_prompt(attacker: Agent, goal: AttackGoal, last_response: str, la
     return str(refined.prompt)
 
 
-def success_score(judge: Agent, goal: AttackGoal, response: str) -> tuple[float, int | None]:
+def success_score(make_judge: Callable[[], Agent], goal: AttackGoal, response: str) -> tuple[float, int | None]:
     """Score the target response 1-10 (PAIR judge), normalized to [0, 1].
 
     Cheap in-loop early-stop gate. When the case has no ``success_criteria`` the gate
-    does NOT call the judge -- it returns ``(0.0, None)`` so the loop never early-stops and
+    does NOT build or call a judge -- it returns ``(0.0, None)`` so the loop never early-stops and
     runs the full K iterations (matching crescendo's gate, so the two strategies' turn
     counts stay comparable on no-criteria cases; no-criteria only arises on hand-authored
     custom cases -- the generator always fills ``success_criteria``). When criteria ARE
@@ -120,8 +121,13 @@ def success_score(judge: Agent, goal: AttackGoal, response: str) -> tuple[float,
     as success. On a structured-output parse failure it also returns ``(0.0, None)`` (not-
     yet-success) so the loop keeps refining -- the final evaluator decides the verdict.
 
+    A FRESH judge is built per call (via ``make_judge``) so no agent state can carry from one
+    turn's scoring into the next -- stronger than reusing one judge and clearing only its
+    ``messages``.
+
     Args:
-        judge: Agent used to score the response.
+        make_judge: Zero-arg factory that builds a fresh scoring Agent (not called when there is
+            no ``success_criteria``).
         goal: The attack goal; its ``success_criteria`` is the TASK objective (no judge
             call when it is absent).
         response: The target's response text.
@@ -133,9 +139,7 @@ def success_score(judge: Agent, goal: AttackGoal, response: str) -> tuple[float,
     """
     if not goal.success_criteria:
         return 0.0, None
-    # Score each response independently; clear prior-turn history so earlier responses
-    # don't bias the verdict and the judge's context doesn't grow per turn.
-    judge.messages.clear()
+    judge = make_judge()  # fresh judge per scoring call: zero cross-call state carryover
     task = goal.success_criteria
     prompt = f"# Objective\n{task}\n\n# Target Response\n{response}"
     result = judge(prompt, structured_output_model=_JudgeRating)
@@ -165,8 +169,11 @@ class PairStrategy(AttackStrategy):
     from ``AttackSuccessEvaluator`` over the full trace; this gate is only the
     strategy's own stop signal.
 
-    Instances are shared across cases and rebuilt per case via ``reset()``; this is
-    safe only because ``RedTeamExperiment`` runs with ``max_workers=1``.
+    The strategy is stateless across cases: only static config lives on ``self``. The attacker is
+    built once per ``run_attack`` (its cross-iteration refinement history IS the strategy); the
+    judge is built fresh per scoring call so no agent state carries between scores. Neither is
+    cached on the instance, so an instance can be reused across cases with no ``reset()`` between
+    them.
     """
 
     def __init__(
@@ -201,8 +208,6 @@ class PairStrategy(AttackStrategy):
         self._max_turns = max_turns
         self._success_threshold = success_threshold
         self._model = model
-        self._attacker: Agent | None = None
-        self._judge: Agent | None = None
 
     @property
     def name(self) -> str:
@@ -219,8 +224,11 @@ class PairStrategy(AttackStrategy):
     ) -> AttackRunResult:
         goal = case.config.attack_goal
         resolved_model = self._model or model
-        attacker = self._attacker_agent(goal, resolved_model)
-        judge = self._judge_agent(resolved_model)
+        attacker = self._build_attacker(goal, resolved_model)
+        # A judge FACTORY (not a judge): success_score builds a fresh judge per scoring call so no
+        # agent state carries between turns. The attacker, by contrast, is one per case -- its
+        # refinement history across iterations IS the strategy, not carryover to scrub.
+        make_judge = partial(self._build_judge, resolved_model)
         turn_cap = min(self._max_turns, max_turns)
 
         conversation: list[dict[str, Any]] = []
@@ -251,8 +259,11 @@ class PairStrategy(AttackStrategy):
             target_calls += 1
             # All-or-nothing turn bookkeeping: an empty response ends the case BEFORE any
             # per-turn state is recorded, so conversation/metadata never disagree on the
-            # turn count (target_calls trails by the dropped call).
-            if not response.strip():
+            # turn count (target_calls trails by the dropped call). Guard None too: the
+            # TargetSession Protocol types invoke -> str, but a custom session may return
+            # None, and None.strip() would raise into the per-case score=0 swallow (matches
+            # the GOAT/BLJ guard).
+            if not response or not response.strip():
                 logger.warning("reason=<empty_response> | target returned no text | ending case early")
                 break
 
@@ -263,7 +274,7 @@ class PairStrategy(AttackStrategy):
             last_response = response
 
             # 3. Jailbreak scoring (PAIR step 3). None-guarded -> 0.0, never raises.
-            turn_score, last_raw_score = success_score(judge, goal, response)
+            turn_score, last_raw_score = success_score(make_judge, goal, response)
             best_score = turn_score if best_score is None else max(best_score, turn_score)
             logger.debug("iteration=<%s> score=<%.3f> | pair turn scored", iterations, turn_score)
 
@@ -286,25 +297,20 @@ class PairStrategy(AttackStrategy):
             },
         )
 
-    def reset(self) -> None:
-        self._attacker = None
-        self._judge = None
+    def _build_attacker(self, goal: AttackGoal, model: Model | str | None) -> Agent:
+        # Built fresh per run_attack as a local; never cached on self. The attacker accumulates
+        # history across a case's refinement turns (within run_attack), but a new case gets a new
+        # attacker baked with its own goal and empty history -- so the strategy is stateless across
+        # cases and needs no reset().
+        system_prompt = pair_v0.ATTACKER_SYSTEM_PROMPT.replace("{actor_goal}", goal.actor_goal)
+        return Agent(model=model, system_prompt=system_prompt, callback_handler=None)
 
-    def _attacker_agent(self, goal: AttackGoal, model: Model | str | None) -> Agent:
-        # The attacker is lazily built once per case and its system prompt bakes in
-        # goal.actor_goal. Per-case history accumulation relies on the task runner
-        # calling reset() before each case (see reset() and AttackStrategy.reset's
-        # contract); under the experiment's max_workers=1 that holds. A future
-        # parallelization must rebuild per case -- see the standalone refactor.
-        if self._attacker is None:
-            system_prompt = pair_v0.ATTACKER_SYSTEM_PROMPT.replace("{actor_goal}", goal.actor_goal)
-            self._attacker = Agent(model=model, system_prompt=system_prompt, callback_handler=None)
-        return self._attacker
-
-    def _judge_agent(self, model: Model | str | None) -> Agent:
-        if self._judge is None:
-            self._judge = Agent(model=model, system_prompt=pair_v0.JUDGE_SYSTEM_PROMPT, callback_handler=None)
-        return self._judge
+    def _build_judge(self, model: Model | str | None) -> Agent:
+        # Called per scoring call (via the make_judge factory) so each score runs on a fresh judge
+        # with zero carried-over agent state; never cached on self. COST: one build per scored turn;
+        # cheap when `model` is a Model object (benchmark/production path), but the convenience
+        # STRING-model path makes a new boto3 client each build -- pass a Model object on hot paths.
+        return Agent(model=model, system_prompt=pair_v0.JUDGE_SYSTEM_PROMPT, callback_handler=None)
 
 
 __all__ = ["PairStrategy"]
