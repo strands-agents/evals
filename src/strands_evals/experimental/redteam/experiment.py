@@ -27,19 +27,10 @@ from .utils import _put_model_field
 
 
 class RedTeamExperiment(Experiment[InputT, OutputT]):
-    """Experiment specialized for red team evaluation.
-
-    Holds the attack strategies and runs the case × strategy cross-product:
-    every case is attacked by every strategy. When ``agent`` is supplied,
-    ``run_evaluations()`` builds a default multi-turn attacker task internally;
-    pass an explicit ``task`` to customize. Returns a :class:`RedTeamReport`.
+    """Experiment that runs the case x strategy cross-product and returns a `RedTeamReport`.
 
     Example:
         ```python
-        from strands_evals.experimental.redteam import (
-            AdversarialCaseGenerator, RedTeamExperiment, CrescendoStrategy,
-        )
-
         cases = AdversarialCaseGenerator(model=model).generate_cases(agent=agent)
         experiment = RedTeamExperiment(
             cases=cases, agent=agent, attack_strategies=[CrescendoStrategy(max_turns=10)]
@@ -66,20 +57,15 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
         self._attack_strategies = attack_strategies or []
         self._by_label = self._build_by_label(self._attack_strategies)
         self._model = model
-        # case name -> strategy run metadata (turns_used, backtracks, ...); the
-        # default task records into this and we join it onto the report, since the
-        # base Experiment doesn't carry task-returned metadata into EvaluationData.
+        # case name -> strategy run metadata; the base Experiment drops task-returned
+        # metadata, so we join this onto the report ourselves.
         self._run_meta: dict[str, dict[str, Any]] = {}
 
     @property
     def agent(self) -> Agent | TargetSession | None:
         """The target the default attacker task talks to.
 
-        Persisted experiments do not include the agent (live `Agent` /
-        `MultiAgentBase` / `TargetSession` instances are not JSON-serializable),
-        so the canonical load path is `from_file` followed by `exp.agent = ...`
-        before `run_evaluations`. Setting to `None` is allowed and restores the
-        "must supply explicit task" error path.
+        Not persisted by `to_dict`; set via this setter after `from_file` / `from_dict` before `run_evaluations`.
         """
         return self._agent
 
@@ -89,12 +75,7 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
 
     @property
     def attack_strategies(self) -> list[AttackStrategy]:
-        """The configured attack strategies (read-only view).
-
-        The experiment's `_by_label` index is built from this list at
-        construction; mutating the returned list will not re-index. Reload
-        with `from_dict` if you need to change strategies after construction.
-        """
+        """The configured attack strategies (read-only copy)."""
         return list(self._attack_strategies)
 
     @staticmethod
@@ -110,19 +91,10 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
         return by_label
 
     def _expand_cross_product(self) -> list[Case[InputT, OutputT]]:
-        """Expand held cases into the case × strategy cross-product.
+        """Return a new list of (case x strategy) work items; does not mutate `self._cases`.
 
-        Each work item is a copy of the case tagged with one strategy's label in
-        ``metadata["strategy"]`` and a unique name ``"{case}__{label}"`` (so the
-        evaluation_data_store cache keys stay unique). The base worker still sees
-        a plain case queue.
-
-        Pure: returns a new list and never mutates ``self._cases``, so reusing
-        the experiment across runs does not re-expand an already-expanded list.
-
-        Returns:
-            The expanded case list, or the held cases unchanged when no
-            strategies were supplied.
+        Each item is a copy of the case named `"{case}__{label}"` and tagged with `metadata["strategy"] = label`
+        so cache keys stay unique.
         """
         if not self._attack_strategies:
             return list(self._cases)
@@ -159,19 +131,11 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
         self._run_meta.clear()
         if task is None:
             task = self._default_task()
-        # Swap self._cases to the expanded cross-product only for the duration of the
-        # base run, then restore it, so the experiment can be re-run without re-expanding
-        # (validated by test_run_evaluations_twice_is_idempotent). This temporary mutation
-        # is safe ONLY because max_workers=1 is enforced above: no other worker or
-        # event-loop task reads self._cases concurrently. Passing the expanded list down
-        # without mutating self is cleaner and is part of the standalone (composition)
-        # refactor tracked in the fast-follow plan; the base API doesn't accept an
-        # explicit case list today.
+        # Swap _cases for the expanded cross-product only for the duration of the base
+        # run; safe because max_workers=1 is enforced, so nothing else reads it concurrently.
         original_cases = self._cases
         self._cases = self._expand_cross_product()
         try:
-            # base now returns a single flattened EvaluationReport (#241), each case row
-            # tagged with its evaluator; RedTeamReport wraps that and joins run_meta.
             report = await super().run_evaluations_async(
                 task, max_workers=max_workers, evaluation_data_store=evaluation_data_store
             )
@@ -196,14 +160,7 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
         )
 
     def to_dict(self) -> dict:  # type: ignore[override]
-        """Serialize the experiment without the live target agent.
-
-        Adds `attack_strategies` and `model` on top of the base shape. The
-        target `agent` is intentionally omitted — `Agent` / `MultiAgentBase` /
-        `TargetSession` instances are not JSON-serializable, so callers must
-        re-attach via the `agent` setter (or pass an explicit `task`) after
-        loading. `_run_meta` is per-run state and is not persisted.
-        """
+        """Serialize the experiment, omitting the live `agent` and per-run state."""
         out = super().to_dict()
         out["attack_strategies"] = [strategy.to_dict() for strategy in self._attack_strategies]
         # Coerce via the strategy helper for consistency with how strategies serialize their own model field.
@@ -217,11 +174,7 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
         custom_evaluators: list[type[Evaluator]] | None = None,
         custom_strategies: list[type[AttackStrategy]] | None = None,
     ):
-        """Load a RedTeamExperiment from a JSON file.
-
-        Same contract as :meth:`from_dict`: the loaded experiment has no
-        `agent` attached, so set `exp.agent = ...` before `run_evaluations`.
-        """
+        """Load a RedTeamExperiment from JSON. The loaded experiment has no `agent` attached."""
         file_path = Path(path)
         if file_path.suffix != ".json":
             raise ValueError(
@@ -244,16 +197,11 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
     ):
         """Reconstruct a RedTeamExperiment from its serialized form.
 
-        The loaded experiment has no `agent` attached: set `exp.agent = ...`
-        before `run_evaluations`, or pass an explicit `task=`. Cases are
-        validated as `RedTeamCase` so the typed `config` survives reload.
-        `AttackSuccessEvaluator` is registered automatically; pass
-        `custom_evaluators` for user-defined evaluator subclasses and
-        `custom_strategies` for user-defined strategy subclasses.
+        Cases are validated as `RedTeamCase`. Pass `custom_evaluators` / `custom_strategies` to register
+        user-defined subclasses.
         """
         merged_evaluators: list[type[Evaluator]] = [AttackSuccessEvaluator, *(custom_evaluators or [])]
-        # Reuse the base evaluator-resolving path (registry + custom merge), but skip
-        # its case parser: we want RedTeamCase, not Case.
+        # Reuse the base evaluator-resolving path but skip its case parser; we want RedTeamCase.
         payload = dict(data)
         case_dicts = payload.pop("cases", [])
         strategy_dicts = payload.pop("attack_strategies", [])

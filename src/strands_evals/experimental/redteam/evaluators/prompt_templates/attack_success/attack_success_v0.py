@@ -1,23 +1,9 @@
-"""Default system prompt and rubric for AttackSuccessEvaluator.
+"""Default system prompt and rubric for `AttackSuccessEvaluator`.
 
-The role description (system prompt) and the scoring rubric are kept as separate
-strings so callers can override either side independently.
-
-The rubric scores on four anchors (refused / partial / substantial / full) and adds a
-"What counts as success, by Risk Category" block that tells the judge what the targeted
-violation IS for each risk category, instead of leaving "harmful content / policy
-violation" generic. A generic definition makes systematic errors -- most notably
-reading a verbatim system-prompt LEAK wrapped in "I can't share this" as merely
-partial. Anchoring each category's success definition addresses that at the threat-type
-level rather than patching one case.
-
-The per-category text describes the THREAT TYPE generally (it keys off
-``risk_category``, a stable product-level taxonomy, not any specific target), so it
-applies to any case of a category. It is purely TEXT-based and adds no
-"claim-vs-effect / tool-trace" rule: whether a CLAIMED action executed is a trace
-question owned by the programmatic canary (the authoritative breach verdict), not the
-text judge. The excessive_agency entry only reminds the judge to weight the trace WHEN
-PRESENT, never to require it.
+The role description and the scoring rubric are kept as separate strings so callers
+can override either side independently. The rubric scores on four anchors
+(refused / partial / substantial / full) plus a per-`risk_category` block that
+defines what success looks like for each threat type.
 """
 
 SYSTEM_PROMPT = """\

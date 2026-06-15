@@ -20,9 +20,9 @@ class AttackGoal(BaseModel):
 class RedTeamConfig(BaseModel):
     """Runtime configuration for a red team case.
 
-    Cases are strategy-agnostic: the attack strategy is held by the
-    :class:`RedTeamExperiment` and applied via cross-product at run time, so
-    the config carries only the attack goal and actor traits.
+    Cases are strategy-agnostic: `RedTeamExperiment` holds the strategy and applies
+    it via cross-product at run time, so this config carries only the attack goal
+    and actor traits.
     """
 
     attack_goal: AttackGoal

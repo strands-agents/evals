@@ -568,9 +568,7 @@ class TestSwarmShapedResumeFlagGuard:
         leaf = _real_agent("seed")
         root = _NoResumeAttr({"a": leaf})
         s = StrandsMultiAgentSession(root)
-        with caplog.at_level(
-            "WARNING", logger="strands_evals.experimental.redteam.strategies.target_session"
-        ):
+        with caplog.at_level("WARNING", logger="strands_evals.experimental.redteam.strategies.target_session"):
             s.restore(s.snapshot())
         assert any("_resume_from_session" in rec.message for rec in caplog.records), (
             "missing-attribute path must log a rename warning"
@@ -583,8 +581,6 @@ class TestSwarmShapedResumeFlagGuard:
         leaf = _real_agent("seed")
         root = _FakeOrchestrator({"a": leaf})  # serialize_state emits no `status`
         s = StrandsMultiAgentSession(root)
-        with caplog.at_level(
-            "WARNING", logger="strands_evals.experimental.redteam.strategies.target_session"
-        ):
+        with caplog.at_level("WARNING", logger="strands_evals.experimental.redteam.strategies.target_session"):
             s.restore(s.snapshot())
         assert not any("_resume_from_session" in rec.message for rec in caplog.records)
