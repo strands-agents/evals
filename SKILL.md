@@ -1,7 +1,7 @@
 ---
 name: strands-evals
-description: Use when authoring evaluations with strands-agents-evals. Activates on tasks involving Case/Experiment construction, picking evaluators (Output, Trajectory, Helpfulness, Faithfulness, Coherence, Conciseness, ResponseRelevance, Harmfulness, Refusal, Stereotyping, InstructionFollowing, GoalSuccessRate, ToolSelection/ParameterAccuracy, Multimodal*), trace-based evaluation with mappers (CloudWatch, OpenSearch, OpenInference, LangChain OTel, Strands in-memory), simulators (ActorSimulator, ToolSimulator), failure detection and root-cause analysis (detect_failures, analyze_root_cause, diagnose_session), or auto test-case generation (ExperimentGenerator). Trigger phrases include "evaluate this agent", "score the trajectory", "simulate a user", "diagnose the session", "generate test cases", "LLM-as-a-Judge". Skip for general LLM eval theory unrelated to this package.
-version: 0.1.0
+description: Use when authoring evaluations with strands-agents-evals. Activates on tasks involving Case/Experiment construction, picking evaluators (Output, Trajectory, Helpfulness, Faithfulness, Coherence, Conciseness, ResponseRelevance, Harmfulness, Refusal, Stereotyping, InstructionFollowing, GoalSuccessRate, ToolSelection/ParameterAccuracy, Multimodal*), trace-based evaluation with mappers (CloudWatch, OpenSearch, OpenInference, LangChain OTel, Strands in-memory), simulators (ActorSimulator, ToolSimulator), failure detection and root-cause analysis (detect_failures, analyze_root_cause, diagnose_session), chaos / fault-injection testing (ChaosCase, ChaosExperiment, ChaosPlugin), red-team evaluation (RedTeamExperiment, AdversarialCaseGenerator, AttackSuccessEvaluator, attack strategies), or auto test-case generation (ExperimentGenerator). Trigger phrases include "evaluate this agent", "score the trajectory", "simulate a user", "diagnose the session", "generate test cases", "LLM-as-a-Judge", "inject tool failures", "chaos test", "red team this agent", "jailbreak / adversarial". Skip for general LLM eval theory unrelated to this package.
+version: 0.2.0
 ---
 
 # strands-evals — Authoring Evaluations
@@ -18,9 +18,13 @@ Patterns for using the `strands-agents-evals` package to evaluate AI agents and 
 | Multi-turn conversation testing | ActorSimulator |
 | Replace real tools during eval | ToolSimulator |
 | Diagnose a failing session | Detectors |
+| Inject tool failures / response corruption | Chaos Testing |
+| Red-team an agent for safety bypasses | Red Team |
 | Auto-generate test cases | ExperimentGenerator |
 | Image-to-text evaluation | Multimodal |
 | Build a custom evaluator | Custom evaluator |
+| Async / parallel runs | Async Execution |
+| Cache task results across runs | Result Caching |
 
 ## Core Building Blocks
 
@@ -104,6 +108,23 @@ def task_function(case):
     session = StrandsInMemorySessionMapper().map_to_session(spans, session_id=case.session_id)
     return {"output": str(response), "trajectory": session}
 ```
+
+### Shortcut: `@eval_task` + `TracedHandler`
+
+For the common Strands-in-memory case, the `@eval_task(TracedHandler())` decorator collects spans and maps them to a `Session` automatically. The decorated function can return an `Agent` (auto-invoked with `case.input`), a string, or a dict.
+
+```python
+from strands import Agent
+from strands_evals import eval_task, TracedHandler
+
+@eval_task(TracedHandler())
+def task(case):
+    return Agent(model="...", tools=[...])  # auto-invoked, telemetry captured
+
+report = experiment.run_evaluations(task)
+```
+
+`TracedHandler` shares one in-memory exporter across calls — safe with `run_evaluations` (sequential) or `run_evaluations_async(max_workers=1)`. For concurrent runs (`max_workers > 1`), give each worker its own handler instance via a per-call factory or fall back to the manual capture pattern above. Pass a different `mapper=` to `TracedHandler` if you need a non-default `SessionMapper`.
 
 Pick the evaluator by scope:
 
@@ -246,6 +267,108 @@ Display recommendations on the report:
 report.display(include_recommendations=True)
 ```
 
+## Chaos Testing (deterministic fault injection)
+
+Inject tool failures and response corruption to evaluate resilience. Effects fire via Strands' native hook system; the user's task body stays chaos-free.
+
+```python
+from strands import Agent
+from strands_evals import Case
+from strands_evals.chaos import (
+    ChaosCase, ChaosExperiment, ChaosPlugin,
+    Timeout, NetworkError, ExecutionError, ValidationError,   # pre-hook (cancel call)
+    TruncateFields, RemoveFields, CorruptValues,              # post-hook (corrupt response)
+)
+
+base = [Case(name="flight_search", input="Find flights to Tokyo")]
+effect_maps = {
+    "search_timeout":  {"tool_effects": {"search_tool":   [Timeout()]}},
+    "db_truncate":     {"tool_effects": {"database_tool": [TruncateFields(max_length=20)]}},
+}
+chaos_cases = ChaosCase.expand(base, effect_maps, include_no_effect_baseline=True)
+
+def task(case):
+    agent = Agent(tools=[search_tool, database_tool], plugins=[ChaosPlugin()])
+    return {"output": str(agent(case.input))}
+
+report = ChaosExperiment(cases=chaos_cases, evaluators=[...]).run_evaluations(task=task)
+```
+
+Effect categories:
+- **Pre-hook (cancel before execution):** `Timeout`, `NetworkError`, `ExecutionError`, `ValidationError` — each takes an `error_message`. First pre-hook effect wins.
+- **Post-hook (corrupt response):** `TruncateFields(max_length=...)`, `RemoveFields(remove_ratio=...)`, `CorruptValues(...)` — applied in order to the tool's dict response.
+
+Pair with chaos-aware evaluators in `strands_evals.evaluators.chaos`:
+
+```python
+from strands_evals.evaluators.chaos import (
+    FailureCommunicationEvaluator,   # did the agent tell the user?
+    PartialCompletionEvaluator,      # did it deliver what it could?
+    RecoveryStrategyEvaluator,       # did it retry / fall back well?
+)
+```
+
+`ChaosCase.expand(base_cases, effect_maps, include_no_effect_baseline=True)` produces the Cartesian product (cases × effect maps) plus an optional baseline run per case. `ChaosPlugin` reads the active case from a `ContextVar` set by `ChaosExperiment` — do not instantiate cases by hand inside a plain `Experiment` and expect effects to fire.
+
+## Red Team (adversarial evaluation)
+
+Lives under `strands_evals.experimental.redteam`. Runs the case × strategy cross-product against a target agent and produces a `RedTeamReport`.
+
+```python
+from strands import Agent
+from strands_evals.experimental.redteam import (
+    RedTeamExperiment, AdversarialCaseGenerator, AttackSuccessEvaluator,
+    CrescendoStrategy, GoatStrategy, PairStrategy,
+    BadLikertJudgeStrategy, SequentialBreakStrategy, PromptStrategy,
+    AttackGoal, RedTeamConfig, RISK_CATEGORIES,
+)
+
+target = Agent(model=..., system_prompt=..., tools=[...])
+
+# 1. Generate cases tailored to the target (or hand-author RedTeamCase)
+cases = AdversarialCaseGenerator(model=judge_model).generate_cases(
+    agent=target,
+    risk_categories=["guideline_bypass", "data_exfiltration"],
+    num_cases=5,
+)
+
+# 2. Run case × strategy cross-product
+experiment = RedTeamExperiment(
+    cases=cases,
+    agent=target,
+    attack_strategies=[CrescendoStrategy(max_turns=10), PairStrategy(max_turns=8)],
+    evaluators=[AttackSuccessEvaluator(model=judge_model, pass_threshold=0.3)],
+    model=judge_model,
+)
+report = experiment.run_evaluations()
+report.display()
+```
+
+Targets accepted: a `strands.Agent`, a `strands.multiagent.Graph`/`Swarm` (any `MultiAgentBase`), or a custom `TargetSession` Protocol implementer. For parallel runs (`max_workers > 1`) pass `agent_factory=` instead of `agent=` — Strands clients carry non-deepcopyable state.
+
+Built-in strategies:
+
+| Strategy | Use |
+| --- | --- |
+| `PromptStrategy(label, system_prompt_template)` | Single-prompt attacker; one is registered as `BUILTIN_STRATEGIES["gradual_escalation"]` |
+| `CrescendoStrategy(max_turns=...)` | Multi-turn ramp from benign to harmful |
+| `GoatStrategy(...)` | Generative Offensive Agent Tester loop |
+| `PairStrategy(max_turns=...)` | Prompt Automatic Iterative Refinement |
+| `BadLikertJudgeStrategy(...)` | Likert-scale judge-prompt attack |
+| `SequentialBreakStrategy(...)` | Narrative-scaffold attack (PR #254) |
+
+Targets and sessions in `redteam.strategies`: `StrandsAgentSession`, `StrandsMultiAgentSession`, `TargetCheckpoint`, `TargetSession` (Protocol).
+
+Cases are typed `RedTeamCase` carrying a `RedTeamConfig(attack_goal=AttackGoal(risk_category=..., actor_goal=..., severity=..., success_criteria=...), traits={...})`. `RISK_CATEGORIES` is the canonical category list for case generation.
+
+`AttackSuccessEvaluator` is the default — an LLM-as-judge with continuous 0.0-1.0 scoring, structured-output severity (`refused | partial | substantial | full`), and `pass_threshold` (default 0.3, where pass = score below threshold = attack failed).
+
+`RedTeamReport` adds case-centric grouping: one `AttackResult` per case, plus `GroupedSummary` aggregations exposed via `report.by_risk_category()` and `report.by_strategy()`. Severity is recorded on each `AttackResult` (no `by_severity()` aggregator). `trajectory` holds raw tool I/O — sanitize before sharing if tools return sensitive data.
+
+**Hard turn cap:** `task.py` enforces `MAX_ALLOWED_TURNS = 50` regardless of a strategy's own `max_turns`. A `CrescendoStrategy(max_turns=100)` will still stop at 50 inside `RedTeamExperiment`. Lower turn budgets honor the strategy setting.
+
+Stability: `experimental.redteam` APIs may change in a minor release. Breaking changes (renames, removed args, changed defaults) go through a deprecation cycle with a `DeprecationWarning` for at least one minor version.
+
 ## ExperimentGenerator (auto test-case generation)
 
 ```python
@@ -292,6 +415,32 @@ class PolicyComplianceEvaluator(Evaluator[str, str]):
 ```
 
 For LLM-backed custom evaluators, route through `strands.Agent`. The package treats this as a hard rule, see `AGENTS.md`. Use `agent(prompt, structured_output_model=PydanticModel)` for structured scoring. Default judge model is `global.anthropic.claude-sonnet-4-6`.
+
+## Async Execution
+
+`run_evaluations` is sync; under the hood it delegates to `run_evaluations_async(max_workers=1)`. For parallel runs:
+
+```python
+report = await experiment.run_evaluations_async(task, max_workers=10)
+```
+
+- `task` may be sync or async — async tasks require `run_evaluations_async`; passing one to `run_evaluations` raises `ValueError`.
+- `max_workers` defaults to 10; the runner caps it at `len(cases)`.
+- `TracedHandler` shares a single in-memory exporter, so it is **not** safe under `max_workers > 1`. Either run sequentially or build a per-call `TracedHandler` inside the task.
+- Red-team parallel runs must use `agent_factory=` (see Red Team section).
+
+## Result Caching
+
+`Experiment.run_evaluations` and `run_evaluations_async` accept `evaluation_data_store=` to cache per-case `EvaluationData` and skip cases that already have results.
+
+```python
+from strands_evals import LocalFileTaskResultStore  # writes one JSON per case
+
+store = LocalFileTaskResultStore("./results")
+report = experiment.run_evaluations(task, evaluation_data_store=store)
+```
+
+For non-filesystem backends (S3, DB, etc.), implement the `EvaluationDataStore` Protocol — it requires only `load(case_name) -> EvaluationData | None` and `save(case_name, result)`.
 
 ## Authoring Best Practices
 
