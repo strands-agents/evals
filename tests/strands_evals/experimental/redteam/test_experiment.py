@@ -152,14 +152,103 @@ async def test_run_evaluations_async_returns_report():
         agent=_FakeSession(),
         attack_strategies=[_StubStrategy()],
     )
-    report = await exp.run_evaluations_async()
+    # Sequential -- a TargetSession can't be deep-copied, and parallel paths are covered below.
+    report = await exp.run_evaluations_async(max_workers=1)
     assert isinstance(report, RedTeamReport)
 
 
-async def test_max_workers_must_be_one():
+async def test_max_workers_must_be_positive():
     exp = RedTeamExperiment(cases=[_case()], agent=_FakeSession(), attack_strategies=[_StubStrategy()])
-    with pytest.raises(ValueError, match="max_workers=1"):
-        await exp.run_evaluations_async(max_workers=4)
+    with pytest.raises(ValueError, match="max_workers"):
+        await exp.run_evaluations_async(max_workers=0)
+
+
+async def test_parallel_requires_agent_factory():
+    """Parallel runs always require `agent_factory` -- the runner does not deepcopy targets."""
+    exp = RedTeamExperiment(cases=[_case()], agent=_FakeSession(), attack_strategies=[_StubStrategy()])
+    with pytest.raises(TypeError, match="agent_factory"):
+        await exp.run_evaluations_async(max_workers=2)
+
+
+async def test_parallel_uses_agent_factory_per_case():
+    """When parallel and `agent_factory` is set, each case gets a fresh target from the factory."""
+    factory_calls: list[_FakeSession] = []
+
+    def factory():
+        sess = _FakeSession()
+        factory_calls.append(sess)
+        return sess
+
+    exp = RedTeamExperiment(
+        cases=[_case("c0"), _case("c1"), _case("c2")],
+        agent_factory=factory,
+        attack_strategies=[_StubStrategy()],
+    )
+    report = await exp.run_evaluations_async(max_workers=3)
+    assert isinstance(report, RedTeamReport)
+    assert len(factory_calls) == 3
+
+
+async def test_parallel_report_per_case_isolation():
+    """End-to-end: under `max_workers > 1`, each case's output lands on its own report row.
+
+    Pins the property the parallel path is *for* -- that concurrent cases don't bleed each
+    other's outputs through the shared strategy / shared `_run_meta` dict.
+    """
+
+    class _EchoStrategy(AttackStrategy):
+        @property
+        def name(self) -> str:
+            return "echo"
+
+        def run_attack(self, case, target_session, *, max_turns, model=None, **kwargs) -> AttackRunResult:
+            target_session.invoke(case.input)
+            return AttackRunResult(
+                conversation=[{"role": "attacker", "content": case.input}],
+                metadata={"echoed": case.input},
+            )
+
+    def factory():
+        return _FakeSession()
+
+    cases = [_case(f"c{i}") for i in range(5)]
+    for i, case in enumerate(cases):
+        case.input = f"msg-{i}"
+
+    exp = RedTeamExperiment(
+        cases=cases,
+        agent_factory=factory,
+        attack_strategies=[_EchoStrategy()],
+    )
+    report = await exp.run_evaluations_async(max_workers=4)
+
+    by_name = {r.case_name: r for r in report.attack_results()}
+    assert set(by_name) == {"c0__echo", "c1__echo", "c2__echo", "c3__echo", "c4__echo"}
+    for i in range(5):
+        attack = by_name[f"c{i}__echo"]
+        assert attack.conversation == [{"role": "attacker", "content": f"msg-{i}"}]
+
+
+async def test_factory_wins_in_sequential_runs():
+    """`agent_factory` overrides `agent` even at `max_workers=1` -- factory is the source of truth."""
+    factory_calls: list[_FakeSession] = []
+
+    def factory():
+        sess = _FakeSession()
+        factory_calls.append(sess)
+        return sess
+
+    shared = _FakeSession()
+    exp = RedTeamExperiment(
+        cases=[_case("c0"), _case("c1")],
+        agent=shared,
+        agent_factory=factory,
+        attack_strategies=[_StubStrategy()],
+    )
+    report = await exp.run_evaluations_async(max_workers=1)
+    assert isinstance(report, RedTeamReport)
+    assert len(factory_calls) == 2
+    assert shared not in factory_calls
 
 
 def test_async_task_rejected():

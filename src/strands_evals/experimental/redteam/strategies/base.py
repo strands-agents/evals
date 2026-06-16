@@ -75,6 +75,13 @@ class AttackStrategy(ABC):
     ) -> AttackRunResult:
         """Run the multi-turn attack and return its result.
 
+        Parallel safety: a single strategy instance is shared across every case in an experiment,
+        including parallel ones. Implementations MUST keep per-case state in `run_attack` locals
+        (or the supplied `target_session`); writing to `self` mid-run is cross-talk between
+        concurrent cases. If a strategy needs to track state across turns within one case, use
+        local variables. If it needs to reset something on `self` between cases, do it in
+        `reset()`, not in `run_attack`.
+
         Args:
             case: The red team case carrying the attack goal.
             target_session: Session for talking to the target; use `target_session.invoke(message)`.

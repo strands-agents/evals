@@ -12,6 +12,8 @@ from .strategies import (
     PairStrategy,
     PromptStrategy,
     SequentialBreakStrategy,
+    StrandsAgentSession,
+    StrandsMultiAgentSession,
     TargetCheckpoint,
     TargetSession,
 )
@@ -36,6 +38,8 @@ __all__ = [
     "RedTeamExperiment",
     "RedTeamReport",
     "SequentialBreakStrategy",
+    "StrandsAgentSession",
+    "StrandsMultiAgentSession",
     "TargetCheckpoint",
     "TargetSession",
     "TargetSpec",
