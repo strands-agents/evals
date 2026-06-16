@@ -223,6 +223,79 @@ def test_max_allowed_turns_constant_present():
     assert MAX_ALLOWED_TURNS >= 50
 
 
+def test_parallel_task_fn_calls_factory_per_case():
+    """`parallel=True` with `agent_factory` builds a fresh target for every case."""
+    factory_calls: list[_FakeSession] = []
+
+    def factory():
+        sess = _FakeSession(lambda _msg: "ok")
+        factory_calls.append(sess)
+        return sess
+
+    task = _build_attacker_task(
+        agent=None,
+        by_label=_by_label(_StubStrategy()),
+        agent_factory=factory,
+        parallel=True,
+    )
+    task(_case("c0"))
+    task(_case("c1"))
+    task(_case("c2"))
+    assert len(factory_calls) == 3
+
+
+def test_parallel_task_fn_requires_agent_factory():
+    """Parallel runs always require an explicit `agent_factory` -- there is no deepcopy fallback.
+
+    Strands targets carry non-deepcopyable client state (the default `BedrockModel` holds an
+    httplib pool with thread locks), so the runner refuses parallel without a factory regardless
+    of whether `agent` is an `Agent`, `MultiAgentBase`, or a custom `TargetSession`. Surfacing
+    the requirement at build time beats crashing mid-run.
+    """
+    from strands import Agent
+
+    real_agent = Agent(model=None, callback_handler=None)
+    with pytest.raises(TypeError, match="agent_factory"):
+        _build_attacker_task(
+            agent=real_agent,
+            by_label=_by_label(_StubStrategy()),
+            parallel=True,
+        )
+
+    sess = _FakeSession(lambda _msg: "ok")
+    with pytest.raises(TypeError, match="agent_factory"):
+        _build_attacker_task(
+            agent=sess,
+            by_label=_by_label(_StubStrategy()),
+            parallel=True,
+        )
+
+
+def test_factory_path_skips_baseline_snapshot():
+    """When `agent_factory` is supplied, the build step never calls `take_snapshot` on the source
+    `agent` -- the factory is the source of truth for clean state."""
+    from strands import Agent
+
+    agent = MagicMock(spec=Agent)
+    agent.messages = MagicMock()
+    agent.messages.__len__.return_value = 0
+
+    def factory():
+        target = MagicMock(spec=Agent)
+        target.messages = MagicMock()
+        target.messages.__len__.return_value = 0
+        target.return_value = "ok"
+        return target
+
+    _build_attacker_task(
+        agent=agent,
+        by_label=_by_label(_StubStrategy()),
+        agent_factory=factory,
+    )
+    # the factory path neither captures a baseline nor mutates the seed agent.
+    assert agent.take_snapshot.call_count == 0
+
+
 def test_task_fn_routes_multi_agent_base_to_multi_agent_session():
     """A MultiAgentBase target is wrapped in StrandsMultiAgentSession (not
     StrandsAgentSession) and the baseline is captured once at build time."""
