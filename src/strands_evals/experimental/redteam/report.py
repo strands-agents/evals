@@ -31,9 +31,7 @@ class AttackResult:
 
     @property
     def score(self) -> float:
-        # Worst-case across evaluators: for red teaming the strongest attack signal
-        # (the highest score = most successful breach) is what matters, so aggregate
-        # with max(), not min().
+        # max(): the strongest attack signal across evaluators is what matters for red teaming.
         return max(self.scores.values()) if self.scores else 0.0
 
     @property
@@ -59,24 +57,17 @@ class RedTeamReport(EvaluationReport):
     """Case-centric report for red team evaluation.
 
     Note:
-        `trajectory` holds raw tool I/O — sanitize before sharing if
-        target tools return sensitive data.
+        `trajectory` holds raw tool I/O — sanitize before sharing if target tools return sensitive data.
     """
 
     @classmethod
     def from_evaluation_report(cls, report: EvaluationReport, run_meta: dict[str, dict] | None = None) -> RedTeamReport:
-        """Wrap a flattened evaluation report as a case-centric red team report.
-
-        The base `Experiment.run_evaluations_async` already returns a single flattened
-        report (#241) and tags each case row with its `evaluator` (regardless of evaluator
-        count). We reuse that shape directly.
+        """Wrap a flattened `EvaluationReport` as a case-centric red team report.
 
         Args:
-            report: The single flattened EvaluationReport from the base experiment.
-            run_meta: Optional per-case strategy run metadata (turns_used, backtracks, ...)
-                keyed by case name, merged onto each case's metadata so it surfaces in the
-                report. Supplied by ``RedTeamExperiment`` because the base ``Experiment``
-                does not carry task-returned metadata into the ``EvaluationData``.
+            report: Flattened report from the base experiment, one row per (case, evaluator).
+            run_meta: Per-case strategy run metadata keyed by case name; merged into each case's metadata so
+                the report sees it.
         """
         run_meta = run_meta or {}
         n = len(report.cases)
@@ -155,19 +146,10 @@ class RedTeamReport(EvaluationReport):
         return sorted([r for r in self.attack_results() if not r.passed], key=lambda r: r.score)
 
     def display(self, *, verbose: bool = False, **_kwargs) -> None:  # type: ignore[override]
-        """Print the red team report as a flat, denormalized view.
-
-        The output leads with a cross-product matrix (case x strategy) and a flat
-        per-attack table — every attack, breached and defended, one row each —
-        rather than grouped summaries. Defended attacks stay visible (with the
-        count of blocked attempts), so a strong defense is not mistaken for an
-        attack that did nothing.
+        """Print the report: case x strategy matrix, then one row per attack worst-first.
 
         Args:
-            verbose: When True, also print each attack's full attacker/target
-                conversation and its blocked (refused) attempts. Use this to
-                verify a verdict by eye — an LLM judge can be fooled by a target
-                that *claims* to leak, so the conversation is the ground truth.
+            verbose: Also print each attack's full conversation and blocked attempts.
         """
         results = self.attack_results()
         total = len(results)
@@ -180,10 +162,8 @@ class RedTeamReport(EvaluationReport):
         n_blocked = sum(len(r.pruned_branches) // 2 for r in results)
         verdict = "PASS" if n_breached == 0 else "FAIL"
         strategies = sorted({r.strategy for r in results})
-        # The cross-product tags each work item's name as "{case}__{strategy}"; strip the
-        # suffix so the matrix pivots on the original case (one row per case, one col per strategy).
-        # If stripping would collapse two distinct results onto the same cell (a case name that
-        # collides with the stripped form), fall back to full names so nothing is hidden.
+        # Strip the "__{strategy}" suffix so the matrix pivots on the original case;
+        # fall back to full names if stripping would collapse two distinct cells.
         row_key = _base_case if _base_case_is_unique(results) else (lambda r: r.case_name)
         cases = sorted({row_key(r) for r in results})
 
@@ -271,11 +251,7 @@ class RedTeamReport(EvaluationReport):
 
 
 def _base_case(result: AttackResult) -> str:
-    """The original case name with the cross-product ``__{strategy}`` suffix removed.
-
-    Work items are named ``"{case}__{strategy}"`` by the cross-product expansion; the
-    matrix pivots on the original case so each case is one row across all strategies.
-    """
+    """Return the case name with the cross-product `__{strategy}` suffix removed."""
     suffix = f"__{result.strategy}"
     if result.case_name.endswith(suffix):
         return result.case_name[: -len(suffix)]
@@ -283,19 +259,13 @@ def _base_case(result: AttackResult) -> str:
 
 
 def _base_case_is_unique(results: list[AttackResult]) -> bool:
-    """Whether ``(base_case, strategy)`` keys stay 1:1 after stripping the suffix.
-
-    Stripping the cross-product ``__{strategy}`` suffix is a lossy inverse: a case
-    whose real name happens to end in a strategy label could collapse onto another
-    result's cell. When that happens, the matrix falls back to full names so no
-    result is silently hidden.
-    """
+    """Return True if `(base_case, strategy)` keys stay 1:1 after stripping the suffix."""
     keys = [(_base_case(r), r.strategy) for r in results]
     return len(set(keys)) == len(keys)
 
 
 def _format_run_stats(result: AttackResult) -> str:
-    """Render the strategy's per-run stats (turns/backtracks/blocked) when present."""
+    """Render the strategy's per-run stats when present."""
     parts = []
     if result.turns_used is not None:
         parts.append(f"turns={result.turns_used}")

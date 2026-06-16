@@ -45,7 +45,7 @@ _REQUIRED_TARGET_KEYS = ("system_prompt", "tools")
 
 
 def _extract_tool_info(agent: Agent) -> dict:
-    """Extract tool definitions and system prompt as ``target_info``."""
+    """Extract tool definitions and system prompt as `target_info`."""
     tools: list[dict[str, Any]] = []
     try:
         all_configs: Any = agent.tool_registry.get_all_tools_config()
@@ -121,7 +121,7 @@ class AdversarialCaseGenerator:
         risk_categories: list[str] | None = None,
         num_cases: int = 5,
     ) -> list[RedTeamCase]:
-        """Async variant of :meth:`generate_cases`."""
+        """Async variant of `generate_cases`."""
         target_info = _coerce_target(agent)
         resolved_categories = risk_categories or await self._infer_risk_categories(target_info)
         return await self._generate_cases(
