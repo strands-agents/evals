@@ -271,9 +271,11 @@ report.display(include_recommendations=True)
 
 Inject tool failures and response corruption to evaluate resilience. Effects fire via Strands' native hook system; the user's task body stays chaos-free.
 
+Use `@eval_task(TracedHandler())` so the chaos-aware evaluators have a `Session` to score against — they call `_get_last_turn()` on `actual_trajectory` and will raise without one:
+
 ```python
 from strands import Agent
-from strands_evals import Case
+from strands_evals import Case, eval_task, TracedHandler
 from strands_evals.chaos import (
     ChaosCase, ChaosExperiment, ChaosPlugin,
     Timeout, NetworkError, ExecutionError, ValidationError,   # pre-hook (cancel call)
@@ -287,9 +289,9 @@ effect_maps = {
 }
 chaos_cases = ChaosCase.expand(base, effect_maps, include_no_effect_baseline=True)
 
+@eval_task(TracedHandler())
 def task(case):
-    agent = Agent(tools=[search_tool, database_tool], plugins=[ChaosPlugin()])
-    return {"output": str(agent(case.input))}
+    return Agent(tools=[search_tool, database_tool], plugins=[ChaosPlugin()])
 
 report = ChaosExperiment(cases=chaos_cases, evaluators=[...]).run_evaluations(task=task)
 ```
@@ -297,6 +299,8 @@ report = ChaosExperiment(cases=chaos_cases, evaluators=[...]).run_evaluations(ta
 Effect categories:
 - **Pre-hook (cancel before execution):** `Timeout`, `NetworkError`, `ExecutionError`, `ValidationError` — each takes an `error_message`. First pre-hook effect wins.
 - **Post-hook (corrupt response):** `TruncateFields(max_length=...)`, `RemoveFields(remove_ratio=...)`, `CorruptValues(...)` — applied in order to the tool's dict response.
+
+**One effect per tool per `ChaosCase`.** `ChaosCase` validates `len(effects_list) <= 1` per tool and raises `ValueError` otherwise. To test multiple effects on the same tool, use separate `ChaosCase` instances (`ChaosCase.expand` will produce them from distinct entries in `effect_maps`).
 
 Pair with chaos-aware evaluators in `strands_evals.evaluators.chaos`:
 
@@ -307,6 +311,62 @@ from strands_evals.evaluators.chaos import (
     RecoveryStrategyEvaluator,       # did it retry / fall back well?
 )
 ```
+
+All three are trace-based — they need `actual_trajectory` to be a `Session`, which is why the task above uses `TracedHandler`.
+
+### Combining ToolSimulator with Chaos
+
+`ChaosPlugin` operates on Strands `@tool` calls regardless of whether the implementation is real or simulated. Wrap simulated tools in `ToolSimulator` and pass `ChaosPlugin()` alongside as usual:
+
+```python
+from strands_evals.simulation.tool_simulator import ToolSimulator
+
+tool_simulator = ToolSimulator()
+
+@tool_simulator.tool(output_schema=SearchResponse)
+def search_tool(query: str) -> dict: ...
+
+@eval_task(TracedHandler())
+def task(case):
+    return Agent(
+        tools=[tool_simulator.get_tool("search_tool")],
+        plugins=[ChaosPlugin()],
+    )
+```
+
+The simulator generates the tool's response; `ChaosPlugin` then applies pre-hook cancellations or post-hook corruption to that response based on the active `ChaosCase`. Useful when you want chaos coverage without standing up real backends.
+
+### Parallel chaos runs
+
+`ChaosExperiment` inherits `run_evaluations_async`. The `@eval_task(TracedHandler())` form above is sequential-only — `TracedHandler.before()` calls `exporter.clear()` on a shared in-memory exporter, so concurrent workers wipe each other's in-flight spans. For `max_workers > 1`, capture spans manually and let the mapper partition them by session ID. `StrandsInMemorySessionMapper` filters spans by `session.id` / `gen_ai.conversation.id` when those attributes are present, so stamping them on the agent gives you per-case isolation against a shared exporter:
+
+```python
+from strands_evals.telemetry import StrandsEvalsTelemetry
+from strands_evals.mappers import StrandsInMemorySessionMapper
+
+telemetry = StrandsEvalsTelemetry().setup_in_memory_exporter()
+mapper = StrandsInMemorySessionMapper()
+
+def task(case):
+    agent = Agent(
+        tools=[search_tool, database_tool],
+        plugins=[ChaosPlugin()],
+        trace_attributes={
+            "session.id": case.session_id,
+            "gen_ai.conversation.id": case.session_id,
+        },
+    )
+    output = str(agent(case.input))
+    spans = telemetry.in_memory_exporter.get_finished_spans()
+    session = mapper.map_to_session(spans, case.session_id)
+    return {"output": output, "trajectory": session}
+
+report = await ChaosExperiment(cases=chaos_cases, evaluators=[...]).run_evaluations_async(
+    task=task, max_workers=10,
+)
+```
+
+Note: this leaves spans in the exporter across cases (no `clear()`); memory grows with case count. Acceptable for typical eval runs, but flush manually if you're sweeping thousands of cases.
 
 `ChaosCase.expand(base_cases, effect_maps, include_no_effect_baseline=True)` produces the Cartesian product (cases × effect maps) plus an optional baseline run per case. `ChaosPlugin` reads the active case from a `ContextVar` set by `ChaosExperiment` — do not instantiate cases by hand inside a plain `Experiment` and expect effects to fire.
 
