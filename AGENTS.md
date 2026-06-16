@@ -21,7 +21,10 @@ When helping someone contribute, you are a guide — not a gatekeeper, not a sub
 - Trace-based evaluation over OpenTelemetry sessions from CloudWatch, Langfuse, OpenSearch, LangChain, and Strands in-memory
 - Multi-turn conversation simulators (ActorSimulator / UserSimulator / ToolSimulator)
 - Failure detection and root-cause analysis (`detectors` module)
+- Chaos testing — deterministic tool failure / response corruption (`chaos` module)
+- Red-team / adversarial evaluation with strategy library (`experimental.redteam`)
 - Automated experiment / test-case generation
+- Async parallel execution and per-case result caching (`EvaluationDataStore` / `LocalFileTaskResultStore`)
 - Experiment management with JSON serialization
 
 ## Relationship to the Strands Agents SDK
@@ -76,12 +79,48 @@ strands-evals/
 │   │   ├── tool_selection_accuracy_evaluator.py
 │   │   ├── trajectory_evaluator.py
 │   │   ├── multimodal_*.py                   # Multimodal evaluators (MLLM-as-a-Judge)
+│   │   ├── chaos/                            # Chaos-aware evaluators
+│   │   │   ├── failure_communication_evaluator.py
+│   │   │   ├── partial_completion_evaluator.py
+│   │   │   └── recovery_strategy_evaluator.py
 │   │   ├── deterministic/                    # Non-LLM evaluators
 │   │   │   ├── output.py
 │   │   │   ├── trajectory.py
 │   │   │   └── environment_state.py
 │   │   └── prompt_templates/                 # Per-evaluator prompt modules
 │   │       └── {evaluator_name}/{name}_v0.py # Exports SYSTEM_PROMPT constant
+│   │
+│   ├── chaos/                                # Deterministic fault injection (Strands Plugin hooks)
+│   │   ├── case.py                           # ChaosCase + ChaosCase.expand
+│   │   ├── effects.py                        # Timeout / NetworkError / ExecutionError /
+│   │   │                                     # ValidationError / TruncateFields /
+│   │   │                                     # RemoveFields / CorruptValues
+│   │   ├── experiment.py                     # ChaosExperiment (sets active case via ContextVar)
+│   │   ├── plugin.py                         # ChaosPlugin (BeforeToolCallEvent / AfterToolCallEvent)
+│   │   └── _context.py                       # ContextVar holding the active ChaosCase
+│   │
+│   ├── experimental/                         # Stable public API, evolving surface
+│   │   └── redteam/                          # Adversarial / red-team evaluation
+│   │       ├── README.md                     # Module quick-start + walkthrough
+│   │       ├── case.py                       # RedTeamCase + RedTeamConfig
+│   │       ├── experiment.py                 # RedTeamExperiment (case × strategy cross-product)
+│   │       ├── task.py                       # _build_attacker_task; MAX_ALLOWED_TURNS = 50 (hard cap)
+│   │       ├── utils.py                      # _put_model_field (used by to_dict)
+│   │       ├── report.py                     # RedTeamReport / AttackResult / GroupedSummary
+│   │       ├── evaluators/                   # AttackSuccessEvaluator
+│   │       ├── generators/                   # AdversarialCaseGenerator + TargetSpec
+│   │       ├── strategies/                   # AttackStrategy base + per-strategy subpackages
+│   │       │   ├── base.py                   # AttackStrategy ABC + AttackRunResult
+│   │       │   ├── _common.py                # Shared helpers
+│   │       │   ├── target_session.py         # TargetSession Protocol + StrandsAgentSession,
+│   │       │   │                             # StrandsMultiAgentSession, TargetCheckpoint, ToolUseEntry
+│   │       │   ├── bad_likert_judge/         # BadLikertJudgeStrategy
+│   │       │   ├── crescendo/                # CrescendoStrategy + crescendo_v0 prompt
+│   │       │   ├── goat/                     # GoatStrategy + goat_v0 prompt
+│   │       │   ├── pair/                     # PairStrategy + prompt template
+│   │       │   ├── prompt_strategy/          # PromptStrategy + gradual_escalation template
+│   │       │   └── sequentialbreak/          # SequentialBreakStrategy
+│   │       └── types/                        # AttackGoal, RedTeamConfig, RISK_CATEGORIES, Severity
 │   │
 │   ├── detectors/                            # Failure detection + RCA
 │   │   ├── failure_detector.py               # detect_failures (model.stream text mode)
@@ -167,8 +206,12 @@ strands-evals/
 │
 ├── tests/strands_evals/                      # Unit tests (mirrors src/strands_evals/)
 │   ├── evaluators/
+│   │   ├── chaos/
 │   │   └── deterministic/
+│   ├── chaos/
 │   ├── detectors/
+│   ├── experimental/
+│   │   └── redteam/                          # Mirrors src/strands_evals/experimental/redteam/
 │   ├── simulation/
 │   ├── extractors/
 │   ├── generators/
@@ -213,7 +256,7 @@ All evaluators subclass `strands_evals.evaluators.Evaluator[InputT, OutputT]`:
   Agent(model=self.model, system_prompt=..., callback_handler=None)
   ```
 - `model` parameter type: `Union[Model, str, None]`, supports all 13+ Strands model providers
-- Structured output pattern: `agent(prompt, structured_output_model=PydanticModel)`
+- Structured output pattern: `agent(prompt, structured_output_model=PydanticModel)` (sync). Async counterpart: `await agent.invoke_async(prompt, structured_output_model=PydanticModel)` — used in `experimental/redteam/generators/adversarial.py` and other async code paths.
 
 ### Default Judge Model
 
@@ -231,6 +274,16 @@ All evaluators subclass `strands_evals.evaluators.Evaluator[InputT, OutputT]`:
 - `Case[InputT, OutputT]`: one test scenario (`input`, `expected_output`, optional `trajectory`, `metadata`)
 - `Experiment[InputT, OutputT]`: collection of Cases plus evaluators
 - Entry point: `experiment.run_evaluations(task_function)` returns a single `EvaluationReport`. With multiple evaluators, results are flattened across (case, evaluator) pairs and each row is tagged via `cases[i]["evaluator"]`.
+- Async / parallel: `experiment.run_evaluations_async(task, max_workers=10, evaluation_data_store=...)`. The sync `run_evaluations` delegates to it with `max_workers=1`. Async tasks must use the async entry point.
+- Result caching: pass `evaluation_data_store=` (any `EvaluationDataStore` Protocol implementer; `LocalFileTaskResultStore` writes one JSON per case) to skip cases with cached `EvaluationData`.
+
+### Task Handlers
+
+`strands_evals.eval_task_handler` provides an `@eval_task` decorator that wraps a task function with normalization and optional telemetry collection.
+
+- `EvalTaskHandler` — base handler; normalizes return values to `dict` with at least `"output"`.
+- `TracedHandler(mapper=None)` — collects OpenTelemetry spans and maps them to a `Session` in `result["trajectory"]`. Defaults to `StrandsInMemorySessionMapper`. **Single shared exporter — sequential / `max_workers=1` only.**
+- The decorated function may return a `strands.Agent` (auto-invoked with `case.input`), a string, or a dict; it may take zero arguments or a single `Case`.
 
 ### Session / Trace Types
 
@@ -406,6 +459,8 @@ If you are an agent opening a PR on behalf of a contributor, the human is the au
 - Route all LLM calls through `strands.Agent`.
 - Version prompt templates as Python string constants in `{name}_v0.py`.
 - When editing `detectors/`, keep the three-tier RCA fallback and the `model.stream()` text-mode path for failure detection intact unless the PR explicitly targets those behaviors.
+- When editing `chaos/`, keep the `ContextVar`-based plugin dispatch and the discriminated-union effect serialization intact; `ChaosPlugin` should remain a thin reader of the active `ChaosCase`.
+- When editing `experimental/redteam/`, keep `AttackStrategy` instances stateless across cases (clear in `reset()`) and prefer extending the strategy library over modifying `RedTeamExperiment`'s cross-product loop.
 
 ## Things NOT to Do
 
@@ -428,9 +483,11 @@ When reviewing a PR in this repo, scan for all of the following:
 3. **Detector changes**: preserve the text-mode streaming in `failure_detector.py` and the three-tier fallback in `root_cause_analyzer.py` unless explicitly targeted.
 4. **Session/trace schema**: if the PR changes fields on `Session`, `Trace`, or `SpanUnion`, every mapper in `mappers/` must still produce valid instances. Check each.
 5. **SDK usage**: if the PR calls into `strands.*`, verify the symbol exists in the current SDK public API and is not under an `_` module or an experimental surface. When the SDK source is available as a sibling checkout (`../sdk-python/` or similar), read the relevant SDK file and confirm the signature matches.
-6. **Dependencies**: no new litellm, no new Jinja2, no new `_internal/` directories.
-7. **Style & logging**: structured logging with `%s` interpolation, lowercase messages, no f-strings in logger calls.
-8. **Tests**: new code needs a mirrored test file in `tests/strands_evals/...`. Async code uses `pytest-asyncio` auto mode.
+6. **Chaos changes**: new `ChaosEffect` subclasses must declare a `hook` (`"pre"` or `"post"`) and a unique `effect_type` literal so the discriminated union round-trips through Pydantic. The `ChaosPlugin` reads the active case from `_current_chaos_case` (ContextVar); don't rewire it to read from instance state. `ChaosCase.expand` is the public entry point for case × effect-map cross-products.
+7. **Red-team changes**: new strategies subclass `AttackStrategy` and clear runtime state in `reset()` (instances are shared across cases). `AttackSuccessEvaluator` must return a continuous 0.0-1.0 score and the four-anchor severity (`refused | partial | substantial | full`). For parallel runs, `RedTeamExperiment` requires `agent_factory=`, not `agent=`. Stability: `experimental.redteam` APIs may change in a minor release. Breaking changes (renames, removed args, changed defaults) go through a deprecation cycle with a `DeprecationWarning` for at least one minor version.
+8. **Dependencies**: no new litellm, no new Jinja2, no new `_internal/` directories.
+9. **Style & logging**: structured logging with `%s` interpolation, lowercase messages, no f-strings in logger calls.
+10. **Tests**: new code needs a mirrored test file in `tests/strands_evals/...`. Async code uses `pytest-asyncio` auto mode.
 
 ## Additional Resources
 

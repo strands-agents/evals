@@ -46,6 +46,8 @@ Strands Evaluation is a powerful framework for evaluating AI agents and LLM appl
 - **Experiment Management**: Save, load, and version your evaluation experiments with JSON serialization
 - **Built-in Scoring Tools**: Helper functions for exact, in-order, and any-order trajectory matching
 - **Failure Detection & Root Cause Analysis**: Automatically detect failures in agent sessions and diagnose root causes with actionable fix recommendations
+- **Chaos Testing**: Deterministic fault injection via Strands plugin hooks — simulate tool timeouts, network errors, and response corruption to evaluate agent resilience
+- **Red Team Evaluation**: Adversarial safety testing with built-in attack strategies (Crescendo, GOAT, PAIR, BadLikertJudge, SequentialBreak); see [src/strands_evals/experimental/redteam/README.md](src/strands_evals/experimental/redteam/README.md)
 
 ## Quick Start
 
@@ -432,6 +434,34 @@ if failures.failures:
 # analyze_root_cause calls detect_failures automatically if failures is not provided
 rca = analyze_root_cause(session)
 ```
+
+### Chaos Testing
+
+Inject deterministic tool failures and response corruption to evaluate how an agent handles adverse conditions. Effects fire through Strands' native plugin hooks, and the user's task body stays chaos-free:
+
+```python
+from strands import Agent
+from strands_evals import Case
+from strands_evals.chaos import (
+    ChaosCase, ChaosExperiment, ChaosPlugin,
+    Timeout, NetworkError, TruncateFields,
+)
+
+base_cases = [Case(name="flight_search", input="Find flights to Tokyo")]
+effect_maps = {
+    "search_timeout":  {"tool_effects": {"search_tool":   [Timeout()]}},
+    "db_truncate":     {"tool_effects": {"database_tool": [TruncateFields(max_length=20)]}},
+}
+chaos_cases = ChaosCase.expand(base_cases, effect_maps, include_no_effect_baseline=True)
+
+def task(case):
+    agent = Agent(tools=[search_tool, database_tool], plugins=[ChaosPlugin()])
+    return {"output": str(agent(case.input))}
+
+report = ChaosExperiment(cases=chaos_cases, evaluators=[...]).run_evaluations(task=task)
+```
+
+Available effects: `Timeout`, `NetworkError`, `ExecutionError`, `ValidationError` (cancel the tool call); `TruncateFields`, `RemoveFields`, `CorruptValues` (corrupt the response). Pair with chaos-aware evaluators in `strands_evals.evaluators.chaos` (`FailureCommunicationEvaluator`, `PartialCompletionEvaluator`, `RecoveryStrategyEvaluator`). For the full authoring guide see [`SKILL.md`](SKILL.md#chaos-testing-deterministic-fault-injection).
 
 ### Custom Evaluators with Structured Output
 
