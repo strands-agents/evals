@@ -472,7 +472,7 @@ Only import from `typing` for symbols without a built-in equivalent: `Any`, `Cal
 ## Pointers
 
 - Repo conventions, contribution rules, prompt versioning, review checklist: `AGENTS.md`
-- CLI workflow (`strands-evals run` / `validate` / `diagnose` / `report` / `generate`): see the README "Command-Line Interface" section and `--help` on each subcommand
+- CLI workflow (`strands-evals run` / `validate` / `diagnose` / `report` / `generate` / `fetch`): see the README "Command-Line Interface" section and `--help` on each subcommand. `fetch` has provider-scoped sub-subcommands (`fetch cloudwatch`, `fetch langfuse`, `fetch opensearch`) that emit a Session JSON to stdout or `-o PATH`, ready to pipe into `strands-evals diagnose -`.
 - Logging style: `STYLE_GUIDE.md`
 - Human contributor guide: `CONTRIBUTING.md`
 - User docs: https://strandsagents.com/latest/documentation/docs/user-guide/evals-sdk/quickstart/

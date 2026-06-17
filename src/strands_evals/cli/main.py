@@ -7,6 +7,7 @@ import sys
 
 from . import _common
 from .commands import diagnose as diagnose_cmd
+from .commands import fetch as fetch_cmd
 from .commands import generate as generate_cmd
 from .commands import report as report_cmd
 from .commands import run as run_cmd
@@ -29,6 +30,7 @@ def _build_parser() -> argparse.ArgumentParser:
     diagnose_cmd.add_subparser(subparsers, parent)
     run_cmd.add_subparser(subparsers, parent)
     generate_cmd.add_subparser(subparsers, parent)
+    fetch_cmd.add_subparser(subparsers, parent)
 
     return parser
 
