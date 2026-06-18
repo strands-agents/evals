@@ -10,6 +10,7 @@ from strands_evals.types.trace import (
     AssistantMessage,
     TextContent,
     ToolCallContent,
+    ToolConfig,
     ToolResultContent,
     UserMessage,
 )
@@ -303,3 +304,110 @@ def test_get_name_uses_explicit_name():
     assert evaluator.get_name() == "my_simple_check"
     # get_type_name() still reports the class for from_dict registry lookups.
     assert evaluator.get_type_name() == "SimpleEvaluator"
+
+
+class TestFormatTools:
+    """Tests for _format_tools covering parameter formatting behavior."""
+
+    def setup_method(self):
+        self.evaluator = SimpleEvaluator()
+
+    def test_format_tools_no_parameters(self):
+        """Tool with no parameters shows only name and description."""
+        tools = [ToolConfig(name="get_time", description="Returns the current time")]
+        result = self.evaluator._format_tools(tools)
+        assert result == "- get_time: Returns the current time"
+
+    def test_format_tools_no_description(self):
+        """Tool with no description uses fallback text."""
+        tools = [ToolConfig(name="noop", description=None)]
+        result = self.evaluator._format_tools(tools)
+        assert result == "- noop: No description"
+
+    def test_format_tools_with_parameters_required_and_optional(self):
+        """Tool with parameters shows type, required markers, and descriptions."""
+        tools = [
+            ToolConfig(
+                name="search",
+                description="Search the web",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                        "limit": {"type": "integer", "description": "Max results"},
+                    },
+                    "required": ["query"],
+                },
+            )
+        ]
+        result = self.evaluator._format_tools(tools)
+        expected = (
+            "- search: Search the web\n"
+            "  Parameters:\n"
+            "    - query (string (required)): Search query\n"
+            "    - limit (integer): Max results"
+        )
+        assert result == expected
+
+    def test_format_tools_parameter_missing_description(self):
+        """Parameters without a description field render as empty string."""
+        tools = [
+            ToolConfig(
+                name="ping",
+                description="Ping a host",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "host": {"type": "string"},
+                    },
+                    "required": ["host"],
+                },
+            )
+        ]
+        result = self.evaluator._format_tools(tools)
+        expected = "- ping: Ping a host\n  Parameters:\n    - host (string (required)): "
+        assert result == expected
+
+    def test_format_tools_empty_properties(self):
+        """Parameters dict with empty/absent properties should NOT produce a dangling 'Parameters:' header."""
+        tools = [
+            ToolConfig(
+                name="health_check",
+                description="Check system health",
+                parameters={"type": "object", "properties": {}},
+            )
+        ]
+        result = self.evaluator._format_tools(tools)
+        assert result == "- health_check: Check system health"
+        assert "Parameters:" not in result
+
+    def test_format_tools_parameters_without_properties_key(self):
+        """Parameters dict that has no 'properties' key at all should NOT produce a dangling header."""
+        tools = [
+            ToolConfig(
+                name="reset",
+                description="Reset state",
+                parameters={"type": "object", "required": ["confirm"]},
+            )
+        ]
+        result = self.evaluator._format_tools(tools)
+        assert result == "- reset: Reset state"
+        assert "Parameters:" not in result
+
+    def test_format_tools_multiple_tools(self):
+        """Multiple tools are separated by newlines."""
+        tools = [
+            ToolConfig(name="tool_a", description="First tool"),
+            ToolConfig(
+                name="tool_b",
+                description="Second tool",
+                parameters={
+                    "type": "object",
+                    "properties": {"x": {"type": "number", "description": "A number"}},
+                    "required": ["x"],
+                },
+            ),
+        ]
+        result = self.evaluator._format_tools(tools)
+        expected = "- tool_a: First tool\n- tool_b: Second tool\n  Parameters:\n    - x (number (required)): A number"
+        assert result == expected

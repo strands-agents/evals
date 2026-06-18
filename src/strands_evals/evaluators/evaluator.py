@@ -156,8 +156,28 @@ class Evaluator(Generic[InputT, OutputT]):
         return ""
 
     def _format_tools(self, tools: list[ToolConfig]) -> str:
-        """Format available tools for prompt display."""
-        return "\n".join([f"- {tool.name}: {tool.description or 'No description'}" for tool in tools])
+        """Format available tools for prompt display, including parameter schemas."""
+        tool_lines = []
+        for tool in tools:
+            desc = tool.description or "No description"
+            if tool.parameters:
+                params = tool.parameters
+                properties = params.get("properties", {})
+                required = params.get("required", [])
+                param_details = []
+                for param_name, param_info in properties.items():
+                    param_type = param_info.get("type", "any")
+                    param_desc = param_info.get("description", "")
+                    req_marker = " (required)" if param_name in required else ""
+                    param_details.append(f"    - {param_name} ({param_type}{req_marker}): {param_desc}")
+                if param_details:
+                    params_str = "\n".join(param_details)
+                    tool_lines.append(f"- {tool.name}: {desc}\n  Parameters:\n{params_str}")
+                else:
+                    tool_lines.append(f"- {tool.name}: {desc}")
+            else:
+                tool_lines.append(f"- {tool.name}: {desc}")
+        return "\n".join(tool_lines)
 
     def _format_session_history(self, contexts: list[Context]) -> str:
         """Format session history with tool executions for prompt display."""
