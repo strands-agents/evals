@@ -47,7 +47,7 @@ dev = [
     "ruff>=0.13.0,<0.15.0",
 ]
 
-langfuse = ["langfuse>=2.0.0,<4"]
+langfuse = ["langfuse>=2.0.0,<5"]
 opensearch = ["opensearch-genai-observability-sdk-py[opensearch]>=0.2.7,<1.0.0"]
 otel = ["opentelemetry-exporter-otlp-proto-http>=1.30.0,<2.0.0"]
 langchain = [
