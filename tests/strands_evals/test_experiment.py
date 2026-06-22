@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import logging
 import random
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -55,6 +56,13 @@ class ThrowingEvaluator(Evaluator[str, str]):
         raise RuntimeError("Evaluator exploded")
 
 
+class ThrottlingErrorEvaluator(Evaluator[str, str]):
+    """Evaluator that always throws a model throttling exception"""
+
+    def evaluate(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
+        raise ModelThrottledException("Too many tokens")
+
+
 @pytest.fixture
 def mock_evaluator():
     return MockEvaluator()
@@ -77,6 +85,38 @@ def simple_task():
         return case.input
 
     return task
+
+
+@pytest.fixture
+def debug_logging():
+    """Set up logger at debug level of verbosity"""
+    logger = logging.getLogger("strands_evals")
+    original_level = logger.level
+    logger.setLevel(logging.DEBUG)
+    yield
+    logger.setLevel(original_level)
+
+
+@pytest.fixture
+def warning_logging():
+    """Set up logger at warning level of verbosity"""
+    logger = logging.getLogger("strands_evals")
+    original_level = logger.level
+    logger.setLevel(logging.WARNING)
+    yield
+    logger.setLevel(original_level)
+
+
+@pytest.fixture
+def evaluator_call_kwargs():
+    """Setup boilerplate for experiment._run_evaluator tests"""
+    eval_data = EvaluationData(
+        input="hello",
+        actual_output="hello",
+        name="caseN",
+        expected_output="hello",
+    )
+    return {"evaluation_context": eval_data, "case_name": "", "trace_id": "", "session_id": ""}
 
 
 def test_experiment__init__full(mock_evaluator):
@@ -2123,3 +2163,111 @@ def test_evaluator_name_default_omitted_from_to_dict():
 
     payload = experiment.to_dict()
     assert "name" not in payload["evaluators"][0]
+
+
+# ===================================
+# Verbosity -> Traceback testing
+# ===================================
+def test_module_logger_inherits_debug_level_from_parent(debug_logging):
+    # child logger should inherit from package logger
+    child_logger = logging.getLogger("strands_evals.experiment")
+    assert child_logger.isEnabledFor(logging.DEBUG)
+
+
+@pytest.mark.asyncio
+async def test_worker_exception_includes_traceback_at_debug_level(debug_logging, mock_span):
+    case = Case(name="test1", input="hello", expected_output="world")
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
+    queue = asyncio.Queue()
+    queue.put_nowait((0, case))
+    results = [None]
+    with patch.object(experiment._tracer, "start_as_current_span", return_value=mock_span):
+
+        def failing_task(c):
+            raise RuntimeError("We had a simulated error ...")
+
+        await experiment._worker(queue, failing_task, results)
+        assert "Traceback" in results[0]["evaluator_results"][0]["reason"]
+        assert "simulated error" in results[0]["evaluator_results"][0]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_worker_exception_excludes_traceback_at_warning_level(warning_logging, mock_span):
+    case = Case(name="test1", input="hello", expected_output="world")
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
+    queue = asyncio.Queue()
+    queue.put_nowait((0, case))
+    results = [None]
+    with patch.object(experiment._tracer, "start_as_current_span", return_value=mock_span):
+
+        def failing_task(c):
+            raise RuntimeError("We had a simulated error ...")
+
+        await experiment._worker(queue, failing_task, results)
+        assert "Traceback" not in results[0]["evaluator_results"][0]["reason"]
+        assert "simulated error" in results[0]["evaluator_results"][0]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_run_evaluator_generic_exception_includes_traceback_at_debug_level(
+    debug_logging, mock_span, evaluator_call_kwargs
+):
+    case = Case(name="test1", input="hello", expected_output="world")
+    evaluator = ThrowingEvaluator()
+    experiment = Experiment(cases=[case], evaluators=[evaluator])
+    with patch.object(experiment._tracer, "start_as_current_span", return_value=mock_span):
+        results = await experiment._run_evaluator(evaluator, **evaluator_call_kwargs)
+        # ThrowingEvaluator should fail with error message including traceback now
+        assert "Traceback" in results["reason"]
+        assert "Evaluator exploded" in results["reason"]
+
+
+@pytest.mark.asyncio
+async def test_run_evaluator_generic_exception_excludes_traceback_at_warning_level(
+    warning_logging, mock_span, evaluator_call_kwargs
+):
+    case = Case(name="test1", input="hello", expected_output="world")
+    evaluator = ThrowingEvaluator()
+    experiment = Experiment(cases=[case], evaluators=[evaluator])
+    with patch.object(experiment._tracer, "start_as_current_span", return_value=mock_span):
+        results = await experiment._run_evaluator(evaluator, **evaluator_call_kwargs)
+        # ThrowingEvaluator should fail with error message including traceback now
+        assert "Traceback" not in results["reason"]
+        assert "Evaluator exploded" in results["reason"]
+
+
+@pytest.mark.asyncio
+@patch("strands_evals.experiment._MAX_RETRY_ATTEMPTS", 3)
+@patch("strands_evals.experiment._INITIAL_RETRY_DELAY", 0.01)
+@patch("strands_evals.experiment._MAX_RETRY_DELAY", 0.02)
+async def test_run_evaluator_retry_error_includes_traceback_at_debug_level(
+    debug_logging, mock_span, evaluator_call_kwargs
+):
+    # Setup experiment and evaluator
+    case = Case(name="test1", input="hello", expected_output="world")
+    evaluator = ThrottlingErrorEvaluator()
+    experiment = Experiment(cases=[case], evaluators=[evaluator])
+
+    with patch.object(experiment._tracer, "start_as_current_span", return_value=mock_span):
+        results = await experiment._run_evaluator(evaluator, **evaluator_call_kwargs)
+        # ThrowingEvaluator should fail with error message including traceback now
+        assert "Traceback" in results["reason"]
+
+
+@pytest.mark.asyncio
+@patch("strands_evals.experiment._MAX_RETRY_ATTEMPTS", 3)
+@patch("strands_evals.experiment._INITIAL_RETRY_DELAY", 0.01)
+@patch("strands_evals.experiment._MAX_RETRY_DELAY", 0.02)
+async def test_run_evaluator_retry_error_excludes_traceback_at_warning_level(
+    warning_logging, mock_span, evaluator_call_kwargs
+):
+    # Setup experiment and evaluator
+    case = Case(name="test1", input="hello", expected_output="world")
+    evaluator = ThrottlingErrorEvaluator()
+    experiment = Experiment(cases=[case], evaluators=[evaluator])
+
+    with patch.object(experiment._tracer, "start_as_current_span", return_value=mock_span):
+        results = await experiment._run_evaluator(evaluator, **evaluator_call_kwargs)
+        # ThrowingEvaluator should fail with error message including traceback now
+        assert "Traceback" not in results["reason"]
+        assert "Too many tokens" in results["reason"]
