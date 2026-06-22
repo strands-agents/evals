@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from strands.models.model import Model
 from strands.types.content import ContentBlock, Message, Messages
 
-from .._async import run_async
+from .._async import bounded_gather_fail_fast, run_async
 from ..types.detector import ConfidenceLevel, FailureDetectionStructuredOutput, FailureItem, FailureOutput
 from ..types.trace import Session
 from .chunking import merge_chunk_failures, split_spans_by_tokens, would_exceed_context
@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_confidence_threshold(threshold: ConfidenceLevel) -> float:
-    """Map the categorical ``"low"|"medium"|"high"`` threshold to the numeric
-    value used for comparison (see ``CONFIDENCE_MAP``).
+    """Map the categorical `"low"|"medium"|"high"` threshold to the numeric
+    value used for comparison (see `CONFIDENCE_MAP`).
     """
     return CONFIDENCE_MAP[threshold]
 
@@ -62,18 +62,52 @@ def detect_failures(
 ) -> FailureOutput:
     """Detect semantic failures in an agent execution session.
 
+    Synchronous wrapper around `detect_failures_async`. Safe to call from
+    sync code or from inside a running event loop (Jupyter, FastAPI, async
+    tests) — the work runs on a dedicated worker thread with its own loop.
+
     Args:
         session: The Session object to analyze.
         confidence_threshold: Minimum categorical confidence to include a
-            failure (``"low"`` | ``"medium"`` | ``"high"``). Internally mapped
-            to ``0.5 | 0.75 | 0.9`` via ``CONFIDENCE_MAP`` before filtering.
-            Defaults to ``"low"`` (include everything the LLM flagged).
+            failure (`"low"` | `"medium"` | `"high"`). Internally mapped
+            to `0.5 | 0.75 | 0.9` via `CONFIDENCE_MAP` before filtering.
+            Defaults to `"low"` (include everything the LLM flagged).
         model: A Model instance, model ID string (wrapped in BedrockModel),
             or None (uses default Haiku).
 
     Returns:
         FailureOutput with list of FailureItems, each with span_id, category,
         confidence (float in [0.0, 1.0]), and evidence.
+    """
+    return run_async(
+        lambda: detect_failures_async(
+            session,
+            confidence_threshold=confidence_threshold,
+            model=model,
+        )
+    )
+
+
+async def detect_failures_async(
+    session: Session,
+    *,
+    confidence_threshold: ConfidenceLevel = ConfidenceLevel.LOW,
+    model: Model | str | None = None,
+    max_workers: int = 5,
+) -> FailureOutput:
+    """Async variant of `detect_failures`.
+
+    Chunked detection fans chunks out concurrently, capped at `max_workers`.
+
+    Args:
+        session: The Session object to analyze.
+        confidence_threshold: Minimum categorical confidence to include a
+            failure. See `detect_failures`.
+        model: A Model instance, model ID string, or None.
+        max_workers: Maximum concurrent LLM calls during chunked detection.
+
+    Returns:
+        FailureOutput. See `detect_failures`.
     """
     threshold = _resolve_confidence_threshold(confidence_threshold)
     effective_model = _resolve_model(model)
@@ -82,14 +116,14 @@ def detect_failures(
     user_prompt = template.build_prompt(session_json=session_json)
 
     if would_exceed_context(user_prompt):
-        raw = _detect_chunked(session, effective_model, template)
+        raw = await _detect_chunked_async(session, effective_model, template, max_workers)
     else:
         try:
-            raw = _detect_direct(user_prompt, effective_model, template)
+            raw = await _detect_direct_async(user_prompt, effective_model, template)
         except Exception as e:
             if _is_context_exceeded(e):
                 logger.warning("Context exceeded despite pre-flight check, falling back to chunking")
-                raw = _detect_chunked(session, effective_model, template)
+                raw = await _detect_chunked_async(session, effective_model, template, max_workers)
             else:
                 raise
 
@@ -108,18 +142,19 @@ def detect_failures(
     return FailureOutput(session_id=session.session_id, failures=filtered)
 
 
-def _detect_direct(user_prompt: str, model: Model, template: object) -> list[FailureItem]:
-    """Attempt direct LLM detection on the full session."""
-    text = _call_model(model, system_prompt=template.SYSTEM_PROMPT, user_prompt=user_prompt)
+async def _detect_direct_async(user_prompt: str, model: Model, template: object) -> list[FailureItem]:
+    """Direct LLM detection on the full session."""
+    text = await _call_model_async(model, system_prompt=template.SYSTEM_PROMPT, user_prompt=user_prompt)
     return _parse_text_result(text)
 
 
-def _detect_chunked(
+async def _detect_chunked_async(
     session: Session,
     model: Model,
     template: object,
+    max_workers: int,
 ) -> list[FailureItem]:
-    """Chunk session and detect failures per chunk, then merge."""
+    """Chunk session and detect failures per chunk concurrently, then merge."""
     spans = _flatten_traces_to_spans(session.traces)
 
     if len(spans) <= MIN_CHUNK_SIZE:
@@ -130,24 +165,32 @@ def _detect_chunked(
 
     logger.info("Chunked detection: %d spans -> %d chunks", len(spans), len(chunks))
 
-    chunk_results: list[list[FailureItem]] = []
-    for i, chunk_spans in enumerate(chunks):
+    async def _process_chunk(index: int, chunk_spans: list) -> list[FailureItem]:
         try:
             chunk_json = _serialize_spans(chunk_spans)
             user_prompt = template.build_prompt(session_json=chunk_json)
-            text = _call_model(model, system_prompt=template.SYSTEM_PROMPT, user_prompt=user_prompt)
-            chunk_results.append(_parse_text_result(text))
-            logger.info("Chunk %d/%d: processed %d spans", i + 1, len(chunks), len(chunk_spans))
+            text = await _call_model_async(model, system_prompt=template.SYSTEM_PROMPT, user_prompt=user_prompt)
+            result = _parse_text_result(text)
+            logger.info("Chunk %d/%d: processed %d spans", index + 1, len(chunks), len(chunk_spans))
+            return result
         except Exception as e:
             if _is_context_exceeded(e):
-                logger.warning("Chunk %d/%d still exceeds context, skipping", i + 1, len(chunks))
-            else:
-                raise
+                logger.warning("Chunk %d/%d still exceeds context, skipping", index + 1, len(chunks))
+                return []
+            raise
+
+    # `_process_chunk` already swallows context-exceeded as `[]`, so anything that
+    # reaches `bounded_gather_fail_fast` as an exception is a genuine error worth
+    # cancelling sibling LLM calls for (vs. paying for every chunk before raising).
+    chunk_results = await bounded_gather_fail_fast(
+        (_process_chunk(i, chunk_spans) for i, chunk_spans in enumerate(chunks)),
+        max_workers,
+    )
 
     return merge_chunk_failures(chunk_results)
 
 
-def _call_model(model: Model, *, system_prompt: str, user_prompt: str) -> str:
+async def _call_model_async(model: Model, *, system_prompt: str, user_prompt: str) -> str:
     """Call the model directly and return the full text response.
 
     Prompt delivery: everything goes in a single user message with no
@@ -163,16 +206,13 @@ def _call_model(model: Model, *, system_prompt: str, user_prompt: str) -> str:
     full_prompt = f"{system_prompt}\n\n{user_prompt}"
     messages: Messages = [Message(role="user", content=[ContentBlock(text=full_prompt)])]
 
-    async def _stream() -> str:
-        chunks: list[str] = []
-        async for event in model.stream(messages):
-            if "contentBlockDelta" in event:
-                delta = event["contentBlockDelta"].get("delta", {})
-                if "text" in delta:
-                    chunks.append(delta["text"])
-        return "".join(chunks)
-
-    return run_async(_stream)
+    chunks: list[str] = []
+    async for event in model.stream(messages):
+        if "contentBlockDelta" in event:
+            delta = event["contentBlockDelta"].get("delta", {})
+            if "text" in delta:
+                chunks.append(delta["text"])
+    return "".join(chunks)
 
 
 def _extract_json(text: str) -> str:
