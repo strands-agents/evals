@@ -190,7 +190,8 @@ strands-evals/
 │   │       ├── validate.py
 │   │       ├── report.py
 │   │       ├── diagnose.py
-│   │       └── generate.py
+│   │       ├── generate.py
+│   │       └── fetch.py                      # pull Session JSON from a TraceProvider
 │   │
 │   ├── __main__.py                           # `python -m strands_evals` shim → cli.main
 │   │
@@ -235,7 +236,7 @@ strands-evals/
 ### Directory Purposes
 
 - **`src/strands_evals/`**: All production code
-- **`src/strands_evals/cli/`**: `strands-evals` console script — five subcommands (`run`, `validate`, `report`, `diagnose`, `generate`) plus the `module:attr` resolver and synthesized task wrapper used by `--agent`
+- **`src/strands_evals/cli/`**: `strands-evals` console script — six subcommands (`run`, `validate`, `report`, `diagnose`, `generate`, `fetch`) plus the `module:attr` resolver and synthesized task wrapper used by `--agent`. `fetch` has per-provider sub-subcommands (`cloudwatch`, `langfuse`, `opensearch`); langfuse / opensearch are imported lazily so they only fail when invoked without their extra installed.
 - **`tests/strands_evals/`**: Unit tests mirroring src/ structure
 - **`tests/strands_evals/cli/`**: CLI tests; fixtures live under `cli/fixtures/` and are referenced by tests via `tests.strands_evals.cli.fixtures.*:attr` specs
 - **`tests_integ/`**: Integration tests using real trace providers and model endpoints
