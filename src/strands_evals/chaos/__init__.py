@@ -18,6 +18,16 @@ from .effects import (
     ValidationError,
 )
 from .experiment import ChaosExperiment
+from .model_effects import (
+    FormatCorruptionEffect,
+    HallucinationEffect,
+    RefusalEffect,
+)
+from .model_types import (
+    ModelOutputCorruptionConfig,
+    ModelOutputCorruptionType,
+    ModelOutputHallucinationType,
+)
 from .plugin import ChaosPlugin
 
 __all__ = [
@@ -38,4 +48,10 @@ __all__ = [
     "TruncateFields",
     "RemoveFields",
     "CorruptValues",
+    "ModelOutputCorruptionConfig",
+    "ModelOutputCorruptionType",
+    "ModelOutputHallucinationType",
+    "FormatCorruptionEffect",
+    "HallucinationEffect",
+    "RefusalEffect",
 ]
