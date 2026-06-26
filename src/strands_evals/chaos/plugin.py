@@ -17,9 +17,7 @@ The model-chaos callback is GUARDED to only corrupt the FINAL agent response:
 
 This guard prevents destructive effects (EMPTY_RESPONSE, FULL_REFUSAL) from
 deleting toolUse blocks on mid-turn tool_use messages, which would break the
-agent loop. MessageAddedEvent fires BEFORE tool dispatch (event_loop.py L427-428
-fires the event; L187 branches on stop_reason; L476 extracts toolUse from the
-same message object).
+agent loop. MessageAddedEvent fires BEFORE tool dispatch.
 """
 
 import json
@@ -43,13 +41,13 @@ logger = logging.getLogger(__name__)
 class ChaosPlugin(Plugin):
     """Strands Plugin that injects deterministic chaos based on configuration.
 
-    Handles both tool-level chaos (P0) and model-output chaos (P1):
+    Handles both tool-level chaos and model-output chaos:
 
-    Tool chaos (P0):
+    Tool chaos:
         - BeforeToolCallEvent: cancels tool calls for pre-hook effects
         - AfterToolCallEvent: corrupts tool responses for post-hook effects
 
-    Model output chaos (P1):
+    Model output chaos:
         - MessageAddedEvent: corrupts the final assistant response content
 
     The active ChaosCase is managed via a ContextVar (set by ChaosExperiment).
@@ -108,7 +106,7 @@ class ChaosPlugin(Plugin):
         self._model_effects = value
 
     # -----------------------------------------------------------------------
-    # Tool chaos hooks (P0) — from PR #224
+    # Tool chaos hooks
     # -----------------------------------------------------------------------
 
     @hook  # type: ignore[call-overload]
@@ -168,7 +166,7 @@ class ChaosPlugin(Plugin):
             logger.info("effect=<%s>, tool=<%s> | applied chaos post-hook", type(effect).__name__, tool_name)
 
     # -----------------------------------------------------------------------
-    # Model output chaos hook (P1)
+    # Model output chaos hook
     # -----------------------------------------------------------------------
 
     @hook  # type: ignore[call-overload]
@@ -231,7 +229,7 @@ class ChaosPlugin(Plugin):
         )
 
     # -----------------------------------------------------------------------
-    # Tool corruption helpers (P0)
+    # Tool corruption helpers
     # -----------------------------------------------------------------------
 
     def _apply_to_blocks(self, effect: ChaosEffect, blocks: list) -> list:
