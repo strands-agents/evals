@@ -16,7 +16,7 @@ import math
 import random
 import re
 from abc import abstractmethod
-from typing import Annotated, Any, ClassVar, Literal, Union
+from typing import Annotated, Any, Callable, ClassVar, Literal, Union
 
 from pydantic import BaseModel, Discriminator, Field, Tag
 
@@ -344,11 +344,11 @@ class ModelEffect(ChaosEffect):
 
 
 # ---------------------------------------------------------------------------
-# Helper — module-level (used by multiple model effects)
+# Helper — module-level (used by text-transforming model effects)
 # ---------------------------------------------------------------------------
 
 
-def _map_text_in_blocks(blocks: list, fn: Any) -> list:
+def _apply_text_to_blocks(blocks: list, fn: Callable[[str], str]) -> list:
     """Apply *fn* to every ``"text"`` value; leave other blocks untouched."""
     result = []
     for block in blocks:
@@ -367,6 +367,7 @@ def _map_text_in_blocks(blocks: list, fn: Any) -> list:
 class MalformedJson(ModelEffect):
     """Corrupts JSON structures in model output."""
 
+    hook: ClassVar[Literal["pre", "post"]] = "post"
     effect_type: Literal["malformed_json"] = "malformed_json"
 
     def apply(self, content: Any = None) -> Any:
@@ -409,6 +410,7 @@ class MalformedJson(ModelEffect):
 class EmptyResponse(ModelEffect):
     """Returns empty content."""
 
+    hook: ClassVar[Literal["pre", "post"]] = "post"
     effect_type: Literal["empty_response"] = "empty_response"
 
     def apply(self, content: Any = None) -> Any:
@@ -429,6 +431,7 @@ class EmptyResponse(ModelEffect):
 class Confabulation(ModelEffect):
     """Injects fabricated citations into model output text."""
 
+    hook: ClassVar[Literal["pre", "post"]] = "post"
     effect_type: Literal["confabulation"] = "confabulation"
 
     _CONFABULATION_TEMPLATES: ClassVar[list[str]] = [
@@ -448,7 +451,7 @@ class Confabulation(ModelEffect):
         if isinstance(content, str):
             return self._confabulate(content)
         elif isinstance(content, list):
-            return _map_text_in_blocks(content, self._confabulate)
+            return _apply_text_to_blocks(content, self._confabulate)
         raise ValueError(f"Confabulation.apply() received unsupported type {type(content).__name__}")
 
     def _confabulate(self, text: str) -> str:
@@ -471,6 +474,7 @@ class Confabulation(ModelEffect):
 class FullRefusal(ModelEffect):
     """Replaces model output with a refusal message."""
 
+    hook: ClassVar[Literal["pre", "post"]] = "pre"
     effect_type: Literal["full_refusal"] = "full_refusal"
 
     _REFUSAL_TEMPLATES: ClassVar[list[str]] = [
@@ -481,6 +485,10 @@ class FullRefusal(ModelEffect):
         "This is beyond what I'm able to do. Please consider an alternative approach.",
         "I can't assist with the request as described. Could you provide more context?",
     ]
+
+    def cancel_message(self) -> str:
+        """Return a random refusal template string for use with event.cancel."""
+        return random.choice(self._REFUSAL_TEMPLATES)
 
     def apply(self, content: Any = None) -> Any:
         if content is None:
@@ -504,6 +512,7 @@ class SuccessFraming(ModelEffect):
     This is composable — applied AFTER another effect to disguise corruption.
     """
 
+    hook: ClassVar[Literal["pre", "post"]] = "post"
     effect_type: Literal["success_framing"] = "success_framing"
 
     _SUCCESS_PREFIXES: ClassVar[list[str]] = [

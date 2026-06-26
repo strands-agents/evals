@@ -12,7 +12,7 @@ from typing_extensions import Generic
 
 from ..case import Case
 from ..types.evaluation import InputT, OutputT
-from .effects import ToolEffectUnion
+from .effects import ModelEffectUnion, ToolEffectUnion
 
 
 class ChaosCase(Case, Generic[InputT, OutputT]):
@@ -59,6 +59,12 @@ class ChaosCase(Case, Generic[InputT, OutputT]):
         default_factory=dict,
         description="Effect categories. Currently supports 'tool_effects' mapping "
         "tool_name -> list of effects. Empty dict means baseline (no chaos).",
+    )
+
+    model_effects: list[ModelEffectUnion] = Field(
+        default_factory=list,
+        description="List of model output effects to apply. FullRefusal is pre-hook "
+        "(cancels model call); others are post-hook (corrupt response).",
     )
 
     @model_validator(mode="after")
@@ -152,4 +158,8 @@ class ChaosCase(Case, Generic[InputT, OutputT]):
         effects_str = ", ".join(
             f"{target}: [{', '.join(type(e).__name__ for e in effs)}]" for target, effs in self.tool_effects.items()
         )
-        return f"ChaosCase(name='{self.name}', effects={{{effects_str}}})"
+        parts = [f"name='{self.name}'", f"effects={{{effects_str}}}"]
+        if self.model_effects:
+            model_str = ", ".join(type(e).__name__ for e in self.model_effects)
+            parts.append(f"model_effects=[{model_str}]")
+        return f"ChaosCase({', '.join(parts)})"
