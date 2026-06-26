@@ -11,8 +11,10 @@ Each concrete effect has an `effect_type` discriminator field for Pydantic
 discriminated-union serialization, ensuring full round-trip fidelity.
 """
 
+import json
 import math
 import random
+import re
 from abc import abstractmethod
 from typing import Annotated, Any, ClassVar, Literal, Union
 
@@ -329,3 +331,219 @@ ToolEffectUnion = Annotated[
 Used in ChaosCase.effects to ensure full round-trip serialization fidelity
 with Pydantic's model_dump() / model_validate().
 """
+
+
+class ModelEffect(ChaosEffect):
+    """Effect that operates on model output content.
+
+    Intermediate class parallel to ToolEffect. Enables type-based dispatch
+    so the plugin can distinguish model-output effects from tool-level effects.
+    """
+
+    hook: ClassVar[Literal["pre", "post"]] = "post"
+
+
+# ---------------------------------------------------------------------------
+# Helper — module-level (used by multiple model effects)
+# ---------------------------------------------------------------------------
+
+
+def _map_text_in_blocks(blocks: list, fn: Any) -> list:
+    """Apply *fn* to every ``"text"`` value; leave other blocks untouched."""
+    result = []
+    for block in blocks:
+        block = dict(block)
+        if "text" in block and isinstance(block["text"], str):
+            block["text"] = fn(block["text"])
+        result.append(block)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# a) MalformedJson
+# ---------------------------------------------------------------------------
+
+
+class MalformedJson(ModelEffect):
+    """Corrupts JSON structures in model output."""
+
+    effect_type: Literal["malformed_json"] = "malformed_json"
+
+    def apply(self, content: Any = None) -> Any:
+        if content is None:
+            raise ValueError("MalformedJson.apply() requires content")
+        if isinstance(content, str):
+            return self._malform_text(content)
+        elif isinstance(content, list):
+            return self._malform_blocks(content)
+        raise ValueError(f"MalformedJson.apply() received unsupported type {type(content).__name__}")
+
+    @staticmethod
+    def _malform_text(text: str) -> str:
+        stripped = text.strip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            return stripped[: len(stripped) // 2]
+        return text
+
+    @staticmethod
+    def _malform_blocks(blocks: list) -> list:
+        result = []
+        for block in blocks:
+            block = dict(block)
+            if "toolUse" in block:
+                tool_use = dict(block["toolUse"])
+                raw = json.dumps(tool_use.get("input", {}))
+                tool_use["input"] = raw[:-1] if raw.endswith("}") else raw + "{{{"
+                block["toolUse"] = tool_use
+            elif "text" in block and isinstance(block["text"], str):
+                block["text"] = MalformedJson._malform_text(block["text"])
+            result.append(block)
+        return result
+
+
+# ---------------------------------------------------------------------------
+# b) EmptyResponse
+# ---------------------------------------------------------------------------
+
+
+class EmptyResponse(ModelEffect):
+    """Returns empty content."""
+
+    effect_type: Literal["empty_response"] = "empty_response"
+
+    def apply(self, content: Any = None) -> Any:
+        if content is None:
+            raise ValueError("EmptyResponse.apply() requires content")
+        if isinstance(content, str):
+            return ""
+        elif isinstance(content, list):
+            return []
+        raise ValueError(f"EmptyResponse.apply() received unsupported type {type(content).__name__}")
+
+
+# ---------------------------------------------------------------------------
+# c) Confabulation
+# ---------------------------------------------------------------------------
+
+
+class Confabulation(ModelEffect):
+    """Injects fabricated citations into model output text."""
+
+    effect_type: Literal["confabulation"] = "confabulation"
+
+    _CONFABULATION_TEMPLATES: ClassVar[list[str]] = [
+        "According to a 2019 study published in Nature, ",
+        "Research conducted by MIT in 2021 demonstrated that ",
+        "A comprehensive report by the World Health Organization found that ",
+        "Based on data from the U.S. Census Bureau (2020), ",
+        "As documented in the IEEE Transactions on Software Engineering, ",
+        "A peer-reviewed analysis by Stanford researchers confirmed that ",
+        "The European Commission's 2022 technical report states that ",
+        "Historical records from the Smithsonian Institution indicate that ",
+    ]
+
+    def apply(self, content: Any = None) -> Any:
+        if content is None:
+            raise ValueError("Confabulation.apply() requires content")
+        if isinstance(content, str):
+            return self._confabulate(content)
+        elif isinstance(content, list):
+            return _map_text_in_blocks(content, self._confabulate)
+        raise ValueError(f"Confabulation.apply() received unsupported type {type(content).__name__}")
+
+    def _confabulate(self, text: str) -> str:
+        if not text:
+            return text
+        template = random.choice(self._CONFABULATION_TEMPLATES)
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        if len(sentences) <= 1:
+            return template + text
+        insert_pos = random.randint(1, len(sentences) - 1)
+        sentences.insert(insert_pos, template)
+        return " ".join(sentences)
+
+
+# ---------------------------------------------------------------------------
+# d) FullRefusal
+# ---------------------------------------------------------------------------
+
+
+class FullRefusal(ModelEffect):
+    """Replaces model output with a refusal message."""
+
+    effect_type: Literal["full_refusal"] = "full_refusal"
+
+    _REFUSAL_TEMPLATES: ClassVar[list[str]] = [
+        "I'm sorry, but I can't help with that request.",
+        "I'm not able to help with this particular request. Could you try rephrasing?",
+        "I can't assist with that. Please try a different approach.",
+        "I'm unable to process this request at this time.",
+        "This is beyond what I'm able to do. Please consider an alternative approach.",
+        "I can't assist with the request as described. Could you provide more context?",
+    ]
+
+    def apply(self, content: Any = None) -> Any:
+        if content is None:
+            raise ValueError("FullRefusal.apply() requires content")
+        template = random.choice(self._REFUSAL_TEMPLATES)
+        if isinstance(content, str):
+            return template
+        elif isinstance(content, list):
+            return [{"text": template}]
+        raise ValueError(f"FullRefusal.apply() received unsupported type {type(content).__name__}")
+
+
+# ---------------------------------------------------------------------------
+# e) SuccessFraming (composable post-step)
+# ---------------------------------------------------------------------------
+
+
+class SuccessFraming(ModelEffect):
+    """Prepends a confident success prefix to content.
+
+    This is composable — applied AFTER another effect to disguise corruption.
+    """
+
+    effect_type: Literal["success_framing"] = "success_framing"
+
+    _SUCCESS_PREFIXES: ClassVar[list[str]] = [
+        "Successfully completed the requested operation.",
+        "Done! Here are the results you asked for.",
+        "Great news \u2014 everything worked as expected.",
+        "Operation finished successfully. Here's what I found:",
+        "All done! The task has been completed without issues.",
+        "I've successfully processed your request. Here's the output:",
+        "Task completed. Below are the verified results:",
+    ]
+
+    def apply(self, content: Any = None) -> Any:
+        if content is None:
+            raise ValueError("SuccessFraming.apply() requires content")
+        prefix = random.choice(self._SUCCESS_PREFIXES)
+        if isinstance(content, str):
+            return prefix + " " + content
+        elif isinstance(content, list):
+            # Prepend into first text block if one exists
+            for block in content:
+                if isinstance(block, dict) and "text" in block and isinstance(block["text"], str):
+                    block["text"] = prefix + " " + block["text"]
+                    return content
+            # No text block — prepend a new one
+            return [{"text": prefix}] + content
+        raise ValueError(f"SuccessFraming.apply() received unsupported type {type(content).__name__}")
+
+
+# ---------------------------------------------------------------------------
+# ModelEffectUnion — discriminated union for Pydantic deserialization
+# ---------------------------------------------------------------------------
+
+ModelEffectUnion = Annotated[
+    Union[
+        Annotated[MalformedJson, Tag("malformed_json")],
+        Annotated[EmptyResponse, Tag("empty_response")],
+        Annotated[Confabulation, Tag("confabulation")],
+        Annotated[FullRefusal, Tag("full_refusal")],
+        Annotated[SuccessFraming, Tag("success_framing")],
+    ],
+    Discriminator("effect_type"),
+]

@@ -11,24 +11,18 @@ Tests cover:
 import copy
 from unittest.mock import MagicMock
 
-from strands_evals.chaos.model_types import (
-    ModelOutputCorruptionConfig,
-    ModelOutputCorruptionType,
-    ModelOutputHallucinationType,
-)
-from strands_evals.chaos.model_utils import (
-    _REFUSAL_TEMPLATES,
-    _SUCCESS_PREFIXES,
+from strands_evals.chaos.effects import (
+    Confabulation,
+    EmptyResponse,
+    FullRefusal,
+    MalformedJson,
+    SuccessFraming,
 )
 from strands_evals.chaos.plugin import ChaosPlugin
 
 
 def _make_event(message: dict) -> MagicMock:
-    """Create a mock MessageAddedEvent with the given message.
-
-    The event's `message` attribute is a real dict (not a Mock) so that
-    dict mutation works as in production.
-    """
+    """Create a mock MessageAddedEvent with the given message."""
     event = MagicMock()
     event.message = message
     return event
@@ -78,12 +72,7 @@ class TestModelChaosFormatCorruptionMalformedJson:
     """MALFORMED_JSON effect corrupts the final assistant message."""
 
     def test_malformed_json_corrupts_json_text(self):
-        plugin = ChaosPlugin(
-            model_output_config=ModelOutputCorruptionConfig(
-                apply_rate=1.0,
-                corruption_type=ModelOutputCorruptionType.MALFORMED_JSON,
-            )
-        )
+        plugin = ChaosPlugin(model_effects=[MalformedJson()])
         message = _final_assistant_message('{"key": "value", "nested": {"a": 1}}')
         event = _make_event(message)
 
@@ -98,12 +87,7 @@ class TestModelChaosFormatCorruptionEmptyResponse:
     """EMPTY_RESPONSE effect empties the final assistant message content."""
 
     def test_empty_response_on_final_message(self):
-        plugin = ChaosPlugin(
-            model_output_config=ModelOutputCorruptionConfig(
-                apply_rate=1.0,
-                corruption_type=ModelOutputCorruptionType.EMPTY_RESPONSE,
-            )
-        )
+        plugin = ChaosPlugin(model_effects=[EmptyResponse()])
         message = _final_assistant_message("Hello world")
         event = _make_event(message)
 
@@ -116,12 +100,7 @@ class TestModelChaosHallucination:
     """Hallucination effect corrupts the final assistant message text."""
 
     def test_confabulation_injects_template(self):
-        plugin = ChaosPlugin(
-            model_output_config=ModelOutputCorruptionConfig(
-                apply_rate=1.0,
-                corruption_type=ModelOutputHallucinationType.CONFABULATION,
-            )
-        )
+        plugin = ChaosPlugin(model_effects=[Confabulation()])
         original_text = "The weather is sunny. It is warm outside. Birds are singing."
         message = _final_assistant_message(original_text)
         event = _make_event(message)
@@ -138,12 +117,7 @@ class TestModelChaosRefusal:
     """FULL_REFUSAL replaces the final assistant message content with a refusal."""
 
     def test_refusal_replaces_content(self):
-        plugin = ChaosPlugin(
-            model_output_config=ModelOutputCorruptionConfig(
-                apply_rate=1.0,
-                corruption_type=ModelOutputCorruptionType.FULL_REFUSAL,
-            )
-        )
+        plugin = ChaosPlugin(model_effects=[FullRefusal()])
         message = _final_assistant_message("Here is the code you requested...")
         event = _make_event(message)
 
@@ -151,27 +125,21 @@ class TestModelChaosRefusal:
 
         # Content should be a single refusal text block
         assert len(message["content"]) == 1
-        assert message["content"][0]["text"] in _REFUSAL_TEMPLATES
+        assert message["content"][0]["text"] in FullRefusal._REFUSAL_TEMPLATES
 
 
 class TestModelChaosSuccessFraming:
     """Success framing prepends a confident prefix after corruption."""
 
     def test_success_framing_with_refusal(self):
-        plugin = ChaosPlugin(
-            model_output_config=ModelOutputCorruptionConfig(
-                apply_rate=1.0,
-                corruption_type=ModelOutputCorruptionType.FULL_REFUSAL,
-                add_success_framing=True,
-            )
-        )
+        plugin = ChaosPlugin(model_effects=[FullRefusal(), SuccessFraming()])
         message = _final_assistant_message("Here is the code you requested...")
         event = _make_event(message)
 
         plugin.message_added(event)
 
         result_text = message["content"][0]["text"]
-        assert any(result_text.startswith(prefix) for prefix in _SUCCESS_PREFIXES)
+        assert any(result_text.startswith(prefix) for prefix in SuccessFraming._SUCCESS_PREFIXES)
 
 
 # ---------------------------------------------------------------------------
@@ -184,12 +152,7 @@ class TestModelChaosGuardToolUseMessage:
 
     def test_empty_response_on_tooluse_message_not_corrupted(self):
         """EMPTY_RESPONSE on a tool_use message passes through; toolUse intact."""
-        plugin = ChaosPlugin(
-            model_output_config=ModelOutputCorruptionConfig(
-                apply_rate=1.0,
-                corruption_type=ModelOutputCorruptionType.EMPTY_RESPONSE,
-            )
-        )
+        plugin = ChaosPlugin(model_effects=[EmptyResponse()])
         message = _tooluse_assistant_message()
         original_content = copy.deepcopy(message["content"])
         event = _make_event(message)
@@ -205,12 +168,7 @@ class TestModelChaosGuardToolUseMessage:
 
     def test_full_refusal_on_tooluse_message_not_corrupted(self):
         """FULL_REFUSAL on a tool_use message passes through; toolUse intact."""
-        plugin = ChaosPlugin(
-            model_output_config=ModelOutputCorruptionConfig(
-                apply_rate=1.0,
-                corruption_type=ModelOutputCorruptionType.FULL_REFUSAL,
-            )
-        )
+        plugin = ChaosPlugin(model_effects=[FullRefusal()])
         message = _tooluse_assistant_message()
         original_content = copy.deepcopy(message["content"])
         event = _make_event(message)
@@ -225,12 +183,7 @@ class TestModelChaosGuardStructuredOutputPath:
 
     def test_structured_output_tool_message_not_corrupted(self):
         """A message containing the structured output tool call is NOT corrupted."""
-        plugin = ChaosPlugin(
-            model_output_config=ModelOutputCorruptionConfig(
-                apply_rate=1.0,
-                corruption_type=ModelOutputCorruptionType.EMPTY_RESPONSE,
-            )
-        )
+        plugin = ChaosPlugin(model_effects=[EmptyResponse()])
         # Simulate the structured output tool invocation message
         message = {
             "role": "assistant",
@@ -258,12 +211,7 @@ class TestModelChaosGuardFinalMessage:
 
     def test_final_end_turn_message_corrupted(self):
         """An end_turn message with text only (no toolUse) gets corrupted."""
-        plugin = ChaosPlugin(
-            model_output_config=ModelOutputCorruptionConfig(
-                apply_rate=1.0,
-                corruption_type=ModelOutputCorruptionType.EMPTY_RESPONSE,
-            )
-        )
+        plugin = ChaosPlugin(model_effects=[EmptyResponse()])
         message = _final_assistant_message("Hello world")
         event = _make_event(message)
 
@@ -276,12 +224,7 @@ class TestModelChaosGuardRoleFiltering:
     """User and tool result messages are NOT corrupted."""
 
     def test_user_message_not_corrupted(self):
-        plugin = ChaosPlugin(
-            model_output_config=ModelOutputCorruptionConfig(
-                apply_rate=1.0,
-                corruption_type=ModelOutputCorruptionType.EMPTY_RESPONSE,
-            )
-        )
+        plugin = ChaosPlugin(model_effects=[EmptyResponse()])
         message = _user_message()
         original_content = copy.deepcopy(message["content"])
         event = _make_event(message)
@@ -291,12 +234,7 @@ class TestModelChaosGuardRoleFiltering:
         assert message["content"] == original_content
 
     def test_tool_result_message_not_corrupted(self):
-        plugin = ChaosPlugin(
-            model_output_config=ModelOutputCorruptionConfig(
-                apply_rate=1.0,
-                corruption_type=ModelOutputCorruptionType.EMPTY_RESPONSE,
-            )
-        )
+        plugin = ChaosPlugin(model_effects=[EmptyResponse()])
         message = _tool_result_message()
         original_content = copy.deepcopy(message["content"])
         event = _make_event(message)
@@ -307,25 +245,10 @@ class TestModelChaosGuardRoleFiltering:
 
 
 class TestModelChaosPassthrough:
-    """No corruption when no model_output_config is set."""
+    """No corruption when no model_effects is set."""
 
     def test_no_config_passes_through(self):
-        plugin = ChaosPlugin()  # No model_output_config
-        message = _final_assistant_message("Hello world")
-        original_content = copy.deepcopy(message["content"])
-        event = _make_event(message)
-
-        plugin.message_added(event)
-
-        assert message["content"] == original_content
-
-    def test_zero_apply_rate_passes_through(self):
-        plugin = ChaosPlugin(
-            model_output_config=ModelOutputCorruptionConfig(
-                apply_rate=0.0,
-                corruption_type=ModelOutputCorruptionType.EMPTY_RESPONSE,
-            )
-        )
+        plugin = ChaosPlugin()  # No model_effects
         message = _final_assistant_message("Hello world")
         original_content = copy.deepcopy(message["content"])
         event = _make_event(message)

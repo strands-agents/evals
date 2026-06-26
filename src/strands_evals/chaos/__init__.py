@@ -7,10 +7,17 @@ under tool failures and response corruption scenarios.
 from .case import ChaosCase
 from .effects import (
     ChaosEffect,
+    Confabulation,
     CorruptValues,
+    EmptyResponse,
     ExecutionError,
+    FullRefusal,
+    MalformedJson,
+    ModelEffect,
+    ModelEffectUnion,
     NetworkError,
     RemoveFields,
+    SuccessFraming,
     Timeout,
     ToolEffect,
     ToolEffectUnion,
@@ -18,16 +25,6 @@ from .effects import (
     ValidationError,
 )
 from .experiment import ChaosExperiment
-from .model_effects import (
-    FormatCorruptionEffect,
-    HallucinationEffect,
-    RefusalEffect,
-)
-from .model_types import (
-    ModelOutputCorruptionConfig,
-    ModelOutputCorruptionType,
-    ModelOutputHallucinationType,
-)
 from .plugin import ChaosPlugin
 
 __all__ = [
@@ -48,10 +45,11 @@ __all__ = [
     "TruncateFields",
     "RemoveFields",
     "CorruptValues",
-    "ModelOutputCorruptionConfig",
-    "ModelOutputCorruptionType",
-    "ModelOutputHallucinationType",
-    "FormatCorruptionEffect",
-    "HallucinationEffect",
-    "RefusalEffect",
+    "ModelEffect",
+    "ModelEffectUnion",
+    "MalformedJson",
+    "EmptyResponse",
+    "Confabulation",
+    "FullRefusal",
+    "SuccessFraming",
 ]

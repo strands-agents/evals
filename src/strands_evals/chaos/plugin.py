@@ -24,28 +24,24 @@ same message object).
 
 import json
 import logging
-import random
-from typing import Any
 
 from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent, MessageAddedEvent
 from strands.plugins import Plugin, hook
 
 from ._context import _current_chaos_case
-from .effects import ChaosEffect, TruncateFields
-from .model_effects import (
-    HALLUCINATION_TYPES,
-    FormatCorruptionEffect,
-    HallucinationEffect,
-    RefusalEffect,
+from .effects import (
+    ChaosEffect,
+    ModelEffect,
+    ModelEffectUnion,
+    SuccessFraming,
+    TruncateFields,
 )
-from .model_types import ModelOutputCorruptionConfig, ModelOutputCorruptionType
-from .model_utils import _SUCCESS_PREFIXES
 
 logger = logging.getLogger(__name__)
 
 
 class ChaosPlugin(Plugin):
-    """Strands Plugin that injects deterministic chaos based on the active ChaosCase.
+    """Strands Plugin that injects deterministic chaos based on configuration.
 
     Handles both tool-level chaos (P0) and model-output chaos (P1):
 
@@ -57,27 +53,20 @@ class ChaosPlugin(Plugin):
         - MessageAddedEvent: corrupts the final assistant response content
 
     The active ChaosCase is managed via a ContextVar (set by ChaosExperiment).
-    When no ChaosCase is active or the case has no effects, all tools and model
-    output behave normally.
+    When no ChaosCase is active or the case has no effects, all tools behave normally.
 
-    Model output corruption is configured via `model_output_config` on the
-    ChaosPlugin instance or via the ChaosCase effects dict (key: "model_effects").
+    Model output corruption is configured via `model_effects` on the ChaosPlugin
+    instance. Effects are applied sequentially. SuccessFraming is always applied
+    LAST (composable post-step).
 
     Example::
 
         from strands import Agent
         from strands_evals.chaos import ChaosPlugin
-        from strands_evals.chaos.model_types import (
-            ModelOutputCorruptionConfig,
-            ModelOutputHallucinationType,
-        )
+        from strands_evals.chaos.effects import EmptyResponse, SuccessFraming
 
         chaos = ChaosPlugin(
-            model_output_config=ModelOutputCorruptionConfig(
-                apply_rate=1.0,
-                corruption_type=ModelOutputHallucinationType.CONFABULATION,
-                add_success_framing=True,
-            )
+            model_effects=[EmptyResponse(), SuccessFraming()],
         )
 
         agent = Agent(
@@ -85,34 +74,42 @@ class ChaosPlugin(Plugin):
             tools=[search_tool, database_tool],
             plugins=[chaos],
         )
+
+    NOTE on structured_output: When the agent uses structured_output_model, the
+    final response is a toolUse block (containing the structured output tool call).
+    The toolUse guard will skip these messages, so model chaos does NOT affect
+    structured_output responses. This is intentional — corrupting the structured
+    output tool call would break parsing. Future work may add a dedicated
+    structured_output chaos effect that corrupts the tool input fields specifically.
     """
 
     name = "chaos-testing"
 
-    def __init__(self, model_output_config: ModelOutputCorruptionConfig | None = None) -> None:
+    def __init__(self, model_effects: list[ModelEffectUnion] | None = None) -> None:
         """Initialize the ChaosPlugin.
 
         Args:
-            model_output_config: Optional configuration for model output corruption.
+            model_effects: Optional list of model-output effects to apply sequentially.
                 When provided, enables model-output chaos on final assistant responses.
+                SuccessFraming (if included) is always applied last regardless of list order.
                 When None, only tool-level chaos (from ChaosCase effects) is active.
         """
         super().__init__()
-        self._model_output_config = model_output_config
+        self._model_effects = model_effects
 
     @property
-    def model_output_config(self) -> ModelOutputCorruptionConfig | None:
-        """The active model output corruption configuration."""
-        return self._model_output_config
+    def model_effects(self) -> list[ModelEffectUnion] | None:
+        """The active model output effects list."""
+        return self._model_effects
 
-    @model_output_config.setter
-    def model_output_config(self, value: ModelOutputCorruptionConfig | None) -> None:
-        """Update the model output corruption configuration."""
-        self._model_output_config = value
+    @model_effects.setter
+    def model_effects(self, value: list[ModelEffectUnion] | None) -> None:
+        """Update the model output effects list."""
+        self._model_effects = value
 
-    # ------------------------------------------------------------------
+    # -----------------------------------------------------------------------
     # Tool chaos hooks (P0) — from PR #224
-    # ------------------------------------------------------------------
+    # -----------------------------------------------------------------------
 
     @hook  # type: ignore[call-overload]
     def before_tool_call(self, event: BeforeToolCallEvent) -> None:
@@ -170,17 +167,17 @@ class ChaosPlugin(Plugin):
 
             logger.info("effect=<%s>, tool=<%s> | applied chaos post-hook", type(effect).__name__, tool_name)
 
-    # ------------------------------------------------------------------
+    # -----------------------------------------------------------------------
     # Model output chaos hook (P1)
-    # ------------------------------------------------------------------
+    # -----------------------------------------------------------------------
 
     @hook  # type: ignore[call-overload]
     def message_added(self, event: MessageAddedEvent) -> None:
         """Intercept messages to corrupt the final assistant response.
 
         GUARD: corruption is applied ONLY when ALL conditions hold:
-        1. message role == "assistant"
-        2. message content contains NO toolUse blocks
+            1. message role == "assistant"
+            2. message content contains NO toolUse blocks
 
         This prevents destructive effects from breaking mid-turn tool dispatch.
         MessageAddedEvent fires BEFORE the agent extracts toolUse blocks for
@@ -192,10 +189,7 @@ class ChaosPlugin(Plugin):
         without are final end_turn responses. This is reliable because end_turn
         messages never contain toolUse blocks.
         """
-        if self._model_output_config is None:
-            return
-
-        if self._model_output_config.apply_rate <= 0:
+        if self._model_effects is None:
             return
 
         message = event.message
@@ -214,63 +208,31 @@ class ChaosPlugin(Plugin):
                 if isinstance(block, dict) and "toolUse" in block:
                     return
 
-        # Guard 3: apply_rate probabilistic check
-        if random.random() >= self._model_output_config.apply_rate:
-            return
+        # Separate SuccessFraming from primary effects (applied last)
+        primary_effects: list[ModelEffect] = [e for e in self._model_effects if not isinstance(e, SuccessFraming)]
+        framing_effects: list[ModelEffect] = [e for e in self._model_effects if isinstance(e, SuccessFraming)]
 
-        # Dispatch to effect
-        corrupted = self._apply_model_corruption(content)
+        # Apply primary effects sequentially
+        corrupted = content
+        for effect in primary_effects:
+            corrupted = effect.apply(corrupted)
 
-        # Apply success framing if content was mutated
-        if self._model_output_config.add_success_framing and corrupted != content:
-            corrupted = self._apply_success_framing(corrupted)
+        # Apply success framing last (composable post-step)
+        for effect in framing_effects:
+            corrupted = effect.apply(corrupted)
 
         # Mutate via dict assignment (NOT attribute assignment on the event)
         message["content"] = corrupted
 
+        effect_names = ", ".join(type(e).__name__ for e in self._model_effects)
         logger.info(
-            "corruption_type=<%s> | applied model output chaos to assistant message",
-            self._model_output_config.corruption_type.value,
+            "effects=<%s> | applied model output chaos to assistant message",
+            effect_names,
         )
 
-    # ------------------------------------------------------------------
-    # Model corruption helpers
-    # ------------------------------------------------------------------
-
-    def _apply_model_corruption(self, content: Any) -> Any:
-        """Dispatch to the appropriate model effect and apply corruption."""
-        config = self._model_output_config
-        assert config is not None
-        ct = config.corruption_type
-        
-        effect: ChaosEffect
-        if ct in HALLUCINATION_TYPES:
-            effect = HallucinationEffect(config)
-        elif ct == ModelOutputCorruptionType.FULL_REFUSAL:
-            effect = RefusalEffect(config)
-        else:
-            effect = FormatCorruptionEffect(config)
-
-        return effect.apply(content)
-
-    @staticmethod
-    def _apply_success_framing(content: Any) -> Any:
-        """Prepend a success prefix to corrupted content."""
-        prefix = random.choice(_SUCCESS_PREFIXES)
-
-        if isinstance(content, str):
-            return prefix + " " + content
-        elif isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and "text" in block and isinstance(block["text"], str):
-                    block["text"] = prefix + " " + block["text"]
-                    return content
-            return [{"text": prefix}] + content
-        return content
-
-    # ------------------------------------------------------------------
+    # -----------------------------------------------------------------------
     # Tool corruption helpers (P0)
-    # ------------------------------------------------------------------
+    # -----------------------------------------------------------------------
 
     def _apply_to_blocks(self, effect: ChaosEffect, blocks: list) -> list:
         """Apply effect to text blocks in a content list."""
