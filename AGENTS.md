@@ -96,7 +96,7 @@ strands-evals/
 │   │   │                                     # ValidationError / TruncateFields /
 │   │   │                                     # RemoveFields / CorruptValues
 │   │   ├── experiment.py                     # ChaosExperiment (sets active case via ContextVar)
-│   │   ├── plugin.py                         # ChaosPlugin (BeforeToolCallEvent / AfterToolCallEvent)
+│   │   ├── plugin.py                         # ChaosPlugin (tool + model hooks via ContextVar)
 │   │   └── _context.py                       # ContextVar holding the active ChaosCase
 │   │
 │   ├── experimental/                         # Stable public API, evolving surface
