@@ -23,7 +23,7 @@ from . import pair_v0
 if TYPE_CHECKING:
     from ...case import RedTeamCase
     from ...types import AttackGoal
-    from ..target_session import TargetSession
+    from ..target_session import TargetSession, ToolUseEntry
 
 logger = logging.getLogger(__name__)
 
@@ -154,10 +154,9 @@ class PairStrategy(AttackStrategy):
         turn_cap = min(self._max_turns, max_turns)
 
         conversation: list[dict[str, Any]] = []
+        all_trace: list[ToolUseEntry] = []
         last_response = ""
         last_raw_score: int | None = None
-        # PEAK normalized score across turns (a refinement strategy's closest approach is more informative
-        # than the last turn, which may have dipped after a peak).
         best_score: float | None = None
         succeeded = False
         iterations = 0
@@ -170,6 +169,10 @@ class PairStrategy(AttackStrategy):
                 parse_failures += 1
                 logger.warning("reason=<empty_prompt> | attacker produced no prompt | ending case early")
                 break
+
+            # Each P is an independent single-shot: reset the target between iterations.
+            all_trace.extend(target_session.trace)
+            target_session.reset()
 
             response = target_session.invoke(p)
             target_calls += 1
@@ -189,6 +192,11 @@ class PairStrategy(AttackStrategy):
             if turn_score >= self._success_threshold:
                 succeeded = True
                 break
+
+        # Restore accumulated trace so the evaluator sees tool uses from all iterations.
+        all_trace.extend(target_session.trace)
+        target_session.trace.clear()
+        target_session.trace.extend(all_trace)
 
         return AttackRunResult(
             conversation=conversation,

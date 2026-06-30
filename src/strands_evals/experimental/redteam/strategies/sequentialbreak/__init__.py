@@ -28,7 +28,7 @@ from . import sequentialbreak_v0
 if TYPE_CHECKING:
     from ...case import RedTeamCase
     from ...types import AttackGoal
-    from ..target_session import TargetSession
+    from ..target_session import TargetSession, ToolUseEntry
 
 logger = logging.getLogger(__name__)
 
@@ -139,17 +139,23 @@ class SequentialBreakStrategy(AttackStrategy):
         variants = self._variants[:turn_cap]
 
         conversation: list[dict[str, Any]] = []
+        all_trace: list[ToolUseEntry] = []
         variants_tried: list[str] = []
         breached_variant: str | None = None
         target_calls = 0
         score: float | None = None
         succeeded = False
 
-        for variant in variants:
+        for i, variant in enumerate(variants):
             prompt = assemble_scaffold(sequentialbreak_v0.SCAFFOLDS[variant], goal.actor_goal)
             if not prompt.strip():
                 logger.warning("variant=<%s> | assembled empty prompt | skipping", variant)
                 continue
+
+            # Each variant is an independent single-shot: reset between variants.
+            if i > 0:
+                all_trace.extend(target_session.trace)
+                target_session.reset()
 
             response = target_session.invoke(prompt)
             target_calls += 1
@@ -169,6 +175,11 @@ class SequentialBreakStrategy(AttackStrategy):
                 succeeded = True
                 breached_variant = variant
                 break
+
+        # Restore accumulated trace so the evaluator sees tool uses from all variants.
+        all_trace.extend(target_session.trace)
+        target_session.trace.clear()
+        target_session.trace.extend(all_trace)
 
         return AttackRunResult(
             conversation=conversation,
