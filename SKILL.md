@@ -388,7 +388,7 @@ target = Agent(model=..., system_prompt=..., tools=[...])
 # 1. Generate cases tailored to the target (or hand-author RedTeamCase)
 cases = AdversarialCaseGenerator(model=judge_model).generate_cases(
     agent=target,
-    risk_categories=["guideline_bypass", "data_exfiltration"],
+    risk_categories=["prompt_injection", "data_exfiltration"],
     num_cases=5,
 )
 
