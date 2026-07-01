@@ -25,7 +25,7 @@ class TargetSpec(TypedDict):
     tools: list[dict]
 
 
-class _AttackCase(BaseModel):
+class AttackCase(BaseModel):
     actor_goal: str = Field(description="Specific attack objective for this case")
     target_context: str = Field(description="1-2 sentence target summary relevant to the attack")
     traits: dict = Field(default_factory=dict, description="Attacker persona attributes")
@@ -33,11 +33,11 @@ class _AttackCase(BaseModel):
     success_criteria: str = Field(description="Concrete observable condition that marks the attack as successful")
 
 
-class _AttackCases(BaseModel):
-    cases: list[_AttackCase]
+class AttackCases(BaseModel):
+    cases: list[AttackCase]
 
 
-class _RiskCategorySelection(BaseModel):
+class RiskCategorySelection(BaseModel):
     categories: list[str] = Field(description="Selected risk category keys relevant to the target")
 
 
@@ -182,8 +182,8 @@ class AdversarialCaseGenerator:
             categories=categories_desc,
         )
         agent = Agent(model=self.model, callback_handler=None)
-        response = await agent.invoke_async(prompt, structured_output_model=_RiskCategorySelection)
-        result = cast(_RiskCategorySelection, response.structured_output)
+        response = await agent.invoke_async(prompt, structured_output_model=RiskCategorySelection)
+        result = cast(RiskCategorySelection, response.structured_output)
         if result is None:
             logger.warning("reason=<no_structured_output> | risk-category inference empty | using all")
             return list(RISK_CATEGORIES.keys())
@@ -199,7 +199,7 @@ class AdversarialCaseGenerator:
         risk_category: str,
         target_info: dict,
         num_cases: int,
-    ) -> list[_AttackCase]:
+    ) -> list[AttackCase]:
         template = _get_prompt_template(self.prompt_version)
         prompt = template.CASE_GENERATION_PROMPT.format(
             target_info=json.dumps(target_info, indent=2),
@@ -208,8 +208,8 @@ class AdversarialCaseGenerator:
             num_cases=num_cases,
         )
         agent = Agent(model=self.model, callback_handler=None)
-        response = await agent.invoke_async(prompt, structured_output_model=_AttackCases)
-        result = cast(_AttackCases, response.structured_output)
+        response = await agent.invoke_async(prompt, structured_output_model=AttackCases)
+        result = cast(AttackCases, response.structured_output)
         if result is None or not result.cases:
             raise RuntimeError(f"Case generator produced no cases for risk_category={risk_category!r}.")
         return result.cases[:num_cases]

@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class _SuccessRating(BaseModel):
+class SuccessRating(BaseModel):
     """Structured judge output: how fully the response meets the success criteria.
 
     `score` is unconstrained; out-of-range values are clamped in `success_score` rather than failing
@@ -53,8 +53,8 @@ def success_score(make_judge: Callable[[], Agent], goal: AttackGoal, response: s
         return 0.0
     judge = make_judge()
     prompt = f"# Success Criteria\n{goal.success_criteria}\n\n# Target Response\n{response}"
-    result = judge(prompt, structured_output_model=_SuccessRating)
-    rating = cast("_SuccessRating | None", result.structured_output)
+    result = judge(prompt, structured_output_model=SuccessRating)
+    rating = cast("SuccessRating | None", result.structured_output)
     if rating is None:
         logger.warning("reason=<parse_failure> | success judge produced no structured output | defaulting to 0")
         return 0.0
