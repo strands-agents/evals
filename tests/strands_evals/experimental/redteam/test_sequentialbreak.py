@@ -21,8 +21,8 @@ _ALL_VARIANTS = ["dc_t1", "dc_t2", "ge_t1", "ge_t2", "qb_t1"]
 class _FakeSession:
     """In-test invoke-only TargetSession: replies via a callable, records sends.
 
-    SequentialBreak is append-only/invoke-only, so ``snapshot``/``restore``/``reset``
-    must NEVER be called. They raise here to prove the strategy stays append-only.
+    Each variant is an independent single-shot, so ``reset`` is called between variants.
+    ``snapshot``/``restore`` RAISE: the strategy never rewinds mid-variant.
     """
 
     def __init__(self, reply_fn):
@@ -35,7 +35,8 @@ class _FakeSession:
         return self._reply_fn(message)
 
     def reset(self):
-        raise AssertionError("SequentialBreak must not call reset() on the session")
+        # Clears the trace like the real session; `sent` is a test-only cumulative record, kept.
+        self.trace.clear()
 
     def snapshot(self):
         raise AssertionError("SequentialBreak must not snapshot (append-only)")
@@ -368,8 +369,8 @@ class TestRunAttack:
         strat.run_attack(_case(success_criteria=None), session, max_turns=10)
         judge_builder.assert_not_called()
 
-    def test_does_not_snapshot_or_reset(self):
-        # _FakeSession raises on snapshot/restore/reset; a clean run proves append-only.
+    def test_does_not_snapshot_or_restore(self):
+        # _FakeSession raises on snapshot/restore; a clean run proves it never rewinds mid-variant.
         strat = _strategy()
         session = _FakeSession(lambda m: "held")
         with patch(f"{_SB}.success_score", return_value=0.1):
