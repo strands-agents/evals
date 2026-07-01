@@ -56,23 +56,23 @@ def test_unknown_risk_category_raises(patched_agent):
 def test_agent_required():
     gen = AdversarialCaseGenerator()
     with pytest.raises(TypeError):
-        gen.generate_cases(risk_categories=["guideline_bypass"])  # type: ignore[call-arg]
+        gen.generate_cases(risk_categories=["prompt_injection"])  # type: ignore[call-arg]
 
 
 def test_generate_cases_returns_strategy_agnostic_cases(patched_agent):
     gen = AdversarialCaseGenerator()
     cases = gen.generate_cases(
         agent=_make_agent_mock(),
-        risk_categories=["guideline_bypass"],
+        risk_categories=["prompt_injection"],
         num_cases=2,
     )
     assert len(cases) == 2
     assert all(isinstance(c, RedTeamCase) for c in cases)
-    assert all(c.config.attack_goal.risk_category == "guideline_bypass" for c in cases)
+    assert all(c.config.attack_goal.risk_category == "prompt_injection" for c in cases)
     # cases are strategy-agnostic now: no strategy baked into the config or name
     assert not hasattr(cases[0].config, "strategy")
     assert "__" not in cases[0].name
-    assert cases[0].name == "guideline_bypass_0"
+    assert cases[0].name == "prompt_injection_0"
     assert cases[0].input == "open-0"
     assert cases[0].config.attack_goal.actor_goal == "goal-0"
     assert cases[0].config.attack_goal.context == "ctx-0"
@@ -84,11 +84,11 @@ def test_metadata_synced_from_config(patched_agent):
     gen = AdversarialCaseGenerator()
     cases = gen.generate_cases(
         agent=_make_agent_mock(),
-        risk_categories=["guideline_bypass"],
+        risk_categories=["prompt_injection"],
         num_cases=1,
     )
     case = cases[0]
-    assert case.metadata["risk_category"] == "guideline_bypass"
+    assert case.metadata["risk_category"] == "prompt_injection"
     assert case.metadata["actor_goal"] == case.config.attack_goal.actor_goal
 
 
@@ -97,7 +97,7 @@ def test_generate_cases_with_target_spec(patched_agent):
     gen = AdversarialCaseGenerator()
     cases = gen.generate_cases(
         agent={"system_prompt": "x", "tools": []},
-        risk_categories=["guideline_bypass"],
+        risk_categories=["prompt_injection"],
         num_cases=1,
     )
     assert len(cases) == 1
@@ -108,7 +108,7 @@ def test_generate_risk_categories_optional(patched_agent):
     """generate_cases() infers risk categories when not provided."""
     gen = AdversarialCaseGenerator()
     with patch.object(gen, "_infer_risk_categories", new_callable=AsyncMock) as mock_infer:
-        mock_infer.return_value = ["guideline_bypass"]
+        mock_infer.return_value = ["prompt_injection"]
         cases = gen.generate_cases(agent=_make_agent_mock(), num_cases=1)
         mock_infer.assert_called_once()
         assert len(cases) == 1
@@ -119,7 +119,7 @@ def test_target_spec_missing_keys_raises():
     with pytest.raises(ValueError, match="missing required keys"):
         gen.generate_cases(
             agent={"system_prompt": "x"},  # missing 'tools'
-            risk_categories=["guideline_bypass"],
+            risk_categories=["prompt_injection"],
         )
 
 
@@ -131,7 +131,7 @@ def test_empty_llm_response_raises(patched_agent):
     with pytest.raises(RuntimeError, match="produced no cases"):
         gen.generate_cases(
             agent=_make_agent_mock(),
-            risk_categories=["guideline_bypass"],
+            risk_categories=["prompt_injection"],
             num_cases=1,
         )
 
@@ -140,7 +140,7 @@ async def test_generate_cases_async_returns_cases(patched_agent):
     gen = AdversarialCaseGenerator()
     cases = await gen.generate_cases_async(
         agent={"system_prompt": "x", "tools": []},
-        risk_categories=["guideline_bypass"],
+        risk_categories=["prompt_injection"],
         num_cases=1,
     )
     assert len(cases) == 1
