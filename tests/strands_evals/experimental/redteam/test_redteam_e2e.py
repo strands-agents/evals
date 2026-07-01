@@ -112,14 +112,14 @@ def test_generated_cases_end_to_end():
         patch("strands_evals.experimental.redteam.generators.adversarial.Agent") as gen_agent_cls,
         patch("strands_evals.experimental.redteam.generators.adversarial._extract_tool_info") as extract,
     ):
-        from strands_evals.experimental.redteam.generators.adversarial import _AttackCase, _AttackCases
+        from strands_evals.experimental.redteam.generators.adversarial import AttackCase, AttackCases
 
         gen_agent = MagicMock()
         gen_agent.invoke_async = _async_return(
             MagicMock(
-                structured_output=_AttackCases(
+                structured_output=AttackCases(
                     cases=[
-                        _AttackCase(
+                        AttackCase(
                             actor_goal="g0",
                             target_context="ctx",
                             traits={},

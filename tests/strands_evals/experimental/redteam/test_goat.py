@@ -9,7 +9,7 @@ from strands_evals.experimental.redteam.strategies import CrescendoStrategy, Goa
 from strands_evals.experimental.redteam.strategies.base import AttackRunResult
 from strands_evals.experimental.redteam.strategies.goat import (
     _ATTACK_NAMES,
-    _AttackerTurn,
+    AttackerTurn,
     gen_attacker_turn,
     success_score,
 )
@@ -62,8 +62,8 @@ def _case(
     )
 
 
-def _turn(reply="next message", attacks=None, observation="obs", thought="th", strategy="st") -> _AttackerTurn:
-    return _AttackerTurn(
+def _turn(reply="next message", attacks=None, observation="obs", thought="th", strategy="st") -> AttackerTurn:
+    return AttackerTurn(
         observation=observation,
         thought=thought,
         strategy=strategy,
@@ -87,7 +87,7 @@ def _strategy(**kwargs) -> GoatStrategy:
 def _run(strat, case, session, *, turns, score_fn=None, max_turns=5):
     """Drive ``strat.run_attack`` with the module helpers patched (mirrors test_crescendo).
 
-    ``turns`` is a list of ``_AttackerTurn | None`` (None simulates a parse failure); ``score_fn``
+    ``turns`` is a list of ``AttackerTurn | None`` (None simulates a parse failure); ``score_fn``
     maps a target response to a float (default 0.0 -> never early-stops). ``success_score`` keeps
     its no-criteria-returns-0 contract so the no-criteria test still exercises the real gate path.
     """
