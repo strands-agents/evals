@@ -16,7 +16,7 @@ import math
 import random
 import re
 from abc import abstractmethod
-from typing import Annotated, Any, Callable, ClassVar, Literal, Union
+from typing import Annotated, Any, ClassVar, Literal, Union
 
 from pydantic import BaseModel, Discriminator, Field, Tag
 
@@ -344,22 +344,6 @@ class ModelEffect(ChaosEffect):
 
 
 # ---------------------------------------------------------------------------
-# Helper — module-level (used by text-transforming model effects)
-# ---------------------------------------------------------------------------
-
-
-def _apply_text_to_blocks(blocks: list, fn: Callable[[str], str]) -> list:
-    """Apply *fn* to every ``"text"`` value; leave other blocks untouched."""
-    result = []
-    for block in blocks:
-        block = dict(block)
-        if "text" in block and isinstance(block["text"], str):
-            block["text"] = fn(block["text"])
-        result.append(block)
-    return result
-
-
-# ---------------------------------------------------------------------------
 # a) MalformedJson
 # ---------------------------------------------------------------------------
 
@@ -410,8 +394,12 @@ class MalformedJson(ModelEffect):
 class EmptyResponse(ModelEffect):
     """Returns empty content."""
 
-    hook: ClassVar[Literal["pre", "post"]] = "post"
+    hook: ClassVar[Literal["pre", "post"]] = "pre"
     effect_type: Literal["empty_response"] = "empty_response"
+
+    def cancel_message(self) -> str:
+        # Pre-cancel with single space (truthy) skips real model call — "model returned nothing".
+        return " "
 
     def apply(self, content: Any = None) -> Any:
         if content is None:
@@ -451,7 +439,13 @@ class Confabulation(ModelEffect):
         if isinstance(content, str):
             return self._confabulate(content)
         elif isinstance(content, list):
-            return _apply_text_to_blocks(content, self._confabulate)
+            result = []
+            for block in content:
+                block = dict(block)
+                if "text" in block and isinstance(block["text"], str):
+                    block["text"] = self._confabulate(block["text"])
+                result.append(block)
+            return result
         raise ValueError(f"Confabulation.apply() received unsupported type {type(content).__name__}")
 
     def _confabulate(self, text: str) -> str:
