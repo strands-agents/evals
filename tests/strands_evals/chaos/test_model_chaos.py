@@ -1,11 +1,13 @@
-"""Unit tests for model output chaos via ChaosPlugin MessageAddedEvent callback.
+"""Unit tests for model output chaos via ChaosPlugin two-hook architecture.
 
 Tests cover:
-- Per-effect corruption on final assistant messages (end_turn, no toolUse)
-- Guard: toolUse-carrying messages are NOT corrupted
-- Guard: user/tool messages are NOT corrupted
-- Guard: passthrough when no config set
-- structured_output_model path: messages with toolUse are skipped (deferred scope)
+- 6.1: Effects constructed via keyed dict {"model_effects": {"*": [...]}}
+- 6.2: EmptyResponse as pre-hook: model not called, turn is single space
+- 6.3: FullRefusal as pre-hook: model not called, turn is refusal text
+- 6.4: MalformedJson on structured-output toolUse: toolUse input corrupted
+- 6.5: Post effects (Confabulation, MalformedJson-on-text, SuccessFraming) work
+- 6.6: Mixed pre+post still produces one turn (pre wins)
+- 6.7: MalformedJson DOES reach/corrupt structured-output toolUse
 """
 
 import copy
@@ -22,11 +24,22 @@ from strands_evals.chaos.effects import (
 )
 from strands_evals.chaos.plugin import ChaosPlugin
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-def _make_event(message: dict) -> MagicMock:
-    """Create a mock MessageAddedEvent with the given message."""
+
+def _make_event(message: dict, dynamic_tools: dict | None = None) -> MagicMock:
+    """Create a mock MessageAddedEvent with the given message.
+
+    Args:
+        message: The message dict.
+        dynamic_tools: Optional dict of dynamic tool names -> tools (structured-output tools).
+            If None, defaults to empty dict (no structured-output tools registered).
+    """
     event = MagicMock()
     event.message = message
+    event.agent.tool_registry.dynamic_tools = dynamic_tools or {}
     return event
 
 
@@ -66,261 +79,111 @@ def _tool_result_message() -> dict:
 
 
 def _set_chaos_case(model_effects):
-    """Helper to set the _current_chaos_case ContextVar with given model_effects."""
+    """Helper to set the _current_chaos_case ContextVar with given model_effects.
+
+    Uses keyed dict form: effects={"model_effects": {"*": model_effects}}
+    """
     case = ChaosCase(
         name="test_case",
         input="test input",
-        model_effects=model_effects,
+        effects={"model_effects": {"*": model_effects}},
     )
     _current_chaos_case.set(case)
     return case
 
 
 # ---------------------------------------------------------------------------
-# Per-effect corruption tests on final end_turn assistant messages
+# 6.1: Effects constructed via keyed dict
 # ---------------------------------------------------------------------------
 
 
-class TestModelChaosFormatCorruptionMalformedJson:
-    """MALFORMED_JSON effect corrupts the final assistant message."""
+class TestKeyedDictConstruction:
+    """Effects are constructed via keyed dict form."""
 
-    def test_malformed_json_corrupts_json_text(self):
-        _set_chaos_case([MalformedJson()])
-        plugin = ChaosPlugin()
-        message = _final_assistant_message('{"key": "value", "nested": {"a": 1}}')
-        event = _make_event(message)
+    def test_keyed_dict_form_is_valid(self):
+        """ChaosCase accepts effects={"model_effects": {"*": [...]}}."""
+        case = ChaosCase(
+            name="keyed",
+            input="test",
+            effects={"model_effects": {"*": [MalformedJson()]}},
+        )
+        assert case.model_effects == [MalformedJson()]
 
-        plugin.after_model_invocation(event)
+    def test_wildcard_resolver(self):
+        """model_effects property resolves '*' wildcard to flat list."""
+        case = ChaosCase(
+            name="wildcard",
+            input="test",
+            effects={"model_effects": {"*": [FullRefusal(), MalformedJson()]}},
+        )
+        assert len(case.model_effects) == 2
+        assert isinstance(case.model_effects[0], FullRefusal)
+        assert isinstance(case.model_effects[1], MalformedJson)
 
-        # Content should be corrupted (JSON truncated)
-        result_text = message["content"][0]["text"]
-        assert result_text != '{"key": "value", "nested": {"a": 1}}'
-
-    def teardown_method(self):
-        _current_chaos_case.set(None)
+    def test_empty_effects_baseline(self):
+        """Empty effects dict produces no model_effects."""
+        case = ChaosCase(name="baseline", input="test", effects={})
+        assert case.model_effects == []
 
 
-class TestModelChaosFormatCorruptionEmptyResponse:
-    """EMPTY_RESPONSE effect empties the final assistant message content."""
+# ---------------------------------------------------------------------------
+# 6.2: EmptyResponse as pre-hook
+# ---------------------------------------------------------------------------
 
-    def test_empty_response_on_final_message(self):
+
+class TestEmptyResponsePreHook:
+    """EmptyResponse is a pre-hook effect — cancels model call with single space."""
+
+    def test_empty_response_cancels_with_single_space(self):
+        """before_model_invocation sets event.cancel to ' ' (single space)."""
         _set_chaos_case([EmptyResponse()])
         plugin = ChaosPlugin()
-        message = _final_assistant_message("Hello world")
-        event = _make_event(message)
+        event = MagicMock()
 
-        plugin.after_model_invocation(event)
+        plugin.before_model_invocation(event)
 
-        assert message["content"] == []
+        # event.cancel should be set to single space
+        assert event.cancel == " "
 
-    def teardown_method(self):
-        _current_chaos_case.set(None)
-
-
-class TestModelChaosHallucination:
-    """Hallucination effect corrupts the final assistant message text."""
-
-    def test_confabulation_injects_template(self):
-        _set_chaos_case([Confabulation()])
+    def test_empty_response_model_not_called(self):
+        """When EmptyResponse fires as pre-hook, post-hook does not apply effects."""
+        _set_chaos_case([EmptyResponse()])
         plugin = ChaosPlugin()
-        original_text = "The weather is sunny. It is warm outside. Birds are singing."
-        message = _final_assistant_message(original_text)
-        event = _make_event(message)
 
-        plugin.after_model_invocation(event)
+        # Pre-hook fires
+        pre_event = MagicMock()
+        plugin.before_model_invocation(pre_event)
+        assert pre_event.cancel == " "
 
-        result_text = message["content"][0]["text"]
-        assert result_text != original_text
-        # Should contain original text fragments
-        assert "sunny" in result_text or "warm" in result_text
+        # SDK builds cancel message, MessageAddedEvent fires
+        cancel_message = {"role": "assistant", "content": [{"text": " "}]}
+        post_event = _make_event(cancel_message)
+        plugin.after_model_invocation(post_event)
+
+        # Content should be unchanged (pre effects skip post processing)
+        assert cancel_message["content"] == [{"text": " "}]
 
     def teardown_method(self):
         _current_chaos_case.set(None)
 
 
-class TestModelChaosRefusal:
-    """FULL_REFUSAL is a pre-hook effect — it uses before_model_invocation."""
+# ---------------------------------------------------------------------------
+# 6.3: FullRefusal as pre-hook (unchanged behavior)
+# ---------------------------------------------------------------------------
 
-    def test_refusal_cancels_model_call(self):
+
+class TestFullRefusalPreHook:
+    """FullRefusal is a pre-hook effect — cancels model call with refusal text."""
+
+    def test_full_refusal_cancels_model_call(self):
+        """before_model_invocation sets event.cancel to a refusal template."""
         _set_chaos_case([FullRefusal()])
         plugin = ChaosPlugin()
         event = MagicMock()
 
         plugin.before_model_invocation(event)
 
-        # event.cancel should be set to a refusal template string
         assert event.cancel in FullRefusal._REFUSAL_TEMPLATES
-
-    def teardown_method(self):
-        _current_chaos_case.set(None)
-
-
-class TestModelChaosSuccessFraming:
-    """Success framing prepends a confident prefix after corruption."""
-
-    def test_success_framing_with_empty_response(self):
-        # SuccessFraming is a post-hook composable effect
-        _set_chaos_case([EmptyResponse(), SuccessFraming()])
-        plugin = ChaosPlugin()
-        message = _final_assistant_message("Here is the code you requested...")
-        event = _make_event(message)
-
-        plugin.after_model_invocation(event)
-
-        # EmptyResponse clears content to [], then SuccessFraming prepends a
-        # prefix block (disguises the emptied response with confident framing)
-        assert len(message["content"]) == 1
-        result_text = message["content"][0]["text"]
-        assert result_text in SuccessFraming._SUCCESS_PREFIXES
-
-    def teardown_method(self):
-        _current_chaos_case.set(None)
-
-
-# ---------------------------------------------------------------------------
-# Guard tests
-# ---------------------------------------------------------------------------
-
-
-class TestModelChaosGuardToolUseMessage:
-    """Messages with toolUse blocks are NOT corrupted (guard skips them)."""
-
-    def test_empty_response_on_tooluse_message_not_corrupted(self):
-        """EMPTY_RESPONSE on a tool_use message passes through; toolUse intact."""
-        _set_chaos_case([EmptyResponse()])
-        plugin = ChaosPlugin()
-        message = _tooluse_assistant_message()
-        original_content = copy.deepcopy(message["content"])
-        event = _make_event(message)
-
-        plugin.after_model_invocation(event)
-
-        # Content should be UNCHANGED — guard skipped corruption
-        assert message["content"] == original_content
-        # toolUse blocks should be intact
-        tool_blocks = [b for b in message["content"] if "toolUse" in b]
-        assert len(tool_blocks) == 1
-        assert tool_blocks[0]["toolUse"]["name"] == "search"
-
-    def test_full_refusal_does_not_affect_post_hook(self):
-        """FullRefusal is pre-hook only — after_model_invocation with toolUse still passes through."""
-        _set_chaos_case([FullRefusal()])
-        plugin = ChaosPlugin()
-        message = _tooluse_assistant_message()
-        original_content = copy.deepcopy(message["content"])
-        event = _make_event(message)
-
-        plugin.after_model_invocation(event)
-
-        # FullRefusal is pre-hook, so post hook has no post effects to apply
-        assert message["content"] == original_content
-
-    def teardown_method(self):
-        _current_chaos_case.set(None)
-
-
-class TestModelChaosGuardStructuredOutputPath:
-    """structured_output_model path fires MessageAddedEvent with toolUse — guard skips it."""
-
-    def test_structured_output_tool_message_not_corrupted(self):
-        """A message containing the structured output tool call is NOT corrupted."""
-        _set_chaos_case([EmptyResponse()])
-        plugin = ChaosPlugin()
-        # Simulate the structured output tool invocation message
-        message = {
-            "role": "assistant",
-            "content": [
-                {
-                    "toolUse": {
-                        "toolUseId": "so_1",
-                        "name": "structured_output__MyModel",
-                        "input": {"field1": "value1"},
-                    }
-                },
-            ],
-        }
-        original_content = copy.deepcopy(message["content"])
-        event = _make_event(message)
-
-        plugin.after_model_invocation(event)
-
-        # Guard should skip — toolUse block present
-        assert message["content"] == original_content
-
-    def teardown_method(self):
-        _current_chaos_case.set(None)
-
-
-class TestModelChaosGuardFinalMessage:
-    """Final end_turn assistant message IS corrupted."""
-
-    def test_final_end_turn_message_corrupted(self):
-        """An end_turn message with text only (no toolUse) gets corrupted."""
-        _set_chaos_case([EmptyResponse()])
-        plugin = ChaosPlugin()
-        message = _final_assistant_message("Hello world")
-        event = _make_event(message)
-
-        plugin.after_model_invocation(event)
-
-        assert message["content"] == []
-
-    def teardown_method(self):
-        _current_chaos_case.set(None)
-
-
-class TestModelChaosGuardRoleFiltering:
-    """User and tool result messages are NOT corrupted."""
-
-    def test_user_message_not_corrupted(self):
-        _set_chaos_case([EmptyResponse()])
-        plugin = ChaosPlugin()
-        message = _user_message()
-        original_content = copy.deepcopy(message["content"])
-        event = _make_event(message)
-
-        plugin.after_model_invocation(event)
-
-        assert message["content"] == original_content
-
-    def test_tool_result_message_not_corrupted(self):
-        _set_chaos_case([EmptyResponse()])
-        plugin = ChaosPlugin()
-        message = _tool_result_message()
-        original_content = copy.deepcopy(message["content"])
-        event = _make_event(message)
-
-        plugin.after_model_invocation(event)
-
-        assert message["content"] == original_content
-
-    def teardown_method(self):
-        _current_chaos_case.set(None)
-
-
-class TestModelChaosPassthrough:
-    """No corruption when no model_effects is set."""
-
-    def test_no_config_passes_through(self):
-        # No chaos case set — plugin should pass through
-        _current_chaos_case.set(None)
-        plugin = ChaosPlugin()
-        message = _final_assistant_message("Hello world")
-        original_content = copy.deepcopy(message["content"])
-        event = _make_event(message)
-
-        plugin.after_model_invocation(event)
-
-        assert message["content"] == original_content
-
-
-# ---------------------------------------------------------------------------
-# Pre-hook integration test
-# ---------------------------------------------------------------------------
-
-
-class TestModelChaosPreHookIntegration:
-    """Integration test: FullRefusal pre-hook produces one assistant turn."""
 
     def test_full_refusal_produces_single_turn(self):
         """FullRefusal cancels model call, SDK builds cancel message, run ends."""
@@ -347,16 +210,164 @@ class TestModelChaosPreHookIntegration:
 
 
 # ---------------------------------------------------------------------------
-# Mixed pre+post case test
+# 6.4: MalformedJson on structured-output toolUse
 # ---------------------------------------------------------------------------
 
 
-class TestModelChaosMixedCase:
+class TestMalformedJsonStructuredOutput:
+    """MalformedJson DOES reach and corrupt structured-output toolUse blocks only."""
+
+    def test_malformed_json_corrupts_structured_output_tooluse(self):
+        """MalformedJson corrupts toolUse input when tool is in dynamic_tools (structured-output)."""
+        _set_chaos_case([MalformedJson()])
+        plugin = ChaosPlugin()
+        message = {
+            "role": "assistant",
+            "content": [
+                {"toolUse": {"toolUseId": "so_1", "name": "MyModel", "input": {"field1": "value1"}}},
+            ],
+        }
+        # Register "MyModel" as a structured-output dynamic tool
+        event = _make_event(message, dynamic_tools={"MyModel": MagicMock()})
+
+        plugin.after_model_invocation(event)
+
+        # toolUse input should be corrupted — now a truncated JSON string
+        tool_use_block = message["content"][0]["toolUse"]
+        corrupted_input = tool_use_block["input"]
+        assert isinstance(corrupted_input, str)
+        assert not corrupted_input.endswith("}")
+
+    def test_plain_tooluse_not_corrupted_even_with_malformed_json(self):
+        """A plain mid-turn toolUse (not in dynamic_tools) is NOT corrupted by MalformedJson."""
+        _set_chaos_case([MalformedJson()])
+        plugin = ChaosPlugin()
+        message = {
+            "role": "assistant",
+            "content": [
+                {"toolUse": {"toolUseId": "tu_1", "name": "search", "input": {"query": "test"}}},
+            ],
+        }
+        original_content = copy.deepcopy(message["content"])
+        # "search" is NOT in dynamic_tools — it's a regular tool
+        event = _make_event(message, dynamic_tools={})
+
+        plugin.after_model_invocation(event)
+
+        # Content should be UNCHANGED — Guard 2 rejects (no structured-output tool found)
+        assert message["content"] == original_content
+
+    def test_mixed_tooluse_only_structured_output_corrupted(self):
+        """In a message with both regular and structured-output toolUse, only SO is corrupted."""
+        _set_chaos_case([MalformedJson()])
+        plugin = ChaosPlugin()
+        message = {
+            "role": "assistant",
+            "content": [
+                {"toolUse": {"toolUseId": "tu_1", "name": "search", "input": {"query": "test"}}},
+                {"toolUse": {"toolUseId": "so_1", "name": "MyModel", "input": {"field1": "value1"}}},
+            ],
+        }
+        # Only "MyModel" is structured-output
+        event = _make_event(message, dynamic_tools={"MyModel": MagicMock()})
+
+        plugin.after_model_invocation(event)
+
+        # "search" toolUse should be UNCHANGED
+        search_block = message["content"][0]["toolUse"]
+        assert search_block["input"] == {"query": "test"}
+        # "MyModel" toolUse should be CORRUPTED
+        so_block = message["content"][1]["toolUse"]
+        assert isinstance(so_block["input"], str)
+        assert not so_block["input"].endswith("}")
+
+    def teardown_method(self):
+        _current_chaos_case.set(None)
+
+
+# ---------------------------------------------------------------------------
+# 6.5: Post effects still work on text-only messages
+# ---------------------------------------------------------------------------
+
+
+class TestPostEffectsOnText:
+    """Post effects (Confabulation, MalformedJson-on-text, SuccessFraming) work."""
+
+    def test_confabulation_injects_template(self):
+        """Confabulation injects fabricated citations into text content."""
+        _set_chaos_case([Confabulation()])
+        plugin = ChaosPlugin()
+        original_text = "The weather is sunny. It is warm outside. Birds are singing."
+        message = _final_assistant_message(original_text)
+        event = _make_event(message)
+
+        plugin.after_model_invocation(event)
+
+        result_text = message["content"][0]["text"]
+        assert result_text != original_text
+        # Should contain original text fragments
+        assert "sunny" in result_text or "warm" in result_text
+
+    def test_malformed_json_on_text(self):
+        """MalformedJson truncates JSON-like text content."""
+        _set_chaos_case([MalformedJson()])
+        plugin = ChaosPlugin()
+        message = _final_assistant_message('{"key": "value", "nested": {"a": 1}}')
+        event = _make_event(message)
+
+        plugin.after_model_invocation(event)
+
+        result_text = message["content"][0]["text"]
+        assert result_text != '{"key": "value", "nested": {"a": 1}}'
+        # Should be truncated (roughly half the original)
+        assert len(result_text) < len('{"key": "value", "nested": {"a": 1}}')
+
+    def test_success_framing_prepends_prefix(self):
+        """SuccessFraming prepends a confident prefix to text content."""
+        _set_chaos_case([SuccessFraming()])
+        plugin = ChaosPlugin()
+        message = _final_assistant_message("Here is the result.")
+        event = _make_event(message)
+
+        plugin.after_model_invocation(event)
+
+        result_text = message["content"][0]["text"]
+        # Should start with one of the success prefixes
+        has_prefix = any(result_text.startswith(p) for p in SuccessFraming._SUCCESS_PREFIXES)
+        assert has_prefix
+        # Original text should still be present
+        assert "Here is the result." in result_text
+
+    def test_confabulation_plus_success_framing(self):
+        """Confabulation + SuccessFraming compose: citation injected, then prefix prepended."""
+        _set_chaos_case([Confabulation(), SuccessFraming()])
+        plugin = ChaosPlugin()
+        original_text = "The weather is sunny. It is warm outside. Birds are singing."
+        message = _final_assistant_message(original_text)
+        event = _make_event(message)
+
+        plugin.after_model_invocation(event)
+
+        result_text = message["content"][0]["text"]
+        # Should start with a success prefix (SuccessFraming applied last)
+        has_prefix = any(result_text.startswith(p) for p in SuccessFraming._SUCCESS_PREFIXES)
+        assert has_prefix
+
+    def teardown_method(self):
+        _current_chaos_case.set(None)
+
+
+# ---------------------------------------------------------------------------
+# 6.6: Mixed pre+post still produces one turn (pre wins)
+# ---------------------------------------------------------------------------
+
+
+class TestMixedPrePostCase:
     """Mixed pre+post effects: pre wins, post does NOT double-corrupt."""
 
-    def test_pre_plus_post_produces_single_uncorrupted_turn(self):
-        """ChaosCase with FullRefusal + EmptyResponse: pre cancels, post skipped."""
-        _set_chaos_case([FullRefusal(), EmptyResponse()])
+    def test_full_refusal_plus_malformed_json(self):
+        """FullRefusal (pre) + MalformedJson (post): pre cancels, post skipped."""
+        _set_chaos_case([FullRefusal(), MalformedJson()])
         plugin = ChaosPlugin()
 
         # Pre-hook fires and cancels
@@ -370,9 +381,142 @@ class TestModelChaosMixedCase:
         post_event = _make_event(cancel_message)
         plugin.after_model_invocation(post_event)
 
-        # Post effect (EmptyResponse) should NOT have emptied the content
+        # Post effect (MalformedJson) should NOT have corrupted the content
         assert cancel_message["content"] == [{"text": cancel_text}]
         assert len(cancel_message["content"]) == 1
+
+    def test_empty_response_plus_success_framing(self):
+        """EmptyResponse (pre) + SuccessFraming (post): pre cancels, post skipped."""
+        _set_chaos_case([EmptyResponse(), SuccessFraming()])
+        plugin = ChaosPlugin()
+
+        # Pre-hook fires
+        pre_event = MagicMock()
+        plugin.before_model_invocation(pre_event)
+        assert pre_event.cancel == " "
+
+        # SDK builds cancel message with single space
+        cancel_message = {"role": "assistant", "content": [{"text": " "}]}
+        post_event = _make_event(cancel_message)
+        plugin.after_model_invocation(post_event)
+
+        # SuccessFraming (post) should NOT have been applied
+        assert cancel_message["content"] == [{"text": " "}]
+
+    def teardown_method(self):
+        _current_chaos_case.set(None)
+
+
+# ---------------------------------------------------------------------------
+# 6.7: MalformedJson DOES reach structured-output toolUse (replaces old guard test)
+# ---------------------------------------------------------------------------
+
+
+class TestMalformedJsonReachesStructuredOutput:
+    """MalformedJson reaches structured-output toolUse (Guard 2 relaxed for it)."""
+
+    def test_malformed_json_corrupts_structured_output_tooluse(self):
+        """MalformedJson DOES corrupt a structured-output toolUse block."""
+        _set_chaos_case([MalformedJson()])
+        plugin = ChaosPlugin()
+        message = {
+            "role": "assistant",
+            "content": [
+                {
+                    "toolUse": {
+                        "toolUseId": "so_1",
+                        "name": "MyModel",
+                        "input": {"field1": "value1"},
+                    }
+                },
+            ],
+        }
+        event = _make_event(message, dynamic_tools={"MyModel": MagicMock()})
+
+        plugin.after_model_invocation(event)
+
+        # The toolUse input should now be a corrupted string, not a dict
+        tool_use_block = message["content"][0]["toolUse"]
+        assert isinstance(tool_use_block["input"], str)
+        assert not tool_use_block["input"].endswith("}")
+
+    def test_other_post_effects_still_skip_tooluse(self):
+        """Confabulation on a toolUse message is skipped (Guard 2 only relaxed for MalformedJson)."""
+        _set_chaos_case([Confabulation()])
+        plugin = ChaosPlugin()
+        message = _tooluse_assistant_message()
+        original_content = copy.deepcopy(message["content"])
+        event = _make_event(message)
+
+        plugin.after_model_invocation(event)
+
+        # Content should be UNCHANGED — guard skipped corruption
+        assert message["content"] == original_content
+
+    def teardown_method(self):
+        _current_chaos_case.set(None)
+
+
+# ---------------------------------------------------------------------------
+# Guard tests (role filtering, passthrough)
+# ---------------------------------------------------------------------------
+
+
+class TestGuardRoleFiltering:
+    """User and tool result messages are NOT corrupted."""
+
+    def test_user_message_not_corrupted(self):
+        _set_chaos_case([Confabulation()])
+        plugin = ChaosPlugin()
+        message = _user_message()
+        original_content = copy.deepcopy(message["content"])
+        event = _make_event(message)
+
+        plugin.after_model_invocation(event)
+
+        assert message["content"] == original_content
+
+    def test_tool_result_message_not_corrupted(self):
+        _set_chaos_case([Confabulation()])
+        plugin = ChaosPlugin()
+        message = _tool_result_message()
+        original_content = copy.deepcopy(message["content"])
+        event = _make_event(message)
+
+        plugin.after_model_invocation(event)
+
+        assert message["content"] == original_content
+
+    def teardown_method(self):
+        _current_chaos_case.set(None)
+
+
+class TestPassthrough:
+    """No corruption when no model_effects is set."""
+
+    def test_no_config_passes_through(self):
+        _current_chaos_case.set(None)
+        plugin = ChaosPlugin()
+        message = _final_assistant_message("Hello world")
+        original_content = copy.deepcopy(message["content"])
+        event = _make_event(message)
+
+        plugin.after_model_invocation(event)
+
+        assert message["content"] == original_content
+
+    def test_empty_effects_passes_through(self):
+        """ChaosCase with empty effects dict does not corrupt."""
+        case = ChaosCase(name="baseline", input="test", effects={})
+        _current_chaos_case.set(case)
+        plugin = ChaosPlugin()
+        message = _final_assistant_message("Hello world")
+        original_content = copy.deepcopy(message["content"])
+        event = _make_event(message)
+
+        plugin.after_model_invocation(event)
+
+        assert message["content"] == original_content
 
     def teardown_method(self):
         _current_chaos_case.set(None)

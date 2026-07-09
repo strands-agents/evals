@@ -6,6 +6,7 @@ base Case class.
 """
 
 import uuid
+from typing import Any
 
 from pydantic import Field, model_validator
 from typing_extensions import Generic
@@ -26,16 +27,26 @@ class ChaosCase(Case, Generic[InputT, OutputT]):
     ChaosExperiment.
 
     Attributes:
-        effects: A dict keyed by effect category. Currently supports
-            ``"tool_effects"`` mapping tool_name -> list of effects.
+        effects: A dict keyed by effect category. Supports ``"tool_effects"``
+            mapping tool_name -> list of effects, and ``"model_effects"``
+            mapping model_name (or ``"*"`` wildcard) -> list of effects.
 
     Example::
 
         from strands_evals import Case
         from strands_evals.chaos import ChaosCase
-        from strands_evals.chaos.effects import Timeout, TruncateFields
+        from strands_evals.chaos.effects import FullRefusal, Timeout, TruncateFields
 
-        # Direct construction
+        # Direct construction with model effects
+        chaos_case = ChaosCase(
+            name="refusal_test",
+            input="Tell me something",
+            effects={
+                "model_effects": {"*": [FullRefusal()]},
+            },
+        )
+
+        # Direct construction with tool effects
         chaos_case = ChaosCase(
             name="search_timeout",
             input="Find flights to Tokyo",
@@ -55,41 +66,53 @@ class ChaosCase(Case, Generic[InputT, OutputT]):
         # Produces 6 ChaosCase objects: 2 cases × (2 effect maps + 1 baseline)
     """
 
-    effects: dict[str, dict[str, list[ToolEffectUnion]]] = Field(
+    effects: dict[str, Any] = Field(
         default_factory=dict,
-        description="Effect categories. Currently supports 'tool_effects' mapping "
-        "tool_name -> list of effects. Empty dict means baseline (no chaos).",
-    )
-
-    model_effects: list[ModelEffectUnion] = Field(
-        default_factory=list,
-        description="List of model output effects to apply. FullRefusal is pre-hook "
-        "(cancels model call); others are post-hook (corrupt response).",
+        description="Effect categories. Supports 'tool_effects' mapping "
+        "tool_name -> list of effects, and 'model_effects' mapping "
+        "model_name (or '*' wildcard) -> list of effects. "
+        "Empty dict means baseline (no chaos).",
     )
 
     @model_validator(mode="after")
-    def _validate_tool_effects(self) -> "ChaosCase":
-        """Validate tool effects configuration."""
-        allowed_categories = {"tool_effects"}
+    def _validate_effects(self) -> "ChaosCase":
+        """Validate effects configuration structure."""
+        allowed_categories = {"tool_effects", "model_effects"}
         unknown = set(self.effects.keys()) - allowed_categories
         if unknown:
             raise ValueError(
                 f"Unknown effect categories: {sorted(unknown)}. Allowed categories: {sorted(allowed_categories)}."
             )
 
+        # Validate tool_effects: dict[str, list[ToolEffectUnion]]
         for tool_name, effects_list in self.tool_effects.items():
             if len(effects_list) > 1:
                 raise ValueError(
                     f"Tool '{tool_name}' has {len(effects_list)} effects — only 1 is allowed per "
                     f"ChaosCase. Use separate ChaosCase instances to test effects independently."
                 )
+
+        # Validate model_effects: dict[str, list[ModelEffectUnion]]
+        model_effects_map = self.effects.get("model_effects", {})
+        if model_effects_map:
+            if not isinstance(model_effects_map, dict):
+                raise ValueError("'model_effects' must be a dict keyed by model name (or '*' wildcard).")
+            for model_name, effects_list in model_effects_map.items():
+                if not isinstance(model_name, str):
+                    raise ValueError(f"model_effects keys must be strings, got {type(model_name).__name__}.")
+                if not isinstance(effects_list, list):
+                    raise ValueError(
+                        f"model_effects['{model_name}'] must be a list of model effects, "
+                        f"got {type(effects_list).__name__}."
+                    )
+
         return self
 
     @classmethod
     def expand(
         cls,
         cases: list[Case],
-        effect_maps: dict[str, dict[str, dict[str, list[ToolEffectUnion]]]],
+        effect_maps: dict[str, dict[str, Any]],
         include_no_effect_baseline: bool = False,
     ) -> list["ChaosCase"]:
         """Generate the Cartesian product of cases × named effect maps.
@@ -102,13 +125,16 @@ class ChaosCase(Case, Generic[InputT, OutputT]):
             cases: Base test cases to expand.
             effect_maps: Named effect configurations. Keys are short human-readable
                 names (used in the composite case name); values are dicts keyed by
-                effect category (e.g. ``"tool_effects"``) mapping tool_name -> list
-                of effect instances.
+                effect category (e.g. ``"tool_effects"``, ``"model_effects"``)
+                mapping target -> list of effect instances.
                 Example::
 
                     {
                         "search_timeout": {
                             "tool_effects": {"search_tool": [Timeout()]}
+                        },
+                        "refusal": {
+                            "model_effects": {"*": [FullRefusal()]}
                         },
                     }
             include_no_effect_baseline: If True, includes a baseline (no chaos)
@@ -118,7 +144,7 @@ class ChaosCase(Case, Generic[InputT, OutputT]):
             Flat list of ChaosCase objects with composite names like
             "flight_search|baseline" or "flight_search|search_timeout".
         """
-        all_entries: list[tuple[str, dict[str, dict[str, list[ToolEffectUnion]]]]] = []
+        all_entries: list[tuple[str, dict[str, Any]]] = []
 
         if include_no_effect_baseline:
             all_entries.append(("baseline", {}))
@@ -153,6 +179,15 @@ class ChaosCase(Case, Generic[InputT, OutputT]):
     def tool_effects(self) -> dict[str, list[ToolEffectUnion]]:
         """Convenience accessor for effects['tool_effects']."""
         return self.effects.get("tool_effects", {})
+
+    @property
+    def model_effects(self) -> list[ModelEffectUnion]:
+        """Resolve model effects. '*' wildcard applies to all models."""
+        model_effects_map = self.effects.get("model_effects", {})
+        if not model_effects_map:
+            return []
+        # For now, resolve "*" (wildcard = applies to all models)
+        return model_effects_map.get("*", [])
 
     def __repr__(self) -> str:
         effects_str = ", ".join(

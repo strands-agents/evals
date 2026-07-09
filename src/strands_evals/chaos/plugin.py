@@ -5,25 +5,8 @@ native hook system. Handles BOTH tool-level and model-output chaos:
 
 - BeforeToolCallEvent: cancels tool calls for pre-hook effects (Timeout, etc.)
 - AfterToolCallEvent: corrupts tool responses for post-hook effects (TruncateFields, etc.)
-- BeforeModelCallEvent: cancels model call for pre-hook effects (FullRefusal)
-- MessageAddedEvent: corrupts model output for post-hook effects (EmptyResponse, etc.)
-
-Model output corruption uses dict mutation on event.message["content"]. This is
-necessary because AfterModelCallEvent.stop_response is read-only (only `retry`
-is writeable). Dict mutation bypasses _can_write (which only intercepts __setattr__).
-
-The post-model-chaos callback is GUARDED to only corrupt the FINAL agent response:
-- role == "assistant"
-- message content contains NO toolUse blocks
-
-This guard prevents destructive effects (EMPTY_RESPONSE, FULL_REFUSAL) from
-deleting toolUse blocks on mid-turn tool_use messages, which would break the
-agent loop. MessageAddedEvent fires BEFORE tool dispatch.
-
-The pre-model-chaos callback uses BeforeModelCallEvent.cancel to inject a refusal
-message before the model is called. The cancel path builds an assistant message,
-sets stop_reason="end_turn", and ends the agent cycle — no guard needed since
-there is no existing message at pre time.
+- BeforeModelCallEvent: cancels model call for pre-hook effects (FullRefusal, EmptyResponse)
+- MessageAddedEvent: corrupts model output for post-hook effects (MalformedJson, Confabulation, etc.)
 """
 
 import json
@@ -40,6 +23,7 @@ from strands.plugins import Plugin, hook
 from ._context import _current_chaos_case
 from .effects import (
     ChaosEffect,
+    MalformedJson,
     SuccessFraming,
     TruncateFields,
 )
@@ -57,7 +41,7 @@ class ChaosPlugin(Plugin):
         - AfterToolCallEvent: corrupts tool responses for post-hook effects
 
     Model output chaos:
-        - BeforeModelCallEvent: cancels model call for pre-hook effects (FullRefusal)
+        - BeforeModelCallEvent: cancels model call for pre-hook effects (FullRefusal, EmptyResponse)
         - MessageAddedEvent: corrupts the final assistant response content (post effects)
 
     The active ChaosCase is managed via a ContextVar (set by ChaosExperiment).
@@ -66,7 +50,8 @@ class ChaosPlugin(Plugin):
 
     Model output effects are configured via `model_effects` on the ChaosCase.
     Effects are applied sequentially. SuccessFraming is always applied LAST
-    (composable post-step).
+    (composable post-step). MalformedJson can reach structured-output toolUse
+    blocks; other post effects skip toolUse messages.
 
     Example::
 
@@ -77,17 +62,12 @@ class ChaosPlugin(Plugin):
         chaos_case = ChaosCase(
             name="refusal_test",
             input="Tell me about quantum physics",
-            model_effects=[FullRefusal()],
+            effects={
+                "model_effects": {"*": [FullRefusal()]},
+            },
         )
         chaos = ChaosPlugin()
         agent = Agent(model=my_model, tools=[...], plugins=[chaos])
-
-    NOTE on structured_output: When the agent uses structured_output_model, the
-    final response is a toolUse block (containing the structured output tool call).
-    The toolUse guard will skip these messages, so model chaos does NOT affect
-    structured_output responses. This is intentional — corrupting the structured
-    output tool call would break parsing. Future work may add a dedicated
-    structured_output chaos effect that corrupts the tool input fields specifically.
     """
 
     name = "chaos-testing"
@@ -100,9 +80,7 @@ class ChaosPlugin(Plugin):
     def before_tool_call(self, event: BeforeToolCallEvent) -> None:
         """Intercept tool calls to inject pre-hook (error) effects.
 
-        For pre-hook effects (Timeout, NetworkError, ExecutionError,
-        ValidationError), cancels the tool call with the effect's error_message
-        before the tool executes.
+        Cancels the tool call with the effect's error_message before execution.
         """
         chaos_case = _current_chaos_case.get()
         if chaos_case is None or not chaos_case.tool_effects:
@@ -124,8 +102,7 @@ class ChaosPlugin(Plugin):
     def after_tool_call(self, event: AfterToolCallEvent) -> None:
         """Intercept tool results to inject post-hook (corruption) effects.
 
-        For corruption effects (TruncateFields, RemoveFields, CorruptValues),
-        applies effect.apply() to JSON content blocks in the tool response.
+        Applies corruption effects to JSON content blocks in the tool response.
         """
         chaos_case = _current_chaos_case.get()
         if chaos_case is None or not chaos_case.tool_effects:
@@ -148,7 +125,7 @@ class ChaosPlugin(Plugin):
             content = result.get("content")
 
             if isinstance(content, list):
-                result["content"] = self._apply_to_blocks(effect, content)  # type: ignore[assignment]
+                result["content"] = self._apply_to_tool_blocks(effect, content)  # type: ignore[assignment]
 
             logger.info("effect=<%s>, tool=<%s> | applied chaos post-hook", type(effect).__name__, tool_name)
 
@@ -158,13 +135,10 @@ class ChaosPlugin(Plugin):
 
     @hook  # type: ignore[call-overload]
     def before_model_invocation(self, event: BeforeModelCallEvent) -> None:
-        """Intercept model calls to inject pre-hook effects (FullRefusal).
+        """Intercept model calls to inject pre-hook effects (FullRefusal, EmptyResponse).
 
-        For pre-hook effects, cancels the model call by setting event.cancel
-        to the effect's cancel_message. The SDK builds an assistant message
-        from the cancel text, sets stop_reason="end_turn", and ends the cycle.
-
-        No role/toolUse guard is needed here — there is no message yet at pre time.
+        Cancels the model call by setting event.cancel to the effect's cancel_message.
+        No role/toolUse guard is needed — there is no message yet at pre time.
         """
         chaos_case = _current_chaos_case.get()
         if chaos_case is None or not chaos_case.model_effects:
@@ -184,23 +158,8 @@ class ChaosPlugin(Plugin):
     def after_model_invocation(self, event: MessageAddedEvent) -> None:
         """Intercept messages to corrupt the final assistant response.
 
-        GUARD: corruption is applied ONLY when ALL conditions hold:
-            1. message role == "assistant"
-            2. message content contains NO toolUse blocks
-
-        This prevents destructive effects from breaking mid-turn tool dispatch.
-        MessageAddedEvent fires BEFORE the agent extracts toolUse blocks for
-        execution, so corrupting a tool_use message would break the agent loop.
-
-        Only post-hook effects are applied here. If no post effects exist (e.g.
-        only FullRefusal in model_effects), this returns early to prevent
-        double-corruption in mixed pre+post cases.
-
-        NOTE: stop_reason is NOT available on MessageAddedEvent (the event only
-        carries `message: Message`). We use the toolUse-presence check as a proxy:
-        messages with toolUse blocks are mid-turn tool_use messages; messages
-        without are final end_turn responses. This is reliable because end_turn
-        messages never contain toolUse blocks.
+        Guards ensure corruption is only applied to appropriate messages.
+        Only post-hook effects are applied here.
         """
         chaos_case = _current_chaos_case.get()
         if chaos_case is None or not chaos_case.model_effects:
@@ -212,18 +171,11 @@ class ChaosPlugin(Plugin):
         if message.get("role") != "assistant":
             return
 
-        # Guard 2: skip messages with toolUse blocks (mid-turn tool dispatch)
         content = message.get("content")
         if content is None:
             return
 
-        if isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and "toolUse" in block:
-                    return
-
         # If any pre effects exist, they already produced the turn — skip post
-        # to prevent double-corruption in mixed pre+post cases.
         pre_effects = [e for e in chaos_case.model_effects if e.hook == "pre"]
         if pre_effects:
             return
@@ -233,20 +185,27 @@ class ChaosPlugin(Plugin):
         if not post_effects:
             return
 
-        # Separate SuccessFraming from primary effects (applied last)
-        primary_effects: list = [e for e in post_effects if not isinstance(e, SuccessFraming)]
-        framing_effects: list = [e for e in post_effects if isinstance(e, SuccessFraming)]
+        # Guard 2: skip toolUse messages (mid-turn dispatch); exception: MalformedJson on structured-output toolUse.
+        if isinstance(content, list):
+            has_tool_use = any(isinstance(block, dict) and "toolUse" in block for block in content)
+            if has_tool_use:
+                if not any(isinstance(e, MalformedJson) for e in post_effects):
+                    return
+                # Only allow through if toolUse is a structured-output tool (dynamic_tools)
+                so_tool_names = set(event.agent.tool_registry.dynamic_tools.keys())
+                tool_use_names = {
+                    block["toolUse"]["name"] for block in content if isinstance(block, dict) and "toolUse" in block
+                }
+                if not tool_use_names & so_tool_names:
+                    return  # No structured-output toolUse — skip
 
-        # Apply primary effects sequentially
-        corrupted = content
-        for effect in primary_effects:
-            corrupted = effect.apply(corrupted)
+        # Resolve structured-output tool names for _apply_to_model_blocks
+        so_tool_names_set: set[str] = set()
+        if isinstance(content, list) and any(isinstance(b, dict) and "toolUse" in b for b in content):
+            so_tool_names_set = set(event.agent.tool_registry.dynamic_tools.keys())
 
-        # Apply success framing last (composable post-step)
-        for effect in framing_effects:
-            corrupted = effect.apply(corrupted)
-
-        # Mutate via dict assignment (NOT attribute assignment on the event)
+        # Apply model post effects
+        corrupted = self._apply_to_model_blocks(post_effects, content, so_tool_names_set)
         message["content"] = corrupted
 
         effect_names = ", ".join(type(e).__name__ for e in post_effects)
@@ -256,11 +215,57 @@ class ChaosPlugin(Plugin):
         )
 
     # -----------------------------------------------------------------------
+    # Model corruption helpers
+    # -----------------------------------------------------------------------
+
+    def _apply_to_model_blocks(self, post_effects: list, content: list, so_tool_names: set[str] | None = None) -> list:
+        """Apply model post effects to content blocks sequentially.
+
+        Handles text blocks (Confabulation, SuccessFraming, MalformedJson on text)
+        and toolUse blocks (MalformedJson on structured-output tool input only).
+        Ordinary mid-turn toolUse blocks are left untouched.
+        """
+        primary = [e for e in post_effects if not isinstance(e, SuccessFraming)]
+        framing = [e for e in post_effects if isinstance(e, SuccessFraming)]
+
+        corrupted = content
+        for effect in primary:
+            if isinstance(effect, MalformedJson) and so_tool_names:
+                corrupted = self._apply_malformed_json_selective(effect, corrupted, so_tool_names)
+            else:
+                corrupted = effect.apply(corrupted)
+        for effect in framing:
+            corrupted = effect.apply(corrupted)
+        return corrupted
+
+    def _apply_malformed_json_selective(self, effect: MalformedJson, blocks: list, so_tool_names: set[str]) -> list:
+        """Apply MalformedJson only to structured-output toolUse blocks and text blocks.
+
+        Ordinary mid-turn toolUse blocks are left untouched.
+        """
+        result = []
+        for block in blocks:
+            block = dict(block)
+            if "toolUse" in block:
+                tool_name = block["toolUse"].get("name", "")
+                if tool_name in so_tool_names:
+                    # Structured-output toolUse — corrupt the input JSON
+                    tool_use = dict(block["toolUse"])
+                    raw = json.dumps(tool_use.get("input", {}))
+                    tool_use["input"] = raw[:-1] if raw.endswith("}") else raw + "{{{"
+                    block["toolUse"] = tool_use
+                # else: ordinary mid-turn toolUse — leave untouched
+            elif "text" in block and isinstance(block["text"], str):
+                block["text"] = MalformedJson._malform_text(block["text"])
+            result.append(block)
+        return result
+
+    # -----------------------------------------------------------------------
     # Tool corruption helpers
     # -----------------------------------------------------------------------
 
-    def _apply_to_blocks(self, effect: ChaosEffect, blocks: list) -> list:
-        """Apply effect to text blocks in a content list."""
+    def _apply_to_tool_blocks(self, effect: ChaosEffect, blocks: list) -> list:
+        """Apply effect to text blocks in a tool content list."""
         corrupted_blocks = []
         for block in blocks:
             if isinstance(block, dict) and "text" in block:
