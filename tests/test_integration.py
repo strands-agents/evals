@@ -244,19 +244,25 @@ async def test_integration_async_dataset_concurrency():
     many_cases = [Case(name=f"case{i}", input=f"input{i}", expected_output=f"input{i}") for i in range(10)]
     experiment = Experiment(cases=many_cases, evaluators=[SimpleEvaluator()])
 
-    # Create a task with noticeable delay
-    async def slow_task(case):
-        await asyncio.sleep(0.1)  # Each task takes 0.1s
+    # Track how many tasks are in flight at once instead of timing the run:
+    # wall-clock assertions flake on loaded CI runners.
+    in_flight = 0
+    peak_in_flight = 0
+
+    async def tracking_task(case):
+        nonlocal in_flight, peak_in_flight
+        in_flight += 1
+        peak_in_flight = max(peak_in_flight, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
         return case.input
 
-    # Time the execution
-    start_time = asyncio.get_event_loop().time()
-    report = await experiment.run_evaluations_async(slow_task, max_workers=5)
-    end_time = asyncio.get_event_loop().time()
+    report = await experiment.run_evaluations_async(tracking_task, max_workers=5)
 
-    # With 10 tasks taking 0.1s each and 5 workers, should take ~0.2s
-    # (two batches of 5 tasks), not 1.0s (if sequential)
-    assert end_time - start_time < 0.5  # Allow some overhead
+    # With 10 tasks and 5 workers, tasks must overlap (sequential execution
+    # would never exceed 1) and must respect the worker limit.
+    assert peak_in_flight > 1
+    assert peak_in_flight <= 5
 
     # Verify results
     assert len(report.scores) == 10
