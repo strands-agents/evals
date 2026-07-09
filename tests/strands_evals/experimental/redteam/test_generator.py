@@ -8,15 +8,15 @@ from strands import Agent as RealAgent
 from strands_evals.experimental.redteam.case import RedTeamCase
 from strands_evals.experimental.redteam.generators.adversarial import (
     AdversarialCaseGenerator,
-    _AttackCase,
-    _AttackCases,
+    AttackCase,
+    AttackCases,
 )
 
 
-def _mock_attack_cases(n: int = 2) -> _AttackCases:
-    return _AttackCases(
+def _mock_attack_cases(n: int = 2) -> AttackCases:
+    return AttackCases(
         cases=[
-            _AttackCase(
+            AttackCase(
                 actor_goal=f"goal-{i}",
                 target_context=f"ctx-{i}",
                 traits={"role": "tester"},
@@ -125,7 +125,7 @@ def test_target_spec_missing_keys_raises():
 
 def test_empty_llm_response_raises(patched_agent):
     empty_response = MagicMock()
-    empty_response.structured_output = _AttackCases(cases=[])
+    empty_response.structured_output = AttackCases(cases=[])
     patched_agent.return_value.invoke_async = AsyncMock(return_value=empty_response)
     gen = AdversarialCaseGenerator()
     with pytest.raises(RuntimeError, match="produced no cases"):

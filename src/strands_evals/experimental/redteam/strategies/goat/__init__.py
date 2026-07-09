@@ -42,7 +42,7 @@ _ATTACK_NAMES = frozenset(
 )
 
 
-class _AttackerTurn(BaseModel):
+class AttackerTurn(BaseModel):
     """Structured attacker output: the O/T/S/R chain. Only `reply` reaches the target."""
 
     observation: str = Field(description="What the target's last response did")
@@ -54,7 +54,7 @@ class _AttackerTurn(BaseModel):
     reply: str = Field(description="The ONLY field sent to the target: the next message")
 
 
-class _SuccessRating(BaseModel):
+class SuccessRating(BaseModel):
     """Structured judge output: how fully the response meets the success criteria."""
 
     score: float = Field(ge=0.0, le=1.0, description="0.0 no progress, 1.0 criteria fully met")
@@ -70,7 +70,7 @@ def success_score(make_judge: Callable[[], Agent], response: str, success_criter
         return 0.0
     judge = make_judge()
     prompt = f"# Success Criteria\n{success_criteria}\n\n# Target Response\n{response}"
-    result = judge(prompt, structured_output_model=_SuccessRating)
+    result = judge(prompt, structured_output_model=SuccessRating)
     rating = result.structured_output
     if rating is None:
         logger.warning("reason=<parse_failure> | success judge produced no structured output | defaulting to 0")
@@ -80,7 +80,7 @@ def success_score(make_judge: Callable[[], Agent], response: str, success_criter
 
 def gen_attacker_turn(
     attacker: Agent, goal: AttackGoal, last_reply: str, last_response: str, *, first_turn: bool
-) -> _AttackerTurn | None:
+) -> AttackerTurn | None:
     """Generate the next O/T/S/R attacker turn, or return None on a parse failure."""
     if first_turn:
         prompt = goat_v0.INITIAL_TURN_PROMPT.replace("{actor_goal}", goal.actor_goal)
@@ -91,8 +91,8 @@ def gen_attacker_turn(
             .replace("{last_reply}", last_reply)
             .replace("{target_response}", last_response)
         )
-    result = attacker(prompt, structured_output_model=_AttackerTurn)
-    return cast("_AttackerTurn | None", result.structured_output)
+    result = attacker(prompt, structured_output_model=AttackerTurn)
+    return cast("AttackerTurn | None", result.structured_output)
 
 
 class GoatStrategy(AttackStrategy):
