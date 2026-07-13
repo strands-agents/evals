@@ -12,6 +12,14 @@ license = {text = "Apache-2.0"}
 authors = [
     {name = "AWS", email = "opensource@amazon.com"},
 ]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
 
 dependencies = [
     "pydantic>=2.4.0,<3.0.0",
@@ -75,7 +83,7 @@ dependencies = [
 ]
 
 [[tool.hatch.envs.hatch-test.matrix]]
-python = ["3.13", "3.12", "3.11", "3.10"]
+python = ["3.14", "3.13", "3.12", "3.11", "3.10"]
 
 [tool.hatch.envs.default.scripts]
 list = [
