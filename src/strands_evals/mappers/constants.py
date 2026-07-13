@@ -7,7 +7,16 @@ Attribute keys and values are used for span type detection and data extraction.
 # --- Instrumentation scope names ---
 SCOPE_LANGCHAIN_OTEL = "opentelemetry.instrumentation.langchain"
 SCOPE_OPENINFERENCE = "openinference.instrumentation.langchain"
+SCOPE_OPENINFERENCE_SMOLAGENTS = "openinference.instrumentation.smolagents"
 SCOPE_STRANDS = "strands.telemetry.tracer"
+
+# All scopes that should route to OpenInferenceSessionMapper
+SCOPES_OPENINFERENCE_FAMILY = frozenset(
+    [
+        SCOPE_OPENINFERENCE,
+        SCOPE_OPENINFERENCE_SMOLAGENTS,
+    ]
+)
 
 # --- OTEL semantic convention attribute keys ---
 ATTR_LLM_REQUEST_TYPE = "llm.request.type"

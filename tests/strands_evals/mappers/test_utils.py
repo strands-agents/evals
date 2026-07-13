@@ -204,6 +204,12 @@ class TestDetectOtelMapper:
         mapper = detect_otel_mapper(spans)
         assert isinstance(mapper, OpenInferenceSessionMapper)
 
+    def test_detects_smolagents_openinference_scope(self):
+        """Detects OpenInferenceSessionMapper for smolagents openinference scope."""
+        spans = [make_span_dict(scope_name="openinference.instrumentation.smolagents")]
+        mapper = detect_otel_mapper(spans)
+        assert isinstance(mapper, OpenInferenceSessionMapper)
+
 
 class TestReadableSpansToDicts:
     def test_converts_readable_spans(self):

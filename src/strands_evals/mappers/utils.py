@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from .constants import SCOPE_LANGCHAIN_OTEL, SCOPE_OPENINFERENCE, SCOPE_STRANDS
+from .constants import SCOPE_LANGCHAIN_OTEL, SCOPE_STRANDS, SCOPES_OPENINFERENCE_FAMILY
 from .session_mapper import SessionMapper
 
 logger = logging.getLogger(__name__)
@@ -104,7 +104,7 @@ def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
         if scope_name == SCOPE_LANGCHAIN_OTEL:
             return LangChainOtelSessionMapper()
 
-        if scope_name == SCOPE_OPENINFERENCE:
+        if scope_name in SCOPES_OPENINFERENCE_FAMILY:
             return OpenInferenceSessionMapper()
 
         if scope_name == SCOPE_STRANDS:

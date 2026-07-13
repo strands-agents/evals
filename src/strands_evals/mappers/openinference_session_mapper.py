@@ -27,7 +27,7 @@ from ..types.trace import (
     Trace,
     UserMessage,
 )
-from .constants import SCOPE_OPENINFERENCE
+from .constants import SCOPES_OPENINFERENCE_FAMILY
 from .session_mapper import SessionMapper
 
 logger = logging.getLogger(__name__)
@@ -77,8 +77,8 @@ class OpenInferenceSessionMapper(SessionMapper):
         # Normalize input to flat spans
         spans = self._normalize_to_flat_spans(data)
 
-        # Filter to only spans from this scope
-        openinference_spans = [s for s in spans if self._get_scope_name(s) == SCOPE_OPENINFERENCE]
+        # Filter to only spans from this scope (including smolagents variant)
+        openinference_spans = [s for s in spans if self._get_scope_name(s) in SCOPES_OPENINFERENCE_FAMILY]
 
         # Group spans by trace_id
         grouped = defaultdict(list)
@@ -273,7 +273,7 @@ class OpenInferenceSessionMapper(SessionMapper):
         if not tool_name:
             span_name = span.get("name", "")
             # ADOT synthetic spans use the scope name as span name — skip it
-            if span_name and span_name != SCOPE_OPENINFERENCE:
+            if span_name and span_name not in SCOPES_OPENINFERENCE_FAMILY:
                 tool_name = span_name
 
         # Get input from attributes
@@ -296,13 +296,19 @@ class OpenInferenceSessionMapper(SessionMapper):
         if output_value:
             try:
                 if isinstance(output_value, str):
-                    parsed = json.loads(output_value)
-                    tool_output_content = parsed.get("content", str(parsed))
-                    tool_call_id = parsed.get("tool_call_id")
-                    tool_status = parsed.get("status", "success")
+                    try:
+                        parsed = json.loads(output_value)
+                    except json.JSONDecodeError:
+                        parsed = None
+                    if isinstance(parsed, dict):
+                        tool_output_content = parsed.get("content", str(parsed))
+                        tool_call_id = parsed.get("tool_call_id")
+                        tool_status = parsed.get("status", "success")
+                    else:
+                        tool_output_content = output_value
                 elif isinstance(output_value, dict):
                     tool_output_content = output_value.get("content", str(output_value))
-            except json.JSONDecodeError:
+            except Exception:
                 tool_output_content = str(output_value)
 
         # Fallback to span_events format (CloudWatch/ADOT)
@@ -495,7 +501,7 @@ class OpenInferenceSessionMapper(SessionMapper):
         span_events = span.get("span_events", [])
         for event in span_events:
             event_name = event.get("event_name", "")
-            if event_name == SCOPE_OPENINFERENCE:
+            if event_name in SCOPES_OPENINFERENCE_FAMILY:
                 body = event.get("body", {})
                 input_group = body.get("input", {})
                 output_group = body.get("output", {})

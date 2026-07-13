@@ -19,6 +19,7 @@ _LIVE_SPANS_FILE = _FIXTURES_DIR / "openinference_live_spans.json"
 _ADOT_SPANS_FILE = _FIXTURES_DIR / "openinference_adot_spans.json"
 
 SCOPE_NAME = "openinference.instrumentation.langchain"
+SMOLAGENTS_SCOPE_NAME = "openinference.instrumentation.smolagents"
 
 
 def make_span(
@@ -30,6 +31,7 @@ def make_span(
     span_events=None,
     start_time=1700000000000000000,
     end_time=1700000001000000000,
+    scope_name=None,
 ):
     """Build a normalized span dict for OpenInference LangChain traces."""
     return {
@@ -40,7 +42,7 @@ def make_span(
         "start_time": start_time,
         "end_time": end_time,
         "attributes": attributes or {},
-        "scope": {"name": SCOPE_NAME, "version": "0.1.0"},
+        "scope": {"name": scope_name or SCOPE_NAME, "version": "0.1.0"},
         "status": {"code": "OK"},
         "span_events": span_events or [],
     }
@@ -52,6 +54,7 @@ def make_llm_span(
     user_content="Hello",
     assistant_content="Hi there",
     tool_calls=None,
+    scope_name=None,
 ):
     """Build an LLM inference span with openinference attributes."""
     attrs = {
@@ -70,7 +73,7 @@ def make_llm_span(
             )
             attrs[f"llm.output_messages.0.message.tool_calls.{i}.tool_call.id"] = tc.get("id", f"tool-{i}")
 
-    return make_span(trace_id=trace_id, span_id=span_id, attributes=attrs)
+    return make_span(trace_id=trace_id, span_id=span_id, attributes=attrs, scope_name=scope_name)
 
 
 def make_tool_span(
@@ -80,6 +83,7 @@ def make_tool_span(
     tool_input=None,
     tool_output=None,
     tool_call_id="tool-1",
+    scope_name=None,
 ):
     """Build a tool execution span with openinference attributes."""
     tool_input = tool_input or {"expr": "2+2"}
@@ -100,7 +104,7 @@ def make_tool_span(
         "output.value": output_value,
     }
 
-    return make_span(trace_id=trace_id, span_id=span_id, name=tool_name, attributes=attrs)
+    return make_span(trace_id=trace_id, span_id=span_id, name=tool_name, attributes=attrs, scope_name=scope_name)
 
 
 def make_chain_span(
@@ -1349,3 +1353,144 @@ class TestAdotFixtureIntegration:
                 text_only = all(hasattr(c, "text") for c in assistant_content)
                 if text_only:
                     assert any(c.text for c in assistant_content)
+
+
+# =============================================================================
+# Smolagents Scope Support (regression: openinference.instrumentation.smolagents)
+#
+# smolagents (and the OpenInference semantic conventions it follows) sets
+# output.value as a bare string rather than a JSON object with a "content" key,
+# and uses a distinct scope name ("openinference.instrumentation.smolagents")
+# that differs from the LangChain variant. These tests verify the mapper
+# accepts this scope and correctly parses the bare-string output format.
+# =============================================================================
+
+
+class TestSmolagentsScopeSupport:
+    """Regression tests: spans scoped to 'openinference.instrumentation.smolagents'
+    must not be silently filtered out by the mapper's scope check."""
+
+    def setup_method(self):
+        self.mapper = OpenInferenceSessionMapper()
+
+    def test_smolagents_scope_not_filtered(self):
+        """Smolagents-scoped spans are accepted (not silently dropped)."""
+        span = make_tool_span(
+            tool_name="web_search",
+            tool_input={"query": "weather london"},
+            tool_output="15C cloudy",
+            scope_name=SMOLAGENTS_SCOPE_NAME,
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        assert len(session.traces) == 1
+        assert len(session.traces[0].spans) == 1
+
+    def test_smolagents_tool_span(self):
+        """TOOL span with smolagents scope produces ToolExecutionSpan."""
+        span = make_tool_span(
+            tool_name="web_search",
+            tool_input={"query": "weather london"},
+            tool_output="Temperature: 15C, cloudy",
+            tool_call_id="tc-smol",
+            scope_name=SMOLAGENTS_SCOPE_NAME,
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        tool = session.traces[0].spans[0]
+        assert isinstance(tool, ToolExecutionSpan)
+        assert tool.tool_call.name == "web_search"
+        assert tool.tool_call.arguments == {"query": "weather london"}
+        assert tool.tool_result.content == "Temperature: 15C, cloudy"
+
+    def test_smolagents_tool_span_bare_output(self):
+        """TOOL span with bare string output.value (real smolagents format)."""
+        span = make_span(
+            name="DuckDuckGoSearchTool",
+            scope_name=SMOLAGENTS_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "TOOL",
+                "tool.name": "web_search",
+                "input.value": json.dumps({"query": "weather london"}),
+                "output.value": "Temperature: 15C, cloudy with rain",
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        assert len(session.traces[0].spans) == 1
+        tool = session.traces[0].spans[0]
+        assert isinstance(tool, ToolExecutionSpan)
+        assert tool.tool_call.name == "web_search"
+        assert tool.tool_result.content == "Temperature: 15C, cloudy with rain"
+
+    def test_smolagents_llm_span(self):
+        """LLM span with smolagents scope produces InferenceSpan."""
+        span = make_llm_span(
+            user_content="What is 2+2?",
+            assistant_content="4",
+            scope_name=SMOLAGENTS_SCOPE_NAME,
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        assert len(session.traces[0].spans) == 1
+        assert isinstance(session.traces[0].spans[0], InferenceSpan)
+
+    def test_smolagents_full_trace(self):
+        """LLM + TOOL spans with smolagents scope in same trace."""
+        spans = [
+            make_llm_span(
+                trace_id="t1",
+                span_id="s1",
+                user_content="Search for weather",
+                assistant_content="I'll search.",
+                scope_name=SMOLAGENTS_SCOPE_NAME,
+            ),
+            make_tool_span(
+                trace_id="t1",
+                span_id="s2",
+                tool_name="web_search",
+                tool_input={"query": "weather"},
+                tool_output="15C cloudy",
+                scope_name=SMOLAGENTS_SCOPE_NAME,
+            ),
+        ]
+        session = self.mapper.map_to_session(spans, "sess-1")
+
+        assert len(session.traces) == 1
+        span_types = [s.span_type.value for s in session.traces[0].spans]
+        assert "inference" in span_types
+        assert "execute_tool" in span_types
+
+    @pytest.mark.parametrize(
+        "output_value,expected_content",
+        [
+            ("42", "42"),
+            ("[1, 2, 3]", "[1, 2, 3]"),
+            ('"quoted string"', '"quoted string"'),
+            ("true", "true"),
+            ("null", "null"),
+        ],
+        ids=["number", "list", "quoted-string", "boolean", "null"],
+    )
+    def test_smolagents_tool_span_non_dict_json_output(self, output_value, expected_content):
+        """TOOL span with output.value that is valid JSON but not a dict must not crash.
+
+        Regression: json.loads succeeds on numbers/lists/quoted-strings, but the old
+        code called .get() on the result, raising AttributeError and dropping the span.
+        """
+        span = make_span(
+            name="compute_tool",
+            scope_name=SMOLAGENTS_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "TOOL",
+                "tool.name": "compute_tool",
+                "input.value": json.dumps({"x": 1}),
+                "output.value": output_value,
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        assert len(session.traces) == 1
+        assert len(session.traces[0].spans) == 1
+        tool = session.traces[0].spans[0]
+        assert isinstance(tool, ToolExecutionSpan)
+        assert tool.tool_result.content == expected_content
