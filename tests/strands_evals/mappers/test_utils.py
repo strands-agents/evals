@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from strands_evals.mappers import (
     CloudWatchSessionMapper,
+    GenericGenAISessionMapper,
     LangChainOtelSessionMapper,
     OpenInferenceSessionMapper,
     StrandsInMemorySessionMapper,
@@ -211,11 +212,11 @@ class TestDetectOtelMapper:
         mapper = detect_otel_mapper(spans)
         assert isinstance(mapper, StrandsInMemorySessionMapper)
 
-    def test_defaults_to_strands_mapper_for_unknown_scope(self):
-        """Defaults to StrandsInMemorySessionMapper for unknown scope."""
+    def test_defaults_to_generic_mapper_for_unknown_scope(self):
+        """Defaults to GenericGenAISessionMapper for unknown scope."""
         spans = [make_span_dict(scope_name="unknown.scope")]
         mapper = detect_otel_mapper(spans)
-        assert isinstance(mapper, StrandsInMemorySessionMapper)
+        assert isinstance(mapper, GenericGenAISessionMapper)
 
     def test_skips_spans_without_scope(self):
         """Skips spans without scope and continues detection."""
@@ -231,6 +232,33 @@ class TestDetectOtelMapper:
         spans = [make_span_dict(scope_name="openinference.instrumentation.smolagents")]
         mapper = detect_otel_mapper(spans)
         assert isinstance(mapper, OpenInferenceSessionMapper)
+
+    def test_raw_readable_spans_route_to_strands_mapper(self):
+        """Raw ReadableSpan objects (not dicts) route directly to StrandsInMemorySessionMapper."""
+        from unittest.mock import MagicMock
+
+        mock_span = MagicMock()
+        mock_span.context.trace_id = 0x123
+        mock_span.context.span_id = 0x456
+        mapper = detect_otel_mapper([mock_span])
+        assert isinstance(mapper, StrandsInMemorySessionMapper)
+
+    def test_unrecognized_scope_with_gen_ai_attrs_routes_to_generic_mapper(self):
+        """Dict spans with unrecognized scope but gen_ai.operation.name route to GenericGenAISessionMapper."""
+        spans = [
+            make_span_dict(
+                scope_name="my-custom-tracer",
+                attributes={"gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "calc"},
+            )
+        ]
+        mapper = detect_otel_mapper(spans)
+        assert isinstance(mapper, GenericGenAISessionMapper)
+
+    def test_unrecognized_scope_without_gen_ai_attrs_still_returns_mapper(self):
+        """Dict spans with unrecognized scope and no gen_ai attrs still return a mapper (default)."""
+        spans = [make_span_dict(scope_name="totally.unknown", attributes={"custom.key": "val"})]
+        mapper = detect_otel_mapper(spans)
+        assert isinstance(mapper, GenericGenAISessionMapper)
 
 
 class TestReadableSpansToDicts:

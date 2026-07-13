@@ -96,7 +96,7 @@ def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
     - InMemory format: gen_ai.* attributes
 
     Args:
-        spans: List of span dictionaries (normalized or raw)
+        spans: List of span dictionaries (normalized or raw), or ReadableSpan objects
 
     Returns:
         Appropriate SessionMapper instance
@@ -115,12 +115,20 @@ def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
     # Import here to avoid circular imports
     from .adk_otel_session_mapper import ADKOtelSessionMapper
     from .cloudwatch_session_mapper import CloudWatchSessionMapper
+    from .generic_gen_ai_session_mapper import GenericGenAISessionMapper
     from .langchain_otel_session_mapper import LangChainOtelSessionMapper
     from .openinference_session_mapper import OpenInferenceSessionMapper
     from .strands_in_memory_session_mapper import StrandsInMemorySessionMapper
 
     if not spans:
         return StrandsInMemorySessionMapper()
+
+    # Check if input is raw ReadableSpan objects (not dicts).
+    # If so, route directly to StrandsInMemorySessionMapper which handles them natively.
+    if not isinstance(spans[0], dict):
+        return StrandsInMemorySessionMapper()
+
+    # From here, spans are dicts (from readable_spans_to_dicts or CloudWatch parsing)
 
     # Detect scope and format from first relevant span
     for span in spans:
@@ -141,15 +149,19 @@ def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
             # body-scan below determine CloudWatch vs InMemory.
             break
 
-    # Fallback: check if spans use the CloudWatch body format (no scope.name
-    # but have body.input/output structure). This handles raw CloudWatch
-    # log records that haven't been normalized by CloudWatchLogsParser.
+    # Fallback: check if spans use the CloudWatch body format
     for span in spans:
         if get_body(span) is not None:
             return CloudWatchSessionMapper()
 
-    # Default to StrandsInMemorySessionMapper
-    return StrandsInMemorySessionMapper()
+    # Fallback for dict spans with gen_ai.* attributes but unrecognized scope
+    for span in spans:
+        attrs = span.get("attributes", {})
+        if isinstance(attrs, dict) and "gen_ai.operation.name" in attrs:
+            return GenericGenAISessionMapper()
+
+    # Final default for truly unrecognized spans
+    return GenericGenAISessionMapper()
 
 
 def get_body(span: dict) -> dict | None:
