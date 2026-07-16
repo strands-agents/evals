@@ -1,7 +1,15 @@
 """
-OpenInferenceSessionMapper - Maps OpenInference LangChain traces to Session format.
+OpenInferenceSessionMapper - Maps OpenInference traces to Session format.
 
-Handles traces with scope: openinference.instrumentation.langchain
+Handles traces from any producer in the OpenInference family:
+- openinference.instrumentation.langchain (LangChain / LangGraph)
+- openinference.instrumentation.smolagents (HuggingFace smolagents)
+
+Each producer emits spans following the OpenInference semantic conventions but
+with producer-specific encoding differences (e.g. attribute paths for message
+content, tool argument wrapping).  A per-producer normalization step inside
+map_to_session() canonicalizes these differences before the shared conversion
+logic runs.
 """
 
 import ast
@@ -27,20 +35,27 @@ from ..types.trace import (
     Trace,
     UserMessage,
 )
-from .constants import SCOPES_OPENINFERENCE_FAMILY
+from .constants import SCOPE_OPENINFERENCE_SMOLAGENTS, SCOPES_OPENINFERENCE_FAMILY
 from .session_mapper import SessionMapper
 
 logger = logging.getLogger(__name__)
 
 
 class OpenInferenceSessionMapper(SessionMapper):
-    """Maps OpenInference LangChain traces to Session format.
+    """Maps OpenInference traces to Session format.
 
-    This mapper handles traces produced by the openinference-instrumentation-langchain library.
-    It identifies span types using:
-    - Inference spans: openinference.span.kind == "LLM"
-    - Tool execution spans: openinference.span.kind == "TOOL"
-    - Agent invocation spans: openinference.span.kind == "CHAIN" (name=LangGraph) or "AGENT"
+    This mapper handles traces produced by any library in the OpenInference family:
+    - openinference-instrumentation-langchain (LangChain / LangGraph)
+    - openinference-instrumentation-smolagents (HuggingFace smolagents)
+
+    Span type identification uses the openinference.span.kind attribute:
+    - Inference spans: "LLM"
+    - Tool execution spans: "TOOL"
+    - Agent invocation spans: "AGENT" (smolagents CodeAgent.run) or
+      "CHAIN" with name="LangGraph" (LangGraph root graph)
+
+    Producer-specific encoding differences (e.g. message attribute paths,
+    tool argument wrapping) are normalized before shared conversion logic runs.
     """
 
     def __init__(self):
@@ -56,7 +71,7 @@ class OpenInferenceSessionMapper(SessionMapper):
         self._adot_output_cache: dict[str, Any] = {}
 
     def map_to_session(self, data: Any, session_id: str) -> Session:
-        """Map OpenInference LangChain spans to Session format.
+        """Map OpenInference spans to Session format.
 
         Args:
             data: Trace data in various formats:
@@ -80,6 +95,12 @@ class OpenInferenceSessionMapper(SessionMapper):
         # Filter to only spans from this scope (including smolagents variant)
         openinference_spans = [s for s in spans if self._get_scope_name(s) in SCOPES_OPENINFERENCE_FAMILY]
 
+        # Per-producer normalization: canonicalize encoding differences so the
+        # shared conversion logic receives a uniform representation.
+        for span in openinference_spans:
+            if self._get_scope_name(span) == SCOPE_OPENINFERENCE_SMOLAGENTS:
+                self._normalize_smolagents_span(span)
+
         # Group spans by trace_id
         grouped = defaultdict(list)
         for span in openinference_spans:
@@ -94,6 +115,104 @@ class OpenInferenceSessionMapper(SessionMapper):
                 result_traces.append(trace)
 
         return Session(traces=result_traces, session_id=session_id)
+
+    # =========================================================================
+    # Per-producer normalization
+    # =========================================================================
+
+    def _normalize_smolagents_span(self, span: dict) -> None:
+        """Normalize a smolagents span in-place to the canonical representation.
+
+        Smolagents OpenInference instrumentation differs from the LangChain variant:
+        1. LLM message content uses plural path:
+           llm.input_messages.N.message.contents.0.message_content.text
+           instead of singular: llm.input_messages.N.message.content
+        2. Tool input.value wraps arguments in:
+           {"args": [...], "kwargs": {...}, "sanitize_inputs_outputs": ...}
+           instead of clean logical arguments.
+        3. AGENT spans carry user_task (input.value) and final response (output.value)
+           as plain strings rather than structured messages.
+        """
+        attrs = span.get("attributes", {})
+        span_kind = attrs.get("openinference.span.kind", "")
+
+        if span_kind == "LLM":
+            self._normalize_smolagents_llm_attrs(attrs)
+        elif span_kind == "TOOL":
+            self._normalize_smolagents_tool_attrs(attrs)
+
+    def _normalize_smolagents_llm_attrs(self, attrs: dict) -> None:
+        """Normalize smolagents LLM span attributes to canonical form.
+
+        Converts plural contents path to singular content path:
+          llm.input_messages.N.message.contents.0.message_content.text
+          → llm.input_messages.N.message.content
+
+          llm.output_messages.N.message.contents.0.message_content.text
+          → llm.output_messages.N.message.content
+        """
+        # Normalize input messages
+        idx = 0
+        while True:
+            prefix = f"llm.input_messages.{idx}.message"
+            role = attrs.get(f"{prefix}.role")
+            if role is None:
+                break
+            # If singular .content is missing, try plural .contents path
+            if not attrs.get(f"{prefix}.content"):
+                content_text = attrs.get(f"{prefix}.contents.0.message_content.text")
+                if content_text:
+                    attrs[f"{prefix}.content"] = content_text
+            idx += 1
+
+        # Normalize output messages
+        idx = 0
+        while True:
+            prefix = f"llm.output_messages.{idx}.message"
+            role = attrs.get(f"{prefix}.role")
+            if role is None:
+                break
+            if not attrs.get(f"{prefix}.content"):
+                content_text = attrs.get(f"{prefix}.contents.0.message_content.text")
+                if content_text:
+                    attrs[f"{prefix}.content"] = content_text
+            idx += 1
+
+    def _normalize_smolagents_tool_attrs(self, attrs: dict) -> None:
+        """Normalize smolagents TOOL span input.value to logical arguments.
+
+        Smolagents instrumentation wraps tool calls as:
+          {"args": [positional_args...], "kwargs": {named_args...},
+           "sanitize_inputs_outputs": bool}
+
+        This normalizes to the kwargs dict (which contains the logical arguments
+        in most smolagents tools), falling back to a merged representation.
+        """
+        input_value = attrs.get("input.value")
+        if not input_value or not isinstance(input_value, str):
+            return
+
+        try:
+            parsed = json.loads(input_value)
+        except json.JSONDecodeError:
+            return
+
+        if not isinstance(parsed, dict):
+            return
+
+        # Only normalize if it looks like the smolagents wrapper format
+        if "kwargs" not in parsed and "args" not in parsed:
+            return
+
+        kwargs = parsed.get("kwargs", {})
+        args = parsed.get("args", [])
+
+        if kwargs and isinstance(kwargs, dict):
+            # kwargs contains the logical named arguments
+            attrs["input.value"] = json.dumps(kwargs)
+        elif args and isinstance(args, list):
+            # Positional args only — store as a list under "args" key
+            attrs["input.value"] = json.dumps({"args": args})
 
     def _build_trace(self, trace_id: str, spans: list[dict], session_id: str) -> Trace:
         """Build a Trace from spans with the same trace_id."""
@@ -189,16 +308,28 @@ class OpenInferenceSessionMapper(SessionMapper):
         """Check if span is an agent invocation span.
 
         Detection:
-        1. Live instrumentation: CHAIN + name=LangGraph
-        2. ADOT body: root LangGraph graph node — input has "messages" without
+        1. Live instrumentation (LangGraph): CHAIN + name=LangGraph
+        2. Live instrumentation (smolagents): AGENT span kind
+        3. ADOT body: root LangGraph graph node — input has "messages" without
            "remaining_steps" (intermediate nodes always have "remaining_steps"),
            and output has "messages".
         """
         attrs = span.get("attributes", {})
         span_kind = attrs.get("openinference.span.kind", "")
         span_name = span.get("name", "")
+
+        # LangGraph: CHAIN span named "LangGraph"
         if span_kind == "CHAIN" and span_name == "LangGraph":
             return True
+
+        # smolagents: AGENT span (e.g. CodeAgent.run) — must have both
+        # input.value (user task) and output.value (final answer) to distinguish
+        # from LangChain's mislabeled routing spans that only carry input.
+        if span_kind == "AGENT":
+            input_val = attrs.get("input.value")
+            output_val = attrs.get("output.value")
+            if input_val and output_val:
+                return True
 
         # ADOT fallback: root LangGraph node has messages in/out but no remaining_steps.
         # Intermediate agent nodes (from create_react_agent) always include
@@ -294,22 +425,19 @@ class OpenInferenceSessionMapper(SessionMapper):
         # Get output from attributes
         output_value = attrs.get("output.value")
         if output_value:
-            try:
-                if isinstance(output_value, str):
-                    try:
-                        parsed = json.loads(output_value)
-                    except json.JSONDecodeError:
-                        parsed = None
-                    if isinstance(parsed, dict):
-                        tool_output_content = parsed.get("content", str(parsed))
-                        tool_call_id = parsed.get("tool_call_id")
-                        tool_status = parsed.get("status", "success")
-                    else:
-                        tool_output_content = output_value
-                elif isinstance(output_value, dict):
-                    tool_output_content = output_value.get("content", str(output_value))
-            except Exception:
-                tool_output_content = str(output_value)
+            if isinstance(output_value, str):
+                try:
+                    parsed = json.loads(output_value)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    tool_output_content = parsed.get("content", str(parsed))
+                    tool_call_id = parsed.get("tool_call_id")
+                    tool_status = parsed.get("status", "success")
+                else:
+                    tool_output_content = output_value
+            elif isinstance(output_value, dict):
+                tool_output_content = output_value.get("content", str(output_value))
 
         # Fallback to span_events format (CloudWatch/ADOT)
         if not tool_name or tool_parameters is None or tool_output_content is None:
@@ -362,14 +490,36 @@ class OpenInferenceSessionMapper(SessionMapper):
         return ToolExecutionSpan(span_info=span_info, tool_call=tool_call, tool_result=tool_result, metadata={})
 
     def _convert_agent_invocation_span(self, span: dict, session_id: str) -> AgentInvocationSpan | None:
-        """Convert OTEL span to AgentInvocationSpan."""
+        """Convert OTEL span to AgentInvocationSpan.
+
+        Handles two formats:
+        - LangGraph: structured messages in span_events body
+        - smolagents: input.value (user task) and output.value (final answer) as plain strings
+        """
         span_info = self._create_span_info(span, session_id)
         trace_id = span.get("trace_id", "")
+        attrs = span.get("attributes", {})
 
-        input_messages, output_messages = self._get_messages_from_span_events(span)
+        user_prompt: str | None = None
+        agent_response: str | None = None
 
-        user_prompt = self._extract_user_prompt(input_messages, span)
-        agent_response = self._extract_agent_response(output_messages, span)
+        # smolagents AGENT spans: input.value is the user task, output.value is the response
+        span_kind = attrs.get("openinference.span.kind", "")
+        if span_kind == "AGENT":
+            input_value = attrs.get("input.value", "")
+            output_value = attrs.get("output.value", "")
+            if isinstance(input_value, str) and input_value:
+                user_prompt = input_value
+            if isinstance(output_value, str) and output_value:
+                agent_response = output_value
+
+        # LangGraph / ADOT: extract from structured messages
+        if not user_prompt or not agent_response:
+            input_messages, output_messages = self._get_messages_from_span_events(span)
+            if not user_prompt:
+                user_prompt = self._extract_user_prompt(input_messages, span)
+            if not agent_response:
+                agent_response = self._extract_agent_response(output_messages, span)
 
         if not user_prompt:
             logger.warning(f"No user_prompt for agent span {span.get('span_id')}")

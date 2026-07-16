@@ -17,6 +17,7 @@ from strands_evals.types.trace import (
 _FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 _LIVE_SPANS_FILE = _FIXTURES_DIR / "openinference_live_spans.json"
 _ADOT_SPANS_FILE = _FIXTURES_DIR / "openinference_adot_spans.json"
+_SMOLAGENTS_SPANS_FILE = _FIXTURES_DIR / "smolagents_live_spans.json"
 
 SCOPE_NAME = "openinference.instrumentation.langchain"
 SMOLAGENTS_SCOPE_NAME = "openinference.instrumentation.smolagents"
@@ -177,6 +178,12 @@ def _load_live_spans():
 def _load_adot_spans():
     """Load ADOT/CloudWatch spans from fixture file."""
     with open(_ADOT_SPANS_FILE) as f:
+        return json.load(f)
+
+
+def _load_smolagents_spans():
+    """Load real smolagents (openinference-instrumentation-smolagents) spans from fixture file."""
+    with open(_SMOLAGENTS_SPANS_FILE) as f:
         return json.load(f)
 
 
@@ -1494,3 +1501,139 @@ class TestSmolagentsScopeSupport:
         tool = session.traces[0].spans[0]
         assert isinstance(tool, ToolExecutionSpan)
         assert tool.tool_result.content == expected_content
+
+
+# =============================================================================
+# Integration Tests: Real smolagents fixture
+# (captured from openinference-instrumentation-smolagents v0.1.31,
+#  smolagents CodeAgent + DuckDuckGoSearchTool, scope
+#  "openinference.instrumentation.smolagents")
+#
+# These tests use ACTUAL spans produced by the instrumentor, validating that the
+# mapper handles real-world encoding:
+# - LLM spans with plural `contents` path (message.contents.0.message_content.text)
+# - TOOL spans with wrapper input.value ({"args":[], "kwargs":{...}, ...})
+# - TOOL spans with bare-string output.value
+# - Root AGENT span (CodeAgent.run) with input.value (task) and output.value (answer)
+# =============================================================================
+
+
+@pytest.fixture(scope="module")
+def smolagents_session():
+    """Map real smolagents spans to a Session."""
+    spans = _load_smolagents_spans()
+    mapper = OpenInferenceSessionMapper()
+    return mapper.map_to_session(spans, "smolagents-sess")
+
+
+class TestSmolagentsFixtureIntegration:
+    """Integration tests using real smolagents OpenInference trace data.
+
+    Fixture was captured from a live run of:
+        CodeAgent(tools=[DuckDuckGoSearchTool()], model=LiteLLMModel(...))
+        agent.run("What is the population of Tokyo?")
+
+    The fixture contains 7 spans:
+        - 2x LLM spans (LiteLLMModel.generate) with plural contents path
+        - 2x TOOL spans (DuckDuckGoSearchTool, FinalAnswerTool) with wrapper input.value
+        - 2x CHAIN spans (Step 1, Step 2)
+        - 1x AGENT span (CodeAgent.run)
+    """
+
+    def test_session_has_traces(self, smolagents_session):
+        """Smolagents fixture produces at least one trace."""
+        assert len(smolagents_session.traces) >= 1
+
+    def test_all_spans_routed_to_mapper(self, smolagents_session):
+        """All smolagents spans are accepted by the mapper (not silently dropped)."""
+        all_spans = [s for t in smolagents_session.traces for s in t.spans]
+        # At minimum: tool spans + agent span should survive conversion
+        assert len(all_spans) >= 3
+
+    def test_produces_tool_execution_spans(self, smolagents_session):
+        """TOOL spans with wrapper input.value produce ToolExecutionSpan."""
+        all_spans = [s for t in smolagents_session.traces for s in t.spans]
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) >= 1
+
+    def test_tool_names_extracted_correctly(self, smolagents_session):
+        """Tool names are extracted from tool.name attribute."""
+        all_spans = [s for t in smolagents_session.traces for s in t.spans]
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        tool_names = {s.tool_call.name for s in tool_spans}
+        assert "web_search" in tool_names
+
+    def test_tool_arguments_normalized_from_wrapper(self, smolagents_session):
+        """Smolagents wrapper format {"args":[], "kwargs":{...}} is normalized to logical args.
+
+        Real smolagents input.value: {"args": [], "kwargs": {"query": "..."}, "sanitize_inputs_outputs": false}
+        Expected normalized: {"query": "..."}
+        """
+        all_spans = [s for t in smolagents_session.traces for s in t.spans]
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        web_search_spans = [s for s in tool_spans if s.tool_call.name == "web_search"]
+        assert len(web_search_spans) >= 1
+
+        ws = web_search_spans[0]
+        # After normalization, arguments should contain the logical "query" key
+        # not the wrapper keys ("args", "kwargs", "sanitize_inputs_outputs")
+        assert "query" in ws.tool_call.arguments
+        assert "sanitize_inputs_outputs" not in ws.tool_call.arguments
+        assert "kwargs" not in ws.tool_call.arguments
+
+    def test_tool_output_bare_string_parsed(self, smolagents_session):
+        """TOOL output.value as bare string (not JSON object) is captured as content."""
+        all_spans = [s for t in smolagents_session.traces for s in t.spans]
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        for span in tool_spans:
+            # Every tool span should have non-empty content
+            assert span.tool_result.content
+            assert len(span.tool_result.content) > 0
+
+    def test_llm_spans_with_plural_contents_produce_inference_spans(self, smolagents_session):
+        """LLM spans with llm.*.message.contents.0.message_content.text produce InferenceSpan.
+
+        Smolagents instrumentor v0.1.31+ uses the plural `contents` attribute path
+        instead of the singular `content` path used by LangChain's instrumentor.
+        The normalization layer should convert these to canonical form.
+        """
+        all_spans = [s for t in smolagents_session.traces for s in t.spans]
+        inference_spans = [s for s in all_spans if isinstance(s, InferenceSpan)]
+        # After normalization, we should get InferenceSpans from the LLM spans
+        assert len(inference_spans) >= 1
+
+    def test_inference_spans_have_user_and_assistant_content(self, smolagents_session):
+        """InferenceSpans from smolagents have both user and assistant messages."""
+        all_spans = [s for t in smolagents_session.traces for s in t.spans]
+        inference_spans = [s for s in all_spans if isinstance(s, InferenceSpan)]
+        for span in inference_spans:
+            assert len(span.messages) >= 2
+            user_msg = span.messages[0]
+            assistant_msg = span.messages[1]
+            assert user_msg.role.value == "user"
+            assert assistant_msg.role.value == "assistant"
+            # Content should not be empty
+            assert any(hasattr(c, "text") and c.text for c in user_msg.content)
+            assert any(hasattr(c, "text") and c.text for c in assistant_msg.content)
+
+    def test_agent_span_produces_agent_invocation_span(self, smolagents_session):
+        """Root AGENT span (CodeAgent.run) produces AgentInvocationSpan.
+
+        Smolagents emits a root span with openinference.span.kind=AGENT,
+        input.value containing the user task, and output.value containing
+        the final answer.
+        """
+        all_spans = [s for t in smolagents_session.traces for s in t.spans]
+        agent_spans = [s for s in all_spans if isinstance(s, AgentInvocationSpan)]
+        assert len(agent_spans) == 1
+
+        agent = agent_spans[0]
+        assert "population" in agent.user_prompt.lower() or "tokyo" in agent.user_prompt.lower()
+        assert agent.agent_response
+        assert len(agent.agent_response) > 10  # Non-trivial response
+
+    def test_one_agent_span_per_trace(self, smolagents_session):
+        """Each trace has at most 1 AgentInvocationSpan."""
+        for trace in smolagents_session.traces:
+            agent_spans = [s for s in trace.spans if isinstance(s, AgentInvocationSpan)]
+            assert len(agent_spans) <= 1
