@@ -185,7 +185,7 @@ jobs:
           name: pypi-build-output
           path: dist
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.10'
 
@@ -277,7 +277,7 @@ jobs:
           fetch-tags: true
           persist-credentials: false
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.10'
 
