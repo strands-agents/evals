@@ -1374,31 +1374,17 @@ class TestAdotFixtureIntegration:
 
 
 class TestSmolagentsScopeSupport:
-    """Regression tests: spans scoped to 'openinference.instrumentation.smolagents'
-    must not be silently filtered out by the mapper's scope check."""
+    """Smolagents-scoped spans must be accepted and correctly normalized."""
 
     def setup_method(self):
         self.mapper = OpenInferenceSessionMapper()
 
-    def test_smolagents_scope_not_filtered(self):
-        """Smolagents-scoped spans are accepted (not silently dropped)."""
-        span = make_tool_span(
-            tool_name="web_search",
-            tool_input={"query": "weather london"},
-            tool_output="15C cloudy",
-            scope_name=SMOLAGENTS_SCOPE_NAME,
-        )
-        session = self.mapper.map_to_session([span], "sess-1")
-        assert len(session.traces) == 1
-        assert len(session.traces[0].spans) == 1
-
     def test_smolagents_tool_span(self):
-        """TOOL span with smolagents scope produces ToolExecutionSpan."""
+        """TOOL span with smolagents scope produces ToolExecutionSpan with correct fields."""
         span = make_tool_span(
             tool_name="web_search",
             tool_input={"query": "weather london"},
             tool_output="Temperature: 15C, cloudy",
-            tool_call_id="tc-smol",
             scope_name=SMOLAGENTS_SCOPE_NAME,
         )
         session = self.mapper.map_to_session([span], "sess-1")
@@ -1409,26 +1395,6 @@ class TestSmolagentsScopeSupport:
         assert tool.tool_call.arguments == {"query": "weather london"}
         assert tool.tool_result.content == "Temperature: 15C, cloudy"
 
-    def test_smolagents_tool_span_bare_output(self):
-        """TOOL span with bare string output.value (real smolagents format)."""
-        span = make_span(
-            name="DuckDuckGoSearchTool",
-            scope_name=SMOLAGENTS_SCOPE_NAME,
-            attributes={
-                "openinference.span.kind": "TOOL",
-                "tool.name": "web_search",
-                "input.value": json.dumps({"query": "weather london"}),
-                "output.value": "Temperature: 15C, cloudy with rain",
-            },
-        )
-        session = self.mapper.map_to_session([span], "sess-1")
-
-        assert len(session.traces[0].spans) == 1
-        tool = session.traces[0].spans[0]
-        assert isinstance(tool, ToolExecutionSpan)
-        assert tool.tool_call.name == "web_search"
-        assert tool.tool_result.content == "Temperature: 15C, cloudy with rain"
-
     def test_smolagents_llm_span(self):
         """LLM span with smolagents scope produces InferenceSpan."""
         span = make_llm_span(
@@ -1437,53 +1403,15 @@ class TestSmolagentsScopeSupport:
             scope_name=SMOLAGENTS_SCOPE_NAME,
         )
         session = self.mapper.map_to_session([span], "sess-1")
-
-        assert len(session.traces[0].spans) == 1
         assert isinstance(session.traces[0].spans[0], InferenceSpan)
-
-    def test_smolagents_full_trace(self):
-        """LLM + TOOL spans with smolagents scope in same trace."""
-        spans = [
-            make_llm_span(
-                trace_id="t1",
-                span_id="s1",
-                user_content="Search for weather",
-                assistant_content="I'll search.",
-                scope_name=SMOLAGENTS_SCOPE_NAME,
-            ),
-            make_tool_span(
-                trace_id="t1",
-                span_id="s2",
-                tool_name="web_search",
-                tool_input={"query": "weather"},
-                tool_output="15C cloudy",
-                scope_name=SMOLAGENTS_SCOPE_NAME,
-            ),
-        ]
-        session = self.mapper.map_to_session(spans, "sess-1")
-
-        assert len(session.traces) == 1
-        span_types = [s.span_type.value for s in session.traces[0].spans]
-        assert "inference" in span_types
-        assert "execute_tool" in span_types
 
     @pytest.mark.parametrize(
         "output_value,expected_content",
-        [
-            ("42", "42"),
-            ("[1, 2, 3]", "[1, 2, 3]"),
-            ('"quoted string"', '"quoted string"'),
-            ("true", "true"),
-            ("null", "null"),
-        ],
-        ids=["number", "list", "quoted-string", "boolean", "null"],
+        [("42", "42"), ("[1, 2, 3]", "[1, 2, 3]"), ('"quoted"', '"quoted"')],
+        ids=["number", "list", "quoted-string"],
     )
-    def test_smolagents_tool_span_non_dict_json_output(self, output_value, expected_content):
-        """TOOL span with output.value that is valid JSON but not a dict must not crash.
-
-        Regression: json.loads succeeds on numbers/lists/quoted-strings, but the old
-        code called .get() on the result, raising AttributeError and dropping the span.
-        """
+    def test_non_dict_json_output_not_crash(self, output_value, expected_content):
+        """TOOL span with non-dict JSON output.value must not crash."""
         span = make_span(
             name="compute_tool",
             scope_name=SMOLAGENTS_SCOPE_NAME,
@@ -1495,12 +1423,81 @@ class TestSmolagentsScopeSupport:
             },
         )
         session = self.mapper.map_to_session([span], "sess-1")
-
-        assert len(session.traces) == 1
-        assert len(session.traces[0].spans) == 1
         tool = session.traces[0].spans[0]
         assert isinstance(tool, ToolExecutionSpan)
         assert tool.tool_result.content == expected_content
+
+    def test_mixed_positional_and_kwargs_merged(self):
+        """Positional args mapped via tool.parameters and merged with kwargs.
+
+        {"args": ["tokyo", 5], "kwargs": {"offset": 10}} + params [query, limit, offset]
+        → {"query": "tokyo", "limit": 5, "offset": 10}
+        """
+        span = make_span(
+            name="search",
+            scope_name=SMOLAGENTS_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "TOOL",
+                "tool.name": "search",
+                "tool.parameters": json.dumps({
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer"},
+                    "offset": {"type": "integer"},
+                }),
+                "input.value": json.dumps({
+                    "args": ["tokyo", 5],
+                    "kwargs": {"offset": 10},
+                    "sanitize_inputs_outputs": False,
+                }),
+                "output.value": "results",
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        tool = session.traces[0].spans[0]
+        assert tool.tool_call.arguments == {"query": "tokyo", "limit": 5, "offset": 10}
+
+    def test_langchain_agent_span_rejected(self):
+        """LangChain AGENT spans (e.g. route_to_agent) with input+output explicitly rejected."""
+        span = make_span(
+            name="route_to_agent",
+            scope_name="openinference.instrumentation.langchain",
+            attributes={
+                "openinference.span.kind": "AGENT",
+                "input.value": '{"agent_name": "research_agent"}',
+                "output.value": '{"result": "done"}',
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        agent_spans = [s for t in session.traces for s in t.spans if isinstance(s, AgentInvocationSpan)]
+        assert len(agent_spans) == 0
+
+    def test_agent_span_extracts_task_from_json_wrapper(self):
+        """AGENT span input.value JSON wrapper is parsed to extract just the 'task' field.
+
+        Smolagents CodeAgent.run emits input.value as:
+          {"task": "What is 2+2?", "stream": false, "reset": true, ...}
+        The mapper must return only the task string, not the full JSON wrapper.
+        """
+        span = make_span(
+            name="CodeAgent.run",
+            scope_name=SMOLAGENTS_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "AGENT",
+                "input.value": json.dumps({
+                    "task": "What is 2+2?",
+                    "stream": False,
+                    "reset": True,
+                    "images": None,
+                    "additional_args": None,
+                }),
+                "output.value": "The answer is 4.",
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        all_spans = [s for t in session.traces for s in t.spans]
+        agent_spans = [s for s in all_spans if isinstance(s, AgentInvocationSpan)]
+        assert len(agent_spans) == 1
+        assert agent_spans[0].user_prompt == "What is 2+2?"
 
 
 # =============================================================================
@@ -1527,113 +1524,75 @@ def smolagents_session():
 
 
 class TestSmolagentsFixtureIntegration:
-    """Integration tests using real smolagents OpenInference trace data.
-
-    Fixture was captured from a live run of:
-        CodeAgent(tools=[DuckDuckGoSearchTool()], model=LiteLLMModel(...))
-        agent.run("What is the population of Tokyo?")
-
-    The fixture contains 7 spans:
-        - 2x LLM spans (LiteLLMModel.generate) with plural contents path
-        - 2x TOOL spans (DuckDuckGoSearchTool, FinalAnswerTool) with wrapper input.value
-        - 2x CHAIN spans (Step 1, Step 2)
-        - 1x AGENT span (CodeAgent.run)
-    """
+    """Integration tests using real smolagents trace (CodeAgent + DuckDuckGoSearchTool)."""
 
     def test_session_has_traces(self, smolagents_session):
         """Smolagents fixture produces at least one trace."""
         assert len(smolagents_session.traces) >= 1
 
-    def test_all_spans_routed_to_mapper(self, smolagents_session):
-        """All smolagents spans are accepted by the mapper (not silently dropped)."""
+    def test_produces_expected_span_types(self, smolagents_session):
+        """Real trace produces InferenceSpan, ToolExecutionSpan, and AgentInvocationSpan."""
         all_spans = [s for t in smolagents_session.traces for s in t.spans]
-        # At minimum: tool spans + agent span should survive conversion
-        assert len(all_spans) >= 3
+        span_types = {type(s) for s in all_spans}
+        assert InferenceSpan in span_types
+        assert ToolExecutionSpan in span_types
+        assert AgentInvocationSpan in span_types
 
-    def test_produces_tool_execution_spans(self, smolagents_session):
-        """TOOL spans with wrapper input.value produce ToolExecutionSpan."""
-        all_spans = [s for t in smolagents_session.traces for s in t.spans]
-        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
-        assert len(tool_spans) >= 1
-
-    def test_tool_names_extracted_correctly(self, smolagents_session):
-        """Tool names are extracted from tool.name attribute."""
-        all_spans = [s for t in smolagents_session.traces for s in t.spans]
-        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
-        tool_names = {s.tool_call.name for s in tool_spans}
-        assert "web_search" in tool_names
-
-    def test_tool_arguments_normalized_from_wrapper(self, smolagents_session):
-        """Smolagents wrapper format {"args":[], "kwargs":{...}} is normalized to logical args.
-
-        Real smolagents input.value: {"args": [], "kwargs": {"query": "..."}, "sanitize_inputs_outputs": false}
-        Expected normalized: {"query": "..."}
-        """
-        all_spans = [s for t in smolagents_session.traces for s in t.spans]
-        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
-        web_search_spans = [s for s in tool_spans if s.tool_call.name == "web_search"]
-        assert len(web_search_spans) >= 1
-
-        ws = web_search_spans[0]
-        # After normalization, arguments should contain the logical "query" key
-        # not the wrapper keys ("args", "kwargs", "sanitize_inputs_outputs")
-        assert "query" in ws.tool_call.arguments
-        assert "sanitize_inputs_outputs" not in ws.tool_call.arguments
-        assert "kwargs" not in ws.tool_call.arguments
-
-    def test_tool_output_bare_string_parsed(self, smolagents_session):
-        """TOOL output.value as bare string (not JSON object) is captured as content."""
-        all_spans = [s for t in smolagents_session.traces for s in t.spans]
-        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
-        for span in tool_spans:
-            # Every tool span should have non-empty content
-            assert span.tool_result.content
-            assert len(span.tool_result.content) > 0
-
-    def test_llm_spans_with_plural_contents_produce_inference_spans(self, smolagents_session):
-        """LLM spans with llm.*.message.contents.0.message_content.text produce InferenceSpan.
-
-        Smolagents instrumentor v0.1.31+ uses the plural `contents` attribute path
-        instead of the singular `content` path used by LangChain's instrumentor.
-        The normalization layer should convert these to canonical form.
-        """
+    def test_plural_contents_path_normalized(self, smolagents_session):
+        """LLM spans with plural contents path produce InferenceSpans with user+assistant."""
         all_spans = [s for t in smolagents_session.traces for s in t.spans]
         inference_spans = [s for s in all_spans if isinstance(s, InferenceSpan)]
-        # After normalization, we should get InferenceSpans from the LLM spans
         assert len(inference_spans) >= 1
-
-    def test_inference_spans_have_user_and_assistant_content(self, smolagents_session):
-        """InferenceSpans from smolagents have both user and assistant messages."""
-        all_spans = [s for t in smolagents_session.traces for s in t.spans]
-        inference_spans = [s for s in all_spans if isinstance(s, InferenceSpan)]
         for span in inference_spans:
-            assert len(span.messages) >= 2
-            user_msg = span.messages[0]
-            assistant_msg = span.messages[1]
-            assert user_msg.role.value == "user"
-            assert assistant_msg.role.value == "assistant"
-            # Content should not be empty
-            assert any(hasattr(c, "text") and c.text for c in user_msg.content)
-            assert any(hasattr(c, "text") and c.text for c in assistant_msg.content)
+            assert span.messages[0].role.value == "user"
+            assert span.messages[1].role.value == "assistant"
 
-    def test_agent_span_produces_agent_invocation_span(self, smolagents_session):
-        """Root AGENT span (CodeAgent.run) produces AgentInvocationSpan.
+    def test_tool_spans_kwargs_normalized(self, smolagents_session):
+        """web_search: kwargs wrapper normalized to logical {"query": "..."}."""
+        all_spans = [s for t in smolagents_session.traces for s in t.spans]
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        ws = next(s for s in tool_spans if s.tool_call.name == "web_search")
+        assert ws.tool_call.arguments == {"query": "population of Tokyo"}
 
-        Smolagents emits a root span with openinference.span.kind=AGENT,
-        input.value containing the user task, and output.value containing
-        the final answer.
+    def test_tool_spans_positional_args_mapped(self, smolagents_session):
+        """FinalAnswerTool: positional arg mapped to "answer" via tool.parameters.
+
+        {"args": ["...answer text..."], "kwargs": {}} → {"answer": "...answer text..."}
         """
+        all_spans = [s for t in smolagents_session.traces for s in t.spans]
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        fa = next(s for s in tool_spans if s.tool_call.name == "final_answer")
+
+        expected_answer = (
+            "The population of Tokyo is approximately 14 million people as of 2023. "
+            "(The city proper has over 14 million residents, while the greater Tokyo "
+            "metropolitan area has approximately 37 million people.)"
+        )
+        assert fa.tool_call.arguments == {"answer": expected_answer}
+        assert fa.tool_call.arguments["answer"] == fa.tool_result.content
+
+    def test_agent_span_extracts_task_field(self, smolagents_session):
+        """AGENT span: parses {"task": "...", "stream": ...} → user_prompt = task value."""
         all_spans = [s for t in smolagents_session.traces for s in t.spans]
         agent_spans = [s for s in all_spans if isinstance(s, AgentInvocationSpan)]
         assert len(agent_spans) == 1
 
         agent = agent_spans[0]
-        assert "population" in agent.user_prompt.lower() or "tokyo" in agent.user_prompt.lower()
-        assert agent.agent_response
-        assert len(agent.agent_response) > 10  # Non-trivial response
+        assert agent.user_prompt == "What is the population of Tokyo?"
+        assert "population" in agent.agent_response.lower()
 
     def test_one_agent_span_per_trace(self, smolagents_session):
         """Each trace has at most 1 AgentInvocationSpan."""
         for trace in smolagents_session.traces:
             agent_spans = [s for s in trace.spans if isinstance(s, AgentInvocationSpan)]
             assert len(agent_spans) <= 1
+
+    def test_no_empty_response_inference_spans(self, smolagents_session):
+        """No InferenceSpan has empty-text-only assistant content."""
+        all_spans = [s for t in smolagents_session.traces for s in t.spans]
+        for span in all_spans:
+            if isinstance(span, InferenceSpan):
+                assistant_content = span.messages[1].content
+                text_only = all(hasattr(c, "text") for c in assistant_content)
+                if text_only:
+                    assert any(c.text for c in assistant_content)

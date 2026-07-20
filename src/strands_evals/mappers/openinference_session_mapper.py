@@ -185,8 +185,10 @@ class OpenInferenceSessionMapper(SessionMapper):
           {"args": [positional_args...], "kwargs": {named_args...},
            "sanitize_inputs_outputs": bool}
 
-        This normalizes to the kwargs dict (which contains the logical arguments
-        in most smolagents tools), falling back to a merged representation.
+        This normalizes to the logical arguments by:
+        1. Using kwargs directly when present (most common case)
+        2. Mapping positional args to named parameters using tool.parameters
+        3. Merging both when a tool uses positional + keyword args
         """
         input_value = attrs.get("input.value")
         if not input_value or not isinstance(input_value, str):
@@ -207,11 +209,27 @@ class OpenInferenceSessionMapper(SessionMapper):
         kwargs = parsed.get("kwargs", {})
         args = parsed.get("args", [])
 
-        if kwargs and isinstance(kwargs, dict):
-            # kwargs contains the logical named arguments
-            attrs["input.value"] = json.dumps(kwargs)
+        # Map positional args to named parameters using tool.parameters
+        named_from_args: dict = {}
+        if args and isinstance(args, list):
+            tool_params_raw = attrs.get("tool.parameters")
+            if tool_params_raw:
+                try:
+                    tool_params = json.loads(tool_params_raw) if isinstance(tool_params_raw, str) else tool_params_raw
+                    if isinstance(tool_params, dict):
+                        param_names = list(tool_params.keys())
+                        for i, arg_val in enumerate(args):
+                            if i < len(param_names):
+                                named_from_args[param_names[i]] = arg_val
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        # Build the logical arguments: named positional args + kwargs merged
+        if named_from_args or (kwargs and isinstance(kwargs, dict)):
+            logical_args = {**named_from_args, **(kwargs if isinstance(kwargs, dict) else {})}
+            attrs["input.value"] = json.dumps(logical_args)
         elif args and isinstance(args, list):
-            # Positional args only — store as a list under "args" key
+            # Fallback: no tool.parameters available to map positional args
             attrs["input.value"] = json.dumps({"args": args})
 
     def _build_trace(self, trace_id: str, spans: list[dict], session_id: str) -> Trace:
@@ -322,14 +340,20 @@ class OpenInferenceSessionMapper(SessionMapper):
         if span_kind == "CHAIN" and span_name == "LangGraph":
             return True
 
-        # smolagents: AGENT span (e.g. CodeAgent.run) — must have both
-        # input.value (user task) and output.value (final answer) to distinguish
-        # from LangChain's mislabeled routing spans that only carry input.
+        # smolagents: AGENT span (e.g. CodeAgent.run) — only accept spans from
+        # the smolagents scope to avoid matching LangChain's route_to_agent spans
+        # which also have kind=AGENT with both input and output values.
         if span_kind == "AGENT":
-            input_val = attrs.get("input.value")
-            output_val = attrs.get("output.value")
-            if input_val and output_val:
-                return True
+            scope_name = self._get_scope_name(span)
+            if scope_name == SCOPE_OPENINFERENCE_SMOLAGENTS:
+                input_val = attrs.get("input.value")
+                output_val = attrs.get("output.value")
+                if input_val and output_val:
+                    return True
+            # LangChain AGENT spans (e.g. route_to_agent) carry kind=AGENT with
+            # input/output but are routing nodes, not agent invocations. Explicitly
+            # reject any non-smolagents AGENT span.
+            return False
 
         # ADOT fallback: root LangGraph node has messages in/out but no remaining_steps.
         # Intermediate agent nodes (from create_react_agent) always include
@@ -503,13 +527,22 @@ class OpenInferenceSessionMapper(SessionMapper):
         user_prompt: str | None = None
         agent_response: str | None = None
 
-        # smolagents AGENT spans: input.value is the user task, output.value is the response
+        # smolagents AGENT spans: input.value is a JSON object with "task" field,
+        # output.value is the final response string
         span_kind = attrs.get("openinference.span.kind", "")
         if span_kind == "AGENT":
             input_value = attrs.get("input.value", "")
             output_value = attrs.get("output.value", "")
             if isinstance(input_value, str) and input_value:
-                user_prompt = input_value
+                # smolagents wraps user task in: {"task": "...", "stream": ..., ...}
+                try:
+                    parsed_input = json.loads(input_value)
+                    if isinstance(parsed_input, dict) and "task" in parsed_input:
+                        user_prompt = parsed_input["task"]
+                    else:
+                        user_prompt = input_value
+                except (json.JSONDecodeError, TypeError):
+                    user_prompt = input_value
             if isinstance(output_value, str) and output_value:
                 agent_response = output_value
 
