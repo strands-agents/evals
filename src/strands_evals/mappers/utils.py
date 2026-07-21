@@ -109,7 +109,9 @@ def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
 
         if scope_name == SCOPE_STRANDS:
             # Auto-detect format for Strands
-            if get_body(span) is not None:
+            # Check ALL spans for body — CloudWatch split format has body
+            # on a separate entry from the scope entry
+            if any(get_body(s) is not None for s in spans):
                 return CloudWatchSessionMapper()
             else:
                 return StrandsInMemorySessionMapper()
