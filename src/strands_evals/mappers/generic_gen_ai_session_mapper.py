@@ -163,6 +163,7 @@ class GenericGenAISessionMapper(SessionMapper):
         """Convert a span with gen_ai.operation.name='chat' to InferenceSpan."""
         messages: list[UserMessage | AssistantMessage] = []
 
+        # Try span_events first (Strands telemetry / manual instrumentation format)
         for event in span.get("span_events", []):
             try:
                 event_name = event.get("event_name", "")
@@ -199,6 +200,12 @@ class GenericGenAISessionMapper(SessionMapper):
                     span.get("span_id", "?"), event.get("event_name", "?"), e,
                 )
 
+        # Fallback: gen_ai.input.messages / gen_ai.output.messages as span attributes
+        # (PydanticAI, AutoGen, and other native gen_ai semconv frameworks)
+        if not messages:
+            attrs = span.get("attributes", {})
+            messages = self._parse_attribute_messages(attrs)
+
         return InferenceSpan(span_info=span_info, messages=messages, metadata={})
 
     def _convert_tool_execution_span(self, span: dict, span_info: SpanInfo) -> ToolExecutionSpan | None:
@@ -232,7 +239,7 @@ class GenericGenAISessionMapper(SessionMapper):
 
         # Fallback: gen_ai.tool.input/output attributes (manual instrumentation)
         if not tool_arguments:
-            tool_input = attrs.get("gen_ai.tool.input", "")
+            tool_input = attrs.get("gen_ai.tool.input", "") or attrs.get("gen_ai.tool.call.arguments", "")
             if tool_input:
                 try:
                     parsed = json.loads(tool_input) if isinstance(tool_input, str) else tool_input
@@ -241,7 +248,7 @@ class GenericGenAISessionMapper(SessionMapper):
                     tool_arguments = {}
 
         if not tool_result_content:
-            tool_output = attrs.get("gen_ai.tool.output", "")
+            tool_output = attrs.get("gen_ai.tool.output", "") or attrs.get("gen_ai.tool.call.result", "")
             if tool_output:
                 tool_result_content = str(tool_output)
 
@@ -261,16 +268,20 @@ class GenericGenAISessionMapper(SessionMapper):
         agent_response = ""
         available_tools: list[ToolConfig] = []
 
-        # Parse available tools
+        # Parse available tools from gen_ai.agent.tools or gen_ai.tool.definitions
         try:
-            tools_json = attrs.get("gen_ai.agent.tools", "[]")
-            tool_names = json.loads(str(tools_json)) if isinstance(tools_json, str) else tools_json
-            if isinstance(tool_names, list):
-                available_tools = [ToolConfig(name=name) for name in tool_names]
+            tools_json = attrs.get("gen_ai.agent.tools", "") or attrs.get("gen_ai.tool.definitions", "[]")
+            tool_list = json.loads(str(tools_json)) if isinstance(tools_json, str) else tools_json
+            if isinstance(tool_list, list):
+                for item in tool_list:
+                    if isinstance(item, str):
+                        available_tools.append(ToolConfig(name=item))
+                    elif isinstance(item, dict):
+                        available_tools.append(ToolConfig(name=item.get("name", "")))
         except (json.JSONDecodeError, TypeError):
             pass
 
-        # Extract from span_events
+        # Extract from span_events (manual instrumentation format)
         for event in span.get("span_events", []):
             try:
                 event_name = event.get("event_name", "")
@@ -288,6 +299,29 @@ class GenericGenAISessionMapper(SessionMapper):
                     span.get("span_id", "?"), e,
                 )
 
+        # Fallback: extract from attributes (PydanticAI / native gen_ai format)
+        if not user_prompt:
+            # Try pydantic_ai.all_messages or gen_ai.input.messages
+            all_msgs_raw = attrs.get("pydantic_ai.all_messages", "") or attrs.get("gen_ai.input.messages", "")
+            if all_msgs_raw:
+                try:
+                    all_msgs = json.loads(all_msgs_raw) if isinstance(all_msgs_raw, str) else all_msgs_raw
+                    if isinstance(all_msgs, list):
+                        for msg in all_msgs:
+                            if msg.get("role") == "user":
+                                parts = msg.get("parts", [])
+                                for part in parts:
+                                    if part.get("type") == "text" and part.get("content"):
+                                        user_prompt = part["content"]
+                                        break
+                            if user_prompt:
+                                break
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        if not agent_response:
+            agent_response = str(attrs.get("final_result", ""))
+
         return AgentInvocationSpan(
             span_info=span_info,
             user_prompt=user_prompt,
@@ -299,6 +333,86 @@ class GenericGenAISessionMapper(SessionMapper):
     # =========================================================================
     # Content Processing Helpers
     # =========================================================================
+
+    def _parse_attribute_messages(self, attrs: dict) -> list[UserMessage | AssistantMessage]:
+        """Parse gen_ai.input.messages / gen_ai.output.messages from span attributes.
+
+        PydanticAI and other native gen_ai semconv frameworks store messages as
+        JSON arrays in span attributes rather than span_events. Format:
+            [{"role": "user", "parts": [{"type": "text", "content": "..."}]}, ...]
+        """
+        messages: list[UserMessage | AssistantMessage] = []
+
+        # Parse input messages
+        input_msgs_raw = attrs.get("gen_ai.input.messages", "")
+        if input_msgs_raw:
+            try:
+                input_msgs = json.loads(input_msgs_raw) if isinstance(input_msgs_raw, str) else input_msgs_raw
+                if isinstance(input_msgs, list):
+                    for msg in input_msgs:
+                        role = msg.get("role", "")
+                        parts = msg.get("parts", [])
+                        if role == "user":
+                            user_content: list[TextContent | ToolResultContent] = []
+                            for part in parts:
+                                if part.get("type") == "text" and part.get("content"):
+                                    user_content.append(TextContent(text=part["content"]))
+                                elif part.get("type") == "tool_call_response":
+                                    user_content.append(
+                                        ToolResultContent(
+                                            content=str(part.get("result", "")),
+                                            error=None,
+                                            tool_call_id=part.get("id"),
+                                        )
+                                    )
+                            if user_content:
+                                messages.append(UserMessage(content=user_content))
+                        elif role == "assistant":
+                            assistant_content: list[TextContent | ToolCallContent] = []
+                            for part in parts:
+                                if part.get("type") == "text" and part.get("content"):
+                                    assistant_content.append(TextContent(text=part["content"]))
+                                elif part.get("type") == "tool_call":
+                                    assistant_content.append(
+                                        ToolCallContent(
+                                            name=part.get("name", ""),
+                                            arguments=part.get("arguments", {}),
+                                            tool_call_id=part.get("id"),
+                                        )
+                                    )
+                            if assistant_content:
+                                messages.append(AssistantMessage(content=assistant_content))
+            except (json.JSONDecodeError, TypeError, KeyError):
+                pass
+
+        # Parse output messages
+        output_msgs_raw = attrs.get("gen_ai.output.messages", "")
+        if output_msgs_raw:
+            try:
+                output_msgs = json.loads(output_msgs_raw) if isinstance(output_msgs_raw, str) else output_msgs_raw
+                if isinstance(output_msgs, list):
+                    for msg in output_msgs:
+                        role = msg.get("role", "")
+                        parts = msg.get("parts", [])
+                        if role == "assistant":
+                            assistant_content = []
+                            for part in parts:
+                                if part.get("type") == "text" and part.get("content"):
+                                    assistant_content.append(TextContent(text=part["content"]))
+                                elif part.get("type") == "tool_call":
+                                    assistant_content.append(
+                                        ToolCallContent(
+                                            name=part.get("name", ""),
+                                            arguments=part.get("arguments", {}),
+                                            tool_call_id=part.get("id"),
+                                        )
+                                    )
+                            if assistant_content:
+                                messages.append(AssistantMessage(content=assistant_content))
+            except (json.JSONDecodeError, TypeError, KeyError):
+                pass
+
+        return messages
 
     @staticmethod
     def _process_assistant_content(content_list: list[dict]) -> list[TextContent | ToolCallContent]:

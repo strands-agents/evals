@@ -1,6 +1,11 @@
 """Tests for GenericGenAISessionMapper - dict-format spans with gen_ai.* attributes."""
 
-from strands_evals.mappers import GenericGenAISessionMapper
+import json
+from pathlib import Path
+
+import pytest
+
+from strands_evals.mappers import GenericGenAISessionMapper, detect_otel_mapper
 from strands_evals.types.trace import AgentInvocationSpan, InferenceSpan, ToolExecutionSpan
 
 
@@ -210,3 +215,198 @@ class TestSessionBuilding:
         ]
         session = self.mapper.map_to_session(spans, "any-id")
         assert len(session.traces) == 2
+
+
+# =============================================================================
+# Fixture-based integration tests — real captured traces
+# =============================================================================
+
+_FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
+_PYDANTIC_AI_SPANS_FILE = _FIXTURES_DIR / "pydantic_ai_live_spans.json"
+_AUTOGEN_SPANS_FILE = _FIXTURES_DIR / "autogen_live_spans.json"
+
+
+@pytest.fixture(scope="module")
+def pydantic_ai_spans():
+    """Load real PydanticAI spans captured from Agent.instrument_all()."""
+    with open(_PYDANTIC_AI_SPANS_FILE) as f:
+        return json.load(f)
+
+
+@pytest.fixture(scope="module")
+def pydantic_ai_session(pydantic_ai_spans):
+    """Map PydanticAI spans to a Session using GenericGenAISessionMapper."""
+    mapper = GenericGenAISessionMapper()
+    # Auto-detect session_id from gen_ai.conversation.id
+    session_id = "test"
+    for s in pydantic_ai_spans:
+        sid = s.get("attributes", {}).get("gen_ai.conversation.id")
+        if sid:
+            session_id = str(sid)
+            break
+    return mapper.map_to_session(pydantic_ai_spans, session_id=session_id)
+
+
+@pytest.fixture(scope="module")
+def autogen_spans():
+    """Load real AutoGen spans captured from autogen_core native telemetry."""
+    with open(_AUTOGEN_SPANS_FILE) as f:
+        return json.load(f)
+
+
+@pytest.fixture(scope="module")
+def autogen_session(autogen_spans):
+    """Map AutoGen spans to a Session using GenericGenAISessionMapper."""
+    mapper = GenericGenAISessionMapper()
+    return mapper.map_to_session(autogen_spans, session_id="test")
+
+
+class TestPydanticAIFixtureRouting:
+    """Verify detect_otel_mapper routes PydanticAI spans to GenericGenAISessionMapper."""
+
+    def test_routes_to_generic_mapper(self, pydantic_ai_spans):
+        """PydanticAI scope 'pydantic-ai' routes to GenericGenAISessionMapper."""
+        mapper = detect_otel_mapper(pydantic_ai_spans)
+        assert isinstance(mapper, GenericGenAISessionMapper)
+
+    def test_scope_is_pydantic_ai(self, pydantic_ai_spans):
+        """All spans have scope.name = 'pydantic-ai'."""
+        scopes = {s["scope"]["name"] for s in pydantic_ai_spans}
+        assert scopes == {"pydantic-ai"}
+
+    def test_has_gen_ai_operation_names(self, pydantic_ai_spans):
+        """Spans use gen_ai.operation.name with expected values."""
+        operations = {s["attributes"].get("gen_ai.operation.name") for s in pydantic_ai_spans}
+        assert "chat" in operations
+        assert "execute_tool" in operations
+        assert "invoke_agent" in operations
+
+
+class TestPydanticAIFixtureIntegration:
+    """Integration tests using real PydanticAI trace (Agent + get_weather tool)."""
+
+    def test_session_has_traces(self, pydantic_ai_session):
+        """PydanticAI fixture produces at least one trace."""
+        assert len(pydantic_ai_session.traces) >= 1
+
+    def test_produces_expected_span_types(self, pydantic_ai_session):
+        """Real trace produces InferenceSpan, ToolExecutionSpan, and AgentInvocationSpan."""
+        all_spans = [s for t in pydantic_ai_session.traces for s in t.spans]
+        span_types = {type(s) for s in all_spans}
+        assert InferenceSpan in span_types
+        assert ToolExecutionSpan in span_types
+        assert AgentInvocationSpan in span_types
+
+    def test_tool_span_extracts_name_and_args(self, pydantic_ai_session):
+        """get_weather tool: extracts name, arguments, and result from attributes."""
+        all_spans = [s for t in pydantic_ai_session.traces for s in t.spans]
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+
+        tool = tool_spans[0]
+        assert tool.tool_call.name == "get_weather"
+        assert tool.tool_call.arguments == {"city": "Seattle"}
+        assert "62°F" in tool.tool_result.content
+
+    def test_inference_span_has_messages(self, pydantic_ai_session):
+        """Chat spans produce InferenceSpans with user and assistant messages."""
+        all_spans = [s for t in pydantic_ai_session.traces for s in t.spans]
+        inference_spans = [s for s in all_spans if isinstance(s, InferenceSpan)]
+        assert len(inference_spans) >= 1
+
+        # At least one inference span should have an assistant text response
+        has_assistant_text = False
+        for span in inference_spans:
+            for msg in span.messages:
+                if msg.role.value == "assistant":
+                    for c in msg.content:
+                        if hasattr(c, "text") and c.text and "Seattle" in c.text:
+                            has_assistant_text = True
+        assert has_assistant_text
+
+    def test_agent_span_extracts_user_prompt(self, pydantic_ai_session):
+        """Agent invocation span extracts user prompt from conversation messages."""
+        all_spans = [s for t in pydantic_ai_session.traces for s in t.spans]
+        agent_spans = [s for s in all_spans if isinstance(s, AgentInvocationSpan)]
+        assert len(agent_spans) == 1
+
+        agent = agent_spans[0]
+        assert "weather" in agent.user_prompt.lower()
+        assert "Seattle" in agent.user_prompt
+
+    def test_agent_span_extracts_final_result(self, pydantic_ai_session):
+        """Agent invocation span extracts final_result as agent_response."""
+        all_spans = [s for t in pydantic_ai_session.traces for s in t.spans]
+        agent_spans = [s for s in all_spans if isinstance(s, AgentInvocationSpan)]
+        agent = agent_spans[0]
+        assert "62°F" in agent.agent_response
+
+    def test_session_id_filtering_with_conversation_id(self, pydantic_ai_spans):
+        """Filtering by gen_ai.conversation.id correctly includes/excludes spans."""
+        mapper = GenericGenAISessionMapper()
+
+        # Get the real conversation_id
+        real_id = pydantic_ai_spans[0]["attributes"]["gen_ai.conversation.id"]
+
+        # Correct session_id → spans included
+        session = mapper.map_to_session(pydantic_ai_spans, session_id=real_id)
+        assert len(session.traces) >= 1
+
+        # Wrong session_id → spans excluded
+        session_wrong = mapper.map_to_session(pydantic_ai_spans, session_id="nonexistent-id")
+        assert len(session_wrong.traces) == 0
+
+
+class TestAutoGenFixtureRouting:
+    """Verify detect_otel_mapper routes AutoGen spans to GenericGenAISessionMapper."""
+
+    def test_routes_to_generic_mapper(self, autogen_spans):
+        """AutoGen scope 'autogen-core' routes to GenericGenAISessionMapper."""
+        mapper = detect_otel_mapper(autogen_spans)
+        assert isinstance(mapper, GenericGenAISessionMapper)
+
+    def test_scope_is_autogen_core(self, autogen_spans):
+        """All spans have scope.name = 'autogen-core'."""
+        scopes = {s["scope"]["name"] for s in autogen_spans}
+        assert scopes == {"autogen-core"}
+
+    def test_has_gen_ai_operation_names(self, autogen_spans):
+        """Spans use gen_ai.operation.name with expected values."""
+        operations = {s["attributes"].get("gen_ai.operation.name") for s in autogen_spans}
+        assert "execute_tool" in operations
+        assert "invoke_agent" in operations
+        assert "create_agent" in operations
+
+
+class TestAutoGenFixtureIntegration:
+    """Integration tests using real AutoGen trace (AssistantAgent + calculate tool)."""
+
+    def test_session_has_traces(self, autogen_session):
+        """AutoGen fixture produces at least one trace."""
+        assert len(autogen_session.traces) >= 1
+
+    def test_tool_span_extracted(self, autogen_session):
+        """execute_tool span for 'calculate' is correctly parsed."""
+        all_spans = [s for t in autogen_session.traces for s in t.spans]
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) >= 1
+
+        calc = next(s for s in tool_spans if s.tool_call.name == "calculate")
+        assert calc.tool_call.tool_call_id == "toolu_bdrk_011nDreLrC9nv8NZs6iGrx6d"
+
+    def test_agent_span_extracted(self, autogen_session):
+        """invoke_agent span for 'math_assistant' is correctly parsed."""
+        all_spans = [s for t in autogen_session.traces for s in t.spans]
+        agent_spans = [s for s in all_spans if isinstance(s, AgentInvocationSpan)]
+        assert len(agent_spans) >= 1
+
+    def test_create_agent_span_skipped(self, autogen_spans):
+        """create_agent operation is not a recognized span type (skipped gracefully)."""
+        mapper = GenericGenAISessionMapper()
+        session = mapper.map_to_session(autogen_spans, session_id="test")
+        all_spans = [s for t in session.traces for s in t.spans]
+        # create_agent should not crash; it's simply not mapped to any known type
+        # The 3 raw spans are: create_agent, execute_tool, invoke_agent
+        # Only execute_tool and invoke_agent should produce mapped spans
+        span_types = {type(s).__name__ for s in all_spans}
+        assert "ToolExecutionSpan" in span_types or "AgentInvocationSpan" in span_types
