@@ -178,6 +178,25 @@ class TestDetectOtelMapper:
         mapper = detect_otel_mapper(spans)
         assert isinstance(mapper, CloudWatchSessionMapper)
 
+    def test_detects_strands_cloudwatch_split_format(self):
+        """CloudWatch split format: Strands scope entry has no body, a later
+        entry carries the body — must still route to CloudWatchSessionMapper."""
+        spans = [
+            # Entry 1: metadata — Strands scope, no body
+            make_span_dict(
+                scope_name="strands.telemetry.tracer",
+                attributes={"gen_ai.operation.name": "invoke_agent"},
+            ),
+            # Entry 2: log event — body with input/output, no scope
+            {
+                "trace_id": "trace-1",
+                "span_id": "span-1",
+                "body": {"input": {"messages": []}, "output": {"messages": []}},
+            },
+        ]
+        mapper = detect_otel_mapper(spans)
+        assert isinstance(mapper, CloudWatchSessionMapper)
+
     def test_detects_strands_in_memory_format(self):
         """Detects StrandsInMemorySessionMapper for strands scope without body format."""
         spans = [

@@ -108,13 +108,10 @@ def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
             return OpenInferenceSessionMapper()
 
         if scope_name == SCOPE_STRANDS:
-            # Auto-detect format for Strands
-            # Check ALL spans for body — CloudWatch split format has body
-            # on a separate entry from the scope entry
-            if any(get_body(s) is not None for s in spans):
-                return CloudWatchSessionMapper()
-            else:
-                return StrandsInMemorySessionMapper()
+            # CloudWatch split format puts body on a separate entry from
+            # the scoped metadata entry. Break here and let the fallback
+            # body-scan below determine CloudWatch vs InMemory.
+            break
 
     # Fallback: check if spans use the CloudWatch body format (no scope.name
     # but have body.input/output structure). This handles raw CloudWatch
