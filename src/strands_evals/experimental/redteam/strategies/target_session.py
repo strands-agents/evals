@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import copy
 import logging
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Protocol, TypedDict
 
@@ -91,6 +93,51 @@ class TargetSession(Protocol):
     def restore(self, checkpoint: TargetCheckpoint) -> None:
         """Roll the target back to `checkpoint` and truncate `trace` to its length then."""
         ...
+
+
+@contextmanager
+def single_shot_attempts(session: TargetSession) -> Iterator[Callable[[], None]]:
+    """Run a sequence of independent single-shot attempts against one `session`.
+
+    PAIR (each refined prompt P) and SequentialBreak (each scaffold variant) treat every attempt as an
+    independent single-shot, so attempt N must start from the same target state attempt 1 saw — not carry
+    attempt N-1's conversation or agent state. This context manager captures the entry state once with
+    `snapshot()` and rolls back to it before each later attempt with `restore()`, which covers all target
+    state (messages, agent `state`, conversation-manager state), unlike a baseline-less `reset()` that only
+    clears messages.
+
+    Tool-use evidence must survive the rollbacks: the authoritative `AttackSuccessEvaluator` reads
+    `session.trace` to detect tool-call breaches. Each attempt's trace delta is accumulated and, on exit,
+    the session trace is rebuilt as the entry prefix plus every attempt's delta — once each, in order —
+    even if the caller raises mid-loop.
+
+    Args:
+        session: The target session to checkpoint at entry and restore between attempts.
+
+    Yields:
+        A zero-arg `begin_attempt` the caller MUST invoke immediately before each `invoke()`. The first
+        call is a no-op (attempt 1 uses the supplied state); each later call collects the finished
+        attempt's trace delta and restores the checkpoint. Calling it only right before `invoke()` means
+        attempts that end early (parse failure, empty prompt) never trigger a rollback.
+    """
+    checkpoint = session.snapshot()
+    trace_prefix = list(session.trace[: checkpoint.trace_len])
+    attempt_trace: list[ToolUseEntry] = []
+    started = False
+
+    def begin_attempt() -> None:
+        nonlocal started
+        if started:
+            attempt_trace.extend(session.trace[checkpoint.trace_len :])
+            session.restore(checkpoint)
+        started = True
+
+    try:
+        yield begin_attempt
+    finally:
+        # Keep the in-flight attempt's evidence even if the caller raised after invoke().
+        attempt_trace.extend(session.trace[checkpoint.trace_len :])
+        session.trace[:] = trace_prefix + attempt_trace
 
 
 class StrandsAgentSession:

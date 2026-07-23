@@ -12,6 +12,7 @@ from strands_evals.experimental.redteam.strategies.sequentialbreak import (
     sequentialbreak_v0,
     success_score,
 )
+from strands_evals.experimental.redteam.strategies.target_session import TargetCheckpoint
 from strands_evals.experimental.redteam.types import AttackGoal, RedTeamConfig
 
 _SB = "strands_evals.experimental.redteam.strategies.sequentialbreak"
@@ -19,30 +20,38 @@ _ALL_VARIANTS = ["dc_t1", "dc_t2", "ge_t1", "ge_t2", "qb_t1"]
 
 
 class _FakeSession:
-    """In-test invoke-only TargetSession: replies via a callable, records sends.
+    """In-test TargetSession with a REAL snapshot/restore, modeling non-message target state.
 
-    Each variant is an independent single-shot, so ``reset`` is called between variants.
-    ``snapshot``/``restore`` RAISE: the strategy never rewinds mid-variant.
+    Each variant is an independent single-shot: the strategy checkpoints at entry and restores between
+    variants. This fake implements `snapshot`/`restore` for real (not raising) and carries a `state`
+    counter that `invoke` mutates, so a regression test can prove every variant sees the same entry state
+    and that tool-use trace survives the restores. `reset()` RAISES: the strategy must rewind via
+    restore, never the baseline-less reset that leaks non-message state.
     """
 
     def __init__(self, reply_fn):
         self._reply_fn = reply_fn
         self.sent: list[str] = []
         self.trace: list[dict] = []
+        # Non-message target state (the leak the fix addresses); invoke mutates it, restore rolls it back.
+        self.state = 0
+        self.state_seen_per_attempt: list[int] = []
 
     def invoke(self, message):
         self.sent.append(message)
+        self.state_seen_per_attempt.append(self.state)
+        self.state += 1
         return self._reply_fn(message)
 
     def reset(self):
-        # Clears the trace like the real session; `sent` is a test-only cumulative record, kept.
-        self.trace.clear()
+        raise AssertionError("SequentialBreak must rewind via restore(), not baseline-less reset()")
 
     def snapshot(self):
-        raise AssertionError("SequentialBreak must not snapshot (append-only)")
+        return TargetCheckpoint(agent_snapshot={"state": self.state}, trace_len=len(self.trace))
 
     def restore(self, checkpoint):
-        raise AssertionError("SequentialBreak must not restore (append-only)")
+        self.state = checkpoint.agent_snapshot["state"]
+        del self.trace[checkpoint.trace_len :]
 
 
 def _case(success_criteria: str | None = "leaked the secret", actor_goal: str = "exfiltrate the secret") -> RedTeamCase:
@@ -369,12 +378,31 @@ class TestRunAttack:
         strat.run_attack(_case(success_criteria=None), session, max_turns=10)
         judge_builder.assert_not_called()
 
-    def test_does_not_snapshot_or_restore(self):
-        # _FakeSession raises on snapshot/restore; a clean run proves it never rewinds mid-variant.
+    def test_every_variant_sees_the_same_entry_state(self):
+        # Single-shot isolation: each variant must start from the state captured at run_attack entry, not
+        # carry the prior variant's mutation. invoke() bumps `state`; restore between variants must roll it
+        # back so every variant observes the same initial value (0).
         strat = _strategy()
         session = _FakeSession(lambda m: "held")
         with patch(f"{_SB}.success_score", return_value=0.1):
-            strat.run_attack(_case(), session, max_turns=10)  # must not raise
+            strat.run_attack(_case(), session, max_turns=10)
+        assert session.state_seen_per_attempt == [0, 0, 0, 0, 0]  # 5 variants, each from entry state 0
+
+    def test_tool_trace_from_every_variant_survives_restores(self):
+        # The evaluator reads session.trace for tool-call breaches; each variant's tool use must survive
+        # the between-variant restores, exactly once and in order.
+        strat = _strategy()
+        counter = {"n": 0}
+
+        def reply(_m):
+            counter["n"] += 1
+            session.trace.append({"name": f"tool_{counter['n']}", "input": {}})
+            return "held"
+
+        session = _FakeSession(reply)
+        with patch(f"{_SB}.success_score", return_value=0.1):
+            strat.run_attack(_case(), session, max_turns=10)
+        assert session.trace == [{"name": f"tool_{i}", "input": {}} for i in range(1, 6)]  # 5 variants
 
     def test_target_calls_equals_variants_when_all_respond(self):
         strat = _strategy()

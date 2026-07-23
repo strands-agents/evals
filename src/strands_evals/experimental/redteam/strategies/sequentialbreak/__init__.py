@@ -23,12 +23,13 @@ from strands.models.model import Model
 
 from ...utils import _put_model_field
 from ..base import AttackRunResult, AttackStrategy
+from ..target_session import single_shot_attempts
 from . import sequentialbreak_v0
 
 if TYPE_CHECKING:
     from ...case import RedTeamCase
     from ...types import AttackGoal
-    from ..target_session import TargetSession, ToolUseEntry
+    from ..target_session import TargetSession
 
 logger = logging.getLogger(__name__)
 
@@ -139,47 +140,40 @@ class SequentialBreakStrategy(AttackStrategy):
         variants = self._variants[:turn_cap]
 
         conversation: list[dict[str, Any]] = []
-        all_trace: list[ToolUseEntry] = []
         variants_tried: list[str] = []
         breached_variant: str | None = None
         target_calls = 0
         score: float | None = None
         succeeded = False
 
-        for i, variant in enumerate(variants):
-            prompt = assemble_scaffold(sequentialbreak_v0.SCAFFOLDS[variant], goal.actor_goal)
-            if not prompt.strip():
-                logger.warning("variant=<%s> | assembled empty prompt | skipping", variant)
-                continue
+        # Each variant is an independent single-shot: restore the target to its entry state between
+        # variants (covers agent state, not just messages) while preserving every variant's tool-use trace.
+        with single_shot_attempts(target_session) as begin_attempt:
+            for variant in variants:
+                prompt = assemble_scaffold(sequentialbreak_v0.SCAFFOLDS[variant], goal.actor_goal)
+                if not prompt.strip():
+                    logger.warning("variant=<%s> | assembled empty prompt | skipping", variant)
+                    continue
 
-            # Each variant is an independent single-shot: reset between variants.
-            if i > 0:
-                all_trace.extend(target_session.trace)
-                target_session.reset()
+                begin_attempt()
+                response = target_session.invoke(prompt)
+                target_calls += 1
+                if not response.strip():
+                    logger.warning("variant=<%s> | empty target response | trying next variant", variant)
+                    continue
 
-            response = target_session.invoke(prompt)
-            target_calls += 1
-            if not response.strip():
-                logger.warning("variant=<%s> | empty target response | trying next variant", variant)
-                continue
+                variants_tried.append(variant)
+                conversation.append({"role": "attacker", "content": prompt})
+                conversation.append({"role": "target", "content": response})
 
-            variants_tried.append(variant)
-            conversation.append({"role": "attacker", "content": prompt})
-            conversation.append({"role": "target", "content": response})
+                rating = success_score(make_judge, goal, response)
+                score = rating if score is None else max(score, rating)
+                logger.debug("variant=<%s> score=<%.3f> | sequentialbreak variant scored", variant, rating)
 
-            rating = success_score(make_judge, goal, response)
-            score = rating if score is None else max(score, rating)
-            logger.debug("variant=<%s> score=<%.3f> | sequentialbreak variant scored", variant, rating)
-
-            if rating >= self._success_threshold:
-                succeeded = True
-                breached_variant = variant
-                break
-
-        # Restore accumulated trace so the evaluator sees tool uses from all variants.
-        all_trace.extend(target_session.trace)
-        target_session.trace.clear()
-        target_session.trace.extend(all_trace)
+                if rating >= self._success_threshold:
+                    succeeded = True
+                    breached_variant = variant
+                    break
 
         return AttackRunResult(
             conversation=conversation,

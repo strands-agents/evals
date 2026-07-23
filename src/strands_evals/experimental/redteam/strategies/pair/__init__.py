@@ -18,12 +18,13 @@ from strands.models.model import Model
 
 from ...utils import _put_model_field
 from ..base import AttackRunResult, AttackStrategy
+from ..target_session import single_shot_attempts
 from . import pair_v0
 
 if TYPE_CHECKING:
     from ...case import RedTeamCase
     from ...types import AttackGoal
-    from ..target_session import TargetSession, ToolUseEntry
+    from ..target_session import TargetSession
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +155,6 @@ class PairStrategy(AttackStrategy):
         turn_cap = min(self._max_turns, max_turns)
 
         conversation: list[dict[str, Any]] = []
-        all_trace: list[ToolUseEntry] = []
         last_response = ""
         last_raw_score: int | None = None
         best_score: float | None = None
@@ -163,40 +163,35 @@ class PairStrategy(AttackStrategy):
         target_calls = 0
         parse_failures = 0
 
-        for _ in range(turn_cap):
-            p = gen_refined_prompt(attacker, goal, last_response, last_raw_score)
-            if p is None or not p.strip():
-                parse_failures += 1
-                logger.warning("reason=<empty_prompt> | attacker produced no prompt | ending case early")
-                break
+        # Each P is an independent single-shot: restore the target to its entry state between iterations
+        # (covers agent state, not just messages) while preserving every iteration's tool-use trace.
+        with single_shot_attempts(target_session) as begin_attempt:
+            for _ in range(turn_cap):
+                p = gen_refined_prompt(attacker, goal, last_response, last_raw_score)
+                if p is None or not p.strip():
+                    parse_failures += 1
+                    logger.warning("reason=<empty_prompt> | attacker produced no prompt | ending case early")
+                    break
 
-            # Each P is an independent single-shot: reset the target between iterations.
-            all_trace.extend(target_session.trace)
-            target_session.reset()
+                begin_attempt()
+                response = target_session.invoke(p)
+                target_calls += 1
+                if not response or not response.strip():
+                    logger.warning("reason=<empty_response> | target returned no text | ending case early")
+                    break
 
-            response = target_session.invoke(p)
-            target_calls += 1
-            if not response or not response.strip():
-                logger.warning("reason=<empty_response> | target returned no text | ending case early")
-                break
+                iterations += 1
+                conversation.append({"role": "attacker", "content": p})
+                conversation.append({"role": "target", "content": response})
+                last_response = response
 
-            iterations += 1
-            conversation.append({"role": "attacker", "content": p})
-            conversation.append({"role": "target", "content": response})
-            last_response = response
+                turn_score, last_raw_score = success_score(make_judge, goal, response)
+                best_score = turn_score if best_score is None else max(best_score, turn_score)
+                logger.debug("iteration=<%s> score=<%.3f> | pair turn scored", iterations, turn_score)
 
-            turn_score, last_raw_score = success_score(make_judge, goal, response)
-            best_score = turn_score if best_score is None else max(best_score, turn_score)
-            logger.debug("iteration=<%s> score=<%.3f> | pair turn scored", iterations, turn_score)
-
-            if turn_score >= self._success_threshold:
-                succeeded = True
-                break
-
-        # Restore accumulated trace so the evaluator sees tool uses from all iterations.
-        all_trace.extend(target_session.trace)
-        target_session.trace.clear()
-        target_session.trace.extend(all_trace)
+                if turn_score >= self._success_threshold:
+                    succeeded = True
+                    break
 
         return AttackRunResult(
             conversation=conversation,

@@ -2,12 +2,15 @@
 
 from unittest.mock import MagicMock
 
+import pytest
 from strands import Agent
 
 from strands_evals.experimental.redteam.strategies.target_session import (
     MALFORMED_TOOL_NAME,
     StrandsAgentSession,
+    TargetCheckpoint,
     _tool_uses_in,
+    single_shot_attempts,
 )
 
 
@@ -186,3 +189,87 @@ class TestStrandsAgentSessionRewind:
         session.reset()
         assert session._agent.messages == []  # messages cleared
         assert session._agent.state.get("leak") is True  # but state persists
+
+
+# ---------------------------------------------------------------------------
+# single_shot_attempts — the shared PAIR/SequentialBreak isolation helper
+# ---------------------------------------------------------------------------
+
+
+class _RewindSession:
+    """Minimal TargetSession with a real snapshot/restore over one integer state + a trace list."""
+
+    def __init__(self):
+        self.state = 0
+        self.trace: list[dict] = []
+
+    def invoke(self, message):  # not used by the helper directly; the test drives state/trace
+        raise NotImplementedError
+
+    def reset(self):
+        raise AssertionError("single_shot_attempts must rewind via restore(), never reset()")
+
+    def snapshot(self):
+        return TargetCheckpoint(agent_snapshot={"state": self.state}, trace_len=len(self.trace))
+
+    def restore(self, checkpoint):
+        self.state = checkpoint.agent_snapshot["state"]
+        del self.trace[checkpoint.trace_len :]
+
+
+class TestSingleShotAttempts:
+    def test_each_attempt_starts_from_entry_state(self):
+        # First begin_attempt() is a no-op (attempt 1 uses entry state); each later one restores it,
+        # rolling the counter back so every attempt observes the same value.
+        session = _RewindSession()
+        seen = []
+        with single_shot_attempts(session) as begin_attempt:
+            for _ in range(3):
+                begin_attempt()
+                seen.append(session.state)
+                session.state += 1  # mutate as invoke() would
+        assert seen == [0, 0, 0]
+
+    def test_trace_from_every_attempt_preserved_in_order(self):
+        session = _RewindSession()
+        with single_shot_attempts(session) as begin_attempt:
+            for i in range(3):
+                begin_attempt()
+                session.trace.append({"name": f"tool_{i}", "input": {}})
+        assert session.trace == [{"name": f"tool_{i}", "input": {}} for i in range(3)]
+
+    def test_entry_prefix_is_preserved(self):
+        # Trace already holding pre-entry entries: the prefix survives, attempt deltas append after it.
+        session = _RewindSession()
+        session.trace.append({"name": "pre", "input": {}})
+        with single_shot_attempts(session) as begin_attempt:
+            begin_attempt()
+            session.trace.append({"name": "a0", "input": {}})
+            begin_attempt()
+            session.trace.append({"name": "a1", "input": {}})
+        assert session.trace == [{"name": "pre", "input": {}}, {"name": "a0", "input": {}}, {"name": "a1", "input": {}}]
+
+    def test_trace_preserved_even_when_caller_raises(self):
+        # A raise after invoke() must still leave the in-flight attempt's trace on the session (finally).
+        session = _RewindSession()
+        with pytest.raises(RuntimeError):
+            with single_shot_attempts(session) as begin_attempt:
+                begin_attempt()
+                session.trace.append({"name": "a0", "input": {}})
+                raise RuntimeError("boom")
+        assert session.trace == [{"name": "a0", "input": {}}]
+
+    def test_skipped_attempt_does_not_restore(self):
+        # begin_attempt() called only before a real invoke: an attempt that ends early (never calls it)
+        # triggers no rollback. Here attempt 2 "skips" (no begin_attempt), so state keeps climbing until
+        # the next begin_attempt() rolls back to entry.
+        session = _RewindSession()
+        seen = []
+        with single_shot_attempts(session) as begin_attempt:
+            begin_attempt()  # attempt 1: no-op
+            seen.append(session.state)  # 0
+            session.state += 1
+            # attempt 2 ends early before invoke -> no begin_attempt(), no restore
+            begin_attempt()  # attempt 3: restores to entry
+            seen.append(session.state)  # 0 again
+        assert seen == [0, 0]

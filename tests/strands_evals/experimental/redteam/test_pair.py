@@ -8,36 +8,48 @@ from strands_evals.experimental.redteam.case import RedTeamCase
 from strands_evals.experimental.redteam.strategies import BUILTIN_STRATEGIES, PairStrategy
 from strands_evals.experimental.redteam.strategies.base import AttackRunResult
 from strands_evals.experimental.redteam.strategies.pair import gen_refined_prompt, success_score
+from strands_evals.experimental.redteam.strategies.target_session import TargetCheckpoint
 from strands_evals.experimental.redteam.types import AttackGoal, RedTeamConfig
 
 _PAIR = "strands_evals.experimental.redteam.strategies.pair"
 
 
 class _FakeSession:
-    """In-test append-only TargetSession: replies via a callable, records tool uses.
+    """In-test TargetSession with a REAL snapshot/restore, modeling non-message target state.
 
-    PAIR (single-stream) is invoke-only, so ``snapshot``/``restore`` RAISE: any call would prove the
-    strategy is not staying append-only. ``invoke``/``reset`` are the full surface used.
+    PAIR treats each P as an independent single-shot by checkpointing at entry and restoring between
+    iterations. This fake implements `snapshot`/`restore` for real (not raising) and carries a `state`
+    counter that `invoke` mutates, so a regression test can prove every iteration sees the same entry
+    state and that tool-use trace survives the restores. `reset()` RAISES: the strategy must rewind via
+    restore, never the baseline-less reset that leaks non-message state.
     """
 
     def __init__(self, reply_fn):
         self._reply_fn = reply_fn
         self._messages: list[str] = []
         self.trace: list[dict] = []
+        # Non-message target state (the leak the fix addresses); invoke mutates it, restore rolls it back.
+        self.state = 0
+        self.state_seen_per_attempt: list[int] = []
 
     def invoke(self, message):
         self._messages.append(message)
+        self.state_seen_per_attempt.append(self.state)
+        self.state += 1
         return self._reply_fn(message)
 
     def reset(self):
-        self._messages.clear()
-        self.trace.clear()
+        raise AssertionError("PAIR must rewind via restore(), not baseline-less reset()")
 
     def snapshot(self):
-        raise AssertionError("PAIR must not snapshot (append-only)")
+        return TargetCheckpoint(
+            agent_snapshot={"messages": list(self._messages), "state": self.state}, trace_len=len(self.trace)
+        )
 
     def restore(self, checkpoint):
-        raise AssertionError("PAIR must not restore (append-only)")
+        self._messages[:] = list(checkpoint.agent_snapshot["messages"])
+        self.state = checkpoint.agent_snapshot["state"]
+        del self.trace[checkpoint.trace_len :]
 
 
 def _case(success_criteria: str | None = "leaked the secret", actor_goal: str = "exfiltrate the secret") -> RedTeamCase:
@@ -365,6 +377,44 @@ def test_empty_response_all_or_nothing():
     assert result.metadata["turns_used"] == 1
     assert len(result.conversation) == 2  # only the first turn's (attacker, target)
     assert len(score_calls) == 1  # the empty turn was never scored
+
+
+def test_every_iteration_sees_the_same_entry_state():
+    """Single-shot isolation: each P must start from the state captured at run_attack entry, not carry
+    the prior iteration's mutation. invoke() bumps `state` every call; with restore between iterations
+    every attempt must observe the same initial value (0)."""
+    strat = _strategy(max_turns=3, success_threshold=0.8)
+    session = _session(lambda _m: "engaged")
+    with (
+        patch(f"{_PAIR}.gen_refined_prompt", return_value="p"),
+        patch(f"{_PAIR}.success_score", return_value=(0.1, 2)),
+    ):
+        strat.run_attack(_case(), session, max_turns=10)
+    # 3 iterations, each seeing the entry state 0 (restore rolls the counter back every time).
+    assert session.state_seen_per_attempt == [0, 0, 0]
+
+
+def test_tool_trace_from_every_iteration_survives_restores():
+    """The evaluator reads session.trace for tool-call breaches; each iteration's tool use must survive
+    the between-iteration restores, exactly once and in order."""
+    strat = _strategy(max_turns=3, success_threshold=0.8)
+    counter = {"n": 0}
+
+    def reply(_m):
+        # Each invoke appends a unique tool-use entry, as the real session would from the agent's messages.
+        counter["n"] += 1
+        session.trace.append({"name": f"tool_{counter['n']}", "input": {}})
+        return "engaged"
+
+    session = _session(reply)
+    with (
+        patch(f"{_PAIR}.gen_refined_prompt", return_value="p"),
+        patch(f"{_PAIR}.success_score", return_value=(0.1, 2)),
+    ):
+        result = strat.run_attack(_case(), session, max_turns=10)
+    # All three iterations' tool uses present, once each, in order -- not truncated by the restores.
+    assert session.trace == [{"name": f"tool_{i}", "input": {}} for i in range(1, 4)]
+    assert result.metadata["iterations"] == 3
 
 
 def test_pruned_branches_always_empty():
