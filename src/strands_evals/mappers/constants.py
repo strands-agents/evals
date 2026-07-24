@@ -8,6 +8,7 @@ Attribute keys and values are used for span type detection and data extraction.
 SCOPE_LANGCHAIN_OTEL = "opentelemetry.instrumentation.langchain"
 SCOPE_OPENINFERENCE = "openinference.instrumentation.langchain"
 SCOPE_OPENINFERENCE_SMOLAGENTS = "openinference.instrumentation.smolagents"
+SCOPE_ADK = "gcp.vertex.agent"
 SCOPE_STRANDS = "strands.telemetry.tracer"
 
 # All scopes that should route to OpenInferenceSessionMapper

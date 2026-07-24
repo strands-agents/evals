@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from .constants import SCOPE_LANGCHAIN_OTEL, SCOPE_STRANDS, SCOPES_OPENINFERENCE_FAMILY
+from .constants import SCOPE_ADK, SCOPE_LANGCHAIN_OTEL, SCOPE_STRANDS, SCOPES_OPENINFERENCE_FAMILY
 from .session_mapper import SessionMapper
 
 logger = logging.getLogger(__name__)
@@ -89,6 +89,7 @@ def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
         >>> session = mapper.map_to_session(spans, "session-123")
     """
     # Import here to avoid circular imports
+    from .adk_otel_session_mapper import ADKOtelSessionMapper
     from .cloudwatch_session_mapper import CloudWatchSessionMapper
     from .langchain_otel_session_mapper import LangChainOtelSessionMapper
     from .openinference_session_mapper import OpenInferenceSessionMapper
@@ -106,6 +107,9 @@ def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
 
         if scope_name in SCOPES_OPENINFERENCE_FAMILY:
             return OpenInferenceSessionMapper()
+
+        if scope_name == SCOPE_ADK:
+            return ADKOtelSessionMapper()
 
         if scope_name == SCOPE_STRANDS:
             # CloudWatch split format puts body on a separate entry from

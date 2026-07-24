@@ -1,5 +1,6 @@
 """Converters for transforming telemetry data to Session format."""
 
+from .adk_otel_session_mapper import ADKOtelSessionMapper
 from .cloudwatch_parser import CloudWatchLogsParser, parse_cloudwatch_logs
 from .cloudwatch_session_mapper import CloudWatchSessionMapper
 from .langchain_otel_session_mapper import LangChainOtelSessionMapper
@@ -10,6 +11,7 @@ from .strands_in_memory_session_mapper import GenAIConventionVersion, StrandsInM
 from .utils import detect_otel_mapper, get_scope_name, readable_spans_to_dicts
 
 __all__ = [
+    "ADKOtelSessionMapper",
     "CloudWatchLogsParser",
     "CloudWatchSessionMapper",
     "GenAIConventionVersion",

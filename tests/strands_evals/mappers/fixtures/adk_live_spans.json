@@ -1,0 +1,193 @@
+[
+  {
+    "trace_id": "97847cb33dff13e46483685930f4e236",
+    "span_id": "771ce4dcbd861745",
+    "parent_span_id": "b5aaea6a8c6e066f",
+    "name": "execute_tool calculator",
+    "start_time": 1784995767655639000,
+    "end_time": 1784995767656160000,
+    "attributes": {
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.tool.description": "Evaluate a mathematical expression and return the result.\n\nArgs:\n    expression: A mathematical expression to evaluate, e.g. \"2 + 2\" or \"15 * 37\".\n\nReturns:\n    The result of the expression as a string.",
+      "gen_ai.tool.name": "calculator",
+      "gen_ai.tool.type": "FunctionTool",
+      "gcp.vertex.agent.llm_request": "{}",
+      "gcp.vertex.agent.llm_response": "{}",
+      "gcp.vertex.agent.tool_call_args": "{\"expression\": \"15 * 37\"}",
+      "gen_ai.tool.call.id": "uwpsprd2",
+      "gcp.vertex.agent.event_id": "71bae700-48f8-4f1b-9779-c1259c12e5a5",
+      "gcp.vertex.agent.tool_response": "{\"result\": \"555\"}"
+    },
+    "scope": {
+      "name": "gcp.vertex.agent",
+      "version": "2.5.0"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "97847cb33dff13e46483685930f4e236",
+    "span_id": "b5aaea6a8c6e066f",
+    "parent_span_id": "f402c1e62b85df9b",
+    "name": "generate_content gemini-3.5-flash",
+    "start_time": 1784995766557686000,
+    "end_time": 1784995767656646000,
+    "attributes": {
+      "gen_ai.system": "gemini",
+      "gen_ai.operation.name": "generate_content",
+      "gen_ai.request.model": "gemini-3.5-flash",
+      "gen_ai.agent.name": "math_agent",
+      "gen_ai.conversation.id": "b4866a2a-a3d4-4d2f-8f40-6bb0d03d135c",
+      "gcp.vertex.agent.event_id": "375fe362-48af-4b49-9191-e3bcbe1ebd9c",
+      "gcp.vertex.agent.invocation_id": "e-5742fbee-9bb9-4445-b224-7ae0041d6631",
+      "gen_ai.response.finish_reasons": [
+        "stop"
+      ],
+      "gen_ai.usage.input_tokens": 157,
+      "gen_ai.usage.output_tokens": 51,
+      "gen_ai.usage.reasoning.output_tokens": 32
+    },
+    "scope": {
+      "name": "gcp.vertex.agent",
+      "version": "2.5.0"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "97847cb33dff13e46483685930f4e236",
+    "span_id": "f402c1e62b85df9b",
+    "parent_span_id": "67654e241edd27e4",
+    "name": "call_llm",
+    "start_time": 1784995766557571000,
+    "end_time": 1784995767656731000,
+    "attributes": {
+      "gen_ai.system": "gcp.vertex.agent",
+      "gen_ai.request.model": "gemini-3.5-flash",
+      "gcp.vertex.agent.invocation_id": "e-5742fbee-9bb9-4445-b224-7ae0041d6631",
+      "gcp.vertex.agent.session_id": "b4866a2a-a3d4-4d2f-8f40-6bb0d03d135c",
+      "gcp.vertex.agent.event_id": "375fe362-48af-4b49-9191-e3bcbe1ebd9c",
+      "gcp.vertex.agent.llm_request": "{\"model\": \"gemini-3.5-flash\", \"config\": {\"http_options\": {\"headers\": {\"x-goog-api-client\": \"google-adk/2.5.0 gl-python/3.10.0\", \"user-agent\": \"google-adk/2.5.0 gl-python/3.10.0\"}}, \"system_instruction\": \"You are a math assistant. Use the calculator tool to evaluate mathematical expressions.\\n\\nYou are an agent. Your internal name is \\\"math_agent\\\". The description about you is \\\"A helpful math assistant\\\".\", \"tools\": [{\"function_declarations\": [{\"description\": \"Evaluate a mathematical expression and return the result.\\n\\nArgs:\\n    expression: A mathematical expression to evaluate, e.g. \\\"2 + 2\\\" or \\\"15 * 37\\\".\\n\\nReturns:\\n    The result of the expression as a string.\", \"name\": \"calculator\", \"parameters_json_schema\": {\"properties\": {\"expression\": {\"title\": \"Expression\", \"type\": \"string\"}}, \"required\": [\"expression\"], \"title\": \"calculatorParams\", \"type\": \"object\"}}]}]}, \"contents\": [{\"parts\": [{\"text\": \"What is 15 multiplied by 37?\"}], \"role\": \"user\"}]}",
+      "gcp.vertex.agent.llm_response": "{\"model_version\":\"gemini-3.5-flash\",\"content\":{\"parts\":[{\"function_call\":{\"id\":\"uwpsprd2\",\"args\":{\"expression\":\"15 * 37\"},\"name\":\"calculator\"},\"thought_signature\":\"EpsBCpgBARFNMg_L4ljyIrSpRvhyg-49q7jvZ0A3gE7AeeMXKikwKIpbZ4fCvCZ3x6_-JUZwfIH8G_P6ttdyXsXCLX9PZAZh20PNVDV42YXQLG2IJ7I4O1cKYqwQWLkMKdEqAhSwbBizYp9no3B72reIWkkpav_C_8ZxfOM4841-reXWyMVvQCXM9nqxDd8sHt2zcH5OYOY8hsZDBqc=\"}],\"role\":\"model\"},\"finish_reason\":\"STOP\",\"usage_metadata\":{\"candidates_token_count\":19,\"prompt_token_count\":157,\"prompt_tokens_details\":[{\"modality\":\"TEXT\",\"token_count\":157}],\"thoughts_token_count\":32,\"total_token_count\":208}}",
+      "gen_ai.usage.input_tokens": 157,
+      "gen_ai.usage.output_tokens": 51,
+      "gen_ai.usage.reasoning.output_tokens": 32,
+      "gen_ai.response.finish_reasons": [
+        "stop"
+      ]
+    },
+    "scope": {
+      "name": "gcp.vertex.agent",
+      "version": "2.5.0"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "97847cb33dff13e46483685930f4e236",
+    "span_id": "44872427376a4cb5",
+    "parent_span_id": "49b19fa1ee559677",
+    "name": "generate_content gemini-3.5-flash",
+    "start_time": 1784995767662764000,
+    "end_time": 1784995768671922000,
+    "attributes": {
+      "gen_ai.system": "gemini",
+      "gen_ai.operation.name": "generate_content",
+      "gen_ai.request.model": "gemini-3.5-flash",
+      "gen_ai.agent.name": "math_agent",
+      "gen_ai.conversation.id": "b4866a2a-a3d4-4d2f-8f40-6bb0d03d135c",
+      "gcp.vertex.agent.event_id": "d1dd03f4-d8ba-4f1b-bbf4-fc8ebd4b39f3",
+      "gcp.vertex.agent.invocation_id": "e-5742fbee-9bb9-4445-b224-7ae0041d6631",
+      "gen_ai.response.finish_reasons": [
+        "stop"
+      ],
+      "gen_ai.usage.input_tokens": 222,
+      "gen_ai.usage.output_tokens": 33,
+      "gen_ai.usage.reasoning.output_tokens": 20
+    },
+    "scope": {
+      "name": "gcp.vertex.agent",
+      "version": "2.5.0"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "97847cb33dff13e46483685930f4e236",
+    "span_id": "49b19fa1ee559677",
+    "parent_span_id": "67654e241edd27e4",
+    "name": "call_llm",
+    "start_time": 1784995767662531000,
+    "end_time": 1784995768672096000,
+    "attributes": {
+      "gen_ai.system": "gcp.vertex.agent",
+      "gen_ai.request.model": "gemini-3.5-flash",
+      "gcp.vertex.agent.invocation_id": "e-5742fbee-9bb9-4445-b224-7ae0041d6631",
+      "gcp.vertex.agent.session_id": "b4866a2a-a3d4-4d2f-8f40-6bb0d03d135c",
+      "gcp.vertex.agent.event_id": "d1dd03f4-d8ba-4f1b-bbf4-fc8ebd4b39f3",
+      "gcp.vertex.agent.llm_request": "{\"model\": \"gemini-3.5-flash\", \"config\": {\"http_options\": {\"headers\": {\"x-goog-api-client\": \"google-adk/2.5.0 gl-python/3.10.0\", \"user-agent\": \"google-adk/2.5.0 gl-python/3.10.0\"}}, \"system_instruction\": \"You are a math assistant. Use the calculator tool to evaluate mathematical expressions.\\n\\nYou are an agent. Your internal name is \\\"math_agent\\\". The description about you is \\\"A helpful math assistant\\\".\", \"tools\": [{\"function_declarations\": [{\"description\": \"Evaluate a mathematical expression and return the result.\\n\\nArgs:\\n    expression: A mathematical expression to evaluate, e.g. \\\"2 + 2\\\" or \\\"15 * 37\\\".\\n\\nReturns:\\n    The result of the expression as a string.\", \"name\": \"calculator\", \"parameters_json_schema\": {\"properties\": {\"expression\": {\"title\": \"Expression\", \"type\": \"string\"}}, \"required\": [\"expression\"], \"title\": \"calculatorParams\", \"type\": \"object\"}}]}]}, \"contents\": [{\"parts\": [{\"text\": \"What is 15 multiplied by 37?\"}], \"role\": \"user\"}, {\"parts\": [{\"function_call\": {\"id\": \"uwpsprd2\", \"args\": {\"expression\": \"15 * 37\"}, \"name\": \"calculator\"}, \"thought_signature\": \"EpsBCpgBARFNMg_L4ljyIrSpRvhyg-49q7jvZ0A3gE7AeeMXKikwKIpbZ4fCvCZ3x6_-JUZwfIH8G_P6ttdyXsXCLX9PZAZh20PNVDV42YXQLG2IJ7I4O1cKYqwQWLkMKdEqAhSwbBizYp9no3B72reIWkkpav_C_8ZxfOM4841-reXWyMVvQCXM9nqxDd8sHt2zcH5OYOY8hsZDBqc=\"}], \"role\": \"model\"}, {\"parts\": [{\"function_response\": {\"id\": \"uwpsprd2\", \"name\": \"calculator\", \"response\": {\"result\": \"555\"}}}], \"role\": \"user\"}]}",
+      "gcp.vertex.agent.llm_response": "{\"model_version\":\"gemini-3.5-flash\",\"content\":{\"parts\":[{\"text\":\"15 multiplied by 37 is 555.\",\"thought_signature\":\"EoEBCn8BEU0yDxArxh3YY8ngMUkq2yb9wZDkZHyNOeZCv1rMt7FJwNN0bbTnqV5_QYnhy09kPVzAm9gtqywlQOd0Ym46_m5ZEaR10oJMtwmriDwgUz4s4xhu1txYqmSZu6uglTGuw-HXLZFuypDmZXcLEhofJfll3hXZDxMgBnjT5u8Z\"}],\"role\":\"model\"},\"finish_reason\":\"STOP\",\"usage_metadata\":{\"candidates_token_count\":13,\"prompt_token_count\":222,\"prompt_tokens_details\":[{\"modality\":\"TEXT\",\"token_count\":222}],\"thoughts_token_count\":20,\"total_token_count\":255}}",
+      "gen_ai.usage.input_tokens": 222,
+      "gen_ai.usage.output_tokens": 33,
+      "gen_ai.usage.reasoning.output_tokens": 20,
+      "gen_ai.response.finish_reasons": [
+        "stop"
+      ]
+    },
+    "scope": {
+      "name": "gcp.vertex.agent",
+      "version": "2.5.0"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "97847cb33dff13e46483685930f4e236",
+    "span_id": "67654e241edd27e4",
+    "parent_span_id": "6fd93d29bfd4a522",
+    "name": "invoke_agent math_agent",
+    "start_time": 1784995765229514000,
+    "end_time": 1784995768672315000,
+    "attributes": {
+      "gen_ai.operation.name": "invoke_agent",
+      "gen_ai.agent.description": "A helpful math assistant",
+      "gen_ai.agent.name": "math_agent",
+      "gen_ai.conversation.id": "b4866a2a-a3d4-4d2f-8f40-6bb0d03d135c"
+    },
+    "scope": {
+      "name": "gcp.vertex.agent",
+      "version": "2.5.0"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "97847cb33dff13e46483685930f4e236",
+    "span_id": "6fd93d29bfd4a522",
+    "parent_span_id": null,
+    "name": "invocation",
+    "start_time": 1784995765227135000,
+    "end_time": 1784995768672840000,
+    "attributes": {},
+    "scope": {
+      "name": "gcp.vertex.agent",
+      "version": "2.5.0"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "span_events": []
+  }
+]
