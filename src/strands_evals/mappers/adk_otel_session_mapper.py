@@ -182,7 +182,7 @@ class ADKOtelSessionMapper(SessionMapper):
         span_id = self._extract_span_id(span)
         call_llm_spans = sorted(
             [child for child in children_by_parent.get(span_id, []) if self._is_call_llm_span(child)],
-            key=lambda s: self._parse_timestamp(s.get("start_time")),
+            key=lambda s: self._get_span_start_time(s),
         )
 
         user_prompt = ""
@@ -219,7 +219,7 @@ class ADKOtelSessionMapper(SessionMapper):
                     if self._get_operation_name(desc) == "execute_tool"
                     and desc.get("attributes", {}).get("gen_ai.tool.name") != "(merged tools)"
                 ],
-                key=lambda s: self._parse_timestamp(s.get("start_time")),
+                key=lambda s: self._get_span_start_time(s),
             )
             if tool_descendants:
                 last_tool_attrs = tool_descendants[-1].get("attributes", {})
@@ -486,9 +486,17 @@ class ADKOtelSessionMapper(SessionMapper):
             span_id=self._extract_span_id(span),
             session_id=session_id,
             parent_span_id=self._extract_parent_span_id(span),
-            start_time=self._parse_timestamp(span.get("start_time") or span.get("startTimeUnixNano")),
-            end_time=self._parse_timestamp(span.get("end_time") or span.get("endTimeUnixNano")),
+            start_time=self._get_span_start_time(span),
+            end_time=self._get_span_end_time(span),
         )
+
+    def _get_span_start_time(self, span: dict) -> datetime:
+        """Parse the start timestamp from a span, handling both snake_case and camelCase keys."""
+        return self._parse_timestamp(span.get("start_time") or span.get("startTimeUnixNano"))
+
+    def _get_span_end_time(self, span: dict) -> datetime:
+        """Parse the end timestamp from a span, handling both snake_case and camelCase keys."""
+        return self._parse_timestamp(span.get("end_time") or span.get("endTimeUnixNano"))
 
     def _extract_trace_id(self, span: dict) -> str:
         """Extract trace_id from span dict.
