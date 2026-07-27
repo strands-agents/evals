@@ -182,7 +182,7 @@ class ADKOtelSessionMapper(SessionMapper):
         span_id = self._extract_span_id(span)
         call_llm_spans = sorted(
             [child for child in children_by_parent.get(span_id, []) if self._is_call_llm_span(child)],
-            key=lambda s: self._get_span_start_time(s),
+            key=lambda s: self._parse_timestamp(s.get("start_time")),
         )
 
         user_prompt = ""
@@ -219,7 +219,7 @@ class ADKOtelSessionMapper(SessionMapper):
                     if self._get_operation_name(desc) == "execute_tool"
                     and desc.get("attributes", {}).get("gen_ai.tool.name") != "(merged tools)"
                 ],
-                key=lambda s: self._get_span_start_time(s),
+                key=lambda s: self._parse_timestamp(s.get("start_time")),
             )
             if tool_descendants:
                 last_tool_attrs = tool_descendants[-1].get("attributes", {})
@@ -486,27 +486,16 @@ class ADKOtelSessionMapper(SessionMapper):
             span_id=self._extract_span_id(span),
             session_id=session_id,
             parent_span_id=self._extract_parent_span_id(span),
-            start_time=self._get_span_start_time(span),
-            end_time=self._get_span_end_time(span),
+            start_time=self._parse_timestamp(span.get("start_time")),
+            end_time=self._parse_timestamp(span.get("end_time")),
         )
-
-    def _get_span_start_time(self, span: dict) -> datetime:
-        """Parse the start timestamp from a span, handling both snake_case and camelCase keys."""
-        return self._parse_timestamp(span.get("start_time") or span.get("startTimeUnixNano"))
-
-    def _get_span_end_time(self, span: dict) -> datetime:
-        """Parse the end timestamp from a span, handling both snake_case and camelCase keys."""
-        return self._parse_timestamp(span.get("end_time") or span.get("endTimeUnixNano"))
 
     def _extract_trace_id(self, span: dict) -> str:
         """Extract trace_id from span dict.
 
-        Handles multiple formats:
-        - snake_case: span["trace_id"] (InMemorySpanExporter / readable_spans_to_dicts)
-        - camelCase: span["traceId"] (CloudWatch OTel JSON export)
-        - nested: span["context"]["trace_id"] (to_json export format)
+        Falls back to span["context"]["trace_id"] for the to_json export format.
         """
-        trace_id = span.get("trace_id", "") or span.get("traceId", "")
+        trace_id = span.get("trace_id", "")
         if not trace_id:
             context = span.get("context", {})
             if isinstance(context, dict):
@@ -528,12 +517,9 @@ class ADKOtelSessionMapper(SessionMapper):
     def _extract_span_id(self, span: dict) -> str:
         """Extract span_id from span dict.
 
-        Handles multiple formats:
-        - snake_case: span["span_id"] (InMemorySpanExporter / readable_spans_to_dicts)
-        - camelCase: span["spanId"] (CloudWatch OTel JSON export)
-        - nested: span["context"]["span_id"] (to_json export format)
+        Falls back to span["context"]["span_id"] for the to_json export format.
         """
-        span_id = span.get("span_id", "") or span.get("spanId", "")
+        span_id = span.get("span_id", "")
         if not span_id:
             context = span.get("context", {})
             if isinstance(context, dict):
@@ -541,8 +527,8 @@ class ADKOtelSessionMapper(SessionMapper):
         return self._strip_hex_prefix(span_id)
 
     def _extract_parent_span_id(self, span: dict) -> str | None:
-        """Extract parent_span_id, falling back to camelCase and legacy formats."""
-        parent = span.get("parent_span_id") or span.get("parentSpanId") or span.get("parent_id")
+        """Extract parent_span_id, falling back to span["parent_id"]."""
+        parent = span.get("parent_span_id") or span.get("parent_id")
         if parent is None:
             return None
         return self._strip_hex_prefix(str(parent))
