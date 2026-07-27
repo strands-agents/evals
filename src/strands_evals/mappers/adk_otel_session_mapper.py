@@ -47,7 +47,9 @@ from ..types.trace import (
     Trace,
     UserMessage,
 )
+from .constants import SCOPE_ADK
 from .session_mapper import SessionMapper
+from .utils import get_scope_name
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,11 @@ class ADKOtelSessionMapper(SessionMapper):
         """
         spans = self._normalize_to_flat_spans(data)
 
+        # Filter to only spans from the ADK instrumentation scope.
+        # Include spans with no scope (e.g. to_json format) since this mapper
+        # was explicitly selected for ADK traces.
+        spans = [s for s in spans if get_scope_name(s) in (SCOPE_ADK, "")]
+
         # Group spans by trace_id
         grouped: dict[str, list[dict]] = defaultdict(list)
         for span in spans:
@@ -87,17 +94,27 @@ class ADKOtelSessionMapper(SessionMapper):
 
         result_traces: list[Trace] = []
         for trace_id, trace_spans in grouped.items():
-            trace = self._build_trace(trace_id, trace_spans, session_id)
-            if trace.spans:
-                result_traces.append(trace)
+            traces = self._build_traces(trace_id, trace_spans, session_id)
+            result_traces.extend(t for t in traces if t.spans)
 
         # Sort traces chronologically by earliest span start_time
         result_traces.sort(key=lambda t: min(s.span_info.start_time for s in t.spans))
 
         return Session(session_id=session_id, traces=result_traces)
 
-    def _build_trace(self, trace_id: str, spans: list[dict], session_id: str) -> Trace:
-        """Build a Trace from spans sharing the same trace_id."""
+    def _build_traces(self, trace_id: str, spans: list[dict], session_id: str) -> list[Trace]:
+        """Build Trace objects from spans sharing the same trace_id.
+
+        In multi-agent scenarios (e.g. coordinator -> specialist), a single OTel
+        trace contains multiple ``invoke_agent`` spans. The TraceExtractor expects
+        one AgentInvocationSpan per Trace so that each tool call is evaluated
+        against the correct agent's available_tools. This method splits the spans
+        into one Trace per agent invocation, grouping each agent's descendant
+        inference and tool execution spans with it.
+
+        When only 0 or 1 ``invoke_agent`` spans exist, the original single-Trace
+        behavior is preserved.
+        """
         # Index spans for parent-child lookups
         spans_by_id: dict[str, dict] = {}
         children_by_parent: dict[str, list[dict]] = defaultdict(list)
@@ -110,6 +127,68 @@ class ADKOtelSessionMapper(SessionMapper):
             if parent_span_id:
                 children_by_parent[parent_span_id].append(span)
 
+        # Identify invoke_agent spans
+        agent_spans_raw = [
+            s for s in spans if self._get_operation_name(s) == "invoke_agent"
+        ]
+
+        # If 0 or 1 agent invocations, build a single trace (original behavior)
+        if len(agent_spans_raw) <= 1:
+            trace = self._build_single_trace(trace_id, spans, session_id, spans_by_id, children_by_parent)
+            return [trace]
+
+        # Multiple agent invocations — split into per-agent traces.
+        # Sort agent spans by start_time so child agents come after parents.
+        agent_spans_raw.sort(key=lambda s: self._parse_timestamp(s.get("start_time")))
+
+        # Build a mapping: span_id -> owning invoke_agent span_id.
+        # Process agent spans from innermost (latest start) to outermost so
+        # that a tool span nested under a child agent is assigned to that child,
+        # not the parent coordinator.
+        agent_span_ids = {self._extract_span_id(s) for s in agent_spans_raw}
+        span_to_agent: dict[str, str] = {}
+
+        for agent_raw in reversed(agent_spans_raw):
+            agent_id = self._extract_span_id(agent_raw)
+            descendants = self._get_descendants(agent_id, children_by_parent)
+            for desc in descendants:
+                desc_id = self._extract_span_id(desc)
+                # Skip other invoke_agent spans — they form their own traces
+                if desc_id in agent_span_ids:
+                    continue
+                # Only assign if not already claimed by a more specific (inner) agent
+                if desc_id and desc_id not in span_to_agent:
+                    span_to_agent[desc_id] = agent_id
+
+        # Group non-agent spans by their owning agent
+        agent_groups: dict[str, list[dict]] = {self._extract_span_id(a): [] for a in agent_spans_raw}
+        for span in spans:
+            span_id = self._extract_span_id(span)
+            if span_id in agent_span_ids:
+                continue
+            owning_agent = span_to_agent.get(span_id)
+            if owning_agent and owning_agent in agent_groups:
+                agent_groups[owning_agent].append(span)
+
+        # Build one Trace per agent invocation
+        traces: list[Trace] = []
+        for agent_raw in agent_spans_raw:
+            agent_id = self._extract_span_id(agent_raw)
+            group_spans = [agent_raw] + agent_groups.get(agent_id, [])
+            trace = self._build_single_trace(trace_id, group_spans, session_id, spans_by_id, children_by_parent)
+            traces.append(trace)
+
+        return traces
+
+    def _build_single_trace(
+        self,
+        trace_id: str,
+        spans: list[dict],
+        session_id: str,
+        spans_by_id: dict[str, dict],
+        children_by_parent: dict[str, list[dict]],
+    ) -> Trace:
+        """Build a single Trace from a set of spans."""
         converted_spans: list[InferenceSpan | ToolExecutionSpan | AgentInvocationSpan] = []
 
         for span in spans:
