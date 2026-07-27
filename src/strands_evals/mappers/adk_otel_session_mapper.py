@@ -486,16 +486,19 @@ class ADKOtelSessionMapper(SessionMapper):
             span_id=self._extract_span_id(span),
             session_id=session_id,
             parent_span_id=self._extract_parent_span_id(span),
-            start_time=self._parse_timestamp(span.get("start_time")),
-            end_time=self._parse_timestamp(span.get("end_time")),
+            start_time=self._parse_timestamp(span.get("start_time") or span.get("startTimeUnixNano")),
+            end_time=self._parse_timestamp(span.get("end_time") or span.get("endTimeUnixNano")),
         )
 
     def _extract_trace_id(self, span: dict) -> str:
         """Extract trace_id from span dict.
 
-        Falls back to span["context"]["trace_id"] for the to_json export format.
+        Handles multiple formats:
+        - snake_case: span["trace_id"] (InMemorySpanExporter / readable_spans_to_dicts)
+        - camelCase: span["traceId"] (CloudWatch OTel JSON export)
+        - nested: span["context"]["trace_id"] (to_json export format)
         """
-        trace_id = span.get("trace_id", "")
+        trace_id = span.get("trace_id", "") or span.get("traceId", "")
         if not trace_id:
             context = span.get("context", {})
             if isinstance(context, dict):
@@ -517,9 +520,12 @@ class ADKOtelSessionMapper(SessionMapper):
     def _extract_span_id(self, span: dict) -> str:
         """Extract span_id from span dict.
 
-        Falls back to span["context"]["span_id"] for the to_json export format.
+        Handles multiple formats:
+        - snake_case: span["span_id"] (InMemorySpanExporter / readable_spans_to_dicts)
+        - camelCase: span["spanId"] (CloudWatch OTel JSON export)
+        - nested: span["context"]["span_id"] (to_json export format)
         """
-        span_id = span.get("span_id", "")
+        span_id = span.get("span_id", "") or span.get("spanId", "")
         if not span_id:
             context = span.get("context", {})
             if isinstance(context, dict):
@@ -527,8 +533,8 @@ class ADKOtelSessionMapper(SessionMapper):
         return self._strip_hex_prefix(span_id)
 
     def _extract_parent_span_id(self, span: dict) -> str | None:
-        """Extract parent_span_id, falling back to span["parent_id"]."""
-        parent = span.get("parent_span_id") or span.get("parent_id")
+        """Extract parent_span_id, falling back to camelCase and legacy formats."""
+        parent = span.get("parent_span_id") or span.get("parentSpanId") or span.get("parent_id")
         if parent is None:
             return None
         return self._strip_hex_prefix(str(parent))

@@ -1,0 +1,246 @@
+[
+  {
+    "traceId": "adk-adot-trace-1",
+    "spanId": "invocation-1",
+    "parentSpanId": "root-1",
+    "name": "invocation",
+    "kind": "INTERNAL",
+    "startTimeUnixNano": 1785179209069429584,
+    "endTimeUnixNano": 1785179216255792196,
+    "durationNano": 7186362612,
+    "scope": {
+      "name": "gcp.vertex.agent",
+      "version": "1.35.2"
+    },
+    "attributes": {
+      "aws.local.service": "AdkExperiment_AdkExperiment.DEFAULT",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "session.id": "test-session-1",
+      "aws.local.environment": "bedrock-agentcore:default"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "flags": 256
+  },
+  {
+    "traceId": "adk-adot-trace-1",
+    "spanId": "invoke-agent-1",
+    "parentSpanId": "invocation-1",
+    "name": "invoke_agent math_agent",
+    "kind": "INTERNAL",
+    "startTimeUnixNano": 1785179209069866097,
+    "endTimeUnixNano": 1785179216255567701,
+    "durationNano": 7185701604,
+    "scope": {
+      "name": "gcp.vertex.agent",
+      "version": "1.35.2"
+    },
+    "attributes": {
+      "aws.local.service": "AdkExperiment_AdkExperiment.DEFAULT",
+      "gen_ai.operation.name": "invoke_agent",
+      "gen_ai.agent.name": "math_agent",
+      "aws.genai.span_kind": "AGENT",
+      "gen_ai.conversation.id": "test-session-1",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "gen_ai.agent.description": "A helpful math assistant",
+      "session.id": "test-session-1",
+      "aws.local.environment": "bedrock-agentcore:default"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "flags": 256
+  },
+  {
+    "traceId": "adk-adot-trace-1",
+    "spanId": "call-llm-1",
+    "parentSpanId": "invoke-agent-1",
+    "name": "call_llm",
+    "kind": "INTERNAL",
+    "startTimeUnixNano": 1785179209238108046,
+    "endTimeUnixNano": 1785179215251886043,
+    "durationNano": 6013777997,
+    "scope": {
+      "name": "gcp.vertex.agent",
+      "version": "1.35.2"
+    },
+    "attributes": {
+      "aws.local.service": "AdkExperiment_AdkExperiment.DEFAULT",
+      "gcp.vertex.agent.llm_response": "{\"model_version\": \"us.anthropic.claude-sonnet-4-6\", \"content\": {\"parts\": [{\"function_call\": {\"id\": \"tool-call-1\", \"args\": {\"expression\": \"15 * 37\"}, \"name\": \"calculator\"}}], \"role\": \"model\"}, \"finish_reason\": \"STOP\", \"usage_metadata\": {\"candidates_token_count\": 56, \"prompt_token_count\": 667, \"total_token_count\": 723}}",
+      "gen_ai.usage.output_tokens": 56,
+      "gcp.vertex.agent.invocation_id": "e-5f12c4f0-9f37-4776-89e0-a318c6c86ed7",
+      "aws.local.environment": "bedrock-agentcore:default",
+      "gen_ai.provider.name": "gcp.vertex.agent",
+      "gcp.vertex.agent.llm_request": "{\"model\": \"bedrock/us.anthropic.claude-sonnet-4-6\", \"config\": {\"system_instruction\": \"You are a math assistant. Use the calculator tool.\", \"tools\": [{\"function_declarations\": [{\"description\": \"Evaluate a math expression.\", \"name\": \"calculator\", \"parameters\": {\"properties\": {\"expression\": {\"type\": \"STRING\"}}, \"required\": [\"expression\"], \"type\": \"OBJECT\"}}]}]}, \"contents\": [{\"parts\": [{\"text\": \"What is 15 multiplied by 37?\"}], \"role\": \"user\"}]}",
+      "gcp.vertex.agent.event_id": "event-1",
+      "gen_ai.usage.input_tokens": 667,
+      "aws.genai.token_count_total": 723,
+      "gen_ai.response.finish_reasons": [
+        "stop"
+      ],
+      "gen_ai.request.model": "bedrock/us.anthropic.claude-sonnet-4-6",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "session.id": "test-session-1",
+      "gen_ai.system": "gcp.vertex.agent",
+      "gcp.vertex.agent.session_id": "test-session-1"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "flags": 256
+  },
+  {
+    "traceId": "adk-adot-trace-1",
+    "spanId": "generate-content-1",
+    "parentSpanId": "call-llm-1",
+    "name": "generate_content bedrock/us.anthropic.claude-sonnet-4-6",
+    "kind": "INTERNAL",
+    "startTimeUnixNano": 1785179209238309954,
+    "endTimeUnixNano": 1785179215251837880,
+    "durationNano": 6013527926,
+    "scope": {
+      "name": "gcp.vertex.agent",
+      "version": "1.35.2"
+    },
+    "attributes": {
+      "aws.local.service": "AdkExperiment_AdkExperiment.DEFAULT",
+      "user.id": "default_user",
+      "gen_ai.usage.output_tokens": 56,
+      "gen_ai.agent.name": "math_agent",
+      "gcp.vertex.agent.invocation_id": "e-5f12c4f0-9f37-4776-89e0-a318c6c86ed7",
+      "aws.genai.span_kind": "LLM",
+      "aws.local.environment": "bedrock-agentcore:default",
+      "gen_ai.provider.name": "gemini",
+      "gcp.vertex.agent.event_id": "event-1",
+      "gen_ai.operation.name": "generate_content",
+      "gen_ai.usage.input_tokens": 667,
+      "aws.genai.token_count_total": 723,
+      "gen_ai.response.finish_reasons": [
+        "stop"
+      ],
+      "gen_ai.request.model": "bedrock/us.anthropic.claude-sonnet-4-6",
+      "gen_ai.conversation.id": "test-session-1",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "session.id": "test-session-1",
+      "gen_ai.system": "gemini"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "flags": 256
+  },
+  {
+    "traceId": "adk-adot-trace-1",
+    "spanId": "execute-tool-1",
+    "parentSpanId": "generate-content-1",
+    "name": "execute_tool calculator",
+    "kind": "INTERNAL",
+    "startTimeUnixNano": 1785179215251198610,
+    "endTimeUnixNano": 1785179215251585180,
+    "durationNano": 386570,
+    "scope": {
+      "name": "gcp.vertex.agent",
+      "version": "1.35.2"
+    },
+    "attributes": {
+      "aws.local.service": "AdkExperiment_AdkExperiment.DEFAULT",
+      "gcp.vertex.agent.llm_response": "{}",
+      "gen_ai.tool.call.id": "tool-call-1",
+      "gen_ai.tool.description": "Evaluate a math expression.",
+      "gen_ai.tool.type": "FunctionTool",
+      "aws.genai.span_kind": "TOOL",
+      "aws.local.environment": "bedrock-agentcore:default",
+      "gcp.vertex.agent.tool_call_args": "{\"expression\": \"15 * 37\"}",
+      "gcp.vertex.agent.llm_request": "{}",
+      "gcp.vertex.agent.event_id": "event-2",
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.tool.name": "calculator",
+      "gcp.vertex.agent.tool_response": "{\"result\": \"555\"}",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "session.id": "test-session-1"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "flags": 256
+  },
+  {
+    "traceId": "adk-adot-trace-1",
+    "spanId": "call-llm-2",
+    "parentSpanId": "invoke-agent-1",
+    "name": "call_llm",
+    "kind": "INTERNAL",
+    "startTimeUnixNano": 1785179215257807868,
+    "endTimeUnixNano": 1785179216255474599,
+    "durationNano": 997666731,
+    "scope": {
+      "name": "gcp.vertex.agent",
+      "version": "1.35.2"
+    },
+    "attributes": {
+      "aws.local.service": "AdkExperiment_AdkExperiment.DEFAULT",
+      "gcp.vertex.agent.llm_response": "{\"model_version\": \"us.anthropic.claude-sonnet-4-6\", \"content\": {\"parts\": [{\"text\": \"15 multiplied by 37 is 555.\"}], \"role\": \"model\"}, \"finish_reason\": \"STOP\", \"usage_metadata\": {\"candidates_token_count\": 20, \"prompt_token_count\": 741, \"total_token_count\": 761}}",
+      "gen_ai.usage.output_tokens": 20,
+      "gcp.vertex.agent.invocation_id": "e-5f12c4f0-9f37-4776-89e0-a318c6c86ed7",
+      "aws.local.environment": "bedrock-agentcore:default",
+      "gen_ai.provider.name": "gcp.vertex.agent",
+      "gcp.vertex.agent.llm_request": "{\"model\": \"bedrock/us.anthropic.claude-sonnet-4-6\", \"config\": {\"system_instruction\": \"You are a math assistant. Use the calculator tool.\", \"tools\": [{\"function_declarations\": [{\"description\": \"Evaluate a math expression.\", \"name\": \"calculator\", \"parameters\": {\"properties\": {\"expression\": {\"type\": \"STRING\"}}, \"required\": [\"expression\"], \"type\": \"OBJECT\"}}]}]}, \"contents\": [{\"parts\": [{\"text\": \"What is 15 multiplied by 37?\"}], \"role\": \"user\"}, {\"parts\": [{\"function_call\": {\"id\": \"tool-call-1\", \"args\": {\"expression\": \"15 * 37\"}, \"name\": \"calculator\"}}], \"role\": \"model\"}, {\"parts\": [{\"function_response\": {\"id\": \"tool-call-1\", \"name\": \"calculator\", \"response\": {\"result\": \"555\"}}}], \"role\": \"user\"}]}",
+      "gcp.vertex.agent.event_id": "event-3",
+      "gen_ai.usage.input_tokens": 741,
+      "aws.genai.token_count_total": 761,
+      "gen_ai.response.finish_reasons": [
+        "stop"
+      ],
+      "gen_ai.request.model": "bedrock/us.anthropic.claude-sonnet-4-6",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "session.id": "test-session-1",
+      "gen_ai.system": "gcp.vertex.agent",
+      "gcp.vertex.agent.session_id": "test-session-1"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "flags": 256
+  },
+  {
+    "traceId": "adk-adot-trace-1",
+    "spanId": "generate-content-2",
+    "parentSpanId": "call-llm-2",
+    "name": "generate_content bedrock/us.anthropic.claude-sonnet-4-6",
+    "kind": "INTERNAL",
+    "startTimeUnixNano": 1785179215257957896,
+    "endTimeUnixNano": 1785179216255416014,
+    "durationNano": 997458118,
+    "scope": {
+      "name": "gcp.vertex.agent",
+      "version": "1.35.2"
+    },
+    "attributes": {
+      "aws.local.service": "AdkExperiment_AdkExperiment.DEFAULT",
+      "user.id": "default_user",
+      "gen_ai.usage.output_tokens": 20,
+      "gen_ai.agent.name": "math_agent",
+      "gcp.vertex.agent.invocation_id": "e-5f12c4f0-9f37-4776-89e0-a318c6c86ed7",
+      "aws.genai.span_kind": "LLM",
+      "aws.local.environment": "bedrock-agentcore:default",
+      "gen_ai.provider.name": "gemini",
+      "gcp.vertex.agent.event_id": "event-3",
+      "gen_ai.operation.name": "generate_content",
+      "gen_ai.usage.input_tokens": 741,
+      "aws.genai.token_count_total": 761,
+      "gen_ai.response.finish_reasons": [
+        "stop"
+      ],
+      "gen_ai.request.model": "bedrock/us.anthropic.claude-sonnet-4-6",
+      "gen_ai.conversation.id": "test-session-1",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "session.id": "test-session-1",
+      "gen_ai.system": "gemini"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "flags": 256
+  }
+]
