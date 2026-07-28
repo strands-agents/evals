@@ -136,7 +136,7 @@ class ADKOtelSessionMapper(SessionMapper):
 
         # Multiple agent invocations — split into per-agent traces.
         # Sort agent spans by start_time so child agents come after parents.
-        agent_spans_raw.sort(key=lambda s: self._parse_timestamp(s.get("start_time")))
+        agent_spans_raw.sort(key=lambda s: self.parse_timestamp(s.get("start_time")))
 
         # Build a mapping: span_id -> owning invoke_agent span_id.
         # Process agent spans from innermost (latest start) to outermost so
@@ -262,7 +262,7 @@ class ADKOtelSessionMapper(SessionMapper):
         span_id = self._extract_span_id(span)
         call_llm_spans = sorted(
             [child for child in children_by_parent.get(span_id, []) if self._is_call_llm_span(child)],
-            key=lambda s: self._parse_timestamp(s.get("start_time")),
+            key=lambda s: self.parse_timestamp(s.get("start_time")),
         )
 
         user_prompt = ""
@@ -299,7 +299,7 @@ class ADKOtelSessionMapper(SessionMapper):
                     if self._get_operation_name(desc) == "execute_tool"
                     and desc.get("attributes", {}).get("gen_ai.tool.name") != "(merged tools)"
                 ],
-                key=lambda s: self._parse_timestamp(s.get("start_time")),
+                key=lambda s: self.parse_timestamp(s.get("start_time")),
             )
             if tool_descendants:
                 last_tool_attrs = tool_descendants[-1].get("attributes", {})
@@ -566,8 +566,8 @@ class ADKOtelSessionMapper(SessionMapper):
             span_id=self._extract_span_id(span),
             session_id=session_id,
             parent_span_id=self._extract_parent_span_id(span),
-            start_time=self._parse_timestamp(span.get("start_time")),
-            end_time=self._parse_timestamp(span.get("end_time")),
+            start_time=self.parse_timestamp(span.get("start_time")),
+            end_time=self.parse_timestamp(span.get("end_time")),
         )
 
     def _extract_trace_id(self, span: dict) -> str:

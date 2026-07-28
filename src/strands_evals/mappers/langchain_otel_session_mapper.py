@@ -451,8 +451,8 @@ class LangChainOtelSessionMapper(SessionMapper):
 
     def _create_span_info(self, span: dict, session_id: str) -> SpanInfo:
         """Create SpanInfo from span dict."""
-        start_time = self._parse_timestamp(span.get("start_time"))
-        end_time = self._parse_timestamp(span.get("end_time"))
+        start_time = self.parse_timestamp(span.get("start_time"))
+        end_time = self.parse_timestamp(span.get("end_time"))
 
         return SpanInfo(
             trace_id=span.get("trace_id"),

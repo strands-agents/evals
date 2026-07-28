@@ -699,32 +699,31 @@ class TestDataFormatCompatibility:
 
 
 class TestTimestampParsing:
-    """Tests for _parse_timestamp handling various formats."""
+    """Tests for parse_timestamp handling various formats."""
 
     def setup_method(self):
         self.mapper = ADKOtelSessionMapper()
 
     def test_iso_string_with_z(self):
-        ts = self.mapper._parse_timestamp("2026-07-22T16:34:19.917561Z")
+        ts = self.mapper.parse_timestamp("2026-07-22T16:34:19.917561Z")
         assert ts.year == 2026 and ts.month == 7
 
     def test_nanosecond_epoch(self):
         """Nanosecond epoch integer is converted to datetime."""
-        ts_int = self.mapper._parse_timestamp(1700000000000000000)
+        ts_int = self.mapper.parse_timestamp(1700000000000000000)
         assert ts_int.year == 2023
 
-    def test_string_nanosecond_epoch_falls_back_to_now(self):
-        """String-encoded nanosecond epoch is not a valid ISO format, falls back to now."""
-        ts_str = self.mapper._parse_timestamp("1700000000000000000")
-        # Not parseable as ISO 8601, so falls back to current time
-        assert ts_str.year >= 2026
+    def test_string_nanosecond_epoch(self):
+        """String-encoded nanosecond epoch (OTLP JSON uint64) is correctly parsed."""
+        ts_str = self.mapper.parse_timestamp("1700000000000000000")
+        assert ts_str.year == 2023 and ts_str.month == 11
 
     def test_none_returns_now(self):
-        assert self.mapper._parse_timestamp(None) is not None
+        assert self.mapper.parse_timestamp(None) is not None
 
     def test_datetime_passthrough(self):
         dt = datetime(2024, 1, 1, tzinfo=timezone.utc)
-        assert self.mapper._parse_timestamp(dt) == dt
+        assert self.mapper.parse_timestamp(dt) == dt
 
 
 # ============================================================================
@@ -990,7 +989,11 @@ class TestScopeFiltering:
         self.mapper = ADKOtelSessionMapper()
 
     def test_foreign_scope_spans_are_dropped(self):
-        """Spans from non-ADK instrumentation scopes are excluded from the session."""
+        """Spans from non-ADK instrumentation scopes are excluded from the session.
+
+        Uses a foreign-scope execute_tool span that would convert unconditionally
+        if not filtered, ensuring the scope check is the only barrier.
+        """
         spans = [
             # ADK span — should be kept
             make_span(
@@ -1004,17 +1007,20 @@ class TestScopeFiltering:
                     "gcp.vertex.agent.tool_response": "2",
                 },
             ),
-            # Foreign scope span — should be dropped
+            # Foreign scope span with full tool attributes — would convert if not filtered
             {
                 "trace_id": "trace-1",
                 "span_id": "foreign-1",
                 "parent_span_id": None,
-                "name": "generate_content gemini-3.5-flash",
+                "name": "execute_tool foreign_tool",
                 "start_time": 1700000000000000000,
                 "end_time": 1700000001000000000,
                 "attributes": {
-                    "gen_ai.operation.name": "generate_content",
-                    "gen_ai.request.model": "gemini-3.5-flash",
+                    "gen_ai.operation.name": "execute_tool",
+                    "gen_ai.tool.name": "foreign_tool",
+                    "gen_ai.tool.call.id": "c2",
+                    "gcp.vertex.agent.tool_call_args": '{"q": "test"}',
+                    "gcp.vertex.agent.tool_response": "foreign result",
                 },
                 "scope": {"name": "opentelemetry.instrumentation.vertexai", "version": "1.0.0"},
                 "status": {"code": "UNSET"},

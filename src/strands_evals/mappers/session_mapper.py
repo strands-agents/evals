@@ -74,7 +74,7 @@ class SessionMapper(ABC):
         # Fallback for unexpected types
         return []
 
-    def _parse_timestamp(self, value: Any) -> datetime:
+    def parse_timestamp(self, value: Any) -> datetime:
         """Parse timestamp from various formats.
 
         Handles:
@@ -95,6 +95,8 @@ class SessionMapper(ABC):
         if isinstance(value, datetime):
             return value
         if isinstance(value, str):
+            if value.isdigit():
+                return datetime.fromtimestamp(int(value) / 1e9, tz=timezone.utc)
             try:
                 if value.endswith("Z"):
                     value = value[:-1] + "+00:00"
