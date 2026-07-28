@@ -12,6 +12,29 @@ from .session_mapper import SessionMapper
 logger = logging.getLogger(__name__)
 
 
+def safe_json_parse(content: Any) -> Any:
+    """Safely parse JSON content, returning the original value on failure.
+
+    If content is already a dict, returns it as-is. If it's a string, attempts
+    JSON parsing and falls back to returning the raw string on decode error.
+    For all other types, returns the value unchanged.
+
+    Args:
+        content: Value to parse — typically a str or dict from span attributes.
+
+    Returns:
+        Parsed dict/list on success, or the original value if parsing fails or is unnecessary.
+    """
+    if isinstance(content, dict):
+        return content
+    if isinstance(content, str):
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            return content
+    return content
+
+
 def join_tool_result_content(content: Any) -> str:
     """Join all blocks in a Bedrock-style toolResult content list into one string.
 

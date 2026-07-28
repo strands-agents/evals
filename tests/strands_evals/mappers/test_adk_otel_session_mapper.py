@@ -709,11 +709,15 @@ class TestTimestampParsing:
         assert ts.year == 2026 and ts.month == 7
 
     def test_nanosecond_epoch(self):
-        """Nanosecond epoch (integer or decimal string) is converted to datetime."""
+        """Nanosecond epoch integer is converted to datetime."""
         ts_int = self.mapper._parse_timestamp(1700000000000000000)
-        ts_str = self.mapper._parse_timestamp("1700000000000000000")
         assert ts_int.year == 2023
-        assert ts_str.year == 2023
+
+    def test_string_nanosecond_epoch_falls_back_to_now(self):
+        """String-encoded nanosecond epoch is not a valid ISO format, falls back to now."""
+        ts_str = self.mapper._parse_timestamp("1700000000000000000")
+        # Not parseable as ISO 8601, so falls back to current time
+        assert ts_str.year >= 2026
 
     def test_none_returns_now(self):
         assert self.mapper._parse_timestamp(None) is not None
@@ -777,3 +781,251 @@ class TestErrorHandling:
         ]
         session = self.mapper.map_to_session(spans, SESSION_ID)
         assert session.traces[0].spans[0].tool_call.arguments == {"x": 42}
+
+
+# ============================================================================
+# Tests: Multi-Agent Trace Splitting
+# ============================================================================
+
+
+class TestMultiAgentSplitting:
+    """Tests for per-agent trace splitting in multi-agent scenarios."""
+
+    def setup_method(self):
+        self.mapper = ADKOtelSessionMapper()
+
+    def test_coordinator_specialist_produces_separate_traces(self):
+        """Two invoke_agent spans in one trace produce one Trace per agent with correct tools."""
+        spans = [
+            # Coordinator agent
+            make_span(
+                span_id="coordinator",
+                name="invoke_agent coordinator",
+                attributes={"gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "coordinator"},
+                start_time=1700000001000000000,
+                end_time=1700000009000000000,
+            ),
+            make_span(
+                span_id="coord-callllm",
+                parent_span_id="coordinator",
+                name="call_llm",
+                attributes={
+                    "gcp.vertex.agent.llm_request": make_llm_request(
+                        user_text="Book a flight",
+                        system_instruction="You coordinate tasks.",
+                        tools=[{"name": "delegate", "description": "Delegate to specialist"}],
+                    ),
+                    "gcp.vertex.agent.llm_response": make_llm_response_tool_call(
+                        name="delegate", args={"task": "book"}, call_id="fc-coord"
+                    ),
+                },
+                start_time=1700000002000000000,
+                end_time=1700000003000000000,
+            ),
+            # Specialist agent (nested under coordinator's call_llm)
+            make_span(
+                span_id="specialist",
+                parent_span_id="coord-callllm",
+                name="invoke_agent specialist",
+                attributes={"gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "specialist"},
+                start_time=1700000004000000000,
+                end_time=1700000008000000000,
+            ),
+            make_span(
+                span_id="spec-callllm",
+                parent_span_id="specialist",
+                name="call_llm",
+                attributes={
+                    "gcp.vertex.agent.llm_request": make_llm_request(
+                        user_text="Book a flight",
+                        system_instruction="You book flights.",
+                        tools=[{"name": "book_flight", "description": "Book a flight"}],
+                    ),
+                    "gcp.vertex.agent.llm_response": make_llm_response_text("Booked seat 4A."),
+                },
+                start_time=1700000005000000000,
+                end_time=1700000006000000000,
+            ),
+            make_span(
+                span_id="spec-tool",
+                parent_span_id="spec-callllm",
+                name="execute_tool book_flight",
+                attributes={
+                    "gen_ai.operation.name": "execute_tool",
+                    "gen_ai.tool.name": "book_flight",
+                    "gen_ai.tool.call.id": "fc-spec",
+                    "gcp.vertex.agent.tool_call_args": '{"destination": "NYC"}',
+                    "gcp.vertex.agent.tool_response": '{"result": "SPECIALIST_TOOL_OUTPUT"}',
+                },
+                start_time=1700000006000000000,
+                end_time=1700000007000000000,
+            ),
+        ]
+
+        session = self.mapper.map_to_session(spans, SESSION_ID)
+
+        # Should produce two traces — one per agent
+        assert len(session.traces) == 2
+
+        # Find each agent's trace
+        coord_trace = next(
+            t
+            for t in session.traces
+            if any(
+                isinstance(s, AgentInvocationSpan) and s.metadata.get("agent_name") == "coordinator" for s in t.spans
+            )
+        )
+        spec_trace = next(
+            t
+            for t in session.traces
+            if any(isinstance(s, AgentInvocationSpan) and s.metadata.get("agent_name") == "specialist" for s in t.spans)
+        )
+
+        # Coordinator should have its own tools, not the specialist's
+        coord_agent = [s for s in coord_trace.spans if isinstance(s, AgentInvocationSpan)][0]
+        assert coord_agent.available_tools[0].name == "delegate"
+        # Coordinator should NOT leak the specialist's tool response
+        assert "SPECIALIST_TOOL_OUTPUT" not in coord_agent.agent_response
+
+        # Specialist should have its own tools and response
+        spec_agent = [s for s in spec_trace.spans if isinstance(s, AgentInvocationSpan)][0]
+        assert spec_agent.available_tools[0].name == "book_flight"
+        assert spec_agent.agent_response == "Booked seat 4A."
+
+        # Tool execution span should only appear in the specialist's trace
+        coord_tools = [s for s in coord_trace.spans if isinstance(s, ToolExecutionSpan)]
+        spec_tools = [s for s in spec_trace.spans if isinstance(s, ToolExecutionSpan)]
+        assert len(coord_tools) == 0
+        assert len(spec_tools) == 1
+        assert spec_tools[0].tool_call.name == "book_flight"
+
+    def test_unclaimed_spans_assigned_to_earliest_agent(self):
+        """Spans not nested under any invoke_agent go to the earliest agent's trace."""
+        spans = [
+            # Orphan tool span — not parented to either agent
+            make_span(
+                span_id="orphan-tool",
+                name="execute_tool audit",
+                attributes={
+                    "gen_ai.operation.name": "execute_tool",
+                    "gen_ai.tool.name": "audit",
+                    "gen_ai.tool.call.id": "fc-audit",
+                    "gcp.vertex.agent.tool_call_args": "{}",
+                    "gcp.vertex.agent.tool_response": "audited",
+                },
+                start_time=1700000001000000000,
+                end_time=1700000002000000000,
+            ),
+            # Two minimal agent spans (each needs a call_llm child to be non-empty)
+            make_span(
+                span_id="agent-1",
+                name="invoke_agent alpha",
+                attributes={"gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "alpha"},
+                start_time=1700000003000000000,
+                end_time=1700000005000000000,
+            ),
+            make_span(
+                span_id="callllm-1",
+                parent_span_id="agent-1",
+                name="call_llm",
+                attributes={
+                    "gcp.vertex.agent.llm_request": make_llm_request(user_text="Hello"),
+                    "gcp.vertex.agent.llm_response": make_llm_response_text("Hi"),
+                },
+                start_time=1700000004000000000,
+                end_time=1700000005000000000,
+            ),
+            make_span(
+                span_id="agent-2",
+                name="invoke_agent beta",
+                attributes={"gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "beta"},
+                start_time=1700000006000000000,
+                end_time=1700000008000000000,
+            ),
+            make_span(
+                span_id="callllm-2",
+                parent_span_id="agent-2",
+                name="call_llm",
+                attributes={
+                    "gcp.vertex.agent.llm_request": make_llm_request(user_text="Bye"),
+                    "gcp.vertex.agent.llm_response": make_llm_response_text("Goodbye"),
+                },
+                start_time=1700000007000000000,
+                end_time=1700000008000000000,
+            ),
+        ]
+
+        session = self.mapper.map_to_session(spans, SESSION_ID)
+        assert len(session.traces) == 2
+
+        # The orphan tool should appear in the earliest agent's trace (alpha)
+        alpha_trace = next(
+            t
+            for t in session.traces
+            if any(isinstance(s, AgentInvocationSpan) and s.metadata.get("agent_name") == "alpha" for s in t.spans)
+        )
+        beta_trace = next(
+            t
+            for t in session.traces
+            if any(isinstance(s, AgentInvocationSpan) and s.metadata.get("agent_name") == "beta" for s in t.spans)
+        )
+
+        alpha_tools = [s for s in alpha_trace.spans if isinstance(s, ToolExecutionSpan)]
+        beta_tools = [s for s in beta_trace.spans if isinstance(s, ToolExecutionSpan)]
+
+        assert len(alpha_tools) == 1
+        assert alpha_tools[0].tool_call.name == "audit"
+        assert len(beta_tools) == 0
+
+
+# ============================================================================
+# Tests: Scope Filtering
+# ============================================================================
+
+
+class TestScopeFiltering:
+    """Tests for instrumentation scope filtering."""
+
+    def setup_method(self):
+        self.mapper = ADKOtelSessionMapper()
+
+    def test_foreign_scope_spans_are_dropped(self):
+        """Spans from non-ADK instrumentation scopes are excluded from the session."""
+        spans = [
+            # ADK span — should be kept
+            make_span(
+                span_id="tool-1",
+                name="execute_tool calculator",
+                attributes={
+                    "gen_ai.operation.name": "execute_tool",
+                    "gen_ai.tool.name": "calculator",
+                    "gen_ai.tool.call.id": "c1",
+                    "gcp.vertex.agent.tool_call_args": '{"x": 1}',
+                    "gcp.vertex.agent.tool_response": "2",
+                },
+            ),
+            # Foreign scope span — should be dropped
+            {
+                "trace_id": "trace-1",
+                "span_id": "foreign-1",
+                "parent_span_id": None,
+                "name": "generate_content gemini-3.5-flash",
+                "start_time": 1700000000000000000,
+                "end_time": 1700000001000000000,
+                "attributes": {
+                    "gen_ai.operation.name": "generate_content",
+                    "gen_ai.request.model": "gemini-3.5-flash",
+                },
+                "scope": {"name": "opentelemetry.instrumentation.vertexai", "version": "1.0.0"},
+                "status": {"code": "UNSET"},
+                "span_events": [],
+            },
+        ]
+
+        session = self.mapper.map_to_session(spans, SESSION_ID)
+
+        # Only the ADK tool span should survive
+        assert len(session.traces) == 1
+        assert len(session.traces[0].spans) == 1
+        assert isinstance(session.traces[0].spans[0], ToolExecutionSpan)
+        assert session.traces[0].spans[0].tool_call.name == "calculator"

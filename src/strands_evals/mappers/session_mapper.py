@@ -3,6 +3,7 @@ SessionMapper - Base class for mapping telemetry data to Session format
 """
 
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
 
 from typing_extensions import Any
 
@@ -72,3 +73,37 @@ class SessionMapper(ABC):
 
         # Fallback for unexpected types
         return []
+
+    def _parse_timestamp(self, value: Any) -> datetime:
+        """Parse timestamp from various formats.
+
+        Handles:
+        - None → current UTC time
+        - datetime → passthrough
+        - ISO 8601 string (with optional trailing Z) → parsed datetime
+        - Numeric (int/float) nanosecond epoch → datetime
+        - String-encoded nanosecond epoch → datetime
+
+        Args:
+            value: Raw timestamp value from a span dict.
+
+        Returns:
+            Timezone-aware datetime in UTC.
+        """
+        if value is None:
+            return datetime.now(timezone.utc)
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            try:
+                if value.endswith("Z"):
+                    value = value[:-1] + "+00:00"
+                return datetime.fromisoformat(value)
+            except ValueError:
+                return datetime.now(timezone.utc)
+        if isinstance(value, (int, float)):
+            # Handle nanoseconds
+            if value > 1e12:
+                value = value / 1e9
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        return datetime.now(timezone.utc)

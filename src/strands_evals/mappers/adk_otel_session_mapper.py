@@ -28,7 +28,6 @@ Limitations:
 import json
 import logging
 from collections import defaultdict
-from datetime import datetime, timezone
 from typing import Any
 
 from ..types.trace import (
@@ -49,7 +48,7 @@ from ..types.trace import (
 )
 from .constants import SCOPE_ADK
 from .session_mapper import SessionMapper
-from .utils import get_scope_name
+from .utils import get_scope_name, safe_json_parse
 
 logger = logging.getLogger(__name__)
 
@@ -128,9 +127,7 @@ class ADKOtelSessionMapper(SessionMapper):
                 children_by_parent[parent_span_id].append(span)
 
         # Identify invoke_agent spans
-        agent_spans_raw = [
-            s for s in spans if self._get_operation_name(s) == "invoke_agent"
-        ]
+        agent_spans_raw = [s for s in spans if self._get_operation_name(s) == "invoke_agent"]
 
         # If 0 or 1 agent invocations, build a single trace (original behavior)
         if len(agent_spans_raw) <= 1:
@@ -162,6 +159,7 @@ class ADKOtelSessionMapper(SessionMapper):
 
         # Group non-agent spans by their owning agent
         agent_groups: dict[str, list[dict]] = {self._extract_span_id(a): [] for a in agent_spans_raw}
+        first_agent_id = self._extract_span_id(agent_spans_raw[0])
         for span in spans:
             span_id = self._extract_span_id(span)
             if span_id in agent_span_ids:
@@ -169,6 +167,9 @@ class ADKOtelSessionMapper(SessionMapper):
             owning_agent = span_to_agent.get(span_id)
             if owning_agent and owning_agent in agent_groups:
                 agent_groups[owning_agent].append(span)
+            else:
+                # Unclaimed spans go to the earliest agent rather than being dropped
+                agent_groups[first_agent_id].append(span)
 
         # Build one Trace per agent invocation
         traces: list[Trace] = []
@@ -294,7 +295,7 @@ class ADKOtelSessionMapper(SessionMapper):
             tool_descendants = sorted(
                 [
                     desc
-                    for desc in self._get_descendants(span_id, children_by_parent)
+                    for desc in self._get_descendants(span_id, children_by_parent, stop_at_agents=True)
                     if self._get_operation_name(desc) == "execute_tool"
                     and desc.get("attributes", {}).get("gen_ai.tool.name") != "(merged tools)"
                 ],
@@ -387,7 +388,7 @@ class ADKOtelSessionMapper(SessionMapper):
         tool_name = attrs.get("gen_ai.tool.name", "")
         tool_call_id = attrs.get("gen_ai.tool.call.id")
 
-        tool_parameters = self._safe_json_parse(attrs.get("gcp.vertex.agent.tool_call_args", "{}"))
+        tool_parameters = safe_json_parse(attrs.get("gcp.vertex.agent.tool_call_args", "{}"))
         if not isinstance(tool_parameters, dict):
             tool_parameters = {}
 
@@ -429,7 +430,7 @@ class ADKOtelSessionMapper(SessionMapper):
         raw = attrs.get("gcp.vertex.agent.llm_request", "")
         if not raw or raw == "{}":
             return None
-        return self._safe_json_parse(raw) if isinstance(raw, str) else None
+        return safe_json_parse(raw) if isinstance(raw, str) else None
 
     def _parse_llm_response(self, call_llm_span: dict) -> dict | None:
         """Parse the gcp.vertex.agent.llm_response JSON attribute from a call_llm span."""
@@ -437,7 +438,7 @@ class ADKOtelSessionMapper(SessionMapper):
         raw = attrs.get("gcp.vertex.agent.llm_response", "")
         if not raw or raw == "{}":
             return None
-        return self._safe_json_parse(raw) if isinstance(raw, str) else None
+        return safe_json_parse(raw) if isinstance(raw, str) else None
 
     def _extract_user_prompt_from_request(self, llm_request: dict) -> str:
         """Extract the latest user text from llm_request.contents.
@@ -581,12 +582,27 @@ class ADKOtelSessionMapper(SessionMapper):
                 trace_id = context.get("trace_id", "")
         return self._strip_hex_prefix(trace_id)
 
-    def _get_descendants(self, span_id: str, children_by_parent: dict[str, list[dict]]) -> list[dict]:
-        """Get all descendants of a span by traversing the parent-child hierarchy."""
+    def _get_descendants(
+        self,
+        span_id: str,
+        children_by_parent: dict[str, list[dict]],
+        stop_at_agents: bool = False,
+    ) -> list[dict]:
+        """Get all descendants of a span by traversing the parent-child hierarchy.
+
+        Args:
+            span_id: Root span to start traversal from.
+            children_by_parent: Full parent-child index.
+            stop_at_agents: If True, stop traversal at nested invoke_agent spans
+                (don't include them or their descendants). Used in multi-agent
+                scenarios to scope results to a single agent's subtree.
+        """
         descendants: list[dict] = []
         queue = list(children_by_parent.get(span_id, []))
         while queue:
             child = queue.pop(0)
+            if stop_at_agents and self._get_operation_name(child) == "invoke_agent":
+                continue
             descendants.append(child)
             child_id = self._extract_span_id(child)
             if child_id:
@@ -619,37 +635,3 @@ class ADKOtelSessionMapper(SessionMapper):
         if value.startswith("0x"):
             return value[2:]
         return value
-
-    def _parse_timestamp(self, value: Any) -> datetime:
-        """Parse timestamp from ISO 8601, numeric epoch, or nanosecond-string format."""
-        if value is None:
-            return datetime.now(timezone.utc)
-        if isinstance(value, datetime):
-            return value
-        if isinstance(value, str):
-            # Detect decimal-string nanosecond epochs (e.g. "1700000000000000000")
-            if value.isdigit():
-                ns = int(value)
-                return datetime.fromtimestamp(ns / 1e9, tz=timezone.utc)
-            try:
-                if value.endswith("Z"):
-                    value = value[:-1] + "+00:00"
-                return datetime.fromisoformat(value)
-            except ValueError:
-                return datetime.now(timezone.utc)
-        if isinstance(value, (int, float)):
-            if value > 1e15:
-                value = value / 1e9
-            return datetime.fromtimestamp(value, tz=timezone.utc)
-        return datetime.now(timezone.utc)
-
-    def _safe_json_parse(self, content: Any) -> Any:
-        """Safely parse JSON content."""
-        if isinstance(content, dict):
-            return content
-        if isinstance(content, str):
-            try:
-                return json.loads(content)
-            except json.JSONDecodeError:
-                return content
-        return content

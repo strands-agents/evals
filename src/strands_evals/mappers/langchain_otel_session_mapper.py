@@ -12,7 +12,6 @@ Supports two trace formats:
 import json
 import logging
 from collections import defaultdict
-from datetime import datetime, timezone
 from typing import Any
 
 from ..types.trace import (
@@ -47,6 +46,7 @@ from .constants import (
     SCOPE_LANGCHAIN_OTEL,
 )
 from .session_mapper import SessionMapper
+from .utils import safe_json_parse
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +248,7 @@ class LangChainOtelSessionMapper(SessionMapper):
             result = None
         else:
             in_content = input_messages[0].get("content", "")
-            result = self._safe_json_parse(in_content) if isinstance(in_content, str) else in_content
+            result = safe_json_parse(in_content) if isinstance(in_content, str) else in_content
 
         if span_id:
             self._adot_body_cache[span_id] = result
@@ -327,7 +327,7 @@ class LangChainOtelSessionMapper(SessionMapper):
                         # Direct inputs dict: {"inputs": {"a": 1, "b": 2}}
                         tool_parameters = inputs
                 if tool_parameters is None and ADOT_INPUT_STR_KEY in in_parsed:
-                    params_parsed = self._safe_json_parse(in_parsed.get(ADOT_INPUT_STR_KEY, ""))
+                    params_parsed = safe_json_parse(in_parsed.get(ADOT_INPUT_STR_KEY, ""))
                     if isinstance(params_parsed, dict):
                         tool_parameters = params_parsed
 
@@ -351,17 +351,17 @@ class LangChainOtelSessionMapper(SessionMapper):
             entity_output = attrs.get(ATTR_TRACELOOP_ENTITY_OUTPUT, "")
 
             if entity_input:
-                parsed = self._safe_json_parse(entity_input)
+                parsed = safe_json_parse(entity_input)
                 if isinstance(parsed, dict):
                     if "inputs" in parsed and isinstance(parsed.get("inputs"), dict):
                         tool_parameters = parsed.get("inputs")
                     elif ADOT_INPUT_STR_KEY in parsed:
-                        params_parsed = self._safe_json_parse(parsed.get(ADOT_INPUT_STR_KEY, ""))
+                        params_parsed = safe_json_parse(parsed.get(ADOT_INPUT_STR_KEY, ""))
                         if isinstance(params_parsed, dict):
                             tool_parameters = params_parsed
 
             if entity_output:
-                parsed = self._safe_json_parse(entity_output)
+                parsed = safe_json_parse(entity_output)
                 lc_kwargs = self._extract_lc_kwargs(parsed, "output") if isinstance(parsed, dict) else None
                 if lc_kwargs:
                     tool_output_content = str(lc_kwargs.get("content", ""))
@@ -410,14 +410,14 @@ class LangChainOtelSessionMapper(SessionMapper):
             entity_output = attrs.get(ATTR_TRACELOOP_ENTITY_OUTPUT, "")
 
             if entity_input:
-                parsed = self._safe_json_parse(entity_input)
+                parsed = safe_json_parse(entity_input)
                 if isinstance(parsed, dict) and "inputs" in parsed:
                     inputs = parsed["inputs"]
                     if isinstance(inputs, dict) and "messages" in inputs:
                         user_query = self._get_last_message_text(inputs["messages"])
 
             if entity_output:
-                parsed = self._safe_json_parse(entity_output)
+                parsed = safe_json_parse(entity_output)
                 if isinstance(parsed, dict) and "outputs" in parsed:
                     outputs = parsed["outputs"]
                     if isinstance(outputs, dict) and "messages" in outputs:
@@ -463,44 +463,13 @@ class LangChainOtelSessionMapper(SessionMapper):
             end_time=end_time,
         )
 
-    def _parse_timestamp(self, value: Any) -> datetime:
-        """Parse timestamp from various formats."""
-        if value is None:
-            return datetime.now(timezone.utc)
-        if isinstance(value, datetime):
-            return value
-        if isinstance(value, str):
-            try:
-                if value.endswith("Z"):
-                    value = value[:-1] + "+00:00"
-                return datetime.fromisoformat(value)
-            except ValueError:
-                return datetime.now(timezone.utc)
-        if isinstance(value, (int, float)):
-            # Handle nanoseconds
-            if value > 1e12:
-                value = value / 1e9
-            return datetime.fromtimestamp(value, tz=timezone.utc)
-        return datetime.now(timezone.utc)
-
-    def _safe_json_parse(self, content: Any) -> Any:
-        """Safely parse JSON content."""
-        if isinstance(content, dict):
-            return content
-        if isinstance(content, str):
-            try:
-                return json.loads(content)
-            except json.JSONDecodeError:
-                return content
-        return content
-
     def _parse_adot_tool_content(self, input_messages: list[dict], output_messages: list[dict]) -> tuple[Any, Any]:
         """Parse and return (input_parsed, output_parsed) from ADOT body messages."""
         in_content = input_messages[-1].get("content", "")
-        in_parsed = self._safe_json_parse(in_content) if isinstance(in_content, str) else in_content
+        in_parsed = safe_json_parse(in_content) if isinstance(in_content, str) else in_content
 
         out_content = output_messages[-1].get("content", "")
-        out_parsed = self._safe_json_parse(out_content) if isinstance(out_content, str) else out_content
+        out_parsed = safe_json_parse(out_content) if isinstance(out_content, str) else out_content
 
         return in_parsed, out_parsed
 
@@ -639,7 +608,7 @@ class LangChainOtelSessionMapper(SessionMapper):
         msg_content = message.get("content", "")
         if isinstance(msg_content, str):
             # ADOT double-encodes strings — decode outer JSON quotes if present
-            text = self._safe_json_parse(msg_content) if msg_content.startswith('"') else msg_content
+            text = safe_json_parse(msg_content) if msg_content.startswith('"') else msg_content
             if not isinstance(text, str):
                 text = msg_content
             if is_tool_msg:
@@ -658,7 +627,7 @@ class LangChainOtelSessionMapper(SessionMapper):
         msg_content = message.get("content", "")
         if isinstance(msg_content, str):
             # ADOT double-encodes empty strings as '""' — decode and skip if empty
-            text = self._safe_json_parse(msg_content) if msg_content.startswith('"') else msg_content
+            text = safe_json_parse(msg_content) if msg_content.startswith('"') else msg_content
             if not isinstance(text, str):
                 text = msg_content
             if text:
@@ -716,7 +685,7 @@ class LangChainOtelSessionMapper(SessionMapper):
         msg = input_messages[-1]
         content = msg.get("content", "")
         if isinstance(content, str):
-            parsed = self._safe_json_parse(content)
+            parsed = safe_json_parse(content)
             if isinstance(parsed, dict) and "inputs" in parsed:
                 inputs = parsed["inputs"]
                 if isinstance(inputs, dict) and "messages" in inputs:
@@ -741,7 +710,7 @@ class LangChainOtelSessionMapper(SessionMapper):
         if not isinstance(content, str):
             return None
 
-        parsed = self._safe_json_parse(content)
+        parsed = safe_json_parse(content)
         if not isinstance(parsed, dict):
             return None
 

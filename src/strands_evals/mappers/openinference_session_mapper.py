@@ -16,7 +16,6 @@ import ast
 import json
 import logging
 from collections import defaultdict
-from datetime import datetime, timezone
 from typing import Any
 
 from ..types.trace import (
@@ -37,6 +36,7 @@ from ..types.trace import (
 )
 from .constants import SCOPE_OPENINFERENCE_SMOLAGENTS, SCOPES_OPENINFERENCE_FAMILY
 from .session_mapper import SessionMapper
+from .utils import safe_json_parse
 
 logger = logging.getLogger(__name__)
 
@@ -315,7 +315,7 @@ class OpenInferenceSessionMapper(SessionMapper):
             input_messages, _ = self._get_messages_from_span_events(span)
             if input_messages:
                 in_content = input_messages[0].get("content", "")
-                in_parsed = self._safe_json_parse(in_content) if isinstance(in_content, str) else in_content
+                in_parsed = safe_json_parse(in_content) if isinstance(in_content, str) else in_content
                 if isinstance(in_parsed, dict) and in_parsed.get("__type") == "tool_call_with_context":
                     return False
             return True
@@ -361,7 +361,7 @@ class OpenInferenceSessionMapper(SessionMapper):
         input_messages, _ = self._get_messages_from_span_events(span)
         if input_messages:
             in_content = input_messages[0].get("content", "")
-            in_parsed = self._safe_json_parse(in_content) if isinstance(in_content, str) else in_content
+            in_parsed = safe_json_parse(in_content) if isinstance(in_content, str) else in_content
             if isinstance(in_parsed, dict) and "messages" in in_parsed and "remaining_steps" not in in_parsed:
                 out_parsed = self._parse_adot_output(span)
                 if isinstance(out_parsed, dict) and "messages" in out_parsed:
@@ -611,36 +611,6 @@ class OpenInferenceSessionMapper(SessionMapper):
             end_time=end_time,
         )
 
-    def _parse_timestamp(self, value: Any) -> datetime:
-        """Parse timestamp from various formats."""
-        if value is None:
-            return datetime.now(timezone.utc)
-        if isinstance(value, datetime):
-            return value
-        if isinstance(value, str):
-            try:
-                if value.endswith("Z"):
-                    value = value[:-1] + "+00:00"
-                return datetime.fromisoformat(value)
-            except ValueError:
-                return datetime.now(timezone.utc)
-        if isinstance(value, (int, float)):
-            if value > 1e12:
-                value = value / 1e9
-            return datetime.fromtimestamp(value, tz=timezone.utc)
-        return datetime.now(timezone.utc)
-
-    def _safe_json_parse(self, content: Any) -> Any:
-        """Safely parse JSON content."""
-        if isinstance(content, dict):
-            return content
-        if isinstance(content, str):
-            try:
-                return json.loads(content)
-            except json.JSONDecodeError:
-                return content
-        return content
-
     def _parse_adot_output(self, span: dict) -> Any:
         """Parse the output content from the first ADOT body message.
 
@@ -656,7 +626,7 @@ class OpenInferenceSessionMapper(SessionMapper):
             result = None
         else:
             out_content = output_messages[0].get("content", "")
-            result = self._safe_json_parse(out_content) if isinstance(out_content, str) else out_content
+            result = safe_json_parse(out_content) if isinstance(out_content, str) else out_content
 
         if span_id:
             self._adot_output_cache[span_id] = result
