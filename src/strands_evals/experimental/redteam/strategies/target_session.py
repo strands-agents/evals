@@ -96,15 +96,14 @@ class TargetSession(Protocol):
 
 
 @contextmanager
-def single_shot_attempts(session: TargetSession) -> Iterator[Callable[[], None]]:
+def _single_shot_attempts(session: TargetSession) -> Iterator[Callable[[], None]]:
     """Run a sequence of independent single-shot attempts against one `session`.
 
     PAIR (each refined prompt P) and SequentialBreak (each scaffold variant) treat every attempt as an
     independent single-shot, so attempt N must start from the same target state attempt 1 saw — not carry
     attempt N-1's conversation or agent state. This context manager captures the entry state once with
-    `snapshot()` and rolls back to it before each later attempt with `restore()`, which covers all target
-    state (messages, agent `state`, conversation-manager state), unlike a baseline-less `reset()` that only
-    clears messages.
+    `snapshot()` and rolls back to it before each later attempt with `restore()`, which covers the state
+    represented by the session checkpoint, unlike a baseline-less `reset()` that only clears messages.
 
     Tool-use evidence must survive the rollbacks: the authoritative `AttackSuccessEvaluator` reads
     `session.trace` to detect tool-call breaches. Each attempt's trace delta is accumulated and, on exit,
@@ -125,10 +124,17 @@ def single_shot_attempts(session: TargetSession) -> Iterator[Callable[[], None]]
     attempt_trace: list[ToolUseEntry] = []
     started = False
 
+    def take_delta() -> list[ToolUseEntry]:
+        # Move (not copy) the delta off the session: a `restore()` that raises after this must not leave
+        # the same entries behind for the `finally` block to collect a second time.
+        delta = list(session.trace[checkpoint.trace_len :])
+        del session.trace[checkpoint.trace_len :]
+        return delta
+
     def begin_attempt() -> None:
         nonlocal started
         if started:
-            attempt_trace.extend(session.trace[checkpoint.trace_len :])
+            attempt_trace.extend(take_delta())
             session.restore(checkpoint)
         started = True
 
@@ -136,7 +142,7 @@ def single_shot_attempts(session: TargetSession) -> Iterator[Callable[[], None]]
         yield begin_attempt
     finally:
         # Keep the in-flight attempt's evidence even if the caller raised after invoke().
-        attempt_trace.extend(session.trace[checkpoint.trace_len :])
+        attempt_trace.extend(take_delta())
         session.trace[:] = trace_prefix + attempt_trace
 
 
@@ -261,7 +267,10 @@ class StrandsMultiAgentSession:
         return TargetCheckpoint(
             agent_snapshot=_MultiAgentSnapshot(
                 agents={path: agent.take_snapshot(preset="session") for path, agent in self._agent_index.items()},
-                orchestrators={path: orch.serialize_state() for path, orch in self._orch_index.items()},
+                # Deep-copy at capture: `serialize_state()` can hand back live orchestrator state (Swarm
+                # returns its `shared_context` dict), and one checkpoint is restored repeatedly here.
+                # Leaf snapshots need no copy -- `take_snapshot` already deep-copies messages and state.
+                orchestrators={path: copy.deepcopy(orch.serialize_state()) for path, orch in self._orch_index.items()},
             ),
             trace_len=len(self.trace),
         )

@@ -74,8 +74,7 @@ seven questions below in order, with concrete detail for each.
 6. What debrief questions help trainees reflect afterwards?
 7. How should the simulation onboard a first-time trainee?"""
 
-# Insertion order is the strategy's try-order; dc_t1 is first as the paper's strongest
-# variant, which also minimizes cross-variant contamination on stateful targets.
+# Insertion order is the strategy's try-order; dc_t1 is first as the paper's strongest variant.
 SCAFFOLDS = {
     "dc_t1": DC_T1,
     "dc_t2": DC_T2,

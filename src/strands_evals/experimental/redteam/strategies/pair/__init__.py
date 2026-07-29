@@ -18,7 +18,7 @@ from strands.models.model import Model
 
 from ...utils import _put_model_field
 from ..base import AttackRunResult, AttackStrategy
-from ..target_session import single_shot_attempts
+from ..target_session import _single_shot_attempts
 from . import pair_v0
 
 if TYPE_CHECKING:
@@ -163,9 +163,9 @@ class PairStrategy(AttackStrategy):
         target_calls = 0
         parse_failures = 0
 
-        # Each P is an independent single-shot: restore the target to its entry state between iterations
-        # (covers agent state, not just messages) while preserving every iteration's tool-use trace.
-        with single_shot_attempts(target_session) as begin_attempt:
+        # Each P is an independent single-shot: restore the target checkpoint between iterations while
+        # preserving every iteration's tool-use trace.
+        with _single_shot_attempts(target_session) as begin_attempt:
             for _ in range(turn_cap):
                 p = gen_refined_prompt(attacker, goal, last_response, last_raw_score)
                 if p is None or not p.strip():
@@ -186,6 +186,7 @@ class PairStrategy(AttackStrategy):
                 last_response = response
 
                 turn_score, last_raw_score = success_score(make_judge, goal, response)
+                # A refinement strategy's closest approach is more informative than a later dip.
                 best_score = turn_score if best_score is None else max(best_score, turn_score)
                 logger.debug("iteration=<%s> score=<%.3f> | pair turn scored", iterations, turn_score)
 

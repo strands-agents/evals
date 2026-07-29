@@ -1,8 +1,10 @@
 """Tests for SequentialBreakStrategy and its module-level helpers."""
 
+import copy
 from unittest.mock import MagicMock, patch
 
 import pytest
+from strands import Agent
 
 from strands_evals.experimental.redteam.case import RedTeamCase
 from strands_evals.experimental.redteam.strategies import BUILTIN_STRATEGIES, SequentialBreakStrategy
@@ -12,7 +14,7 @@ from strands_evals.experimental.redteam.strategies.sequentialbreak import (
     sequentialbreak_v0,
     success_score,
 )
-from strands_evals.experimental.redteam.strategies.target_session import TargetCheckpoint
+from strands_evals.experimental.redteam.strategies.target_session import StrandsAgentSession, TargetCheckpoint
 from strands_evals.experimental.redteam.types import AttackGoal, RedTeamConfig
 
 _SB = "strands_evals.experimental.redteam.strategies.sequentialbreak"
@@ -52,6 +54,48 @@ class _FakeSession:
     def restore(self, checkpoint):
         self.state = checkpoint.agent_snapshot["state"]
         del self.trace[checkpoint.trace_len :]
+
+
+class _RecordingTargetAgent(Agent):
+    """Real SDK Agent whose deterministic call records and mutates snapshot-managed state."""
+
+    def __init__(self):
+        super().__init__(model=None, callback_handler=None)
+        self.entry_states: list[dict] = []
+        self.call_count = 0
+        self.state.set("nested", ["v1"])
+        self.state.set("turns", 0)
+
+    def __call__(self, message, **kwargs):
+        self.entry_states.append(
+            copy.deepcopy(
+                {
+                    "messages": len(self.messages),
+                    "nested": self.state.get("nested"),
+                    "turns": self.state.get("turns"),
+                }
+            )
+        )
+        nested = list(self.state.get("nested"))
+        nested.append(f"attempt_{self.call_count + 1}")
+        self.state.set("nested", nested)
+        self.state.set("turns", self.state.get("turns") + 1)
+        self.call_count += 1
+        self.messages.append(
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "toolUse": {
+                            "toolUseId": f"tool-{self.call_count}",
+                            "name": f"tool_{self.call_count}",
+                            "input": {},
+                        }
+                    }
+                ],
+            }
+        )
+        return "held"
 
 
 def _case(success_criteria: str | None = "leaked the secret", actor_goal: str = "exfiltrate the secret") -> RedTeamCase:
@@ -403,6 +447,17 @@ class TestRunAttack:
         with patch(f"{_SB}.success_score", return_value=0.1):
             strat.run_attack(_case(), session, max_turns=10)
         assert session.trace == [{"name": f"tool_{i}", "input": {}} for i in range(1, 6)]  # 5 variants
+
+    def test_real_agent_session_restores_nested_state_and_preserves_trace(self):
+        strat = _strategy()
+        agent = _RecordingTargetAgent()
+        session = StrandsAgentSession(agent)
+
+        with patch(f"{_SB}.success_score", return_value=0.1):
+            strat.run_attack(_case(), session, max_turns=10)
+
+        assert agent.entry_states == [{"messages": 0, "nested": ["v1"], "turns": 0}] * 5
+        assert session.trace == [{"name": f"tool_{i}", "input": {}} for i in range(1, 6)]
 
     def test_target_calls_equals_variants_when_all_respond(self):
         strat = _strategy()

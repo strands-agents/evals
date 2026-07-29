@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 from strands import Agent
+from strands.multiagent import Swarm
 from strands.multiagent.base import MultiAgentBase
 
 from strands_evals.experimental.redteam.strategies.target_session import (
@@ -205,6 +206,27 @@ class TestSnapshotRestore:
         assert isinstance(ck.agent_snapshot, _MultiAgentSnapshot)
         assert set(ck.agent_snapshot.agents.keys()) == {("a",), ("sub", "y")}
         assert set(ck.agent_snapshot.orchestrators.keys()) == {(), ("sub",)}
+
+    def test_snapshot_detaches_nested_orchestrator_state(self):
+        root = _FakeOrchestrator({"a": _real_agent()})
+        root._orch_state["scratch"] = {"notes": ["seed"]}
+        s = StrandsMultiAgentSession(root)
+
+        ck = s.snapshot()
+        root._orch_state["scratch"]["notes"].append("attempt")
+
+        assert ck.agent_snapshot.orchestrators[()]["orch_state"]["scratch"] == {"notes": ["seed"]}
+
+    def test_real_swarm_snapshot_detaches_live_nested_context(self):
+        swarm = Swarm([_real_agent()])
+        live_context = swarm.state.shared_context.context
+        live_context["planner"] = {"notes": ["seed"]}
+        s = StrandsMultiAgentSession(swarm)
+
+        ck = s.snapshot()
+        live_context["planner"]["notes"].append("attempt")
+
+        assert ck.agent_snapshot.orchestrators[()]["context"]["shared_context"] == {"planner": {"notes": ["seed"]}}
 
     def test_restore_rolls_back_each_leaf_messages(self):
         leaf_a = _real_agent("seed_a")

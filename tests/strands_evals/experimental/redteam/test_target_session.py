@@ -9,8 +9,8 @@ from strands_evals.experimental.redteam.strategies.target_session import (
     MALFORMED_TOOL_NAME,
     StrandsAgentSession,
     TargetCheckpoint,
+    _single_shot_attempts,
     _tool_uses_in,
-    single_shot_attempts,
 )
 
 
@@ -192,7 +192,7 @@ class TestStrandsAgentSessionRewind:
 
 
 # ---------------------------------------------------------------------------
-# single_shot_attempts — the shared PAIR/SequentialBreak isolation helper
+# _single_shot_attempts — the shared PAIR/SequentialBreak isolation helper
 # ---------------------------------------------------------------------------
 
 
@@ -207,7 +207,7 @@ class _RewindSession:
         raise NotImplementedError
 
     def reset(self):
-        raise AssertionError("single_shot_attempts must rewind via restore(), never reset()")
+        raise AssertionError("_single_shot_attempts must rewind via restore(), never reset()")
 
     def snapshot(self):
         return TargetCheckpoint(agent_snapshot={"state": self.state}, trace_len=len(self.trace))
@@ -218,12 +218,19 @@ class _RewindSession:
 
 
 class TestSingleShotAttempts:
+    def test_first_begin_attempt_does_not_restore(self):
+        session = _RewindSession()
+        with _single_shot_attempts(session) as begin_attempt:
+            session.state = 99
+            begin_attempt()
+            assert session.state == 99
+
     def test_each_attempt_starts_from_entry_state(self):
         # First begin_attempt() is a no-op (attempt 1 uses entry state); each later one restores it,
         # rolling the counter back so every attempt observes the same value.
         session = _RewindSession()
         seen = []
-        with single_shot_attempts(session) as begin_attempt:
+        with _single_shot_attempts(session) as begin_attempt:
             for _ in range(3):
                 begin_attempt()
                 seen.append(session.state)
@@ -232,7 +239,7 @@ class TestSingleShotAttempts:
 
     def test_trace_from_every_attempt_preserved_in_order(self):
         session = _RewindSession()
-        with single_shot_attempts(session) as begin_attempt:
+        with _single_shot_attempts(session) as begin_attempt:
             for i in range(3):
                 begin_attempt()
                 session.trace.append({"name": f"tool_{i}", "input": {}})
@@ -242,7 +249,7 @@ class TestSingleShotAttempts:
         # Trace already holding pre-entry entries: the prefix survives, attempt deltas append after it.
         session = _RewindSession()
         session.trace.append({"name": "pre", "input": {}})
-        with single_shot_attempts(session) as begin_attempt:
+        with _single_shot_attempts(session) as begin_attempt:
             begin_attempt()
             session.trace.append({"name": "a0", "input": {}})
             begin_attempt()
@@ -253,10 +260,23 @@ class TestSingleShotAttempts:
         # A raise after invoke() must still leave the in-flight attempt's trace on the session (finally).
         session = _RewindSession()
         with pytest.raises(RuntimeError):
-            with single_shot_attempts(session) as begin_attempt:
+            with _single_shot_attempts(session) as begin_attempt:
                 begin_attempt()
                 session.trace.append({"name": "a0", "input": {}})
                 raise RuntimeError("boom")
+        assert session.trace == [{"name": "a0", "input": {}}]
+
+    def test_trace_is_not_duplicated_when_restore_raises(self):
+        class _FailingRestoreSession(_RewindSession):
+            def restore(self, checkpoint):
+                raise RuntimeError("restore failed")
+
+        session = _FailingRestoreSession()
+        with pytest.raises(RuntimeError, match="restore failed"):
+            with _single_shot_attempts(session) as begin_attempt:
+                begin_attempt()
+                session.trace.append({"name": "a0", "input": {}})
+                begin_attempt()
         assert session.trace == [{"name": "a0", "input": {}}]
 
     def test_skipped_attempt_does_not_restore(self):
@@ -265,7 +285,7 @@ class TestSingleShotAttempts:
         # the next begin_attempt() rolls back to entry.
         session = _RewindSession()
         seen = []
-        with single_shot_attempts(session) as begin_attempt:
+        with _single_shot_attempts(session) as begin_attempt:
             begin_attempt()  # attempt 1: no-op
             seen.append(session.state)  # 0
             session.state += 1

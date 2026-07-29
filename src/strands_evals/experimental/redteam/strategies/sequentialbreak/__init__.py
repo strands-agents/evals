@@ -5,9 +5,9 @@ paper measures three scaffold families (Dialog Completion, Game Environment, Que
 breaching scaffold is model-dependent, so this strategy tries several variants per case and stops at the
 first breach. No attacker LLM; the inline success judge is just an early-stop gate. Append-only.
 
-On a stateful `target_session`, variants 2..N see earlier variants' refusal context, so measured ASR is a
-lower bound whenever more than one variant is tried; best-variant-first (dc_t1) minimizes this.
-`variants_tried` length > 1 flags possible contamination.
+Each scaffold variant is an independent single-shot: the strategy checkpoints `target_session` at entry
+and restores that checkpoint before every later variant, so variant N never sees variant N-1's refusal
+context. Variant ordering therefore does not bias measured ASR.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from strands.models.model import Model
 
 from ...utils import _put_model_field
 from ..base import AttackRunResult, AttackStrategy
-from ..target_session import single_shot_attempts
+from ..target_session import _single_shot_attempts
 from . import sequentialbreak_v0
 
 if TYPE_CHECKING:
@@ -146,9 +146,9 @@ class SequentialBreakStrategy(AttackStrategy):
         score: float | None = None
         succeeded = False
 
-        # Each variant is an independent single-shot: restore the target to its entry state between
-        # variants (covers agent state, not just messages) while preserving every variant's tool-use trace.
-        with single_shot_attempts(target_session) as begin_attempt:
+        # Each variant is an independent single-shot: restore the target checkpoint between variants while
+        # preserving every variant's tool-use trace.
+        with _single_shot_attempts(target_session) as begin_attempt:
             for variant in variants:
                 prompt = assemble_scaffold(sequentialbreak_v0.SCAFFOLDS[variant], goal.actor_goal)
                 if not prompt.strip():

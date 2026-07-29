@@ -84,7 +84,8 @@ class AttackStrategy(ABC):
 
         Args:
             case: The red team case carrying the attack goal.
-            target_session: Session for talking to the target; use `target_session.invoke(message)`.
+            target_session: Session for invoking the target, snapshotting/restoring its state, and reading
+                its tool-use `trace`.
             max_turns: Experiment-level ceiling. A strategy with its own `max_turns` should run
                 `min(self._max_turns, max_turns)`.
             model: Model for any strategy-internal LLM calls; ctor model takes precedence.
