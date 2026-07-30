@@ -125,6 +125,11 @@ SpanUnion: TypeAlias = InferenceSpan | ToolExecutionSpan | AgentInvocationSpan
 
 
 class Trace(BaseModel):
+    """A single trace within a session.
+
+    A Trace may contain multiple ``AgentInvocationSpan`` instances in multi-agent systems.
+    """
+
     spans: list[SpanUnion]
     trace_id: str
     session_id: str

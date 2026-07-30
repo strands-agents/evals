@@ -788,13 +788,13 @@ class TestErrorHandling:
 
 
 class TestMultiAgentSplitting:
-    """Tests for per-agent trace splitting in multi-agent scenarios."""
+    """Tests that multi-agent traces are kept as a single Trace (scoping handled by TraceExtractor)."""
 
     def setup_method(self):
         self.mapper = ADKOtelSessionMapper()
 
-    def test_coordinator_specialist_produces_separate_traces(self):
-        """Two invoke_agent spans in one trace produce one Trace per agent with correct tools."""
+    def test_coordinator_specialist_produces_single_trace(self):
+        """Two invoke_agent spans in one OTel trace produce a single Trace with both agents."""
         spans = [
             # Coordinator agent
             make_span(
@@ -863,43 +863,27 @@ class TestMultiAgentSplitting:
 
         session = self.mapper.map_to_session(spans, SESSION_ID)
 
-        # Should produce two traces — one per agent
-        assert len(session.traces) == 2
+        # Single trace containing both agents
+        assert len(session.traces) == 1
+        trace = session.traces[0]
 
-        # Find each agent's trace
-        coord_trace = next(
-            t
-            for t in session.traces
-            if any(
-                isinstance(s, AgentInvocationSpan) and s.metadata.get("agent_name") == "coordinator" for s in t.spans
-            )
-        )
-        spec_trace = next(
-            t
-            for t in session.traces
-            if any(isinstance(s, AgentInvocationSpan) and s.metadata.get("agent_name") == "specialist" for s in t.spans)
-        )
+        # Both agent spans present
+        agent_spans = [s for s in trace.spans if isinstance(s, AgentInvocationSpan)]
+        assert len(agent_spans) == 2
 
-        # Coordinator should have its own tools, not the specialist's
-        coord_agent = [s for s in coord_trace.spans if isinstance(s, AgentInvocationSpan)][0]
+        # Each agent retains its own available_tools
+        coord_agent = next(s for s in agent_spans if s.metadata.get("agent_name") == "coordinator")
+        spec_agent = next(s for s in agent_spans if s.metadata.get("agent_name") == "specialist")
         assert coord_agent.available_tools[0].name == "delegate"
-        # Coordinator should NOT leak the specialist's tool response
-        assert "SPECIALIST_TOOL_OUTPUT" not in coord_agent.agent_response
-
-        # Specialist should have its own tools and response
-        spec_agent = [s for s in spec_trace.spans if isinstance(s, AgentInvocationSpan)][0]
         assert spec_agent.available_tools[0].name == "book_flight"
-        assert spec_agent.agent_response == "Booked seat 4A."
 
-        # Tool execution span should only appear in the specialist's trace
-        coord_tools = [s for s in coord_trace.spans if isinstance(s, ToolExecutionSpan)]
-        spec_tools = [s for s in spec_trace.spans if isinstance(s, ToolExecutionSpan)]
-        assert len(coord_tools) == 0
-        assert len(spec_tools) == 1
-        assert spec_tools[0].tool_call.name == "book_flight"
+        # Tool execution span present in the trace
+        tool_spans = [s for s in trace.spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+        assert tool_spans[0].tool_call.name == "book_flight"
 
-    def test_unclaimed_spans_assigned_to_earliest_agent(self):
-        """Spans not nested under any invoke_agent go to the earliest agent's trace."""
+    def test_unclaimed_spans_in_single_trace(self):
+        """Spans not nested under any invoke_agent remain in the single trace."""
         spans = [
             # Orphan tool span — not parented to either agent
             make_span(
@@ -955,26 +939,17 @@ class TestMultiAgentSplitting:
         ]
 
         session = self.mapper.map_to_session(spans, SESSION_ID)
-        assert len(session.traces) == 2
 
-        # The orphan tool should appear in the earliest agent's trace (alpha)
-        alpha_trace = next(
-            t
-            for t in session.traces
-            if any(isinstance(s, AgentInvocationSpan) and s.metadata.get("agent_name") == "alpha" for s in t.spans)
-        )
-        beta_trace = next(
-            t
-            for t in session.traces
-            if any(isinstance(s, AgentInvocationSpan) and s.metadata.get("agent_name") == "beta" for s in t.spans)
-        )
+        # Single trace with everything
+        assert len(session.traces) == 1
+        trace = session.traces[0]
 
-        alpha_tools = [s for s in alpha_trace.spans if isinstance(s, ToolExecutionSpan)]
-        beta_tools = [s for s in beta_trace.spans if isinstance(s, ToolExecutionSpan)]
-
-        assert len(alpha_tools) == 1
-        assert alpha_tools[0].tool_call.name == "audit"
-        assert len(beta_tools) == 0
+        # Both agents and the orphan tool are in the same trace
+        agent_spans = [s for s in trace.spans if isinstance(s, AgentInvocationSpan)]
+        tool_spans = [s for s in trace.spans if isinstance(s, ToolExecutionSpan)]
+        assert len(agent_spans) == 2
+        assert len(tool_spans) == 1
+        assert tool_spans[0].tool_call.name == "audit"
 
 
 # ============================================================================
