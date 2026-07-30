@@ -160,13 +160,17 @@ def test_extract_empty_session_tool_level():
 
 
 def test_extract_tool_level_incremental_session_history():
-    """Test that each tool span sees prior tool results in session_history."""
+    """Each tool span sees exactly its true predecessors in session_history, in order."""
     now = datetime.now()
     agent_span = AgentInvocationSpan(
         span_info=SpanInfo(session_id="test", span_id="a0", start_time=now, end_time=now),
-        user_prompt="What is the square root of 1764, multiplied by 3?",
-        agent_response="126",
-        available_tools=[ToolConfig(name="square_root"), ToolConfig(name="multiply_numbers")],
+        user_prompt="What is the square root of 1764, multiplied by 3, then add 1?",
+        agent_response="127",
+        available_tools=[
+            ToolConfig(name="square_root"),
+            ToolConfig(name="multiply_numbers"),
+            ToolConfig(name="add_numbers"),
+        ],
     )
     tool_span_1 = ToolExecutionSpan(
         span_info=SpanInfo(session_id="test", span_id="t1", parent_span_id="a0", start_time=now, end_time=now),
@@ -178,20 +182,39 @@ def test_extract_tool_level_incremental_session_history():
         tool_call=ToolCall(name="multiply_numbers", arguments={"a": 42, "b": 3}),
         tool_result=ToolResult(content="126"),
     )
+    tool_span_3 = ToolExecutionSpan(
+        span_info=SpanInfo(session_id="test", span_id="t3", parent_span_id="a0", start_time=now, end_time=now),
+        tool_call=ToolCall(name="add_numbers", arguments={"a": 126, "b": 1}),
+        tool_result=ToolResult(content="127"),
+    )
 
-    trace = Trace(spans=[agent_span, tool_span_1, tool_span_2], trace_id="trace1", session_id="test")
+    trace = Trace(spans=[agent_span, tool_span_1, tool_span_2, tool_span_3], trace_id="trace1", session_id="test")
     session = Session(traces=[trace], session_id="test")
 
     extractor = TraceExtractor(EvaluationLevel.TOOL_LEVEL)
     result = extractor.extract(session)
 
-    assert len(result) == 2
+    assert len(result) == 3, f"expected 3 tool-level inputs, got {len(result)}"
 
-    # First tool: sees only the user prompt
-    assert len(result[0].session_history) == 1
+    # First tool: sees only the user prompt, no prior executions
+    assert len(result[0].session_history) == 1, (
+        f"first tool should only see user prompt, got {len(result[0].session_history)} entries"
+    )
+    assert result[0].tool_execution_details.tool_call.name == "square_root"
 
     # Second tool: sees user prompt + first tool's execution
-    assert len(result[1].session_history) == 2
+    assert len(result[1].session_history) == 2, (
+        f"second tool should see user prompt + 1 prior execution, got {len(result[1].session_history)} entries"
+    )
     assert isinstance(result[1].session_history[1], list)
     assert result[1].session_history[1][0].tool_call.name == "square_root"
     assert result[1].session_history[1][0].tool_result.content == "42.0"
+
+    # Third tool: sees user prompt + [square_root, multiply_numbers] in order
+    assert len(result[2].session_history) == 2, (
+        f"expected 2 entries (user + prior tools), got {len(result[2].session_history)}"
+    )
+    prior_names = [entry.tool_call.name for entry in result[2].session_history[1]]
+    assert prior_names == ["square_root", "multiply_numbers"], (
+        f"expected [square_root, multiply_numbers] in order, got {prior_names}"
+    )

@@ -207,7 +207,10 @@ class Evaluator(Generic[InputT, OutputT]):
                     # Handle tool execution lists
                     for tool_exec in msg:
                         history_lines.append(f"Tool call: {tool_exec.tool_call.name}({tool_exec.tool_call.arguments})")
-                        history_lines.append(f"Tool result: {tool_exec.tool_result.content}")
+                        if tool_exec.tool_result.error:
+                            history_lines.append(f"Tool result: ERROR - {tool_exec.tool_result.error}")
+                        else:
+                            history_lines.append(f"Tool result: {tool_exec.tool_result.content}")
                 else:
                     text = msg.content[0].text if msg.content and hasattr(msg.content[0], "text") else ""
                     history_lines.append(f"{msg.role.value.capitalize()}: {text}")
@@ -232,7 +235,10 @@ class Evaluator(Generic[InputT, OutputT]):
                     # Handle tool execution lists
                     for tool_exec in msg:
                         history_lines.append(f"Tool call: {tool_exec.tool_call.name}({tool_exec.tool_call.arguments})")
-                        history_lines.append(f"Tool result: {tool_exec.tool_result.content}")
+                        if tool_exec.tool_result.error:
+                            history_lines.append(f"Tool result: ERROR - {tool_exec.tool_result.error}")
+                        else:
+                            history_lines.append(f"Tool result: {tool_exec.tool_result.content}")
                 else:
                     text = msg.content[0].text if msg.content and hasattr(msg.content[0], "text") else ""
                     history_lines.append(f"{msg.role.value.capitalize()}: {text}")

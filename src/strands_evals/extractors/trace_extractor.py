@@ -85,7 +85,11 @@ class TraceExtractor:
         return evaluation_inputs
 
     def _extract_tool_level(self, session: Session) -> list[ToolLevelInput]:
-        """Extract tool-level inputs with session and tool context."""
+        """Extract tool-level inputs with session and tool context.
+
+        Note: spans are not scoped by parent_span_id, so nested agent-as-tool traces
+        may leak child-agent internals into the parent's history.
+        """
         evaluator_inputs: list[ToolLevelInput] = []
         session_history: list[UserMessage | list[ToolExecution] | AssistantMessage] = []
         available_tools: list[ToolConfig] = []
@@ -100,20 +104,27 @@ class TraceExtractor:
             if agent_span and agent_span.user_prompt:
                 session_history.append(UserMessage(content=[TextContent(text=agent_span.user_prompt)]))
 
-            for tool_span in tool_spans:
+            for index, tool_span in enumerate(tool_spans):
+                prior_executions = [
+                    ToolExecution(tool_call=span.tool_call, tool_result=span.tool_result)
+                    for span in tool_spans[:index]
+                    if span.span_info.end_time <= tool_span.span_info.start_time
+                ]
+
                 evaluator_inputs.append(
                     ToolLevelInput(
                         span_info=tool_span.span_info,
                         available_tools=available_tools,
                         tool_execution_details=tool_span,
-                        session_history=list(session_history),
+                        session_history=list(session_history) + ([prior_executions] if prior_executions else []),
                     )
                 )
 
-                # Accumulate this tool's execution so subsequent tool spans see it
-                session_history.append(
-                    [ToolExecution(tool_call=tool_span.tool_call, tool_result=tool_span.tool_result)]
-                )
+            if tool_spans:
+                tool_executions = [
+                    ToolExecution(tool_call=span.tool_call, tool_result=span.tool_result) for span in tool_spans
+                ]
+                session_history.append(tool_executions)
 
             if agent_span and agent_span.agent_response:
                 session_history.append(AssistantMessage(content=[TextContent(text=agent_span.agent_response)]))
