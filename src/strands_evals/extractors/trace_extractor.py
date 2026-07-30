@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 
 from ..types.trace import (
     AgentInvocationSpan,
@@ -18,6 +19,13 @@ from ..types.trace import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _to_aware_utc(dt: datetime) -> datetime:
+    """Normalize a datetime to timezone-aware UTC."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 class TraceExtractor:
@@ -108,7 +116,7 @@ class TraceExtractor:
                 prior_executions = [
                     ToolExecution(tool_call=span.tool_call, tool_result=span.tool_result)
                     for span in tool_spans[:index]
-                    if span.span_info.end_time <= tool_span.span_info.start_time
+                    if _to_aware_utc(span.span_info.end_time) <= _to_aware_utc(tool_span.span_info.start_time)
                 ]
 
                 evaluator_inputs.append(

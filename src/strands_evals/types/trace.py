@@ -170,8 +170,8 @@ class ToolLevelInput(BaseEvaluationInput):
     """Input for tool-level evaluators.
 
     `session_history` is the context preceding `tool_execution_details` and never includes the
-    call under evaluation. Unlike `TraceLevelInput`, where each `list[ToolExecution]` entry is one
-    turn's whole batch, here each entry holds exactly one execution.
+    call under evaluation. Tool executions that precede it within the same trace are appended as a
+    single `list[ToolExecution]` entry, in span order.
     """
 
     available_tools: list[ToolConfig]

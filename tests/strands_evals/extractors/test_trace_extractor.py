@@ -160,10 +160,19 @@ def test_extract_empty_session_tool_level():
 
 
 def test_extract_tool_level_incremental_session_history():
-    """Each tool span sees exactly its true predecessors in session_history, in order."""
-    now = datetime.now()
+    """Each tool span sees exactly its causally-completed predecessors in session_history.
+
+    Uses distinct timestamps so the causality filter is exercised:
+    - tool_1 (t=0→1) finishes before tool_2 starts → prior for tool_2 and tool_3
+    - tool_2 (t=1→4) is long-running and still in-flight when tool_3 starts at t=2 → NOT a prior for tool_3
+    - tool_3 (t=2→3) starts while tool_2 is still running
+    """
+    from datetime import timedelta, timezone
+
+    base = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+
     agent_span = AgentInvocationSpan(
-        span_info=SpanInfo(session_id="test", span_id="a0", start_time=now, end_time=now),
+        span_info=SpanInfo(session_id="test", span_id="a0", start_time=base, end_time=base + timedelta(seconds=10)),
         user_prompt="What is the square root of 1764, multiplied by 3, then add 1?",
         agent_response="127",
         available_tools=[
@@ -173,17 +182,36 @@ def test_extract_tool_level_incremental_session_history():
         ],
     )
     tool_span_1 = ToolExecutionSpan(
-        span_info=SpanInfo(session_id="test", span_id="t1", parent_span_id="a0", start_time=now, end_time=now),
+        span_info=SpanInfo(
+            session_id="test",
+            span_id="t1",
+            parent_span_id="a0",
+            start_time=base,
+            end_time=base + timedelta(seconds=1),
+        ),
         tool_call=ToolCall(name="square_root", arguments={"n": 1764}),
         tool_result=ToolResult(content="42.0"),
     )
+    # Long-running: finishes at t=4, AFTER tool_3 starts at t=2
     tool_span_2 = ToolExecutionSpan(
-        span_info=SpanInfo(session_id="test", span_id="t2", parent_span_id="a0", start_time=now, end_time=now),
+        span_info=SpanInfo(
+            session_id="test",
+            span_id="t2",
+            parent_span_id="a0",
+            start_time=base + timedelta(seconds=1),
+            end_time=base + timedelta(seconds=4),
+        ),
         tool_call=ToolCall(name="multiply_numbers", arguments={"a": 42, "b": 3}),
         tool_result=ToolResult(content="126"),
     )
     tool_span_3 = ToolExecutionSpan(
-        span_info=SpanInfo(session_id="test", span_id="t3", parent_span_id="a0", start_time=now, end_time=now),
+        span_info=SpanInfo(
+            session_id="test",
+            span_id="t3",
+            parent_span_id="a0",
+            start_time=base + timedelta(seconds=2),
+            end_time=base + timedelta(seconds=3),
+        ),
         tool_call=ToolCall(name="add_numbers", arguments={"a": 126, "b": 1}),
         tool_result=ToolResult(content="127"),
     )
@@ -202,7 +230,7 @@ def test_extract_tool_level_incremental_session_history():
     )
     assert result[0].tool_execution_details.tool_call.name == "square_root"
 
-    # Second tool: sees user prompt + first tool's execution
+    # Second tool: sees user prompt + first tool's execution (square_root finished at t=1 <= t=1)
     assert len(result[1].session_history) == 2, (
         f"second tool should see user prompt + 1 prior execution, got {len(result[1].session_history)} entries"
     )
@@ -210,11 +238,66 @@ def test_extract_tool_level_incremental_session_history():
     assert result[1].session_history[1][0].tool_call.name == "square_root"
     assert result[1].session_history[1][0].tool_result.content == "42.0"
 
-    # Third tool: sees user prompt + [square_root, multiply_numbers] in order
+    # Third tool: only square_root is a valid prior (multiply_numbers ends at t=4 > t=2 start)
     assert len(result[2].session_history) == 2, (
         f"expected 2 entries (user + prior tools), got {len(result[2].session_history)}"
     )
     prior_names = [entry.tool_call.name for entry in result[2].session_history[1]]
-    assert prior_names == ["square_root", "multiply_numbers"], (
-        f"expected [square_root, multiply_numbers] in order, got {prior_names}"
+    assert prior_names == ["square_root"], (
+        f"expected only [square_root] (multiply_numbers still running), got {prior_names}"
     )
+
+
+def test_extract_tool_level_mixed_tz_timestamps():
+    """The causality filter handles mixed naive/aware timestamps without raising TypeError."""
+    from datetime import timedelta, timezone
+
+    base_naive = datetime(2024, 1, 1, 12, 0, 0)  # no tzinfo
+    base_aware = datetime(2024, 1, 1, 12, 0, 1, tzinfo=timezone.utc)  # aware
+
+    agent_span = AgentInvocationSpan(
+        span_info=SpanInfo(
+            session_id="test", span_id="a0", start_time=base_naive, end_time=base_aware + timedelta(seconds=5)
+        ),
+        user_prompt="Mixed tz test",
+        agent_response="Done",
+        available_tools=[ToolConfig(name="tool_x"), ToolConfig(name="tool_y")],
+    )
+    # tool_x: naive timestamps
+    tool_x = ToolExecutionSpan(
+        span_info=SpanInfo(
+            session_id="test",
+            span_id="tx",
+            parent_span_id="a0",
+            start_time=base_naive,
+            end_time=base_naive + timedelta(seconds=1),
+        ),
+        tool_call=ToolCall(name="tool_x", arguments={}),
+        tool_result=ToolResult(content="x_result"),
+    )
+    # tool_y: aware timestamps — starts after tool_x ends
+    tool_y = ToolExecutionSpan(
+        span_info=SpanInfo(
+            session_id="test",
+            span_id="ty",
+            parent_span_id="a0",
+            start_time=base_aware,
+            end_time=base_aware + timedelta(seconds=1),
+        ),
+        tool_call=ToolCall(name="tool_y", arguments={}),
+        tool_result=ToolResult(content="y_result"),
+    )
+
+    trace = Trace(spans=[agent_span, tool_x, tool_y], trace_id="trace1", session_id="test")
+    session = Session(traces=[trace], session_id="test")
+
+    extractor = TraceExtractor(EvaluationLevel.TOOL_LEVEL)
+    # Should not raise TypeError
+    result = extractor.extract(session)
+
+    assert len(result) == 2
+    # tool_y should see tool_x as a prior (naive 12:00:01 <= aware 12:00:01 UTC)
+    assert result[1].tool_execution_details.tool_call.name == "tool_y"
+    assert len(result[1].session_history) == 2
+    prior_names = [e.tool_call.name for e in result[1].session_history[1]]
+    assert prior_names == ["tool_x"]
