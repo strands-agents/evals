@@ -157,3 +157,41 @@ def test_extract_empty_session_tool_level():
 
     assert isinstance(result, list)
     assert len(result) == 0
+
+
+def test_extract_tool_level_incremental_session_history():
+    """Test that each tool span sees prior tool results in session_history."""
+    now = datetime.now()
+    agent_span = AgentInvocationSpan(
+        span_info=SpanInfo(session_id="test", span_id="a0", start_time=now, end_time=now),
+        user_prompt="What is the square root of 1764, multiplied by 3?",
+        agent_response="126",
+        available_tools=[ToolConfig(name="square_root"), ToolConfig(name="multiply_numbers")],
+    )
+    tool_span_1 = ToolExecutionSpan(
+        span_info=SpanInfo(session_id="test", span_id="t1", parent_span_id="a0", start_time=now, end_time=now),
+        tool_call=ToolCall(name="square_root", arguments={"n": 1764}),
+        tool_result=ToolResult(content="42.0"),
+    )
+    tool_span_2 = ToolExecutionSpan(
+        span_info=SpanInfo(session_id="test", span_id="t2", parent_span_id="a0", start_time=now, end_time=now),
+        tool_call=ToolCall(name="multiply_numbers", arguments={"a": 42, "b": 3}),
+        tool_result=ToolResult(content="126"),
+    )
+
+    trace = Trace(spans=[agent_span, tool_span_1, tool_span_2], trace_id="trace1", session_id="test")
+    session = Session(traces=[trace], session_id="test")
+
+    extractor = TraceExtractor(EvaluationLevel.TOOL_LEVEL)
+    result = extractor.extract(session)
+
+    assert len(result) == 2
+
+    # First tool: sees only the user prompt
+    assert len(result[0].session_history) == 1
+
+    # Second tool: sees user prompt + first tool's execution
+    assert len(result[1].session_history) == 2
+    assert isinstance(result[1].session_history[1], list)
+    assert result[1].session_history[1][0].tool_call.name == "square_root"
+    assert result[1].session_history[1][0].tool_result.content == "42.0"

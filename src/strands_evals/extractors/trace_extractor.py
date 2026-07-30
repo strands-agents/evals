@@ -110,11 +110,10 @@ class TraceExtractor:
                     )
                 )
 
-            if tool_spans:
-                tool_executions = [
-                    ToolExecution(tool_call=span.tool_call, tool_result=span.tool_result) for span in tool_spans
-                ]
-                session_history.append(tool_executions)
+                # Accumulate this tool's execution so subsequent tool spans see it
+                session_history.append(
+                    [ToolExecution(tool_call=tool_span.tool_call, tool_result=tool_span.tool_result)]
+                )
 
             if agent_span and agent_span.agent_response:
                 session_history.append(AssistantMessage(content=[TextContent(text=agent_span.agent_response)]))
