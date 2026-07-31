@@ -65,6 +65,7 @@ langchain = [
     "openinference-instrumentation-langchain>=0.1.0",
     "opentelemetry-instrumentation-langchain>=0.40.0,<0.62.0",
 ]
+adk = ["google-adk>=2.0.0"]
 
 [tool.ruff]
 line-length = 120
@@ -73,7 +74,7 @@ include = ["src/**/*.py", "tests/**/*.py", "tests_integ/**/*.py"]
 [tool.hatch.envs.hatch-test]
 installer = "uv"
 extra-args = ["-n", "auto", "-vv"]
-features = ["otel", "langfuse", "langchain", "opensearch"]
+features = ["otel", "langfuse", "langchain", "opensearch", "adk"]
 dependencies = [
     "pytest>=8.0.0,<10.0.0",
     "pytest-cov>=7.0.0,<8.0.0",
