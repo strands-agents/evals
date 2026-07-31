@@ -8,6 +8,7 @@ Attribute keys and values are used for span type detection and data extraction.
 SCOPE_LANGCHAIN_OTEL = "opentelemetry.instrumentation.langchain"
 SCOPE_OPENINFERENCE = "openinference.instrumentation.langchain"
 SCOPE_OPENINFERENCE_SMOLAGENTS = "openinference.instrumentation.smolagents"
+SCOPE_OPENINFERENCE_CLAUDE_AGENT_SDK = "openinference.instrumentation.claude_agent_sdk"
 SCOPE_ADK = "gcp.vertex.agent"
 SCOPE_STRANDS = "strands.telemetry.tracer"
 
@@ -16,6 +17,7 @@ SCOPES_OPENINFERENCE_FAMILY = frozenset(
     [
         SCOPE_OPENINFERENCE,
         SCOPE_OPENINFERENCE_SMOLAGENTS,
+        SCOPE_OPENINFERENCE_CLAUDE_AGENT_SDK,
     ]
 )
 
