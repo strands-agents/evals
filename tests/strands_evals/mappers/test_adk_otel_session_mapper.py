@@ -672,6 +672,24 @@ class TestDataFormatCompatibility:
         """Spans in to_json format (context.trace_id, parent_id with 0x prefix) are parsed."""
         spans = [
             {
+                "name": "invoke_agent my_agent",
+                "context": {"trace_id": "0xabc123", "span_id": "0x789abc"},
+                "start_time": "2026-07-22T16:34:19.900000Z",
+                "end_time": "2026-07-22T16:34:19.920000Z",
+                "attributes": {
+                    "gen_ai.operation.name": "invoke_agent",
+                    "gen_ai.agent.name": "my_agent",
+                    "gcp.vertex.agent.llm_request": "",
+                },
+                "events": [
+                    {
+                        "name": "gen_ai.user.message",
+                        "timestamp": "2026-07-22T16:34:19.900000Z",
+                        "attributes": {"content": "hello"},
+                    }
+                ],
+            },
+            {
                 "name": "execute_tool calculator",
                 "context": {"trace_id": "0xabc123", "span_id": "0xdef456"},
                 "parent_id": "0x789abc",
@@ -684,10 +702,12 @@ class TestDataFormatCompatibility:
                     "gcp.vertex.agent.tool_call_args": '{"x": 1}',
                     "gcp.vertex.agent.tool_response": "result",
                 },
-            }
+            },
         ]
         session = self.mapper.map_to_session(spans, SESSION_ID)
-        tool = session.traces[0].spans[0]
+        tool_spans = [s for s in session.traces[0].spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+        tool = tool_spans[0]
         assert tool.span_info.trace_id == "abc123"
         assert tool.span_info.span_id == "def456"
         assert tool.span_info.parent_span_id == "789abc"

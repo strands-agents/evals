@@ -111,6 +111,7 @@ class ToolExecutionSpan(BaseSpan):
     span_type: SpanType = SpanType.TOOL_EXECUTION
     tool_call: ToolCall
     tool_result: ToolResult
+    owning_agent_span_id: str | None = None
 
 
 class AgentInvocationSpan(BaseSpan):

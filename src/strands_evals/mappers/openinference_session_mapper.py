@@ -36,7 +36,7 @@ from ..types.trace import (
 )
 from .constants import SCOPE_OPENINFERENCE_SMOLAGENTS, SCOPES_OPENINFERENCE_FAMILY
 from .session_mapper import SessionMapper
-from .utils import safe_json_parse
+from .utils import assign_tool_ownership, safe_json_parse
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +271,8 @@ class OpenInferenceSessionMapper(SessionMapper):
             for converted in converted_spans:
                 if isinstance(converted, AgentInvocationSpan) and not converted.available_tools:
                     converted.available_tools = tools_list
+
+        assign_tool_ownership(converted_spans)
 
         return Trace(spans=converted_spans, trace_id=trace_id, session_id=session_id)
 

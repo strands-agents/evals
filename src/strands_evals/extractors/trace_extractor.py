@@ -57,14 +57,7 @@ class TraceExtractor:
             agent_spans = self._find_agent_invocation_spans(trace)
             tool_spans = self._find_tool_execution_spans(trace)
 
-            # Resolve which tools belong to which agent via ancestry
-            tool_to_agent = self._resolve_tool_ownership(trace, agent_spans) if len(agent_spans) > 1 else None
-
             for span in agent_spans:
-                # Skip spans with no evaluable content
-                if not span.user_prompt and not span.agent_response:
-                    continue
-
                 try:
                     text_content = TextContent(text=span.user_prompt)
                     previous_turns.append(UserMessage(content=[text_content]))
@@ -73,8 +66,9 @@ class TraceExtractor:
                     continue
 
                 # Include only tool executions owned by this agent
-                if tool_to_agent:
-                    owned_tools = [ts for ts in tool_spans if tool_to_agent.get(id(ts)) is span]
+                ownership_assigned = any(ts.owning_agent_span_id for ts in tool_spans)
+                if len(agent_spans) > 1 and ownership_assigned:
+                    owned_tools = [ts for ts in tool_spans if ts.owning_agent_span_id == span.span_info.span_id]
                 else:
                     owned_tools = tool_spans
 
@@ -126,8 +120,8 @@ class TraceExtractor:
                 if agent_span.user_prompt:
                     session_history.append(UserMessage(content=[TextContent(text=agent_span.user_prompt)]))
 
-            # Resolve per-agent tool scoping for multi-agent traces
-            tool_to_agent = self._resolve_tool_ownership(trace, agent_spans) if len(agent_spans) > 1 else None
+            # Build agent lookup for multi-agent scoping
+            agent_by_id = {s.span_info.span_id: s for s in agent_spans if s.span_info.span_id}
 
             tool_executions = [
                 ToolExecution(tool_call=span.tool_call, tool_result=span.tool_result) for span in tool_spans
@@ -147,8 +141,8 @@ class TraceExtractor:
                     and (tool_end_times[position] < target_start or position < index)
                 ]
 
-                if tool_to_agent:
-                    owning_agent = tool_to_agent.get(id(tool_span))
+                if tool_span.owning_agent_span_id and len(agent_spans) > 1:
+                    owning_agent = agent_by_id.get(tool_span.owning_agent_span_id)
                     scoped_tools = owning_agent.available_tools if owning_agent and owning_agent.available_tools else []
                 else:
                     scoped_tools = available_tools
@@ -191,43 +185,6 @@ class TraceExtractor:
     def _find_tool_execution_spans(self, trace) -> list[ToolExecutionSpan]:
         """Find all ToolExecutionSpans in a trace."""
         return [span for span in trace.spans if isinstance(span, ToolExecutionSpan)]
-
-    def _resolve_tool_ownership(self, trace, agent_spans: list[AgentInvocationSpan]) -> dict[int, AgentInvocationSpan]:
-        """Map each tool span to its owning AgentInvocationSpan via parent_span_id ancestry.
-
-        Walks the parent chain from each ToolExecutionSpan until it finds an
-        AgentInvocationSpan. Falls back to the root (outermost) agent when the
-        parent chain is incomplete.
-        """
-        span_by_id: dict[str, object] = {}
-        for span in trace.spans:
-            if span.span_info.span_id:
-                span_by_id[span.span_info.span_id] = span
-
-        agent_by_id = {s.span_info.span_id: s for s in agent_spans if s.span_info.span_id}
-        root_agent = self._find_root_agent(agent_spans)
-
-        # Walk each tool span's parent chain to find its nearest owning AgentInvocationSpan, falling back to root.
-        result: dict[int, AgentInvocationSpan] = {}
-        for span in trace.spans:
-            if not isinstance(span, ToolExecutionSpan):
-                continue
-            current_id = span.span_info.parent_span_id
-            found: AgentInvocationSpan | None = None
-            visited: set[str] = set()
-            while current_id and current_id not in visited:
-                visited.add(current_id)
-                if current_id in agent_by_id:
-                    found = agent_by_id[current_id]
-                    break
-                parent = span_by_id.get(current_id)
-                if parent:
-                    current_id = parent.span_info.parent_span_id
-                else:
-                    break
-            result[id(span)] = found or root_agent
-
-        return result
 
     def _extract_session_level(self, session: Session) -> SessionLevelInput:
         """Extract session-level input with full history."""

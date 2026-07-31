@@ -6,6 +6,7 @@ import json
 import logging
 from typing import Any
 
+from ..types.trace import AgentInvocationSpan, SpanUnion, ToolExecutionSpan
 from .constants import SCOPE_ADK, SCOPE_LANGCHAIN_OTEL, SCOPE_STRANDS, SCOPES_OPENINFERENCE_FAMILY
 from .session_mapper import SessionMapper
 
@@ -221,7 +222,9 @@ def readable_spans_to_dicts(spans: Any) -> list[dict]:
         List of span dictionaries ready for use with mappers
 
     Example:
-        >>> from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+        >>> from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        ...     InMemorySpanExporter,
+        ... )
         >>> exporter = InMemorySpanExporter()
         >>> # ... run instrumented code ...
         >>> spans = readable_spans_to_dicts(exporter.get_finished_spans())
@@ -258,3 +261,91 @@ def readable_spans_to_dicts(spans: Any) -> list[dict]:
 
         result.append(span_dict)
     return result
+
+
+def bridge_parent_gaps(
+    converted_spans: list[SpanUnion],
+    raw_parent_map: dict[str, str | None],
+) -> None:
+    """Patch parent_span_id on converted spans to skip unconverted intermediates.
+
+    When a converted span's parent_span_id points to a span that wasn't
+    converted (e.g. execute_event_loop_cycle in Strands SDK, call_llm in ADK),
+    this walks up via raw_parent_map until it finds a converted ancestor — or
+    sets parent_span_id to None if no converted ancestor exists.
+
+    Args:
+        converted_spans: Flat list of converted spans from a single trace.
+        raw_parent_map: span_id -> parent_span_id for ALL raw spans, including
+            unconverted ones.
+    """
+    converted_ids = {s.span_info.span_id for s in converted_spans if s.span_info.span_id}
+    for span in converted_spans:
+        parent_id = span.span_info.parent_span_id
+        if parent_id and parent_id not in converted_ids:
+            visited: set[str] = set()
+            current: str | None = parent_id
+            while current and current not in visited:
+                visited.add(current)
+                if current in converted_ids:
+                    span.span_info.parent_span_id = current
+                    break
+                current = raw_parent_map.get(current)
+            else:
+                span.span_info.parent_span_id = None
+
+
+def assign_tool_ownership(
+    spans: list[SpanUnion],
+    raw_parent_map: dict[str, str | None] | None = None,
+) -> None:
+    """Assign owning_agent_span_id on each ToolExecutionSpan via parent_span_id ancestry.
+
+    Walks the parent chain from each ToolExecutionSpan until it finds an
+    AgentInvocationSpan. Falls back to the root agent (no parent or first in list)
+    when the parent chain is incomplete.
+
+    Args:
+        spans: Flat list of converted spans from a single trace.
+        raw_parent_map: Optional span_id -> parent_span_id for ALL raw spans.
+            When provided, reparenting is applied first to bridge gaps caused
+            by unconverted intermediate spans.
+    """
+    if raw_parent_map is not None:
+        bridge_parent_gaps(spans, raw_parent_map)
+
+    agent_by_id: dict[str, AgentInvocationSpan] = {}
+    span_by_id: dict[str, SpanUnion] = {}
+    for span in spans:
+        sid = span.span_info.span_id
+        if sid:
+            span_by_id[sid] = span
+            if isinstance(span, AgentInvocationSpan):
+                agent_by_id[sid] = span
+
+    if not agent_by_id:
+        return
+
+    # Determine root agent: prefer one with no parent, otherwise first agent in list
+    root_agent_id: str | None = None
+    for sid, agent in agent_by_id.items():
+        if agent.span_info.parent_span_id is None:
+            root_agent_id = sid
+            break
+    if root_agent_id is None:
+        root_agent_id = next(iter(agent_by_id))
+
+    for span in spans:
+        if not isinstance(span, ToolExecutionSpan):
+            continue
+        current_id = span.span_info.parent_span_id
+        visited: set[str] = set()
+        found: str | None = None
+        while current_id and current_id not in visited:
+            visited.add(current_id)
+            if current_id in agent_by_id:
+                found = current_id
+                break
+            parent = span_by_id.get(current_id)
+            current_id = parent.span_info.parent_span_id if parent else None
+        span.owning_agent_span_id = found or root_agent_id

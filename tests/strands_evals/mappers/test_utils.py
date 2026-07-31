@@ -1,5 +1,7 @@
 """Tests for mapper utility functions."""
 
+from datetime import datetime, timezone
+
 from strands_evals.mappers import (
     CloudWatchSessionMapper,
     LangChainOtelSessionMapper,
@@ -9,7 +11,8 @@ from strands_evals.mappers import (
     get_scope_name,
     readable_spans_to_dicts,
 )
-from strands_evals.mappers.utils import join_tool_result_content
+from strands_evals.mappers.utils import assign_tool_ownership, join_tool_result_content
+from strands_evals.types.trace import AgentInvocationSpan, SpanInfo, ToolCall, ToolExecutionSpan, ToolResult
 
 
 class TestJoinToolResultContent:
@@ -313,3 +316,90 @@ class TestReadableSpansToDicts:
         """Handles empty span list."""
         result = readable_spans_to_dicts([])
         assert result == []
+
+
+def _make_span_info(span_id: str, parent_span_id: str | None = None) -> SpanInfo:
+    """Build a minimal SpanInfo for assign_tool_ownership tests."""
+    now = datetime.now(timezone.utc)
+    return SpanInfo(
+        trace_id="trace-1",
+        span_id=span_id,
+        session_id="session-1",
+        parent_span_id=parent_span_id,
+        start_time=now,
+        end_time=now,
+    )
+
+
+def _make_agent(span_id: str, parent_span_id: str | None = None) -> AgentInvocationSpan:
+    return AgentInvocationSpan(
+        span_info=_make_span_info(span_id, parent_span_id),
+        user_prompt="hi",
+        agent_response="hello",
+        available_tools=[],
+        metadata={},
+    )
+
+
+def _make_tool(span_id: str, parent_span_id: str | None = None) -> ToolExecutionSpan:
+    return ToolExecutionSpan(
+        span_info=_make_span_info(span_id, parent_span_id),
+        tool_call=ToolCall(name="calc", arguments={}, tool_call_id="tc-1"),
+        tool_result=ToolResult(content="42", tool_call_id="tc-1"),
+        metadata={},
+    )
+
+
+class TestAssignToolOwnership:
+    def test_single_agent_assigns_to_that_agent(self):
+        """With one agent, all tools are owned by it."""
+        agent = _make_agent("agent-1")
+        tool = _make_tool("tool-1", parent_span_id="agent-1")
+        spans = [agent, tool]
+
+        assign_tool_ownership(spans)
+
+        assert tool.owning_agent_span_id == "agent-1"
+
+    def test_multi_agent_assigns_to_nearest_ancestor(self):
+        """Each tool is owned by the nearest agent in its parent chain."""
+        root_agent = _make_agent("agent-root")
+        child_agent = _make_agent("agent-child", parent_span_id="agent-root")
+        tool_of_root = _make_tool("tool-root", parent_span_id="agent-root")
+        tool_of_child = _make_tool("tool-child", parent_span_id="agent-child")
+        spans = [root_agent, child_agent, tool_of_root, tool_of_child]
+
+        assign_tool_ownership(spans)
+
+        assert tool_of_root.owning_agent_span_id == "agent-root"
+        assert tool_of_child.owning_agent_span_id == "agent-child"
+
+    def test_orphan_tool_falls_back_to_root_agent(self):
+        """A tool whose parent chain doesn't reach any agent falls back to root."""
+        agent = _make_agent("agent-1")
+        tool = _make_tool("tool-1", parent_span_id="nonexistent")
+        spans = [agent, tool]
+
+        assign_tool_ownership(spans)
+
+        assert tool.owning_agent_span_id == "agent-1"
+
+    def test_no_agents_leaves_ownership_none(self):
+        """With no agents in the trace, ownership is not set."""
+        tool = _make_tool("tool-1", parent_span_id=None)
+        spans = [tool]
+
+        assign_tool_ownership(spans)
+
+        assert tool.owning_agent_span_id is None
+
+    def test_idempotent(self):
+        """Calling assign_tool_ownership twice produces the same result."""
+        agent = _make_agent("agent-1")
+        tool = _make_tool("tool-1", parent_span_id="agent-1")
+        spans = [agent, tool]
+
+        assign_tool_ownership(spans)
+        assign_tool_ownership(spans)
+
+        assert tool.owning_agent_span_id == "agent-1"

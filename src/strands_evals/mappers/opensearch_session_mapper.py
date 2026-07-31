@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from strands_evals.mappers.session_mapper import SessionMapper
+from strands_evals.mappers.utils import assign_tool_ownership
 from strands_evals.types.trace import (
     AgentInvocationSpan,
     AssistantMessage,
@@ -93,6 +94,8 @@ class OpenSearchSessionMapper(SessionMapper):
                             metadata={},
                         )
                     )
+
+        assign_tool_ownership(spans)
 
         return Trace(spans=spans, trace_id=trace_id, session_id=session_id)
 

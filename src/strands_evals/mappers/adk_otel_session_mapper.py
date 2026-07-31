@@ -48,7 +48,7 @@ from ..types.trace import (
 )
 from .constants import SCOPE_ADK
 from .session_mapper import SessionMapper
-from .utils import get_scope_name, safe_json_parse
+from .utils import assign_tool_ownership, get_scope_name, safe_json_parse
 
 logger = logging.getLogger(__name__)
 
@@ -138,41 +138,15 @@ class ADKOtelSessionMapper(SessionMapper):
                 span_id = self._extract_span_id(span) or "unknown"
                 logger.warning("span_id=<%s>, error=<%s> | failed to convert ADK span", span_id, e)
 
-        self._reparent_spans(converted_spans, spans_by_id)
+        # Build raw parent map from all spans (including unconverted call_llm, invocation)
+        raw_parent_map: dict[str, str | None] = {
+            self._extract_span_id(s): self._extract_parent_span_id(s) for s in spans if self._extract_span_id(s)
+        }
+
         converted_spans.sort(key=lambda s: s.span_info.start_time)
+        assign_tool_ownership(converted_spans, raw_parent_map)
 
         return Trace(spans=converted_spans, trace_id=trace_id, session_id=session_id)
-
-    def _reparent_spans(
-        self,
-        converted_spans: list[InferenceSpan | ToolExecutionSpan | AgentInvocationSpan],
-        spans_by_id: dict[str, dict],
-    ) -> None:
-        """Re-parent spans whose parent_span_id points to a skipped span.
-
-        When intermediate spans (e.g. call_llm) are not converted, the parent
-        chain breaks. This walks up the raw span tree to find the nearest
-        converted ancestor for the purpose of tool ownership resolution.
-        """
-        agent_spans = [s for s in converted_spans if isinstance(s, AgentInvocationSpan)]
-        if len(agent_spans) <= 1:
-            return
-
-        converted_ids = {s.span_info.span_id for s in converted_spans if s.span_info.span_id}
-        for conv_span in converted_spans:
-            parent_id = conv_span.span_info.parent_span_id
-            if parent_id and parent_id not in converted_ids:
-                visited: set[str] = set()
-                current: str | None = parent_id
-                while current and current not in visited:
-                    visited.add(current)
-                    if current in converted_ids:
-                        conv_span.span_info.parent_span_id = current
-                        break
-                    raw_parent = spans_by_id.get(current)
-                    current = self._extract_parent_span_id(raw_parent) if raw_parent else None
-                else:
-                    conv_span.span_info.parent_span_id = None
 
     # =========================================================================
     # Span Type Detection

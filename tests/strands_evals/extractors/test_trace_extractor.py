@@ -93,16 +93,19 @@ def multi_agent_session():
         span_info=_span_info(span_id="tool-delegate", parent_span_id="coordinator"),
         tool_call=ToolCall(name="ask_math", arguments={"query": "sqrt(16)*2"}),
         tool_result=ToolResult(content="8"),
+        owning_agent_span_id="coordinator",
     )
     tool_sqrt = ToolExecutionSpan(
         span_info=_span_info(span_id="tool-sqrt", parent_span_id="math-agent"),
         tool_call=ToolCall(name="square_root", arguments={"n": 16}),
         tool_result=ToolResult(content="4.0"),
+        owning_agent_span_id="math-agent",
     )
     tool_mult = ToolExecutionSpan(
         span_info=_span_info(span_id="tool-mult", parent_span_id="math-agent"),
         tool_call=ToolCall(name="multiply", arguments={"a": 4, "b": 2}),
         tool_result=ToolResult(content="8"),
+        owning_agent_span_id="math-agent",
     )
     trace = Trace(
         spans=[coordinator, math_agent, tool_delegate, tool_sqrt, tool_mult], trace_id="t1", session_id="test"
@@ -431,11 +434,13 @@ def test_span_id_none_does_not_collide():
         span_info=_span_info(span_id=None, parent_span_id="spec-a"),
         tool_call=ToolCall(name="tool_a", arguments={}),
         tool_result=ToolResult(content="a"),
+        owning_agent_span_id="spec-a",
     )
     tool_b = ToolExecutionSpan(
         span_info=_span_info(span_id=None, parent_span_id="spec-b"),
         tool_call=ToolCall(name="tool_b", arguments={}),
         tool_result=ToolResult(content="b"),
+        owning_agent_span_id="spec-b",
     )
 
     trace = Trace(spans=[coordinator, spec_a, spec_b, tool_a, tool_b], trace_id="t1", session_id="test")
@@ -448,21 +453,3 @@ def test_span_id_none_does_not_collide():
     result_b = next(r for r in result if r.tool_execution_details.tool_call.name == "tool_b")
     assert [t.name for t in result_a.available_tools] == ["tool_a"]
     assert [t.name for t in result_b.available_tools] == ["tool_b"]
-
-
-def test_empty_agent_span_is_skipped():
-    """An AgentInvocationSpan with no content is dropped from trace-level output."""
-    empty = AgentInvocationSpan(
-        span_info=_span_info(span_id="empty"), user_prompt="", agent_response="", available_tools=[]
-    )
-    real = AgentInvocationSpan(
-        span_info=_span_info(span_id="real"), user_prompt="Hello", agent_response="Hi!", available_tools=[]
-    )
-
-    trace = Trace(spans=[empty, real], trace_id="t1", session_id="test")
-    session = Session(traces=[trace], session_id="test")
-
-    result = TraceExtractor(EvaluationLevel.TRACE_LEVEL).extract(session)
-
-    assert len(result) == 1
-    assert result[0].agent_response.text == "Hi!"
