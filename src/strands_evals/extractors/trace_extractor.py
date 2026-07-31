@@ -115,7 +115,10 @@ class TraceExtractor:
             tool_executions = [
                 ToolExecution(tool_call=span.tool_call, tool_result=span.tool_result) for span in tool_spans
             ]
-            tool_end_times = [_to_aware_utc(span.span_info.end_time) for span in tool_spans]
+            tool_end_times = [
+                max(_to_aware_utc(span.span_info.end_time), _to_aware_utc(span.span_info.start_time))
+                for span in tool_spans
+            ]
 
             for index, tool_span in enumerate(tool_spans):
                 target_start = _to_aware_utc(tool_span.span_info.start_time)
