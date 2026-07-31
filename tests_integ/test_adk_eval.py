@@ -29,7 +29,9 @@ from strands_evals.mappers import ADKOtelSessionMapper, detect_otel_mapper, read
 from strands_evals.telemetry import StrandsEvalsTelemetry
 from strands_evals.types.trace import AgentInvocationSpan, ToolExecutionSpan
 
-DEFAULT_MODEL = LiteLlm(model="bedrock/us.anthropic.claude-sonnet-4-6", temperature=0)
+DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-20250514-v1:0"
+
+DEFAULT_MODEL = LiteLlm(model=f"bedrock/{DEFAULT_MODEL_ID}", temperature=0)
 
 
 # =============================================================================
