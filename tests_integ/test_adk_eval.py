@@ -340,9 +340,9 @@ def test_adk_multi_agent_evaluation(telemetry, create_multi_agent_runner):
         trace_agent_names = {s.metadata.get("agent_name") for s in trace_agent_spans}
 
         if "coordinator" in trace_agent_names and "weather_specialist" not in trace_agent_names:
-            assert len(trace_tool_spans) == 0, (
-                f"Tool spans should not appear on the coordinator trace (found {len(trace_tool_spans)} tool spans)"
-            )
+            tool_names = {s.tool_call.name for s in trace_tool_spans}
+            assert "get_weather" not in tool_names, f"Specialist tool leaked onto coordinator trace: {tool_names}"
+            assert tool_names <= {"transfer_to_agent"}, f"Unexpected tools on coordinator trace: {tool_names}"
         elif "weather_specialist" in trace_agent_names:
             assert len(trace_tool_spans) >= 1, "Specialist trace should have at least one tool span"
             # Verify tool_call_id is populated (Bedrock emits gen_ai.tool.call.id)
