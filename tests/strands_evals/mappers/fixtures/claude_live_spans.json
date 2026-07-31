@@ -1,0 +1,268 @@
+[
+  {
+    "trace_id": "4b0b961d81a720593197cd65f829ad3f",
+    "span_id": "1caa50d4f4973488",
+    "parent_span_id": "053c311b792d91c6",
+    "name": "Bash",
+    "start_time": 1785532828134675000,
+    "end_time": 1785532830265870000,
+    "attributes": {
+      "tool.id": "toolu_mock_ny_weather",
+      "tool.name": "Bash",
+      "tool.parameters": "{\"command\": \"echo \\\"Location: New York City, NY\\nTemperature: 89°F\\nConditions: Partly cloudy\\\"\"}",
+      "input.value": "{\"command\": \"echo \\\"Location: New York City, NY\\nTemperature: 89°F\\nConditions: Partly cloudy\\\"\"}",
+      "input.mime_type": "application/json",
+      "output.value": "{\"stdout\": \"Location: New York City, NY\\nTemperature: 89°F\\nConditions: Partly cloudy\", \"stderr\": \"\", \"interrupted\": false}",
+      "output.mime_type": "application/json",
+      "openinference.span.kind": "TOOL"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.claude_agent_sdk",
+      "version": "0.1.7"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "4b0b961d81a720593197cd65f829ad3f",
+    "span_id": "0030c035f039e139",
+    "parent_span_id": "a6e166c4a06cc015",
+    "name": "Bash",
+    "start_time": 1785532830345624000,
+    "end_time": 1785532830379943000,
+    "attributes": {
+      "tool.id": "toolu_mock_sea_weather",
+      "tool.name": "Bash",
+      "tool.parameters": "{\"command\": \"echo \\\"Location: Seattle, WA\\nTemperature: 72°F\\nConditions: Partly cloudy\\\"\"}",
+      "input.value": "{\"command\": \"echo \\\"Location: Seattle, WA\\nTemperature: 72°F\\nConditions: Partly cloudy\\\"\"}",
+      "input.mime_type": "application/json",
+      "output.value": "{\"stdout\": \"Location: Seattle, WA\\nTemperature: 72°F\\nConditions: Partly cloudy\", \"stderr\": \"\", \"interrupted\": false}",
+      "output.mime_type": "application/json",
+      "openinference.span.kind": "TOOL"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.claude_agent_sdk",
+      "version": "0.1.7"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "4b0b961d81a720593197cd65f829ad3f",
+    "span_id": "1c51a9dac98b8f20",
+    "parent_span_id": "ebdd7630e6537a19",
+    "name": "Agent",
+    "start_time": 1785532825592072000,
+    "end_time": 1785532831236592000,
+    "attributes": {
+      "tool.id": "toolu_mock_agent_seattle",
+      "tool.name": "Agent",
+      "tool.parameters": "{\"description\": \"Get current weather in Seattle\", \"subagent_type\": \"research-specialist\", \"prompt\": \"What is the current temperature in Seattle, Washington?\", \"run_in_background\": false}",
+      "input.value": "{\"description\": \"Get current weather in Seattle\", \"subagent_type\": \"research-specialist\", \"prompt\": \"What is the current temperature in Seattle, Washington?\", \"run_in_background\": false}",
+      "input.mime_type": "application/json",
+      "output.value": "{\"status\": \"completed\", \"prompt\": \"What is the current temperature in Seattle, Washington?\", \"agentId\": \"mock-agent-001\", \"agentType\": \"research-specialist\", \"content\": [{\"type\": \"text\", \"text\": \"72°F, partly cloudy\"}], \"resolvedModel\": \"us.anthropic.claude-sonnet-4-6\", \"totalDurationMs\": 5637, \"totalTokens\": 4542, \"totalToolUseCount\": 1}",
+      "output.mime_type": "application/json",
+      "openinference.span.kind": "TOOL"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.claude_agent_sdk",
+      "version": "0.1.7"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "4b0b961d81a720593197cd65f829ad3f",
+    "span_id": "51e6bd914525fee4",
+    "parent_span_id": "ebdd7630e6537a19",
+    "name": "Agent",
+    "start_time": 1785532824627161000,
+    "end_time": 1785532831501258000,
+    "attributes": {
+      "tool.id": "toolu_mock_agent_ny",
+      "tool.name": "Agent",
+      "tool.parameters": "{\"description\": \"Get current weather in New York\", \"subagent_type\": \"research-specialist\", \"prompt\": \"What is the current temperature in New York City?\", \"run_in_background\": false}",
+      "input.value": "{\"description\": \"Get current weather in New York\", \"subagent_type\": \"research-specialist\", \"prompt\": \"What is the current temperature in New York City?\", \"run_in_background\": false}",
+      "input.mime_type": "application/json",
+      "output.value": "{\"status\": \"completed\", \"prompt\": \"What is the current temperature in New York City?\", \"agentId\": \"mock-agent-002\", \"agentType\": \"research-specialist\", \"content\": [{\"type\": \"text\", \"text\": \"89°F, partly cloudy with high humidity\"}], \"resolvedModel\": \"us.anthropic.claude-sonnet-4-6\", \"totalDurationMs\": 6860, \"totalTokens\": 4472, \"totalToolUseCount\": 1}",
+      "output.mime_type": "application/json",
+      "openinference.span.kind": "TOOL"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.claude_agent_sdk",
+      "version": "0.1.7"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "4b0b961d81a720593197cd65f829ad3f",
+    "span_id": "b29670c3fb945a41",
+    "parent_span_id": "f028c72828771e95",
+    "name": "Bash",
+    "start_time": 1785532836023907000,
+    "end_time": 1785532836140075000,
+    "attributes": {
+      "tool.id": "toolu_mock_calc",
+      "tool.name": "Bash",
+      "tool.parameters": "{\"command\": \"python3 -c 'print(89 - 72)'\", \"description\": \"Calculate temperature difference\"}",
+      "input.value": "{\"command\": \"python3 -c 'print(89 - 72)'\", \"description\": \"Calculate temperature difference\"}",
+      "input.mime_type": "application/json",
+      "output.value": "{\"stdout\": \"17\", \"stderr\": \"\", \"interrupted\": false}",
+      "output.mime_type": "application/json",
+      "openinference.span.kind": "TOOL"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.claude_agent_sdk",
+      "version": "0.1.7"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "4b0b961d81a720593197cd65f829ad3f",
+    "span_id": "a6e405461983ccf4",
+    "parent_span_id": "ebdd7630e6537a19",
+    "name": "Agent",
+    "start_time": 1785532834085541000,
+    "end_time": 1785532837059862000,
+    "attributes": {
+      "tool.id": "toolu_mock_agent_math",
+      "tool.name": "Agent",
+      "tool.parameters": "{\"description\": \"Calculate temperature difference\", \"subagent_type\": \"math-specialist\", \"prompt\": \"Calculate 89 minus 72.\", \"run_in_background\": false}",
+      "input.value": "{\"description\": \"Calculate temperature difference\", \"subagent_type\": \"math-specialist\", \"prompt\": \"Calculate 89 minus 72.\", \"run_in_background\": false}",
+      "input.mime_type": "application/json",
+      "output.value": "{\"status\": \"completed\", \"prompt\": \"Calculate 89 minus 72.\", \"agentId\": \"mock-agent-003\", \"agentType\": \"math-specialist\", \"content\": [{\"type\": \"text\", \"text\": \"17\"}], \"resolvedModel\": \"us.anthropic.claude-sonnet-4-6\", \"totalDurationMs\": 2970, \"totalTokens\": 4639, \"totalToolUseCount\": 1}",
+      "output.mime_type": "application/json",
+      "openinference.span.kind": "TOOL"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.claude_agent_sdk",
+      "version": "0.1.7"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "4b0b961d81a720593197cd65f829ad3f",
+    "span_id": "053c311b792d91c6",
+    "parent_span_id": "51e6bd914525fee4",
+    "name": "ClaudeAgentSDK.Agent",
+    "start_time": 1785532824645170000,
+    "end_time": 1785532844762479000,
+    "attributes": {
+      "agent.name": "Agent",
+      "llm.model_name": "claude-sonnet-4-6",
+      "openinference.span.kind": "AGENT"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.claude_agent_sdk",
+      "version": "0.1.7"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "4b0b961d81a720593197cd65f829ad3f",
+    "span_id": "a6e166c4a06cc015",
+    "parent_span_id": "1c51a9dac98b8f20",
+    "name": "ClaudeAgentSDK.Agent",
+    "start_time": 1785532825602031000,
+    "end_time": 1785532844762515000,
+    "attributes": {
+      "agent.name": "Agent",
+      "llm.model_name": "claude-sonnet-4-6",
+      "openinference.span.kind": "AGENT"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.claude_agent_sdk",
+      "version": "0.1.7"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "4b0b961d81a720593197cd65f829ad3f",
+    "span_id": "f028c72828771e95",
+    "parent_span_id": "a6e405461983ccf4",
+    "name": "ClaudeAgentSDK.Agent",
+    "start_time": 1785532834092860000,
+    "end_time": 1785532844762527000,
+    "attributes": {
+      "agent.name": "Agent",
+      "llm.model_name": "claude-sonnet-4-6",
+      "openinference.span.kind": "AGENT"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.claude_agent_sdk",
+      "version": "0.1.7"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "4b0b961d81a720593197cd65f829ad3f",
+    "span_id": "ebdd7630e6537a19",
+    "parent_span_id": "9be1bbbdd3211df5",
+    "name": "ClaudeAgentSDK.query",
+    "start_time": 1785532815901349000,
+    "end_time": 1785532844762539000,
+    "attributes": {
+      "llm.system": "anthropic",
+      "input.value": "Look up the weather in New York and Seattle, then calculate the temperature difference.",
+      "input.mime_type": "text/plain",
+      "llm.output_messages.0.message.role": "assistant",
+      "llm.output_messages.0.message.content.0": "I'll look up the weather in both cities and then calculate the difference.",
+      "llm.output_messages.1.message.tool_calls.0.tool_call.id": "toolu_mock_agent_ny",
+      "llm.output_messages.1.message.tool_calls.0.tool_call.function.name": "Agent",
+      "llm.output_messages.1.message.tool_calls.0.tool_call.function.arguments": "{\"description\": \"Get current weather in New York\", \"subagent_type\": \"research-specialist\", \"prompt\": \"What is the current temperature in New York City?\", \"run_in_background\": false}",
+      "llm.output_messages.1.message.role": "assistant",
+      "llm.output_messages.2.message.tool_calls.0.tool_call.id": "toolu_mock_agent_seattle",
+      "llm.output_messages.2.message.tool_calls.0.tool_call.function.name": "Agent",
+      "llm.output_messages.2.message.tool_calls.0.tool_call.function.arguments": "{\"description\": \"Get current weather in Seattle\", \"subagent_type\": \"research-specialist\", \"prompt\": \"What is the current temperature in Seattle, Washington?\", \"run_in_background\": false}",
+      "llm.output_messages.2.message.role": "assistant",
+      "llm.output_messages.3.message.content.0": "Got both temperatures! Now let me calculate the difference.",
+      "llm.output_messages.3.message.role": "assistant",
+      "llm.output_messages.4.message.tool_calls.0.tool_call.id": "toolu_mock_agent_math",
+      "llm.output_messages.4.message.tool_calls.0.tool_call.function.name": "Agent",
+      "llm.output_messages.4.message.tool_calls.0.tool_call.function.arguments": "{\"description\": \"Calculate temperature difference\", \"subagent_type\": \"math-specialist\", \"prompt\": \"Calculate 89 minus 72.\", \"run_in_background\": false}",
+      "llm.output_messages.4.message.role": "assistant",
+      "llm.output_messages.5.message.content.0": "New York is 89°F and Seattle is 72°F. The temperature difference is 17°F — New York is warmer.",
+      "llm.output_messages.5.message.role": "assistant",
+      "output.value": "New York is 89°F and Seattle is 72°F. The temperature difference is 17°F — New York is warmer.",
+      "output.mime_type": "text/plain",
+      "llm.model_name": "us.anthropic.claude-sonnet-4-6",
+      "llm.token_count.prompt": 132,
+      "llm.token_count.completion": 850,
+      "llm.token_count.total": 982,
+      "session.id": "mock-session-001",
+      "openinference.span.kind": "AGENT"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.claude_agent_sdk",
+      "version": "0.1.7"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  }
+]

@@ -4,6 +4,7 @@ OpenInferenceSessionMapper - Maps OpenInference traces to Session format.
 Handles traces from any producer in the OpenInference family:
 - openinference.instrumentation.langchain (LangChain / LangGraph)
 - openinference.instrumentation.smolagents (HuggingFace smolagents)
+- openinference.instrumentation.claude_agent_sdk (Claude Agent SDK)
 
 Each producer emits spans following the OpenInference semantic conventions but
 with producer-specific encoding differences (e.g. attribute paths for message
@@ -34,7 +35,12 @@ from ..types.trace import (
     Trace,
     UserMessage,
 )
-from .constants import SCOPE_OPENINFERENCE_SMOLAGENTS, SCOPES_OPENINFERENCE_FAMILY
+from .constants import (
+    SCOPE_OPENINFERENCE,
+    SCOPE_OPENINFERENCE_CLAUDE_AGENT_SDK,
+    SCOPE_OPENINFERENCE_SMOLAGENTS,
+    SCOPES_OPENINFERENCE_FAMILY,
+)
 from .session_mapper import SessionMapper
 from .utils import safe_json_parse
 
@@ -47,11 +53,12 @@ class OpenInferenceSessionMapper(SessionMapper):
     This mapper handles traces produced by any library in the OpenInference family:
     - openinference-instrumentation-langchain (LangChain / LangGraph)
     - openinference-instrumentation-smolagents (HuggingFace smolagents)
+    - openinference-instrumentation-claude-agent-sdk (Claude Agent SDK)
 
     Span type identification uses the openinference.span.kind attribute:
     - Inference spans: "LLM"
     - Tool execution spans: "TOOL"
-    - Agent invocation spans: "AGENT" (smolagents CodeAgent.run) or
+    - Agent invocation spans: "AGENT" (smolagents CodeAgent.run, Claude Agent SDK query) or
       "CHAIN" with name="LangGraph" (LangGraph root graph)
 
     Producer-specific encoding differences (e.g. message attribute paths,
@@ -255,10 +262,13 @@ class OpenInferenceSessionMapper(SessionMapper):
 
         # In multi-agent LangGraph systems, each nested sub-graph produces its own
         # LangGraph CHAIN span. Keep only the last one (root graph finishes last).
+        is_langchain = any(self._get_scope_name(s) == SCOPE_OPENINFERENCE for s in spans)
         agent_spans = [s for s in converted_spans if isinstance(s, AgentInvocationSpan)]
-        if len(agent_spans) > 1:
+        if len(agent_spans) > 1 and is_langchain:
             root = agent_spans[-1]
-            converted_spans = [s for s in converted_spans if not isinstance(s, AgentInvocationSpan) or s is root]
+            converted_spans = [
+                s for s in converted_spans if not isinstance(s, AgentInvocationSpan) or s is root
+            ]
 
         # If no tools found from attributes (common in ADOT), collect from converted tool spans
         trace_tools = self._trace_tools_map.get(trace_id, {})
@@ -340,19 +350,19 @@ class OpenInferenceSessionMapper(SessionMapper):
         if span_kind == "CHAIN" and span_name == "LangGraph":
             return True
 
-        # smolagents: AGENT span (e.g. CodeAgent.run) — only accept spans from
-        # the smolagents scope to avoid matching LangChain's route_to_agent spans
-        # which also have kind=AGENT with both input and output values.
+        # smolagents and Claude Agent SDK: AGENT spans with input.value + output.value.
+        # Only accept from known scopes to avoid matching LangChain's route_to_agent
+        # spans which also have kind=AGENT with both input and output values.
         if span_kind == "AGENT":
             scope_name = self._get_scope_name(span)
-            if scope_name == SCOPE_OPENINFERENCE_SMOLAGENTS:
+            if scope_name in (SCOPE_OPENINFERENCE_SMOLAGENTS, SCOPE_OPENINFERENCE_CLAUDE_AGENT_SDK):
                 input_val = attrs.get("input.value")
                 output_val = attrs.get("output.value")
                 if input_val and output_val:
                     return True
             # LangChain AGENT spans (e.g. route_to_agent) carry kind=AGENT with
             # input/output but are routing nodes, not agent invocations. Explicitly
-            # reject any non-smolagents AGENT span.
+            # reject any unrecognized AGENT span.
             return False
 
         # ADOT fallback: root LangGraph node has messages in/out but no remaining_steps.
@@ -431,6 +441,9 @@ class OpenInferenceSessionMapper(SessionMapper):
             if span_name and span_name not in SCOPES_OPENINFERENCE_FAMILY:
                 tool_name = span_name
 
+        # Extract tool_call_id from tool.id attribute
+        tool_call_id = attrs.get("tool.id")
+
         # Get input from attributes
         input_value = attrs.get("input.value")
         if input_value:
@@ -455,8 +468,19 @@ class OpenInferenceSessionMapper(SessionMapper):
                 except json.JSONDecodeError:
                     parsed = None
                 if isinstance(parsed, dict):
-                    tool_output_content = parsed.get("content", str(parsed))
-                    tool_call_id = parsed.get("tool_call_id")
+                    raw_content = parsed.get("content")
+                    if isinstance(raw_content, list):
+                        # Content blocks (e.g. [{"type": "text", "text": "..."}])
+                        texts = [
+                            block.get("text", "") for block in raw_content
+                            if isinstance(block, dict)
+                        ]
+                        tool_output_content = "\n".join(texts) if texts else str(raw_content)
+                    elif isinstance(raw_content, str):
+                        tool_output_content = raw_content
+                    else:
+                        tool_output_content = str(parsed)
+                    tool_call_id = parsed.get("tool_call_id") or tool_call_id
                     tool_status = parsed.get("status", "success")
                 else:
                     tool_output_content = output_value
@@ -516,9 +540,10 @@ class OpenInferenceSessionMapper(SessionMapper):
     def _convert_agent_invocation_span(self, span: dict, session_id: str) -> AgentInvocationSpan | None:
         """Convert OTEL span to AgentInvocationSpan.
 
-        Handles two formats:
+        Handles three formats:
         - LangGraph: structured messages in span_events body
-        - smolagents: input.value (user task) and output.value (final answer) as plain strings
+        - smolagents: input.value (user task as JSON with "task" key) and output.value (final answer)
+        - Claude Agent SDK: input.value (plain text prompt) and output.value (plain text response)
         """
         span_info = self._create_span_info(span, session_id)
         trace_id = span.get("trace_id", "")
@@ -527,14 +552,14 @@ class OpenInferenceSessionMapper(SessionMapper):
         user_prompt: str | None = None
         agent_response: str | None = None
 
-        # smolagents AGENT spans: input.value is a JSON object with "task" field,
-        # output.value is the final response string
         span_kind = attrs.get("openinference.span.kind", "")
         if span_kind == "AGENT":
             input_value = attrs.get("input.value", "")
             output_value = attrs.get("output.value", "")
+
+            # input.value is a string per OpenInference spec; some producers wrap
+            # the prompt in a JSON object (e.g. {"task": "..."}). Unwrap if present.
             if isinstance(input_value, str) and input_value:
-                # smolagents wraps user task in: {"task": "...", "stream": ..., ...}
                 try:
                     parsed_input = json.loads(input_value)
                     if isinstance(parsed_input, dict) and "task" in parsed_input:
