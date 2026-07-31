@@ -123,13 +123,6 @@ def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
     if not spans:
         return StrandsInMemorySessionMapper()
 
-    # Check if input is raw ReadableSpan objects (not dicts).
-    # If so, route directly to StrandsInMemorySessionMapper which handles them natively.
-    if not isinstance(spans[0], dict):
-        return StrandsInMemorySessionMapper()
-
-    # From here, spans are dicts (from readable_spans_to_dicts or CloudWatch parsing)
-
     # Detect scope and format from first relevant span
     for span in spans:
         scope_name = get_scope_name(span)
@@ -149,19 +142,26 @@ def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
             # body-scan below determine CloudWatch vs InMemory.
             break
 
-    # Fallback: check if spans use the CloudWatch body format
+    # Fallback: check if spans use the CloudWatch body format (no scope.name
+    # but have body.input/output structure). This handles raw CloudWatch
+    # log records that haven't been normalized by CloudWatchLogsParser.
     for span in spans:
         if get_body(span) is not None:
             return CloudWatchSessionMapper()
 
-    # Fallback for dict spans with gen_ai.* attributes but unrecognized scope
+    # Fallback for dict spans with gen_ai.* attributes but unrecognized scope.
+    # Only route to GenericGenAISessionMapper if the span has an unrecognized
+    # (or missing) scope — Strands-scoped spans already fell through above.
+    known_scopes = {SCOPE_STRANDS, SCOPE_LANGCHAIN_OTEL, SCOPE_ADK} | SCOPES_OPENINFERENCE_FAMILY
     for span in spans:
-        attrs = span.get("attributes", {})
-        if isinstance(attrs, dict) and "gen_ai.operation.name" in attrs:
-            return GenericGenAISessionMapper()
+        scope_name = get_scope_name(span)
+        if scope_name not in known_scopes:
+            attrs = span.get("attributes", {})
+            if isinstance(attrs, dict) and "gen_ai.operation.name" in attrs:
+                return GenericGenAISessionMapper()
 
-    # Final default for truly unrecognized spans
-    return GenericGenAISessionMapper()
+    # Default to StrandsInMemorySessionMapper
+    return StrandsInMemorySessionMapper()
 
 
 def get_body(span: dict) -> dict | None:

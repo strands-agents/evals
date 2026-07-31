@@ -212,11 +212,11 @@ class TestDetectOtelMapper:
         mapper = detect_otel_mapper(spans)
         assert isinstance(mapper, StrandsInMemorySessionMapper)
 
-    def test_defaults_to_generic_mapper_for_unknown_scope(self):
-        """Defaults to GenericGenAISessionMapper for unknown scope."""
+    def test_defaults_to_strands_mapper_for_unknown_scope(self):
+        """Defaults to StrandsInMemorySessionMapper for unknown scope without gen_ai attrs."""
         spans = [make_span_dict(scope_name="unknown.scope")]
         mapper = detect_otel_mapper(spans)
-        assert isinstance(mapper, GenericGenAISessionMapper)
+        assert isinstance(mapper, StrandsInMemorySessionMapper)
 
     def test_skips_spans_without_scope(self):
         """Skips spans without scope and continues detection."""
@@ -254,11 +254,11 @@ class TestDetectOtelMapper:
         mapper = detect_otel_mapper(spans)
         assert isinstance(mapper, GenericGenAISessionMapper)
 
-    def test_unrecognized_scope_without_gen_ai_attrs_still_returns_mapper(self):
-        """Dict spans with unrecognized scope and no gen_ai attrs still return a mapper (default)."""
+    def test_unrecognized_scope_without_gen_ai_attrs_defaults_to_strands(self):
+        """Dict spans with unrecognized scope and no gen_ai attrs default to StrandsInMemorySessionMapper."""
         spans = [make_span_dict(scope_name="totally.unknown", attributes={"custom.key": "val"})]
         mapper = detect_otel_mapper(spans)
-        assert isinstance(mapper, GenericGenAISessionMapper)
+        assert isinstance(mapper, StrandsInMemorySessionMapper)
 
 
 class TestReadableSpansToDicts:

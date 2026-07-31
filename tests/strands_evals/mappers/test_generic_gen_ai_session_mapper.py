@@ -409,4 +409,551 @@ class TestAutoGenFixtureIntegration:
         # The 3 raw spans are: create_agent, execute_tool, invoke_agent
         # Only execute_tool and invoke_agent should produce mapped spans
         span_types = {type(s).__name__ for s in all_spans}
-        assert "ToolExecutionSpan" in span_types or "AgentInvocationSpan" in span_types
+        assert span_types == {"ToolExecutionSpan", "AgentInvocationSpan"}
+
+
+# =============================================================================
+# Regression tests for jjbuck review feedback
+# =============================================================================
+
+
+class TestToolErrorHandling:
+    """Regression: error.type + span status ERROR must surface as tool_result.error."""
+
+    def setup_method(self):
+        self.mapper = GenericGenAISessionMapper()
+
+    def test_error_type_attribute_sets_tool_error(self):
+        """Tool span with error.type="TimeoutError" and status ERROR reports error."""
+        span = make_span(
+            operation_name="execute_tool",
+            attributes={
+                "gen_ai.tool.name": "slow_api",
+                "gen_ai.tool.call.id": "call-err-1",
+                "gen_ai.tool.input": '{"timeout": 30}',
+                "error.type": "TimeoutError",
+            },
+        )
+        # Override status to ERROR
+        span["status"] = {"code": "ERROR"}
+
+        session = self.mapper.map_to_session([span], "sess-1")
+        tool = session.traces[0].spans[0]
+        assert isinstance(tool, ToolExecutionSpan)
+        assert tool.tool_result.error == "TimeoutError"
+
+    def test_span_status_error_without_error_type(self):
+        """Tool span with status ERROR but no error.type still reports an error."""
+        span = make_span(
+            operation_name="execute_tool",
+            attributes={
+                "gen_ai.tool.name": "flaky_tool",
+                "gen_ai.tool.call.id": "call-err-2",
+            },
+        )
+        span["status"] = {"code": "ERROR"}
+
+        session = self.mapper.map_to_session([span], "sess-1")
+        tool = session.traces[0].spans[0]
+        assert isinstance(tool, ToolExecutionSpan)
+        assert tool.tool_result.error == "ERROR"
+
+    def test_legacy_tool_status_failure_still_works(self):
+        """Legacy gen_ai.tool.status != 'success' still reports as error."""
+        span = make_span(
+            operation_name="execute_tool",
+            attributes={
+                "gen_ai.tool.name": "legacy_tool",
+                "gen_ai.tool.call.id": "call-err-3",
+                "gen_ai.tool.status": "failed",
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        tool = session.traces[0].spans[0]
+        assert isinstance(tool, ToolExecutionSpan)
+        assert tool.tool_result.error == "failed"
+
+    def test_error_type_takes_precedence_over_tool_status(self):
+        """error.type takes precedence over gen_ai.tool.status."""
+        span = make_span(
+            operation_name="execute_tool",
+            attributes={
+                "gen_ai.tool.name": "dual_error",
+                "gen_ai.tool.call.id": "call-err-4",
+                "gen_ai.tool.status": "failed",
+                "error.type": "ConnectionError",
+            },
+        )
+        span["status"] = {"code": "ERROR"}
+
+        session = self.mapper.map_to_session([span], "sess-1")
+        tool = session.traces[0].spans[0]
+        assert isinstance(tool, ToolExecutionSpan)
+        assert tool.tool_result.error == "ConnectionError"
+
+    def test_successful_tool_no_error(self):
+        """Successful tool span (no error.type, status OK) has no error."""
+        span = make_span(
+            operation_name="execute_tool",
+            attributes={
+                "gen_ai.tool.name": "good_tool",
+                "gen_ai.tool.call.id": "call-ok",
+                "gen_ai.tool.status": "success",
+                "gen_ai.tool.output": "result",
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        tool = session.traces[0].spans[0]
+        assert isinstance(tool, ToolExecutionSpan)
+        assert tool.tool_result.error is None
+
+
+class TestOperationDetailsEvent:
+    """Regression: gen_ai.client.inference.operation.details event must produce messages."""
+
+    def setup_method(self):
+        self.mapper = GenericGenAISessionMapper()
+
+    def test_operation_details_event_structured_messages(self):
+        """Chat span with operation.details event produces user and assistant messages."""
+        span = make_span(
+            operation_name="chat",
+            span_events=[
+                {
+                    "event_name": "gen_ai.client.inference.operation.details",
+                    "timestamp": 0,
+                    "attributes": {
+                        "gen_ai.input.messages": json.dumps(
+                            [{"role": "user", "parts": [{"type": "text", "content": "Hello"}]}]
+                        ),
+                        "gen_ai.output.messages": json.dumps(
+                            [{"role": "assistant", "parts": [{"type": "text", "content": "Hi there!"}]}]
+                        ),
+                    },
+                }
+            ],
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        inference = session.traces[0].spans[0]
+        assert isinstance(inference, InferenceSpan)
+        assert len(inference.messages) == 2
+        assert inference.messages[0].role.value == "user"
+        assert inference.messages[1].role.value == "assistant"
+
+    def test_operation_details_event_list_format(self):
+        """operation.details with already-parsed list (not JSON string) still works."""
+        span = make_span(
+            operation_name="chat",
+            span_events=[
+                {
+                    "event_name": "gen_ai.client.inference.operation.details",
+                    "timestamp": 0,
+                    "attributes": {
+                        "gen_ai.input.messages": [
+                            {"role": "user", "parts": [{"type": "text", "content": "What's 2+2?"}]}
+                        ],
+                        "gen_ai.output.messages": [{"role": "assistant", "parts": [{"type": "text", "content": "4"}]}],
+                    },
+                }
+            ],
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        inference = session.traces[0].spans[0]
+        assert isinstance(inference, InferenceSpan)
+        assert len(inference.messages) == 2
+
+    def test_operation_details_event_with_tool_role(self):
+        """operation.details with role 'tool' messages normalizes to ToolResultContent."""
+        span = make_span(
+            operation_name="chat",
+            span_events=[
+                {
+                    "event_name": "gen_ai.client.inference.operation.details",
+                    "timestamp": 0,
+                    "attributes": {
+                        "gen_ai.input.messages": json.dumps(
+                            [
+                                {"role": "user", "parts": [{"type": "text", "content": "Check weather"}]},
+                                {"role": "tool", "id": "call-1", "response": "72F sunny"},
+                            ]
+                        ),
+                        "gen_ai.output.messages": json.dumps(
+                            [{"role": "assistant", "parts": [{"type": "text", "content": "It's 72F and sunny"}]}]
+                        ),
+                    },
+                }
+            ],
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        inference = session.traces[0].spans[0]
+        assert isinstance(inference, InferenceSpan)
+        # user + tool (as UserMessage) + assistant = 3 messages
+        assert len(inference.messages) == 3
+        # The tool message should be a UserMessage with ToolResultContent
+        tool_msg = inference.messages[1]
+        assert tool_msg.role.value == "user"
+        assert hasattr(tool_msg.content[0], "content")
+        assert tool_msg.content[0].content == "72F sunny"
+
+
+class TestSessionFilteringTraceLevel:
+    """Regression: untagged spans must not leak into sessions with tagged data."""
+
+    def setup_method(self):
+        self.mapper = GenericGenAISessionMapper()
+
+    def test_untagged_trace_excluded_when_sessions_present(self):
+        """Untagged trace excluded when session-tagged data exists."""
+        spans = [
+            # Trace 1: tagged with session A
+            make_span(
+                trace_id="t1",
+                span_id="s1",
+                operation_name="invoke_agent",
+                attributes={"session.id": "sess-A"},
+            ),
+            # Trace 2: completely untagged (unrelated)
+            make_span(
+                trace_id="t2",
+                span_id="s2",
+                operation_name="invoke_agent",
+            ),
+            # Trace 3: tagged with session B
+            make_span(
+                trace_id="t3",
+                span_id="s3",
+                operation_name="invoke_agent",
+                attributes={"session.id": "sess-B"},
+            ),
+        ]
+        session = self.mapper.map_to_session(spans, "sess-A")
+
+        # Only trace t1 should be included; t2 (untagged) should NOT leak in
+        assert len(session.traces) == 1
+        assert session.traces[0].trace_id == "t1"
+
+    def test_untagged_span_in_tagged_trace_included(self):
+        """Untagged span within a trace that has a tagged span IS included."""
+        spans = [
+            # Same trace: one span tagged, one not
+            make_span(
+                trace_id="t1",
+                span_id="s1",
+                operation_name="invoke_agent",
+                attributes={"session.id": "sess-A"},
+            ),
+            make_span(
+                trace_id="t1",
+                span_id="s2",
+                parent_span_id="s1",
+                operation_name="execute_tool",
+                attributes={"gen_ai.tool.name": "calc", "gen_ai.tool.output": "4"},
+            ),
+        ]
+        session = self.mapper.map_to_session(spans, "sess-A")
+
+        # Both spans in the same trace should be included
+        assert len(session.traces) == 1
+        assert len(session.traces[0].spans) == 2
+
+    def test_mixed_tagged_untagged_traces(self):
+        """Only traces with at least one matching span are included."""
+        spans = [
+            # t1: session A
+            make_span(trace_id="t1", span_id="s1", operation_name="invoke_agent", attributes={"session.id": "sess-A"}),
+            make_span(
+                trace_id="t1",
+                span_id="s2",
+                parent_span_id="s1",
+                operation_name="execute_tool",
+                attributes={"gen_ai.tool.name": "x", "gen_ai.tool.output": "y"},
+            ),
+            # t2: untagged
+            make_span(trace_id="t2", span_id="s3", operation_name="invoke_agent"),
+            # t3: session B
+            make_span(
+                trace_id="t3",
+                span_id="s4",
+                operation_name="invoke_agent",
+                attributes={"gen_ai.conversation.id": "sess-B"},
+            ),
+        ]
+        session_a = self.mapper.map_to_session(spans, "sess-A")
+        session_b = self.mapper.map_to_session(spans, "sess-B")
+
+        assert len(session_a.traces) == 1
+        assert session_a.traces[0].trace_id == "t1"
+        assert len(session_b.traces) == 1
+        assert session_b.traces[0].trace_id == "t3"
+
+
+class TestAgentResponseFromOutputMessages:
+    """Regression: invoke_agent must extract agent_response from gen_ai.output.messages."""
+
+    def setup_method(self):
+        self.mapper = GenericGenAISessionMapper()
+
+    def test_agent_response_from_output_messages(self):
+        """Agent response extracted from gen_ai.output.messages attribute."""
+        span = make_span(
+            operation_name="invoke_agent",
+            attributes={
+                "gen_ai.input.messages": json.dumps(
+                    [{"role": "user", "parts": [{"type": "text", "content": "What's the weather?"}]}]
+                ),
+                "gen_ai.output.messages": json.dumps(
+                    [{"role": "assistant", "parts": [{"type": "text", "content": "It's sunny and 72F"}]}]
+                ),
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        agent = session.traces[0].spans[0]
+        assert isinstance(agent, AgentInvocationSpan)
+        assert agent.user_prompt == "What's the weather?"
+        assert agent.agent_response == "It's sunny and 72F"
+
+    def test_agent_response_flat_content_string(self):
+        """Agent response from gen_ai.output.messages with flat content (no parts)."""
+        span = make_span(
+            operation_name="invoke_agent",
+            attributes={
+                "gen_ai.output.messages": json.dumps([{"role": "assistant", "content": "The answer is 42"}]),
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        agent = session.traces[0].spans[0]
+        assert isinstance(agent, AgentInvocationSpan)
+        assert agent.agent_response == "The answer is 42"
+
+    def test_final_result_used_when_no_output_messages(self):
+        """Falls back to final_result when gen_ai.output.messages absent."""
+        span = make_span(
+            operation_name="invoke_agent",
+            attributes={
+                "final_result": "Legacy result",
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        agent = session.traces[0].spans[0]
+        assert isinstance(agent, AgentInvocationSpan)
+        assert agent.agent_response == "Legacy result"
+
+
+class TestToolRoleMessages:
+    """Regression: role 'tool' in gen_ai.input.messages must be parsed as ToolResultContent."""
+
+    def setup_method(self):
+        self.mapper = GenericGenAISessionMapper()
+
+    def test_tool_role_with_response_field(self):
+        """OTel convention: role 'tool' with 'response' field parsed correctly."""
+        span = make_span(
+            operation_name="chat",
+            attributes={
+                "gen_ai.input.messages": json.dumps(
+                    [
+                        {"role": "user", "parts": [{"type": "text", "content": "Search for cats"}]},
+                        {"role": "tool", "id": "call-t1", "response": "Found 10 cats"},
+                    ]
+                ),
+                "gen_ai.output.messages": json.dumps(
+                    [{"role": "assistant", "parts": [{"type": "text", "content": "I found 10 cats for you"}]}]
+                ),
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        inference = session.traces[0].spans[0]
+        assert isinstance(inference, InferenceSpan)
+        assert len(inference.messages) == 3  # user + tool + assistant
+
+        # Check tool message
+        tool_msg = inference.messages[1]
+        assert tool_msg.role.value == "user"
+        assert tool_msg.content[0].content == "Found 10 cats"
+        assert tool_msg.content[0].tool_call_id == "call-t1"
+
+    def test_tool_role_with_dict_response(self):
+        """Tool role with dict response is JSON-serialized."""
+        span = make_span(
+            operation_name="chat",
+            attributes={
+                "gen_ai.input.messages": json.dumps(
+                    [
+                        {"role": "tool", "id": "call-t2", "response": {"status": "ok", "count": 5}},
+                    ]
+                ),
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        inference = session.traces[0].spans[0]
+        assert isinstance(inference, InferenceSpan)
+        tool_msg = inference.messages[0]
+        assert '"count": 5' in tool_msg.content[0].content
+        assert '"status": "ok"' in tool_msg.content[0].content
+
+    def test_pydantic_ai_tool_call_response_still_works(self):
+        """PydanticAI format: tool_call_response under user role still parsed correctly."""
+        span = make_span(
+            operation_name="chat",
+            attributes={
+                "gen_ai.input.messages": json.dumps(
+                    [
+                        {
+                            "role": "user",
+                            "parts": [{"type": "tool_call_response", "id": "call-p1", "result": "42"}],
+                        }
+                    ]
+                ),
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        inference = session.traces[0].spans[0]
+        assert isinstance(inference, InferenceSpan)
+        tool_msg = inference.messages[0]
+        assert tool_msg.content[0].content == "42"
+        assert tool_msg.content[0].tool_call_id == "call-p1"
+
+
+# =============================================================================
+# OTel GenAI Semantic Convention fixture tests (current spec)
+# Covers: gen_ai.client.inference.operation.details event, error.type on tools,
+# gen_ai.output.messages on invoke_agent, role "tool" with tool_call_response,
+# gen_ai.tool.call.arguments / gen_ai.tool.call.result, trace-level session filtering.
+# =============================================================================
+
+_OTEL_CONVENTION_SPANS_FILE = _FIXTURES_DIR / "otel_genai_convention_spans.json"
+
+
+@pytest.fixture(scope="module")
+def otel_convention_spans():
+    """Load hand-crafted spans following current OTel GenAI semantic conventions."""
+    with open(_OTEL_CONVENTION_SPANS_FILE) as f:
+        return json.load(f)
+
+
+@pytest.fixture(scope="module")
+def otel_convention_session(otel_convention_spans):
+    """Map OTel convention spans to a Session."""
+    mapper = GenericGenAISessionMapper()
+    return mapper.map_to_session(otel_convention_spans, session_id="conv_otel_test_001")
+
+
+class TestOtelConventionRouting:
+    """Verify detect_otel_mapper routes unrecognized scope to GenericGenAISessionMapper."""
+
+    def test_routes_to_generic_mapper(self, otel_convention_spans):
+        """Custom scope 'my-weather-app' routes to GenericGenAISessionMapper."""
+        mapper = detect_otel_mapper(otel_convention_spans)
+        assert isinstance(mapper, GenericGenAISessionMapper)
+
+    def test_scope_is_custom(self, otel_convention_spans):
+        """All spans have unrecognized scope.name."""
+        scopes = {s["scope"]["name"] for s in otel_convention_spans}
+        assert scopes == {"my-weather-app"}
+
+
+class TestOtelConventionIntegration:
+    """Full integration tests using current OTel GenAI semantic convention format."""
+
+    def test_session_has_single_trace(self, otel_convention_session):
+        """All spans share one trace_id → single trace."""
+        assert len(otel_convention_session.traces) == 1
+
+    def test_produces_all_span_types(self, otel_convention_session):
+        """Trace contains InferenceSpan, ToolExecutionSpan, and AgentInvocationSpan."""
+        all_spans = [s for t in otel_convention_session.traces for s in t.spans]
+        span_types = {type(s) for s in all_spans}
+        assert InferenceSpan in span_types
+        assert ToolExecutionSpan in span_types
+        assert AgentInvocationSpan in span_types
+
+    def test_agent_span_extracts_from_output_messages(self, otel_convention_session):
+        """invoke_agent extracts user_prompt and agent_response from gen_ai.input/output.messages."""
+        all_spans = [s for t in otel_convention_session.traces for s in t.spans]
+        agent_spans = [s for s in all_spans if isinstance(s, AgentInvocationSpan)]
+        assert len(agent_spans) == 1
+
+        agent = agent_spans[0]
+        assert "Paris" in agent.user_prompt and "London" in agent.user_prompt
+        assert "57" in agent.agent_response and "timeout" in agent.agent_response.lower()
+
+    def test_agent_span_has_tool_definitions(self, otel_convention_session):
+        """invoke_agent extracts available_tools from gen_ai.tool.definitions."""
+        all_spans = [s for t in otel_convention_session.traces for s in t.spans]
+        agent_spans = [s for s in all_spans if isinstance(s, AgentInvocationSpan)]
+        agent = agent_spans[0]
+        assert len(agent.available_tools) == 1
+        assert agent.available_tools[0].name == "get_weather"
+
+    def test_successful_tool_uses_call_arguments_and_result(self, otel_convention_session):
+        """Successful tool uses gen_ai.tool.call.arguments and gen_ai.tool.call.result."""
+        all_spans = [s for t in otel_convention_session.traces for s in t.spans]
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+
+        paris_tool = next(s for s in tool_spans if s.tool_call.tool_call_id == "call_paris_001")
+        assert paris_tool.tool_call.name == "get_weather"
+        assert paris_tool.tool_call.arguments == {"location": "Paris"}
+        assert "rainy" in paris_tool.tool_result.content and "57" in paris_tool.tool_result.content
+        assert paris_tool.tool_result.error is None
+
+    def test_failed_tool_reports_error_type(self, otel_convention_session):
+        """Failed tool with error.type and status ERROR surfaces tool_result.error."""
+        all_spans = [s for t in otel_convention_session.traces for s in t.spans]
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+
+        london_tool = next(s for s in tool_spans if s.tool_call.tool_call_id == "call_london_001")
+        assert london_tool.tool_call.name == "get_weather"
+        assert london_tool.tool_result.error == "TimeoutError"
+
+    def test_chat_span_with_operation_details_event(self, otel_convention_session):
+        """Chat span with gen_ai.client.inference.operation.details produces messages."""
+        all_spans = [s for t in otel_convention_session.traces for s in t.spans]
+        inference_spans = [s for s in all_spans if isinstance(s, InferenceSpan)]
+        assert len(inference_spans) == 2
+
+    def test_operation_details_parses_tool_calls(self, otel_convention_session):
+        """operation.details event extracts assistant tool_call parts."""
+        all_spans = [s for t in otel_convention_session.traces for s in t.spans]
+        inference_spans = [s for s in all_spans if isinstance(s, InferenceSpan)]
+
+        # First chat span has the initial tool_call response
+        first_chat = inference_spans[0]
+        # Should have user message + assistant message with tool calls
+        assert len(first_chat.messages) >= 2
+
+    def test_operation_details_parses_tool_role(self, otel_convention_session):
+        """operation.details event with role 'tool' produces ToolResultContent."""
+        all_spans = [s for t in otel_convention_session.traces for s in t.spans]
+        inference_spans = [s for s in all_spans if isinstance(s, InferenceSpan)]
+
+        # Second chat span has role "tool" messages in input
+        second_chat = inference_spans[1]
+        # Should contain: user + assistant + 2x tool + assistant output = multiple messages
+        assert len(second_chat.messages) >= 4
+
+        # Find the tool role messages (mapped as UserMessage with ToolResultContent)
+        tool_messages = []
+        for msg in second_chat.messages:
+            if msg.role.value == "user":
+                for c in msg.content:
+                    if hasattr(c, "tool_call_id") and c.tool_call_id:
+                        tool_messages.append(c)
+        assert len(tool_messages) >= 1
+        # The Paris tool result should be present
+        paris_result = next((m for m in tool_messages if m.tool_call_id == "call_paris_001"), None)
+        assert paris_result is not None
+        assert "rainy" in paris_result.content and "57" in paris_result.content
+
+    def test_session_id_filtering(self, otel_convention_spans):
+        """Correct session_id includes all spans; wrong one excludes them."""
+        mapper = GenericGenAISessionMapper()
+
+        # Correct session_id
+        session = mapper.map_to_session(otel_convention_spans, session_id="conv_otel_test_001")
+        assert len(session.traces) == 1
+        all_spans = [s for t in session.traces for s in t.spans]
+        assert len(all_spans) == 5  # 1 agent + 2 chat + 2 tool
+
+        # Wrong session_id → no traces
+        session_wrong = mapper.map_to_session(otel_convention_spans, session_id="wrong-id")
+        assert len(session_wrong.traces) == 0

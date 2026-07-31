@@ -70,18 +70,31 @@ class GenericGenAISessionMapper(SessionMapper):
             for span in spans
         )
 
-        for span in spans:
-            attrs = span.get("attributes", {})
-
-            if not any_span_has_session_id:
-                should_include = True
-            else:
-                span_session_id = attrs.get("gen_ai.conversation.id") or attrs.get("session.id")
-                should_include = str(span_session_id) == session_id if span_session_id else True
-
-            if should_include:
+        if not any_span_has_session_id:
+            # No spans have session IDs — include all spans
+            for span in spans:
                 trace_id = span.get("trace_id", "unknown")
                 traces_by_id[trace_id].append(span)
+        else:
+            # Some spans have session IDs — use trace-level filtering.
+            # First, identify which trace_ids contain at least one span matching session_id.
+            all_traces: dict[str, list[dict]] = defaultdict(list)
+            traces_with_session: set[str] = set()
+
+            for span in spans:
+                trace_id = span.get("trace_id", "unknown")
+                all_traces[trace_id].append(span)
+                attrs = span.get("attributes", {})
+                span_session_id = attrs.get("gen_ai.conversation.id") or attrs.get("session.id")
+                if span_session_id and str(span_session_id) == session_id:
+                    traces_with_session.add(trace_id)
+
+            # Include all spans from traces that contain at least one matching span.
+            # Exclude entire traces where no span matches the session_id (even if some
+            # spans in that trace have no session_id tag).
+            for trace_id, trace_spans in all_traces.items():
+                if trace_id in traces_with_session:
+                    traces_by_id[trace_id] = trace_spans
 
         traces: list[Trace] = []
         for trace_id, trace_spans in traces_by_id.items():
@@ -124,7 +137,9 @@ class GenericGenAISessionMapper(SessionMapper):
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as e:
                 logger.warning(
                     "trace_id=%s span_id=%s | Failed to convert span: %s",
-                    span.get("trace_id", "?"), span.get("span_id", "?"), e,
+                    span.get("trace_id", "?"),
+                    span.get("span_id", "?"),
+                    e,
                 )
 
         return Trace(spans=converted_spans, trace_id=trace_id, session_id=session_id)
@@ -194,10 +209,19 @@ class GenericGenAISessionMapper(SessionMapper):
                     assistant_content = self._process_assistant_content(message_list)
                     if assistant_content:
                         messages.append(AssistantMessage(content=assistant_content))
+
+                elif event_name == "gen_ai.client.inference.operation.details":
+                    # Current OTel GenAI convention: single event with input/output messages
+                    # https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-events.md
+                    details_messages = self._parse_operation_details_event(event_attrs)
+                    messages.extend(details_messages)
+
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as e:
                 logger.warning(
                     "span_id=%s event=%s | Failed to process event: %s",
-                    span.get("span_id", "?"), event.get("event_name", "?"), e,
+                    span.get("span_id", "?"),
+                    event.get("event_name", "?"),
+                    e,
                 )
 
         # Fallback: gen_ai.input.messages / gen_ai.output.messages as span attributes
@@ -214,8 +238,25 @@ class GenericGenAISessionMapper(SessionMapper):
 
         tool_name = str(attrs.get("gen_ai.tool.name", ""))
         tool_call_id = str(attrs.get("gen_ai.tool.call.id", ""))
+
+        # Prefer error.type (current OTel GenAI convention for failed operations),
+        # fall back to gen_ai.tool.status / tool.status for legacy compatibility.
+        # https://github.com/open-telemetry/semantic-conventions-genai/blob/main/model/gen-ai/spans.yaml#L522-L562
+        error_type = attrs.get("error.type", "")
+        span_status = span.get("status", {}).get("code", "")
         tool_status = attrs.get("gen_ai.tool.status", attrs.get("tool.status", ""))
-        tool_error = None if tool_status == "success" else (str(tool_status) if tool_status else None)
+
+        if error_type:
+            # OTel convention: error.type indicates the error class (e.g., "TimeoutError")
+            tool_error = str(error_type)
+        elif span_status == "ERROR":
+            # Span status set to ERROR without error.type — still a failure
+            tool_error = "ERROR"
+        elif tool_status and tool_status != "success":
+            # Legacy fallback: gen_ai.tool.status or tool.status
+            tool_error = str(tool_status)
+        else:
+            tool_error = None
 
         tool_arguments: dict = {}
         tool_result_content: str = ""
@@ -234,7 +275,8 @@ class GenericGenAISessionMapper(SessionMapper):
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as e:
                 logger.warning(
                     "span_id=%s | Failed to process tool event: %s",
-                    span.get("span_id", "?"), e,
+                    span.get("span_id", "?"),
+                    e,
                 )
 
         # Fallback: gen_ai.tool.input/output attributes (manual instrumentation)
@@ -296,7 +338,8 @@ class GenericGenAISessionMapper(SessionMapper):
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as e:
                 logger.warning(
                     "span_id=%s | Failed to process agent event: %s",
-                    span.get("span_id", "?"), e,
+                    span.get("span_id", "?"),
+                    e,
                 )
 
         # Fallback: extract from attributes (PydanticAI / native gen_ai format)
@@ -320,6 +363,29 @@ class GenericGenAISessionMapper(SessionMapper):
                     pass
 
         if not agent_response:
+            # Try gen_ai.output.messages (current OTel GenAI convention for invoke_agent)
+            # https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-agent-spans.md
+            output_msgs_raw = attrs.get("gen_ai.output.messages", "")
+            if output_msgs_raw:
+                try:
+                    output_msgs = json.loads(output_msgs_raw) if isinstance(output_msgs_raw, str) else output_msgs_raw
+                    if isinstance(output_msgs, list):
+                        for msg in output_msgs:
+                            if msg.get("role") == "assistant":
+                                parts = msg.get("parts", [])
+                                for part in parts:
+                                    if part.get("type") == "text" and part.get("content"):
+                                        agent_response = part["content"]
+                                        break
+                                # Also handle flat content string
+                                if not agent_response and msg.get("content"):
+                                    agent_response = str(msg["content"])
+                            if agent_response:
+                                break
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        if not agent_response:
             agent_response = str(attrs.get("final_result", ""))
 
         return AgentInvocationSpan(
@@ -338,8 +404,9 @@ class GenericGenAISessionMapper(SessionMapper):
         """Parse gen_ai.input.messages / gen_ai.output.messages from span attributes.
 
         PydanticAI and other native gen_ai semconv frameworks store messages as
-        JSON arrays in span attributes rather than span_events. Format:
-            [{"role": "user", "parts": [{"type": "text", "content": "..."}]}, ...]
+        JSON arrays in span attributes rather than span_events. Supports:
+        - PydanticAI format: [{"role": "user", "parts": [{"type": "text", "content": "..."}]}]
+        - OTel GenAI convention: role "tool" with response field for tool results
         """
         messages: list[UserMessage | AssistantMessage] = []
 
@@ -367,6 +434,54 @@ class GenericGenAISessionMapper(SessionMapper):
                                     )
                             if user_content:
                                 messages.append(UserMessage(content=user_content))
+                        elif role == "tool":
+                            # OTel GenAI convention: role "tool" carries tool results.
+                            # Two formats:
+                            #   1. parts: [{"type": "tool_call_response", "id": "...", "response": "..."}]
+                            #   2. flat: {"role": "tool", "id": "...", "response": "..."}
+                            # https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/registry/attributes/gen-ai.md
+                            if parts:
+                                for part in parts:
+                                    if isinstance(part, dict) and part.get("type") == "tool_call_response":
+                                        tc_id = part.get("id") or part.get("tool_call_id")
+                                        resp = part.get("response", "")
+                                        if isinstance(resp, dict):
+                                            resp = json.dumps(resp)
+                                        messages.append(
+                                            UserMessage(
+                                                content=[
+                                                    ToolResultContent(
+                                                        content=str(resp) if resp else "",
+                                                        error=None,
+                                                        tool_call_id=tc_id,
+                                                    )
+                                                ]
+                                            )
+                                        )
+                            else:
+                                tool_call_id = msg.get("id") or msg.get("tool_call_id")
+                                response = msg.get("response", msg.get("content", ""))
+                                if isinstance(response, dict):
+                                    response = json.dumps(response)
+                                elif isinstance(response, list):
+                                    parts_text = []
+                                    for block in response:
+                                        if isinstance(block, dict) and block.get("text"):
+                                            parts_text.append(block["text"])
+                                        elif isinstance(block, str):
+                                            parts_text.append(block)
+                                    response = "\n".join(parts_text) if parts_text else str(response)
+                                messages.append(
+                                    UserMessage(
+                                        content=[
+                                            ToolResultContent(
+                                                content=str(response) if response else "",
+                                                error=None,
+                                                tool_call_id=tool_call_id,
+                                            )
+                                        ]
+                                    )
+                                )
                         elif role == "assistant":
                             assistant_content: list[TextContent | ToolCallContent] = []
                             for part in parts:
@@ -411,6 +526,118 @@ class GenericGenAISessionMapper(SessionMapper):
                                 messages.append(AssistantMessage(content=assistant_content))
             except (json.JSONDecodeError, TypeError, KeyError):
                 pass
+
+        return messages
+
+    def _parse_operation_details_event(self, event_attrs: dict) -> list[UserMessage | AssistantMessage]:
+        """Parse gen_ai.client.inference.operation.details event (current OTel GenAI convention).
+
+        This event carries gen_ai.input.messages and gen_ai.output.messages as structured
+        lists or JSON-encoded strings within a single span event.
+        https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-events.md
+        """
+        messages: list[UserMessage | AssistantMessage] = []
+
+        for key in ("gen_ai.input.messages", "gen_ai.output.messages"):
+            raw = event_attrs.get(key, "")
+            if not raw:
+                continue
+            try:
+                msg_list = json.loads(raw) if isinstance(raw, str) else raw
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            if not isinstance(msg_list, list):
+                continue
+
+            for msg in msg_list:
+                role = msg.get("role", "")
+                parts = msg.get("parts", [])
+
+                if role == "user":
+                    user_content: list[TextContent | ToolResultContent] = []
+                    for part in parts:
+                        if isinstance(part, dict):
+                            if part.get("type") == "text" and part.get("content"):
+                                user_content.append(TextContent(text=part["content"]))
+                            elif part.get("type") == "tool_call_response":
+                                user_content.append(
+                                    ToolResultContent(
+                                        content=str(part.get("result", "")),
+                                        error=None,
+                                        tool_call_id=part.get("id"),
+                                    )
+                                )
+                    if user_content:
+                        messages.append(UserMessage(content=user_content))
+
+                elif role == "tool":
+                    # OTel convention: role "tool" carries tool results.
+                    # Two formats:
+                    #   1. parts: [{"type": "tool_call_response", "id": "...", "response": "..."}]
+                    #   2. flat: {"role": "tool", "id": "...", "response": "..."}
+                    if parts:
+                        for part in parts:
+                            if isinstance(part, dict) and part.get("type") == "tool_call_response":
+                                tc_id = part.get("id") or part.get("tool_call_id")
+                                resp = part.get("response", "")
+                                if isinstance(resp, dict):
+                                    resp = json.dumps(resp)
+                                messages.append(
+                                    UserMessage(
+                                        content=[
+                                            ToolResultContent(
+                                                content=str(resp) if resp else "",
+                                                error=None,
+                                                tool_call_id=tc_id,
+                                            )
+                                        ]
+                                    )
+                                )
+                    else:
+                        tool_call_id = msg.get("id") or msg.get("tool_call_id")
+                        response = msg.get("response", msg.get("content", ""))
+                        if isinstance(response, dict):
+                            response = json.dumps(response)
+                        elif isinstance(response, list):
+                            parts_text = []
+                            for block in response:
+                                if isinstance(block, dict) and block.get("text"):
+                                    parts_text.append(block["text"])
+                                elif isinstance(block, str):
+                                    parts_text.append(block)
+                            response = "\n".join(parts_text) if parts_text else str(response)
+                        messages.append(
+                            UserMessage(
+                                content=[
+                                    ToolResultContent(
+                                        content=str(response) if response else "",
+                                        error=None,
+                                        tool_call_id=tool_call_id,
+                                    )
+                                ]
+                            )
+                        )
+
+                elif role == "assistant":
+                    assistant_content: list[TextContent | ToolCallContent] = []
+                    for part in parts:
+                        if isinstance(part, dict):
+                            if part.get("type") == "text" and part.get("content"):
+                                assistant_content.append(TextContent(text=part["content"]))
+                            elif part.get("type") == "tool_call":
+                                assistant_content.append(
+                                    ToolCallContent(
+                                        name=part.get("name", ""),
+                                        arguments=part.get("arguments", {}),
+                                        tool_call_id=part.get("id"),
+                                    )
+                                )
+                    # Also handle flat content string (no parts)
+                    if not assistant_content and msg.get("content"):
+                        assistant_content.append(TextContent(text=str(msg["content"])))
+                    if assistant_content:
+                        messages.append(AssistantMessage(content=assistant_content))
 
         return messages
 
