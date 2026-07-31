@@ -112,11 +112,19 @@ class TraceExtractor:
             if agent_span and agent_span.user_prompt:
                 session_history.append(UserMessage(content=[TextContent(text=agent_span.user_prompt)]))
 
+            tool_executions = [
+                ToolExecution(tool_call=span.tool_call, tool_result=span.tool_result) for span in tool_spans
+            ]
+            tool_end_times = [_to_aware_utc(span.span_info.end_time) for span in tool_spans]
+
             for index, tool_span in enumerate(tool_spans):
+                target_start = _to_aware_utc(tool_span.span_info.start_time)
                 prior_executions = [
-                    ToolExecution(tool_call=span.tool_call, tool_result=span.tool_result)
-                    for span in tool_spans[:index]
-                    if _to_aware_utc(span.span_info.end_time) <= _to_aware_utc(tool_span.span_info.start_time)
+                    tool_executions[position]
+                    for position in range(len(tool_spans))
+                    if position != index
+                    and tool_end_times[position] <= target_start
+                    and (tool_end_times[position] < target_start or position < index)
                 ]
 
                 evaluator_inputs.append(
@@ -129,9 +137,6 @@ class TraceExtractor:
                 )
 
             if tool_spans:
-                tool_executions = [
-                    ToolExecution(tool_call=span.tool_call, tool_result=span.tool_result) for span in tool_spans
-                ]
                 session_history.append(tool_executions)
 
             if agent_span and agent_span.agent_response:

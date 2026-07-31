@@ -160,13 +160,7 @@ def test_extract_empty_session_tool_level():
 
 
 def test_extract_tool_level_incremental_session_history():
-    """Each tool span sees exactly its causally-completed predecessors in session_history.
-
-    Uses distinct timestamps so the causality filter is exercised:
-    - tool_1 (t=0→1) finishes before tool_2 starts → prior for tool_2 and tool_3
-    - tool_2 (t=1→4) is long-running and still in-flight when tool_3 starts at t=2 → NOT a prior for tool_3
-    - tool_3 (t=2→3) starts while tool_2 is still running
-    """
+    """Each tool span sees exactly its causally-completed predecessors in session_history."""
     from datetime import timedelta, timezone
 
     base = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -192,14 +186,15 @@ def test_extract_tool_level_incremental_session_history():
         tool_call=ToolCall(name="square_root", arguments={"n": 1764}),
         tool_result=ToolResult(content="42.0"),
     )
-    # Long-running: finishes at t=4, AFTER tool_3 starts at t=2
+    # Finishes at t=2.5: AFTER tool_3 starts (t=2) but BEFORE tool_3 ends (t=3)
+    # This discriminates start_time vs end_time comparison targets
     tool_span_2 = ToolExecutionSpan(
         span_info=SpanInfo(
             session_id="test",
             span_id="t2",
             parent_span_id="a0",
             start_time=base + timedelta(seconds=1),
-            end_time=base + timedelta(seconds=4),
+            end_time=base + timedelta(milliseconds=2500),
         ),
         tool_call=ToolCall(name="multiply_numbers", arguments={"a": 42, "b": 3}),
         tool_result=ToolResult(content="126"),
@@ -238,13 +233,13 @@ def test_extract_tool_level_incremental_session_history():
     assert result[1].session_history[1][0].tool_call.name == "square_root"
     assert result[1].session_history[1][0].tool_result.content == "42.0"
 
-    # Third tool: only square_root is a valid prior (multiply_numbers ends at t=4 > t=2 start)
+    # Third tool: only square_root is a valid prior
     assert len(result[2].session_history) == 2, (
         f"expected 2 entries (user + prior tools), got {len(result[2].session_history)}"
     )
     prior_names = [entry.tool_call.name for entry in result[2].session_history[1]]
     assert prior_names == ["square_root"], (
-        f"expected only [square_root] (multiply_numbers still running), got {prior_names}"
+        f"expected only [square_root] (multiply_numbers still running at tool_3.start_time), got {prior_names}"
     )
 
 
@@ -253,17 +248,21 @@ def test_extract_tool_level_mixed_tz_timestamps():
     from datetime import timedelta, timezone
 
     base_naive = datetime(2024, 1, 1, 12, 0, 0)  # no tzinfo
-    base_aware = datetime(2024, 1, 1, 12, 0, 1, tzinfo=timezone.utc)  # aware
+    base_aware = datetime(2024, 1, 1, 12, 0, 2, tzinfo=timezone.utc)  # aware, starts at +2s
 
     agent_span = AgentInvocationSpan(
         span_info=SpanInfo(
-            session_id="test", span_id="a0", start_time=base_naive, end_time=base_aware + timedelta(seconds=5)
+            session_id="test", span_id="a0", start_time=base_naive, end_time=base_aware + timedelta(seconds=10)
         ),
         user_prompt="Mixed tz test",
         agent_response="Done",
-        available_tools=[ToolConfig(name="tool_x"), ToolConfig(name="tool_y")],
+        available_tools=[
+            ToolConfig(name="tool_x"),
+            ToolConfig(name="tool_long"),
+            ToolConfig(name="tool_y"),
+        ],
     )
-    # tool_x: naive timestamps
+    # tool_x: ends at 12:00:01 (before tool_y starts)
     tool_x = ToolExecutionSpan(
         span_info=SpanInfo(
             session_id="test",
@@ -275,7 +274,19 @@ def test_extract_tool_level_mixed_tz_timestamps():
         tool_call=ToolCall(name="tool_x", arguments={}),
         tool_result=ToolResult(content="x_result"),
     )
-    # tool_y: aware timestamps — starts after tool_x ends
+    # tool_long: ends at 12:00:05 (after tool_y starts at 12:00:02)
+    tool_long = ToolExecutionSpan(
+        span_info=SpanInfo(
+            session_id="test",
+            span_id="tl",
+            parent_span_id="a0",
+            start_time=base_naive,
+            end_time=base_naive + timedelta(seconds=5),
+        ),
+        tool_call=ToolCall(name="tool_long", arguments={}),
+        tool_result=ToolResult(content="long_result"),
+    )
+    # tool_y: starts at 12:00:02 UTC
     tool_y = ToolExecutionSpan(
         span_info=SpanInfo(
             session_id="test",
@@ -288,16 +299,18 @@ def test_extract_tool_level_mixed_tz_timestamps():
         tool_result=ToolResult(content="y_result"),
     )
 
-    trace = Trace(spans=[agent_span, tool_x, tool_y], trace_id="trace1", session_id="test")
+    trace = Trace(spans=[agent_span, tool_x, tool_long, tool_y], trace_id="trace1", session_id="test")
     session = Session(traces=[trace], session_id="test")
 
     extractor = TraceExtractor(EvaluationLevel.TOOL_LEVEL)
-    # Should not raise TypeError
+    # Should not raise TypeError from mixed tz comparison
     result = extractor.extract(session)
 
-    assert len(result) == 2
-    # tool_y should see tool_x as a prior (naive 12:00:01 <= aware 12:00:01 UTC)
-    assert result[1].tool_execution_details.tool_call.name == "tool_y"
-    assert len(result[1].session_history) == 2
-    prior_names = [e.tool_call.name for e in result[1].session_history[1]]
-    assert prior_names == ["tool_x"]
+    assert len(result) == 3
+    # tool_y should see ONLY tool_x as a prior
+    assert result[2].tool_execution_details.tool_call.name == "tool_y"
+    assert len(result[2].session_history) == 2
+    prior_names = [e.tool_call.name for e in result[2].session_history[1]]
+    assert prior_names == ["tool_x"], (
+        f"expected only ['tool_x'] as prior for tool_y (tool_long still running), got {prior_names}"
+    )
