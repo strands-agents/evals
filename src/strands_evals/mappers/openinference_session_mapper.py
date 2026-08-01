@@ -266,9 +266,7 @@ class OpenInferenceSessionMapper(SessionMapper):
         agent_spans = [s for s in converted_spans if isinstance(s, AgentInvocationSpan)]
         if len(agent_spans) > 1 and is_langchain:
             root = agent_spans[-1]
-            converted_spans = [
-                s for s in converted_spans if not isinstance(s, AgentInvocationSpan) or s is root
-            ]
+            converted_spans = [s for s in converted_spans if not isinstance(s, AgentInvocationSpan) or s is root]
 
         # If no tools found from attributes (common in ADOT), collect from converted tool spans
         trace_tools = self._trace_tools_map.get(trace_id, {})
@@ -470,16 +468,14 @@ class OpenInferenceSessionMapper(SessionMapper):
                 if isinstance(parsed, dict):
                     raw_content = parsed.get("content")
                     if isinstance(raw_content, list):
-                        # Content blocks (e.g. [{"type": "text", "text": "..."}])
                         texts = [
-                            block.get("text", "") for block in raw_content
-                            if isinstance(block, dict)
+                            block["text"] for block in raw_content if isinstance(block, dict) and block.get("text")
                         ]
-                        tool_output_content = "\n".join(texts) if texts else str(raw_content)
+                        tool_output_content = "\n".join(texts) if texts else json.dumps(raw_content)
                     elif isinstance(raw_content, str):
                         tool_output_content = raw_content
                     else:
-                        tool_output_content = str(parsed)
+                        tool_output_content = json.dumps(parsed)
                     tool_call_id = parsed.get("tool_call_id") or tool_call_id
                     tool_status = parsed.get("status", "success")
                 else:
@@ -523,6 +519,14 @@ class OpenInferenceSessionMapper(SessionMapper):
                         except json.JSONDecodeError:
                             pass
 
+        # For failed tool calls (e.g. Claude Agent SDK sets status=ERROR with no output.value),
+        # preserve the span with empty content so judges see the failure.
+        if tool_output_content is None:
+            status_code = span.get("status", {}).get("status_code", "")
+            if status_code == "ERROR":
+                tool_output_content = ""
+                tool_status = tool_status or "error"
+
         # Validate required fields
         if not tool_name or tool_parameters is None or tool_output_content is None:
             logger.warning(f"Missing required fields for tool span {span.get('span_id')}")
@@ -531,7 +535,8 @@ class OpenInferenceSessionMapper(SessionMapper):
         tool_call = ToolCall(name=tool_name, arguments=tool_parameters or {}, tool_call_id=tool_call_id)
         tool_result = ToolResult(
             content=tool_output_content or "",
-            error=None if tool_status == "success" else tool_status,
+            # "success" = smolagents/LangChain default; "completed" = Claude Agent SDK
+            error=None if tool_status in ("success", "completed") else tool_status,
             tool_call_id=tool_call_id,
         )
 
