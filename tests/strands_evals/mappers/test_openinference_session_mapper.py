@@ -1623,7 +1623,8 @@ class TestClaudeAgentSdkScopeSupport:
         spans = _load_claude_spans()
         # Root span is the one with input.value as plain text and no parent_span_id chain to TOOL
         root_span = next(
-            s for s in spans
+            s
+            for s in spans
             if s["attributes"].get("openinference.span.kind") == "AGENT"
             and s["attributes"].get("input.value")
             and s["attributes"].get("output.value")
@@ -1644,9 +1645,9 @@ class TestClaudeAgentSdkScopeSupport:
         spans = _load_claude_spans()
         # Nested AGENT spans have kind=AGENT but no input.value/output.value
         nested_span = next(
-            s for s in spans
-            if s["attributes"].get("openinference.span.kind") == "AGENT"
-            and not s["attributes"].get("input.value")
+            s
+            for s in spans
+            if s["attributes"].get("openinference.span.kind") == "AGENT" and not s["attributes"].get("input.value")
         )
         session = self.mapper.map_to_session([nested_span], "sess-1")
 
@@ -1658,9 +1659,9 @@ class TestClaudeAgentSdkScopeSupport:
         spans = _load_claude_spans()
         # Pick an Agent tool span (subagent delegation)
         agent_tool_span = next(
-            s for s in spans
-            if s["attributes"].get("openinference.span.kind") == "TOOL"
-            and s["attributes"].get("tool.name") == "Agent"
+            s
+            for s in spans
+            if s["attributes"].get("openinference.span.kind") == "TOOL" and s["attributes"].get("tool.name") == "Agent"
         )
         session = self.mapper.map_to_session([agent_tool_span], "sess-1")
 
@@ -1681,18 +1682,22 @@ class TestClaudeAgentSdkScopeSupport:
                 "openinference.span.kind": "TOOL",
                 "tool.id": "toolu_bdrk_xyz789",
                 "tool.name": "Agent",
-                "input.value": json.dumps({
-                    "description": "Research task",
-                    "subagent_type": "research-specialist",
-                    "prompt": "Look up weather in NYC.",
-                }),
-                "output.value": json.dumps({
-                    "status": "completed",
-                    "content": [
-                        {"type": "text", "text": "Temperature: 89°F"},
-                        {"type": "text", "text": "Conditions: Partly cloudy"},
-                    ],
-                }),
+                "input.value": json.dumps(
+                    {
+                        "description": "Research task",
+                        "subagent_type": "research-specialist",
+                        "prompt": "Look up weather in NYC.",
+                    }
+                ),
+                "output.value": json.dumps(
+                    {
+                        "status": "completed",
+                        "content": [
+                            {"type": "text", "text": "Temperature: 89°F"},
+                            {"type": "text", "text": "Conditions: Partly cloudy"},
+                        ],
+                    }
+                ),
             },
         )
         session = self.mapper.map_to_session([span], "sess-1")
