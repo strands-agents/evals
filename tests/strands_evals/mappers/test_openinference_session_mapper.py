@@ -1621,7 +1621,7 @@ class TestClaudeAgentSdkScopeSupport:
     def test_claude_agent_span_with_plain_text_input_detected(self):
         """Root AGENT span with plain-text input/output → AgentInvocationSpan."""
         spans = _load_claude_spans()
-        # Root span is the one with input.value as plain text and no parent_span_id chain to TOOL
+        # Root span has both input.value and output.value populated
         root_span = next(
             s
             for s in spans
@@ -1705,3 +1705,50 @@ class TestClaudeAgentSdkScopeSupport:
         tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
         assert len(tool_spans) == 1
         assert tool_spans[0].tool_result.content == "Temperature: 89°F\nConditions: Partly cloudy"
+        assert tool_spans[0].tool_result.error is None
+
+    @pytest.mark.parametrize(
+        "status,span_events,expected_error",
+        [
+            pytest.param(
+                {"code": "ERROR", "description": "EACCES: permission denied"},
+                [],
+                "EACCES: permission denied",
+                id="description",
+            ),
+            pytest.param(
+                {"code": "ERROR"},
+                [
+                    {
+                        "event_name": "exception",
+                        "timestamp": 1700000000500000000,
+                        "attributes": {"exception.message": "Permission denied: /etc/shadow"},
+                    }
+                ],
+                "Permission denied: /etc/shadow",
+                id="exception_message",
+            ),
+            pytest.param({"code": "ERROR"}, [], "error", id="bare_fallback"),
+        ],
+    )
+    def test_claude_failed_tool_span_no_output_preserved(self, status, span_events, expected_error):
+        """status=ERROR with no output.value is preserved via description/exception/fallback."""
+        span = make_span(
+            name="Bash",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "TOOL",
+                "tool.id": "toolu_failed",
+                "tool.name": "Bash",
+                "input.value": json.dumps({"command": "false"}),
+            },
+            span_events=span_events,
+        )
+        span["status"] = status
+
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+        assert tool_spans[0].tool_result.error == expected_error
+        assert tool_spans[0].tool_result.content == expected_error
