@@ -2,16 +2,18 @@
 
 Requirements:
     pip install strands-agents-evals[adk]
+    Set GOOGLE_API_KEY environment variable with a valid Google AI API key.
 
 Run with: pytest tests_integ/test_adk_eval.py -v
 """
 
 import asyncio
+import os
 import uuid
 
 import pytest
 from google.adk.agents import Agent
-from google.adk.models.lite_llm import LiteLlm
+from google.adk.models.google_llm import Gemini
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 
@@ -29,9 +31,9 @@ from strands_evals.mappers import ADKOtelSessionMapper, detect_otel_mapper, read
 from strands_evals.telemetry import StrandsEvalsTelemetry
 from strands_evals.types.trace import AgentInvocationSpan, ToolExecutionSpan
 
-DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-20250514-v1:0"
-
-DEFAULT_MODEL = LiteLlm(model=f"bedrock/{DEFAULT_MODEL_ID}", temperature=0)
+# Uses Gemini 3 Flash via Google AI API (requires GOOGLE_API_KEY env var).
+DEFAULT_MODEL_ID = "gemini-3-flash-preview"
+DEFAULT_MODEL = Gemini(model=DEFAULT_MODEL_ID, google_api_key=os.environ.get("GOOGLE_API_KEY", ""))
 
 
 # =============================================================================
@@ -269,8 +271,7 @@ def test_adk_single_agent_multi_tool(telemetry, create_multi_tool_runner):
         assert len(tool_spans) >= 1, "Expected at least one tool execution span"
         for tool_span in tool_spans:
             assert tool_span.tool_call.tool_call_id is not None, (
-                f"tool_call_id should be populated (Bedrock emits gen_ai.tool.call.id), "
-                f"got None for tool '{tool_span.tool_call.name}'"
+                f"tool_call_id should be populated, got None for tool '{tool_span.tool_call.name}'"
             )
 
 
@@ -345,7 +346,7 @@ def test_adk_multi_agent_evaluation(telemetry, create_multi_agent_runner):
             assert tool_names <= {"transfer_to_agent"}, f"Unexpected tools on coordinator trace: {tool_names}"
         elif "weather_specialist" in trace_agent_names:
             assert len(trace_tool_spans) >= 1, "Specialist trace should have at least one tool span"
-            # Verify tool_call_id is populated (Bedrock emits gen_ai.tool.call.id)
+            # Verify tool_call_id is populated
             for tool_span in trace_tool_spans:
                 assert tool_span.tool_call.tool_call_id is not None, (
                     f"tool_call_id should be populated, got None for tool '{tool_span.tool_call.name}'"
