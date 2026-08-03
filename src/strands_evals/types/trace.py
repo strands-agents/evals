@@ -136,9 +136,13 @@ class Trace(BaseModel):
     session_id: str
 
     def model_post_init(self, __context: Any) -> None:
-        """Assign owning_agent_span_id on tool spans if not already set."""
-        tool_spans = [s for s in self.spans if isinstance(s, ToolExecutionSpan)]
-        if not tool_spans or any(s.owning_agent_span_id for s in tool_spans):
+        """Assign owning_agent_span_id on tool spans if not already set.
+
+        Note: mutates span objects in place; reusing a span across multiple
+        Trace constructions will keep the first assignment.
+        """
+        tool_spans = [s for s in self.spans if isinstance(s, ToolExecutionSpan) and not s.owning_agent_span_id]
+        if not tool_spans:
             return
 
         agent_by_id: dict[str, AgentInvocationSpan] = {}
@@ -153,26 +157,39 @@ class Trace(BaseModel):
         if not agent_by_id:
             return
 
-        # Root agent: prefer one with no parent, else first encountered
+        # Root agent: prefer parentless with content, then any parentless, then first
         root_agent_id: str | None = None
         for sid, agent in agent_by_id.items():
-            if agent.span_info.parent_span_id is None:
+            if agent.span_info.parent_span_id is None and (agent.user_prompt or agent.agent_response):
                 root_agent_id = sid
                 break
         if root_agent_id is None:
+            for sid, agent in agent_by_id.items():
+                if agent.span_info.parent_span_id is None:
+                    root_agent_id = sid
+                    break
+        if root_agent_id is None:
             root_agent_id = next(iter(agent_by_id))
 
+        owner_cache: dict[str, str | None] = {}
         for span in tool_spans:
             current_id = span.span_info.parent_span_id
-            visited: set[str] = set()
+            visited: list[str] = []
+            seen: set[str] = set()
             found: str | None = None
-            while current_id and current_id not in visited:
-                visited.add(current_id)
+            while current_id and current_id not in owner_cache and current_id not in seen:
                 if current_id in agent_by_id:
                     found = current_id
                     break
+                seen.add(current_id)
+                visited.append(current_id)
                 parent = span_by_id.get(current_id)
                 current_id = parent.span_info.parent_span_id if parent else None
+            else:
+                if current_id and current_id in owner_cache:
+                    found = owner_cache[current_id]
+            for vid in visited:
+                owner_cache[vid] = found
             span.owning_agent_span_id = found or root_agent_id
 
 

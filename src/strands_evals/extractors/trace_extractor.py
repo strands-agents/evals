@@ -114,8 +114,15 @@ class TraceExtractor:
             agent_span: AgentInvocationSpan | None = None
             if agent_spans:
                 agent_span = next(
-                    (s for s in agent_spans if s.span_info.parent_span_id is None),
-                    agent_spans[0],
+                    (
+                        s
+                        for s in agent_spans
+                        if s.span_info.parent_span_id is None and (s.user_prompt or s.agent_response)
+                    ),
+                    next(
+                        (s for s in agent_spans if s.span_info.parent_span_id is None),
+                        agent_spans[0],
+                    ),
                 )
 
                 if agent_span.available_tools:
