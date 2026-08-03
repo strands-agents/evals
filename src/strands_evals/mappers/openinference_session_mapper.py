@@ -335,7 +335,8 @@ class OpenInferenceSessionMapper(SessionMapper):
 
         Detection:
         1. Live instrumentation (LangGraph): CHAIN + name=LangGraph
-        2. Live instrumentation (smolagents): AGENT span kind
+        2. Live instrumentation (smolagents/Claude Agent SDK): AGENT span kind
+           from a known scope, with both input.value and output.value present.
         3. ADOT body: root LangGraph graph node — input has "messages" without
            "remaining_steps" (intermediate nodes always have "remaining_steps"),
            and output has "messages".
@@ -359,8 +360,9 @@ class OpenInferenceSessionMapper(SessionMapper):
                 if input_val and output_val:
                     return True
             # LangChain AGENT spans (e.g. route_to_agent) carry kind=AGENT with
-            # input/output but are routing nodes, not agent invocations. Explicitly
-            # reject any unrecognized AGENT span.
+            # input/output but are routing nodes, not agent invocations. Reject
+            # unrecognized scopes, and also reject recognized-scope AGENT spans
+            # that lack input/output
             return False
 
         # ADOT fallback: root LangGraph node has messages in/out but no remaining_steps.
@@ -469,13 +471,21 @@ class OpenInferenceSessionMapper(SessionMapper):
                     raw_content = parsed.get("content")
                     if isinstance(raw_content, list):
                         texts = [
-                            block["text"] for block in raw_content if isinstance(block, dict) and block.get("text")
+                            block["text"]
+                            for block in raw_content
+                            if isinstance(block, dict) and isinstance(block.get("text"), str) and block["text"]
                         ]
-                        tool_output_content = "\n".join(texts) if texts else json.dumps(raw_content)
+                        if texts:
+                            tool_output_content = "\n".join(texts)
+                        elif any(isinstance(b, dict) and "text" in b for b in raw_content):
+                            # All text blocks are empty — preserve as empty string
+                            tool_output_content = ""
+                        else:
+                            tool_output_content = json.dumps(raw_content, ensure_ascii=False)
                     elif isinstance(raw_content, str):
                         tool_output_content = raw_content
                     else:
-                        tool_output_content = json.dumps(parsed)
+                        tool_output_content = json.dumps(parsed, ensure_ascii=False)
                     tool_call_id = parsed.get("tool_call_id") or tool_call_id
                     tool_status = parsed.get("status", "success")
                 else:
@@ -520,12 +530,12 @@ class OpenInferenceSessionMapper(SessionMapper):
                             pass
 
         # For failed tool calls (e.g. Claude Agent SDK sets status=ERROR with no output.value),
-        # preserve the span with empty content so judges see the failure.
+        # preserve the span with an error message so judges see the failure.
         if tool_output_content is None:
-            status_code = span.get("status", {}).get("status_code", "")
-            if status_code == "ERROR":
-                tool_output_content = ""
-                tool_status = tool_status or "error"
+            span_status = span.get("status") or {}
+            if isinstance(span_status, dict) and span_status.get("code") == "ERROR":
+                tool_output_content = span_status.get("description") or self._exception_message(span) or "error"
+                tool_status = tool_output_content
 
         # Validate required fields
         if not tool_name or tool_parameters is None or tool_output_content is None:
@@ -545,10 +555,10 @@ class OpenInferenceSessionMapper(SessionMapper):
     def _convert_agent_invocation_span(self, span: dict, session_id: str) -> AgentInvocationSpan | None:
         """Convert OTEL span to AgentInvocationSpan.
 
-        Handles three formats:
-        - LangGraph: structured messages in span_events body
-        - smolagents: input.value (user task as JSON with "task" key) and output.value (final answer)
-        - Claude Agent SDK: input.value (plain text prompt) and output.value (plain text response)
+        Handles three producer formats via two code paths:
+        - LangGraph: structured messages in span_events body (span_events path)
+        - smolagents: input.value as JSON with "task" key, output.value as final answer (attrs path)
+        - Claude Agent SDK: input.value as plain text prompt, output.value as plain text response (attrs path)
         """
         span_info = self._create_span_info(span, session_id)
         trace_id = span.get("trace_id", "")
@@ -626,6 +636,16 @@ class OpenInferenceSessionMapper(SessionMapper):
         """Extract scope name from span."""
         scope = span.get("scope", {})
         return scope.get("name", "") if isinstance(scope, dict) else ""
+
+    @staticmethod
+    def _exception_message(span: dict) -> str | None:
+        """Extract the first exception.message from span events, if any."""
+        for event in span.get("span_events", []):
+            if event.get("event_name") == "exception":
+                msg = (event.get("attributes") or {}).get("exception.message")
+                if msg:
+                    return str(msg)
+        return None
 
     def _create_span_info(self, span: dict, session_id: str) -> SpanInfo:
         """Create SpanInfo from span dict."""
