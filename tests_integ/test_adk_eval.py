@@ -29,7 +29,7 @@ from strands_evals.evaluators import (
 )
 from strands_evals.mappers import ADKOtelSessionMapper, detect_otel_mapper, readable_spans_to_dicts
 from strands_evals.telemetry import StrandsEvalsTelemetry
-from strands_evals.types.trace import AgentInvocationSpan, ToolExecutionSpan
+from strands_evals.types.trace import AgentInvocationSpan, Session, ToolExecutionSpan
 
 # Uses Gemini 3 Flash via Google AI API (requires GOOGLE_API_KEY env var).
 DEFAULT_MODEL_ID = "gemini-3-flash-preview"
@@ -291,10 +291,7 @@ def test_adk_multi_agent_evaluation(telemetry, create_multi_agent_runner):
         ),
     ]
 
-    captured_session = None
-
     def task_function(case: Case) -> dict:
-        nonlocal captured_session
         telemetry.in_memory_exporter.clear()
         runner = create_multi_agent_runner()
         response = asyncio.run(_run_adk_agent(runner, case.input))
@@ -302,7 +299,6 @@ def test_adk_multi_agent_evaluation(telemetry, create_multi_agent_runner):
         spans = readable_spans_to_dicts(telemetry.in_memory_exporter.get_finished_spans())
         mapper = detect_otel_mapper(spans)
         session = mapper.map_to_session(spans, session_id=case.session_id)
-        captured_session = session
         return {"output": response, "trajectory": session}
 
     evaluators = [
@@ -321,21 +317,21 @@ def test_adk_multi_agent_evaluation(telemetry, create_multi_agent_runner):
     assert len(report.scores) == 6
     assert all(report.test_passes), f"Some evaluations failed: {report.reasons}"
 
-    # Validate the mapped session structure directly — this is what the live trace proves
-    # that synthetic unit tests cannot.
-    assert captured_session is not None
-    assert len(captured_session.traces) == 2, (
-        f"Multi-agent should produce 2 traces (coordinator + specialist), got {len(captured_session.traces)}"
+    # Deserialize the trajectory from the first report case back into a Session object.
+    session = Session.model_validate(report.cases[0]["actual_trajectory"])
+
+    assert len(session.traces) == 2, (
+        f"Multi-agent should produce 2 traces (coordinator + specialist), got {len(session.traces)}"
     )
 
     # Identify traces by agent name in their AgentInvocationSpan metadata
-    agent_spans = [s for t in captured_session.traces for s in t.spans if isinstance(s, AgentInvocationSpan)]
+    agent_spans = [s for t in session.traces for s in t.spans if isinstance(s, AgentInvocationSpan)]
     agent_names = {s.metadata.get("agent_name") for s in agent_spans}
     assert "coordinator" in agent_names, f"Expected coordinator agent, got {agent_names}"
     assert "weather_specialist" in agent_names, f"Expected weather_specialist agent, got {agent_names}"
 
     # Tool spans should only appear on the specialist trace, not double-counted on coordinator
-    for trace in captured_session.traces:
+    for trace in session.traces:
         trace_agent_spans = [s for s in trace.spans if isinstance(s, AgentInvocationSpan)]
         trace_tool_spans = [s for s in trace.spans if isinstance(s, ToolExecutionSpan)]
         trace_agent_names = {s.metadata.get("agent_name") for s in trace_agent_spans}
