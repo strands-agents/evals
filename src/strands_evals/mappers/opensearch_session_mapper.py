@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from strands_evals.mappers.session_mapper import SessionMapper
-from strands_evals.mappers.utils import assign_tool_ownership
+from strands_evals.mappers.utils import bridge_parent_gaps
 from strands_evals.types.trace import (
     AgentInvocationSpan,
     AssistantMessage,
@@ -95,7 +95,12 @@ class OpenSearchSessionMapper(SessionMapper):
                         )
                     )
 
-        assign_tool_ownership(spans)
+        # Fix parent_span_id on converted spans that point to skipped intermediaries
+        raw_parent_map: dict[str, str | None] = {
+            r.span_id: (r.parent_span_id or None) for r in sorted_records if r.span_id
+        }
+
+        bridge_parent_gaps(spans, raw_parent_map)
 
         return Trace(spans=spans, trace_id=trace_id, session_id=session_id)
 

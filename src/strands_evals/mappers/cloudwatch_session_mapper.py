@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..mappers.session_mapper import SessionMapper
-from ..mappers.utils import assign_tool_ownership, get_body, join_tool_result_content
+from ..mappers.utils import get_body, join_tool_result_content
 from ..types.trace import (
     AgentInvocationSpan,
     AssistantMessage,
@@ -150,8 +150,6 @@ class CloudWatchSessionMapper(SessionMapper):
         agent_span = self._create_agent_invocation_span(sorted_spans, all_tool_calls, session_id)
         if agent_span:
             result_spans.append(agent_span)
-
-        assign_tool_ownership(result_spans)
 
         return Trace(spans=result_spans, trace_id=trace_id, session_id=session_id)
 

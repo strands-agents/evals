@@ -113,7 +113,10 @@ class TraceExtractor:
             # Determine root agent for session history
             agent_span: AgentInvocationSpan | None = None
             if agent_spans:
-                agent_span = self._find_root_agent(agent_spans)
+                agent_span = next(
+                    (s for s in agent_spans if s.span_info.parent_span_id is None),
+                    agent_spans[0],
+                )
 
                 if agent_span.available_tools:
                     available_tools = agent_span.available_tools
@@ -167,20 +170,6 @@ class TraceExtractor:
     def _find_agent_invocation_spans(self, trace) -> list[AgentInvocationSpan]:
         """Find all AgentInvocationSpans in a trace."""
         return [span for span in trace.spans if isinstance(span, AgentInvocationSpan)]
-
-    def _find_root_agent(self, agent_spans: list[AgentInvocationSpan]) -> AgentInvocationSpan:
-        """Find the root agent span from a list of agent spans.
-
-        Prefers the agent with no parent that has content (true root of the trace),
-        then falls back to one with a user_prompt, then the last in the list.
-        """
-        return next(
-            (s for s in agent_spans if s.span_info.parent_span_id is None and (s.user_prompt or s.agent_response)),
-            next(
-                (s for s in agent_spans if s.user_prompt),
-                agent_spans[-1],
-            ),
-        )
 
     def _find_tool_execution_spans(self, trace) -> list[ToolExecutionSpan]:
         """Find all ToolExecutionSpans in a trace."""

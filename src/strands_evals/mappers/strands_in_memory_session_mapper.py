@@ -24,7 +24,7 @@ from ..types.trace import (
     UserMessage,
 )
 from .session_mapper import SessionMapper
-from .utils import assign_tool_ownership, join_tool_result_content
+from .utils import bridge_parent_gaps, join_tool_result_content
 
 
 def _response_to_text(response: Any) -> str:
@@ -155,15 +155,14 @@ class StrandsInMemorySessionMapper(SessionMapper):
             except Exception as e:
                 logger.warning(f"Failed to convert span: {e}")
 
-        # Build raw parent map from ALL spans (including unconverted ones like
-        # execute_event_loop_cycle) so reparenting can bridge gaps in the chain
+        # Fix parent_span_id on converted spans that point to skipped intermediaries
         raw_parent_map: dict[str, str | None] = {}
         for span in otel_spans:
             span_id = format(span.context.span_id, "016x")
             parent_id = format(span.parent.span_id, "016x") if span.parent else None
             raw_parent_map[span_id] = parent_id
 
-        assign_tool_ownership(converted_spans, raw_parent_map)
+        bridge_parent_gaps(converted_spans, raw_parent_map)
 
         return Trace(spans=converted_spans, trace_id=trace_id, session_id=session_id)
 

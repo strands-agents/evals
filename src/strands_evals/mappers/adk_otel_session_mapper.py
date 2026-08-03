@@ -48,7 +48,7 @@ from ..types.trace import (
 )
 from .constants import SCOPE_ADK
 from .session_mapper import SessionMapper
-from .utils import assign_tool_ownership, get_scope_name, safe_json_parse
+from .utils import bridge_parent_gaps, get_scope_name, safe_json_parse
 
 logger = logging.getLogger(__name__)
 
@@ -138,13 +138,13 @@ class ADKOtelSessionMapper(SessionMapper):
                 span_id = self._extract_span_id(span) or "unknown"
                 logger.warning("span_id=<%s>, error=<%s> | failed to convert ADK span", span_id, e)
 
-        # Build raw parent map from all spans (including unconverted call_llm, invocation)
+        # Fix parent_span_id on converted spans that point to skipped intermediaries
         raw_parent_map: dict[str, str | None] = {
             self._extract_span_id(s): self._extract_parent_span_id(s) for s in spans if self._extract_span_id(s)
         }
 
         converted_spans.sort(key=lambda s: s.span_info.start_time)
-        assign_tool_ownership(converted_spans, raw_parent_map)
+        bridge_parent_gaps(converted_spans, raw_parent_map)
 
         return Trace(spans=converted_spans, trace_id=trace_id, session_id=session_id)
 

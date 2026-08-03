@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from ..types.trace import AgentInvocationSpan, SpanUnion, ToolExecutionSpan
+from ..types.trace import SpanUnion
 from .constants import SCOPE_ADK, SCOPE_LANGCHAIN_OTEL, SCOPE_STRANDS, SCOPES_OPENINFERENCE_FAMILY
 from .session_mapper import SessionMapper
 
@@ -293,59 +293,3 @@ def bridge_parent_gaps(
                 current = raw_parent_map.get(current)
             else:
                 span.span_info.parent_span_id = None
-
-
-def assign_tool_ownership(
-    spans: list[SpanUnion],
-    raw_parent_map: dict[str, str | None] | None = None,
-) -> None:
-    """Assign owning_agent_span_id on each ToolExecutionSpan via parent_span_id ancestry.
-
-    Walks the parent chain from each ToolExecutionSpan until it finds an
-    AgentInvocationSpan. Falls back to the root agent (no parent or first in list)
-    when the parent chain is incomplete.
-
-    Args:
-        spans: Flat list of converted spans from a single trace.
-        raw_parent_map: Optional span_id -> parent_span_id for ALL raw spans.
-            When provided, reparenting is applied first to bridge gaps caused
-            by unconverted intermediate spans.
-    """
-    if raw_parent_map is not None:
-        bridge_parent_gaps(spans, raw_parent_map)
-
-    agent_by_id: dict[str, AgentInvocationSpan] = {}
-    span_by_id: dict[str, SpanUnion] = {}
-    for span in spans:
-        sid = span.span_info.span_id
-        if sid:
-            span_by_id[sid] = span
-            if isinstance(span, AgentInvocationSpan):
-                agent_by_id[sid] = span
-
-    if not agent_by_id:
-        return
-
-    # Determine root agent: prefer one with no parent, otherwise first agent in list
-    root_agent_id: str | None = None
-    for sid, agent in agent_by_id.items():
-        if agent.span_info.parent_span_id is None:
-            root_agent_id = sid
-            break
-    if root_agent_id is None:
-        root_agent_id = next(iter(agent_by_id))
-
-    for span in spans:
-        if not isinstance(span, ToolExecutionSpan):
-            continue
-        current_id = span.span_info.parent_span_id
-        visited: set[str] = set()
-        found: str | None = None
-        while current_id and current_id not in visited:
-            visited.add(current_id)
-            if current_id in agent_by_id:
-                found = current_id
-                break
-            parent = span_by_id.get(current_id)
-            current_id = parent.span_info.parent_span_id if parent else None
-        span.owning_agent_span_id = found or root_agent_id

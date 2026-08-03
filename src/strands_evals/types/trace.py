@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from enum import Enum
 
 from pydantic import BaseModel, field_serializer
-from typing_extensions import Mapping, Sequence, TypeAlias
+from typing_extensions import Any, Mapping, Sequence, TypeAlias
 
 
 class Role(str, Enum):
@@ -134,6 +134,46 @@ class Trace(BaseModel):
     spans: list[SpanUnion]
     trace_id: str
     session_id: str
+
+    def model_post_init(self, __context: Any) -> None:
+        """Assign owning_agent_span_id on tool spans if not already set."""
+        tool_spans = [s for s in self.spans if isinstance(s, ToolExecutionSpan)]
+        if not tool_spans or any(s.owning_agent_span_id for s in tool_spans):
+            return
+
+        agent_by_id: dict[str, AgentInvocationSpan] = {}
+        span_by_id: dict[str, BaseSpan] = {}
+        for span in self.spans:
+            sid = span.span_info.span_id
+            if sid:
+                span_by_id[sid] = span
+                if isinstance(span, AgentInvocationSpan):
+                    agent_by_id[sid] = span
+
+        if not agent_by_id:
+            return
+
+        # Root agent: prefer one with no parent, else first encountered
+        root_agent_id: str | None = None
+        for sid, agent in agent_by_id.items():
+            if agent.span_info.parent_span_id is None:
+                root_agent_id = sid
+                break
+        if root_agent_id is None:
+            root_agent_id = next(iter(agent_by_id))
+
+        for span in tool_spans:
+            current_id = span.span_info.parent_span_id
+            visited: set[str] = set()
+            found: str | None = None
+            while current_id and current_id not in visited:
+                visited.add(current_id)
+                if current_id in agent_by_id:
+                    found = current_id
+                    break
+                parent = span_by_id.get(current_id)
+                current_id = parent.span_info.parent_span_id if parent else None
+            span.owning_agent_span_id = found or root_agent_id
 
 
 class Session(BaseModel):
