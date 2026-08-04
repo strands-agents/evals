@@ -296,3 +296,55 @@ class TestTraceToolOwnership:
         restored = Trace.model_validate_json(trace.model_dump_json())
         restored_tool = next(s for s in restored.spans if isinstance(s, ToolExecutionSpan))
         assert restored_tool.agent_span_id == "agent-1"
+
+
+def test_tools_without_span_ids_each_owned_by_their_own_agent():
+    """`span_id` is optional, so the subtree walk must not de-duplicate on it."""
+    coordinator = AgentInvocationSpan(
+        span_info=SpanInfo(
+            session_id="s1",
+            span_id="coordinator",
+            start_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            end_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        ),
+        user_prompt="weather?",
+        agent_response="sunny",
+        available_tools=[],
+    )
+    specialist = AgentInvocationSpan(
+        span_info=SpanInfo(
+            session_id="s1",
+            span_id="weather-agent",
+            parent_span_id="coordinator",
+            start_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            end_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        ),
+        user_prompt="weather",
+        agent_response="sunny",
+        available_tools=[],
+    )
+    forecast = ToolExecutionSpan(
+        span_info=SpanInfo(
+            session_id="s1",
+            parent_span_id="weather-agent",
+            start_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            end_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        ),
+        tool_call=ToolCall(name="get_forecast", arguments={}),
+        tool_result=ToolResult(content="sunny"),
+    )
+    alerts = ToolExecutionSpan(
+        span_info=SpanInfo(
+            session_id="s1",
+            parent_span_id="weather-agent",
+            start_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            end_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        ),
+        tool_call=ToolCall(name="get_alerts", arguments={}),
+        tool_result=ToolResult(content="none"),
+    )
+
+    Trace(spans=[coordinator, specialist, forecast, alerts], trace_id="t1", session_id="s1")
+
+    assert forecast.agent_span_id == "weather-agent"
+    assert alerts.agent_span_id == "weather-agent"
