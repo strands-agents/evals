@@ -173,25 +173,25 @@ def make_adot_span(
 
 def _load_live_spans():
     """Load real live (in-memory) spans from fixture file."""
-    with open(_LIVE_SPANS_FILE) as f:
+    with open(_LIVE_SPANS_FILE, encoding="utf-8") as f:
         return json.load(f)
 
 
 def _load_adot_spans():
     """Load ADOT/CloudWatch spans from fixture file."""
-    with open(_ADOT_SPANS_FILE) as f:
+    with open(_ADOT_SPANS_FILE, encoding="utf-8") as f:
         return json.load(f)
 
 
 def _load_smolagents_spans():
     """Load real smolagents (openinference-instrumentation-smolagents) spans from fixture file."""
-    with open(_SMOLAGENTS_SPANS_FILE) as f:
+    with open(_SMOLAGENTS_SPANS_FILE, encoding="utf-8") as f:
         return json.load(f)
 
 
 def _load_claude_spans():
     """Load real Claude Agent SDK (openinference-instrumentation-claude-agent-sdk) spans from fixture file."""
-    with open(_CLAUDE_SPANS_FILE) as f:
+    with open(_CLAUDE_SPANS_FILE, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -1706,6 +1706,8 @@ class TestClaudeAgentSdkScopeSupport:
         assert len(tool_spans) == 1
         assert tool_spans[0].tool_result.content == "Temperature: 89°F\nConditions: Partly cloudy"
         assert tool_spans[0].tool_result.error is None
+        # Non-ASCII must be preserved literally, not escaped
+        assert "\\u" not in tool_spans[0].tool_result.content
 
     @pytest.mark.parametrize(
         "status,span_events,expected_error",
@@ -1750,5 +1752,61 @@ class TestClaudeAgentSdkScopeSupport:
 
         tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
         assert len(tool_spans) == 1
-        assert tool_spans[0].tool_result.error == expected_error
+        assert tool_spans[0].tool_result.error == "error"
         assert tool_spans[0].tool_result.content == expected_error
+
+    def test_empty_text_block_among_non_text_blocks_preserves_siblings(self):
+        """An empty text block among non-text blocks should preserve siblings as JSON, not discard."""
+        non_text_block = {"type": "resource", "resource": {"text": "IMPORTANT DATA"}}
+        span = make_span(
+            name="ReadFile",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "TOOL",
+                "tool.id": "toolu_mixed",
+                "tool.name": "ReadFile",
+                "input.value": json.dumps({"path": "/tmp/data"}),
+                "output.value": json.dumps(
+                    {"status": "completed", "content": [{"type": "text", "text": ""}, non_text_block]}
+                ),
+            },
+        )
+
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+        # Non-text sibling must be preserved (as JSON), not silently discarded
+        assert "IMPORTANT DATA" in tool_spans[0].tool_result.content
+
+    def test_exception_message_returns_first_not_last(self):
+        """_exception_message returns the first exception event, not the last."""
+        span = make_span(
+            name="Bash",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "TOOL",
+                "tool.id": "toolu_multi_exc",
+                "tool.name": "Bash",
+                "input.value": json.dumps({"command": "fail"}),
+            },
+            span_events=[
+                {
+                    "event_name": "exception",
+                    "timestamp": 1700000000100000000,
+                    "attributes": {"exception.message": "first error"},
+                },
+                {
+                    "event_name": "exception",
+                    "timestamp": 1700000000200000000,
+                    "attributes": {"exception.message": "second error"},
+                },
+            ],
+        )
+        span["status"] = {"code": "ERROR"}
+
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+        assert tool_spans[0].tool_result.content == "first error"
