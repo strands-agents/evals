@@ -470,16 +470,9 @@ class OpenInferenceSessionMapper(SessionMapper):
                 if isinstance(parsed, dict):
                     raw_content = parsed.get("content")
                     if isinstance(raw_content, list):
-                        texts = [
-                            block["text"]
-                            for block in raw_content
-                            if isinstance(block, dict) and isinstance(block.get("text"), str) and block["text"]
-                        ]
-                        if texts:
-                            tool_output_content = "\n".join(texts)
-                        elif any(isinstance(b, dict) and "text" in b for b in raw_content):
-                            # All text blocks are empty — preserve as empty string
-                            tool_output_content = ""
+                        flattened = self._flatten_content_blocks(raw_content)
+                        if flattened is not None:
+                            tool_output_content = flattened
                         else:
                             tool_output_content = json.dumps(raw_content, ensure_ascii=False)
                     elif isinstance(raw_content, str):
@@ -489,7 +482,11 @@ class OpenInferenceSessionMapper(SessionMapper):
                     tool_call_id = parsed.get("tool_call_id") or tool_call_id
                     tool_status = parsed.get("status", "success")
                 else:
-                    tool_output_content = output_value
+                    flattened = self._flatten_content_blocks(parsed)
+                    if flattened is not None:
+                        tool_output_content = flattened
+                    else:
+                        tool_output_content = output_value
             elif isinstance(output_value, dict):
                 tool_output_content = output_value.get("content", str(output_value))
 
@@ -534,8 +531,15 @@ class OpenInferenceSessionMapper(SessionMapper):
         if tool_output_content is None:
             span_status = span.get("status") or {}
             if isinstance(span_status, dict) and span_status.get("code") == "ERROR":
-                tool_output_content = span_status.get("description") or self._exception_message(span) or "error"
-                tool_status = tool_output_content
+                raw_error = span_status.get("description") or self._exception_message(span) or "error"
+                # Try to flatten content blocks if the error is a JSON-encoded block list
+                try:
+                    parsed_error = json.loads(raw_error)
+                except (json.JSONDecodeError, TypeError):
+                    parsed_error = None
+                flattened = self._flatten_content_blocks(parsed_error)
+                tool_output_content = flattened if flattened is not None else raw_error
+                tool_status = "error"
 
         # Validate required fields
         if not tool_name or tool_parameters is None or tool_output_content is None:
@@ -638,11 +642,28 @@ class OpenInferenceSessionMapper(SessionMapper):
         return scope.get("name", "") if isinstance(scope, dict) else ""
 
     @staticmethod
+    def _flatten_content_blocks(raw: object) -> str | None:
+        """Join text from a list of content blocks; None if not a block list."""
+        if not isinstance(raw, list):
+            return None
+        texts = [b["text"] for b in raw if isinstance(b, dict) and isinstance(b.get("text"), str) and b["text"]]
+        if texts:
+            return "\n".join(texts)
+        if all(isinstance(b, dict) and "text" in b for b in raw) and raw:
+            return ""
+        return json.dumps(raw, ensure_ascii=False)
+
+    @staticmethod
     def _exception_message(span: dict) -> str | None:
         """Extract the first exception.message from span events, if any."""
-        for event in span.get("span_events", []):
+        for event in span.get("span_events") or []:
+            if not isinstance(event, dict):
+                continue
             if event.get("event_name") == "exception":
-                msg = (event.get("attributes") or {}).get("exception.message")
+                attributes = event.get("attributes")
+                if not isinstance(attributes, dict):
+                    continue
+                msg = attributes.get("exception.message")
                 if msg:
                     return str(msg)
         return None
