@@ -66,9 +66,9 @@ class TraceExtractor:
                     continue
 
                 # Include only tool executions owned by this agent
-                ownership_assigned = any(ts.owning_agent_span_id for ts in tool_spans)
+                ownership_assigned = any(ts.agent_span_id for ts in tool_spans)
                 if len(agent_spans) > 1 and ownership_assigned:
-                    owned_tools = [ts for ts in tool_spans if ts.owning_agent_span_id == span.span_info.span_id]
+                    owned_tools = [ts for ts in tool_spans if ts.agent_span_id == span.span_info.span_id]
                 else:
                     owned_tools = tool_spans
 
@@ -151,8 +151,8 @@ class TraceExtractor:
                     and (tool_end_times[position] < target_start or position < index)
                 ]
 
-                if tool_span.owning_agent_span_id and len(agent_spans) > 1:
-                    owning_agent = agent_by_id.get(tool_span.owning_agent_span_id)
+                if tool_span.agent_span_id and len(agent_spans) > 1:
+                    owning_agent = agent_by_id.get(tool_span.agent_span_id)
                     scoped_tools = owning_agent.available_tools if owning_agent and owning_agent.available_tools else []
                 else:
                     scoped_tools = available_tools

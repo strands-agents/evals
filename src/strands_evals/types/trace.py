@@ -111,7 +111,7 @@ class ToolExecutionSpan(BaseSpan):
     span_type: SpanType = SpanType.TOOL_EXECUTION
     tool_call: ToolCall
     tool_result: ToolResult
-    owning_agent_span_id: str | None = None
+    agent_span_id: str | None = None
 
 
 class AgentInvocationSpan(BaseSpan):
@@ -136,12 +136,12 @@ class Trace(BaseModel):
     session_id: str
 
     def model_post_init(self, __context: Any) -> None:
-        """Assign owning_agent_span_id on tool spans if not already set.
+        """Assign agent_span_id on tool spans if not already set.
 
         Note: mutates span objects in place; reusing a span across multiple
         Trace constructions will keep the first assignment.
         """
-        tool_spans = [s for s in self.spans if isinstance(s, ToolExecutionSpan) and not s.owning_agent_span_id]
+        tool_spans = [s for s in self.spans if isinstance(s, ToolExecutionSpan) and not s.agent_span_id]
         if not tool_spans:
             return
 
@@ -190,7 +190,7 @@ class Trace(BaseModel):
                     found = owner_cache[current_id]
             for vid in visited:
                 owner_cache[vid] = found
-            span.owning_agent_span_id = found or root_agent_id
+            span.agent_span_id = found or root_agent_id
 
 
 class Session(BaseModel):

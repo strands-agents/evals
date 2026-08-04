@@ -209,7 +209,7 @@ class TestTraceToolOwnership:
 
         Trace(spans=[agent, tool], trace_id="t1", session_id="s1")
 
-        assert tool.owning_agent_span_id == "agent-1"
+        assert tool.agent_span_id == "agent-1"
 
     def test_multi_agent_assigns_to_nearest_ancestor(self):
         """Each tool is owned by the nearest agent in its parent chain."""
@@ -233,8 +233,8 @@ class TestTraceToolOwnership:
 
         Trace(spans=[root, child, tool_of_root, tool_of_child], trace_id="t1", session_id="s1")
 
-        assert tool_of_root.owning_agent_span_id == "root"
-        assert tool_of_child.owning_agent_span_id == "child"
+        assert tool_of_root.agent_span_id == "root"
+        assert tool_of_child.agent_span_id == "child"
 
     def test_orphan_tool_falls_back_to_root_agent(self):
         """A tool whose parent chain doesn't reach any agent falls back to root."""
@@ -249,7 +249,7 @@ class TestTraceToolOwnership:
 
         Trace(spans=[agent, tool], trace_id="t1", session_id="s1")
 
-        assert tool.owning_agent_span_id == "agent-1"
+        assert tool.agent_span_id == "agent-1"
 
     def test_no_agents_leaves_ownership_none(self):
         """With no agents in the trace, ownership is not set."""
@@ -261,7 +261,7 @@ class TestTraceToolOwnership:
 
         Trace(spans=[tool], trace_id="t1", session_id="s1")
 
-        assert tool.owning_agent_span_id is None
+        assert tool.agent_span_id is None
 
     def test_skips_when_already_set(self):
         """If ownership is already populated, model_post_init is a no-op."""
@@ -272,12 +272,12 @@ class TestTraceToolOwnership:
             span_info=_info("tool-1", parent_span_id="agent-1"),
             tool_call=ToolCall(name="x", arguments={}),
             tool_result=ToolResult(content="y"),
-            owning_agent_span_id="custom-override",
+            agent_span_id="custom-override",
         )
 
         Trace(spans=[agent, tool], trace_id="t1", session_id="s1")
 
-        assert tool.owning_agent_span_id == "custom-override"
+        assert tool.agent_span_id == "custom-override"
 
     def test_idempotent_on_deserialization(self):
         """Deserializing a Trace with ownership already set doesn't re-walk."""
@@ -290,9 +290,9 @@ class TestTraceToolOwnership:
             tool_result=ToolResult(content="y"),
         )
         trace = Trace(spans=[agent, tool], trace_id="t1", session_id="s1")
-        assert tool.owning_agent_span_id == "agent-1"
+        assert tool.agent_span_id == "agent-1"
 
         # Round-trip through JSON
         restored = Trace.model_validate_json(trace.model_dump_json())
         restored_tool = next(s for s in restored.spans if isinstance(s, ToolExecutionSpan))
-        assert restored_tool.owning_agent_span_id == "agent-1"
+        assert restored_tool.agent_span_id == "agent-1"
