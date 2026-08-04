@@ -1810,3 +1810,77 @@ class TestClaudeAgentSdkScopeSupport:
         tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
         assert len(tool_spans) == 1
         assert tool_spans[0].tool_result.content == "first error"
+
+    @pytest.mark.parametrize(
+        "output_value,status,span_events,expected_content",
+        [
+            pytest.param(
+                json.dumps([{"type": "text", "text": "EACCES: permission denied"}]),
+                {"code": "OK"},
+                [],
+                "EACCES: permission denied",
+                id="bare_list_success",
+            ),
+            pytest.param(
+                None,
+                {"code": "ERROR"},
+                [
+                    {
+                        "event_name": "exception",
+                        "timestamp": 1700000000500000000,
+                        "attributes": {
+                            "exception.message": json.dumps(
+                                [{"type": "text", "text": "EACCES: permission denied, open '/etc/shadow'"}]
+                            )
+                        },
+                    }
+                ],
+                "EACCES: permission denied, open '/etc/shadow'",
+                id="error_path_block_list",
+            ),
+        ],
+    )
+    def test_content_block_flattening_beyond_dict_envelope(self, output_value, status, span_events, expected_content):
+        """Content blocks are flattened on both the bare-list success path and the ERROR path."""
+        attrs = {
+            "openinference.span.kind": "TOOL",
+            "tool.id": "toolu_flatten",
+            "tool.name": "Bash",
+            "input.value": json.dumps({"command": "ls"}),
+        }
+        if output_value is not None:
+            attrs["output.value"] = output_value
+        span = make_span(
+            name="Bash",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes=attrs,
+            span_events=span_events,
+        )
+        span["status"] = status
+
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+        assert tool_spans[0].tool_result.content == expected_content
+
+    def test_ensure_ascii_false_on_json_dumps_fallback(self):
+        """Non-text blocks with unicode hit json.dumps and must not produce escape sequences."""
+        span = make_span(
+            name="ImageGen",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "TOOL",
+                "tool.id": "toolu_img",
+                "tool.name": "ImageGen",
+                "input.value": json.dumps({"prompt": "weather"}),
+                "output.value": json.dumps({"status": "completed", "content": [{"type": "image", "alt": "25°C 東京"}]}),
+            },
+        )
+
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+        assert "25°C 東京" in tool_spans[0].tool_result.content
+        assert "\\u" not in tool_spans[0].tool_result.content
