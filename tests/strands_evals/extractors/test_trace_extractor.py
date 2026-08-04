@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -17,6 +17,22 @@ from strands_evals.types.trace import (
     Trace,
     TraceLevelInput,
 )
+
+
+def _span_info(
+    span_id: str | None = None,
+    parent_span_id: str | None = None,
+    session_id: str = "test",
+) -> SpanInfo:
+    """Helper to create a SpanInfo with minimal boilerplate."""
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    return SpanInfo(
+        session_id=session_id,
+        span_id=span_id,
+        parent_span_id=parent_span_id,
+        start_time=now,
+        end_time=now,
+    )
 
 
 @pytest.fixture
@@ -54,6 +70,46 @@ def session_with_tools():
         tool_result=ToolResult(content="4"),
     )
     trace = Trace(spans=[agent_span, tool_span], trace_id="trace1", session_id="test")
+    return Session(traces=[trace], session_id="test")
+
+
+@pytest.fixture
+def multi_agent_session():
+    """Coordinator delegates to a specialist with its own tools."""
+    coordinator = AgentInvocationSpan(
+        span_info=_span_info(span_id="coordinator", parent_span_id=None),
+        user_prompt="sqrt(16) * 2 and weather in Paris",
+        agent_response="8, sunny.",
+        available_tools=[ToolConfig(name="ask_math"), ToolConfig(name="ask_research")],
+    )
+    math_agent = AgentInvocationSpan(
+        span_info=_span_info(span_id="math-agent", parent_span_id="coordinator"),
+        user_prompt="sqrt(16) * 2",
+        agent_response="8",
+        available_tools=[ToolConfig(name="square_root"), ToolConfig(name="multiply")],
+    )
+    # Tool directly under coordinator (delegation call)
+    tool_delegate = ToolExecutionSpan(
+        span_info=_span_info(span_id="tool-delegate", parent_span_id="coordinator"),
+        tool_call=ToolCall(name="ask_math", arguments={"query": "sqrt(16)*2"}),
+        tool_result=ToolResult(content="8"),
+        owning_agent_span_id="coordinator",
+    )
+    tool_sqrt = ToolExecutionSpan(
+        span_info=_span_info(span_id="tool-sqrt", parent_span_id="math-agent"),
+        tool_call=ToolCall(name="square_root", arguments={"n": 16}),
+        tool_result=ToolResult(content="4.0"),
+        owning_agent_span_id="math-agent",
+    )
+    tool_mult = ToolExecutionSpan(
+        span_info=_span_info(span_id="tool-mult", parent_span_id="math-agent"),
+        tool_call=ToolCall(name="multiply", arguments={"a": 4, "b": 2}),
+        tool_result=ToolResult(content="8"),
+        owning_agent_span_id="math-agent",
+    )
+    trace = Trace(
+        spans=[coordinator, math_agent, tool_delegate, tool_sqrt, tool_mult], trace_id="t1", session_id="test"
+    )
     return Session(traces=[trace], session_id="test")
 
 
@@ -314,3 +370,86 @@ def test_extract_tool_level_mixed_tz_timestamps():
     assert prior_names == ["tool_x"], (
         f"expected only ['tool_x'] as prior for tool_y (tool_long still running), got {prior_names}"
     )
+
+
+def test_tool_ownership_resolves_to_nearest_agent(multi_agent_session):
+    """Tools resolve to nearest ancestor agent; coordinator's tools are not leaked."""
+    extractor = TraceExtractor(EvaluationLevel.TOOL_LEVEL)
+    result = extractor.extract(multi_agent_session)
+
+    assert len(result) == 3
+    delegate = next(r for r in result if r.tool_execution_details.tool_call.name == "ask_math")
+    sqrt_r = next(r for r in result if r.tool_execution_details.tool_call.name == "square_root")
+    mult_r = next(r for r in result if r.tool_execution_details.tool_call.name == "multiply")
+
+    # Coordinator-owned tool gets coordinator's tool list
+    assert {t.name for t in delegate.available_tools} == {"ask_math", "ask_research"}
+    # Specialist-owned tools get specialist's tool list
+    assert {t.name for t in sqrt_r.available_tools} == {"square_root", "multiply"}
+    assert {t.name for t in mult_r.available_tools} == {"square_root", "multiply"}
+
+
+def test_trace_level_scopes_tools_per_agent(multi_agent_session):
+    """Each agent's turn only includes tool executions owned by that agent."""
+    extractor = TraceExtractor(EvaluationLevel.TRACE_LEVEL)
+    result = extractor.extract(multi_agent_session)
+
+    assert len(result) == 2
+    coord_turn = next(r for r in result if r.span_info.span_id == "coordinator")
+    math_turn = next(r for r in result if r.span_info.span_id == "math-agent")
+
+    # coordinator's turn has only its own delegation tool
+    coord_tools = [h for h in coord_turn.session_history if isinstance(h, list)]
+    assert len(coord_tools) == 1
+    assert coord_tools[0][0].tool_call.name == "ask_math"
+
+    # math_agent's turn includes its own tools (plus coordinator's from history)
+    math_tools = [h for h in math_turn.session_history if isinstance(h, list)]
+    assert len(math_tools) == 2
+    assert math_tools[0][0].tool_call.name == "ask_math"  # accumulated from coordinator's turn
+    assert {te.tool_call.name for te in math_tools[1]} == {"square_root", "multiply"}
+
+
+def test_span_id_none_does_not_collide():
+    """Two tool spans with span_id=None under different agents resolve independently."""
+    coordinator = AgentInvocationSpan(
+        span_info=_span_info(span_id="coordinator", parent_span_id=None),
+        user_prompt="Do two things",
+        agent_response="Done.",
+        available_tools=[ToolConfig(name="delegate")],
+    )
+    spec_a = AgentInvocationSpan(
+        span_info=_span_info(span_id="spec-a", parent_span_id="coordinator"),
+        user_prompt="A",
+        agent_response="A done",
+        available_tools=[ToolConfig(name="tool_a")],
+    )
+    spec_b = AgentInvocationSpan(
+        span_info=_span_info(span_id="spec-b", parent_span_id="coordinator"),
+        user_prompt="B",
+        agent_response="B done",
+        available_tools=[ToolConfig(name="tool_b")],
+    )
+    tool_a = ToolExecutionSpan(
+        span_info=_span_info(span_id=None, parent_span_id="spec-a"),
+        tool_call=ToolCall(name="tool_a", arguments={}),
+        tool_result=ToolResult(content="a"),
+        owning_agent_span_id="spec-a",
+    )
+    tool_b = ToolExecutionSpan(
+        span_info=_span_info(span_id=None, parent_span_id="spec-b"),
+        tool_call=ToolCall(name="tool_b", arguments={}),
+        tool_result=ToolResult(content="b"),
+        owning_agent_span_id="spec-b",
+    )
+
+    trace = Trace(spans=[coordinator, spec_a, spec_b, tool_a, tool_b], trace_id="t1", session_id="test")
+    session = Session(traces=[trace], session_id="test")
+
+    extractor = TraceExtractor(EvaluationLevel.TOOL_LEVEL)
+    result = extractor.extract(session)
+
+    result_a = next(r for r in result if r.tool_execution_details.tool_call.name == "tool_a")
+    result_b = next(r for r in result if r.tool_execution_details.tool_call.name == "tool_b")
+    assert [t.name for t in result_a.available_tools] == ["tool_a"]
+    assert [t.name for t in result_b.available_tools] == ["tool_b"]

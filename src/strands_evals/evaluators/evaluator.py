@@ -198,6 +198,16 @@ class Evaluator(Generic[InputT, OutputT]):
         # Format available tools
         if tool_input.available_tools:
             parts.append(f"## Available tool-calls\n{self._format_tools(tool_input.available_tools)}")
+        else:
+            logger.debug(
+                "span_id=<%s> | no available tools resolved for tool-level evaluation",
+                tool_input.span_info.span_id,
+            )
+            parts.append(
+                "## Available tool-calls\n"
+                "No tool list could be resolved for this agent. "
+                "Evaluate the tool call based on the user's request and conversation context."
+            )
 
         # Format previous conversation history
         if tool_input.session_history:

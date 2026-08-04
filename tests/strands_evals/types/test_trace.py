@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from strands_evals.types.trace import (
     AgentInvocationSpan,
@@ -179,3 +179,120 @@ def test_context_creation():
     assert context.user_prompt.text == "What is 2+2?"
     assert context.agent_response.text == "4"
     assert context.tool_execution_history is None
+
+
+def _info(span_id: str, parent_span_id: str | None = None) -> SpanInfo:
+    """Helper to create SpanInfo with minimal boilerplate."""
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    return SpanInfo(
+        session_id="s1",
+        span_id=span_id,
+        parent_span_id=parent_span_id,
+        start_time=now,
+        end_time=now,
+    )
+
+
+class TestTraceToolOwnership:
+    """Tests for automatic tool ownership assignment in Trace.model_post_init."""
+
+    def test_single_agent_assigns_ownership(self):
+        """With one agent, all tools are owned by it."""
+        agent = AgentInvocationSpan(
+            span_info=_info("agent-1"), user_prompt="hi", agent_response="hello", available_tools=[]
+        )
+        tool = ToolExecutionSpan(
+            span_info=_info("tool-1", parent_span_id="agent-1"),
+            tool_call=ToolCall(name="calc", arguments={}),
+            tool_result=ToolResult(content="42"),
+        )
+
+        Trace(spans=[agent, tool], trace_id="t1", session_id="s1")
+
+        assert tool.owning_agent_span_id == "agent-1"
+
+    def test_multi_agent_assigns_to_nearest_ancestor(self):
+        """Each tool is owned by the nearest agent in its parent chain."""
+        root = AgentInvocationSpan(span_info=_info("root"), user_prompt="hi", agent_response="hey", available_tools=[])
+        child = AgentInvocationSpan(
+            span_info=_info("child", parent_span_id="root"),
+            user_prompt="sub",
+            agent_response="done",
+            available_tools=[],
+        )
+        tool_of_root = ToolExecutionSpan(
+            span_info=_info("t-root", parent_span_id="root"),
+            tool_call=ToolCall(name="a", arguments={}),
+            tool_result=ToolResult(content="1"),
+        )
+        tool_of_child = ToolExecutionSpan(
+            span_info=_info("t-child", parent_span_id="child"),
+            tool_call=ToolCall(name="b", arguments={}),
+            tool_result=ToolResult(content="2"),
+        )
+
+        Trace(spans=[root, child, tool_of_root, tool_of_child], trace_id="t1", session_id="s1")
+
+        assert tool_of_root.owning_agent_span_id == "root"
+        assert tool_of_child.owning_agent_span_id == "child"
+
+    def test_orphan_tool_falls_back_to_root_agent(self):
+        """A tool whose parent chain doesn't reach any agent falls back to root."""
+        agent = AgentInvocationSpan(
+            span_info=_info("agent-1"), user_prompt="hi", agent_response="hello", available_tools=[]
+        )
+        tool = ToolExecutionSpan(
+            span_info=_info("tool-1", parent_span_id="nonexistent"),
+            tool_call=ToolCall(name="x", arguments={}),
+            tool_result=ToolResult(content="y"),
+        )
+
+        Trace(spans=[agent, tool], trace_id="t1", session_id="s1")
+
+        assert tool.owning_agent_span_id == "agent-1"
+
+    def test_no_agents_leaves_ownership_none(self):
+        """With no agents in the trace, ownership is not set."""
+        tool = ToolExecutionSpan(
+            span_info=_info("tool-1"),
+            tool_call=ToolCall(name="x", arguments={}),
+            tool_result=ToolResult(content="y"),
+        )
+
+        Trace(spans=[tool], trace_id="t1", session_id="s1")
+
+        assert tool.owning_agent_span_id is None
+
+    def test_skips_when_already_set(self):
+        """If ownership is already populated, model_post_init is a no-op."""
+        agent = AgentInvocationSpan(
+            span_info=_info("agent-1"), user_prompt="hi", agent_response="hello", available_tools=[]
+        )
+        tool = ToolExecutionSpan(
+            span_info=_info("tool-1", parent_span_id="agent-1"),
+            tool_call=ToolCall(name="x", arguments={}),
+            tool_result=ToolResult(content="y"),
+            owning_agent_span_id="custom-override",
+        )
+
+        Trace(spans=[agent, tool], trace_id="t1", session_id="s1")
+
+        assert tool.owning_agent_span_id == "custom-override"
+
+    def test_idempotent_on_deserialization(self):
+        """Deserializing a Trace with ownership already set doesn't re-walk."""
+        agent = AgentInvocationSpan(
+            span_info=_info("agent-1"), user_prompt="hi", agent_response="hello", available_tools=[]
+        )
+        tool = ToolExecutionSpan(
+            span_info=_info("tool-1", parent_span_id="agent-1"),
+            tool_call=ToolCall(name="x", arguments={}),
+            tool_result=ToolResult(content="y"),
+        )
+        trace = Trace(spans=[agent, tool], trace_id="t1", session_id="s1")
+        assert tool.owning_agent_span_id == "agent-1"
+
+        # Round-trip through JSON
+        restored = Trace.model_validate_json(trace.model_dump_json())
+        restored_tool = next(s for s in restored.spans if isinstance(s, ToolExecutionSpan))
+        assert restored_tool.owning_agent_span_id == "agent-1"
