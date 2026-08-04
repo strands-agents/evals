@@ -3,6 +3,7 @@
 from .adk_otel_session_mapper import ADKOtelSessionMapper
 from .cloudwatch_parser import CloudWatchLogsParser, parse_cloudwatch_logs
 from .cloudwatch_session_mapper import CloudWatchSessionMapper
+from .gen_ai_events_dict_session_mapper import GenAIEventsDictSessionMapper
 from .langchain_otel_session_mapper import LangChainOtelSessionMapper
 from .openinference_session_mapper import OpenInferenceSessionMapper
 from .opensearch_session_mapper import OpenSearchSessionMapper
@@ -14,6 +15,7 @@ __all__ = [
     "ADKOtelSessionMapper",
     "CloudWatchLogsParser",
     "CloudWatchSessionMapper",
+    "GenAIEventsDictSessionMapper",
     "GenAIConventionVersion",
     "LangChainOtelSessionMapper",
     "OpenInferenceSessionMapper",

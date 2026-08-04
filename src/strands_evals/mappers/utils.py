@@ -147,7 +147,22 @@ def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
         if get_body(span) is not None:
             return CloudWatchSessionMapper()
 
-    # Default to StrandsInMemorySessionMapper
+    # Check for Strands dict spans with events list. These cannot be handled by
+    # StrandsInMemorySessionMapper (which expects ReadableSpan objects), so route
+    # them to GenAIEventsDictSessionMapper which safely handles dicts and returns
+    # an empty session if no matching gen_ai events are found.
+    from .gen_ai_events_dict_session_mapper import GenAIEventsDictSessionMapper
+
+    for span in spans:
+        if not isinstance(span, dict):
+            continue
+        scope_name = get_scope_name(span)
+        if scope_name != SCOPE_STRANDS:
+            continue
+        if span.get("events"):
+            return GenAIEventsDictSessionMapper()
+
+    # Default to StrandsInMemorySessionMapper (for ReadableSpan objects)
     return StrandsInMemorySessionMapper()
 
 
