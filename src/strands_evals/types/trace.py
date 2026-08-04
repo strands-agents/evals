@@ -125,6 +125,30 @@ class AgentInvocationSpan(BaseSpan):
 SpanUnion: TypeAlias = InferenceSpan | ToolExecutionSpan | AgentInvocationSpan
 
 
+def _to_aware_utc(dt: datetime) -> datetime:
+    """Normalize a datetime to timezone-aware UTC."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _find_root_agent_span(agent_spans: Sequence[AgentInvocationSpan]) -> AgentInvocationSpan | None:
+    """Search for a trace's root agent span.
+
+    Prefers a parentless agent that has content, then any parentless agent,
+    then the earliest by `start_time`. Returns `None` for an empty sequence.
+    """
+    if not agent_spans:
+        return None
+    for span in agent_spans:
+        if span.span_info.parent_span_id is None and (span.user_prompt or span.agent_response):
+            return span
+    for span in agent_spans:
+        if span.span_info.parent_span_id is None:
+            return span
+    return min(agent_spans, key=lambda s: _to_aware_utc(s.span_info.start_time))
+
+
 class Trace(BaseModel):
     """A single trace within a session.
 
@@ -145,52 +169,41 @@ class Trace(BaseModel):
         if not tool_spans:
             return
 
-        agent_by_id: dict[str, AgentInvocationSpan] = {}
-        span_by_id: dict[str, BaseSpan] = {}
-        for span in self.spans:
-            sid = span.span_info.span_id
-            if sid:
-                span_by_id[sid] = span
-                if isinstance(span, AgentInvocationSpan):
-                    agent_by_id[sid] = span
-
-        if not agent_by_id:
+        agent_spans = [s for s in self.spans if isinstance(s, AgentInvocationSpan) and s.span_info.span_id]
+        if not agent_spans:
             return
 
-        # Root agent: prefer parentless with content, then any parentless, then first
-        root_agent_id: str | None = None
-        for sid, agent in agent_by_id.items():
-            if agent.span_info.parent_span_id is None and (agent.user_prompt or agent.agent_response):
-                root_agent_id = sid
-                break
-        if root_agent_id is None:
-            for sid, agent in agent_by_id.items():
-                if agent.span_info.parent_span_id is None:
-                    root_agent_id = sid
-                    break
-        if root_agent_id is None:
-            root_agent_id = next(iter(agent_by_id))
+        spans_by_parent_id: dict[str, list[SpanUnion]] = {}
+        for span in self.spans:
+            parent_id = span.span_info.parent_span_id
+            if parent_id:
+                spans_by_parent_id.setdefault(parent_id, []).append(span)
 
-        owner_cache: dict[str, str | None] = {}
+        for agent_span in agent_spans:
+            agent_id = agent_span.span_info.span_id
+            if not agent_id:
+                continue
+            stack: list[SpanUnion] = list(spans_by_parent_id.get(agent_id, []))
+            seen: set[int] = {id(agent_span)}
+            while stack:
+                span = stack.pop()
+                if id(span) in seen:
+                    continue
+                seen.add(id(span))
+                span_id = span.span_info.span_id
+                # Nested agent span owns its subtree
+                if isinstance(span, AgentInvocationSpan):
+                    continue
+                if isinstance(span, ToolExecutionSpan) and not span.agent_span_id:
+                    span.agent_span_id = agent_id
+                if span_id:
+                    stack.extend(spans_by_parent_id.get(span_id, []))
+
+        root = _find_root_agent_span(agent_spans)
+        root_id = root.span_info.span_id if root else None
         for span in tool_spans:
-            current_id = span.span_info.parent_span_id
-            visited: list[str] = []
-            seen: set[str] = set()
-            found: str | None = None
-            while current_id and current_id not in owner_cache and current_id not in seen:
-                if current_id in agent_by_id:
-                    found = current_id
-                    break
-                seen.add(current_id)
-                visited.append(current_id)
-                parent = span_by_id.get(current_id)
-                current_id = parent.span_info.parent_span_id if parent else None
-            else:
-                if current_id and current_id in owner_cache:
-                    found = owner_cache[current_id]
-            for vid in visited:
-                owner_cache[vid] = found
-            span.agent_span_id = found or root_agent_id
+            if not span.agent_span_id:
+                span.agent_span_id = root_id
 
 
 class Session(BaseModel):

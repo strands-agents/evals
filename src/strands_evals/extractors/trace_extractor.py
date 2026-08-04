@@ -1,5 +1,4 @@
 import logging
-from datetime import datetime, timezone
 
 from ..types.trace import (
     AgentInvocationSpan,
@@ -16,16 +15,11 @@ from ..types.trace import (
     ToolLevelInput,
     TraceLevelInput,
     UserMessage,
+    _find_root_agent_span,
+    _to_aware_utc,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _to_aware_utc(dt: datetime) -> datetime:
-    """Normalize a datetime to timezone-aware UTC."""
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt
 
 
 class TraceExtractor:
@@ -113,21 +107,11 @@ class TraceExtractor:
             # Determine root agent for session history
             agent_span: AgentInvocationSpan | None = None
             if agent_spans:
-                agent_span = next(
-                    (
-                        s
-                        for s in agent_spans
-                        if s.span_info.parent_span_id is None and (s.user_prompt or s.agent_response)
-                    ),
-                    next(
-                        (s for s in agent_spans if s.span_info.parent_span_id is None),
-                        agent_spans[0],
-                    ),
-                )
+                agent_span = _find_root_agent_span(agent_spans)
 
-                if agent_span.available_tools:
+                if agent_span and agent_span.available_tools:
                     available_tools = agent_span.available_tools
-                if agent_span.user_prompt:
+                if agent_span and agent_span.user_prompt:
                     session_history.append(UserMessage(content=[TextContent(text=agent_span.user_prompt)]))
 
             # Build agent lookup for multi-agent scoping
