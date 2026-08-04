@@ -470,11 +470,7 @@ class OpenInferenceSessionMapper(SessionMapper):
                 if isinstance(parsed, dict):
                     raw_content = parsed.get("content")
                     if isinstance(raw_content, list):
-                        flattened = self._flatten_content_blocks(raw_content)
-                        if flattened is not None:
-                            tool_output_content = flattened
-                        else:
-                            tool_output_content = json.dumps(raw_content, ensure_ascii=False)
+                        tool_output_content = self._flatten_content_blocks(raw_content)
                     elif isinstance(raw_content, str):
                         tool_output_content = raw_content
                     else:
@@ -535,10 +531,10 @@ class OpenInferenceSessionMapper(SessionMapper):
                 # Try to flatten content blocks if the error is a JSON-encoded block list
                 try:
                     parsed_error = json.loads(raw_error)
-                except (json.JSONDecodeError, TypeError):
+                except (ValueError, TypeError, RecursionError):
                     parsed_error = None
                 flattened = self._flatten_content_blocks(parsed_error)
-                tool_output_content = flattened if flattened is not None else raw_error
+                tool_output_content = flattened or raw_error
                 tool_status = "error"
 
         # Validate required fields
@@ -649,7 +645,7 @@ class OpenInferenceSessionMapper(SessionMapper):
         texts = [b["text"] for b in raw if isinstance(b, dict) and isinstance(b.get("text"), str) and b["text"]]
         if texts:
             return "\n".join(texts)
-        if all(isinstance(b, dict) and "text" in b for b in raw) and raw:
+        if all(isinstance(b, dict) and isinstance(b.get("text"), str) for b in raw) and raw:
             return ""
         return json.dumps(raw, ensure_ascii=False)
 
