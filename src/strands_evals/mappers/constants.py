@@ -11,6 +11,7 @@ SCOPE_OPENINFERENCE_SMOLAGENTS = "openinference.instrumentation.smolagents"
 SCOPE_OPENINFERENCE_CLAUDE_AGENT_SDK = "openinference.instrumentation.claude_agent_sdk"
 SCOPE_ADK = "gcp.vertex.agent"
 SCOPE_STRANDS = "strands.telemetry.tracer"
+SCOPE_OPENAI_AGENTS = "opentelemetry.instrumentation.openai_agents"
 
 # All scopes that should route to OpenInferenceSessionMapper
 SCOPES_OPENINFERENCE_FAMILY = frozenset(

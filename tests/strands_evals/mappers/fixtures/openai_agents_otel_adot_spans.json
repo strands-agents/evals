@@ -1,0 +1,592 @@
+{
+  "session_id": "7cdeb989-856d-4e70-9b40-02b70cb12287",
+  "span_count": 17,
+  "spans": [
+    {
+      "trace_id": "6a7a3f4c0bcce7686f1753b56a75f8c0",
+      "span_id": "4a47565ab6309c88",
+      "parent_span_id": "e611bc87f477961f",
+      "name": "POST",
+      "start_time": 1786396500849684050,
+      "end_time": 1786396501996407868,
+      "attributes": {
+        "aws.local.service": "CWExperiment_OpenaiTraceloopMulti.DEFAULT",
+        "telemetry.extended": "true",
+        "http.url": "https://api.openai.com/v1/responses",
+        "aws.remote.service": "api.openai.com",
+        "aws.local.environment": "bedrock-agentcore:default",
+        "aws.remote.operation": "POST /v1",
+        "http.status_code": 200,
+        "aws.local.operation": "UnmappedOperation",
+        "aws.span.kind": "CLIENT",
+        "PlatformType": "AWS::BedrockAgentCore",
+        "http.method": "POST",
+        "http.response.status_code": 200,
+        "session.id": "7cdeb989-856d-4e70-9b40-02b70cb12287"
+      },
+      "scope": {
+        "name": "opentelemetry.instrumentation.httpx",
+        "version": "0.65b0"
+      },
+      "status": {
+        "code": "UNSET"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a7a3f4c0bcce7686f1753b56a75f8c0",
+      "span_id": "e611bc87f477961f",
+      "parent_span_id": "09cc6a3e3968be79",
+      "name": "chat gpt-4o-2024-08-06",
+      "start_time": 1786396499925625494,
+      "end_time": 1786396502169013116,
+      "attributes": {
+        "aws.local.service": "CWExperiment_OpenaiTraceloopMulti.DEFAULT",
+        "gen_ai.input.messages": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"What is 42 * 7, and what's the weather in Seattle?\"}]}]",
+        "gen_ai.usage.output_tokens": 47,
+        "gen_ai.agent.name": "OpenAI Agent",
+        "gen_ai.response.model": "gpt-4o-2024-08-06",
+        "aws.genai.span_kind": "LLM",
+        "gen_ai.provider.name": "openai",
+        "aws.local.environment": "bedrock-agentcore:default",
+        "server.address": "api.openai.com",
+        "gen_ai.response.id": "resp_01f06fb53f694a0a006a7a3f552a1081a190c35c82019d1c91",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.usage.input_tokens": 148,
+        "aws.genai.token_count_total": 195,
+        "server.port": 443,
+        "gen_ai.request.model": "gpt-4o-2024-08-06",
+        "gen_ai.output.messages": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"ResponseFunctionToolCall(arguments='{}', call_id='call_51GcOnoD74w70pXxuVysYF9l', name='transfer_to_math_specialist', type='function_call', id='fc_01f06fb53f694a0a006a7a3f55da0081a192049c813129713d', caller=None, namespace=None, status='completed')\"},{\"type\":\"text\",\"content\":\"ResponseFunctionToolCall(arguments='{}', call_id='call_hkef8huCY9wRqq3nUYpPSnSQ', name='transfer_to_research_specialist', type='function_call', id='fc_01f06fb53f694a0a006a7a3f55da1081a189404216778af67b', caller=None, namespace=None, status='completed')\"}]}]",
+        "PlatformType": "AWS::BedrockAgentCore",
+        "gen_ai.agent.description": "OpenAI Agents instrumentation",
+        "gen_ai.output.type": "text",
+        "session.id": "7cdeb989-856d-4e70-9b40-02b70cb12287",
+        "gen_ai.system": "openai",
+        "gen_ai.agent.id": "agent"
+      },
+      "scope": {
+        "name": "opentelemetry.instrumentation.openai_agents",
+        "version": ""
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a7a3f4c0bcce7686f1753b56a75f8c0",
+      "span_id": "42963e788a6291be",
+      "parent_span_id": "09cc6a3e3968be79",
+      "name": "agent_handoff OpenAI Agent",
+      "start_time": 1786396502170012055,
+      "end_time": 1786396502170354945,
+      "attributes": {
+        "aws.local.service": "CWExperiment_OpenaiTraceloopMulti.DEFAULT",
+        "gen_ai.agent.name": "OpenAI Agent",
+        "gen_ai.handoff.from_agent": "coordinator",
+        "gen_ai.provider.name": "openai",
+        "aws.local.environment": "bedrock-agentcore:default",
+        "server.address": "api.openai.com",
+        "gen_ai.operation.name": "agent_handoff",
+        "server.port": 443,
+        "gen_ai.handoff.to_agent": "math_specialist",
+        "PlatformType": "AWS::BedrockAgentCore",
+        "gen_ai.agent.description": "OpenAI Agents instrumentation",
+        "gen_ai.output.type": "text",
+        "session.id": "7cdeb989-856d-4e70-9b40-02b70cb12287",
+        "gen_ai.system": "openai",
+        "gen_ai.agent.id": "agent"
+      },
+      "scope": {
+        "name": "opentelemetry.instrumentation.openai_agents",
+        "version": ""
+      },
+      "status": {
+        "code": "ERROR"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a7a3f4c0bcce7686f1753b56a75f8c0",
+      "span_id": "09cc6a3e3968be79",
+      "parent_span_id": "1afcb5ca9fe89dda",
+      "name": "unknown",
+      "start_time": 1786396499918735377,
+      "end_time": 1786396502170592247,
+      "attributes": {
+        "server.address": "api.openai.com",
+        "aws.local.service": "CWExperiment_OpenaiTraceloopMulti.DEFAULT",
+        "gen_ai.operation.name": "unknown",
+        "gen_ai.agent.name": "OpenAI Agent",
+        "server.port": 443,
+        "PlatformType": "AWS::BedrockAgentCore",
+        "gen_ai.agent.description": "OpenAI Agents instrumentation",
+        "session.id": "7cdeb989-856d-4e70-9b40-02b70cb12287",
+        "gen_ai.system": "openai",
+        "gen_ai.agent.id": "agent",
+        "gen_ai.provider.name": "openai",
+        "aws.local.environment": "bedrock-agentcore:default"
+      },
+      "scope": {
+        "name": "opentelemetry.instrumentation.openai_agents",
+        "version": ""
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a7a3f4c0bcce7686f1753b56a75f8c0",
+      "span_id": "1afcb5ca9fe89dda",
+      "parent_span_id": "42508b0269e20e8b",
+      "name": "invoke_agent coordinator",
+      "start_time": 1786396499918581172,
+      "end_time": 1786396502170790760,
+      "attributes": {
+        "aws.local.service": "CWExperiment_OpenaiTraceloopMulti.DEFAULT",
+        "gen_ai.input.messages": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"What is 42 * 7, and what's the weather in Seattle?\"}]}]",
+        "telemetry.extended": "true",
+        "aws.remote.resource.identifier": "gpt-4o-2024-08-06",
+        "gen_ai.agent.name": "coordinator",
+        "aws.genai.span_kind": "AGENT",
+        "aws.remote.service": "openai",
+        "gen_ai.provider.name": "openai",
+        "aws.local.environment": "bedrock-agentcore:default",
+        "aws.remote.operation": "invoke_agent",
+        "server.address": "api.openai.com",
+        "aws.local.operation": "UnmappedOperation",
+        "aws.span.kind": "CLIENT",
+        "aws.remote.resource.type": "GenAI::Model",
+        "gen_ai.operation.name": "invoke_agent",
+        "server.port": 443,
+        "gen_ai.request.model": "gpt-4o-2024-08-06",
+        "gen_ai.output.messages": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"ResponseFunctionToolCall(arguments='{}', call_id='call_51GcOnoD74w70pXxuVysYF9l', name='transfer_to_math_specialist', type='function_call', id='fc_01f06fb53f694a0a006a7a3f55da0081a192049c813129713d', caller=None, namespace=None, status='completed')\"},{\"type\":\"text\",\"content\":\"ResponseFunctionToolCall(arguments='{}', call_id='call_hkef8huCY9wRqq3nUYpPSnSQ', name='transfer_to_research_specialist', type='function_call', id='fc_01f06fb53f694a0a006a7a3f55da1081a189404216778af67b', caller=None, namespace=None, status='completed')\"}]}]",
+        "PlatformType": "AWS::BedrockAgentCore",
+        "gen_ai.agent.description": "OpenAI Agents instrumentation",
+        "gen_ai.output.type": "text",
+        "session.id": "7cdeb989-856d-4e70-9b40-02b70cb12287",
+        "gen_ai.system": "openai",
+        "gen_ai.agent.id": "agent"
+      },
+      "scope": {
+        "name": "opentelemetry.instrumentation.openai_agents",
+        "version": ""
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a7a3f4c0bcce7686f1753b56a75f8c0",
+      "span_id": "feab386adf46d59a",
+      "parent_span_id": "625e0da0e226cb40",
+      "name": "POST",
+      "start_time": 1786396502179128072,
+      "end_time": 1786396502886058154,
+      "attributes": {
+        "aws.local.service": "CWExperiment_OpenaiTraceloopMulti.DEFAULT",
+        "telemetry.extended": "true",
+        "http.url": "https://api.openai.com/v1/responses",
+        "aws.remote.service": "api.openai.com",
+        "aws.local.environment": "bedrock-agentcore:default",
+        "aws.remote.operation": "POST /v1",
+        "http.status_code": 200,
+        "aws.local.operation": "UnmappedOperation",
+        "aws.span.kind": "CLIENT",
+        "PlatformType": "AWS::BedrockAgentCore",
+        "http.method": "POST",
+        "http.response.status_code": 200,
+        "session.id": "7cdeb989-856d-4e70-9b40-02b70cb12287"
+      },
+      "scope": {
+        "name": "opentelemetry.instrumentation.httpx",
+        "version": "0.65b0"
+      },
+      "status": {
+        "code": "UNSET"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a7a3f4c0bcce7686f1753b56a75f8c0",
+      "span_id": "625e0da0e226cb40",
+      "parent_span_id": "be73ab30c4f246c7",
+      "name": "chat gpt-4o-2024-08-06",
+      "start_time": 1786396502172900165,
+      "end_time": 1786396502898926387,
+      "attributes": {
+        "aws.local.service": "CWExperiment_OpenaiTraceloopMulti.DEFAULT",
+        "gen_ai.input.messages": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"What is 42 * 7, and what's the weather in Seattle?\"}]}]",
+        "gen_ai.usage.output_tokens": 19,
+        "gen_ai.agent.name": "OpenAI Agent",
+        "gen_ai.response.model": "gpt-4o-2024-08-06",
+        "aws.genai.span_kind": "LLM",
+        "gen_ai.provider.name": "openai",
+        "aws.local.environment": "bedrock-agentcore:default",
+        "server.address": "api.openai.com",
+        "gen_ai.response.id": "resp_01f06fb53f694a0a006a7a3f563b3c81a19e5a99bed7ac49a5",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.usage.input_tokens": 257,
+        "aws.genai.token_count_total": 276,
+        "server.port": 443,
+        "gen_ai.request.model": "gpt-4o-2024-08-06",
+        "gen_ai.output.messages": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"ResponseFunctionToolCall(arguments='{\\\"a\\\":42,\\\"b\\\":7}', call_id='call_jJ9VuMX3v20km2IbQsVqFji1', name='multiply_numbers', type='function_call', id='fc_01f06fb53f694a0a006a7a3f56b3b081a1b0922139a52d6325', caller=None, namespace=None, status='completed')\"}]}]",
+        "PlatformType": "AWS::BedrockAgentCore",
+        "gen_ai.agent.description": "OpenAI Agents instrumentation",
+        "gen_ai.output.type": "text",
+        "session.id": "7cdeb989-856d-4e70-9b40-02b70cb12287",
+        "gen_ai.system": "openai",
+        "gen_ai.agent.id": "agent"
+      },
+      "scope": {
+        "name": "opentelemetry.instrumentation.openai_agents",
+        "version": ""
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a7a3f4c0bcce7686f1753b56a75f8c0",
+      "span_id": "c7fc59bb6046e992",
+      "parent_span_id": "be73ab30c4f246c7",
+      "name": "execute_tool multiply_numbers",
+      "start_time": 1786396502900129349,
+      "end_time": 1786396502901173718,
+      "attributes": {
+        "aws.local.service": "CWExperiment_OpenaiTraceloopMulti.DEFAULT",
+        "gen_ai.tool.type": "function",
+        "gen_ai.agent.name": "OpenAI Agent",
+        "aws.genai.span_kind": "TOOL",
+        "gen_ai.provider.name": "openai",
+        "aws.local.environment": "bedrock-agentcore:default",
+        "server.address": "api.openai.com",
+        "gen_ai.operation.name": "execute_tool",
+        "gen_ai.tool.name": "multiply_numbers",
+        "server.port": 443,
+        "PlatformType": "AWS::BedrockAgentCore",
+        "gen_ai.agent.description": "OpenAI Agents instrumentation",
+        "gen_ai.tool.call.arguments": "{\"a\":42,\"b\":7}",
+        "gen_ai.output.type": "json",
+        "session.id": "7cdeb989-856d-4e70-9b40-02b70cb12287",
+        "gen_ai.system": "openai",
+        "gen_ai.agent.id": "agent",
+        "gen_ai.tool.call.result": "294.0"
+      },
+      "scope": {
+        "name": "opentelemetry.instrumentation.openai_agents",
+        "version": ""
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a7a3f4c0bcce7686f1753b56a75f8c0",
+      "span_id": "be73ab30c4f246c7",
+      "parent_span_id": "c2828d53371818f0",
+      "name": "unknown",
+      "start_time": 1786396502171195626,
+      "end_time": 1786396502901547688,
+      "attributes": {
+        "server.address": "api.openai.com",
+        "aws.local.service": "CWExperiment_OpenaiTraceloopMulti.DEFAULT",
+        "gen_ai.operation.name": "unknown",
+        "gen_ai.agent.name": "OpenAI Agent",
+        "server.port": 443,
+        "PlatformType": "AWS::BedrockAgentCore",
+        "gen_ai.agent.description": "OpenAI Agents instrumentation",
+        "session.id": "7cdeb989-856d-4e70-9b40-02b70cb12287",
+        "gen_ai.system": "openai",
+        "gen_ai.agent.id": "agent",
+        "gen_ai.provider.name": "openai",
+        "aws.local.environment": "bedrock-agentcore:default"
+      },
+      "scope": {
+        "name": "opentelemetry.instrumentation.openai_agents",
+        "version": ""
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a7a3f4c0bcce7686f1753b56a75f8c0",
+      "span_id": "9aba34fc6e67c6b3",
+      "parent_span_id": "e283f3051b518f3a",
+      "name": "POST",
+      "start_time": 1786396502909566243,
+      "end_time": 1786396503993384863,
+      "attributes": {
+        "aws.local.service": "CWExperiment_OpenaiTraceloopMulti.DEFAULT",
+        "telemetry.extended": "true",
+        "http.url": "https://api.openai.com/v1/responses",
+        "aws.remote.service": "api.openai.com",
+        "aws.local.environment": "bedrock-agentcore:default",
+        "aws.remote.operation": "POST /v1",
+        "http.status_code": 200,
+        "aws.local.operation": "UnmappedOperation",
+        "aws.span.kind": "CLIENT",
+        "PlatformType": "AWS::BedrockAgentCore",
+        "http.method": "POST",
+        "http.response.status_code": 200,
+        "session.id": "7cdeb989-856d-4e70-9b40-02b70cb12287"
+      },
+      "scope": {
+        "name": "opentelemetry.instrumentation.httpx",
+        "version": "0.65b0"
+      },
+      "status": {
+        "code": "UNSET"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a7a3f4c0bcce7686f1753b56a75f8c0",
+      "span_id": "e283f3051b518f3a",
+      "parent_span_id": "bdf3e5b581b32a74",
+      "name": "chat gpt-4o-2024-08-06",
+      "start_time": 1786396502902425864,
+      "end_time": 1786396503999131992,
+      "attributes": {
+        "aws.local.service": "CWExperiment_OpenaiTraceloopMulti.DEFAULT",
+        "gen_ai.input.messages": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"What is 42 * 7, and what's the weather in Seattle?\"}]}]",
+        "gen_ai.usage.output_tokens": 36,
+        "gen_ai.agent.name": "OpenAI Agent",
+        "gen_ai.response.model": "gpt-4o-2024-08-06",
+        "aws.genai.span_kind": "LLM",
+        "gen_ai.provider.name": "openai",
+        "aws.local.environment": "bedrock-agentcore:default",
+        "server.address": "api.openai.com",
+        "gen_ai.response.id": "resp_01f06fb53f694a0a006a7a3f56f76081a1a89c6d92a689890d",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.usage.input_tokens": 287,
+        "aws.genai.token_count_total": 323,
+        "server.port": 443,
+        "gen_ai.request.model": "gpt-4o-2024-08-06",
+        "gen_ai.output.messages": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"The product of 42 and 7 is 294. \\n\\nAs for the weather in Seattle, I recommend checking a current weather service or website for real-time information.\"}]}]",
+        "PlatformType": "AWS::BedrockAgentCore",
+        "gen_ai.agent.description": "OpenAI Agents instrumentation",
+        "gen_ai.output.type": "text",
+        "session.id": "7cdeb989-856d-4e70-9b40-02b70cb12287",
+        "gen_ai.system": "openai",
+        "gen_ai.agent.id": "agent"
+      },
+      "scope": {
+        "name": "opentelemetry.instrumentation.openai_agents",
+        "version": ""
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a7a3f4c0bcce7686f1753b56a75f8c0",
+      "span_id": "bdf3e5b581b32a74",
+      "parent_span_id": "c2828d53371818f0",
+      "name": "unknown",
+      "start_time": 1786396502901826498,
+      "end_time": 1786396504000164428,
+      "attributes": {
+        "server.address": "api.openai.com",
+        "aws.local.service": "CWExperiment_OpenaiTraceloopMulti.DEFAULT",
+        "gen_ai.operation.name": "unknown",
+        "gen_ai.agent.name": "OpenAI Agent",
+        "server.port": 443,
+        "PlatformType": "AWS::BedrockAgentCore",
+        "gen_ai.agent.description": "OpenAI Agents instrumentation",
+        "session.id": "7cdeb989-856d-4e70-9b40-02b70cb12287",
+        "gen_ai.system": "openai",
+        "gen_ai.agent.id": "agent",
+        "gen_ai.provider.name": "openai",
+        "aws.local.environment": "bedrock-agentcore:default"
+      },
+      "scope": {
+        "name": "opentelemetry.instrumentation.openai_agents",
+        "version": ""
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a7a3f4c0bcce7686f1753b56a75f8c0",
+      "span_id": "c2828d53371818f0",
+      "parent_span_id": "42508b0269e20e8b",
+      "name": "invoke_agent math_specialist",
+      "start_time": 1786396502171043254,
+      "end_time": 1786396504001024531,
+      "attributes": {
+        "aws.local.service": "CWExperiment_OpenaiTraceloopMulti.DEFAULT",
+        "gen_ai.input.messages": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"What is 42 * 7, and what's the weather in Seattle?\"}]}]",
+        "telemetry.extended": "true",
+        "aws.remote.resource.identifier": "gpt-4o-2024-08-06",
+        "gen_ai.agent.name": "math_specialist",
+        "aws.genai.span_kind": "AGENT",
+        "aws.remote.service": "openai",
+        "gen_ai.provider.name": "openai",
+        "aws.local.environment": "bedrock-agentcore:default",
+        "aws.remote.operation": "invoke_agent",
+        "server.address": "api.openai.com",
+        "aws.local.operation": "UnmappedOperation",
+        "aws.span.kind": "CLIENT",
+        "aws.remote.resource.type": "GenAI::Model",
+        "gen_ai.operation.name": "invoke_agent",
+        "server.port": 443,
+        "gen_ai.request.model": "gpt-4o-2024-08-06",
+        "gen_ai.output.messages": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"The product of 42 and 7 is 294. \\n\\nAs for the weather in Seattle, I recommend checking a current weather service or website for real-time information.\"}]}]",
+        "PlatformType": "AWS::BedrockAgentCore",
+        "gen_ai.agent.description": "OpenAI Agents instrumentation",
+        "gen_ai.output.type": "text",
+        "session.id": "7cdeb989-856d-4e70-9b40-02b70cb12287",
+        "gen_ai.system": "openai",
+        "gen_ai.agent.id": "agent"
+      },
+      "scope": {
+        "name": "opentelemetry.instrumentation.openai_agents",
+        "version": ""
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a7a3f4c0bcce7686f1753b56a75f8c0",
+      "span_id": "42508b0269e20e8b",
+      "parent_span_id": "24e36a98a3709aeb",
+      "name": "unknown",
+      "start_time": 1786396499917480536,
+      "end_time": 1786396504001184857,
+      "attributes": {
+        "server.address": "api.openai.com",
+        "aws.local.service": "CWExperiment_OpenaiTraceloopMulti.DEFAULT",
+        "gen_ai.operation.name": "unknown",
+        "gen_ai.agent.name": "OpenAI Agent",
+        "server.port": 443,
+        "PlatformType": "AWS::BedrockAgentCore",
+        "gen_ai.agent.description": "OpenAI Agents instrumentation",
+        "session.id": "7cdeb989-856d-4e70-9b40-02b70cb12287",
+        "gen_ai.system": "openai",
+        "gen_ai.agent.id": "agent",
+        "gen_ai.provider.name": "openai",
+        "aws.local.environment": "bedrock-agentcore:default"
+      },
+      "scope": {
+        "name": "opentelemetry.instrumentation.openai_agents",
+        "version": ""
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a7a3f4c0bcce7686f1753b56a75f8c0",
+      "span_id": "24e36a98a3709aeb",
+      "parent_span_id": "6b49d758067b2298",
+      "name": "Agent workflow",
+      "start_time": 1786396499916663545,
+      "end_time": 1786396504001214386,
+      "attributes": {
+        "aws.local.service": "CWExperiment_OpenaiTraceloopMulti.DEFAULT",
+        "telemetry.extended": "true",
+        "aws.genai.span_kind": "AGENT",
+        "gen_ai.provider.name": "openai",
+        "aws.local.environment": "bedrock-agentcore:default",
+        "server.address": "api.openai.com",
+        "aws.local.operation": "Agent workflow",
+        "aws.span.kind": "SERVER",
+        "gen_ai.operation.name": "invoke_agent",
+        "server.port": 443,
+        "PlatformType": "AWS::BedrockAgentCore",
+        "gen_ai.system": "openai",
+        "session.id": "7cdeb989-856d-4e70-9b40-02b70cb12287"
+      },
+      "scope": {
+        "name": "opentelemetry.instrumentation.openai_agents",
+        "version": ""
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a7a3f4c0bcce7686f1753b56a75f8c0",
+      "span_id": "6b49d758067b2298",
+      "parent_span_id": "a6e4e62b1b39f2d3",
+      "name": "POST /invocations",
+      "start_time": 1786396499914642563,
+      "end_time": 1786396504002304668,
+      "attributes": {
+        "aws.local.service": "CWExperiment_OpenaiTraceloopMulti.DEFAULT",
+        "net.peer.port": 58476,
+        "telemetry.extended": "true",
+        "http.target": "/invocations",
+        "http.flavor": "1.1",
+        "http.url": "http://cell01.us-east-1.prod.arp.kepler-analytics.aws.dev/invocations",
+        "net.peer.ip": "127.0.0.1",
+        "http.host": "127.0.0.1:8080",
+        "aws.local.environment": "bedrock-agentcore:default",
+        "http.status_code": 200,
+        "aws.local.operation": "POST /invocations",
+        "aws.span.kind": "SERVER",
+        "http.server_name": "cell01.us-east-1.prod.arp.kepler-analytics.aws.dev",
+        "net.host.port": 8080,
+        "http.route": "/invocations",
+        "PlatformType": "AWS::BedrockAgentCore",
+        "http.method": "POST",
+        "http.response.status_code": 200,
+        "session.id": "7cdeb989-856d-4e70-9b40-02b70cb12287",
+        "http.scheme": "http"
+      },
+      "scope": {
+        "name": "opentelemetry.instrumentation.starlette",
+        "version": "0.65b0"
+      },
+      "status": {
+        "code": "UNSET"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a7a3f4c0bcce7686f1753b56a75f8c0",
+      "span_id": "4dedb6094f55650c",
+      "parent_span_id": "6b49d758067b2298",
+      "name": "POST",
+      "start_time": 1786396504325441150,
+      "end_time": 1786396504799299049,
+      "attributes": {
+        "aws.local.service": "CWExperiment_OpenaiTraceloopMulti.DEFAULT",
+        "telemetry.extended": "true",
+        "http.url": "https://api.openai.com/v1/traces/ingest",
+        "aws.remote.service": "api.openai.com",
+        "aws.local.environment": "bedrock-agentcore:default",
+        "aws.remote.operation": "POST /v1",
+        "http.status_code": 204,
+        "aws.local.operation": "UnmappedOperation",
+        "aws.span.kind": "CLIENT",
+        "PlatformType": "AWS::BedrockAgentCore",
+        "http.method": "POST",
+        "http.response.status_code": 204,
+        "session.id": "7cdeb989-856d-4e70-9b40-02b70cb12287"
+      },
+      "scope": {
+        "name": "opentelemetry.instrumentation.httpx",
+        "version": "0.65b0"
+      },
+      "status": {
+        "code": "UNSET"
+      },
+      "span_events": []
+    }
+  ]
+}
