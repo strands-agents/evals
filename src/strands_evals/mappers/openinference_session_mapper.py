@@ -36,7 +36,6 @@ from ..types.trace import (
     UserMessage,
 )
 from .constants import (
-    SCOPE_OPENINFERENCE,
     SCOPE_OPENINFERENCE_CLAUDE_AGENT_SDK,
     SCOPE_OPENINFERENCE_SMOLAGENTS,
     SCOPES_OPENINFERENCE_FAMILY,
@@ -262,9 +261,8 @@ class OpenInferenceSessionMapper(SessionMapper):
 
         # In multi-agent LangGraph systems, each nested sub-graph produces its own
         # LangGraph CHAIN span. Keep only the last one (root graph finishes last).
-        is_langchain = any(self._get_scope_name(s) == SCOPE_OPENINFERENCE for s in spans)
         agent_spans = [s for s in converted_spans if isinstance(s, AgentInvocationSpan)]
-        if len(agent_spans) > 1 and is_langchain:
+        if len(agent_spans) > 1:
             root = agent_spans[-1]
             converted_spans = [s for s in converted_spans if not isinstance(s, AgentInvocationSpan) or s is root]
 
