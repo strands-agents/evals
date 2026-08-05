@@ -335,8 +335,8 @@ class OpenInferenceSessionMapper(SessionMapper):
 
         Detection:
         1. Live instrumentation (LangGraph): CHAIN + name=LangGraph
-        2. Live instrumentation (smolagents/Claude Agent SDK): AGENT span kind
-           from a known scope, with both input.value and output.value present.
+        2. Live instrumentation (smolagents/Claude Agent SDK): AGENT span kind,
+           with both input.value and output.value present.
         3. ADOT body: root LangGraph graph node — input has "messages" without
            "remaining_steps" (intermediate nodes always have "remaining_steps"),
            and output has "messages".
@@ -349,9 +349,9 @@ class OpenInferenceSessionMapper(SessionMapper):
         if span_kind == "CHAIN" and span_name == "LangGraph":
             return True
 
-        # smolagents and Claude Agent SDK: AGENT spans with input.value + output.value.
-        # Only accept from known scopes to avoid matching LangChain's route_to_agent
-        # spans which also have kind=AGENT with both input and output values.
+        # Only accept AGENT spans from scopes known to produce real agent
+        # invocations. Other scopes (e.g. LangChain) emit kind=AGENT for 
+        # routing nodes that aren't true agent invocations — reject those by default.
         if span_kind == "AGENT":
             scope_name = self._get_scope_name(span)
             if scope_name in (SCOPE_OPENINFERENCE_SMOLAGENTS, SCOPE_OPENINFERENCE_CLAUDE_AGENT_SDK):
@@ -359,10 +359,6 @@ class OpenInferenceSessionMapper(SessionMapper):
                 output_val = attrs.get("output.value")
                 if input_val and output_val:
                     return True
-            # LangChain AGENT spans (e.g. route_to_agent) carry kind=AGENT with
-            # input/output but are routing nodes, not agent invocations. Reject
-            # unrecognized scopes, and also reject recognized-scope AGENT spans
-            # that lack input/output
             return False
 
         # ADOT fallback: root LangGraph node has messages in/out but no remaining_steps.
@@ -441,7 +437,6 @@ class OpenInferenceSessionMapper(SessionMapper):
             if span_name and span_name not in SCOPES_OPENINFERENCE_FAMILY:
                 tool_name = span_name
 
-        # Extract tool_call_id from tool.id attribute
         tool_call_id = attrs.get("tool.id")
 
         # Get input from attributes
