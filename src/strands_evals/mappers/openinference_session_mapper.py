@@ -350,7 +350,7 @@ class OpenInferenceSessionMapper(SessionMapper):
             return True
 
         # Only accept AGENT spans from scopes known to produce real agent
-        # invocations. Other scopes (e.g. LangChain) emit kind=AGENT for 
+        # invocations. Other scopes (e.g. LangChain) emit kind=AGENT for
         # routing nodes that aren't true agent invocations — reject those by default.
         if span_kind == "AGENT":
             scope_name = self._get_scope_name(span)
