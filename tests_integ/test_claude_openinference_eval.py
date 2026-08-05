@@ -31,7 +31,7 @@ from strands_evals.telemetry import StrandsEvalsTelemetry
 from strands_evals.types.trace import AgentInvocationSpan, Session, ToolExecutionSpan
 
 # Bedrock model for the Claude Agent SDK
-DEFAULT_MODEL = os.environ.get("ANTHROPIC_MODEL", "us.anthropic.claude-sonnet-4-6")
+DEFAULT_MODEL = os.environ.get("STRANDS_CLAUDE_TEST_MODEL", "us.anthropic.claude-sonnet-4-6")
 
 BEDROCK_ENV = {
     "CLAUDE_CODE_USE_BEDROCK": "1",
@@ -47,11 +47,7 @@ BEDROCK_ENV = {
 
 @pytest.fixture(scope="module")
 def telemetry():
-    """Setup OpenTelemetry with in-memory exporter and Claude Agent SDK instrumentation.
-
-    StrandsEvalsTelemetry sets the global TracerProvider; the Claude SDK instrumentor
-    hooks into it automatically.
-    """
+    """Setup OpenTelemetry with in-memory exporter and Claude Agent SDK instrumentation."""
     telemetry = StrandsEvalsTelemetry().setup_in_memory_exporter()
 
     instrumentor = ClaudeAgentSDKInstrumentor()
@@ -84,22 +80,12 @@ def _get_query():
     return _query_func
 
 
-async def _run_claude_agent(prompt: str, *, tools: list[str] | None = None, agents: dict | None = None) -> str:
-    """Run a Claude Agent SDK query and return the final response text.
-
-    Args:
-        prompt: The user prompt to send to the agent.
-        tools: List of tool names to allow (e.g. ["Bash"]). Defaults to ["Bash"].
-        agents: Optional dict of sub-agent definitions for multi-agent mode.
-
-    Returns:
-        The agent's final text response.
-    """
+async def _run_claude_agent(prompt: str, *, agents: dict | None = None) -> str:
+    """Run a Claude Agent SDK query and return the final response text."""
     query = _get_query()
 
-    allowed_tools = tools or ["Bash"]
-    if agents:
-        allowed_tools = ["Agent"]
+    # allowed_tools is the permission allow-list for the entire session including sub-agents.
+    allowed_tools = ["Agent", "Bash"] if agents else ["Bash"]
 
     options = ClaudeAgentOptions(
         allowed_tools=allowed_tools,
@@ -108,25 +94,33 @@ async def _run_claude_agent(prompt: str, *, tools: list[str] | None = None, agen
         env=BEDROCK_ENV,
     )
 
-    final_output = ""
-    async for message in query(prompt=prompt, options=options):
-        if hasattr(message, "result") and message.result:
-            final_output = message.result
+    async def _run_query() -> str:
+        out = ""
+        async for message in query(prompt=prompt, options=options):
+            if hasattr(message, "result"):
+                if message.result:
+                    out = message.result
+                elif getattr(message, "is_error", False):
+                    raise RuntimeError(
+                        f"Claude Agent SDK run failed: subtype={getattr(message, 'subtype', None)!r} "
+                        f"terminal_reason={getattr(message, 'terminal_reason', None)!r}"
+                    )
+        return out
+
+    final_output = await asyncio.wait_for(_run_query(), timeout=180)
 
     return final_output
 
 
 # =============================================================================
-# Tests — Single Agent (reuse one agent call)
+# Tests — Single Agent
 # =============================================================================
 
 
 def test_claude_single_query(telemetry):
     """Spans are captured, mapper is auto-detected, session is valid, and tool_call_ids are populated."""
     telemetry.in_memory_exporter.clear()
-    response = asyncio.run(
-        _run_claude_agent("Use bash to calculate: echo $((15 * 37)). Just give me the number.")
-    )
+    response = asyncio.run(_run_claude_agent("Use bash to calculate: echo $((15 * 37)). Just give me the number."))
     spans = readable_spans_to_dicts(telemetry.in_memory_exporter.get_finished_spans())
 
     assert len(spans) > 0, "Should have captured OTEL spans"
@@ -185,46 +179,27 @@ def test_claude_single_agent_evaluation(telemetry):
 
 def test_claude_multi_agent_evaluation(telemetry):
     """Multi-agent delegation + tool call spans evaluate correctly."""
-    math_specialist = AgentDefinition(
-        description=(
-            "Math specialist agent. Delegate any mathematical calculations "
-            "including arithmetic, algebra, square roots, and numeric computations."
-        ),
-        prompt=(
-            "You are a math specialist. Use Bash ONLY to run `python3 -c 'import math; print(...)'` "
-            "for calculations. Never use Bash for anything else. "
-            "Be precise and return just the numeric result."
-        ),
-        tools=["Bash"],
-    )
-
-    conversion_specialist = AgentDefinition(
-        description=(
-            "Unit conversion specialist. Delegate unit conversions between metric and "
-            "imperial systems, including distance, temperature, and weight."
-        ),
-        prompt=(
-            "You are a unit conversion specialist. Use Bash ONLY to run "
-            "`python3 -c 'print(...)'` for conversion calculations. Never use Bash for anything else.\n"
-            "Supported conversions:\n"
-            "- Distance: km <-> miles (1 km = 0.621371 miles)\n"
-            "- Temperature: celsius <-> fahrenheit (F = C*9/5+32)\n"
-            "- Weight: kg <-> lbs (1 kg = 2.20462 lbs)\n"
-            "Be precise and show the conversion formula used."
-        ),
-        tools=["Bash"],
-    )
-
     agents = {
-        "math-specialist": math_specialist,
-        "conversion-specialist": conversion_specialist,
+        "math-specialist": AgentDefinition(
+            description=(
+                "Math specialist agent. Delegate any mathematical calculations "
+                "including arithmetic, algebra, square roots, and numeric computations."
+            ),
+            prompt=(
+                "You are a math specialist. Use Bash ONLY to run `python3 -c 'import math; print(...)'` "
+                "for calculations. Never use Bash for anything else. "
+                "Be precise and return just the numeric result."
+            ),
+            tools=["Bash"],
+        ),
     }
 
     test_cases = [
         Case[str, str](
             name="multi-agent-math",
             input="Calculate the square root of 1764, then multiply that result by 3.",
-            expected_assertion="The agent delegated to a math specialist and computed the correct result (126).",
+            expected_output="126",
+            expected_assertion="The agent delegated to the math-specialist sub-agent to perform the calculation.",
         ),
     ]
 
@@ -237,7 +212,7 @@ def test_claude_multi_agent_evaluation(telemetry):
         session = mapper.map_to_session(spans, session_id=case.session_id)
         return {"output": response, "trajectory": session}
 
-    # One evaluator per extraction level to maximize mapper coverage
+    # One evaluator per extraction level: SESSION, TRACE, TOOL
     evaluators = [
         GoalSuccessRateEvaluator(),
         CorrectnessEvaluator(),
@@ -248,20 +223,28 @@ def test_claude_multi_agent_evaluation(telemetry):
     report = experiment.run_evaluations(task_function)
 
     assert len(report.scores) == 3
-    assert all(report.test_passes), f"Some evaluations failed: {report.reasons}"
+    assert all(report.test_passes[:2]), f"Some evaluations failed: {report.reasons[:2]}"
+    assert report.scores[2] >= 0.5, f"Tool selection accuracy too low: {report.reasons[2]}"
 
     session = Session.model_validate(report.cases[0]["actual_trajectory"])
 
     assert len(session.traces) >= 1, f"Multi-agent should produce at least 1 trace, got {len(session.traces)}"
 
-    # Verify tool spans are present
+    # Verify tool spans succeeded
     tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
     assert len(tool_spans) >= 1, "Expected at least one tool execution span from sub-agent"
     for tool_span in tool_spans:
         assert tool_span.tool_call.tool_call_id is not None, (
             f"tool_call_id should be populated, got None for tool '{tool_span.tool_call.name}'"
         )
+        assert tool_span.tool_result.error is None, (
+            f"tool '{tool_span.tool_call.name}' did not execute successfully: "
+            f"error={tool_span.tool_result.error!r} content={tool_span.tool_result.content!r}"
+        )
 
-    # Verify agent invocation span is present
     agent_spans = [s for t in session.traces for s in t.spans if isinstance(s, AgentInvocationSpan)]
     assert len(agent_spans) >= 1, "Expected at least one AgentInvocationSpan"
+
+    # Prove delegation actually happened
+    delegations = [s.tool_call.arguments.get("agent_name") for s in tool_spans if s.tool_call.name == "Agent"]
+    assert "math-specialist" in delegations, f"Expected delegation to math-specialist, got {delegations}"

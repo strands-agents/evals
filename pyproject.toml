@@ -67,8 +67,8 @@ langchain = [
 ]
 adk = ["google-adk>=2.0.0,<3.0.0"]
 claude = [
-    "claude-agent-sdk>=0.1.0",
-    "openinference-instrumentation-claude-agent-sdk>=0.1.0",
+    "claude-agent-sdk>=0.2.0,<0.3.0",
+    "openinference-instrumentation-claude-agent-sdk>=0.1.8,<0.2.0",
 ]
 
 [tool.ruff]
