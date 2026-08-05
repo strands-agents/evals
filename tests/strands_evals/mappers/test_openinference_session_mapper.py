@@ -1733,11 +1733,13 @@ class TestClaudeAgentSdkScopeSupport:
             pytest.param({"code": "ERROR"}, [], "error", id="bare_fallback"),
             pytest.param(
                 {"code": "ERROR"},
-                [{
-                    "event_name": "exception",
-                    "timestamp": 1700000000500000000,
-                    "attributes": {"exception.message": '[{"type":"text","text":""}]'},
-                }],
+                [
+                    {
+                        "event_name": "exception",
+                        "timestamp": 1700000000500000000,
+                        "attributes": {"exception.message": '[{"type":"text","text":""}]'},
+                    }
+                ],
                 '[{"type":"text","text":""}]',
                 id="empty_text_block_falls_back_to_raw",
             ),
@@ -1914,5 +1916,3 @@ class TestClaudeAgentSdkScopeSupport:
         tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
         assert len(tool_spans) == 1
         assert tool_spans[0].tool_result.content != ""
-
-
