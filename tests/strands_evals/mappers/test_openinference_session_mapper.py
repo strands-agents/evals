@@ -1731,6 +1731,16 @@ class TestClaudeAgentSdkScopeSupport:
                 id="exception_message",
             ),
             pytest.param({"code": "ERROR"}, [], "error", id="bare_fallback"),
+            pytest.param(
+                {"code": "ERROR"},
+                [{
+                    "event_name": "exception",
+                    "timestamp": 1700000000500000000,
+                    "attributes": {"exception.message": '[{"type":"text","text":""}]'},
+                }],
+                '[{"type":"text","text":""}]',
+                id="empty_text_block_falls_back_to_raw",
+            ),
         ],
     )
     def test_claude_failed_tool_span_no_output_preserved(self, status, span_events, expected_error):
@@ -1884,3 +1894,25 @@ class TestClaudeAgentSdkScopeSupport:
         assert len(tool_spans) == 1
         assert "25°C 東京" in tool_spans[0].tool_result.content
         assert "\\u" not in tool_spans[0].tool_result.content
+
+    def test_non_str_text_value_not_blanked(self):
+        """A block with text: 500 (non-str) must preserve the block as JSON, not return ''."""
+        span = make_span(
+            name="Bash",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "TOOL",
+                "tool.id": "toolu_nonstr",
+                "tool.name": "Bash",
+                "input.value": json.dumps({"command": "echo 500"}),
+                "output.value": json.dumps({"status": "completed", "content": [{"type": "text", "text": 500}]}),
+            },
+        )
+
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+        assert tool_spans[0].tool_result.content != ""
+
+
