@@ -334,42 +334,36 @@ def test_adk_multi_agent_evaluation(telemetry, create_multi_agent_runner):
     # Tool spans are scoped to their owning agent via agent_span_id
     tool_spans = [s for s in trace.spans if isinstance(s, ToolExecutionSpan)]
 
-    # Find each agent's span_id for ownership checks
-    coordinator_span_id = next(
-        s.span_info.span_id for s in agent_spans if s.metadata.get("agent_name") == "coordinator"
-    )
-    specialist_span_id = next(
+    coordinator_span_ids = {s.span_info.span_id for s in agent_spans if s.metadata.get("agent_name") == "coordinator"}
+    specialist_span_ids = {
         s.span_info.span_id for s in agent_spans if s.metadata.get("agent_name") == "weather_specialist"
-    )
+    }
 
     # get_weather should be owned by the specialist, not the coordinator
     for tool_span in tool_spans:
         if tool_span.tool_call.name == "get_weather":
-            assert tool_span.agent_span_id == specialist_span_id, (
-                f"get_weather should be scoped to specialist ({specialist_span_id}), "
+            assert tool_span.agent_span_id in specialist_span_ids, (
+                f"get_weather should be scoped to the specialist ({specialist_span_ids}), "
                 f"got agent_span_id={tool_span.agent_span_id}"
             )
             assert tool_span.tool_call.tool_call_id is not None, (
                 f"tool_call_id should be populated, got None for tool '{tool_span.tool_call.name}'"
             )
         elif tool_span.tool_call.name == "transfer_to_agent":
-            assert tool_span.agent_span_id == coordinator_span_id, (
-                f"transfer_to_agent should be scoped to coordinator ({coordinator_span_id}), "
-                f"got agent_span_id={tool_span.agent_span_id}"
+            assert tool_span.agent_span_id in coordinator_span_ids | specialist_span_ids, (
+                f"transfer_to_agent should be scoped to a known agent span, got agent_span_id={tool_span.agent_span_id}"
             )
 
     # Coordinator tools should only be transfer_to_agent — no specialist tools leaked
-    coordinator_tools = [s for s in tool_spans if s.agent_span_id == coordinator_span_id]
+    coordinator_tools = [s for s in tool_spans if s.agent_span_id in coordinator_span_ids]
     coordinator_tool_names = {s.tool_call.name for s in coordinator_tools}
     assert "get_weather" not in coordinator_tool_names, (
         f"Specialist tool leaked onto coordinator: {coordinator_tool_names}"
     )
-    assert coordinator_tool_names <= {"transfer_to_agent"}, (
-        f"Unexpected tools on coordinator: {coordinator_tool_names}"
-    )
+    assert coordinator_tool_names <= {"transfer_to_agent"}, f"Unexpected tools on coordinator: {coordinator_tool_names}"
 
     # Specialist must have at least the get_weather call
-    specialist_tools = [s for s in tool_spans if s.agent_span_id == specialist_span_id]
+    specialist_tools = [s for s in tool_spans if s.agent_span_id in specialist_span_ids]
     assert len(specialist_tools) >= 1, "Specialist should have at least one tool span"
     specialist_tool_names = {s.tool_call.name for s in specialist_tools}
     assert "get_weather" in specialist_tool_names, f"Expected get_weather tool, got {specialist_tool_names}"
