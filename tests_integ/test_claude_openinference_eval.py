@@ -7,7 +7,6 @@ evaluates using strands-evals via the OpenInferenceSessionMapper.
 Requirements:
     pip install strands-agents-evals[claude]
     AWS credentials configured for Amazon Bedrock access.
-    System: Node.js + Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
 
 Run with: pytest tests_integ/test_claude_openinference_eval.py -v
 """
@@ -136,12 +135,16 @@ def test_claude_single_query(telemetry):
     assert len(session.traces) > 0, "Should have at least one trace"
     assert "555" in response, f"Expected 555 in response, got: {response}"
 
-    # Verify tool spans have tool_call_id populated
+    # Verify tool spans have tool_call_id populated and succeeded
     tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
     assert len(tool_spans) >= 1, "Expected at least one tool execution span"
     for tool_span in tool_spans:
         assert tool_span.tool_call.tool_call_id is not None, (
             f"tool_call_id should be populated, got None for tool '{tool_span.tool_call.name}'"
+        )
+        assert tool_span.tool_result.error is None, (
+            f"tool '{tool_span.tool_call.name}' did not execute successfully: "
+            f"error={tool_span.tool_result.error!r} content={tool_span.tool_result.content!r}"
         )
 
 
@@ -199,7 +202,6 @@ def test_claude_multi_agent_evaluation(telemetry):
             name="multi-agent-math",
             input="Calculate the square root of 1764, then multiply that result by 3.",
             expected_output="126",
-            expected_assertion="The agent delegated to the math-specialist sub-agent to perform the calculation.",
         ),
     ]
 
@@ -246,5 +248,5 @@ def test_claude_multi_agent_evaluation(telemetry):
     assert len(agent_spans) >= 1, "Expected at least one AgentInvocationSpan"
 
     # Prove delegation actually happened
-    delegations = [s.tool_call.arguments.get("agent_name") for s in tool_spans if s.tool_call.name == "Agent"]
+    delegations = [s.tool_call.arguments.get("subagent_type") for s in tool_spans if s.tool_call.name == "Agent"]
     assert "math-specialist" in delegations, f"Expected delegation to math-specialist, got {delegations}"
