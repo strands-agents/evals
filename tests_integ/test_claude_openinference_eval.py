@@ -30,12 +30,12 @@ from strands_evals.telemetry import StrandsEvalsTelemetry
 from strands_evals.types.trace import AgentInvocationSpan, Session, ToolExecutionSpan
 
 # Bedrock model for the Claude Agent SDK
-DEFAULT_MODEL = os.environ.get("STRANDS_CLAUDE_TEST_MODEL", "us.anthropic.claude-sonnet-4-6")
+DEFAULT_MODEL = os.environ.get("STRANDS_CLAUDE_TEST_MODEL", "us.anthropic.claude-sonnet-4-20250514-v1:0")
 
 BEDROCK_ENV = {
     "CLAUDE_CODE_USE_BEDROCK": "1",
     "ANTHROPIC_MODEL": DEFAULT_MODEL,
-    "AWS_REGION": os.environ.get("AWS_REGION", "us-east-1"),
+    "AWS_REGION": os.environ.get("AWS_REGION", "us-west-2"),
 }
 
 
