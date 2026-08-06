@@ -66,6 +66,10 @@ langchain = [
     "opentelemetry-instrumentation-langchain>=0.40.0,<0.62.0",
 ]
 adk = ["google-adk>=2.0.0,<3.0.0"]
+claude = [
+    "claude-agent-sdk>=0.2.0,<0.3.0",
+    "openinference-instrumentation-claude-agent-sdk>=0.1.8,<0.2.0",
+]
 
 [tool.ruff]
 line-length = 120
@@ -74,7 +78,7 @@ include = ["src/**/*.py", "tests/**/*.py", "tests_integ/**/*.py"]
 [tool.hatch.envs.hatch-test]
 installer = "uv"
 extra-args = ["-n", "auto", "-vv"]
-features = ["otel", "langfuse", "langchain", "opensearch", "adk"]
+features = ["otel", "langfuse", "langchain", "opensearch", "adk", "claude"]
 dependencies = [
     "pytest>=8.0.0,<10.0.0",
     "pytest-cov>=7.0.0,<8.0.0",
