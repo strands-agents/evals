@@ -17,7 +17,7 @@ from tenacity import (
 from typing_extensions import Any, Generic
 
 from .case import Case
-from .detectors.diagnosis import diagnose_session
+from .detectors.diagnosis import diagnose_session_async
 from .evaluation_data_store import EvaluationDataStore
 from .evaluators.coherence_evaluator import CoherenceEvaluator
 from .evaluators.conciseness_evaluator import ConcisenessEvaluator
@@ -471,11 +471,11 @@ class Experiment(Generic[InputT, OutputT]):
             return None, None
 
         try:
-            result = await asyncio.to_thread(
-                diagnose_session,
+            result = await diagnose_session_async(
                 trajectory,
                 model=self._diagnosis_config.model,
                 confidence_threshold=self._diagnosis_config.confidence_threshold,
+                max_workers=self._diagnosis_config.max_workers,
             )
             recs = result.recommendations
             recs_str = "; ".join(recs) if recs else None

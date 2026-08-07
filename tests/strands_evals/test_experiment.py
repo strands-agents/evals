@@ -2032,7 +2032,7 @@ class TestDiagnoseOnFailure:
         assert report.recommendations[af] == report.recommendations[m2] == "Fix the prompt"
         mock_run_diag.assert_called_once()
 
-    @patch("strands_evals.experiment.diagnose_session")
+    @patch("strands_evals.experiment.diagnose_session_async")
     def test_diagnosis_exception_returns_none(self, mock_diagnose):
         """If diagnosis throws, it should be caught and return None for both fields."""
         mock_diagnose.side_effect = RuntimeError("LLM unavailable")
@@ -2052,6 +2052,28 @@ class TestDiagnoseOnFailure:
 
         assert report.diagnoses == [None]
         assert report.recommendations == [None]
+
+    @patch("strands_evals.experiment.diagnose_session_async")
+    def test_diagnosis_threads_max_workers_from_config(self, mock_diagnose):
+        """`DiagnosisConfig.max_workers` must reach `diagnose_session_async`
+        so users can tune inner LLM concurrency without monkey-patching.
+        """
+        from strands_evals.types.detector import DiagnosisResult
+
+        mock_diagnose.return_value = DiagnosisResult(session_id="sess_1", failures=[], root_causes=[])
+        session = self._make_session()
+
+        cases = [Case(name="fail", input="foo", expected_output="bar")]
+        experiment = Experiment(
+            cases=cases,
+            evaluators=[MockEvaluator()],
+            diagnosis_config=DiagnosisConfig(max_workers=7),
+        )
+
+        experiment.run_evaluations(lambda c: {"output": c.input, "trajectory": session})
+
+        mock_diagnose.assert_called_once()
+        assert mock_diagnose.call_args.kwargs["max_workers"] == 7
 
 
 def test_run_evaluations_two_same_class_evaluators_with_distinct_names():
