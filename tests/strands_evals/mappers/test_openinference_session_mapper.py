@@ -18,9 +18,13 @@ _FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 _LIVE_SPANS_FILE = _FIXTURES_DIR / "openinference_live_spans.json"
 _ADOT_SPANS_FILE = _FIXTURES_DIR / "openinference_adot_spans.json"
 _SMOLAGENTS_SPANS_FILE = _FIXTURES_DIR / "smolagents_live_spans.json"
+_CLAUDE_SPANS_FILE = _FIXTURES_DIR / "claude_live_spans.json"
+_CLAUDE_AGENTCORE_FILE = _FIXTURES_DIR / "claude_unified_spans.json"
+_CLAUDE_SPLIT_TELEMETRY_FILE = _FIXTURES_DIR / "claude_adot_spans.json"
 
 SCOPE_NAME = "openinference.instrumentation.langchain"
 SMOLAGENTS_SCOPE_NAME = "openinference.instrumentation.smolagents"
+CLAUDE_SDK_SCOPE_NAME = "openinference.instrumentation.claude_agent_sdk"
 
 
 def make_span(
@@ -171,20 +175,40 @@ def make_adot_span(
 
 def _load_live_spans():
     """Load real live (in-memory) spans from fixture file."""
-    with open(_LIVE_SPANS_FILE) as f:
+    with open(_LIVE_SPANS_FILE, encoding="utf-8") as f:
         return json.load(f)
 
 
 def _load_adot_spans():
     """Load ADOT/CloudWatch spans from fixture file."""
-    with open(_ADOT_SPANS_FILE) as f:
+    with open(_ADOT_SPANS_FILE, encoding="utf-8") as f:
         return json.load(f)
 
 
 def _load_smolagents_spans():
     """Load real smolagents (openinference-instrumentation-smolagents) spans from fixture file."""
-    with open(_SMOLAGENTS_SPANS_FILE) as f:
+    with open(_SMOLAGENTS_SPANS_FILE, encoding="utf-8") as f:
         return json.load(f)
+
+
+def _load_claude_spans():
+    """Load real Claude Agent SDK (openinference-instrumentation-claude-agent-sdk) spans from fixture file."""
+    with open(_CLAUDE_SPANS_FILE, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _load_claude_agentcore_spans():
+    """Load Claude Agent SDK spans captured from AgentCore (session.id on all spans)."""
+    with open(_CLAUDE_AGENTCORE_FILE, encoding="utf-8") as f:
+        data = json.load(f)
+    return data["session_id"], data["spans"]
+
+
+def _load_claude_adot_spans():
+    """Load Claude Agent SDK ADOT (split telemetry) event records from AgentCore."""
+    with open(_CLAUDE_SPLIT_TELEMETRY_FILE, encoding="utf-8") as f:
+        data = json.load(f)
+    return data["session_id"], data["spans"]
 
 
 class TestSpanTypeDetection:
@@ -1407,7 +1431,7 @@ class TestSmolagentsScopeSupport:
 
     @pytest.mark.parametrize(
         "output_value,expected_content",
-        [("42", "42"), ("[1, 2, 3]", "[1, 2, 3]"), ('"quoted"', '"quoted"')],
+        [("42", "42"), ("[1, 2, 3]", "[1, 2, 3]"), ('"quoted"', "quoted")],
         ids=["number", "list", "quoted-string"],
     )
     def test_non_dict_json_output_not_crash(self, output_value, expected_content):
@@ -1439,16 +1463,20 @@ class TestSmolagentsScopeSupport:
             attributes={
                 "openinference.span.kind": "TOOL",
                 "tool.name": "search",
-                "tool.parameters": json.dumps({
-                    "query": {"type": "string"},
-                    "limit": {"type": "integer"},
-                    "offset": {"type": "integer"},
-                }),
-                "input.value": json.dumps({
-                    "args": ["tokyo", 5],
-                    "kwargs": {"offset": 10},
-                    "sanitize_inputs_outputs": False,
-                }),
+                "tool.parameters": json.dumps(
+                    {
+                        "query": {"type": "string"},
+                        "limit": {"type": "integer"},
+                        "offset": {"type": "integer"},
+                    }
+                ),
+                "input.value": json.dumps(
+                    {
+                        "args": ["tokyo", 5],
+                        "kwargs": {"offset": 10},
+                        "sanitize_inputs_outputs": False,
+                    }
+                ),
                 "output.value": "results",
             },
         )
@@ -1483,13 +1511,15 @@ class TestSmolagentsScopeSupport:
             scope_name=SMOLAGENTS_SCOPE_NAME,
             attributes={
                 "openinference.span.kind": "AGENT",
-                "input.value": json.dumps({
-                    "task": "What is 2+2?",
-                    "stream": False,
-                    "reset": True,
-                    "images": None,
-                    "additional_args": None,
-                }),
+                "input.value": json.dumps(
+                    {
+                        "task": "What is 2+2?",
+                        "stream": False,
+                        "reset": True,
+                        "images": None,
+                        "additional_args": None,
+                    }
+                ),
                 "output.value": "The answer is 4.",
             },
         )
@@ -1596,3 +1626,548 @@ class TestSmolagentsFixtureIntegration:
                 text_only = all(hasattr(c, "text") for c in assistant_content)
                 if text_only:
                     assert any(c.text for c in assistant_content)
+
+
+class TestClaudeAgentSdkScopeSupport:
+    """Claude Agent SDK-scoped spans: acceptance and conversion."""
+
+    def setup_method(self):
+        self.mapper = OpenInferenceSessionMapper()
+
+    def test_claude_agent_span_with_plain_text_input_detected(self):
+        """Root AGENT span with plain-text input/output → AgentInvocationSpan."""
+        spans = _load_claude_spans()
+        # Root span has both input.value and output.value populated
+        root_span = next(
+            s
+            for s in spans
+            if s["attributes"].get("openinference.span.kind") == "AGENT"
+            and s["attributes"].get("input.value")
+            and s["attributes"].get("output.value")
+        )
+        session = self.mapper.map_to_session([root_span], "sess-1")
+
+        agent_spans = [s for t in session.traces for s in t.spans if isinstance(s, AgentInvocationSpan)]
+        assert len(agent_spans) == 1
+        assert agent_spans[0].user_prompt == (
+            "Look up the weather in New York and Seattle, then calculate the temperature difference."
+        )
+        assert agent_spans[0].agent_response == (
+            "New York is 89°F and Seattle is 72°F. The temperature difference is 17°F — New York is warmer."
+        )
+
+    def test_nested_claude_agent_span_without_input_output_rejected(self):
+        """Nested ClaudeAgentSDK.Agent span (no input/output) is not an agent invocation."""
+        spans = _load_claude_spans()
+        # Nested AGENT spans have kind=AGENT but no input.value/output.value
+        nested_span = next(
+            s
+            for s in spans
+            if s["attributes"].get("openinference.span.kind") == "AGENT" and not s["attributes"].get("input.value")
+        )
+        session = self.mapper.map_to_session([nested_span], "sess-1")
+
+        all_spans = [s for t in session.traces for s in t.spans]
+        assert not any(isinstance(s, AgentInvocationSpan) for s in all_spans)
+
+    def test_claude_tool_span_json_input_parsed(self):
+        """TOOL span with JSON input.value extracts tool_call.arguments correctly."""
+        spans = _load_claude_spans()
+        # Pick an Agent tool span (subagent delegation)
+        agent_tool_span = next(
+            s
+            for s in spans
+            if s["attributes"].get("openinference.span.kind") == "TOOL" and s["attributes"].get("tool.name") == "Agent"
+        )
+        session = self.mapper.map_to_session([agent_tool_span], "sess-1")
+
+        tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+        tool = tool_spans[0]
+        assert tool.tool_call.name == "Agent"
+        assert "subagent_type" in tool.tool_call.arguments
+        assert "prompt" in tool.tool_call.arguments
+        assert tool.tool_call.tool_call_id is not None
+
+    def test_claude_tool_span_content_blocks_output(self):
+        """TOOL output with content as list of blocks joins to newline-separated text."""
+        span = make_span(
+            name="Agent",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "TOOL",
+                "tool.id": "toolu_bdrk_xyz789",
+                "tool.name": "Agent",
+                "input.value": json.dumps(
+                    {
+                        "description": "Research task",
+                        "subagent_type": "research-specialist",
+                        "prompt": "Look up weather in NYC.",
+                    }
+                ),
+                "output.value": json.dumps(
+                    {
+                        "status": "completed",
+                        "content": [
+                            {"type": "text", "text": "Temperature: 89°F"},
+                            {"type": "text", "text": "Conditions: Partly cloudy"},
+                        ],
+                    }
+                ),
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+        assert tool_spans[0].tool_result.content == "Temperature: 89°F\nConditions: Partly cloudy"
+        assert tool_spans[0].tool_result.error is None
+        # Non-ASCII must be preserved literally, not escaped
+        assert "\\u" not in tool_spans[0].tool_result.content
+
+    @pytest.mark.parametrize(
+        "status,span_events,expected_error",
+        [
+            pytest.param(
+                {"code": "ERROR", "description": "EACCES: permission denied"},
+                [],
+                "EACCES: permission denied",
+                id="description",
+            ),
+            pytest.param(
+                {"code": "ERROR"},
+                [
+                    {
+                        "event_name": "exception",
+                        "timestamp": 1700000000500000000,
+                        "attributes": {"exception.message": "Permission denied: /etc/shadow"},
+                    }
+                ],
+                "Permission denied: /etc/shadow",
+                id="exception_message",
+            ),
+            pytest.param({"code": "ERROR"}, [], "error", id="bare_fallback"),
+            pytest.param(
+                {"code": "ERROR"},
+                [
+                    {
+                        "event_name": "exception",
+                        "timestamp": 1700000000500000000,
+                        "attributes": {"exception.message": '[{"type":"text","text":""}]'},
+                    }
+                ],
+                '[{"type":"text","text":""}]',
+                id="empty_text_block_falls_back_to_raw",
+            ),
+        ],
+    )
+    def test_claude_failed_tool_span_no_output_preserved(self, status, span_events, expected_error):
+        """status=ERROR with no output.value is preserved via description/exception/fallback."""
+        span = make_span(
+            name="Bash",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "TOOL",
+                "tool.id": "toolu_failed",
+                "tool.name": "Bash",
+                "input.value": json.dumps({"command": "false"}),
+            },
+            span_events=span_events,
+        )
+        span["status"] = status
+
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+        assert tool_spans[0].tool_result.error == "error"
+        assert tool_spans[0].tool_result.content == expected_error
+
+    def test_empty_text_block_among_non_text_blocks_preserves_siblings(self):
+        """An empty text block among non-text blocks should preserve siblings as JSON, not discard."""
+        non_text_block = {"type": "resource", "resource": {"text": "IMPORTANT DATA"}}
+        span = make_span(
+            name="ReadFile",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "TOOL",
+                "tool.id": "toolu_mixed",
+                "tool.name": "ReadFile",
+                "input.value": json.dumps({"path": "/tmp/data"}),
+                "output.value": json.dumps(
+                    {"status": "completed", "content": [{"type": "text", "text": ""}, non_text_block]}
+                ),
+            },
+        )
+
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+        # Non-text sibling must be preserved (as JSON), not silently discarded
+        assert "IMPORTANT DATA" in tool_spans[0].tool_result.content
+
+    def test_exception_message_returns_first_not_last(self):
+        """_exception_message returns the first exception event, not the last."""
+        span = make_span(
+            name="Bash",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "TOOL",
+                "tool.id": "toolu_multi_exc",
+                "tool.name": "Bash",
+                "input.value": json.dumps({"command": "fail"}),
+            },
+            span_events=[
+                {
+                    "event_name": "exception",
+                    "timestamp": 1700000000100000000,
+                    "attributes": {"exception.message": "first error"},
+                },
+                {
+                    "event_name": "exception",
+                    "timestamp": 1700000000200000000,
+                    "attributes": {"exception.message": "second error"},
+                },
+            ],
+        )
+        span["status"] = {"code": "ERROR"}
+
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+        assert tool_spans[0].tool_result.content == "first error"
+
+    @pytest.mark.parametrize(
+        "output_value,status,span_events,expected_content",
+        [
+            pytest.param(
+                json.dumps([{"type": "text", "text": "EACCES: permission denied"}]),
+                {"code": "OK"},
+                [],
+                "EACCES: permission denied",
+                id="bare_list_success",
+            ),
+            pytest.param(
+                None,
+                {"code": "ERROR"},
+                [
+                    {
+                        "event_name": "exception",
+                        "timestamp": 1700000000500000000,
+                        "attributes": {
+                            "exception.message": json.dumps(
+                                [{"type": "text", "text": "EACCES: permission denied, open '/etc/shadow'"}]
+                            )
+                        },
+                    }
+                ],
+                "EACCES: permission denied, open '/etc/shadow'",
+                id="error_path_block_list",
+            ),
+        ],
+    )
+    def test_content_block_flattening_beyond_dict_envelope(self, output_value, status, span_events, expected_content):
+        """Content blocks are flattened on both the bare-list success path and the ERROR path."""
+        attrs = {
+            "openinference.span.kind": "TOOL",
+            "tool.id": "toolu_flatten",
+            "tool.name": "Bash",
+            "input.value": json.dumps({"command": "ls"}),
+        }
+        if output_value is not None:
+            attrs["output.value"] = output_value
+        span = make_span(
+            name="Bash",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes=attrs,
+            span_events=span_events,
+        )
+        span["status"] = status
+
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+        assert tool_spans[0].tool_result.content == expected_content
+
+    def test_ensure_ascii_false_on_json_dumps_fallback(self):
+        """Non-text blocks with unicode hit json.dumps and must not produce escape sequences."""
+        span = make_span(
+            name="ImageGen",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "TOOL",
+                "tool.id": "toolu_img",
+                "tool.name": "ImageGen",
+                "input.value": json.dumps({"prompt": "weather"}),
+                "output.value": json.dumps({"status": "completed", "content": [{"type": "image", "alt": "25°C 東京"}]}),
+            },
+        )
+
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+        assert "25°C 東京" in tool_spans[0].tool_result.content
+        assert "\\u" not in tool_spans[0].tool_result.content
+
+    def test_non_str_text_value_not_blanked(self):
+        """A block with text: 500 (non-str) must preserve the block as JSON, not return ''."""
+        span = make_span(
+            name="Bash",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "TOOL",
+                "tool.id": "toolu_nonstr",
+                "tool.name": "Bash",
+                "input.value": json.dumps({"command": "echo 500"}),
+                "output.value": json.dumps({"status": "completed", "content": [{"type": "text", "text": 500}]}),
+            },
+        )
+
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+        assert tool_spans[0].tool_result.content != ""
+
+    def test_errored_agent_span_detected(self):
+        """AGENT span with input.value + ERROR status (no output.value) is detected."""
+        span = make_span(
+            name="query",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "AGENT",
+                "input.value": "What is the weather?",
+            },
+        )
+        span["status"] = {"code": "ERROR"}
+
+        assert self.mapper._is_agent_invocation_span(span) is True
+
+    def test_errored_agent_span_without_input_not_detected(self):
+        """AGENT span with ERROR status but no input.value is not detected."""
+        span = make_span(
+            name="query",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "AGENT",
+            },
+        )
+        span["status"] = {"code": "ERROR"}
+
+        assert self.mapper._is_agent_invocation_span(span) is False
+
+    @pytest.mark.parametrize(
+        "status,span_events,expected_response",
+        [
+            pytest.param(
+                {"code": "ERROR", "description": "context deadline exceeded"},
+                [{"event_name": "exception", "timestamp": 0, "attributes": {"exception.message": "ignored"}}],
+                "context deadline exceeded",
+                id="prefers_status_description",
+            ),
+            pytest.param(
+                {"code": "ERROR"},
+                [{"event_name": "exception", "timestamp": 0, "attributes": {"exception.message": "rate limit"}}],
+                "rate limit",
+                id="falls_back_to_exception_message",
+            ),
+            pytest.param(
+                {"code": "ERROR"},
+                [],
+                "error",
+                id="falls_back_to_generic_error",
+            ),
+        ],
+    )
+    def test_errored_agent_span_response_fallback(self, status, span_events, expected_response):
+        """Errored agent span surfaces error via: status.description > exception > 'error'."""
+        span = make_span(
+            name="query",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "AGENT",
+                "input.value": "What is the weather?",
+            },
+            span_events=span_events,
+        )
+        span["status"] = status
+
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        agent_spans = [s for t in session.traces for s in t.spans if isinstance(s, AgentInvocationSpan)]
+        assert len(agent_spans) == 1
+        assert agent_spans[0].user_prompt == "What is the weather?"
+        assert agent_spans[0].agent_response == expected_response
+
+    def test_claude_agent_span_preserves_json_prompt_with_task_key(self):
+        """Claude prompt that is a JSON object with 'task' key is NOT unwrapped."""
+        json_prompt = json.dumps({"task": "summarize", "context": "some data"})
+        span = make_span(
+            name="query",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "AGENT",
+                "input.value": json_prompt,
+                "output.value": "Here is the summary.",
+            },
+        )
+
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        agent_spans = [s for t in session.traces for s in t.spans if isinstance(s, AgentInvocationSpan)]
+        assert len(agent_spans) == 1
+        assert agent_spans[0].user_prompt == json_prompt
+
+
+@pytest.fixture()
+def claude_session():
+    """Map real Claude Agent SDK spans to a Session."""
+    spans = _load_claude_spans()
+    mapper = OpenInferenceSessionMapper()
+    return mapper.map_to_session(spans, "claude-sess")
+
+
+class TestClaudeFixtureIntegration:
+    """Integration tests using real Claude Agent SDK trace (all 10 spans fed together)."""
+
+    def test_span_counts_and_types(self, claude_session):
+        """All 10 fixture spans map to 6 ToolExecutionSpans + 1 AgentInvocationSpan.
+
+        The 3 nested AGENT spans (no input/output) are rejected.
+        """
+        assert len(claude_session.traces) >= 1
+        all_spans = [s for t in claude_session.traces for s in t.spans]
+        assert len(all_spans) == 7
+
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        agent_spans = [s for s in all_spans if isinstance(s, AgentInvocationSpan)]
+        assert len(tool_spans) == 6
+        assert len(agent_spans) == 1
+
+    def test_agent_span_has_prompt_and_response(self, claude_session):
+        """Root agent span has user_prompt and agent_response populated."""
+        all_spans = [s for t in claude_session.traces for s in t.spans]
+        agent = next(s for s in all_spans if isinstance(s, AgentInvocationSpan))
+        assert agent.user_prompt
+        assert agent.agent_response
+
+    def test_agent_span_metadata_has_token_counts(self, claude_session):
+        """Root agent span metadata contains model name and token counts."""
+        all_spans = [s for t in claude_session.traces for s in t.spans]
+        agent = next(s for s in all_spans if isinstance(s, AgentInvocationSpan))
+        assert agent.metadata["llm.model_name"] == "us.anthropic.claude-sonnet-4-6"
+        assert agent.metadata["llm.token_count.total"] > 0
+
+    def test_tool_spans_have_call_ids_and_content(self, claude_session):
+        """All tool spans have tool_call_id populated and non-empty content."""
+        all_spans = [s for t in claude_session.traces for s in t.spans]
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        for tool_span in tool_spans:
+            assert tool_span.tool_call.tool_call_id is not None
+            assert tool_span.tool_result.content
+
+
+@pytest.fixture()
+def claude_agentcore_session():
+    """Map real Claude AgentCore spans (session.id on all spans) to a Session."""
+    session_id, spans = _load_claude_agentcore_spans()
+    mapper = OpenInferenceSessionMapper()
+    return mapper.map_to_session(spans, session_id)
+
+
+class TestClaudeAgentCoreFixtureIntegration:
+    """Integration tests using Claude Agent SDK spans from AgentCore deployment.
+
+    AgentCore's span processor stamps session.id on all spans, so the full set
+    survives a CloudWatch Logs Insights query filtered by session.id.
+    """
+
+    def test_span_counts(self, claude_agentcore_session):
+        """AgentCore trace produces 4 tool spans + 1 agent span."""
+        all_spans = [s for t in claude_agentcore_session.traces for s in t.spans]
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        agent_spans = [s for s in all_spans if isinstance(s, AgentInvocationSpan)]
+        assert len(tool_spans) == 4
+        assert len(agent_spans) == 1
+
+    def test_all_spans_have_session_id_attribute(self, claude_agentcore_session):
+        """Verify the fixture has session.id on all spans (AgentCore behavior)."""
+        session_id, spans = _load_claude_agentcore_spans()
+        for span in spans:
+            attrs = span.get("attributes", {})
+            assert attrs.get("session.id") == session_id
+
+
+@pytest.fixture()
+def claude_adot_session():
+    """Map real Claude Agent SDK ADOT (split telemetry) event records to a Session."""
+    session_id, spans = _load_claude_adot_spans()
+    mapper = OpenInferenceSessionMapper()
+    return mapper.map_to_session(spans, session_id)
+
+
+class TestClaudeAdotIntegration:
+    """Integration tests for Claude Agent SDK ADOT (split telemetry) event records.
+
+    Split telemetry (UNIFIED_TRACES_DESTINATION_ENABLED=false) produces event
+    records in the agent log group with body.input/output.messages but no
+    openinference.span.kind attribute. The mapper must classify these by
+    inspecting body content: JSON input → tool span, plain text input → agent span.
+    """
+
+    def test_session_has_traces(self, claude_adot_session):
+        """ADOT event records produce at least one trace."""
+        assert len(claude_adot_session.traces) > 0
+
+    def test_span_counts(self, claude_adot_session):
+        """ADOT produces 4 tool spans + 1 agent span."""
+        all_spans = [s for t in claude_adot_session.traces for s in t.spans]
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        agent_spans = [s for s in all_spans if isinstance(s, AgentInvocationSpan)]
+        assert len(tool_spans) == 4
+        assert len(agent_spans) == 1
+
+    def test_agent_span_has_user_prompt(self, claude_adot_session):
+        """Agent invocation span has the user's plain-text prompt."""
+        all_spans = [s for t in claude_adot_session.traces for s in t.spans]
+        agent_span = next(s for s in all_spans if isinstance(s, AgentInvocationSpan))
+        assert "42 * 7" in agent_span.user_prompt
+        assert "kilometers" in agent_span.user_prompt
+
+    def test_agent_span_has_response(self, claude_adot_session):
+        """Agent invocation span has the assistant's plain-text response."""
+        all_spans = [s for t in claude_adot_session.traces for s in t.spans]
+        agent_span = next(s for s in all_spans if isinstance(s, AgentInvocationSpan))
+        assert "294" in agent_span.agent_response
+        assert "473" in agent_span.agent_response
+
+    def test_tool_spans_have_names(self, claude_adot_session):
+        """Tool spans have tool names (generic fallback without provider enrichment)."""
+        all_spans = [s for t in claude_adot_session.traces for s in t.spans]
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        assert tool_spans
+        for tool_span in tool_spans:
+            assert tool_span.tool_call.name is not None
+            assert len(tool_span.tool_call.name) > 0
+
+    def test_tool_spans_have_parameters(self, claude_adot_session):
+        """Tool spans have parsed arguments from the input body."""
+        all_spans = [s for t in claude_adot_session.traces for s in t.spans]
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        assert tool_spans
+        for tool_span in tool_spans:
+            assert tool_span.tool_call.arguments is not None
+            assert isinstance(tool_span.tool_call.arguments, dict)
+            assert len(tool_span.tool_call.arguments) > 0
+
+    def test_tool_spans_have_output_content(self, claude_adot_session):
+        """Tool spans have non-empty result content."""
+        all_spans = [s for t in claude_adot_session.traces for s in t.spans]
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        assert tool_spans
+        for tool_span in tool_spans:
+            assert tool_span.tool_result.content

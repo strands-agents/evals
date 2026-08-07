@@ -232,6 +232,12 @@ class TestDetectOtelMapper:
         mapper = detect_otel_mapper(spans)
         assert isinstance(mapper, OpenInferenceSessionMapper)
 
+    def test_detects_claude_agent_sdk_openinference_scope(self):
+        """Detects OpenInferenceSessionMapper for Claude Agent SDK openinference scope."""
+        spans = [make_span_dict(scope_name="openinference.instrumentation.claude_agent_sdk")]
+        mapper = detect_otel_mapper(spans)
+        assert isinstance(mapper, OpenInferenceSessionMapper)
+
 
 class TestReadableSpansToDicts:
     def test_converts_readable_spans(self):
