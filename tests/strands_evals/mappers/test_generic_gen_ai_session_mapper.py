@@ -97,7 +97,6 @@ class TestToolExecutionSpan:
         session = self.mapper.map_to_session([span], "sess-1")
         assert session.traces == []
 
-
     def test_tool_span_from_operation_details_event(self):
         """Tool data extracted from gen_ai.client.inference.operation.details unified event."""
         span = make_span(
@@ -112,7 +111,7 @@ class TestToolExecutionSpan:
                     "timestamp": 0,
                     "attributes": {
                         "gen_ai.input.messages": json.dumps(
-                            [{"role": "user", "parts": [{"type": "text", "content": "{\"location\": \"Seattle\"}"}]}]
+                            [{"role": "user", "parts": [{"type": "text", "content": '{"location": "Seattle"}'}]}]
                         ),
                         "gen_ai.output.messages": json.dumps(
                             [{"role": "assistant", "parts": [{"type": "text", "content": "62F and cloudy"}]}]
@@ -144,7 +143,7 @@ class TestToolExecutionSpan:
                     "timestamp": 0,
                     "attributes": {
                         "gen_ai.input.messages": json.dumps(
-                            [{"role": "user", "parts": [{"type": "text", "content": "{\"query\": \"cats\"}"}]}]
+                            [{"role": "user", "parts": [{"type": "text", "content": '{"query": "cats"}'}]}]
                         ),
                         "gen_ai.output.messages": json.dumps(
                             [{"role": "tool", "id": "call-unified-2", "response": "Found 10 cats"}]
@@ -206,7 +205,6 @@ class TestAgentInvocationSpan:
         assert agent.user_prompt == ""
         assert agent.agent_response == ""
 
-
     def test_agent_span_from_operation_details_event(self):
         """Agent prompt/response extracted from gen_ai.client.inference.operation.details."""
         span = make_span(
@@ -223,7 +221,7 @@ class TestAgentInvocationSpan:
                             [{"role": "user", "parts": [{"type": "text", "content": "What is the weather in Paris?"}]}]
                         ),
                         "gen_ai.output.messages": json.dumps(
-                            [{"role": "assistant", "parts": [{"type": "text", "content": "It is 57F and rainy in Paris."}]}]
+                            [{"role": "assistant", "parts": [{"type": "text", "content": "57F and rainy"}]}]
                         ),
                     },
                 }
@@ -234,7 +232,7 @@ class TestAgentInvocationSpan:
         agent = session.traces[0].spans[0]
         assert isinstance(agent, AgentInvocationSpan)
         assert agent.user_prompt == "What is the weather in Paris?"
-        assert agent.agent_response == "It is 57F and rainy in Paris."
+        assert agent.agent_response == "57F and rainy"
 
     def test_agent_span_operation_details_flat_content(self):
         """Agent response from operation.details with flat content string (no parts)."""
@@ -248,9 +246,7 @@ class TestAgentInvocationSpan:
                         "gen_ai.input.messages": json.dumps(
                             [{"role": "user", "parts": [{"type": "text", "content": "Hello"}]}]
                         ),
-                        "gen_ai.output.messages": json.dumps(
-                            [{"role": "assistant", "content": "Hi there!"}]
-                        ),
+                        "gen_ai.output.messages": json.dumps([{"role": "assistant", "content": "Hi there!"}]),
                     },
                 }
             ],
@@ -339,7 +335,7 @@ class TestSessionBuilding:
         """String-encoded ns epoch (OTLP/JSON int64 encoding) parses to correct datetime."""
         from datetime import datetime, timezone
 
-        result = self.mapper._parse_timestamp("1700000000000000000")
+        result = self.mapper.parse_timestamp("1700000000000000000")
         expected = datetime.fromtimestamp(1700000000, tz=timezone.utc)
         assert result == expected
 
@@ -643,6 +639,41 @@ class TestToolErrorHandling:
                 "gen_ai.tool.output": "result",
             },
         )
+        session = self.mapper.map_to_session([span], "sess-1")
+        tool = session.traces[0].spans[0]
+        assert isinstance(tool, ToolExecutionSpan)
+        assert tool.tool_result.error is None
+
+    def test_status_none_does_not_crash(self):
+        """Span with status: None must not raise AttributeError."""
+        span = make_span(
+            operation_name="execute_tool",
+            attributes={
+                "gen_ai.tool.name": "safe_tool",
+                "gen_ai.tool.call.id": "call-null",
+                "gen_ai.tool.output": "ok",
+            },
+        )
+        span["status"] = None
+
+        session = self.mapper.map_to_session([span], "sess-1")
+        tool = session.traces[0].spans[0]
+        assert isinstance(tool, ToolExecutionSpan)
+        assert tool.tool_result.error is None
+        assert tool.tool_result.content == "ok"
+
+    def test_status_non_dict_does_not_crash(self):
+        """Span with non-dict status (e.g. string) must not crash."""
+        span = make_span(
+            operation_name="execute_tool",
+            attributes={
+                "gen_ai.tool.name": "robust_tool",
+                "gen_ai.tool.call.id": "call-str",
+                "gen_ai.tool.output": "done",
+            },
+        )
+        span["status"] = "OK"
+
         session = self.mapper.map_to_session([span], "sess-1")
         tool = session.traces[0].spans[0]
         assert isinstance(tool, ToolExecutionSpan)

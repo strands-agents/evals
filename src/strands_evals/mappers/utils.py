@@ -96,7 +96,7 @@ def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
     - InMemory format: gen_ai.* attributes
 
     Args:
-        spans: List of span dictionaries (normalized or raw), or ReadableSpan objects
+        spans: List of span dictionaries (normalized or raw)
 
     Returns:
         Appropriate SessionMapper instance

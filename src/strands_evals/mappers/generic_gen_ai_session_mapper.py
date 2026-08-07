@@ -11,7 +11,6 @@ This is the fallback mapper for spans that don't match any known instrumentor sc
 import json
 import logging
 from collections import defaultdict
-from datetime import datetime
 from typing import Any
 
 from ..types.trace import (
@@ -44,8 +43,18 @@ class GenericGenAISessionMapper(SessionMapper):
     - "execute_tool" → ToolExecutionSpan
     - "invoke_agent" → AgentInvocationSpan
 
-    Extracts data from both span attributes (gen_ai.tool.input, gen_ai.tool.output)
-    and span_events (gen_ai.user.message, gen_ai.choice, etc.).
+    Supports both the legacy event convention (gen_ai.user.message, gen_ai.choice,
+    gen_ai.tool.message) and the current unified convention
+    (gen_ai.client.inference.operation.details with gen_ai.input.messages /
+    gen_ai.output.messages), including producers running under
+    OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental.
+
+    Session filtering policy:
+        Trace-level inclusion with span-level exclusion. A trace is included if at
+        least one span matches the requested session_id (via gen_ai.conversation.id or
+        session.id). Within an included trace, spans explicitly tagged with a *different*
+        session are excluded; untagged spans inherit membership from the trace match.
+        When no spans carry any session tag, all spans are included unconditionally.
     """
 
     def map_to_session(self, data: Any, session_id: str) -> Session:
@@ -117,8 +126,8 @@ class GenericGenAISessionMapper(SessionMapper):
                     span_id=span.get("span_id"),
                     session_id=session_id,
                     parent_span_id=span.get("parent_span_id"),
-                    start_time=self._parse_timestamp(span.get("start_time")),
-                    end_time=self._parse_timestamp(span.get("end_time")),
+                    start_time=self.parse_timestamp(span.get("start_time")),
+                    end_time=self.parse_timestamp(span.get("end_time")),
                 )
 
                 if operation_name == "chat":
@@ -142,15 +151,6 @@ class GenericGenAISessionMapper(SessionMapper):
                 )
 
         return Trace(spans=converted_spans, trace_id=trace_id, session_id=session_id)
-
-    def _parse_timestamp(self, value: Any) -> datetime:
-        """Parse timestamp from various formats.
-
-        Delegates to SessionMapper.parse_timestamp, which additionally handles
-        ISO-8601 and string-encoded nanosecond epochs (the OTLP/JSON encoding
-        for int64 fields, as produced on the CloudWatch/ADOT path).
-        """
-        return self.parse_timestamp(value)
 
     def _parse_json_attr(self, attributes: Any, key: str, default: str = "[]") -> Any:
         """Parse a JSON-encoded attribute value."""
@@ -233,7 +233,8 @@ class GenericGenAISessionMapper(SessionMapper):
         # fall back to gen_ai.tool.status / tool.status for legacy compatibility.
         # https://github.com/open-telemetry/semantic-conventions-genai/blob/main/model/gen-ai/spans.yaml#L522-L562
         error_type = attrs.get("error.type", "")
-        span_status = span.get("status", {}).get("code", "")
+        status_obj = span.get("status") or {}
+        span_status = status_obj.get("code", "") if isinstance(status_obj, dict) else ""
         tool_status = attrs.get("gen_ai.tool.status", attrs.get("tool.status", ""))
 
         if error_type:
@@ -425,9 +426,9 @@ class GenericGenAISessionMapper(SessionMapper):
     # Content Processing Helpers
     # =========================================================================
 
-    def _convert_message_list_from_event(self, event_attrs: dict) -> list:
+    def _convert_message_list_from_event(self, event_attrs: dict) -> list[UserMessage | AssistantMessage]:
         """Parse operation.details event attrs and return typed messages via _convert_message_list."""
-        messages = []
+        messages: list[UserMessage | AssistantMessage] = []
         for key in ("gen_ai.input.messages", "gen_ai.output.messages"):
             raw = event_attrs.get(key, "")
             if not raw:

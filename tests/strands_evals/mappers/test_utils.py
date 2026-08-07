@@ -233,13 +233,16 @@ class TestDetectOtelMapper:
         mapper = detect_otel_mapper(spans)
         assert isinstance(mapper, OpenInferenceSessionMapper)
 
-    def test_raw_readable_spans_route_to_strands_mapper(self):
-        """Raw ReadableSpan objects (not dicts) route directly to StrandsInMemorySessionMapper."""
+    def test_non_dict_spans_fall_through_to_strands_mapper(self):
+        """Non-dict spans (no scope/body/gen_ai attrs to match) fall through to default StrandsInMemorySessionMapper."""
         from unittest.mock import MagicMock
 
+        # Simulates the case where raw ReadableSpan objects are passed without
+        # calling readable_spans_to_dicts() first. detect_otel_mapper doesn't
+        # crash but falls through to the default mapper since get_scope_name()
+        # handles non-dict inputs via hasattr checks.
         mock_span = MagicMock()
-        mock_span.context.trace_id = 0x123
-        mock_span.context.span_id = 0x456
+        mock_span.instrumentation_scope.name = ""
         mapper = detect_otel_mapper([mock_span])
         assert isinstance(mapper, StrandsInMemorySessionMapper)
 
