@@ -98,6 +98,69 @@ class TestToolExecutionSpan:
         assert session.traces == []
 
 
+    def test_tool_span_from_operation_details_event(self):
+        """Tool data extracted from gen_ai.client.inference.operation.details unified event."""
+        span = make_span(
+            operation_name="execute_tool",
+            attributes={
+                "gen_ai.tool.name": "get_weather",
+                "gen_ai.tool.call.id": "call-unified-1",
+            },
+            span_events=[
+                {
+                    "event_name": "gen_ai.client.inference.operation.details",
+                    "timestamp": 0,
+                    "attributes": {
+                        "gen_ai.input.messages": json.dumps(
+                            [{"role": "user", "parts": [{"type": "text", "content": "{\"location\": \"Seattle\"}"}]}]
+                        ),
+                        "gen_ai.output.messages": json.dumps(
+                            [{"role": "assistant", "parts": [{"type": "text", "content": "62F and cloudy"}]}]
+                        ),
+                    },
+                }
+            ],
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        tool = session.traces[0].spans[0]
+        assert isinstance(tool, ToolExecutionSpan)
+        assert tool.tool_call.name == "get_weather"
+        assert tool.tool_call.arguments == {"location": "Seattle"}
+        assert tool.tool_result.content == "62F and cloudy"
+        assert tool.tool_result.error is None
+
+    def test_tool_span_operation_details_with_tool_result_content(self):
+        """Tool result from operation.details with ToolResultContent (role=tool)."""
+        span = make_span(
+            operation_name="execute_tool",
+            attributes={
+                "gen_ai.tool.name": "search",
+                "gen_ai.tool.call.id": "call-unified-2",
+            },
+            span_events=[
+                {
+                    "event_name": "gen_ai.client.inference.operation.details",
+                    "timestamp": 0,
+                    "attributes": {
+                        "gen_ai.input.messages": json.dumps(
+                            [{"role": "user", "parts": [{"type": "text", "content": "{\"query\": \"cats\"}"}]}]
+                        ),
+                        "gen_ai.output.messages": json.dumps(
+                            [{"role": "tool", "id": "call-unified-2", "response": "Found 10 cats"}]
+                        ),
+                    },
+                }
+            ],
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        tool = session.traces[0].spans[0]
+        assert isinstance(tool, ToolExecutionSpan)
+        assert tool.tool_call.arguments == {"query": "cats"}
+        assert tool.tool_result.content == "Found 10 cats"
+
+
 class TestAgentInvocationSpan:
     def setup_method(self):
         self.mapper = GenericGenAISessionMapper()
@@ -142,6 +205,62 @@ class TestAgentInvocationSpan:
         assert isinstance(agent, AgentInvocationSpan)
         assert agent.user_prompt == ""
         assert agent.agent_response == ""
+
+
+    def test_agent_span_from_operation_details_event(self):
+        """Agent prompt/response extracted from gen_ai.client.inference.operation.details."""
+        span = make_span(
+            operation_name="invoke_agent",
+            attributes={
+                "gen_ai.agent.tools": '["get_weather"]',
+            },
+            span_events=[
+                {
+                    "event_name": "gen_ai.client.inference.operation.details",
+                    "timestamp": 0,
+                    "attributes": {
+                        "gen_ai.input.messages": json.dumps(
+                            [{"role": "user", "parts": [{"type": "text", "content": "What is the weather in Paris?"}]}]
+                        ),
+                        "gen_ai.output.messages": json.dumps(
+                            [{"role": "assistant", "parts": [{"type": "text", "content": "It is 57F and rainy in Paris."}]}]
+                        ),
+                    },
+                }
+            ],
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        agent = session.traces[0].spans[0]
+        assert isinstance(agent, AgentInvocationSpan)
+        assert agent.user_prompt == "What is the weather in Paris?"
+        assert agent.agent_response == "It is 57F and rainy in Paris."
+
+    def test_agent_span_operation_details_flat_content(self):
+        """Agent response from operation.details with flat content string (no parts)."""
+        span = make_span(
+            operation_name="invoke_agent",
+            span_events=[
+                {
+                    "event_name": "gen_ai.client.inference.operation.details",
+                    "timestamp": 0,
+                    "attributes": {
+                        "gen_ai.input.messages": json.dumps(
+                            [{"role": "user", "parts": [{"type": "text", "content": "Hello"}]}]
+                        ),
+                        "gen_ai.output.messages": json.dumps(
+                            [{"role": "assistant", "content": "Hi there!"}]
+                        ),
+                    },
+                }
+            ],
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        agent = session.traces[0].spans[0]
+        assert isinstance(agent, AgentInvocationSpan)
+        assert agent.user_prompt == "Hello"
+        assert agent.agent_response == "Hi there!"
 
 
 class TestInferenceSpan:

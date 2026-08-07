@@ -203,7 +203,7 @@ class GenericGenAISessionMapper(SessionMapper):
                 elif event_name == "gen_ai.client.inference.operation.details":
                     # Current OTel GenAI convention: single event with input/output messages
                     # https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-events.md
-                    details_messages = self._parse_operation_details_event(event_attrs)
+                    details_messages = self._convert_message_list_from_event(event_attrs)
                     messages.extend(details_messages)
 
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as e:
@@ -262,6 +262,26 @@ class GenericGenAISessionMapper(SessionMapper):
                 elif event_name == "gen_ai.choice":
                     message_list = self._parse_json_attr(event_attrs, "message")
                     tool_result_content = message_list[0].get("text", "") if message_list else ""
+                elif event_name == "gen_ai.client.inference.operation.details":
+                    # Current OTel GenAI convention: unified event with input/output messages.
+                    # Extract tool arguments from input and tool result from output.
+                    messages = self._convert_message_list_from_event(event_attrs)
+                    for msg in messages:
+                        if msg.role.value == "user":
+                            for c in msg.content:
+                                if hasattr(c, "text") and c.text and not tool_arguments:
+                                    try:
+                                        parsed = json.loads(c.text)
+                                        if isinstance(parsed, dict):
+                                            tool_arguments = parsed
+                                    except (json.JSONDecodeError, TypeError):
+                                        pass
+                                elif hasattr(c, "content") and c.content and not tool_result_content:
+                                    tool_result_content = c.content
+                        elif msg.role.value == "assistant":
+                            for c in msg.content:
+                                if hasattr(c, "text") and c.text and not tool_result_content:
+                                    tool_result_content = c.text
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as e:
                 logger.warning(
                     "span_id=%s | Failed to process tool event: %s",
@@ -325,6 +345,21 @@ class GenericGenAISessionMapper(SessionMapper):
                 elif event_name == "gen_ai.choice":
                     msg = event_attrs.get("message", "")
                     agent_response = str(msg)
+                elif event_name == "gen_ai.client.inference.operation.details":
+                    # Current OTel GenAI convention: unified event with input/output messages.
+                    # Extract user prompt from input messages and agent response from output.
+                    messages = self._convert_message_list_from_event(event_attrs)
+                    for msg in messages:
+                        if msg.role.value == "user" and not user_prompt:
+                            for c in msg.content:
+                                if hasattr(c, "text") and c.text:
+                                    user_prompt = c.text
+                                    break
+                        elif msg.role.value == "assistant" and not agent_response:
+                            for c in msg.content:
+                                if hasattr(c, "text") and c.text:
+                                    agent_response = c.text
+                                    break
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as e:
                 logger.warning(
                     "span_id=%s | Failed to process agent event: %s",
@@ -390,6 +425,127 @@ class GenericGenAISessionMapper(SessionMapper):
     # Content Processing Helpers
     # =========================================================================
 
+    def _convert_message_list_from_event(self, event_attrs: dict) -> list:
+        """Parse operation.details event attrs and return typed messages via _convert_message_list."""
+        messages = []
+        for key in ("gen_ai.input.messages", "gen_ai.output.messages"):
+            raw = event_attrs.get(key, "")
+            if not raw:
+                continue
+            try:
+                msg_list = json.loads(raw) if isinstance(raw, str) else raw
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(msg_list, list):
+                messages.extend(self._convert_message_list(msg_list))
+        return messages
+
+    def _convert_message_list(self, msg_list: list[dict]) -> list[UserMessage | AssistantMessage]:
+        """Convert a list of role-tagged message dicts to typed UserMessage/AssistantMessage.
+
+        Shared logic for both span-attribute messages (gen_ai.input.messages /
+        gen_ai.output.messages) and operation.details event payloads.
+
+        Supports:
+        - role "user": text parts and tool_call_response parts
+        - role "tool": OTel GenAI convention tool results (parts-based or flat)
+        - role "assistant": text parts, tool_call parts, or flat content string
+        """
+        messages: list[UserMessage | AssistantMessage] = []
+
+        for msg in msg_list:
+            role = msg.get("role", "")
+            parts = msg.get("parts", [])
+
+            if role == "user":
+                user_content: list[TextContent | ToolResultContent] = []
+                for part in parts:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") == "text" and part.get("content"):
+                        user_content.append(TextContent(text=part["content"]))
+                    elif part.get("type") == "tool_call_response":
+                        user_content.append(
+                            ToolResultContent(
+                                content=str(part.get("result", "")),
+                                error=None,
+                                tool_call_id=part.get("id"),
+                            )
+                        )
+                if user_content:
+                    messages.append(UserMessage(content=user_content))
+
+            elif role == "tool":
+                # OTel GenAI convention: role "tool" carries tool results.
+                # Two formats:
+                #   1. parts: [{"type": "tool_call_response", "id": "...", "response": "..."}]
+                #   2. flat: {"role": "tool", "id": "...", "response": "..."}
+                if parts:
+                    for part in parts:
+                        if isinstance(part, dict) and part.get("type") == "tool_call_response":
+                            tc_id = part.get("id") or part.get("tool_call_id")
+                            resp = part.get("response", "")
+                            if isinstance(resp, dict):
+                                resp = json.dumps(resp)
+                            messages.append(
+                                UserMessage(
+                                    content=[
+                                        ToolResultContent(
+                                            content=str(resp) if resp else "",
+                                            error=None,
+                                            tool_call_id=tc_id,
+                                        )
+                                    ]
+                                )
+                            )
+                else:
+                    tool_call_id = msg.get("id") or msg.get("tool_call_id")
+                    response = msg.get("response", msg.get("content", ""))
+                    if isinstance(response, dict):
+                        response = json.dumps(response)
+                    elif isinstance(response, list):
+                        parts_text = []
+                        for block in response:
+                            if isinstance(block, dict) and block.get("text"):
+                                parts_text.append(block["text"])
+                            elif isinstance(block, str):
+                                parts_text.append(block)
+                        response = "\n".join(parts_text) if parts_text else str(response)
+                    messages.append(
+                        UserMessage(
+                            content=[
+                                ToolResultContent(
+                                    content=str(response) if response else "",
+                                    error=None,
+                                    tool_call_id=tool_call_id,
+                                )
+                            ]
+                        )
+                    )
+
+            elif role == "assistant":
+                assistant_content: list[TextContent | ToolCallContent] = []
+                for part in parts:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") == "text" and part.get("content"):
+                        assistant_content.append(TextContent(text=part["content"]))
+                    elif part.get("type") == "tool_call":
+                        assistant_content.append(
+                            ToolCallContent(
+                                name=part.get("name", ""),
+                                arguments=part.get("arguments", {}),
+                                tool_call_id=part.get("id"),
+                            )
+                        )
+                # Also handle flat content string (no parts)
+                if not assistant_content and msg.get("content"):
+                    assistant_content.append(TextContent(text=str(msg["content"])))
+                if assistant_content:
+                    messages.append(AssistantMessage(content=assistant_content))
+
+        return messages
+
     def _parse_attribute_messages(self, attrs: dict) -> list[UserMessage | AssistantMessage]:
         """Parse gen_ai.input.messages / gen_ai.output.messages from span attributes.
 
@@ -400,234 +556,16 @@ class GenericGenAISessionMapper(SessionMapper):
         """
         messages: list[UserMessage | AssistantMessage] = []
 
-        # Parse input messages
-        input_msgs_raw = attrs.get("gen_ai.input.messages", "")
-        if input_msgs_raw:
-            try:
-                input_msgs = json.loads(input_msgs_raw) if isinstance(input_msgs_raw, str) else input_msgs_raw
-                if isinstance(input_msgs, list):
-                    for msg in input_msgs:
-                        role = msg.get("role", "")
-                        parts = msg.get("parts", [])
-                        if role == "user":
-                            user_content: list[TextContent | ToolResultContent] = []
-                            for part in parts:
-                                if part.get("type") == "text" and part.get("content"):
-                                    user_content.append(TextContent(text=part["content"]))
-                                elif part.get("type") == "tool_call_response":
-                                    user_content.append(
-                                        ToolResultContent(
-                                            content=str(part.get("result", "")),
-                                            error=None,
-                                            tool_call_id=part.get("id"),
-                                        )
-                                    )
-                            if user_content:
-                                messages.append(UserMessage(content=user_content))
-                        elif role == "tool":
-                            # OTel GenAI convention: role "tool" carries tool results.
-                            # Two formats:
-                            #   1. parts: [{"type": "tool_call_response", "id": "...", "response": "..."}]
-                            #   2. flat: {"role": "tool", "id": "...", "response": "..."}
-                            # https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/registry/attributes/gen-ai.md
-                            if parts:
-                                for part in parts:
-                                    if isinstance(part, dict) and part.get("type") == "tool_call_response":
-                                        tc_id = part.get("id") or part.get("tool_call_id")
-                                        resp = part.get("response", "")
-                                        if isinstance(resp, dict):
-                                            resp = json.dumps(resp)
-                                        messages.append(
-                                            UserMessage(
-                                                content=[
-                                                    ToolResultContent(
-                                                        content=str(resp) if resp else "",
-                                                        error=None,
-                                                        tool_call_id=tc_id,
-                                                    )
-                                                ]
-                                            )
-                                        )
-                            else:
-                                tool_call_id = msg.get("id") or msg.get("tool_call_id")
-                                response = msg.get("response", msg.get("content", ""))
-                                if isinstance(response, dict):
-                                    response = json.dumps(response)
-                                elif isinstance(response, list):
-                                    parts_text = []
-                                    for block in response:
-                                        if isinstance(block, dict) and block.get("text"):
-                                            parts_text.append(block["text"])
-                                        elif isinstance(block, str):
-                                            parts_text.append(block)
-                                    response = "\n".join(parts_text) if parts_text else str(response)
-                                messages.append(
-                                    UserMessage(
-                                        content=[
-                                            ToolResultContent(
-                                                content=str(response) if response else "",
-                                                error=None,
-                                                tool_call_id=tool_call_id,
-                                            )
-                                        ]
-                                    )
-                                )
-                        elif role == "assistant":
-                            assistant_content: list[TextContent | ToolCallContent] = []
-                            for part in parts:
-                                if part.get("type") == "text" and part.get("content"):
-                                    assistant_content.append(TextContent(text=part["content"]))
-                                elif part.get("type") == "tool_call":
-                                    assistant_content.append(
-                                        ToolCallContent(
-                                            name=part.get("name", ""),
-                                            arguments=part.get("arguments", {}),
-                                            tool_call_id=part.get("id"),
-                                        )
-                                    )
-                            if assistant_content:
-                                messages.append(AssistantMessage(content=assistant_content))
-            except (json.JSONDecodeError, TypeError, KeyError):
-                pass
-
-        # Parse output messages
-        output_msgs_raw = attrs.get("gen_ai.output.messages", "")
-        if output_msgs_raw:
-            try:
-                output_msgs = json.loads(output_msgs_raw) if isinstance(output_msgs_raw, str) else output_msgs_raw
-                if isinstance(output_msgs, list):
-                    for msg in output_msgs:
-                        role = msg.get("role", "")
-                        parts = msg.get("parts", [])
-                        if role == "assistant":
-                            assistant_content = []
-                            for part in parts:
-                                if part.get("type") == "text" and part.get("content"):
-                                    assistant_content.append(TextContent(text=part["content"]))
-                                elif part.get("type") == "tool_call":
-                                    assistant_content.append(
-                                        ToolCallContent(
-                                            name=part.get("name", ""),
-                                            arguments=part.get("arguments", {}),
-                                            tool_call_id=part.get("id"),
-                                        )
-                                    )
-                            if assistant_content:
-                                messages.append(AssistantMessage(content=assistant_content))
-            except (json.JSONDecodeError, TypeError, KeyError):
-                pass
-
-        return messages
-
-    def _parse_operation_details_event(self, event_attrs: dict) -> list[UserMessage | AssistantMessage]:
-        """Parse gen_ai.client.inference.operation.details event (current OTel GenAI convention).
-
-        This event carries gen_ai.input.messages and gen_ai.output.messages as structured
-        lists or JSON-encoded strings within a single span event.
-        https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-events.md
-        """
-        messages: list[UserMessage | AssistantMessage] = []
-
         for key in ("gen_ai.input.messages", "gen_ai.output.messages"):
-            raw = event_attrs.get(key, "")
+            raw = attrs.get(key, "")
             if not raw:
                 continue
             try:
                 msg_list = json.loads(raw) if isinstance(raw, str) else raw
             except (json.JSONDecodeError, TypeError):
                 continue
-
-            if not isinstance(msg_list, list):
-                continue
-
-            for msg in msg_list:
-                role = msg.get("role", "")
-                parts = msg.get("parts", [])
-
-                if role == "user":
-                    user_content: list[TextContent | ToolResultContent] = []
-                    for part in parts:
-                        if isinstance(part, dict):
-                            if part.get("type") == "text" and part.get("content"):
-                                user_content.append(TextContent(text=part["content"]))
-                            elif part.get("type") == "tool_call_response":
-                                user_content.append(
-                                    ToolResultContent(
-                                        content=str(part.get("result", "")),
-                                        error=None,
-                                        tool_call_id=part.get("id"),
-                                    )
-                                )
-                    if user_content:
-                        messages.append(UserMessage(content=user_content))
-
-                elif role == "tool":
-                    # OTel convention: role "tool" carries tool results.
-                    # Two formats:
-                    #   1. parts: [{"type": "tool_call_response", "id": "...", "response": "..."}]
-                    #   2. flat: {"role": "tool", "id": "...", "response": "..."}
-                    if parts:
-                        for part in parts:
-                            if isinstance(part, dict) and part.get("type") == "tool_call_response":
-                                tc_id = part.get("id") or part.get("tool_call_id")
-                                resp = part.get("response", "")
-                                if isinstance(resp, dict):
-                                    resp = json.dumps(resp)
-                                messages.append(
-                                    UserMessage(
-                                        content=[
-                                            ToolResultContent(
-                                                content=str(resp) if resp else "",
-                                                error=None,
-                                                tool_call_id=tc_id,
-                                            )
-                                        ]
-                                    )
-                                )
-                    else:
-                        tool_call_id = msg.get("id") or msg.get("tool_call_id")
-                        response = msg.get("response", msg.get("content", ""))
-                        if isinstance(response, dict):
-                            response = json.dumps(response)
-                        elif isinstance(response, list):
-                            parts_text = []
-                            for block in response:
-                                if isinstance(block, dict) and block.get("text"):
-                                    parts_text.append(block["text"])
-                                elif isinstance(block, str):
-                                    parts_text.append(block)
-                            response = "\n".join(parts_text) if parts_text else str(response)
-                        messages.append(
-                            UserMessage(
-                                content=[
-                                    ToolResultContent(
-                                        content=str(response) if response else "",
-                                        error=None,
-                                        tool_call_id=tool_call_id,
-                                    )
-                                ]
-                            )
-                        )
-
-                elif role == "assistant":
-                    assistant_content: list[TextContent | ToolCallContent] = []
-                    for part in parts:
-                        if isinstance(part, dict):
-                            if part.get("type") == "text" and part.get("content"):
-                                assistant_content.append(TextContent(text=part["content"]))
-                            elif part.get("type") == "tool_call":
-                                assistant_content.append(
-                                    ToolCallContent(
-                                        name=part.get("name", ""),
-                                        arguments=part.get("arguments", {}),
-                                        tool_call_id=part.get("id"),
-                                    )
-                                )
-                    # Also handle flat content string (no parts)
-                    if not assistant_content and msg.get("content"):
-                        assistant_content.append(TextContent(text=str(msg["content"])))
-                    if assistant_content:
-                        messages.append(AssistantMessage(content=assistant_content))
+            if isinstance(msg_list, list):
+                messages.extend(self._convert_message_list(msg_list))
 
         return messages
 
