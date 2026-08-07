@@ -200,6 +200,31 @@ evaluator = TrajectoryEvaluator(
 )
 ```
 
+### Evaluating Large Traces with Progressive Disclosure
+
+When a session is too large to inline into a judge prompt (large tool results,
+many turns), give the judge a compact overview plus discovery tools instead of
+the full trajectory. The judge loads only the spans the rubric requires:
+
+```python
+from strands_evals.evaluators import OutputEvaluator
+from strands_evals.tools.trace_index import TraceIndex
+
+index = TraceIndex(session)  # session: a Session from any provider/mapper
+
+evaluator = OutputEvaluator(
+    rubric="Every factual claim must be supported by tool-result evidence in the trace.",
+    tools=index.tools,  # list_spans, get_span, search_spans
+)
+
+# Compose the prompt with the compact overview instead of the full trajectory
+evaluation_output = f"{agent_answer}\n\n<TraceOverview>\n{index.overview()}\n</TraceOverview>"
+```
+
+The overview is one line per span (index, type, tool name, sizes, preview);
+`get_span` pages through oversized spans so no single tool return can overflow
+the judge's context.
+
 ### Trace-based Helpfulness Evaluation
 
 Evaluate agent helpfulness using OpenTelemetry traces with seven-level scoring:
