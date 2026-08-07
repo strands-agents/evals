@@ -12,7 +12,9 @@ from strands_evals.cli._entrypoint import (
     classify_agent,
     classify_task,
     import_attr,
+    resolve_evaluator_spec,
 )
+from strands_evals.evaluators import SkillInstructionFollowingEvaluator, SkillSelectionAccuracyEvaluator
 
 
 def test_import_attr_resolves_module_function():
@@ -235,3 +237,9 @@ def test_classify_task_rejects_two_arg_callable():
 
     with pytest.raises(EntryPointError, match="2 positional arguments"):
         classify_task(too_many, "x:y")
+
+
+def test_resolve_evaluator_spec_skill_shortnames():
+    """The skill judges are reachable from `--evaluator` like the other zero-arg built-ins."""
+    assert isinstance(resolve_evaluator_spec("skill-selection-accuracy"), SkillSelectionAccuracyEvaluator)
+    assert isinstance(resolve_evaluator_spec("skill-instruction-following"), SkillInstructionFollowingEvaluator)

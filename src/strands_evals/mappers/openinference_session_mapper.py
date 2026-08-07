@@ -272,6 +272,12 @@ class OpenInferenceSessionMapper(SessionMapper):
                 if isinstance(converted, AgentInvocationSpan) and not converted.available_tools:
                     converted.available_tools = tools_list
 
+        system_prompt = self._trace_system_prompt_map.get(trace_id)
+        if system_prompt:
+            for converted in converted_spans:
+                if isinstance(converted, AgentInvocationSpan) and not converted.system_prompt:
+                    converted.system_prompt = system_prompt
+
         return Trace(spans=converted_spans, trace_id=trace_id, session_id=session_id)
 
     # =========================================================================
@@ -546,13 +552,18 @@ class OpenInferenceSessionMapper(SessionMapper):
             if isinstance(output_value, str) and output_value:
                 agent_response = output_value
 
-        # LangGraph / ADOT: extract from structured messages
-        if not user_prompt or not agent_response:
-            input_messages, output_messages = self._get_messages_from_span_events(span)
-            if not user_prompt:
-                user_prompt = self._extract_user_prompt(input_messages, span)
-            if not agent_response:
-                agent_response = self._extract_agent_response(output_messages, span)
+        # LangGraph / ADOT: extract from structured messages. Parsed unconditionally
+        # (the result is cached) because the system prompt lives here even when the
+        # prompt and response were already recovered from smolagents attributes.
+        input_messages, output_messages = self._get_messages_from_span_events(span)
+        if not user_prompt:
+            user_prompt = self._extract_user_prompt(input_messages, span)
+        if not agent_response:
+            agent_response = self._extract_agent_response(output_messages, span)
+
+        _, span_system_prompt = self._extract_user_contents(input_messages, span)
+        if span_system_prompt:
+            self._trace_system_prompt_map[trace_id] = span_system_prompt
 
         if not user_prompt:
             logger.warning(f"No user_prompt for agent span {span.get('span_id')}")
@@ -572,6 +583,7 @@ class OpenInferenceSessionMapper(SessionMapper):
             user_prompt=user_prompt,
             agent_response=agent_response,
             available_tools=available_tools,
+            system_prompt=self._trace_system_prompt_map.get(trace_id) or None,
             metadata={},
         )
 
@@ -656,6 +668,11 @@ class OpenInferenceSessionMapper(SessionMapper):
             event_name = event.get("event_name", "")
             if event_name in SCOPES_OPENINFERENCE_FAMILY:
                 body = event.get("body", {})
+                if not isinstance(body, dict):
+                    # This path is now walked for every span, to reach the system prompt, so a
+                    # malformed body here would raise and cost the caller the whole span rather
+                    # than just its messages. Matches `cloudwatch_parser`'s own guard.
+                    continue
                 input_group = body.get("input", {})
                 output_group = body.get("output", {})
                 input_msgs = input_group.get("messages", [])

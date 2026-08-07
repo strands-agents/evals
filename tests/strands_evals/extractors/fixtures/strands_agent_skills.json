@@ -1,0 +1,449 @@
+{
+  "loaded": {
+    "system_prompt": [
+      {
+        "text": "You are a helpful agent."
+      },
+      {
+        "text": "<available_skills>\n<skill>\n<name>pdf-processing</name>\n<description>Use this skill when the task requires reading or extracting text from PDF files.</description>\n<location>/tmp/agent_skills_capture/skills/pdf-processing/SKILL.md</location>\n</skill>\n<skill>\n<name>spreadsheet-analysis</name>\n<description>Analyze, edit, or generate spreadsheets.</description>\n<location>/tmp/agent_skills_capture/skills/spreadsheet-analysis/SKILL.md</location>\n</skill>\n</available_skills>"
+      }
+    ],
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "text": "Extract text from report.pdf"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "text": "I'll use the pdf-processing skill."
+          },
+          {
+            "toolUse": {
+              "toolUseId": "tu-1",
+              "name": "skills",
+              "input": {
+                "skill_name": "pdf-processing"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "toolResult": {
+              "toolUseId": "tu-1",
+              "status": "success",
+              "content": [
+                {
+                  "text": "# PDF Processing Skill\n\n1. Identify the PDF file path.\n2. Extract the text.\n3. Summarize it.\n\n---\nLocation: /tmp/agent_skills_capture/skills/pdf-processing/SKILL.md"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "text": "Extracted and summarized."
+          }
+        ]
+      }
+    ]
+  },
+  "typo_refusal": {
+    "system_prompt": [
+      {
+        "text": "You are a helpful agent."
+      },
+      {
+        "text": "<available_skills>\n<skill>\n<name>pdf-processing</name>\n<description>Use this skill when the task requires reading or extracting text from PDF files.</description>\n<location>/tmp/agent_skills_capture/skills/pdf-processing/SKILL.md</location>\n</skill>\n<skill>\n<name>spreadsheet-analysis</name>\n<description>Analyze, edit, or generate spreadsheets.</description>\n<location>/tmp/agent_skills_capture/skills/spreadsheet-analysis/SKILL.md</location>\n</skill>\n</available_skills>"
+      }
+    ],
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "text": "Extract text from report.pdf"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "text": "Loading the skill."
+          },
+          {
+            "toolUse": {
+              "toolUseId": "tu-1",
+              "name": "skills",
+              "input": {
+                "skill_name": "pdf-procesing"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "toolResult": {
+              "toolUseId": "tu-1",
+              "status": "success",
+              "content": [
+                {
+                  "text": "Skill 'pdf-procesing' not found. Available skills: pdf-processing, spreadsheet-analysis"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "text": "Sorry, I could not load it."
+          }
+        ]
+      }
+    ]
+  },
+  "empty_name_refusal": {
+    "system_prompt": [
+      {
+        "text": "You are a helpful agent."
+      },
+      {
+        "text": "<available_skills>\n<skill>\n<name>pdf-processing</name>\n<description>Use this skill when the task requires reading or extracting text from PDF files.</description>\n<location>/tmp/agent_skills_capture/skills/pdf-processing/SKILL.md</location>\n</skill>\n<skill>\n<name>spreadsheet-analysis</name>\n<description>Analyze, edit, or generate spreadsheets.</description>\n<location>/tmp/agent_skills_capture/skills/spreadsheet-analysis/SKILL.md</location>\n</skill>\n</available_skills>"
+      }
+    ],
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "text": "Extract text from report.pdf"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "toolUse": {
+              "toolUseId": "tu-1",
+              "name": "skills",
+              "input": {
+                "skill_name": ""
+              }
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "toolResult": {
+              "toolUseId": "tu-1",
+              "status": "success",
+              "content": [
+                {
+                  "text": "Error: skill_name is required. Available skills: pdf-processing, spreadsheet-analysis"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "text": "Sorry."
+          }
+        ]
+      }
+    ]
+  },
+  "retry_after_refusal": {
+    "system_prompt": [
+      {
+        "text": "You are a helpful agent."
+      },
+      {
+        "text": "<available_skills>\n<skill>\n<name>pdf-processing</name>\n<description>Use this skill when the task requires reading or extracting text from PDF files.</description>\n<location>/tmp/agent_skills_capture/skills/pdf-processing/SKILL.md</location>\n</skill>\n<skill>\n<name>spreadsheet-analysis</name>\n<description>Analyze, edit, or generate spreadsheets.</description>\n<location>/tmp/agent_skills_capture/skills/spreadsheet-analysis/SKILL.md</location>\n</skill>\n</available_skills>"
+      }
+    ],
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "text": "Extract text from report.pdf"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "toolUse": {
+              "toolUseId": "tu-1",
+              "name": "skills",
+              "input": {
+                "skill_name": "pdf-procesing"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "toolResult": {
+              "toolUseId": "tu-1",
+              "status": "success",
+              "content": [
+                {
+                  "text": "Skill 'pdf-procesing' not found. Available skills: pdf-processing, spreadsheet-analysis"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "text": "Retrying with the right name."
+          },
+          {
+            "toolUse": {
+              "toolUseId": "tu-2",
+              "name": "skills",
+              "input": {
+                "skill_name": "pdf-processing"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "toolResult": {
+              "toolUseId": "tu-2",
+              "status": "success",
+              "content": [
+                {
+                  "text": "# PDF Processing Skill\n\n1. Identify the PDF file path.\n2. Extract the text.\n3. Summarize it.\n\n---\nLocation: /tmp/agent_skills_capture/skills/pdf-processing/SKILL.md"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "text": "Done."
+          }
+        ]
+      }
+    ]
+  },
+  "two_skills": {
+    "system_prompt": [
+      {
+        "text": "You are a helpful agent."
+      },
+      {
+        "text": "<available_skills>\n<skill>\n<name>pdf-processing</name>\n<description>Use this skill when the task requires reading or extracting text from PDF files.</description>\n<location>/tmp/agent_skills_capture/skills/pdf-processing/SKILL.md</location>\n</skill>\n<skill>\n<name>spreadsheet-analysis</name>\n<description>Analyze, edit, or generate spreadsheets.</description>\n<location>/tmp/agent_skills_capture/skills/spreadsheet-analysis/SKILL.md</location>\n</skill>\n</available_skills>"
+      }
+    ],
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "text": "Extract the PDF then build a sheet"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "toolUse": {
+              "toolUseId": "tu-1",
+              "name": "skills",
+              "input": {
+                "skill_name": "pdf-processing"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "toolResult": {
+              "toolUseId": "tu-1",
+              "status": "success",
+              "content": [
+                {
+                  "text": "# PDF Processing Skill\n\n1. Identify the PDF file path.\n2. Extract the text.\n3. Summarize it.\n\n---\nLocation: /tmp/agent_skills_capture/skills/pdf-processing/SKILL.md"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "toolUse": {
+              "toolUseId": "tu-2",
+              "name": "skills",
+              "input": {
+                "skill_name": "spreadsheet-analysis"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "toolResult": {
+              "toolUseId": "tu-2",
+              "status": "success",
+              "content": [
+                {
+                  "text": "# Spreadsheet Analysis\n1. Inspect.\n\n---\nLocation: /tmp/agent_skills_capture/skills/spreadsheet-analysis/SKILL.md"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "text": "Done."
+          }
+        ]
+      }
+    ]
+  },
+  "repeated_load": {
+    "system_prompt": [
+      {
+        "text": "You are a helpful agent."
+      },
+      {
+        "text": "<available_skills>\n<skill>\n<name>pdf-processing</name>\n<description>Use this skill when the task requires reading or extracting text from PDF files.</description>\n<location>/tmp/agent_skills_capture/skills/pdf-processing/SKILL.md</location>\n</skill>\n<skill>\n<name>spreadsheet-analysis</name>\n<description>Analyze, edit, or generate spreadsheets.</description>\n<location>/tmp/agent_skills_capture/skills/spreadsheet-analysis/SKILL.md</location>\n</skill>\n</available_skills>"
+      }
+    ],
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "text": "Extract text from report.pdf"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "toolUse": {
+              "toolUseId": "tu-1",
+              "name": "skills",
+              "input": {
+                "skill_name": "pdf-processing"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "toolResult": {
+              "toolUseId": "tu-1",
+              "status": "success",
+              "content": [
+                {
+                  "text": "# PDF Processing Skill\n\n1. Identify the PDF file path.\n2. Extract the text.\n3. Summarize it.\n\n---\nLocation: /tmp/agent_skills_capture/skills/pdf-processing/SKILL.md"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "toolUse": {
+              "toolUseId": "tu-2",
+              "name": "skills",
+              "input": {
+                "skill_name": "pdf-processing"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "toolResult": {
+              "toolUseId": "tu-2",
+              "status": "success",
+              "content": [
+                {
+                  "text": "# PDF Processing Skill\n\n1. Identify the PDF file path.\n2. Extract the text.\n3. Summarize it.\n\n---\nLocation: /tmp/agent_skills_capture/skills/pdf-processing/SKILL.md"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "text": "Done."
+          }
+        ]
+      }
+    ]
+  }
+}

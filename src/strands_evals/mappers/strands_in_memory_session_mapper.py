@@ -139,6 +139,10 @@ class StrandsInMemorySessionMapper(SessionMapper):
 
     def _convert_trace(self, trace_id: str, otel_spans: list[ReadableSpan], session_id: str) -> Trace:
         converted_spans: list[InferenceSpan | ToolExecutionSpan | AgentInvocationSpan] = []
+        system_prompt = next(
+            (prompt for span in otel_spans if (prompt := self._extract_system_prompt(span))),
+            None,
+        )
 
         for span in otel_spans:
             try:
@@ -164,6 +168,11 @@ class StrandsInMemorySessionMapper(SessionMapper):
 
         bridge_parent_gaps(converted_spans, raw_parent_map)
 
+        if system_prompt:
+            for converted_span in converted_spans:
+                if isinstance(converted_span, AgentInvocationSpan) and not converted_span.system_prompt:
+                    converted_span.system_prompt = system_prompt
+
         return Trace(spans=converted_spans, trace_id=trace_id, session_id=session_id)
 
     def _create_span_info(self, span: ReadableSpan, session_id: str) -> SpanInfo:
@@ -185,6 +194,43 @@ class StrandsInMemorySessionMapper(SessionMapper):
             return json.loads(str(value))
         except (AttributeError, TypeError, json.JSONDecodeError):
             return json.loads(default)
+
+    def _prompt_content_to_text(self, value: Any) -> str:
+        """Flatten legacy content blocks or latest OTEL instruction parts."""
+        if isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError:
+                return value
+            return self._prompt_content_to_text(decoded)
+        if isinstance(value, list):
+            return "\n".join(part for item in value if (part := self._prompt_content_to_text(item)))
+        if isinstance(value, dict):
+            for key in ("text", "content"):
+                if key in value:
+                    return self._prompt_content_to_text(value[key])
+        return ""
+
+    def _extract_system_prompt(self, span: ReadableSpan) -> str | None:
+        """Extract a model-visible system prompt from either GenAI convention."""
+        attributes = span.attributes or {}
+        direct = attributes.get("gen_ai.system_instructions")
+        if direct:
+            prompt = self._prompt_content_to_text(direct).strip()
+            if prompt:
+                return prompt
+
+        for event in span.events:
+            event_attributes = event.attributes or {}
+            if event.name == "gen_ai.system.message":
+                prompt = self._prompt_content_to_text(event_attributes.get("content")).strip()
+            elif event.name == "gen_ai.client.inference.operation.details":
+                prompt = self._prompt_content_to_text(event_attributes.get("gen_ai.system_instructions")).strip()
+            else:
+                continue
+            if prompt:
+                return prompt
+        return None
 
     def _process_user_message(self, content_list: list[dict[str, Any]]) -> list[TextContent | ToolResultContent]:
         return [TextContent(text=item["text"]) for item in content_list if "text" in item]
@@ -466,5 +512,6 @@ class StrandsInMemorySessionMapper(SessionMapper):
             user_prompt=user_prompt,
             agent_response=agent_response,
             available_tools=available_tools,
+            system_prompt=self._extract_system_prompt(span),
             metadata={},
         )

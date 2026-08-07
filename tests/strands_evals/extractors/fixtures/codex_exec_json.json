@@ -1,0 +1,42 @@
+{
+  "events": [
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_0",
+        "type": "agent_message",
+        "text": "I\u2019m using the `pdf-processing` skill to inspect `report.pdf` and determine the appropriate extraction workflow."
+      }
+    },
+    {
+      "type": "item.started",
+      "item": {
+        "id": "item_1",
+        "type": "command_execution",
+        "command": "/bin/bash -lc 'cat /tmp/agent_skills_capture/codex/.agents/skills/pdf-processing/SKILL.md'",
+        "aggregated_output": "",
+        "exit_code": null,
+        "status": "in_progress"
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_1",
+        "type": "command_execution",
+        "command": "/bin/bash -lc 'cat /tmp/agent_skills_capture/codex/.agents/skills/pdf-processing/SKILL.md'",
+        "aggregated_output": "---\nname: pdf-processing\ndescription: Use this skill when the task requires reading or extracting text from PDF files.\n---\n\n# PDF Processing Skill\n\n1. Identify the PDF file path.\n2. Extract the text.\n3. Summarize it.\n",
+        "exit_code": 0,
+        "status": "completed"
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_2",
+        "type": "agent_message",
+        "text": "The skill specifies text extraction followed by summarization. I\u2019m locating the PDF and checking which local extractor is available."
+      }
+    }
+  ]
+}

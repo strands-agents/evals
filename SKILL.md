@@ -131,11 +131,12 @@ Pick the evaluator by scope:
 | Scope | Evaluators |
 | --- | --- |
 | Tool-level | `ToolSelectionAccuracyEvaluator`, `ToolParameterAccuracyEvaluator` |
+| Skill-level (per invoked skill) | `SkillSelectionAccuracyEvaluator`, `SkillInstructionFollowingEvaluator`, `SkillInvoked` (deterministic) |
 | Trace-level (last turn) | `CorrectnessEvaluator`, `HelpfulnessEvaluator`, `FaithfulnessEvaluator`, `CoherenceEvaluator`, `ConcisenessEvaluator`, `ResponseRelevanceEvaluator`, `HarmfulnessEvaluator`, `RefusalEvaluator`, `StereotypingEvaluator`, `InstructionFollowingEvaluator` |
 | Session-level (full conversation) | `GoalSuccessRateEvaluator` |
 | Multi-agent interactions and handoffs | `InteractionsEvaluator` (output-based) |
 
-Helpfulness uses a seven-level scale, 0.0 Not helpful to 1.0 Above and beyond. Correctness uses a three-level rubric in basic mode, or binary CORRECT/INCORRECT in reference mode when `expected_assertion` is set on the case. Conciseness uses three levels. Coherence uses five levels. Harmfulness, Refusal, Stereotyping, InstructionFollowing are binary.
+Helpfulness uses a seven-level scale, 0.0 Not helpful to 1.0 Above and beyond. Correctness uses a three-level rubric in basic mode, or binary CORRECT/INCORRECT in reference mode when `expected_assertion` is set on the case. Conciseness uses three levels. Coherence uses five levels. Harmfulness, Refusal, Stereotyping, InstructionFollowing are binary. SkillInstructionFollowing uses a five-level scale, 0.0 Not Followed to 1.0 Fully Followed, and returns one result per invoked skill. SkillSelectionAccuracy is binary and also returns one result per invoked skill.
 
 For traces from external systems pick the matching mapper:
 - `CloudWatchSessionMapper` paired with `CloudWatchProvider` and `CloudWatchLogsParser`

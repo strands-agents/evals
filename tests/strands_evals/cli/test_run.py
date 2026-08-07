@@ -7,7 +7,10 @@ from pathlib import Path
 
 import pytest
 
+from strands_evals.cli.commands.run import _display_expanded, _print_summary
 from strands_evals.cli.main import main
+from strands_evals.types import NOT_APPLICABLE, EvaluationOutput
+from strands_evals.types.evaluation_report import EvaluationReport
 
 
 def test_run_with_task_smoke(experiment_file: Path, capsys, tmp_path: Path):
@@ -748,3 +751,80 @@ def test_run_custom_evaluator_threading(experiment_file: Path, tmp_path: Path):
     payload = json.loads(out_path.read_text())
     assert payload["cases"][0]["evaluator"] == "AlwaysPasses"
     assert payload["test_passes"] == [True]
+
+
+def _report_with_one_not_applicable_case() -> EvaluationReport:
+    """A two-case report where the second case had nothing to judge.
+
+    Its 0.0 is a placeholder, not a verdict, so `calculate_overall_score` leaves it out and the
+    overall score is the first case's 1.0.
+    """
+    judged = [EvaluationOutput(score=1.0, test_pass=True, reason="judged", label="Yes")]
+    nothing_to_judge = [EvaluationOutput(score=0.0, test_pass=True, reason="no skill invoked", label=NOT_APPLICABLE)]
+    scores = [1.0, 0.0]
+    detailed = [judged, nothing_to_judge]
+    return EvaluationReport(
+        overall_score=EvaluationReport.calculate_overall_score(scores, detailed),
+        scores=scores,
+        cases=[
+            {"name": "used a skill", "evaluator": "SkillInstructionFollowingEvaluator"},
+            {"name": "used none", "evaluator": "SkillInstructionFollowingEvaluator"},
+        ],
+        test_passes=[True, True],
+        reasons=["judged", "no skill invoked"],
+        detailed_results=detailed,
+    )
+
+
+def test_summary_average_matches_overall_score(capsys):
+    """The per-evaluator average and `overall:` are computed from the same rows.
+
+    Averaging the not-applicable case's placeholder 0.0 into the per-evaluator number printed
+    `(0.50)` next to `overall: 1.00` off the very same two rows.
+    """
+    report = _report_with_one_not_applicable_case()
+
+    _print_summary(report)
+
+    summary = capsys.readouterr().err
+    assert "SkillInstructionFollowingEvaluator: 2/2 passed (1.00)" in summary
+    assert "overall: 1.00" in summary
+
+
+def test_summary_reports_zero_when_every_case_is_not_applicable(capsys):
+    """No judged rows means no average to print, not a failing score dressed up as one."""
+    outputs = [EvaluationOutput(score=0.0, test_pass=True, reason="no skill invoked", label=NOT_APPLICABLE)]
+    report = EvaluationReport(
+        overall_score=EvaluationReport.calculate_overall_score([0.0], [outputs]),
+        scores=[0.0],
+        cases=[{"name": "used none", "evaluator": "SkillInstructionFollowingEvaluator"}],
+        test_passes=[True],
+        reasons=["no skill invoked"],
+        detailed_results=[outputs],
+    )
+
+    _print_summary(report)
+
+    summary = capsys.readouterr().err
+    assert "SkillInstructionFollowingEvaluator: 1/1 passed (0.00)" in summary
+    assert "overall: 0.00" in summary
+
+
+def test_expanded_display_shows_na_instead_of_a_placeholder_zero(monkeypatch):
+    """The score column of an unjudged case reads "n/a", not the worst possible verdict."""
+    from strands_evals.cli.commands import run as run_module
+
+    captured: dict = {}
+
+    class _FakeDisplay:
+        def __init__(self, items: dict, overall_score: float) -> None:
+            captured["items"] = items
+
+        def run(self, static: bool = True) -> None:
+            pass
+
+    monkeypatch.setattr(run_module, "CollapsibleTableReportDisplay", _FakeDisplay)
+
+    _display_expanded(_report_with_one_not_applicable_case(), include_recommendations=False)
+
+    assert [row["details"]["score"] for row in captured["items"].values()] == ["1.00", "n/a"]

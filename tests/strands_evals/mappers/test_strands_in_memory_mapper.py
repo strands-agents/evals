@@ -4,6 +4,7 @@ import pytest
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.trace import SpanContext, SpanKind, TraceFlags
 
+from strands_evals.extractors import parse_available_skills
 from strands_evals.mappers import GenAIConventionVersion, StrandsInMemorySessionMapper
 from strands_evals.types.trace import AgentInvocationSpan, InferenceSpan, ToolExecutionSpan
 
@@ -75,6 +76,121 @@ def test_agent_span(provider):
     assert agent.user_prompt == "2+2"
     assert agent.agent_response == "4"
     assert agent.available_tools[0].name == "calc"
+
+
+def test_system_prompt_is_read_from_a_span_attribute_too(provider):
+    """The other wire shape: `gen_ai.system_instructions` as a span attribute, not an event.
+
+    The SDK's tracer writes it as an attribute when Langfuse or `gen_ai_span_attributes_only` is
+    active, and unconditionally for bidi sessions. Only the event branch was covered, so the
+    attribute branch could be deleted with every mapper test still green, and the skill catalog
+    would silently vanish for those runs.
+    """
+    available_block = (
+        "<available_skills><skill><name>pdf-processing</name>"
+        "<description>Read PDFs.</description></skill></available_skills>"
+    )
+    chat_span = make_span(
+        provider,
+        0xAAA,
+        0xBBB,
+        0xAAA1,
+        "chat",
+        {
+            "gen_ai.operation.name": "chat",
+            "gen_ai.provider.name": "strands-agents",
+            "gen_ai.system_instructions": json.dumps([{"type": "text", "content": available_block}]),
+        },
+        lambda span: span.add_event("gen_ai.user.message", {"content": '[{"text": "read it"}]'}),
+    )
+    agent_span = make_span(
+        provider,
+        0xAAA,
+        0xCCC,
+        None,
+        "invoke_agent",
+        {"gen_ai.operation.name": "invoke_agent", "gen_ai.provider.name": "strands-agents"},
+        lambda span: span.add_event("gen_ai.user.message", {"content": '[{"text": "read it"}]'}),
+    )
+
+    session = StrandsInMemorySessionMapper().map_to_session([chat_span, agent_span], "sid")
+    agent = next(span for span in session.traces[0].spans if isinstance(span, AgentInvocationSpan))
+
+    assert agent.system_prompt == available_block
+    assert [skill.name for skill in parse_available_skills(session)] == ["pdf-processing"]
+
+
+@pytest.mark.parametrize("latest", [False, True])
+def test_agent_span_receives_system_prompt_from_chat_span(provider, latest):
+    available_block = (
+        "<available_skills><skill><name>pdf-processing</name>"
+        "<description>Read PDFs.</description></skill></available_skills>"
+    )
+    convention_attrs = {"gen_ai.provider.name": "strands-agents"} if latest else {"gen_ai.system": "strands-agents"}
+
+    if latest:
+
+        def chat_events(span):
+            span.add_event(
+                "gen_ai.client.inference.operation.details",
+                {
+                    "gen_ai.system_instructions": json.dumps([{"type": "text", "content": available_block}]),
+                    "gen_ai.input.messages": json.dumps(
+                        [{"role": "user", "parts": [{"type": "text", "content": "read it"}]}]
+                    ),
+                    "gen_ai.output.messages": json.dumps(
+                        [{"role": "assistant", "parts": [{"type": "text", "content": "done"}]}]
+                    ),
+                },
+            )
+
+        def agent_events(span):
+            span.add_event(
+                "gen_ai.client.inference.operation.details",
+                {
+                    "gen_ai.input.messages": json.dumps(
+                        [{"role": "user", "parts": [{"type": "text", "content": "read it"}]}]
+                    ),
+                    "gen_ai.output.messages": json.dumps(
+                        [{"role": "assistant", "parts": [{"type": "text", "content": "done"}]}]
+                    ),
+                },
+            )
+    else:
+
+        def chat_events(span):
+            span.add_event("gen_ai.system.message", {"content": json.dumps([{"text": available_block}])})
+            span.add_event("gen_ai.user.message", {"content": '[{"text": "read it"}]'})
+            span.add_event("gen_ai.choice", {"message": '[{"text": "done"}]'})
+
+        def agent_events(span):
+            span.add_event("gen_ai.user.message", {"content": '[{"text": "read it"}]'})
+            span.add_event("gen_ai.choice", {"message": "done"})
+
+    chat_span = make_span(
+        provider,
+        0xAAA,
+        0xBBB,
+        0xAAA1,
+        "chat",
+        {"gen_ai.operation.name": "chat", **convention_attrs},
+        chat_events,
+    )
+    agent_span = make_span(
+        provider,
+        0xAAA,
+        0xCCC,
+        None,
+        "invoke_agent",
+        {"gen_ai.operation.name": "invoke_agent", **convention_attrs},
+        agent_events,
+    )
+
+    session = StrandsInMemorySessionMapper().map_to_session([chat_span, agent_span], "sid")
+    agent = next(span for span in session.traces[0].spans if isinstance(span, AgentInvocationSpan))
+
+    assert agent.system_prompt == available_block
+    assert [skill.name for skill in parse_available_skills(session)] == ["pdf-processing"]
 
 
 def test_tool_span(provider):

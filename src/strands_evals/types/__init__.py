@@ -7,11 +7,21 @@ from .detector import (
     RCAOutput,
     RCAStructuredOutput,
 )
-from .evaluation import EnvironmentState, EvaluationData, EvaluationOutput, InputT, Interaction, OutputT, TaskOutput
+from .evaluation import (
+    NOT_APPLICABLE,
+    EnvironmentState,
+    EvaluationData,
+    EvaluationOutput,
+    InputT,
+    Interaction,
+    OutputT,
+    TaskOutput,
+)
 from .multimodal import AnyMediaData, ImageData, MultimodalInput, resolve_image_bytes
 from .simulation import ActorProfile, ActorResponse
 
 __all__ = [
+    "NOT_APPLICABLE",
     "EnvironmentState",
     "Interaction",
     "TaskOutput",

@@ -22,7 +22,7 @@ from .evaluation_data_store import EvaluationDataStore
 from .evaluators.coherence_evaluator import CoherenceEvaluator
 from .evaluators.conciseness_evaluator import ConcisenessEvaluator
 from .evaluators.correctness_evaluator import CorrectnessEvaluator
-from .evaluators.deterministic import Contains, Equals, StartsWith, StateEquals, ToolCalled
+from .evaluators.deterministic import Contains, Equals, SkillInvoked, StartsWith, StateEquals, ToolCalled
 from .evaluators.evaluator import Evaluator
 from .evaluators.faithfulness_evaluator import FaithfulnessEvaluator
 from .evaluators.goal_success_rate_evaluator import GoalSuccessRateEvaluator
@@ -38,6 +38,8 @@ from .evaluators.multimodal_overall_quality_evaluator import MultimodalOverallQu
 from .evaluators.output_evaluator import OutputEvaluator
 from .evaluators.refusal_evaluator import RefusalEvaluator
 from .evaluators.response_relevance_evaluator import ResponseRelevanceEvaluator
+from .evaluators.skill_instruction_following_evaluator import SkillInstructionFollowingEvaluator
+from .evaluators.skill_selection_accuracy_evaluator import SkillSelectionAccuracyEvaluator
 from .evaluators.stereotyping_evaluator import StereotypingEvaluator
 from .evaluators.tool_parameter_accuracy_evaluator import ToolParameterAccuracyEvaluator
 from .evaluators.tool_selection_accuracy_evaluator import ToolSelectionAccuracyEvaluator
@@ -45,7 +47,7 @@ from .evaluators.trajectory_evaluator import TrajectoryEvaluator
 from .telemetry import get_tracer, serialize
 from .telemetry._cloudwatch_logger import _send_to_cloudwatch
 from .types.detector import DiagnosisConfig
-from .types.evaluation import EvaluationData, InputT, OutputT
+from .types.evaluation import NOT_APPLICABLE, EvaluationData, EvaluationOutput, InputT, OutputT
 from .types.evaluation_report import EvaluationReport
 from .types.trace import Session
 from .utils import is_throttling_error
@@ -59,7 +61,11 @@ _INITIAL_RETRY_DELAY = 4
 _MAX_RETRY_DELAY = 240  # 4 minutes
 
 
-def _get_label_from_score(evaluator: Evaluator, score: float) -> str:
+def _get_label_from_score(
+    evaluator: Evaluator,
+    score: float,
+    outputs: list[EvaluationOutput] | None = None,
+) -> str:
     """
     Get the label from score using evaluator's _score_mapping if available.
     If no mapping exists, returns "YES" for scores >= 0.5, "NO" otherwise.
@@ -67,11 +73,17 @@ def _get_label_from_score(evaluator: Evaluator, score: float) -> str:
     Args:
         evaluator: The evaluator instance
         score: The numeric score
-        default_label: Default label to return if provided and no mapping found
+        outputs: The rows the score was aggregated from, when available. A case whose every row
+            was not-applicable has no verdict to report, and its 0.0 is a placeholder rather than
+            a score, so reverse-mapping it would emit the mapping's worst label for a case that
+            was never judged.
 
     Returns:
         The label corresponding to the score
     """
+    if outputs is not None and not EvaluationReport.is_applicable(outputs):
+        return NOT_APPLICABLE
+
     if hasattr(evaluator, "_score_mapping") and evaluator._score_mapping:
         # Create reverse mapping from score to label
         reverse_mapping = {v: k for k, v in evaluator._score_mapping.items()}
@@ -366,7 +378,7 @@ class Experiment(Generic[InputT, OutputT]):
                 ) = await _evaluate_with_retry()
 
                 try:
-                    label = _get_label_from_score(evaluator, aggregate_score)
+                    label = _get_label_from_score(evaluator, aggregate_score, evaluation_outputs)
                 except Exception:
                     label = "UNKNOWN"
 
@@ -685,7 +697,10 @@ class Experiment(Generic[InputT, OutputT]):
             data = evaluator_data[eval_name]
             scores = data["scores"]
             report = EvaluationReport(
-                overall_score=sum(scores) / len(scores) if scores else 0,
+                overall_score=EvaluationReport.calculate_overall_score(
+                    scores,
+                    data["detailed_results"],
+                ),
                 scores=scores,
                 test_passes=data["test_passes"],
                 cases=data["cases"],
@@ -775,6 +790,8 @@ class Experiment(Generic[InputT, OutputT]):
             "InstructionFollowingEvaluator": InstructionFollowingEvaluator,
             "RefusalEvaluator": RefusalEvaluator,
             "ResponseRelevanceEvaluator": ResponseRelevanceEvaluator,
+            "SkillInstructionFollowingEvaluator": SkillInstructionFollowingEvaluator,
+            "SkillSelectionAccuracyEvaluator": SkillSelectionAccuracyEvaluator,
             "StereotypingEvaluator": StereotypingEvaluator,
             "ToolParameterAccuracyEvaluator": ToolParameterAccuracyEvaluator,
             "ToolSelectionAccuracyEvaluator": ToolSelectionAccuracyEvaluator,
@@ -788,6 +805,7 @@ class Experiment(Generic[InputT, OutputT]):
             "StartsWith": StartsWith,
             "StateEquals": StateEquals,
             "ToolCalled": ToolCalled,
+            "SkillInvoked": SkillInvoked,
         }
         all_evaluators: dict[str, type[Evaluator]] = {
             **default_evaluators,

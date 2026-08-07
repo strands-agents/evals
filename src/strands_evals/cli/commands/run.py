@@ -222,13 +222,21 @@ def _print_summary(report: EvaluationReport) -> None:
     `run_evaluations_async` returns a single flattened report whose `cases`
     rows are tagged with an `evaluator` key; regroup by that tag so the
     summary still reads `<evaluator>: P/T passed (avg)` per evaluator.
+
+    Each average is computed the same way as `report.overall_score`, dropping cases that had
+    nothing to judge. Averaging their placeholder 0.0 instead would print a lower per-evaluator
+    number than the overall score computed from the very same rows.
     """
     by_eval: dict[str, list[int]] = {}
     by_eval_scores: dict[str, list[float]] = {}
     for i, case in enumerate(report.cases):
         name = case.get("evaluator", "unknown")
         by_eval.setdefault(name, []).append(int(report.test_passes[i]))
-        by_eval_scores.setdefault(name, []).append(report.scores[i])
+        outputs = report.detailed_results[i] if i < len(report.detailed_results) else []
+        if EvaluationReport.is_applicable(outputs):
+            by_eval_scores.setdefault(name, []).append(report.scores[i])
+        else:
+            by_eval_scores.setdefault(name, [])
 
     parts: list[str] = ["strands-evals run"]
     for name, passes in by_eval.items():
@@ -271,7 +279,10 @@ def _display_expanded(
         details: dict[str, Any] = {"name": case.get("name", f"Test {i + 1}")}
         if "evaluator" in case:
             details["evaluator"] = case["evaluator"]
-        details["score"] = f"{report.scores[i]:.2f}"
+        outputs = report.detailed_results[i] if i < len(report.detailed_results) else []
+        # A case with nothing to judge is excluded from every average, so printing its
+        # placeholder 0.00 in the score column would read as the worst possible verdict.
+        details["score"] = f"{report.scores[i]:.2f}" if EvaluationReport.is_applicable(outputs) else "n/a"
         details["test_pass"] = report.test_passes[i] if i < len(report.test_passes) else False
         details["reason"] = report.reasons[i] if i < len(report.reasons) else ""
         details["input"] = EvaluationReport.format_input_for_display(case.get("input"))

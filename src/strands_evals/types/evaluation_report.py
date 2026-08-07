@@ -29,6 +29,38 @@ class EvaluationReport(BaseModel):
     diagnoses: list[dict | None] = []
     recommendations: list[str | None] = []
 
+    @staticmethod
+    def is_applicable(outputs: list[EvaluationOutput]) -> bool:
+        """Whether a case's rows carry a verdict, so its score belongs in an average.
+
+        A case is dropped only when every row both declined to judge and passed. One judged row is
+        enough to make the case's score a real number.
+
+        `test_pass` is what separates the two things a not-applicable row can mean. Declining to
+        judge passes and is droppable: nothing was on offer, so there is no verdict to average.
+        Failing to judge does not pass, and dropping it would take a real failure out of every
+        average and report the run as better than it was. Both evaluators emit the second shape for
+        a missing trajectory.
+
+        No rows at all is applicable for the same reason. An evaluator that returned nothing failed
+        to judge rather than declining to, and `_default_aggregator` scores that `test_pass=False`.
+        """
+        return not outputs or any(not output.not_applicable or not output.test_pass for output in outputs)
+
+    @classmethod
+    def calculate_overall_score(
+        cls,
+        scores: list[float],
+        detailed_results: list[list[EvaluationOutput]],
+    ) -> float:
+        """Average applicable rows while retaining N/A rows in report details."""
+        applicable_scores = [
+            score
+            for index, score in enumerate(scores)
+            if index >= len(detailed_results) or cls.is_applicable(detailed_results[index])
+        ]
+        return sum(applicable_scores) / len(applicable_scores) if applicable_scores else 0.0
+
     @classmethod
     def flatten(cls, reports: list["EvaluationReport"]) -> "EvaluationReport":
         """Concatenate multiple evaluation reports into one.
@@ -53,7 +85,7 @@ class EvaluationReport(BaseModel):
                 recs.append(report.recommendations[i] if i < len(report.recommendations) else None)
 
         return cls(
-            overall_score=sum(scores) / len(scores) if scores else 0.0,
+            overall_score=cls.calculate_overall_score(scores, detailed),
             scores=scores,
             cases=cases,
             test_passes=passes,

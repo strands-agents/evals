@@ -32,6 +32,7 @@ dependencies = [
     "opentelemetry-instrumentation-threading>=0.51b0,<1.00b0",
     "boto3>=1.26.0",
     "tenacity>=8.0.0,<10.0.0",
+    "pyyaml>=6.0.0,<7.0.0",
 ]
 
 [tool.hatch.build.targets.wheel]

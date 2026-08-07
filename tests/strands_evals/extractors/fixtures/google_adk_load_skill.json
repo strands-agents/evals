@@ -1,0 +1,109 @@
+{
+  "loaded": {
+    "contents": [
+      {
+        "role": "model",
+        "parts": [
+          {
+            "function_call": {
+              "id": "adk-1",
+              "args": {
+                "skill_name": "pdf-processing"
+              },
+              "name": "load_skill"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "function_response": {
+              "id": "adk-1",
+              "name": "load_skill",
+              "response": {
+                "skill_name": "pdf-processing",
+                "instructions": "# PDF Processing Skill\n\n1. Identify the PDF file path.\n2. Extract the text.\n3. Summarize it.",
+                "frontmatter": {
+                  "name": "pdf-processing",
+                  "description": "Use this skill when the task requires reading or extracting text from PDF files.",
+                  "license": null,
+                  "compatibility": null,
+                  "allowed_tools": null,
+                  "metadata": {}
+                }
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "not_found": {
+    "contents": [
+      {
+        "role": "model",
+        "parts": [
+          {
+            "function_call": {
+              "id": "adk-1",
+              "args": {
+                "skill_name": "pdf-procesing"
+              },
+              "name": "load_skill"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "function_response": {
+              "id": "adk-1",
+              "name": "load_skill",
+              "response": {
+                "error": "Skill 'pdf-procesing' not found.",
+                "error_code": "SKILL_NOT_FOUND"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "missing_arg": {
+    "contents": [
+      {
+        "role": "model",
+        "parts": [
+          {
+            "function_call": {
+              "id": "adk-1",
+              "args": {
+                "skill_name": ""
+              },
+              "name": "load_skill"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "function_response": {
+              "id": "adk-1",
+              "name": "load_skill",
+              "response": {
+                "error": "Argument 'skill_name' is required.",
+                "error_code": "INVALID_ARGUMENTS"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

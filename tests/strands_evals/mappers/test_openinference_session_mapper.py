@@ -580,6 +580,37 @@ class TestSystemPromptExtraction:
         # No user content → no InferenceSpan produced
         assert session.traces == []
 
+    def test_system_prompt_backfilled_to_agent_span_independent_of_span_order(self):
+        available_block = (
+            "<available_skills><skill><name>pdf-processing</name>"
+            "<description>Read PDFs.</description></skill></available_skills>"
+        )
+        llm_attrs = {
+            "openinference.span.kind": "LLM",
+            "llm.input_messages.0.message.role": "system",
+            "llm.input_messages.0.message.content": available_block,
+            "llm.input_messages.1.message.role": "user",
+            "llm.input_messages.1.message.content": "Read report.pdf",
+            "llm.output_messages.0.message.role": "assistant",
+            "llm.output_messages.0.message.content": "Done",
+        }
+        llm_span = make_span(
+            trace_id="prompt-trace",
+            span_id="llm",
+            attributes=llm_attrs,
+        )
+        agent_span = make_chain_span(
+            trace_id="prompt-trace",
+            span_id="agent",
+            user_query="Read report.pdf",
+            agent_response="Done",
+        )
+
+        session = self.mapper.map_to_session([agent_span, llm_span], "sess-1")
+        agent = next(span for span in session.traces[0].spans if isinstance(span, AgentInvocationSpan))
+
+        assert agent.system_prompt == available_block
+
 
 # =========================================================================
 # Python Repr Parsing Tests

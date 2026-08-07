@@ -29,6 +29,8 @@ from ..evaluators import (
     InstructionFollowingEvaluator,
     RefusalEvaluator,
     ResponseRelevanceEvaluator,
+    SkillInstructionFollowingEvaluator,
+    SkillSelectionAccuracyEvaluator,
     StereotypingEvaluator,
     ToolParameterAccuracyEvaluator,
     ToolSelectionAccuracyEvaluator,
@@ -53,6 +55,10 @@ BUILTIN_EVALUATOR_SHORTNAMES: dict[str, type[Evaluator]] = {
     "instruction-following": InstructionFollowingEvaluator,
     "refusal": RefusalEvaluator,
     "response-relevance": ResponseRelevanceEvaluator,
+    # `skill-invoked` is absent for the same reason as `tool-called`: `SkillInvoked`
+    # requires a `skill_name`, so it belongs in an experiment file.
+    "skill-instruction-following": SkillInstructionFollowingEvaluator,
+    "skill-selection-accuracy": SkillSelectionAccuracyEvaluator,
     "stereotyping": StereotypingEvaluator,
     "tool-parameter-accuracy": ToolParameterAccuracyEvaluator,
     "tool-selection-accuracy": ToolSelectionAccuracyEvaluator,

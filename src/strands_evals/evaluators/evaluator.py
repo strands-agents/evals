@@ -88,6 +88,26 @@ class Evaluator(Generic[InputT, OutputT]):
         combined_reason = " | ".join(o.reason for o in outputs if o.reason)
         return avg_score, all_pass, combined_reason
 
+    @staticmethod
+    def _aggregate_dropping_na(outputs: list[EvaluationOutput]) -> tuple[float, bool, str]:
+        """Average only the rows that carry a verdict.
+
+        For evaluators that emit one row per decision and can find some of those decisions
+        unjudgeable, the not-applicable rows score 0.0 as a placeholder. Averaging that in would
+        report a case with one perfectly judged decision and one unjudgeable one as half right.
+        Set `self.aggregator` to this in `__init__` to opt in.
+        """
+        scored = [o for o in outputs if not o.not_applicable]
+        if not scored:
+            reason = " | ".join(o.reason for o in outputs if o.reason) or "not applicable"
+            # Carry the rows' own verdicts: "nothing to judge" passes, but absent data fails.
+            all_pass = all(o.test_pass for o in outputs) if outputs else True
+            return (0.0, all_pass, reason)
+        avg = sum(o.score for o in scored) / len(scored)
+        all_pass = all(o.test_pass for o in scored)
+        reason = " | ".join(o.reason for o in scored if o.reason)
+        return avg, all_pass, reason
+
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         """
         Evaluate the performance of the task on the given test cases.

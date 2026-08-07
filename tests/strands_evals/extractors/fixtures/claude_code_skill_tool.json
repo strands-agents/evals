@@ -1,0 +1,53 @@
+{
+  "messages": [
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": "Use the pdf-processing skill on report.pdf"
+      }
+    },
+    {
+      "type": "assistant",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "toolu_bdrk_017tApeVjBHWpYV5SVrPQcoD",
+            "name": "Skill",
+            "input": {
+              "skill": "pdf-processing",
+              "args": "report.pdf"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_bdrk_017tApeVjBHWpYV5SVrPQcoD",
+            "content": "Launching skill: pdf-processing"
+          }
+        ]
+      }
+    },
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Base directory for this skill: /tmp/agent_skills_capture/claude/.claude/skills/pdf-processing\n\n# PDF Processing Skill\n\n1. Identify the PDF file path.\n2. Extract the text.\n3. Summarize it.\n\n\nARGUMENTS: report.pdf"
+          }
+        ]
+      }
+    }
+  ]
+}

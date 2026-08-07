@@ -1,7 +1,7 @@
 from .coherence_evaluator import CoherenceEvaluator
 from .conciseness_evaluator import ConcisenessEvaluator
 from .correctness_evaluator import CorrectnessEvaluator
-from .deterministic import Contains, Equals, StartsWith, StateEquals, ToolCalled
+from .deterministic import Contains, Equals, SkillInvoked, StartsWith, StateEquals, ToolCalled
 from .evaluator import Evaluator
 from .faithfulness_evaluator import FaithfulnessEvaluator
 from .goal_success_rate_evaluator import GoalSuccessRateEvaluator
@@ -17,12 +17,17 @@ from .multimodal_overall_quality_evaluator import MultimodalOverallQualityEvalua
 from .output_evaluator import OutputEvaluator
 from .refusal_evaluator import RefusalEvaluator
 from .response_relevance_evaluator import ResponseRelevanceEvaluator
+from .skill_instruction_following_evaluator import SkillInstructionFollowingEvaluator
+from .skill_selection_accuracy_evaluator import SkillSelectionAccuracyEvaluator
 from .stereotyping_evaluator import StereotypingEvaluator
 from .tool_parameter_accuracy_evaluator import ToolParameterAccuracyEvaluator
 from .tool_selection_accuracy_evaluator import ToolSelectionAccuracyEvaluator
 from .trajectory_evaluator import TrajectoryEvaluator
 
 __all__ = [
+    "SkillSelectionAccuracyEvaluator",
+    "SkillInstructionFollowingEvaluator",
+    "SkillInvoked",
     "Evaluator",
     "OutputEvaluator",
     "MultimodalOutputEvaluator",

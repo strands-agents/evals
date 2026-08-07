@@ -109,6 +109,17 @@ class EvaluationData(BaseModel, Generic[InputT, OutputT]):
     expected_environment_state: list[EnvironmentState] | None = None
 
 
+NOT_APPLICABLE = "not_applicable"
+"""`EvaluationOutput.label` for a row that had nothing to judge.
+
+An evaluator emits this when the case gave it no decision to score, so the row carries a
+diagnosis in `reason` rather than a verdict. Its `score` is 0.0 by convention and is not a
+judgment: `EvaluationReport.calculate_overall_score` drops these rows so they do not deflate the
+mean. Anything reporting an average has to drop them the same way, or the same rows read as two
+different numbers depending on where they are displayed.
+"""
+
+
 class EvaluationOutput(BaseModel):
     """
     Structured output for LLM-based judge.
@@ -117,10 +128,16 @@ class EvaluationOutput(BaseModel):
         score: The score of the test case.
         test_pass: Whether the test pass or fail.
         reason: The reason for the score for each test case.
-        label: The categorical label corresponding to the score.
+        label: The categorical label corresponding to the score, or `NOT_APPLICABLE` when there
+            was nothing to judge.
     """
 
     score: float
     test_pass: bool
     reason: str | None = None
     label: str | None = None
+
+    @property
+    def not_applicable(self) -> bool:
+        """Whether this row had nothing to judge, so its score is not a verdict."""
+        return self.label == NOT_APPLICABLE
