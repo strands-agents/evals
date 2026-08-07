@@ -218,7 +218,7 @@ class GenericGenAISessionMapper(SessionMapper):
         # (PydanticAI, AutoGen, and other native gen_ai semconv frameworks)
         if not messages:
             attrs = span.get("attributes", {})
-            messages = self._parse_attribute_messages(attrs)
+            messages = self._convert_message_list_from_event(attrs)
 
         return InferenceSpan(span_info=span_info, messages=messages, metadata={})
 
@@ -455,6 +455,8 @@ class GenericGenAISessionMapper(SessionMapper):
         messages: list[UserMessage | AssistantMessage] = []
 
         for msg in msg_list:
+            if not isinstance(msg, dict):
+                continue
             role = msg.get("role", "")
             parts = msg.get("parts", [])
 
@@ -466,9 +468,14 @@ class GenericGenAISessionMapper(SessionMapper):
                     if part.get("type") == "text" and part.get("content"):
                         user_content.append(TextContent(text=part["content"]))
                     elif part.get("type") == "tool_call_response":
+                        _r = part.get("response", part.get("result", ""))
+                        if isinstance(_r, list):
+                            _r = join_tool_result_content(_r)
+                        elif isinstance(_r, dict):
+                            _r = json.dumps(_r)
                         user_content.append(
                             ToolResultContent(
-                                content=str(part.get("result", "")),
+                                content=str(_r) if _r else "",
                                 error=None,
                                 tool_call_id=part.get("id"),
                             )
@@ -485,9 +492,11 @@ class GenericGenAISessionMapper(SessionMapper):
                     for part in parts:
                         if isinstance(part, dict) and part.get("type") == "tool_call_response":
                             tc_id = part.get("id") or part.get("tool_call_id")
-                            resp = part.get("response", "")
+                            resp = part.get("response", part.get("result", ""))
                             if isinstance(resp, dict):
                                 resp = json.dumps(resp)
+                            elif isinstance(resp, list):
+                                resp = join_tool_result_content(resp)
                             messages.append(
                                 UserMessage(
                                     content=[
@@ -505,13 +514,7 @@ class GenericGenAISessionMapper(SessionMapper):
                     if isinstance(response, dict):
                         response = json.dumps(response)
                     elif isinstance(response, list):
-                        parts_text = []
-                        for block in response:
-                            if isinstance(block, dict) and block.get("text"):
-                                parts_text.append(block["text"])
-                            elif isinstance(block, str):
-                                parts_text.append(block)
-                        response = "\n".join(parts_text) if parts_text else str(response)
+                        response = join_tool_result_content(response)
                     messages.append(
                         UserMessage(
                             content=[
@@ -544,29 +547,6 @@ class GenericGenAISessionMapper(SessionMapper):
                     assistant_content.append(TextContent(text=str(msg["content"])))
                 if assistant_content:
                     messages.append(AssistantMessage(content=assistant_content))
-
-        return messages
-
-    def _parse_attribute_messages(self, attrs: dict) -> list[UserMessage | AssistantMessage]:
-        """Parse gen_ai.input.messages / gen_ai.output.messages from span attributes.
-
-        PydanticAI and other native gen_ai semconv frameworks store messages as
-        JSON arrays in span attributes rather than span_events. Supports:
-        - PydanticAI format: [{"role": "user", "parts": [{"type": "text", "content": "..."}]}]
-        - OTel GenAI convention: role "tool" with response field for tool results
-        """
-        messages: list[UserMessage | AssistantMessage] = []
-
-        for key in ("gen_ai.input.messages", "gen_ai.output.messages"):
-            raw = attrs.get(key, "")
-            if not raw:
-                continue
-            try:
-                msg_list = json.loads(raw) if isinstance(raw, str) else raw
-            except (json.JSONDecodeError, TypeError):
-                continue
-            if isinstance(msg_list, list):
-                messages.extend(self._convert_message_list(msg_list))
 
         return messages
 

@@ -1064,8 +1064,8 @@ class TestToolRoleMessages:
         inference = session.traces[0].spans[0]
         assert isinstance(inference, InferenceSpan)
         tool_msg = inference.messages[0]
-        assert "42" in tool_msg.content[0].content
-        assert "result" in tool_msg.content[0].content
+        # Assert exact serialized JSON string, not just substrings
+        assert tool_msg.content[0].content == '{"result": 42, "status": "ok"}'
 
     def test_tool_result_image_block_placeholder(self):
         """toolResult.content with an image block produces [image] placeholder."""
@@ -1128,6 +1128,195 @@ class TestToolRoleMessages:
         assert "Summary:" in content
         assert "72" in content
         assert "\n" in content
+
+    def test_user_role_tool_call_response_with_list_response(self):
+        """role:'user' tool_call_response with list-valued 'response' joins text blocks."""
+        span = make_span(
+            operation_name="chat",
+            attributes={
+                "gen_ai.input.messages": json.dumps(
+                    [
+                        {
+                            "role": "user",
+                            "parts": [
+                                {
+                                    "type": "tool_call_response",
+                                    "id": "call-list-u1",
+                                    "response": [{"text": "Seattle: 62F, cloudy with light rain"}],
+                                }
+                            ],
+                        }
+                    ]
+                ),
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        inference = session.traces[0].spans[0]
+        assert isinstance(inference, InferenceSpan)
+        tool_msg = inference.messages[0]
+        assert tool_msg.content[0].content == "Seattle: 62F, cloudy with light rain"
+        assert tool_msg.content[0].tool_call_id == "call-list-u1"
+
+    def test_tool_role_parts_branch_with_list_response(self):
+        """role:'tool' parts branch with list-valued 'response' joins text blocks."""
+        span = make_span(
+            operation_name="chat",
+            attributes={
+                "gen_ai.input.messages": json.dumps(
+                    [
+                        {
+                            "role": "tool",
+                            "parts": [
+                                {
+                                    "type": "tool_call_response",
+                                    "id": "call-list-t1",
+                                    "response": [
+                                        {"text": "Paris: 57F, rainy"},
+                                        {"text": "Wind: 12mph NW"},
+                                    ],
+                                }
+                            ],
+                        }
+                    ]
+                ),
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        inference = session.traces[0].spans[0]
+        assert isinstance(inference, InferenceSpan)
+        tool_msg = inference.messages[0]
+        assert "Paris: 57F, rainy" in tool_msg.content[0].content
+        assert "Wind: 12mph NW" in tool_msg.content[0].content
+        assert tool_msg.content[0].tool_call_id == "call-list-t1"
+
+    def test_tool_role_flat_branch_with_list_response(self):
+        """role:'tool' flat (no parts) with list-valued 'response' joins text blocks."""
+        span = make_span(
+            operation_name="chat",
+            attributes={
+                "gen_ai.input.messages": json.dumps(
+                    [
+                        {
+                            "role": "tool",
+                            "id": "call-list-flat1",
+                            "response": [{"text": "London: 55F, overcast"}],
+                        }
+                    ]
+                ),
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        inference = session.traces[0].spans[0]
+        assert isinstance(inference, InferenceSpan)
+        tool_msg = inference.messages[0]
+        assert tool_msg.content[0].content == "London: 55F, overcast"
+        assert tool_msg.content[0].tool_call_id == "call-list-flat1"
+
+    def test_tool_role_flat_branch_with_json_block_in_list(self):
+        """role:'tool' flat with json block in list serializes it, not repr."""
+        span = make_span(
+            operation_name="chat",
+            attributes={
+                "gen_ai.input.messages": json.dumps(
+                    [
+                        {
+                            "role": "tool",
+                            "id": "call-flat-json1",
+                            "response": [
+                                {"text": "Weather:"},
+                                {"json": {"temp": 62, "unit": "F", "condition": "cloudy"}},
+                            ],
+                        }
+                    ]
+                ),
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        inference = session.traces[0].spans[0]
+        assert isinstance(inference, InferenceSpan)
+        tool_msg = inference.messages[0]
+        content = tool_msg.content[0].content
+        # Must contain the text block and serialized json, not Python repr
+        assert "Weather:" in content
+        assert '"temp": 62' in content or '"temp":62' in content
+        # Must NOT contain Python repr artifacts
+        assert "[{" not in content or '{"' in content  # no list-repr wrapper
+        assert "'json'" not in content  # no dict key as Python repr
+
+    def test_non_dict_message_skipped_gracefully(self):
+        """A non-dict entry in the message list is skipped without crashing."""
+        span = make_span(
+            operation_name="chat",
+            attributes={
+                "gen_ai.input.messages": json.dumps(
+                    [
+                        "unexpected string entry",
+                        None,
+                        {"role": "user", "parts": [{"type": "text", "content": "hello"}]},
+                    ]
+                ),
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        inference = session.traces[0].spans[0]
+        assert isinstance(inference, InferenceSpan)
+        # Only the valid dict message should be parsed
+        assert len(inference.messages) == 1
+        assert inference.messages[0].content[0].text == "hello"
+
+    def test_user_role_tool_call_response_falls_back_to_result_key(self):
+        """role:'user' tool_call_response reads 'result' when 'response' is absent."""
+        span = make_span(
+            operation_name="chat",
+            attributes={
+                "gen_ai.input.messages": json.dumps(
+                    [
+                        {
+                            "role": "user",
+                            "parts": [
+                                {
+                                    "type": "tool_call_response",
+                                    "id": "call-fallback1",
+                                    "result": [{"text": "fallback content"}],
+                                }
+                            ],
+                        }
+                    ]
+                ),
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        inference = session.traces[0].spans[0]
+        assert isinstance(inference, InferenceSpan)
+        tool_msg = inference.messages[0]
+        assert tool_msg.content[0].content == "fallback content"
+
+    def test_tool_role_parts_branch_falls_back_to_result_key(self):
+        """role:'tool' parts branch reads 'result' when 'response' is absent."""
+        span = make_span(
+            operation_name="chat",
+            attributes={
+                "gen_ai.input.messages": json.dumps(
+                    [
+                        {
+                            "role": "tool",
+                            "parts": [
+                                {
+                                    "type": "tool_call_response",
+                                    "id": "call-fallback2",
+                                    "result": [{"text": "tool fallback"}],
+                                }
+                            ],
+                        }
+                    ]
+                ),
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        inference = session.traces[0].spans[0]
+        assert isinstance(inference, InferenceSpan)
+        tool_msg = inference.messages[0]
+        assert tool_msg.content[0].content == "tool fallback"
 
 
 # =============================================================================
