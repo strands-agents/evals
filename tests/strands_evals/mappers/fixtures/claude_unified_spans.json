@@ -1,0 +1,281 @@
+{
+  "session_id": "e457cade-6652-42ad-b879-182dde7124c5",
+  "span_count": 8,
+  "spans": [
+    {
+      "trace_id": "6a74fd19607936851cc91fef1506624f",
+      "span_id": "9ba74ad8363a1acd",
+      "parent_span_id": "5c2a984a75d75f78",
+      "name": "Bash",
+      "start_time": 1786051888270252114,
+      "end_time": 1786051888526973038,
+      "attributes": {
+        "aws.local.service": "CWExperiment_ClaudeMulti.DEFAULT",
+        "tool.parameters": "{\"command\": \"echo $((42 * 7))\", \"description\": \"Calculate 42 * 7\"}",
+        "output.value": "{\"stdout\": \"294\", \"stderr\": \"\", \"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false}",
+        "aws.genai.span_kind": "TOOL",
+        "aws.local.environment": "bedrock-agentcore:default",
+        "input.mime_type": "application/json",
+        "output.mime_type": "application/json",
+        "input.value": "{\"command\": \"echo $((42 * 7))\", \"description\": \"Calculate 42 * 7\"}",
+        "tool.id": "toolu_bdrk_01SW1rX7PUer9zBaVQv9wLUa",
+        "openinference.span.kind": "TOOL",
+        "PlatformType": "AWS::BedrockAgentCore",
+        "session.id": "e457cade-6652-42ad-b879-182dde7124c5",
+        "tool.name": "Bash"
+      },
+      "scope": {
+        "name": "openinference.instrumentation.claude_agent_sdk",
+        "version": "0.1.8"
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a74fd19607936851cc91fef1506624f",
+      "span_id": "52c63a60a79dc3e3",
+      "parent_span_id": "c3d1bcc351bf9653",
+      "name": "Agent",
+      "start_time": 1786051886396129012,
+      "end_time": 1786051890339601282,
+      "attributes": {
+        "aws.local.service": "CWExperiment_ClaudeMulti.DEFAULT",
+        "tool.parameters": "{\"description\": \"Calculate 42 * 7\", \"subagent_type\": \"math-agent\", \"prompt\": \"Calculate 42 * 7 and return the result.\", \"run_in_background\": false}",
+        "output.value": "{\"status\": \"completed\", \"prompt\": \"Calculate 42 * 7 and return the result.\", \"agentId\": \"aa0f69f4dc9119fd0\", \"agentType\": \"math-agent\", \"content\": [{\"type\": \"text\", \"text\": \"42 * 7 = **294**\"}], \"resolvedModel\": \"us.anthropic.claude-sonnet-4-6\", \"totalDurationMs\": 3930, \"totalTokens\": 4068, \"totalToolUseCount\": 1, \"usage\": {\"input_tokens\": 1, \"cache_creation_input_tokens\": 99, \"cache_read_input_tokens\": 3955, \"output_tokens\": 13, \"server_tool_use\": {\"web_search_requests\": 0, \"web_fetch_requests\": 0}, \"service_tier\": \"standard\", \"cache_creation\": {\"ephemeral_1h_input_tokens\": 0, \"ephemeral_5m_input_tokens\": 99}, \"inference_geo\": \"\", \"iterations\": [], \"speed\": \"standard\"}, \"toolStats\": {\"readCount\": 0, \"searchCount\": 0, \"bashCount\": 1, \"editFileCount\": 0, \"linesAdded\": 0, \"linesRemoved\": 0, \"otherToolCount\": 0}}",
+        "aws.genai.span_kind": "TOOL",
+        "aws.local.environment": "bedrock-agentcore:default",
+        "input.mime_type": "application/json",
+        "output.mime_type": "application/json",
+        "input.value": "{\"description\": \"Calculate 42 * 7\", \"subagent_type\": \"math-agent\", \"prompt\": \"Calculate 42 * 7 and return the result.\", \"run_in_background\": false}",
+        "tool.id": "toolu_bdrk_013DnTxpqTDkwezwKkHizcHT",
+        "openinference.span.kind": "TOOL",
+        "PlatformType": "AWS::BedrockAgentCore",
+        "session.id": "e457cade-6652-42ad-b879-182dde7124c5",
+        "tool.name": "Agent"
+      },
+      "scope": {
+        "name": "openinference.instrumentation.claude_agent_sdk",
+        "version": "0.1.8"
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a74fd19607936851cc91fef1506624f",
+      "span_id": "d0706922917bdcd1",
+      "parent_span_id": "f120f1e65d898126",
+      "name": "Bash",
+      "start_time": 1786051890133570663,
+      "end_time": 1786051901406971244,
+      "attributes": {
+        "aws.local.service": "CWExperiment_ClaudeMulti.DEFAULT",
+        "tool.parameters": "{\"command\": \"python3 -c 'miles = 294; km = miles / 0.621371; print(f\\\"{miles} miles = {km:.4f} km\\\")'\", \"description\": \"Convert 294 miles to kilometers\"}",
+        "output.value": "{\"stdout\": \"Configuration of aws_configurator not loaded, configurator already loaded\\n294 miles = 473.1473 km\", \"stderr\": \"\", \"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false}",
+        "aws.genai.span_kind": "TOOL",
+        "aws.local.environment": "bedrock-agentcore:default",
+        "input.mime_type": "application/json",
+        "output.mime_type": "application/json",
+        "input.value": "{\"command\": \"python3 -c 'miles = 294; km = miles / 0.621371; print(f\\\"{miles} miles = {km:.4f} km\\\")'\", \"description\": \"Convert 294 miles to kilometers\"}",
+        "tool.id": "toolu_bdrk_01T4wcJbc3MxsEgsGoQEowaa",
+        "openinference.span.kind": "TOOL",
+        "PlatformType": "AWS::BedrockAgentCore",
+        "session.id": "e457cade-6652-42ad-b879-182dde7124c5",
+        "tool.name": "Bash"
+      },
+      "scope": {
+        "name": "openinference.instrumentation.claude_agent_sdk",
+        "version": "0.1.8"
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a74fd19607936851cc91fef1506624f",
+      "span_id": "5399ec80b54ac27c",
+      "parent_span_id": "c3d1bcc351bf9653",
+      "name": "Agent",
+      "start_time": 1786051887131417419,
+      "end_time": 1786051902970334584,
+      "attributes": {
+        "aws.local.service": "CWExperiment_ClaudeMulti.DEFAULT",
+        "tool.parameters": "{\"description\": \"Convert 294 miles to kilometers\", \"subagent_type\": \"conversion-agent\", \"prompt\": \"Convert 294 miles to kilometers and return the result.\", \"run_in_background\": false}",
+        "output.value": "{\"status\": \"completed\", \"prompt\": \"Convert 294 miles to kilometers and return the result.\", \"agentId\": \"af64dcd2e3ee99758\", \"agentType\": \"conversion-agent\", \"content\": [{\"type\": \"text\", \"text\": \"Here is the result of the conversion:\\n\\n**294 miles = 473.1473 kilometers**\\n\\nFormula used: km = miles / 0.621371\\n\\nSpecifically: 294 / 0.621371 = 473.1473 km\"}], \"resolvedModel\": \"us.anthropic.claude-sonnet-4-6\", \"totalDurationMs\": 15836, \"totalTokens\": 4228, \"totalToolUseCount\": 1, \"usage\": {\"input_tokens\": 1, \"cache_creation_input_tokens\": 153, \"cache_read_input_tokens\": 4014, \"output_tokens\": 60, \"server_tool_use\": {\"web_search_requests\": 0, \"web_fetch_requests\": 0}, \"service_tier\": \"standard\", \"cache_creation\": {\"ephemeral_1h_input_tokens\": 0, \"ephemeral_5m_input_tokens\": 153}, \"inference_geo\": \"\", \"iterations\": [], \"speed\": \"standard\"}, \"toolStats\": {\"readCount\": 0, \"searchCount\": 0, \"bashCount\": 1, \"editFileCount\": 0, \"linesAdded\": 0, \"linesRemoved\": 0, \"otherToolCount\": 0}}",
+        "aws.genai.span_kind": "TOOL",
+        "aws.local.environment": "bedrock-agentcore:default",
+        "input.mime_type": "application/json",
+        "output.mime_type": "application/json",
+        "input.value": "{\"description\": \"Convert 294 miles to kilometers\", \"subagent_type\": \"conversion-agent\", \"prompt\": \"Convert 294 miles to kilometers and return the result.\", \"run_in_background\": false}",
+        "tool.id": "toolu_bdrk_01RQYH5cNSJ2iYbufJ8VbEk4",
+        "openinference.span.kind": "TOOL",
+        "PlatformType": "AWS::BedrockAgentCore",
+        "session.id": "e457cade-6652-42ad-b879-182dde7124c5",
+        "tool.name": "Agent"
+      },
+      "scope": {
+        "name": "openinference.instrumentation.claude_agent_sdk",
+        "version": "0.1.8"
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a74fd19607936851cc91fef1506624f",
+      "span_id": "f120f1e65d898126",
+      "parent_span_id": "5399ec80b54ac27c",
+      "name": "ClaudeAgentSDK.Agent",
+      "start_time": 1786051887137321949,
+      "end_time": 1786051904949534800,
+      "attributes": {
+        "aws.local.service": "CWExperiment_ClaudeMulti.DEFAULT",
+        "gen_ai.request.model": "claude-sonnet-4-6",
+        "gen_ai.agent.name": "Agent",
+        "agent.name": "Agent",
+        "aws.genai.span_kind": "AGENT",
+        "llm.model_name": "claude-sonnet-4-6",
+        "openinference.span.kind": "AGENT",
+        "PlatformType": "AWS::BedrockAgentCore",
+        "session.id": "e457cade-6652-42ad-b879-182dde7124c5",
+        "aws.local.environment": "bedrock-agentcore:default"
+      },
+      "scope": {
+        "name": "openinference.instrumentation.claude_agent_sdk",
+        "version": "0.1.8"
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a74fd19607936851cc91fef1506624f",
+      "span_id": "c3d1bcc351bf9653",
+      "parent_span_id": "7549860608387d0b",
+      "name": "ClaudeAgentSDK.query",
+      "start_time": 1786051873454427413,
+      "end_time": 1786051904949557495,
+      "attributes": {
+        "aws.local.service": "CWExperiment_ClaudeMulti.DEFAULT",
+        "llm.output_messages.3.message.tool_calls.0.tool_call.function.name": "Agent",
+        "llm.token_count.prompt_details.cache_write": 2861,
+        "llm.output_messages.3.message.tool_calls.0.tool_call.id": "toolu_bdrk_01RQYH5cNSJ2iYbufJ8VbEk4",
+        "llm.output_messages.0.message.contents.0.message_content.signature": "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",
+        "llm.token_count.prompt": 4,
+        "llm.output_messages.2.message.tool_calls.0.tool_call.function.arguments": "{\"description\": \"Calculate 42 * 7\", \"subagent_type\": \"math-agent\", \"prompt\": \"Calculate 42 * 7 and return the result.\", \"run_in_background\": false}",
+        "llm.model_name": "us.anthropic.claude-sonnet-4-6",
+        "aws.local.environment": "bedrock-agentcore:default",
+        "gen_ai.provider.name": "anthropic",
+        "llm.output_messages.0.message.contents.0.message_content.type": "reasoning",
+        "llm.output_messages.1.message.role": "assistant",
+        "output.mime_type": "text/plain",
+        "llm.output_messages.2.message.role": "assistant",
+        "llm.output_messages.4.message.role": "assistant",
+        "gen_ai.request.model": "us.anthropic.claude-sonnet-4-6",
+        "llm.output_messages.3.message.role": "assistant",
+        "openinference.span.kind": "AGENT",
+        "llm.output_messages.0.message.contents.0.message_content.text": "The user wants two things:\n1. Calculate 42 * 7 (math calculation \u2192 math-agent)\n2. Convert the result to kilometers (unit conversion \u2192 conversion-agent)\n\nHowever, these are dependent - I need the result of 42 * 7 first before I can convert it to kilometers. Wait, actually 42 * 7 = 294, and then I need to convert 294 miles to kilometers.\n\nBut I don't know the result yet (I should delegate to math-agent). However, I can reason: these are sequential - first get the math result, then do the conversion. But actually, I know that 42 * 7 = 294, so I could run both in parallel by pre-computing... but no, I should delegate properly.\nI'm going back and forth on whether to run these sequentially or in parallel. Since the conversion depends on the math result, the proper approach is to delegate to math-agent first, then pass that result to conversion-agent. I could theoretically run them in parallel since I can compute 42 * 7 = 294 myself, but I should follow the delegation pattern and execute them in order.",
+        "llm.output_messages.2.message.tool_calls.0.tool_call.id": "toolu_bdrk_013DnTxpqTDkwezwKkHizcHT",
+        "llm.system": "anthropic",
+        "gen_ai.usage.output_tokens": 767,
+        "output.value": "Here are your results:\n\n1. **42 \u00d7 7 = 294**\n2. **294 miles = 473.15 kilometers**\n\nSo the answer to your multiplication is **294**, and that distance in kilometers is approximately **473.15 km**.",
+        "llm.output_messages.2.message.tool_calls.0.tool_call.function.name": "Agent",
+        "aws.genai.span_kind": "AGENT",
+        "llm.token_count.completion": 767,
+        "llm.output_messages.0.message.role": "assistant",
+        "llm.token_count.total": 771,
+        "llm.cost.total": 0.0712653,
+        "input.mime_type": "text/plain",
+        "llm.token_count.prompt_details.cache_read": 29447,
+        "gen_ai.usage.input_tokens": 4,
+        "aws.genai.token_count_total": 771,
+        "input.value": "What is 42 * 7, and how many miles is that in kilometers?",
+        "llm.output_messages.4.message.content.0": "Here are your results:\n\n1. **42 \u00d7 7 = 294**\n2. **294 miles = 473.15 kilometers**\n\nSo the answer to your multiplication is **294**, and that distance in kilometers is approximately **473.15 km**.",
+        "PlatformType": "AWS::BedrockAgentCore",
+        "session.id": "e457cade-6652-42ad-b879-182dde7124c5",
+        "llm.output_messages.1.message.content.0": "I'll delegate both tasks simultaneously \u2014 the math to **math-agent** and the unit conversion to **conversion-agent** (since 42 \u00d7 7 = 294, I can kick off both in parallel)!",
+        "llm.output_messages.3.message.tool_calls.0.tool_call.function.arguments": "{\"description\": \"Convert 294 miles to kilometers\", \"subagent_type\": \"conversion-agent\", \"prompt\": \"Convert 294 miles to kilometers and return the result.\", \"run_in_background\": false}"
+      },
+      "scope": {
+        "name": "openinference.instrumentation.claude_agent_sdk",
+        "version": "0.1.8"
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a74fd19607936851cc91fef1506624f",
+      "span_id": "5c2a984a75d75f78",
+      "parent_span_id": "52c63a60a79dc3e3",
+      "name": "ClaudeAgentSDK.Agent",
+      "start_time": 1786051886415461604,
+      "end_time": 1786051904949477781,
+      "attributes": {
+        "aws.local.service": "CWExperiment_ClaudeMulti.DEFAULT",
+        "gen_ai.request.model": "claude-sonnet-4-6",
+        "gen_ai.agent.name": "Agent",
+        "agent.name": "Agent",
+        "aws.genai.span_kind": "AGENT",
+        "llm.model_name": "claude-sonnet-4-6",
+        "openinference.span.kind": "AGENT",
+        "PlatformType": "AWS::BedrockAgentCore",
+        "session.id": "e457cade-6652-42ad-b879-182dde7124c5",
+        "aws.local.environment": "bedrock-agentcore:default"
+      },
+      "scope": {
+        "name": "openinference.instrumentation.claude_agent_sdk",
+        "version": "0.1.8"
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": []
+    },
+    {
+      "trace_id": "6a74fd19607936851cc91fef1506624f",
+      "span_id": "7549860608387d0b",
+      "parent_span_id": "0ddd1d7a4995eb19",
+      "name": "POST /invocations",
+      "start_time": 1786051873332529993,
+      "end_time": 1786051904950868523,
+      "attributes": {
+        "aws.local.service": "CWExperiment_ClaudeMulti.DEFAULT",
+        "net.peer.port": 55494,
+        "telemetry.extended": "true",
+        "http.target": "/invocations",
+        "http.flavor": "1.1",
+        "http.url": "http://cell01.us-east-1.prod.arp.kepler-analytics.aws.dev/invocations",
+        "net.peer.ip": "127.0.0.1",
+        "http.host": "127.0.0.1:8080",
+        "aws.local.environment": "bedrock-agentcore:default",
+        "http.status_code": 200,
+        "aws.local.operation": "POST /invocations",
+        "aws.span.kind": "SERVER",
+        "http.server_name": "cell01.us-east-1.prod.arp.kepler-analytics.aws.dev",
+        "net.host.port": 8080,
+        "http.route": "/invocations",
+        "PlatformType": "AWS::BedrockAgentCore",
+        "http.method": "POST",
+        "http.response.status_code": 200,
+        "session.id": "e457cade-6652-42ad-b879-182dde7124c5",
+        "http.scheme": "http"
+      },
+      "scope": {
+        "name": "opentelemetry.instrumentation.starlette",
+        "version": "0.65b0"
+      },
+      "status": {
+        "code": "UNSET"
+      },
+      "span_events": []
+    }
+  ]
+}
