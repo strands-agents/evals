@@ -296,9 +296,6 @@ class OpenInferenceSessionMapper(SessionMapper):
                     elif "status" in output_parsed and "content" in output_parsed:
                         attrs.setdefault("tool.name", "Agent")
                 attrs["output.value"] = output_content
-
-            if isinstance(input_parsed, dict) and "description" in input_parsed:
-                attrs.setdefault("tool.description", input_parsed["description"])
         else:
             # Agent span: inject AGENT kind with plain text input/output
             attrs["openinference.span.kind"] = "AGENT"
@@ -622,13 +619,6 @@ class OpenInferenceSessionMapper(SessionMapper):
             # "success" = smolagents/LangChain default; "completed" = Claude Agent SDK
             error=None if tool_status in ("success", "completed") else tool_status,
             tool_call_id=tool_call_id,
-        )
-
-        # Track tool in trace tools map (used for available_tools on agent spans)
-        trace_id = span.get("trace_id", "")
-        tool_description = attrs.get("tool.description")
-        self._trace_tools_map[trace_id][tool_name] = ToolConfig(
-            name=tool_name, description=tool_description, parameters=None
         )
 
         return ToolExecutionSpan(span_info=span_info, tool_call=tool_call, tool_result=tool_result, metadata={})

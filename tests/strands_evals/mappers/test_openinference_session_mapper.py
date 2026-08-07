@@ -2149,6 +2149,7 @@ class TestClaudeAdotIntegration:
         """Tool spans have tool names (generic fallback without provider enrichment)."""
         all_spans = [s for t in claude_adot_session.traces for s in t.spans]
         tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        assert tool_spans
         for tool_span in tool_spans:
             assert tool_span.tool_call.name is not None
             assert len(tool_span.tool_call.name) > 0
@@ -2157,6 +2158,7 @@ class TestClaudeAdotIntegration:
         """Tool spans have parsed arguments from the input body."""
         all_spans = [s for t in claude_adot_session.traces for s in t.spans]
         tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        assert tool_spans
         for tool_span in tool_spans:
             assert tool_span.tool_call.arguments is not None
             assert isinstance(tool_span.tool_call.arguments, dict)
@@ -2166,5 +2168,6 @@ class TestClaudeAdotIntegration:
         """Tool spans have non-empty result content."""
         all_spans = [s for t in claude_adot_session.traces for s in t.spans]
         tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        assert tool_spans
         for tool_span in tool_spans:
             assert tool_span.tool_result.content
