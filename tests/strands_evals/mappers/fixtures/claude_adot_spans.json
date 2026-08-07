@@ -1,0 +1,246 @@
+{
+  "session_id": "4897eb75-7dc1-4a67-9cd3-570cc00cb982",
+  "span_count": 5,
+  "spans": [
+    {
+      "trace_id": "6a75fb970f2164517ef2173376ef9577",
+      "span_id": "09c4a2a12534cdc5",
+      "parent_span_id": null,
+      "name": "openinference.instrumentation.claude_agent_sdk",
+      "start_time": 1786117035989869774,
+      "end_time": 1786117035989869774,
+      "attributes": {
+        "event.name": "openinference.instrumentation.claude_agent_sdk",
+        "session.id": "4897eb75-7dc1-4a67-9cd3-570cc00cb982"
+      },
+      "scope": {
+        "name": "openinference.instrumentation.claude_agent_sdk",
+        "version": ""
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": [
+        {
+          "event_name": "openinference.instrumentation.claude_agent_sdk",
+          "span_id": "09c4a2a12534cdc5",
+          "timestamp": 1786117035989869774,
+          "attributes": {
+            "event.name": "openinference.instrumentation.claude_agent_sdk",
+            "session.id": "4897eb75-7dc1-4a67-9cd3-570cc00cb982"
+          },
+          "body": {
+            "input": {
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "{\"command\": \"echo $((42 * 7))\", \"description\": \"Calculate 42 * 7\"}"
+                }
+              ]
+            },
+            "output": {
+              "messages": [
+                {
+                  "role": "assistant",
+                  "content": "{\"stdout\": \"294\", \"stderr\": \"\", \"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "trace_id": "6a75fb970f2164517ef2173376ef9577",
+      "span_id": "0633433133c67937",
+      "parent_span_id": null,
+      "name": "openinference.instrumentation.claude_agent_sdk",
+      "start_time": 1786117037279498481,
+      "end_time": 1786117037279498481,
+      "attributes": {
+        "event.name": "openinference.instrumentation.claude_agent_sdk",
+        "session.id": "4897eb75-7dc1-4a67-9cd3-570cc00cb982"
+      },
+      "scope": {
+        "name": "openinference.instrumentation.claude_agent_sdk",
+        "version": ""
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": [
+        {
+          "event_name": "openinference.instrumentation.claude_agent_sdk",
+          "span_id": "0633433133c67937",
+          "timestamp": 1786117037279498481,
+          "attributes": {
+            "event.name": "openinference.instrumentation.claude_agent_sdk",
+            "session.id": "4897eb75-7dc1-4a67-9cd3-570cc00cb982"
+          },
+          "body": {
+            "input": {
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "{\"description\": \"Calculate 42 * 7\", \"subagent_type\": \"math-agent\", \"prompt\": \"Calculate 42 * 7 and return only the numeric result.\", \"run_in_background\": false}"
+                }
+              ]
+            },
+            "output": {
+              "messages": [
+                {
+                  "role": "assistant",
+                  "content": "{\"status\": \"completed\", \"prompt\": \"Calculate 42 * 7 and return only the numeric result.\", \"agentId\": \"a2278450719f677d2\", \"agentType\": \"math-agent\", \"content\": [{\"type\": \"text\", \"text\": \"294\"}], \"resolvedModel\": \"us.anthropic.claude-sonnet-4-6\", \"totalDurationMs\": 3287, \"totalTokens\": 4061, \"totalToolUseCount\": 1, \"usage\": {\"input_tokens\": 1, \"cache_creation_input_tokens\": 99, \"cache_read_input_tokens\": 3957, \"output_tokens\": 4, \"server_tool_use\": {\"web_search_requests\": 0, \"web_fetch_requests\": 0}, \"service_tier\": \"standard\", \"cache_creation\": {\"ephemeral_1h_input_tokens\": 0, \"ephemeral_5m_input_tokens\": 99}, \"inference_geo\": \"\", \"iterations\": [], \"speed\": \"standard\"}, \"toolStats\": {\"readCount\": 0, \"searchCount\": 0, \"bashCount\": 1, \"editFileCount\": 0, \"linesAdded\": 0, \"linesRemoved\": 0, \"otherToolCount\": 0}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "trace_id": "6a75fb970f2164517ef2173376ef9577",
+      "span_id": "065ce5131990bc4c",
+      "parent_span_id": null,
+      "name": "openinference.instrumentation.claude_agent_sdk",
+      "start_time": 1786117045703437058,
+      "end_time": 1786117045703437058,
+      "attributes": {
+        "event.name": "openinference.instrumentation.claude_agent_sdk",
+        "session.id": "4897eb75-7dc1-4a67-9cd3-570cc00cb982"
+      },
+      "scope": {
+        "name": "openinference.instrumentation.claude_agent_sdk",
+        "version": ""
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": [
+        {
+          "event_name": "openinference.instrumentation.claude_agent_sdk",
+          "span_id": "065ce5131990bc4c",
+          "timestamp": 1786117045703437058,
+          "attributes": {
+            "event.name": "openinference.instrumentation.claude_agent_sdk",
+            "session.id": "4897eb75-7dc1-4a67-9cd3-570cc00cb982"
+          },
+          "body": {
+            "input": {
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "{\"command\": \"python3 -c 'miles = 294; km = miles / 0.621371; print(f\\\"{miles} miles = {km:.4f} km\\\")'\", \"description\": \"Convert 294 miles to kilometers\"}"
+                }
+              ]
+            },
+            "output": {
+              "messages": [
+                {
+                  "role": "assistant",
+                  "content": "{\"stdout\": \"Improper configuration: Please configure the environment variable OTEL_EXPORTER_OTLP_LOGS_HEADERS to include x-aws-log-group and x-aws-log-stream\\nImproper configuration: Please configure the environment variable OTEL_EXPORTER_OTLP_LOGS_HEADERS to have values for x-aws-log-group and x-aws-log-stream\\nImproper configuration: please export/set OTEL_EXPORTER_OTLP_LOGS_PROTOCOL=http/protobuf and OTEL_LOGS_EXPORTER=otlp\\n2026-08-07 15:37:24,408 WARNING [opentelemetry.instrumentation.logging] [__init__.py:234] [trace_id=0 span_id=0 resource.service.name=unknown_service trace_sampled=False] - Skipping installation of LoggingHandler from `opentelemetry-instrumentation-logging` to avoid duplicate logs. The SDK's deprecated LoggingHandler is already active (OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED=true). To migrate, unset this environment variable. The SDK's handler will be removed in a future release.\\n2026-08-07 15:37:24,472 INFO [amazon.opentelemetry.distro.instrumentation.mcp] [__init__.py:34] [trace_id=0 span_id=0 resource.service.name=unknown_service trace_sampled=False] - Initializing MCP instrumentor.\\n2026-08-07 15:37:25,020 ERROR [opentelemetry.exporter.otlp.proto.http._log_exporter] [__init__.py:223] [trace_id=0 span_id=0 resource.service.name=unknown_service trace_sampled=False] - Failed to export logs batch code: 403, reason: Forbidden\\n294 miles = 473.1473 km\", \"stderr\": \"\", \"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "trace_id": "6a75fb970f2164517ef2173376ef9577",
+      "span_id": "9bf6fcdbfa86b915",
+      "parent_span_id": null,
+      "name": "openinference.instrumentation.claude_agent_sdk",
+      "start_time": 1786117046966384646,
+      "end_time": 1786117046966384646,
+      "attributes": {
+        "event.name": "openinference.instrumentation.claude_agent_sdk",
+        "session.id": "4897eb75-7dc1-4a67-9cd3-570cc00cb982"
+      },
+      "scope": {
+        "name": "openinference.instrumentation.claude_agent_sdk",
+        "version": ""
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": [
+        {
+          "event_name": "openinference.instrumentation.claude_agent_sdk",
+          "span_id": "9bf6fcdbfa86b915",
+          "timestamp": 1786117046966384646,
+          "attributes": {
+            "event.name": "openinference.instrumentation.claude_agent_sdk",
+            "session.id": "4897eb75-7dc1-4a67-9cd3-570cc00cb982"
+          },
+          "body": {
+            "input": {
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "{\"description\": \"Convert 294 miles to kilometers\", \"subagent_type\": \"conversion-agent\", \"prompt\": \"Convert 294 miles to kilometers and return the result.\", \"run_in_background\": false}"
+                }
+              ]
+            },
+            "output": {
+              "messages": [
+                {
+                  "role": "assistant",
+                  "content": "{\"status\": \"completed\", \"prompt\": \"Convert 294 miles to kilometers and return the result.\", \"agentId\": \"a6bfb972b8dd5180b\", \"agentType\": \"conversion-agent\", \"content\": [{\"type\": \"text\", \"text\": \"Here is the result of the conversion:\\n\\n- Input: 294 miles\\n- Formula: km = miles / 0.621371\\n- Result: 294 miles = 473.1473 kilometers\"}], \"resolvedModel\": \"us.anthropic.claude-sonnet-4-6\", \"totalDurationMs\": 7397, \"totalTokens\": 4662, \"totalToolUseCount\": 1, \"usage\": {\"input_tokens\": 1, \"cache_creation_input_tokens\": 599, \"cache_read_input_tokens\": 4014, \"output_tokens\": 48, \"server_tool_use\": {\"web_search_requests\": 0, \"web_fetch_requests\": 0}, \"service_tier\": \"standard\", \"cache_creation\": {\"ephemeral_1h_input_tokens\": 0, \"ephemeral_5m_input_tokens\": 599}, \"inference_geo\": \"\", \"iterations\": [], \"speed\": \"standard\"}, \"toolStats\": {\"readCount\": 0, \"searchCount\": 0, \"bashCount\": 1, \"editFileCount\": 0, \"linesAdded\": 0, \"linesRemoved\": 0, \"otherToolCount\": 0}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "trace_id": "6a75fb970f2164517ef2173376ef9577",
+      "span_id": "3b215786bbffa46b",
+      "parent_span_id": null,
+      "name": "openinference.instrumentation.claude_agent_sdk",
+      "start_time": 1786117048911009203,
+      "end_time": 1786117048911009203,
+      "attributes": {
+        "event.name": "openinference.instrumentation.claude_agent_sdk",
+        "session.id": "4897eb75-7dc1-4a67-9cd3-570cc00cb982"
+      },
+      "scope": {
+        "name": "openinference.instrumentation.claude_agent_sdk",
+        "version": ""
+      },
+      "status": {
+        "code": "OK"
+      },
+      "span_events": [
+        {
+          "event_name": "openinference.instrumentation.claude_agent_sdk",
+          "span_id": "3b215786bbffa46b",
+          "timestamp": 1786117048911009203,
+          "attributes": {
+            "event.name": "openinference.instrumentation.claude_agent_sdk",
+            "session.id": "4897eb75-7dc1-4a67-9cd3-570cc00cb982"
+          },
+          "body": {
+            "input": {
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "What is 42 * 7, and how many miles is that in kilometers?"
+                }
+              ]
+            },
+            "output": {
+              "messages": [
+                {
+                  "role": "assistant",
+                  "content": "Here are your results:\n\n1. **42 \u00d7 7 = 294**\n2. **294 miles = 473.15 kilometers**\n\nSo the answer to your math problem is 294, and that distance in kilometers is approximately **473.15 km**."
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
