@@ -115,6 +115,7 @@ def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
     # Import here to avoid circular imports
     from .adk_otel_session_mapper import ADKOtelSessionMapper
     from .cloudwatch_session_mapper import CloudWatchSessionMapper
+    from .generic_gen_ai_session_mapper import GenericGenAISessionMapper
     from .langchain_otel_session_mapper import LangChainOtelSessionMapper
     from .openinference_session_mapper import OpenInferenceSessionMapper
     from .strands_in_memory_session_mapper import StrandsInMemorySessionMapper
@@ -147,6 +148,17 @@ def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
     for span in spans:
         if get_body(span) is not None:
             return CloudWatchSessionMapper()
+
+    # Fallback for dict spans with gen_ai.* attributes but unrecognized scope.
+    # Only route to GenericGenAISessionMapper if the span has an unrecognized
+    # (or missing) scope — Strands-scoped spans already fell through above.
+    known_scopes = {SCOPE_STRANDS, SCOPE_LANGCHAIN_OTEL, SCOPE_ADK} | SCOPES_OPENINFERENCE_FAMILY
+    for span in spans:
+        scope_name = get_scope_name(span)
+        if scope_name not in known_scopes:
+            attrs = span.get("attributes", {})
+            if isinstance(attrs, dict) and "gen_ai.operation.name" in attrs:
+                return GenericGenAISessionMapper()
 
     # Default to StrandsInMemorySessionMapper
     return StrandsInMemorySessionMapper()

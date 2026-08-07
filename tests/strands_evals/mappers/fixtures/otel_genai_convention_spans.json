@@ -1,0 +1,150 @@
+[
+  {
+    "trace_id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+    "span_id": "1000000000000001",
+    "parent_span_id": null,
+    "name": "invoke_agent WeatherAssistant",
+    "start_time": 1700000000000000000,
+    "end_time": 1700000006000000000,
+    "attributes": {
+      "gen_ai.operation.name": "invoke_agent",
+      "gen_ai.agent.name": "WeatherAssistant",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.request.model": "gpt-4o",
+      "gen_ai.conversation.id": "conv_otel_test_001",
+      "gen_ai.input.messages": "[{\"role\": \"user\", \"parts\": [{\"type\": \"text\", \"content\": \"What's the weather in Paris and London?\"}]}]",
+      "gen_ai.output.messages": "[{\"role\": \"assistant\", \"parts\": [{\"type\": \"text\", \"content\": \"The weather in Paris is rainy at 57\\u00b0F. I was unable to retrieve London's weather due to a service timeout.\"}], \"finish_reason\": \"stop\"}]",
+      "gen_ai.tool.definitions": "[{\"type\": \"function\", \"name\": \"get_weather\", \"description\": \"Get current weather for a location\", \"parameters\": {\"type\": \"object\", \"properties\": {\"location\": {\"type\": \"string\", \"description\": \"City name\"}}, \"required\": [\"location\"]}}]",
+      "gen_ai.usage.input_tokens": 150,
+      "gen_ai.usage.output_tokens": 42
+    },
+    "scope": {"name": "my-weather-app", "version": "1.0.0"},
+    "status": {"code": "OK"},
+    "span_events": []
+  },
+  {
+    "trace_id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+    "span_id": "1000000000000002",
+    "parent_span_id": "1000000000000001",
+    "name": "chat gpt-4o",
+    "start_time": 1700000001000000000,
+    "end_time": 1700000002000000000,
+    "attributes": {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.request.model": "gpt-4o",
+      "gen_ai.conversation.id": "conv_otel_test_001",
+      "gen_ai.usage.input_tokens": 80,
+      "gen_ai.usage.output_tokens": 25
+    },
+    "scope": {"name": "my-weather-app", "version": "1.0.0"},
+    "status": {"code": "OK"},
+    "span_events": [
+      {
+        "event_name": "gen_ai.client.inference.operation.details",
+        "timestamp": 1700000001500000000,
+        "attributes": {
+          "gen_ai.input.messages": [
+            {"role": "user", "parts": [{"type": "text", "content": "What's the weather in Paris and London?"}]}
+          ],
+          "gen_ai.output.messages": [
+            {
+              "role": "assistant",
+              "parts": [
+                {"type": "text", "content": "Let me check the weather for both cities."},
+                {"type": "tool_call", "id": "call_paris_001", "name": "get_weather", "arguments": {"location": "Paris"}},
+                {"type": "tool_call", "id": "call_london_001", "name": "get_weather", "arguments": {"location": "London"}}
+              ],
+              "finish_reason": "tool_calls"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "trace_id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+    "span_id": "1000000000000003",
+    "parent_span_id": "1000000000000001",
+    "name": "execute_tool get_weather",
+    "start_time": 1700000002000000000,
+    "end_time": 1700000003000000000,
+    "attributes": {
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.tool.name": "get_weather",
+      "gen_ai.tool.call.id": "call_paris_001",
+      "gen_ai.tool.type": "function",
+      "gen_ai.tool.call.arguments": "{\"location\": \"Paris\"}",
+      "gen_ai.tool.call.result": "rainy, 57°F",
+      "gen_ai.conversation.id": "conv_otel_test_001"
+    },
+    "scope": {"name": "my-weather-app", "version": "1.0.0"},
+    "status": {"code": "OK"},
+    "span_events": []
+  },
+  {
+    "trace_id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+    "span_id": "1000000000000004",
+    "parent_span_id": "1000000000000001",
+    "name": "execute_tool get_weather",
+    "start_time": 1700000003000000000,
+    "end_time": 1700000004000000000,
+    "attributes": {
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.tool.name": "get_weather",
+      "gen_ai.tool.call.id": "call_london_001",
+      "gen_ai.tool.type": "function",
+      "gen_ai.tool.call.arguments": "{\"location\": \"London\"}",
+      "gen_ai.conversation.id": "conv_otel_test_001",
+      "error.type": "TimeoutError"
+    },
+    "scope": {"name": "my-weather-app", "version": "1.0.0"},
+    "status": {"code": "ERROR"},
+    "span_events": []
+  },
+  {
+    "trace_id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+    "span_id": "1000000000000005",
+    "parent_span_id": "1000000000000001",
+    "name": "chat gpt-4o",
+    "start_time": 1700000004000000000,
+    "end_time": 1700000005000000000,
+    "attributes": {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.request.model": "gpt-4o",
+      "gen_ai.conversation.id": "conv_otel_test_001",
+      "gen_ai.usage.input_tokens": 120,
+      "gen_ai.usage.output_tokens": 35
+    },
+    "scope": {"name": "my-weather-app", "version": "1.0.0"},
+    "status": {"code": "OK"},
+    "span_events": [
+      {
+        "event_name": "gen_ai.client.inference.operation.details",
+        "timestamp": 1700000004500000000,
+        "attributes": {
+          "gen_ai.input.messages": [
+            {"role": "user", "parts": [{"type": "text", "content": "What's the weather in Paris and London?"}]},
+            {"role": "assistant", "parts": [
+              {"type": "text", "content": "Let me check the weather for both cities."},
+              {"type": "tool_call", "id": "call_paris_001", "name": "get_weather", "arguments": {"location": "Paris"}},
+              {"type": "tool_call", "id": "call_london_001", "name": "get_weather", "arguments": {"location": "London"}}
+            ]},
+            {"role": "tool", "parts": [{"type": "tool_call_response", "id": "call_paris_001", "response": "rainy, 57°F"}]},
+            {"role": "tool", "parts": [{"type": "tool_call_response", "id": "call_london_001", "response": "Error: TimeoutError"}]}
+          ],
+          "gen_ai.output.messages": [
+            {
+              "role": "assistant",
+              "parts": [
+                {"type": "text", "content": "The weather in Paris is rainy at 57°F. I was unable to retrieve London's weather due to a service timeout."}
+              ],
+              "finish_reason": "stop"
+            }
+          ]
+        }
+      }
+    ]
+  }
+]

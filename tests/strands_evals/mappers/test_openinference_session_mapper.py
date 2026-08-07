@@ -1439,16 +1439,20 @@ class TestSmolagentsScopeSupport:
             attributes={
                 "openinference.span.kind": "TOOL",
                 "tool.name": "search",
-                "tool.parameters": json.dumps({
-                    "query": {"type": "string"},
-                    "limit": {"type": "integer"},
-                    "offset": {"type": "integer"},
-                }),
-                "input.value": json.dumps({
-                    "args": ["tokyo", 5],
-                    "kwargs": {"offset": 10},
-                    "sanitize_inputs_outputs": False,
-                }),
+                "tool.parameters": json.dumps(
+                    {
+                        "query": {"type": "string"},
+                        "limit": {"type": "integer"},
+                        "offset": {"type": "integer"},
+                    }
+                ),
+                "input.value": json.dumps(
+                    {
+                        "args": ["tokyo", 5],
+                        "kwargs": {"offset": 10},
+                        "sanitize_inputs_outputs": False,
+                    }
+                ),
                 "output.value": "results",
             },
         )
@@ -1483,13 +1487,15 @@ class TestSmolagentsScopeSupport:
             scope_name=SMOLAGENTS_SCOPE_NAME,
             attributes={
                 "openinference.span.kind": "AGENT",
-                "input.value": json.dumps({
-                    "task": "What is 2+2?",
-                    "stream": False,
-                    "reset": True,
-                    "images": None,
-                    "additional_args": None,
-                }),
+                "input.value": json.dumps(
+                    {
+                        "task": "What is 2+2?",
+                        "stream": False,
+                        "reset": True,
+                        "images": None,
+                        "additional_args": None,
+                    }
+                ),
                 "output.value": "The answer is 4.",
             },
         )

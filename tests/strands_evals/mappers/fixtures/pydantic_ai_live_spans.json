@@ -1,0 +1,138 @@
+[
+  {
+    "trace_id": "25664b7144ee8f957a50b6ff74dfa337",
+    "span_id": "c3fd6f840203e945",
+    "parent_span_id": "1009ff1545ad6303",
+    "name": "chat us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "start_time": 1784744268114742538,
+    "end_time": 1784744270610173022,
+    "attributes": {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.provider.name": "bedrock",
+      "gen_ai.system": "bedrock",
+      "gen_ai.request.model": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "server.address": "bedrock-runtime.us-west-2.amazonaws.com",
+      "model_request_parameters": "{\"function_tools\":[{\"name\":\"get_weather\",\"parameters_json_schema\":{\"additionalProperties\":false,\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"type\":\"object\"},\"description\":\"Get current weather for a city.\",\"outer_typed_dict_key\":null,\"strict\":false,\"sequential\":false,\"kind\":\"function\",\"metadata\":null,\"timeout\":null,\"defer_loading\":false,\"unless_native\":null,\"with_native\":null,\"tool_kind\":null,\"return_schema\":null,\"include_return_schema\":null,\"capability_id\":null}],\"native_tools\":[],\"output_mode\":\"text\",\"output_object\":null,\"output_tools\":[],\"prompted_output_template\":null,\"allow_text_output\":true,\"allow_image_output\":false,\"instruction_parts\":null,\"thinking\":null}",
+      "gen_ai.agent.name": "agent",
+      "gen_ai.agent.call.id": "019f8b0c-5147-74b5-b1e4-f9b17c5d79ac",
+      "gen_ai.conversation.id": "019f8b0c-5147-74b5-b1e4-f9b086da98e0",
+      "gen_ai.tool.definitions": "[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get current weather for a city.\",\"parameters\":{\"additionalProperties\":false,\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"type\":\"object\"}}]",
+      "gen_ai.input.messages": "[{\"role\":\"system\",\"parts\":[{\"type\":\"text\",\"content\":\"You are a helpful assistant. Use the provided tools when needed.\"}]},{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"What's the weather like in Seattle right now?\"}]}]",
+      "gen_ai.output.messages": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"tool_call\",\"id\":\"tooluse_ThYFd3WOkO59ZUHC77SIdX\",\"name\":\"get_weather\",\"arguments\":{\"city\":\"Seattle\"}}],\"finish_reason\":\"tool_call\"}]",
+      "logfire.json_schema": "{\"type\":\"object\",\"properties\":{\"gen_ai.input.messages\":{\"type\":\"array\"},\"gen_ai.output.messages\":{\"type\":\"array\"},\"model_request_parameters\":{\"type\":\"object\"}}}",
+      "gen_ai.usage.input_tokens": 588,
+      "gen_ai.usage.output_tokens": 53,
+      "gen_ai.response.model": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "operation.cost": 0.0028149,
+      "gen_ai.response.id": "bffa7bef-c9f7-4812-b5da-c789fc6f22a8",
+      "gen_ai.response.finish_reasons": [
+        "tool_call"
+      ]
+    },
+    "scope": {
+      "name": "pydantic-ai",
+      "version": "2.9.1"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "25664b7144ee8f957a50b6ff74dfa337",
+    "span_id": "ea4518243ec1a032",
+    "parent_span_id": "1009ff1545ad6303",
+    "name": "execute_tool get_weather",
+    "start_time": 1784744270611270959,
+    "end_time": 1784744270611689839,
+    "attributes": {
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.tool.name": "get_weather",
+      "gen_ai.tool.call.id": "tooluse_ThYFd3WOkO59ZUHC77SIdX",
+      "gen_ai.tool.call.arguments": "{\"city\":\"Seattle\"}",
+      "gen_ai.agent.name": "agent",
+      "gen_ai.agent.call.id": "019f8b0c-5147-74b5-b1e4-f9b17c5d79ac",
+      "gen_ai.conversation.id": "019f8b0c-5147-74b5-b1e4-f9b086da98e0",
+      "logfire.msg": "running tool: get_weather",
+      "logfire.json_schema": "{\"type\":\"object\",\"properties\":{\"gen_ai.tool.call.arguments\":{\"type\":\"object\"},\"gen_ai.tool.call.result\":{\"type\":\"object\"},\"gen_ai.tool.name\":{},\"gen_ai.tool.call.id\":{}}}",
+      "gen_ai.tool.call.result": "62\u00b0F, cloudy with light rain"
+    },
+    "scope": {
+      "name": "pydantic-ai",
+      "version": "2.9.1"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "25664b7144ee8f957a50b6ff74dfa337",
+    "span_id": "17e1fc9e6431229c",
+    "parent_span_id": "1009ff1545ad6303",
+    "name": "chat us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "start_time": 1784744270612936360,
+    "end_time": 1784744272630736291,
+    "attributes": {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.provider.name": "bedrock",
+      "gen_ai.system": "bedrock",
+      "gen_ai.request.model": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "server.address": "bedrock-runtime.us-west-2.amazonaws.com",
+      "model_request_parameters": "{\"function_tools\":[{\"name\":\"get_weather\",\"parameters_json_schema\":{\"additionalProperties\":false,\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"type\":\"object\"},\"description\":\"Get current weather for a city.\",\"outer_typed_dict_key\":null,\"strict\":false,\"sequential\":false,\"kind\":\"function\",\"metadata\":null,\"timeout\":null,\"defer_loading\":false,\"unless_native\":null,\"with_native\":null,\"tool_kind\":null,\"return_schema\":null,\"include_return_schema\":null,\"capability_id\":null}],\"native_tools\":[],\"output_mode\":\"text\",\"output_object\":null,\"output_tools\":[],\"prompted_output_template\":null,\"allow_text_output\":true,\"allow_image_output\":false,\"instruction_parts\":null,\"thinking\":null}",
+      "gen_ai.agent.name": "agent",
+      "gen_ai.agent.call.id": "019f8b0c-5147-74b5-b1e4-f9b17c5d79ac",
+      "gen_ai.conversation.id": "019f8b0c-5147-74b5-b1e4-f9b086da98e0",
+      "gen_ai.tool.definitions": "[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get current weather for a city.\",\"parameters\":{\"additionalProperties\":false,\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"type\":\"object\"}}]",
+      "gen_ai.input.messages": "[{\"role\":\"system\",\"parts\":[{\"type\":\"text\",\"content\":\"You are a helpful assistant. Use the provided tools when needed.\"}]},{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"What's the weather like in Seattle right now?\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"tool_call\",\"id\":\"tooluse_ThYFd3WOkO59ZUHC77SIdX\",\"name\":\"get_weather\",\"arguments\":{\"city\":\"Seattle\"}}],\"finish_reason\":\"tool_call\"},{\"role\":\"user\",\"parts\":[{\"type\":\"tool_call_response\",\"id\":\"tooluse_ThYFd3WOkO59ZUHC77SIdX\",\"name\":\"get_weather\",\"result\":\"62\u00b0F, cloudy with light rain\"}]}]",
+      "gen_ai.output.messages": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"The current weather in Seattle is 62\u00b0F and cloudy with light rain. Pretty typical Seattle weather!\"}],\"finish_reason\":\"stop\"}]",
+      "logfire.json_schema": "{\"type\":\"object\",\"properties\":{\"gen_ai.input.messages\":{\"type\":\"array\"},\"gen_ai.output.messages\":{\"type\":\"array\"},\"model_request_parameters\":{\"type\":\"object\"}}}",
+      "gen_ai.usage.input_tokens": 663,
+      "gen_ai.usage.output_tokens": 25,
+      "gen_ai.response.model": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "operation.cost": 0.0026004,
+      "gen_ai.response.id": "e18a158b-d4d9-4c86-912c-169abedd12cc",
+      "gen_ai.response.finish_reasons": [
+        "stop"
+      ]
+    },
+    "scope": {
+      "name": "pydantic-ai",
+      "version": "2.9.1"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "25664b7144ee8f957a50b6ff74dfa337",
+    "span_id": "1009ff1545ad6303",
+    "parent_span_id": null,
+    "name": "invoke_agent agent",
+    "start_time": 1784744268112921993,
+    "end_time": 1784744272631867669,
+    "attributes": {
+      "model_name": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "agent_name": "agent",
+      "gen_ai.agent.name": "agent",
+      "gen_ai.agent.call.id": "019f8b0c-5147-74b5-b1e4-f9b17c5d79ac",
+      "gen_ai.conversation.id": "019f8b0c-5147-74b5-b1e4-f9b086da98e0",
+      "gen_ai.operation.name": "invoke_agent",
+      "logfire.msg": "agent run",
+      "final_result": "The current weather in Seattle is 62\u00b0F and cloudy with light rain. Pretty typical Seattle weather!",
+      "gen_ai.aggregated_usage.input_tokens": 1251,
+      "gen_ai.aggregated_usage.output_tokens": 78,
+      "pydantic_ai.all_messages": "[{\"role\":\"system\",\"parts\":[{\"type\":\"text\",\"content\":\"You are a helpful assistant. Use the provided tools when needed.\"}]},{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"What's the weather like in Seattle right now?\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"tool_call\",\"id\":\"tooluse_ThYFd3WOkO59ZUHC77SIdX\",\"name\":\"get_weather\",\"arguments\":{\"city\":\"Seattle\"}}],\"finish_reason\":\"tool_call\"},{\"role\":\"user\",\"parts\":[{\"type\":\"tool_call_response\",\"id\":\"tooluse_ThYFd3WOkO59ZUHC77SIdX\",\"name\":\"get_weather\",\"result\":\"62\u00b0F, cloudy with light rain\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"The current weather in Seattle is 62\u00b0F and cloudy with light rain. Pretty typical Seattle weather!\"}],\"finish_reason\":\"stop\"}]",
+      "logfire.json_schema": "{\"type\":\"object\",\"properties\":{\"pydantic_ai.all_messages\":{\"type\":\"array\"},\"final_result\":{\"type\":\"object\"}}}"
+    },
+    "scope": {
+      "name": "pydantic-ai",
+      "version": "2.9.1"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "span_events": []
+  }
+]

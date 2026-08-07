@@ -1,0 +1,69 @@
+[
+  {
+    "trace_id": "0295b55e1b7a83fe709fba9715e803d4",
+    "span_id": "64eafd28de20ab52",
+    "parent_span_id": null,
+    "name": "create_agent math_assistant",
+    "start_time": 1784744881427958982,
+    "end_time": 1784744881427982483,
+    "attributes": {
+      "gen_ai.operation.name": "create_agent",
+      "gen_ai.system": "autogen",
+      "gen_ai.agent.name": "math_assistant",
+      "gen_ai.agent.description": "An agent that provides assistance with ability to use tools."
+    },
+    "scope": {
+      "name": "autogen-core",
+      "version": ""
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "29940edc28dc48eca72e6d60de6e689f",
+    "span_id": "0ec9116f30a58399",
+    "parent_span_id": "2bc1f36601ddf69e",
+    "name": "execute_tool calculate",
+    "start_time": 1784744883555970242,
+    "end_time": 1784744883556256909,
+    "attributes": {
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.system": "autogen",
+      "gen_ai.tool.name": "calculate",
+      "gen_ai.tool.description": "Evaluate a mathematical expression",
+      "gen_ai.tool.call.id": "toolu_bdrk_011nDreLrC9nv8NZs6iGrx6d"
+    },
+    "scope": {
+      "name": "autogen-core",
+      "version": ""
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "29940edc28dc48eca72e6d60de6e689f",
+    "span_id": "2bc1f36601ddf69e",
+    "parent_span_id": null,
+    "name": "invoke_agent math_assistant",
+    "start_time": 1784744881428191698,
+    "end_time": 1784744883556710660,
+    "attributes": {
+      "gen_ai.operation.name": "invoke_agent",
+      "gen_ai.system": "autogen",
+      "gen_ai.agent.name": "math_assistant",
+      "gen_ai.agent.description": "An agent that provides assistance with ability to use tools."
+    },
+    "scope": {
+      "name": "autogen-core",
+      "version": ""
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "span_events": []
+  }
+]
