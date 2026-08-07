@@ -20,6 +20,7 @@ _ADOT_SPANS_FILE = _FIXTURES_DIR / "openinference_adot_spans.json"
 _SMOLAGENTS_SPANS_FILE = _FIXTURES_DIR / "smolagents_live_spans.json"
 _CLAUDE_SPANS_FILE = _FIXTURES_DIR / "claude_live_spans.json"
 _CLAUDE_AGENTCORE_FILE = _FIXTURES_DIR / "claude_unified_spans.json"
+_CLAUDE_SPLIT_TELEMETRY_FILE = _FIXTURES_DIR / "claude_adot_spans.json"
 
 SCOPE_NAME = "openinference.instrumentation.langchain"
 SMOLAGENTS_SCOPE_NAME = "openinference.instrumentation.smolagents"
@@ -199,6 +200,13 @@ def _load_claude_spans():
 def _load_claude_agentcore_spans():
     """Load Claude Agent SDK spans captured from AgentCore (session.id on all spans)."""
     with open(_CLAUDE_AGENTCORE_FILE, encoding="utf-8") as f:
+        data = json.load(f)
+    return data["session_id"], data["spans"]
+
+
+def _load_claude_adot_spans():
+    """Load Claude Agent SDK ADOT (split telemetry) event records from AgentCore."""
+    with open(_CLAUDE_SPLIT_TELEMETRY_FILE, encoding="utf-8") as f:
         data = json.load(f)
     return data["session_id"], data["spans"]
 
@@ -2092,3 +2100,71 @@ class TestClaudeAgentCoreFixtureIntegration:
         for span in spans:
             attrs = span.get("attributes", {})
             assert attrs.get("session.id") == session_id
+
+
+@pytest.fixture()
+def claude_adot_session():
+    """Map real Claude Agent SDK ADOT (split telemetry) event records to a Session."""
+    session_id, spans = _load_claude_adot_spans()
+    mapper = OpenInferenceSessionMapper()
+    return mapper.map_to_session(spans, session_id)
+
+
+class TestClaudeAdotIntegration:
+    """Integration tests for Claude Agent SDK ADOT (split telemetry) event records.
+
+    Split telemetry (UNIFIED_TRACES_DESTINATION_ENABLED=false) produces event
+    records in the agent log group with body.input/output.messages but no
+    openinference.span.kind attribute. The mapper must classify these by
+    inspecting body content: JSON input → tool span, plain text input → agent span.
+    """
+
+    def test_session_has_traces(self, claude_adot_session):
+        """ADOT event records produce at least one trace."""
+        assert len(claude_adot_session.traces) > 0
+
+    def test_span_counts(self, claude_adot_session):
+        """ADOT produces 4 tool spans + 1 agent span."""
+        all_spans = [s for t in claude_adot_session.traces for s in t.spans]
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        agent_spans = [s for s in all_spans if isinstance(s, AgentInvocationSpan)]
+        assert len(tool_spans) == 4
+        assert len(agent_spans) == 1
+
+    def test_agent_span_has_user_prompt(self, claude_adot_session):
+        """Agent invocation span has the user's plain-text prompt."""
+        all_spans = [s for t in claude_adot_session.traces for s in t.spans]
+        agent_span = next(s for s in all_spans if isinstance(s, AgentInvocationSpan))
+        assert "42 * 7" in agent_span.user_prompt
+        assert "kilometers" in agent_span.user_prompt
+
+    def test_agent_span_has_response(self, claude_adot_session):
+        """Agent invocation span has the assistant's plain-text response."""
+        all_spans = [s for t in claude_adot_session.traces for s in t.spans]
+        agent_span = next(s for s in all_spans if isinstance(s, AgentInvocationSpan))
+        assert "294" in agent_span.agent_response
+        assert "473" in agent_span.agent_response
+
+    def test_tool_spans_have_names(self, claude_adot_session):
+        """Tool spans have tool names (generic fallback without provider enrichment)."""
+        all_spans = [s for t in claude_adot_session.traces for s in t.spans]
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        for tool_span in tool_spans:
+            assert tool_span.tool_call.name is not None
+            assert len(tool_span.tool_call.name) > 0
+
+    def test_tool_spans_have_parameters(self, claude_adot_session):
+        """Tool spans have parsed arguments from the input body."""
+        all_spans = [s for t in claude_adot_session.traces for s in t.spans]
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        for tool_span in tool_spans:
+            assert tool_span.tool_call.arguments is not None
+            assert isinstance(tool_span.tool_call.arguments, dict)
+            assert len(tool_span.tool_call.arguments) > 0
+
+    def test_tool_spans_have_output_content(self, claude_adot_session):
+        """Tool spans have non-empty result content."""
+        all_spans = [s for t in claude_adot_session.traces for s in t.spans]
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        for tool_span in tool_spans:
+            assert tool_span.tool_result.content
