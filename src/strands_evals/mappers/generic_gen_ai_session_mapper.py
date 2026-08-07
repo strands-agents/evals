@@ -11,7 +11,7 @@ This is the fallback mapper for spans that don't match any known instrumentor sc
 import json
 import logging
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from ..types.trace import (
@@ -31,6 +31,7 @@ from ..types.trace import (
     UserMessage,
 )
 from .session_mapper import SessionMapper
+from .utils import join_tool_result_content
 
 logger = logging.getLogger(__name__)
 
@@ -62,39 +63,37 @@ class GenericGenAISessionMapper(SessionMapper):
 
         spans = self._normalize_to_flat_spans(data)
 
-        # Group by trace_id, optionally filtering by session.id
-        traces_by_id: dict[str, list[dict]] = defaultdict(list)
+        # Group by trace_id, optionally filtering by session.id.
+        # Single pass: bucket spans by trace and track which traces match session_id.
+        all_traces: dict[str, list[dict]] = defaultdict(list)
+        traces_with_session: set[str] = set()
+        any_span_has_session_id = False
 
-        any_span_has_session_id = any(
-            "session.id" in span.get("attributes", {}) or "gen_ai.conversation.id" in span.get("attributes", {})
-            for span in spans
-        )
-
-        if not any_span_has_session_id:
-            # No spans have session IDs — include all spans
-            for span in spans:
-                trace_id = span.get("trace_id", "unknown")
-                traces_by_id[trace_id].append(span)
-        else:
-            # Some spans have session IDs — use trace-level filtering.
-            # First, identify which trace_ids contain at least one span matching session_id.
-            all_traces: dict[str, list[dict]] = defaultdict(list)
-            traces_with_session: set[str] = set()
-
-            for span in spans:
-                trace_id = span.get("trace_id", "unknown")
-                all_traces[trace_id].append(span)
-                attrs = span.get("attributes", {})
-                span_session_id = attrs.get("gen_ai.conversation.id") or attrs.get("session.id")
-                if span_session_id and str(span_session_id) == session_id:
+        for span in spans:
+            trace_id = span.get("trace_id", "unknown")
+            all_traces[trace_id].append(span)
+            attrs = span.get("attributes", {})
+            span_session_id = attrs.get("gen_ai.conversation.id") or attrs.get("session.id")
+            if span_session_id:
+                any_span_has_session_id = True
+                if str(span_session_id) == session_id:
                     traces_with_session.add(trace_id)
 
-            # Include all spans from traces that contain at least one matching span.
-            # Exclude entire traces where no span matches the session_id (even if some
-            # spans in that trace have no session_id tag).
+        traces_by_id: dict[str, list[dict]] = defaultdict(list)
+        if not any_span_has_session_id:
+            # No spans carry session tags — include everything.
+            traces_by_id = all_traces
+        else:
+            # Include spans from matching traces; own tag wins over inheritance.
             for trace_id, trace_spans in all_traces.items():
-                if trace_id in traces_with_session:
-                    traces_by_id[trace_id] = trace_spans
+                if trace_id not in traces_with_session:
+                    continue
+                for span in trace_spans:
+                    attrs = span.get("attributes", {})
+                    own = attrs.get("gen_ai.conversation.id") or attrs.get("session.id")
+                    if own and str(own) != session_id:
+                        continue
+                    traces_by_id[trace_id].append(span)
 
         traces: list[Trace] = []
         for trace_id, trace_spans in traces_by_id.items():
@@ -147,20 +146,11 @@ class GenericGenAISessionMapper(SessionMapper):
     def _parse_timestamp(self, value: Any) -> datetime:
         """Parse timestamp from various formats.
 
-        readable_spans_to_dicts() preserves OTel's nanosecond epoch timestamps.
-        Values > 1e12 are assumed nanoseconds and divided by 1e9.
+        Delegates to SessionMapper.parse_timestamp, which additionally handles
+        ISO-8601 and string-encoded nanosecond epochs (the OTLP/JSON encoding
+        for int64 fields, as produced on the CloudWatch/ADOT path).
         """
-        if value is None:
-            return datetime.now(timezone.utc)
-        if isinstance(value, datetime):
-            return value
-        if isinstance(value, (int, float)):
-            # OTel timestamps from ReadableSpan are nanoseconds (> 1e18).
-            # Seconds-based timestamps are < 1e10. Threshold at 1e12 to distinguish.
-            if value > 1e12:
-                value = value / 1e9
-            return datetime.fromtimestamp(value, tz=timezone.utc)
-        return datetime.now(timezone.utc)
+        return self.parse_timestamp(value)
 
     def _parse_json_attr(self, attributes: Any, key: str, default: str = "[]") -> Any:
         """Parse a JSON-encoded attribute value."""
@@ -668,9 +658,7 @@ class GenericGenAISessionMapper(SessionMapper):
                 tool_result = item["toolResult"]
                 result_text = tool_result.get("content", "")
                 if isinstance(result_text, list):
-                    result_text = "\n".join(
-                        block.get("text", "") for block in result_text if isinstance(block, dict) and "text" in block
-                    )
+                    result_text = join_tool_result_content(result_text)
                 result.append(
                     ToolResultContent(
                         content=str(result_text),

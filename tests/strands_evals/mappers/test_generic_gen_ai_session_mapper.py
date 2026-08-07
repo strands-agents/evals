@@ -216,6 +216,28 @@ class TestSessionBuilding:
         session = self.mapper.map_to_session(spans, "any-id")
         assert len(session.traces) == 2
 
+    def test_string_nanosecond_timestamp_parsed_correctly(self):
+        """String-encoded ns epoch (OTLP/JSON int64 encoding) parses to correct datetime."""
+        from datetime import datetime, timezone
+
+        result = self.mapper._parse_timestamp("1700000000000000000")
+        expected = datetime.fromtimestamp(1700000000, tz=timezone.utc)
+        assert result == expected
+
+    def test_string_timestamp_in_span_produces_correct_time(self):
+        """Span with string timestamps (CloudWatch/ADOT path) maps to correct year."""
+        span = make_span(
+            operation_name="invoke_agent",
+            attributes={"gen_ai.tool.definitions": "[]"},
+        )
+        span["start_time"] = "1700000000000000000"
+        span["end_time"] = "1700000001000000000"
+
+        session = self.mapper.map_to_session([span], "sess-1")
+        agent = session.traces[0].spans[0]
+        assert isinstance(agent, AgentInvocationSpan)
+        assert agent.span_info.start_time.year == 2023
+
 
 # =============================================================================
 # Fixture-based integration tests — real captured traces
@@ -686,6 +708,58 @@ class TestSessionFilteringTraceLevel:
         assert len(session_b.traces) == 1
         assert session_b.traces[0].trace_id == "t3"
 
+    def test_different_session_span_in_same_trace_excluded(self):
+        """Two spans sharing a trace with different session tags — only matching one returned."""
+        spans = [
+            make_span(
+                trace_id="tSHARED",
+                span_id="s1",
+                operation_name="invoke_agent",
+                attributes={"session.id": "session-123"},
+            ),
+            make_span(
+                trace_id="tSHARED",
+                span_id="s2",
+                operation_name="invoke_agent",
+                attributes={"session.id": "session-456"},
+            ),
+        ]
+        session = self.mapper.map_to_session(spans, "session-123")
+
+        assert len(session.traces) == 1
+        assert len(session.traces[0].spans) == 1
+        assert session.traces[0].spans[0].span_info.span_id == "s1"
+
+    def test_untagged_span_inherits_while_foreign_excluded(self):
+        """Untagged span inherits trace match; explicitly foreign-tagged span excluded."""
+        spans = [
+            make_span(
+                trace_id="tSHARED",
+                span_id="s1",
+                operation_name="invoke_agent",
+                attributes={"session.id": "session-123"},
+            ),
+            make_span(
+                trace_id="tSHARED",
+                span_id="s2",
+                parent_span_id="s1",
+                operation_name="execute_tool",
+                attributes={"gen_ai.tool.name": "calc", "gen_ai.tool.output": "4"},
+            ),
+            make_span(
+                trace_id="tSHARED",
+                span_id="s3",
+                operation_name="invoke_agent",
+                attributes={"session.id": "session-456"},
+            ),
+        ]
+        session = self.mapper.map_to_session(spans, "session-123")
+
+        assert len(session.traces) == 1
+        assert len(session.traces[0].spans) == 2
+        span_ids = {s.span_info.span_id for s in session.traces[0].spans}
+        assert span_ids == {"s1", "s2"}
+
 
 class TestAgentResponseFromOutputMessages:
     """Regression: invoke_agent must extract agent_response from gen_ai.output.messages."""
@@ -812,6 +886,98 @@ class TestToolRoleMessages:
         tool_msg = inference.messages[0]
         assert tool_msg.content[0].content == "42"
         assert tool_msg.content[0].tool_call_id == "call-p1"
+
+    def test_tool_result_json_block_preserved(self):
+        """toolResult.content with a json block serializes it rather than dropping."""
+        span = make_span(
+            operation_name="chat",
+            span_events=[
+                {
+                    "event_name": "gen_ai.tool.message",
+                    "timestamp": 0,
+                    "attributes": {
+                        "content": json.dumps(
+                            [
+                                {
+                                    "toolResult": {
+                                        "toolUseId": "tool-j1",
+                                        "content": [{"json": {"result": 42, "status": "ok"}}],
+                                    }
+                                }
+                            ]
+                        )
+                    },
+                }
+            ],
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        inference = session.traces[0].spans[0]
+        assert isinstance(inference, InferenceSpan)
+        tool_msg = inference.messages[0]
+        assert "42" in tool_msg.content[0].content
+        assert "result" in tool_msg.content[0].content
+
+    def test_tool_result_image_block_placeholder(self):
+        """toolResult.content with an image block produces [image] placeholder."""
+        span = make_span(
+            operation_name="chat",
+            span_events=[
+                {
+                    "event_name": "gen_ai.tool.message",
+                    "timestamp": 0,
+                    "attributes": {
+                        "content": json.dumps(
+                            [
+                                {
+                                    "toolResult": {
+                                        "toolUseId": "tool-img1",
+                                        "content": [{"image": {"format": "png", "data": "base64..."}}],
+                                    }
+                                }
+                            ]
+                        )
+                    },
+                }
+            ],
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        inference = session.traces[0].spans[0]
+        tool_msg = inference.messages[0]
+        assert "[image]" in tool_msg.content[0].content
+
+    def test_tool_result_mixed_text_and_json_blocks(self):
+        """toolResult.content with text + json blocks joins both with newline."""
+        span = make_span(
+            operation_name="chat",
+            span_events=[
+                {
+                    "event_name": "gen_ai.tool.message",
+                    "timestamp": 0,
+                    "attributes": {
+                        "content": json.dumps(
+                            [
+                                {
+                                    "toolResult": {
+                                        "toolUseId": "tool-mix1",
+                                        "content": [
+                                            {"text": "Summary:"},
+                                            {"json": {"temp": 72, "unit": "F"}},
+                                        ],
+                                    }
+                                }
+                            ]
+                        )
+                    },
+                }
+            ],
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+        inference = session.traces[0].spans[0]
+        tool_msg = inference.messages[0]
+        content = tool_msg.content[0].content
+        assert "Summary:" in content
+        assert "72" in content
+        assert "\n" in content
 
 
 # =============================================================================
