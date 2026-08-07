@@ -63,7 +63,7 @@ langchain = [
     "langchain-aws>=0.2.0",
     "langgraph>=0.2.0",
     "openinference-instrumentation-langchain>=0.1.0",
-    "opentelemetry-instrumentation-langchain>=0.40.0,<0.62.0",
+    "opentelemetry-instrumentation-langchain>=0.40.0,<0.63.0",
 ]
 adk = ["google-adk>=2.0.0,<3.0.0"]
 
