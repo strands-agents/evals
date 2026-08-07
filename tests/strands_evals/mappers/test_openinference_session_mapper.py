@@ -1415,7 +1415,7 @@ class TestSmolagentsScopeSupport:
 
     @pytest.mark.parametrize(
         "output_value,expected_content",
-        [("42", "42"), ("[1, 2, 3]", "[1, 2, 3]"), ('"quoted"', '"quoted"')],
+        [("42", "42"), ("[1, 2, 3]", "[1, 2, 3]"), ('"quoted"', "quoted")],
         ids=["number", "list", "quoted-string"],
     )
     def test_non_dict_json_output_not_crash(self, output_value, expected_content):
@@ -1916,3 +1916,133 @@ class TestClaudeAgentSdkScopeSupport:
         tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
         assert len(tool_spans) == 1
         assert tool_spans[0].tool_result.content != ""
+
+    def test_errored_agent_span_detected(self):
+        """AGENT span with input.value + ERROR status (no output.value) is detected."""
+        span = make_span(
+            name="query",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "AGENT",
+                "input.value": "What is the weather?",
+            },
+        )
+        span["status"] = {"code": "ERROR"}
+
+        assert self.mapper._is_agent_invocation_span(span) is True
+
+    def test_errored_agent_span_without_input_not_detected(self):
+        """AGENT span with ERROR status but no input.value is not detected."""
+        span = make_span(
+            name="query",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "AGENT",
+            },
+        )
+        span["status"] = {"code": "ERROR"}
+
+        assert self.mapper._is_agent_invocation_span(span) is False
+
+    @pytest.mark.parametrize(
+        "status,span_events,expected_response",
+        [
+            pytest.param(
+                {"code": "ERROR", "description": "context deadline exceeded"},
+                [{"event_name": "exception", "timestamp": 0, "attributes": {"exception.message": "ignored"}}],
+                "context deadline exceeded",
+                id="prefers_status_description",
+            ),
+            pytest.param(
+                {"code": "ERROR"},
+                [{"event_name": "exception", "timestamp": 0, "attributes": {"exception.message": "rate limit"}}],
+                "rate limit",
+                id="falls_back_to_exception_message",
+            ),
+            pytest.param(
+                {"code": "ERROR"},
+                [],
+                "error",
+                id="falls_back_to_generic_error",
+            ),
+        ],
+    )
+    def test_errored_agent_span_response_fallback(self, status, span_events, expected_response):
+        """Errored agent span surfaces error via: status.description > exception > 'error'."""
+        span = make_span(
+            name="query",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "AGENT",
+                "input.value": "What is the weather?",
+            },
+            span_events=span_events,
+        )
+        span["status"] = status
+
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        agent_spans = [s for t in session.traces for s in t.spans if isinstance(s, AgentInvocationSpan)]
+        assert len(agent_spans) == 1
+        assert agent_spans[0].user_prompt == "What is the weather?"
+        assert agent_spans[0].agent_response == expected_response
+
+    def test_claude_agent_span_preserves_json_prompt_with_task_key(self):
+        """Claude prompt that is a JSON object with 'task' key is NOT unwrapped."""
+        json_prompt = json.dumps({"task": "summarize", "context": "some data"})
+        span = make_span(
+            name="query",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "AGENT",
+                "input.value": json_prompt,
+                "output.value": "Here is the summary.",
+            },
+        )
+
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        agent_spans = [s for t in session.traces for s in t.spans if isinstance(s, AgentInvocationSpan)]
+        assert len(agent_spans) == 1
+        assert agent_spans[0].user_prompt == json_prompt
+
+
+@pytest.fixture()
+def claude_session():
+    """Map real Claude Agent SDK spans to a Session."""
+    spans = _load_claude_spans()
+    mapper = OpenInferenceSessionMapper()
+    return mapper.map_to_session(spans, "claude-sess")
+
+
+class TestClaudeFixtureIntegration:
+    """Integration tests using real Claude Agent SDK trace (all 10 spans fed together)."""
+
+    def test_span_counts_and_types(self, claude_session):
+        """All 10 fixture spans map to 6 ToolExecutionSpans + 1 AgentInvocationSpan.
+
+        The 3 nested AGENT spans (no input/output) are rejected.
+        """
+        assert len(claude_session.traces) >= 1
+        all_spans = [s for t in claude_session.traces for s in t.spans]
+        assert len(all_spans) == 7
+
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        agent_spans = [s for s in all_spans if isinstance(s, AgentInvocationSpan)]
+        assert len(tool_spans) == 6
+        assert len(agent_spans) == 1
+
+    def test_agent_span_has_prompt_and_response(self, claude_session):
+        """Root agent span has user_prompt and agent_response populated."""
+        all_spans = [s for t in claude_session.traces for s in t.spans]
+        agent = next(s for s in all_spans if isinstance(s, AgentInvocationSpan))
+        assert agent.user_prompt
+        assert agent.agent_response
+
+    def test_tool_spans_have_call_ids_and_content(self, claude_session):
+        """All tool spans have tool_call_id populated and non-empty content."""
+        all_spans = [s for t in claude_session.traces for s in t.spans]
+        tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
+        for tool_span in tool_spans:
+            assert tool_span.tool_call.tool_call_id is not None
+            assert tool_span.tool_result.content

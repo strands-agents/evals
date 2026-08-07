@@ -36,6 +36,7 @@ from ..types.trace import (
     UserMessage,
 )
 from .constants import (
+    SCOPE_OPENINFERENCE,
     SCOPE_OPENINFERENCE_CLAUDE_AGENT_SDK,
     SCOPE_OPENINFERENCE_SMOLAGENTS,
     SCOPES_OPENINFERENCE_FAMILY,
@@ -62,6 +63,12 @@ class OpenInferenceSessionMapper(SessionMapper):
 
     Producer-specific encoding differences (e.g. message attribute paths,
     tool argument wrapping) are normalized before shared conversion logic runs.
+
+    Note: Claude Agent SDK instrumentation never emits kind="LLM" spans, so
+    Claude sessions produce only AgentInvocationSpan + ToolExecutionSpan (no
+    InferenceSpans). Claude's attribute layout (`message.content.0`) also
+    differs from what `_extract_assistant_from_live_attrs` reads, so adding
+    LLM extraction for Claude would require a dedicated normalization step.
     """
 
     def __init__(self):
@@ -262,7 +269,8 @@ class OpenInferenceSessionMapper(SessionMapper):
         # In multi-agent LangGraph systems, each nested sub-graph produces its own
         # LangGraph CHAIN span. Keep only the last one (root graph finishes last).
         agent_spans = [s for s in converted_spans if isinstance(s, AgentInvocationSpan)]
-        if len(agent_spans) > 1:
+        is_langchain = any(self._get_scope_name(s) == SCOPE_OPENINFERENCE for s in spans)
+        if len(agent_spans) > 1 and is_langchain:
             root = agent_spans[-1]
             converted_spans = [s for s in converted_spans if not isinstance(s, AgentInvocationSpan) or s is root]
 
@@ -354,9 +362,13 @@ class OpenInferenceSessionMapper(SessionMapper):
             scope_name = self._get_scope_name(span)
             if scope_name in (SCOPE_OPENINFERENCE_SMOLAGENTS, SCOPE_OPENINFERENCE_CLAUDE_AGENT_SDK):
                 input_val = attrs.get("input.value")
-                output_val = attrs.get("output.value")
-                if input_val and output_val:
-                    return True
+                if input_val:
+                    output_val = attrs.get("output.value")
+                    if output_val:
+                        return True
+                    span_status = span.get("status") or {}
+                    if isinstance(span_status, dict) and span_status.get("code") == "ERROR":
+                        return True
             return False
 
         # ADOT fallback: root LangGraph node has messages in/out but no remaining_steps.
@@ -470,12 +482,12 @@ class OpenInferenceSessionMapper(SessionMapper):
                         tool_output_content = json.dumps(parsed, ensure_ascii=False)
                     tool_call_id = parsed.get("tool_call_id") or tool_call_id
                     tool_status = parsed.get("status", "success")
+                elif isinstance(parsed, str):
+                    tool_output_content = parsed
+                elif isinstance(parsed, list):
+                    tool_output_content = self._flatten_content_blocks(parsed)
                 else:
-                    flattened = self._flatten_content_blocks(parsed)
-                    if flattened is not None:
-                        tool_output_content = flattened
-                    else:
-                        tool_output_content = output_value
+                    tool_output_content = output_value
             elif isinstance(output_value, dict):
                 tool_output_content = output_value.get("content", str(output_value))
 
@@ -565,17 +577,16 @@ class OpenInferenceSessionMapper(SessionMapper):
             input_value = attrs.get("input.value", "")
             output_value = attrs.get("output.value", "")
 
-            # input.value is a string per OpenInference spec; some producers wrap
-            # the prompt in a JSON object (e.g. {"task": "..."}). Unwrap if present.
             if isinstance(input_value, str) and input_value:
-                try:
-                    parsed_input = json.loads(input_value)
-                    if isinstance(parsed_input, dict) and "task" in parsed_input:
-                        user_prompt = parsed_input["task"]
-                    else:
-                        user_prompt = input_value
-                except (json.JSONDecodeError, TypeError):
-                    user_prompt = input_value
+                user_prompt = input_value
+                # smolagents wraps user task in: {"task": "...", "stream": ..., ...}
+                if self._get_scope_name(span) == SCOPE_OPENINFERENCE_SMOLAGENTS:
+                    try:
+                        parsed_input = json.loads(input_value)
+                        if isinstance(parsed_input, dict) and "task" in parsed_input:
+                            user_prompt = parsed_input["task"]
+                    except (json.JSONDecodeError, TypeError):
+                        pass
             if isinstance(output_value, str) and output_value:
                 agent_response = output_value
 
@@ -591,6 +602,12 @@ class OpenInferenceSessionMapper(SessionMapper):
             logger.warning(f"No user_prompt for agent span {span.get('span_id')}")
             return None
 
+        # Surface exception message on errored agent spans so judges see the failure.
+        if not agent_response:
+            span_status = span.get("status") or {}
+            if isinstance(span_status, dict) and span_status.get("code") == "ERROR":
+                agent_response = span_status.get("description") or self._exception_message(span) or "error"
+
         if not agent_response:
             logger.warning(f"No agent_response for agent span {span.get('span_id')}")
             return None
@@ -600,17 +617,37 @@ class OpenInferenceSessionMapper(SessionMapper):
             key=lambda t: t.name,
         )
 
+        # Extract token counts, cost, and model name from attributes
+        metadata = self._extract_llm_metadata(attrs)
+
         return AgentInvocationSpan(
             span_info=span_info,
             user_prompt=user_prompt,
             agent_response=agent_response,
             available_tools=available_tools,
-            metadata={},
+            metadata=metadata,
         )
 
     # =========================================================================
     # Helper Methods
     # =========================================================================
+
+    _LLM_METADATA_KEYS = (
+        "llm.model_name",
+        "llm.token_count.prompt",
+        "llm.token_count.completion",
+        "llm.token_count.total",
+    )
+
+    @staticmethod
+    def _extract_llm_metadata(attrs: dict) -> dict:
+        """Extract token counts and model name from span attributes into metadata."""
+        metadata: dict = {}
+        for key in OpenInferenceSessionMapper._LLM_METADATA_KEYS:
+            value = attrs.get(key)
+            if value is not None:
+                metadata[key] = value
+        return metadata
 
     @staticmethod
     def _collect_tools_from_spans(
