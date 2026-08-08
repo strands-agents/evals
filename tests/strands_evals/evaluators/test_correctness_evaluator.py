@@ -87,6 +87,38 @@ def evaluation_data_with_reference():
     )
 
 
+@pytest.fixture
+def evaluation_data_with_expected_output_only():
+    now = datetime.now()
+    span_info = SpanInfo(session_id="test-session", start_time=now, end_time=now)
+
+    tool_config = ToolConfig(name="calculator", description="Evaluate mathematical expressions")
+
+    agent_span = AgentInvocationSpan(
+        span_info=span_info,
+        user_prompt="What is 2 + 2?",
+        agent_response="The answer is 4.",
+        available_tools=[tool_config],
+    )
+
+    tool_span = ToolExecutionSpan(
+        span_info=span_info,
+        tool_call=ToolCall(name="calculator", arguments={"expression": "2+2"}, tool_call_id="1"),
+        tool_result=ToolResult(content="4", tool_call_id="1"),
+    )
+
+    trace = Trace(spans=[agent_span, tool_span], trace_id="trace1", session_id="test-session")
+    session = Session(traces=[trace], session_id="test-session")
+
+    return EvaluationData(
+        input="What is 2 + 2?",
+        actual_output="The answer is 4.",
+        expected_output="4",
+        actual_trajectory=session,
+        name="test-expected-output-only",
+    )
+
+
 def test_init_with_defaults():
     evaluator = CorrectnessEvaluator()
 
@@ -117,6 +149,57 @@ def test_has_reference_true(evaluation_data_with_reference):
 def test_has_reference_false(evaluation_data):
     evaluator = CorrectnessEvaluator()
     assert evaluator._has_reference(evaluation_data) is False
+
+
+def test_has_reference_true_with_expected_output_only(evaluation_data_with_expected_output_only):
+    evaluator = CorrectnessEvaluator()
+    assert evaluator._has_reference(evaluation_data_with_expected_output_only) is True
+
+
+@patch("strands_evals.evaluators.correctness_evaluator.Agent")
+def test_evaluate_with_expected_output_only_uses_reference_mode(
+    mock_agent_class, evaluation_data_with_expected_output_only
+):
+    """A case that sets only expected_output must use reference-mode grading, not silently
+    fall back to basic trajectory grading (issue #334)."""
+    mock_agent = Mock()
+    mock_result = Mock()
+    mock_result.structured_output = CorrectnessReferenceRating(
+        reasoning="The agent response matches the expected answer of 4",
+        verdict=CorrectnessReferenceScore.CORRECT,
+    )
+    mock_agent.return_value = mock_result
+    mock_agent_class.return_value = mock_agent
+    evaluator = CorrectnessEvaluator()
+
+    result = evaluator.evaluate(evaluation_data_with_expected_output_only)
+
+    mock_agent.assert_called_once()
+    prompt = mock_agent.call_args[0][0]
+    assert "4" in prompt
+    assert len(result) == 1
+    assert result[0].score == 1.0
+    assert result[0].label == CorrectnessReferenceScore.CORRECT
+
+
+def test_format_reference_prompt_prefers_expected_assertion_when_both_present(evaluation_data_with_reference):
+    evaluation_data_with_reference.expected_output = "a different expected output"
+    evaluator = CorrectnessEvaluator()
+    parsed_input = evaluator._get_last_turn(evaluation_data_with_reference)
+
+    prompt = evaluator._format_reference_prompt(parsed_input, evaluation_data_with_reference)
+
+    assert "The agent should return the correct answer of 4." in prompt
+    assert "a different expected output" not in prompt
+
+
+def test_format_reference_prompt_uses_expected_output_when_no_assertion(evaluation_data_with_expected_output_only):
+    evaluator = CorrectnessEvaluator()
+    parsed_input = evaluator._get_last_turn(evaluation_data_with_expected_output_only)
+
+    prompt = evaluator._format_reference_prompt(parsed_input, evaluation_data_with_expected_output_only)
+
+    assert "EXPECTED RESPONSE:\n4" in prompt
 
 
 @patch("strands_evals.evaluators.correctness_evaluator.Agent")
