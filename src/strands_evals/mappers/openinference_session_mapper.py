@@ -113,8 +113,6 @@ class OpenInferenceSessionMapper(SessionMapper):
         for span in openinference_spans:
             if self._get_scope_name(span) == SCOPE_OPENINFERENCE_SMOLAGENTS:
                 self._normalize_smolagents_span(span)
-            elif self._get_scope_name(span) == SCOPE_OPENINFERENCE_CLAUDE_AGENT_SDK:
-                self._normalize_claude_adot_span(span)
 
         # Group spans by trace_id
         grouped = defaultdict(list)
@@ -247,62 +245,6 @@ class OpenInferenceSessionMapper(SessionMapper):
             # Fallback: no tool.parameters available to map positional args
             attrs["input.value"] = json.dumps({"args": args})
 
-    def _normalize_claude_adot_span(self, span: dict) -> None:
-        """Normalize a Claude Agent SDK ADOT event record in-place.
-
-        Injects openinference.span.kind, tool.name, and input/output.value from
-        body.input/output.messages so the live-format code paths handle it.
-
-        Classifies by input shape: JSON object → TOOL, plain text → AGENT.
-        Infers tool name from output: "stdout" → Bash, "status"+"content" → Agent.
-        """
-        attrs = span.get("attributes", {})
-
-        # Skip spans that are already normalized
-        if attrs.get("openinference.span.kind"):
-            return
-
-        # Extract body messages from span_events
-        span_events = span.get("span_events", [])
-        input_content: str | None = None
-        output_content: str | None = None
-        for event in span_events:
-            if event.get("event_name") != SCOPE_OPENINFERENCE_CLAUDE_AGENT_SDK:
-                continue
-            body = event.get("body", {})
-            input_msgs = body.get("input", {}).get("messages", [])
-            output_msgs = body.get("output", {}).get("messages", [])
-            if input_msgs:
-                input_content = input_msgs[0].get("content", "")
-            if output_msgs:
-                output_content = output_msgs[0].get("content", "")
-            break
-
-        if input_content is None:
-            return
-
-        input_parsed = safe_json_parse(input_content)
-        if isinstance(input_parsed, dict):
-            # Tool span: inject TOOL kind with name and description
-            attrs["openinference.span.kind"] = "TOOL"
-            attrs["input.value"] = input_content
-
-            if output_content:
-                output_parsed = safe_json_parse(output_content)
-                if isinstance(output_parsed, dict):
-                    # Set generic names because tool names don't exist on Claude ADOT spans
-                    if "stdout" in output_parsed:
-                        attrs.setdefault("tool.name", "Tool")
-                    elif "status" in output_parsed and "content" in output_parsed:
-                        attrs.setdefault("tool.name", "Agent")
-                attrs["output.value"] = output_content
-        else:
-            # Agent span: inject AGENT kind with plain text input/output
-            attrs["openinference.span.kind"] = "AGENT"
-            attrs["input.value"] = input_content
-            if output_content:
-                attrs["output.value"] = output_content
-
     def _build_trace(self, trace_id: str, spans: list[dict], session_id: str) -> Trace:
         """Build a Trace from spans with the same trace_id."""
         converted_spans: list[InferenceSpan | ToolExecutionSpan | AgentInvocationSpan] = []
@@ -399,9 +341,8 @@ class OpenInferenceSessionMapper(SessionMapper):
 
         Detection:
         1. Live instrumentation (LangGraph): CHAIN + name=LangGraph
-        2. Live instrumentation (smolagents/Claude Agent SDK): AGENT span kind
-           from a known scope, with input.value present and either output.value
-           present or status.code == ERROR.
+        2. Live instrumentation (smolagents/Claude Agent SDK): AGENT span kind,
+           with both input.value and output.value present.
         3. ADOT body: root LangGraph graph node — input has "messages" without
            "remaining_steps" (intermediate nodes always have "remaining_steps"),
            and output has "messages".
@@ -577,19 +518,12 @@ class OpenInferenceSessionMapper(SessionMapper):
                     if isinstance(content_str, str):
                         try:
                             tool_data = json.loads(content_str)
+                            tool_output_content = tool_data.get("content")
                             tool_call_id = tool_call_id or tool_data.get("tool_call_id")
                             tool_status = tool_data.get("status")
                             # Always prefer tool name from output data (ADOT spans
                             # lack tool.name attribute)
                             tool_name = tool_data.get("name") or tool_name
-                            # Extract content, flattening Anthropic content blocks
-                            raw_content = tool_data.get("content")
-                            if isinstance(raw_content, list):
-                                tool_output_content = self._flatten_content_blocks(raw_content)
-                            elif isinstance(raw_content, str):
-                                tool_output_content = raw_content
-                            elif raw_content is not None:
-                                tool_output_content = json.dumps(raw_content, ensure_ascii=False)
                         except json.JSONDecodeError:
                             pass
 
