@@ -11,6 +11,14 @@ class InclusiveLanguage(Evaluator[InputT, OutputT]):
     Performs a case-insensitive word-boundary regex scan of actual_output against a
     mapping of banned terms to suggested replacements. Returns a passing score when
     no banned terms are found, and a failing score with details when any are detected.
+
+    Note on false positives: The default term list includes bare tokens like 'master'
+    and 'slave' which can produce false positives in legitimate contexts (e.g.,
+    "master's degree", "master volume"). Word-boundary matching reduces this risk
+    (e.g., "masterful" will not match), but standalone uses like "master branch" will
+    still trigger. If your domain frequently uses these words in non-exclusionary
+    contexts, consider providing a custom terms dict that omits them or uses more
+    specific compound patterns like 'master/slave' instead.
     """
 
     DEFAULT_TERMS: ClassVar[dict[str, str]] = {
@@ -27,11 +35,14 @@ class InclusiveLanguage(Evaluator[InputT, OutputT]):
 
         Args:
             terms: Mapping of banned terms to suggested replacements.
-                If None, uses the built-in DEFAULT_TERMS.
+                If None, uses a copy of the built-in DEFAULT_TERMS.
             name: Optional instance name for identification in reports.
         """
         super().__init__(name=name)
-        self.terms = terms if terms is not None else self.DEFAULT_TERMS
+        self.terms = terms if terms is not None else dict(self.DEFAULT_TERMS)
+        self._compiled_patterns: list[tuple[re.Pattern[str], str, str]] = [
+            (re.compile(rf"\b{re.escape(term)}\b"), term, suggestion) for term, suggestion in self.terms.items()
+        ]
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         """Evaluate actual_output for non-inclusive terminology.
@@ -45,8 +56,8 @@ class InclusiveLanguage(Evaluator[InputT, OutputT]):
         """
         text = str(evaluation_case.actual_output).lower()
         found: list[tuple[str, str]] = []
-        for term, suggestion in self.terms.items():
-            if re.search(rf"\b{re.escape(term)}\b", text):
+        for pattern, term, suggestion in self._compiled_patterns:
+            if pattern.search(text):
                 found.append((term, suggestion))
 
         if not found:

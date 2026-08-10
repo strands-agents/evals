@@ -2,6 +2,7 @@ import pytest
 
 from strands_evals.evaluators.deterministic.inclusive_language import InclusiveLanguage
 from strands_evals.types import EvaluationData
+from strands_evals.types.evaluation import EvaluationOutput
 
 
 class TestInclusiveLanguageDefaults:
@@ -9,51 +10,67 @@ class TestInclusiveLanguageDefaults:
         evaluator = InclusiveLanguage()
         data = EvaluationData(input="q", actual_output="Use the denylist to block bad actors")
         results = evaluator.evaluate(data)
-        assert len(results) == 1
-        assert results[0].score == 1.0
-        assert results[0].test_pass is True
+        assert results == [EvaluationOutput(score=1.0, test_pass=True, reason="no non-inclusive terms found")]
 
     def test_fails_when_blacklist_found(self):
         evaluator = InclusiveLanguage()
         data = EvaluationData(input="q", actual_output="Add the IP to the blacklist")
         results = evaluator.evaluate(data)
-        assert len(results) == 1
-        assert results[0].score == 0.0
-        assert results[0].test_pass is False
-        assert "blacklist" in results[0].reason
-        assert "denylist" in results[0].reason
+        assert results == [
+            EvaluationOutput(
+                score=0.0,
+                test_pass=False,
+                reason="found 1 non-inclusive term(s): 'blacklist' -> 'denylist'",
+            )
+        ]
 
     def test_fails_when_whitelist_found(self):
         evaluator = InclusiveLanguage()
         data = EvaluationData(input="q", actual_output="Add it to the whitelist")
         results = evaluator.evaluate(data)
-        assert results[0].test_pass is False
-        assert "whitelist" in results[0].reason
-        assert "allowlist" in results[0].reason
+        assert results == [
+            EvaluationOutput(
+                score=0.0,
+                test_pass=False,
+                reason="found 1 non-inclusive term(s): 'whitelist' -> 'allowlist'",
+            )
+        ]
 
     def test_fails_when_master_found(self):
         evaluator = InclusiveLanguage()
         data = EvaluationData(input="q", actual_output="Push to the master branch")
         results = evaluator.evaluate(data)
-        assert results[0].test_pass is False
-        assert "master" in results[0].reason
+        assert results == [
+            EvaluationOutput(
+                score=0.0,
+                test_pass=False,
+                reason="found 1 non-inclusive term(s): 'master' -> 'primary'",
+            )
+        ]
 
     def test_fails_when_slave_found(self):
         evaluator = InclusiveLanguage()
         data = EvaluationData(input="q", actual_output="Configure the slave node")
         results = evaluator.evaluate(data)
-        assert results[0].test_pass is False
-        assert "slave" in results[0].reason
-        assert "replica" in results[0].reason
+        assert results == [
+            EvaluationOutput(
+                score=0.0,
+                test_pass=False,
+                reason="found 1 non-inclusive term(s): 'slave' -> 'replica'",
+            )
+        ]
 
     def test_reports_multiple_terms(self):
         evaluator = InclusiveLanguage()
         data = EvaluationData(input="q", actual_output="The master sends to the slave")
         results = evaluator.evaluate(data)
-        assert results[0].test_pass is False
-        assert "2 non-inclusive term(s)" in results[0].reason
-        assert "master" in results[0].reason
-        assert "slave" in results[0].reason
+        assert results == [
+            EvaluationOutput(
+                score=0.0,
+                test_pass=False,
+                reason="found 2 non-inclusive term(s): 'master' -> 'primary', 'slave' -> 'replica'",
+            )
+        ]
 
 
 class TestInclusiveLanguageCaseSensitivity:
@@ -75,19 +92,19 @@ class TestInclusiveLanguageWordBoundary:
         evaluator = InclusiveLanguage()
         data = EvaluationData(input="q", actual_output="That was a masterful performance")
         results = evaluator.evaluate(data)
-        assert results[0].test_pass is True
+        assert results == [EvaluationOutput(score=1.0, test_pass=True, reason="no non-inclusive terms found")]
 
     def test_no_false_positive_on_mastering(self):
         evaluator = InclusiveLanguage()
         data = EvaluationData(input="q", actual_output="She is mastering the skill")
         results = evaluator.evaluate(data)
-        assert results[0].test_pass is True
+        assert results == [EvaluationOutput(score=1.0, test_pass=True, reason="no non-inclusive terms found")]
 
     def test_no_false_positive_on_slavery(self):
         evaluator = InclusiveLanguage()
         data = EvaluationData(input="q", actual_output="The history of slavery is complex")
         results = evaluator.evaluate(data)
-        assert results[0].test_pass is True
+        assert results == [EvaluationOutput(score=1.0, test_pass=True, reason="no non-inclusive terms found")]
 
     def test_matches_term_at_start_of_string(self):
         evaluator = InclusiveLanguage()
@@ -115,23 +132,35 @@ class TestInclusiveLanguageCustomTerms:
         # Default term should not trigger
         data = EvaluationData(input="q", actual_output="Push to the master branch")
         results = evaluator.evaluate(data)
-        assert results[0].test_pass is True
+        assert results == [EvaluationOutput(score=1.0, test_pass=True, reason="no non-inclusive terms found")]
 
     def test_custom_terms_detected(self):
         custom = {"legacy": "historical", "deprecated": "removed"}
         evaluator = InclusiveLanguage(terms=custom)
         data = EvaluationData(input="q", actual_output="This is a legacy system")
         results = evaluator.evaluate(data)
-        assert results[0].test_pass is False
-        assert "legacy" in results[0].reason
-        assert "historical" in results[0].reason
+        assert results == [
+            EvaluationOutput(
+                score=0.0,
+                test_pass=False,
+                reason="found 1 non-inclusive term(s): 'legacy' -> 'historical'",
+            )
+        ]
 
     def test_empty_terms_always_passes(self):
         evaluator = InclusiveLanguage(terms={})
         data = EvaluationData(input="q", actual_output="blacklist whitelist master slave")
         results = evaluator.evaluate(data)
-        assert results[0].test_pass is True
-        assert results[0].score == 1.0
+        assert results == [EvaluationOutput(score=1.0, test_pass=True, reason="no non-inclusive terms found")]
+
+
+class TestInclusiveLanguageSharedState:
+    def test_default_terms_not_shared_between_instances(self):
+        evaluator1 = InclusiveLanguage()
+        evaluator2 = InclusiveLanguage()
+        evaluator1.terms["newterm"] = "replacement"
+        assert "newterm" not in evaluator2.terms
+        assert "newterm" not in InclusiveLanguage.DEFAULT_TERMS
 
 
 class TestInclusiveLanguageEdgeCases:
@@ -139,19 +168,19 @@ class TestInclusiveLanguageEdgeCases:
         evaluator = InclusiveLanguage()
         data = EvaluationData(input="q", actual_output=None)
         results = evaluator.evaluate(data)
-        assert results[0].test_pass is True
+        assert results == [EvaluationOutput(score=1.0, test_pass=True, reason="no non-inclusive terms found")]
 
     def test_empty_string_passes(self):
         evaluator = InclusiveLanguage()
         data = EvaluationData(input="q", actual_output="")
         results = evaluator.evaluate(data)
-        assert results[0].test_pass is True
+        assert results == [EvaluationOutput(score=1.0, test_pass=True, reason="no non-inclusive terms found")]
 
     def test_numeric_output_coerced(self):
         evaluator = InclusiveLanguage()
         data = EvaluationData(input="q", actual_output=42)
         results = evaluator.evaluate(data)
-        assert results[0].test_pass is True
+        assert results == [EvaluationOutput(score=1.0, test_pass=True, reason="no non-inclusive terms found")]
 
     def test_reason_on_pass(self):
         evaluator = InclusiveLanguage()
@@ -172,14 +201,20 @@ class TestInclusiveLanguageAsync:
         evaluator = InclusiveLanguage()
         data = EvaluationData(input="q", actual_output="Use the denylist")
         results = await evaluator.evaluate_async(data)
-        assert results[0].test_pass is True
+        assert results == [EvaluationOutput(score=1.0, test_pass=True, reason="no non-inclusive terms found")]
 
     @pytest.mark.asyncio
     async def test_evaluate_async_detects_terms(self):
         evaluator = InclusiveLanguage()
         data = EvaluationData(input="q", actual_output="Add to blacklist")
         results = await evaluator.evaluate_async(data)
-        assert results[0].test_pass is False
+        assert results == [
+            EvaluationOutput(
+                score=0.0,
+                test_pass=False,
+                reason="found 1 non-inclusive term(s): 'blacklist' -> 'denylist'",
+            )
+        ]
 
 
 class TestInclusiveLanguageSerialization:
