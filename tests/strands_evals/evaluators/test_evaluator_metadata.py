@@ -536,3 +536,66 @@ class TestMetadataImportAccessibility:
         assert hasattr(meta_mod, "REQUIRED_METADATA_KEYS")
         assert hasattr(meta_mod, "VALID_METHOD_CATEGORIES")
         assert hasattr(meta_mod, "VALID_TIERS")
+
+
+class TestExperimentMetadataValidation:
+    """Tests that Experiment validates evaluator metadata at construction time."""
+
+    def test_experiment_rejects_invalid_metadata(self):
+        """Experiment.run_evaluations raises if an evaluator declares bad metadata."""
+        from strands_evals import Case, Experiment
+        from strands_evals.evaluators.evaluator import Evaluator
+
+        class BadMetaEvaluator(Evaluator):
+            def metadata(self):
+                return {"checks": "", "method": {"category": "llm_judge_output", "summary": "test"}, "threshold": "x"}
+
+            def evaluate(self, evaluation_case):
+                return []
+
+            async def evaluate_async(self, evaluation_case):
+                return []
+
+        experiment = Experiment(
+            cases=[Case(input="hello", expected_output="hi")],
+            evaluators=[BadMetaEvaluator()],
+        )
+
+        import pytest
+
+        with pytest.raises(ValueError, match="must be a non-empty string"):
+            experiment.run_evaluations(task=lambda x: x)
+
+    def test_experiment_accepts_valid_metadata(self):
+        """Experiment.run_evaluations does not raise for valid metadata."""
+        from strands_evals import Case, Experiment
+        from strands_evals.evaluators.deterministic import Contains
+
+        experiment = Experiment(
+            cases=[Case(input="hello", expected_output="hello world")],
+            evaluators=[Contains(value="hello")],
+        )
+
+        report = experiment.run_evaluations(task=lambda x: x)
+        assert report is not None
+
+    def test_experiment_skips_evaluators_without_metadata(self):
+        """Experiment.run_evaluations skips evaluators that return None from metadata()."""
+        from strands_evals import Case, Experiment
+        from strands_evals.evaluators.evaluator import Evaluator
+        from strands_evals.types.evaluation import EvaluationOutput
+
+        class NoMetaEvaluator(Evaluator):
+            def evaluate(self, evaluation_case):
+                return [EvaluationOutput(score=1.0, test_pass=True, reason="ok")]
+
+            async def evaluate_async(self, evaluation_case):
+                return self.evaluate(evaluation_case)
+
+        experiment = Experiment(
+            cases=[Case(input="hello", expected_output="hi")],
+            evaluators=[NoMetaEvaluator()],
+        )
+
+        report = experiment.run_evaluations(task=lambda x: x)
+        assert report is not None
