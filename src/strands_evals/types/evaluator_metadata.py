@@ -5,6 +5,8 @@ enabling downstream systems to aggregate results by tier, render informative
 reports, and route models based on evaluation method.
 """
 
+from typing import get_args
+
 from typing_extensions import Literal, TypedDict
 
 MethodCategory = Literal[
@@ -35,17 +37,9 @@ Tier = Literal["guardrail", "quality", "diagnostic"]
 - diagnostic: Surfaced in reports but does not gate pass/fail.
 """
 
-VALID_METHOD_CATEGORIES: set[str] = {
-    "llm_judge_output",
-    "llm_judge_trajectory",
-    "deterministic_string",
-    "deterministic_extraction",
-    "threshold_comparison",
-    "composite",
-    "custom",
-}
+VALID_METHOD_CATEGORIES: set[str] = set(get_args(MethodCategory))
 
-VALID_TIERS: set[str] = {"guardrail", "quality", "diagnostic"}
+VALID_TIERS: set[str] = set(get_args(Tier))
 
 
 class MethodInfo(TypedDict):
@@ -84,16 +78,20 @@ class EvaluatorMetadata(TypedDict, total=False):
 REQUIRED_METADATA_KEYS: set[str] = {"checks", "method", "threshold"}
 
 
-def validate_metadata(metadata: EvaluatorMetadata, evaluator_name: str) -> None:
+def validate_metadata(metadata: EvaluatorMetadata | None, evaluator_name: str) -> None:
     """Validate that evaluator metadata has all required keys and valid values.
 
     Args:
         metadata: The metadata dict returned by an evaluator's metadata() method.
+            If None, the evaluator has not declared metadata and validation is skipped.
         evaluator_name: The evaluator name, used in error messages.
 
     Raises:
         ValueError: If required keys are missing or values are invalid.
     """
+    if metadata is None:
+        return
+
     # Check required keys
     missing_keys = REQUIRED_METADATA_KEYS - set(metadata.keys())
     if missing_keys:

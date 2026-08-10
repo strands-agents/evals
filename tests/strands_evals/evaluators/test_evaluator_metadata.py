@@ -99,6 +99,10 @@ class TestValidateMetadata:
         """Valid metadata does not raise."""
         validate_metadata(self._valid_metadata(), "TestEvaluator")
 
+    def test_none_metadata_passes(self):
+        """None metadata does not raise (evaluator has not declared metadata)."""
+        validate_metadata(None, "TestEvaluator")
+
     def test_valid_metadata_without_optional_fields(self):
         """Metadata without optional fields (tier, description) is valid."""
         meta: EvaluatorMetadata = {
@@ -254,67 +258,103 @@ class TestDeterministicEvaluatorMetadata:
         """Contains returns valid metadata with case sensitivity info."""
         evaluator = Contains(value="hello")
         meta = evaluator.metadata()
-        assert meta is not None
-        assert meta["checks"] == "Whether actual_output contains a required substring"
-        assert meta["method"]["category"] == "deterministic_string"
-        assert "Case-sensitive" in meta["method"]["summary"]
-        assert meta["threshold"] == "substring present"
-        assert meta["tier"] == "quality"
+        assert meta == {
+            "checks": "Whether actual_output contains a required substring",
+            "method": {
+                "category": "deterministic_string",
+                "summary": "Case-sensitive substring search on actual_output.",
+            },
+            "threshold": "substring present",
+            "tier": "quality",
+        }
         validate_metadata(meta, evaluator.get_name())
 
     def test_contains_case_insensitive_metadata(self):
         """Contains with case_sensitive=False reports case-insensitive in summary."""
         evaluator = Contains(value="hello", case_sensitive=False)
         meta = evaluator.metadata()
-        assert meta is not None
-        assert "Case-insensitive" in meta["method"]["summary"]
+        assert meta == {
+            "checks": "Whether actual_output contains a required substring",
+            "method": {
+                "category": "deterministic_string",
+                "summary": "Case-insensitive substring search on actual_output.",
+            },
+            "threshold": "substring present",
+            "tier": "quality",
+        }
 
     def test_equals_metadata(self):
         """Equals returns valid metadata."""
         evaluator = Equals(value="expected")
         meta = evaluator.metadata()
-        assert meta is not None
-        assert meta["checks"] == "Whether actual_output exactly equals an expected value"
-        assert meta["method"]["category"] == "deterministic_string"
-        assert meta["tier"] == "quality"
+        assert meta == {
+            "checks": "Whether actual_output exactly equals an expected value",
+            "method": {
+                "category": "deterministic_string",
+                "summary": "Exact equality comparison between actual_output and expected value.",
+            },
+            "threshold": "exact match",
+            "tier": "quality",
+        }
         validate_metadata(meta, evaluator.get_name())
 
     def test_starts_with_metadata(self):
         """StartsWith returns valid metadata with case sensitivity info."""
         evaluator = StartsWith(value="prefix")
         meta = evaluator.metadata()
-        assert meta is not None
-        assert meta["checks"] == "Whether actual_output starts with a required prefix"
-        assert meta["method"]["category"] == "deterministic_string"
-        assert "Case-sensitive" in meta["method"]["summary"]
-        assert meta["threshold"] == "prefix present"
+        assert meta == {
+            "checks": "Whether actual_output starts with a required prefix",
+            "method": {
+                "category": "deterministic_string",
+                "summary": "Case-sensitive prefix check on actual_output.",
+            },
+            "threshold": "prefix present",
+            "tier": "quality",
+        }
         validate_metadata(meta, evaluator.get_name())
 
     def test_starts_with_case_insensitive_metadata(self):
         """StartsWith with case_sensitive=False reports correctly."""
         evaluator = StartsWith(value="prefix", case_sensitive=False)
         meta = evaluator.metadata()
-        assert meta is not None
-        assert "Case-insensitive" in meta["method"]["summary"]
+        assert meta == {
+            "checks": "Whether actual_output starts with a required prefix",
+            "method": {
+                "category": "deterministic_string",
+                "summary": "Case-insensitive prefix check on actual_output.",
+            },
+            "threshold": "prefix present",
+            "tier": "quality",
+        }
 
     def test_tool_called_metadata(self):
         """ToolCalled returns valid metadata including the tool name."""
         evaluator = ToolCalled(tool_name="search_web")
         meta = evaluator.metadata()
-        assert meta is not None
-        assert "search_web" in meta["checks"]
-        assert meta["method"]["category"] == "deterministic_extraction"
-        assert meta["tier"] == "quality"
+        assert meta == {
+            "checks": "Whether the tool 'search_web' was called during execution",
+            "method": {
+                "category": "deterministic_extraction",
+                "summary": "Searches the trajectory for a tool execution span matching the target tool name.",
+            },
+            "threshold": "tool called at least once",
+            "tier": "quality",
+        }
         validate_metadata(meta, evaluator.get_name())
 
     def test_state_equals_metadata(self):
         """StateEquals returns valid metadata including the state name."""
         evaluator = StateEquals(name="cart")
         meta = evaluator.metadata()
-        assert meta is not None
-        assert "cart" in meta["checks"]
-        assert meta["method"]["category"] == "deterministic_extraction"
-        assert meta["tier"] == "quality"
+        assert meta == {
+            "checks": "Whether environment state 'cart' matches the expected value",
+            "method": {
+                "category": "deterministic_extraction",
+                "summary": "Exact equality comparison of a named environment state against an expected value.",
+            },
+            "threshold": "exact match",
+            "tier": "quality",
+        }
         validate_metadata(meta, evaluator.get_name())
 
 
@@ -325,58 +365,107 @@ class TestLLMEvaluatorMetadata:
         """FaithfulnessEvaluator returns valid guardrail metadata."""
         evaluator = FaithfulnessEvaluator()
         meta = evaluator.metadata()
-        assert meta is not None
-        assert meta["method"]["category"] == "llm_judge_output"
-        assert meta["tier"] == "guardrail"
-        assert "grounded" in meta["checks"]
+        assert meta == {
+            "checks": "Whether the agent's response is grounded in the conversation history",
+            "method": {
+                "category": "llm_judge_output",
+                "summary": (
+                    "An LLM judge compares the agent's last response against prior tool outputs"
+                    " and conversation for unsupported claims."
+                ),
+            },
+            "threshold": "score >= 0.50",
+            "tier": "guardrail",
+        }
         validate_metadata(meta, evaluator.get_name())
 
     def test_harmfulness_metadata(self):
         """HarmfulnessEvaluator returns valid guardrail metadata."""
         evaluator = HarmfulnessEvaluator()
         meta = evaluator.metadata()
-        assert meta is not None
-        assert meta["method"]["category"] == "llm_judge_output"
-        assert meta["tier"] == "guardrail"
-        assert "harmful" in meta["checks"]
+        assert meta == {
+            "checks": "Whether the agent's response contains harmful content",
+            "method": {
+                "category": "llm_judge_output",
+                "summary": (
+                    "An LLM judge examines the agent's response for harmful, dangerous, or inappropriate content."
+                ),
+            },
+            "threshold": "score == 1.0 (not harmful)",
+            "tier": "guardrail",
+        }
         validate_metadata(meta, evaluator.get_name())
 
     def test_correctness_metadata(self):
         """CorrectnessEvaluator returns valid quality metadata."""
         evaluator = CorrectnessEvaluator()
         meta = evaluator.metadata()
-        assert meta is not None
-        assert meta["method"]["category"] == "llm_judge_output"
-        assert meta["tier"] == "quality"
-        assert "correct" in meta["checks"]
+        assert meta == {
+            "checks": "Whether the agent's response is factually correct",
+            "method": {
+                "category": "llm_judge_output",
+                "summary": (
+                    "An LLM judge evaluates correctness of the response using either"
+                    " a 3-level rubric or a binary reference comparison."
+                ),
+            },
+            "threshold": "score >= 1.0 (basic) or CORRECT verdict (reference)",
+            "tier": "quality",
+        }
         validate_metadata(meta, evaluator.get_name())
 
     def test_tool_selection_accuracy_metadata(self):
         """ToolSelectionAccuracyEvaluator returns valid metadata."""
         evaluator = ToolSelectionAccuracyEvaluator()
         meta = evaluator.metadata()
-        assert meta is not None
-        assert meta["method"]["category"] == "llm_judge_trajectory"
-        assert meta["tier"] == "quality"
+        assert meta == {
+            "checks": "Whether each tool call is justified given the conversation context",
+            "method": {
+                "category": "llm_judge_trajectory",
+                "summary": (
+                    "An LLM judge evaluates each tool call in the trajectory to determine if it was"
+                    " appropriate given the available tools and conversation context."
+                ),
+            },
+            "threshold": "all tool calls scored Yes",
+            "tier": "quality",
+        }
         validate_metadata(meta, evaluator.get_name())
 
     def test_tool_parameter_accuracy_metadata(self):
         """ToolParameterAccuracyEvaluator returns valid metadata."""
         evaluator = ToolParameterAccuracyEvaluator()
         meta = evaluator.metadata()
-        assert meta is not None
-        assert meta["method"]["category"] == "llm_judge_trajectory"
-        assert meta["tier"] == "quality"
+        assert meta == {
+            "checks": "Whether tool call parameters faithfully use information from the conversation context",
+            "method": {
+                "category": "llm_judge_trajectory",
+                "summary": (
+                    "An LLM judge evaluates each tool call's parameters to verify they accurately"
+                    " reflect information from the preceding conversation and tool results."
+                ),
+            },
+            "threshold": "all tool calls scored Yes",
+            "tier": "quality",
+        }
         validate_metadata(meta, evaluator.get_name())
 
     def test_goal_success_rate_metadata(self):
         """GoalSuccessRateEvaluator returns valid metadata."""
         evaluator = GoalSuccessRateEvaluator()
         meta = evaluator.metadata()
-        assert meta is not None
-        assert meta["method"]["category"] == "llm_judge_trajectory"
-        assert meta["tier"] == "quality"
-        assert "goals" in meta["checks"].lower()
+        assert meta == {
+            "checks": "Whether all user goals were successfully achieved in the conversation",
+            "method": {
+                "category": "llm_judge_trajectory",
+                "summary": (
+                    "An LLM judge analyzes the full session to determine if user goals were met,"
+                    " either by inferring goals or checking explicit assertions."
+                ),
+            },
+            "threshold": "score == 1.0 (Yes or SUCCESS)",
+            "tier": "quality",
+        }
         validate_metadata(meta, evaluator.get_name())
 
 
