@@ -1,4 +1,5 @@
 from ...types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
+from ...types.evaluator_metadata import EvaluatorMetadata
 from ...types.trace import Session, ToolExecutionSpan
 from ..evaluator import Evaluator
 
@@ -9,6 +10,17 @@ class ToolCalled(Evaluator[InputT, OutputT]):
     def __init__(self, tool_name: str, name: str | None = None):
         super().__init__(name=name)
         self.tool_name = tool_name
+
+    def metadata(self) -> EvaluatorMetadata:
+        return {
+            "checks": f"Whether the tool '{self.tool_name}' was called during execution",
+            "method": {
+                "category": "deterministic_extraction",
+                "summary": "Searches the trajectory for a tool execution span matching the target tool name.",
+            },
+            "threshold": "tool called at least once",
+            "tier": "quality",
+        }
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         trajectory = evaluation_case.actual_trajectory

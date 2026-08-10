@@ -6,6 +6,7 @@ from strands import Agent
 from strands.models.model import Model
 
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
+from ..types.evaluator_metadata import EvaluatorMetadata
 from ..types.trace import EvaluationLevel, SessionLevelInput
 from .evaluator import Evaluator
 from .prompt_templates.goal_success_rate import get_assertion_template, get_template
@@ -83,6 +84,20 @@ class GoalSuccessRateEvaluator(Evaluator[InputT, OutputT]):
         )
         self.version = version
         self.model = model
+
+    def metadata(self) -> EvaluatorMetadata:
+        return {
+            "checks": "Whether all user goals were successfully achieved in the conversation",
+            "method": {
+                "category": "llm_judge_trajectory",
+                "summary": (
+                    "An LLM judge analyzes the full session to determine if user goals "
+                    "were met, either by inferring goals or checking explicit assertions."
+                ),
+            },
+            "threshold": "score == 1.0 (Yes or SUCCESS)",
+            "tier": "quality",
+        }
 
     def _has_assertion(self, evaluation_case: EvaluationData[InputT, OutputT]) -> bool:
         """Check if the evaluation case contains expected_assertion for assertion mode."""

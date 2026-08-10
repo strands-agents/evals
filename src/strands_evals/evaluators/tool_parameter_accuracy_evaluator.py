@@ -6,6 +6,7 @@ from strands import Agent
 from strands.models.model import Model
 
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
+from ..types.evaluator_metadata import EvaluatorMetadata
 from ..types.trace import EvaluationLevel
 from .evaluator import Evaluator
 from .prompt_templates.tool_parameter_accuracy import get_template
@@ -46,6 +47,20 @@ class ToolParameterAccuracyEvaluator(Evaluator[InputT, OutputT]):
         self.system_prompt = system_prompt if system_prompt is not None else get_template(version).SYSTEM_PROMPT
         self.version = version
         self.model = model
+
+    def metadata(self) -> EvaluatorMetadata:
+        return {
+            "checks": "Whether tool call parameters faithfully use information from the conversation context",
+            "method": {
+                "category": "llm_judge_trajectory",
+                "summary": (
+                    "An LLM judge evaluates each tool call's parameters to verify they "
+                    "accurately reflect information from the preceding conversation and tool results."
+                ),
+            },
+            "threshold": "all tool calls scored Yes",
+            "tier": "quality",
+        }
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         tool_inputs = self._parse_trajectory(evaluation_case)
