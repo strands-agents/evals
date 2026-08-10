@@ -46,6 +46,13 @@ from .utils import safe_json_parse
 
 logger = logging.getLogger(__name__)
 
+_LLM_METADATA_KEYS = (
+    "llm.model_name",
+    "llm.token_count.prompt",
+    "llm.token_count.completion",
+    "llm.token_count.total",
+)
+
 
 class OpenInferenceSessionMapper(SessionMapper):
     """Maps OpenInference traces to Session format.
@@ -633,18 +640,11 @@ class OpenInferenceSessionMapper(SessionMapper):
     # Helper Methods
     # =========================================================================
 
-    _LLM_METADATA_KEYS = (
-        "llm.model_name",
-        "llm.token_count.prompt",
-        "llm.token_count.completion",
-        "llm.token_count.total",
-    )
-
     @staticmethod
     def _extract_llm_metadata(attrs: dict) -> dict:
         """Extract token counts and model name from span attributes into metadata."""
         metadata: dict = {}
-        for key in OpenInferenceSessionMapper._LLM_METADATA_KEYS:
+        for key in _LLM_METADATA_KEYS:
             value = attrs.get(key)
             if value is not None:
                 metadata[key] = value
