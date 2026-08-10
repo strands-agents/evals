@@ -19,7 +19,7 @@ _LIVE_SPANS_FILE = _FIXTURES_DIR / "openinference_live_spans.json"
 _ADOT_SPANS_FILE = _FIXTURES_DIR / "openinference_adot_spans.json"
 _SMOLAGENTS_SPANS_FILE = _FIXTURES_DIR / "smolagents_live_spans.json"
 _CLAUDE_SPANS_FILE = _FIXTURES_DIR / "claude_live_spans.json"
-_CLAUDE_AGENTCORE_FILE = _FIXTURES_DIR / "claude_unified_spans.json"
+_CLAUDE_ADOT_FILE = _FIXTURES_DIR / "claude_adot_spans.json"
 
 SCOPE_NAME = "openinference.instrumentation.langchain"
 SMOLAGENTS_SCOPE_NAME = "openinference.instrumentation.smolagents"
@@ -196,9 +196,9 @@ def _load_claude_spans():
         return json.load(f)
 
 
-def _load_claude_agentcore_spans():
+def _load_claude_adot_spans():
     """Load Claude Agent SDK spans captured from AgentCore (session.id on all spans)."""
-    with open(_CLAUDE_AGENTCORE_FILE, encoding="utf-8") as f:
+    with open(_CLAUDE_ADOT_FILE, encoding="utf-8") as f:
         data = json.load(f)
     return data["session_id"], data["spans"]
 
@@ -2064,9 +2064,9 @@ class TestClaudeFixtureIntegration:
 
 
 @pytest.fixture()
-def claude_agentcore_session():
+def claude_adot_session():
     """Map real Claude AgentCore spans (session.id on all spans) to a Session."""
-    session_id, spans = _load_claude_agentcore_spans()
+    session_id, spans = _load_claude_adot_spans()
     mapper = OpenInferenceSessionMapper()
     return mapper.map_to_session(spans, session_id)
 
@@ -2078,17 +2078,17 @@ class TestClaudeAgentCoreFixtureIntegration:
     survives a CloudWatch Logs Insights query filtered by session.id.
     """
 
-    def test_span_counts(self, claude_agentcore_session):
+    def test_span_counts(self, claude_adot_session):
         """AgentCore trace produces 4 tool spans + 1 agent span."""
-        all_spans = [s for t in claude_agentcore_session.traces for s in t.spans]
+        all_spans = [s for t in claude_adot_session.traces for s in t.spans]
         tool_spans = [s for s in all_spans if isinstance(s, ToolExecutionSpan)]
         agent_spans = [s for s in all_spans if isinstance(s, AgentInvocationSpan)]
         assert len(tool_spans) == 4
         assert len(agent_spans) == 1
 
-    def test_all_spans_have_session_id_attribute(self, claude_agentcore_session):
+    def test_all_spans_have_session_id_attribute(self, claude_adot_session):
         """Verify the fixture has session.id on all spans (AgentCore behavior)."""
-        session_id, spans = _load_claude_agentcore_spans()
+        session_id, spans = _load_claude_adot_spans()
         for span in spans:
             attrs = span.get("attributes", {})
             assert attrs.get("session.id") == session_id
