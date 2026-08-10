@@ -79,13 +79,16 @@ class Evaluator(Generic[InputT, OutputT]):
 
     @staticmethod
     def _default_aggregator(outputs: list[EvaluationOutput]) -> tuple[float, bool, str]:
-        # Handle empty outputs list to avoid division by zero
-        if not outputs:
-            return (0.0, False, "No evaluation outputs produced")
+        # Filter to only graded outputs for aggregation
+        graded = [o for o in outputs if o.status == "graded"]
 
-        avg_score = sum(o.score for o in outputs) / len(outputs)
-        all_pass = all(o.test_pass for o in outputs)
-        combined_reason = " | ".join(o.reason for o in outputs if o.reason)
+        # Handle empty graded list to avoid division by zero
+        if not graded:
+            return (0.0, False, "No gradable evaluation outputs produced")
+
+        avg_score = sum(o.score for o in graded) / len(graded)
+        all_pass = all(o.test_pass for o in graded)
+        combined_reason = " | ".join(o.reason for o in graded if o.reason)
         return avg_score, all_pass, combined_reason
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:

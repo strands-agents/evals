@@ -18,6 +18,9 @@ class EvaluationReport(BaseModel):
             the evaluator that produced that row.
         test_passes: A list of booleans indicating whether the test pass or fail.
         reasons: A list of reason for each test case.
+        statuses: A list of status strings for each test case. Controls whether
+            the result is included in overall_score aggregation. Values are
+            "graded", "could_not_evaluate", or "informational".
     """
 
     overall_score: float
@@ -28,6 +31,7 @@ class EvaluationReport(BaseModel):
     detailed_results: list[list[EvaluationOutput]] = []
     diagnoses: list[dict | None] = []
     recommendations: list[str | None] = []
+    statuses: list[str] = []
 
     @classmethod
     def flatten(cls, reports: list["EvaluationReport"]) -> "EvaluationReport":
@@ -40,7 +44,7 @@ class EvaluationReport(BaseModel):
         if not reports:
             return cls(overall_score=0.0, scores=[], cases=[], test_passes=[])
 
-        scores, cases, passes, reasons, detailed, diags, recs = [], [], [], [], [], [], []
+        scores, cases, passes, reasons, detailed, diags, recs, statuses = [], [], [], [], [], [], [], []
 
         for report in reports:
             for i, case in enumerate(report.cases):
@@ -51,9 +55,12 @@ class EvaluationReport(BaseModel):
                 detailed.append(report.detailed_results[i] if i < len(report.detailed_results) else [])
                 diags.append(report.diagnoses[i] if i < len(report.diagnoses) else None)
                 recs.append(report.recommendations[i] if i < len(report.recommendations) else None)
+                statuses.append(report.statuses[i] if i < len(report.statuses) else "graded")
+
+        graded_scores = [s for s, st in zip(scores, statuses, strict=True) if st == "graded"]
 
         return cls(
-            overall_score=sum(scores) / len(scores) if scores else 0.0,
+            overall_score=sum(graded_scores) / len(graded_scores) if graded_scores else 0.0,
             scores=scores,
             cases=cases,
             test_passes=passes,
@@ -61,6 +68,7 @@ class EvaluationReport(BaseModel):
             detailed_results=detailed,
             diagnoses=diags,
             recommendations=recs,
+            statuses=statuses,
         )
 
     @staticmethod
@@ -134,6 +142,10 @@ class EvaluationReport(BaseModel):
                 details_dict["evaluator"] = self.cases[i]["evaluator"]
             details_dict["score"] = f"{self.scores[i]:.2f}"
             details_dict["test_pass"] = self.test_passes[i]
+            # Include status when it differs from the default "graded"
+            status = self.statuses[i] if i < len(self.statuses) else "graded"
+            if status != "graded":
+                details_dict["status"] = status
             details_dict["reason"] = reason
             if include_input:
                 details_dict["input"] = self.format_input_for_display(self.cases[i].get("input"))

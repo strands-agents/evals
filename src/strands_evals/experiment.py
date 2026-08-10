@@ -422,6 +422,13 @@ class Experiment(Generic[InputT, OutputT]):
                     "score": aggregate_score,
                     "reason": aggregate_reason or "",
                     "detailed_results": evaluation_outputs,
+                    "status": (
+                        "graded"
+                        if any(o.status == "graded" for o in evaluation_outputs)
+                        else evaluation_outputs[0].status
+                        if evaluation_outputs
+                        else "graded"
+                    ),
                 }
 
         except RetryError as e:
@@ -443,6 +450,7 @@ class Experiment(Generic[InputT, OutputT]):
                 "score": 0,
                 "reason": f"Evaluator error: {str(original_exception)}",
                 "detailed_results": [],
+                "status": "could_not_evaluate",
             }
         except Exception as e:
             # Catch non-throttling errors and record as failure (error isolation)
@@ -453,6 +461,7 @@ class Experiment(Generic[InputT, OutputT]):
                 "score": 0,
                 "reason": f"Evaluator error: {str(e)}",
                 "detailed_results": [],
+                "status": "could_not_evaluate",
             }
 
     async def _run_diagnosis(
@@ -569,6 +578,7 @@ class Experiment(Generic[InputT, OutputT]):
                                     "score": 0,
                                     "reason": f"An error occurred: {str(e)}",
                                     "detailed_results": [],
+                                    "status": "could_not_evaluate",
                                 }
                             )
                         results[index] = {
@@ -659,6 +669,7 @@ class Experiment(Generic[InputT, OutputT]):
                 "detailed_results": [],
                 "diagnoses": [],
                 "recommendations": [],
+                "statuses": [],
             }
             for evaluator in self._evaluators
         }
@@ -678,14 +689,17 @@ class Experiment(Generic[InputT, OutputT]):
                 evaluator_data[eval_name]["detailed_results"].append(eval_result["detailed_results"])
                 evaluator_data[eval_name]["diagnoses"].append(diagnosis)
                 evaluator_data[eval_name]["recommendations"].append(recommendation)
+                evaluator_data[eval_name]["statuses"].append(eval_result.get("status", "graded"))
 
         reports = []
         for evaluator in self._evaluators:
             eval_name = evaluator.get_name()
             data = evaluator_data[eval_name]
             scores = data["scores"]
+            statuses = data["statuses"]
+            graded_scores = [s for s, st in zip(scores, statuses, strict=True) if st == "graded"]
             report = EvaluationReport(
-                overall_score=sum(scores) / len(scores) if scores else 0,
+                overall_score=sum(graded_scores) / len(graded_scores) if graded_scores else 0,
                 scores=scores,
                 test_passes=data["test_passes"],
                 cases=data["cases"],
@@ -693,6 +707,7 @@ class Experiment(Generic[InputT, OutputT]):
                 detailed_results=data["detailed_results"],
                 diagnoses=data["diagnoses"],
                 recommendations=data["recommendations"],
+                statuses=statuses,
             )
             reports.append(report)
 
