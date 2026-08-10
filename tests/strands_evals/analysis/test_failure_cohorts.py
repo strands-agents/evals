@@ -127,9 +127,7 @@ class TestCohortAnalysis:
         )
         data = analysis.model_dump()
         restored = CohortAnalysis.model_validate(data)
-        assert restored.cohorts == analysis.cohorts
-        assert restored.total_failures == 1
-        assert restored.total_cases == 3
+        assert restored == analysis
 
 
 class TestAnalyzeFailureCohorts:
@@ -147,9 +145,7 @@ class TestAnalyzeFailureCohorts:
             test_passes=[True, True, True],
         )
         analysis = analyze_failure_cohorts(report)
-        assert analysis.total_failures == 0
-        assert analysis.total_cases == 3
-        assert analysis.cohorts == []
+        assert analysis == CohortAnalysis(cohorts=[], total_failures=0, total_cases=3)
 
     def test_all_failing_single_evaluator(self):
         report = EvaluationReport(
@@ -163,13 +159,18 @@ class TestAnalyzeFailureCohorts:
             test_passes=[False, False, False],
         )
         analysis = analyze_failure_cohorts(report)
-        assert analysis.total_failures == 3
-        assert analysis.total_cases == 3
-        assert len(analysis.cohorts) == 1
-        assert analysis.cohorts[0].evaluator_name == "Faithfulness"
-        assert analysis.cohorts[0].count == 3
-        assert analysis.cohorts[0].failed_case_indices == [0, 1, 2]
-        assert analysis.cohorts[0].failed_case_names == ["case-1", "case-2", "case-3"]
+        assert analysis == CohortAnalysis(
+            cohorts=[
+                FailureCohort(
+                    evaluator_name="Faithfulness",
+                    failed_case_indices=[0, 1, 2],
+                    failed_case_names=["case-1", "case-2", "case-3"],
+                    count=3,
+                ),
+            ],
+            total_failures=3,
+            total_cases=3,
+        )
 
     def test_multiple_evaluators_sorted_by_count(self):
         report = EvaluationReport(
@@ -186,13 +187,24 @@ class TestAnalyzeFailureCohorts:
             test_passes=[False, False, False, False, True, True],
         )
         analysis = analyze_failure_cohorts(report)
-        assert analysis.total_failures == 4
-        assert len(analysis.cohorts) == 2
-        # Faithfulness has 3 failures, Correctness has 1
-        assert analysis.cohorts[0].evaluator_name == "Faithfulness"
-        assert analysis.cohorts[0].count == 3
-        assert analysis.cohorts[1].evaluator_name == "Correctness"
-        assert analysis.cohorts[1].count == 1
+        assert analysis == CohortAnalysis(
+            cohorts=[
+                FailureCohort(
+                    evaluator_name="Faithfulness",
+                    failed_case_indices=[1, 2, 3],
+                    failed_case_names=["c2", "c3", "c4"],
+                    count=3,
+                ),
+                FailureCohort(
+                    evaluator_name="Correctness",
+                    failed_case_indices=[0],
+                    failed_case_names=["c1"],
+                    count=1,
+                ),
+            ],
+            total_failures=4,
+            total_cases=6,
+        )
 
     def test_alphabetical_tiebreaker(self):
         report = EvaluationReport(
@@ -205,10 +217,24 @@ class TestAnalyzeFailureCohorts:
             test_passes=[False, False],
         )
         analysis = analyze_failure_cohorts(report)
-        assert len(analysis.cohorts) == 2
-        # Same count (1 each), sorted alphabetically
-        assert analysis.cohorts[0].evaluator_name == "Alpha"
-        assert analysis.cohorts[1].evaluator_name == "Zebra"
+        assert analysis == CohortAnalysis(
+            cohorts=[
+                FailureCohort(
+                    evaluator_name="Alpha",
+                    failed_case_indices=[1],
+                    failed_case_names=["c2"],
+                    count=1,
+                ),
+                FailureCohort(
+                    evaluator_name="Zebra",
+                    failed_case_indices=[0],
+                    failed_case_names=["c1"],
+                    count=1,
+                ),
+            ],
+            total_failures=2,
+            total_cases=2,
+        )
 
     def test_missing_evaluator_key_defaults_to_unknown(self):
         report = EvaluationReport(
@@ -221,9 +247,18 @@ class TestAnalyzeFailureCohorts:
             test_passes=[False, False],
         )
         analysis = analyze_failure_cohorts(report)
-        assert len(analysis.cohorts) == 1
-        assert analysis.cohorts[0].evaluator_name == "unknown"
-        assert analysis.cohorts[0].count == 2
+        assert analysis == CohortAnalysis(
+            cohorts=[
+                FailureCohort(
+                    evaluator_name="unknown",
+                    failed_case_indices=[0, 1],
+                    failed_case_names=["c1", "c2"],
+                    count=2,
+                ),
+            ],
+            total_failures=2,
+            total_cases=2,
+        )
 
     def test_missing_name_key_defaults_to_case_index(self):
         report = EvaluationReport(
@@ -236,7 +271,18 @@ class TestAnalyzeFailureCohorts:
             test_passes=[False, False],
         )
         analysis = analyze_failure_cohorts(report)
-        assert analysis.cohorts[0].failed_case_names == ["case_0", "case_1"]
+        assert analysis == CohortAnalysis(
+            cohorts=[
+                FailureCohort(
+                    evaluator_name="X",
+                    failed_case_indices=[0, 1],
+                    failed_case_names=["case_0", "case_1"],
+                    count=2,
+                ),
+            ],
+            total_failures=2,
+            total_cases=2,
+        )
 
     def test_mixed_pass_fail(self):
         report = EvaluationReport(
@@ -252,12 +298,30 @@ class TestAnalyzeFailureCohorts:
             test_passes=[True, False, True, False, False],
         )
         analysis = analyze_failure_cohorts(report)
-        assert analysis.total_failures == 3
-        assert analysis.total_cases == 5
-        assert len(analysis.cohorts) == 3
-        # Each evaluator has 1 failure, so sorted alphabetically
-        evaluator_names = [c.evaluator_name for c in analysis.cohorts]
-        assert evaluator_names == ["Correctness", "Faithfulness", "Harmfulness"]
+        assert analysis == CohortAnalysis(
+            cohorts=[
+                FailureCohort(
+                    evaluator_name="Correctness",
+                    failed_case_indices=[1],
+                    failed_case_names=["fail1"],
+                    count=1,
+                ),
+                FailureCohort(
+                    evaluator_name="Faithfulness",
+                    failed_case_indices=[3],
+                    failed_case_names=["fail2"],
+                    count=1,
+                ),
+                FailureCohort(
+                    evaluator_name="Harmfulness",
+                    failed_case_indices=[4],
+                    failed_case_names=["fail3"],
+                    count=1,
+                ),
+            ],
+            total_failures=3,
+            total_cases=5,
+        )
 
     def test_empty_report(self):
         report = EvaluationReport(
@@ -267,9 +331,7 @@ class TestAnalyzeFailureCohorts:
             test_passes=[],
         )
         analysis = analyze_failure_cohorts(report)
-        assert analysis.total_failures == 0
-        assert analysis.total_cases == 0
-        assert analysis.cohorts == []
+        assert analysis == CohortAnalysis(cohorts=[], total_failures=0, total_cases=0)
 
     def test_indices_reflect_original_position(self):
         report = EvaluationReport(
@@ -285,8 +347,18 @@ class TestAnalyzeFailureCohorts:
             test_passes=[True, False, True, True, False],
         )
         analysis = analyze_failure_cohorts(report)
-        assert analysis.cohorts[0].failed_case_indices == [1, 4]
-        assert analysis.cohorts[0].failed_case_names == ["b", "e"]
+        assert analysis == CohortAnalysis(
+            cohorts=[
+                FailureCohort(
+                    evaluator_name="E1",
+                    failed_case_indices=[1, 4],
+                    failed_case_names=["b", "e"],
+                    count=2,
+                ),
+            ],
+            total_failures=2,
+            total_cases=5,
+        )
 
     def test_works_with_report_from_file(self, tmp_path):
         report = EvaluationReport(

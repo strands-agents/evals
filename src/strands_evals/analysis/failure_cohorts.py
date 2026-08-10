@@ -8,6 +8,8 @@ problem worth investigating; scattered one-off failures are noise.
 from __future__ import annotations
 
 from pydantic import BaseModel
+from rich.console import Console
+from rich.table import Table
 
 from ..types.evaluation_report import EvaluationReport
 
@@ -59,7 +61,7 @@ def analyze_failure_cohorts(report: EvaluationReport) -> CohortAnalysis:
     """
     failures_by_evaluator: dict[str, list[tuple[int, str]]] = {}
 
-    for i, (case, passed) in enumerate(zip(report.cases, report.test_passes, strict=False)):
+    for i, (case, passed) in enumerate(zip(report.cases, report.test_passes, strict=True)):
         if passed:
             continue
         eval_name = case.get("evaluator", "unknown")
@@ -94,9 +96,6 @@ def print_cohort_summary(analysis: CohortAnalysis) -> None:
     Args:
         analysis: A CohortAnalysis returned by analyze_failure_cohorts.
     """
-    from rich.console import Console
-    from rich.table import Table
-
     console = Console()
     table = Table(title=f"Failure Cohorts ({analysis.total_failures}/{analysis.total_cases} failed)")
     table.add_column("Evaluator", style="bold")
