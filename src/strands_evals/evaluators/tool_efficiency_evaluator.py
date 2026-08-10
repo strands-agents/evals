@@ -33,8 +33,6 @@ class ToolEfficiencyRating(BaseModel):
     """Structured output for the tool efficiency evaluation."""
 
     classifications: list[ToolCallClassification]
-    necessary_count: int
-    total_count: int
     reasoning: str = Field(description="Overall assessment of tool usage efficiency")
 
 
@@ -56,6 +54,7 @@ class ToolEfficiencyEvaluator(Evaluator[InputT, OutputT]):
         model: Model | str | None = None,
         system_prompt: str | None = None,
         max_tool_result_length: int = 2000,
+        pass_threshold: float = 0.5,
         name: str | None = None,
     ):
         super().__init__(name=name)
@@ -63,6 +62,7 @@ class ToolEfficiencyEvaluator(Evaluator[InputT, OutputT]):
         self.version = version
         self.model = model
         self.max_tool_result_length = max_tool_result_length
+        self.pass_threshold = pass_threshold
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         session_input: SessionLevelInput = self._parse_trajectory(evaluation_case)
@@ -72,12 +72,14 @@ class ToolEfficiencyEvaluator(Evaluator[InputT, OutputT]):
         result = evaluator_agent(prompt, structured_output_model=ToolEfficiencyRating)
         rating = cast(ToolEfficiencyRating, result.structured_output)
 
-        score = rating.necessary_count / rating.total_count if rating.total_count > 0 else 1.0
+        total_count = len(rating.classifications)
+        necessary_count = sum(1 for c in rating.classifications if c.category == ToolCallCategory.NECESSARY)
+        score = necessary_count / total_count if total_count > 0 else 1.0
 
         return [
             EvaluationOutput(
                 score=score,
-                test_pass=score >= 0.5,
+                test_pass=score >= self.pass_threshold,
                 reason=rating.reasoning,
                 label=rating.model_dump_json(),
             )
