@@ -341,8 +341,9 @@ class OpenInferenceSessionMapper(SessionMapper):
 
         Detection:
         1. Live instrumentation (LangGraph): CHAIN + name=LangGraph
-        2. Live instrumentation (smolagents/Claude Agent SDK): AGENT span kind,
-           with both input.value and output.value present.
+        2. Live instrumentation (smolagents/Claude Agent SDK): AGENT span kind
+           from a known scope, with input.value present and either output.value
+           present or status.code == ERROR.
         3. ADOT body: root LangGraph graph node — input has "messages" without
            "remaining_steps" (intermediate nodes always have "remaining_steps"),
            and output has "messages".
