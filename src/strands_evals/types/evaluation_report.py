@@ -1,7 +1,8 @@
 import json
 from pathlib import Path
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from ..display.display_console import CollapsibleTableReportDisplay
 from ..types.evaluation import EvaluationOutput
@@ -31,7 +32,19 @@ class EvaluationReport(BaseModel):
     detailed_results: list[list[EvaluationOutput]] = []
     diagnoses: list[dict | None] = []
     recommendations: list[str | None] = []
-    statuses: list[str] = []
+    statuses: list[Literal["graded", "could_not_evaluate", "informational"]] = []
+
+    @model_validator(mode="after")
+    def _pad_statuses_to_match_scores(self) -> "EvaluationReport":
+        """Ensure statuses list length matches scores list length.
+
+        If statuses is shorter than scores (e.g., legacy data or partial construction),
+        pad with 'graded' to maintain the invariant that each score has a corresponding status.
+        """
+        expected_len = len(self.scores)
+        if len(self.statuses) < expected_len:
+            self.statuses = list(self.statuses) + ["graded"] * (expected_len - len(self.statuses))
+        return self
 
     @classmethod
     def flatten(cls, reports: list["EvaluationReport"]) -> "EvaluationReport":

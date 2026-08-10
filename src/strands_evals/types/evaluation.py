@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel
 from typing_extensions import Any, Generic, TypedDict, TypeVar
 
@@ -136,4 +138,4 @@ class EvaluationOutput(BaseModel):
     test_pass: bool
     reason: str | None = None
     label: str | None = None
-    status: str = "graded"
+    status: Literal["graded", "could_not_evaluate", "informational"] = "graded"

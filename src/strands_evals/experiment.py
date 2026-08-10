@@ -59,6 +59,23 @@ _INITIAL_RETRY_DELAY = 4
 _MAX_RETRY_DELAY = 240  # 4 minutes
 
 
+def _roll_up_status(evaluation_outputs: list) -> str:
+    """Derive the aggregate status for a case from its individual evaluation outputs.
+
+    Precedence (highest to lowest):
+        1. "graded" - if ANY output is graded, the roll-up is graded because
+           the evaluator produced at least one real verdict.
+        2. First output's status - when no output is graded, use the status
+           of the first output (could_not_evaluate or informational).
+        3. "graded" - fallback when outputs list is empty (defensive).
+    """
+    if not evaluation_outputs:
+        return "graded"
+    if any(o.status == "graded" for o in evaluation_outputs):
+        return "graded"
+    return evaluation_outputs[0].status
+
+
 def _get_label_from_score(evaluator: Evaluator, score: float) -> str:
     """
     Get the label from score using evaluator's _score_mapping if available.
@@ -422,13 +439,7 @@ class Experiment(Generic[InputT, OutputT]):
                     "score": aggregate_score,
                     "reason": aggregate_reason or "",
                     "detailed_results": evaluation_outputs,
-                    "status": (
-                        "graded"
-                        if any(o.status == "graded" for o in evaluation_outputs)
-                        else evaluation_outputs[0].status
-                        if evaluation_outputs
-                        else "graded"
-                    ),
+                    "status": _roll_up_status(evaluation_outputs),
                 }
 
         except RetryError as e:

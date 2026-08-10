@@ -40,23 +40,33 @@ class TestEvaluationOutputStatusField:
             status="could_not_evaluate",
         )
         data = output.model_dump()
-        assert data["status"] == "could_not_evaluate"
+        assert data == {
+            "score": 0.5,
+            "test_pass": True,
+            "reason": "partial",
+            "label": None,
+            "status": "could_not_evaluate",
+        }
 
         restored = EvaluationOutput.model_validate(data)
-        assert restored.status == "could_not_evaluate"
+        assert restored == output
 
-    def test_status_not_in_serialized_when_default(self):
+    def test_status_included_in_model_dump_when_default(self):
         """When status is 'graded', it still appears in model_dump (Pydantic default behavior)."""
         output = EvaluationOutput(score=1.0, test_pass=True)
-        data = output.model_dump()
-        # Pydantic includes fields with defaults in model_dump
-        assert data["status"] == "graded"
+        assert output.model_dump() == {
+            "score": 1.0,
+            "test_pass": True,
+            "reason": None,
+            "label": None,
+            "status": "graded",
+        }
 
     def test_backward_compatible_deserialization(self):
         """Old data without a status field should deserialize with default 'graded'."""
         data = {"score": 0.8, "test_pass": True, "reason": "good"}
         output = EvaluationOutput.model_validate(data)
-        assert output.status == "graded"
+        assert output == EvaluationOutput(score=0.8, test_pass=True, reason="good", status="graded")
 
 
 class TestDefaultAggregatorWithStatus:
@@ -198,14 +208,17 @@ class TestEvaluationReportFlattenWithStatus:
         assert flattened.overall_score == 0.0
 
     def test_flatten_missing_statuses_defaults_to_graded(self):
-        """Legacy reports without statuses should behave as all graded."""
+        """Legacy reports without statuses should behave as all graded (validator pads them)."""
         report = EvaluationReport(
             overall_score=0.8,
             scores=[0.9, 0.7],
             cases=[{"name": "c1", "evaluator": "E"}, {"name": "c2", "evaluator": "E"}],
             test_passes=[True, True],
-            # No statuses field
+            # No statuses field - validator pads to ["graded", "graded"]
         )
+
+        # Validator should have padded statuses
+        assert report.statuses == ["graded", "graded"]
 
         flattened = EvaluationReport.flatten([report])
         assert flattened.overall_score == pytest.approx(0.8)
@@ -269,7 +282,7 @@ class TestEvaluationReportFileRoundtripWithStatus:
         assert loaded.statuses == ["graded", "could_not_evaluate"]
 
     def test_legacy_report_without_statuses_loads(self, tmp_path):
-        """Reports saved before the status feature should load with empty statuses list."""
+        """Reports saved before the status feature should load with padded 'graded' statuses."""
         import json
 
         data = {
@@ -284,7 +297,7 @@ class TestEvaluationReportFileRoundtripWithStatus:
             json.dump(data, f)
 
         loaded = EvaluationReport.from_file(str(path))
-        assert loaded.statuses == []
+        assert loaded.statuses == ["graded"]
 
 
 class TestEvaluatorWithStatusEndToEnd:
@@ -389,3 +402,102 @@ class TestEvaluatorWithStatusEndToEnd:
         assert score == pytest.approx(0.5)
         assert passed is True
         assert reason == "custom"
+
+
+class TestRollUpStatus:
+    """Tests for the _roll_up_status helper function in experiment.py."""
+
+    def test_empty_outputs_returns_graded(self):
+        from strands_evals.experiment import _roll_up_status
+
+        assert _roll_up_status([]) == "graded"
+
+    def test_all_graded_returns_graded(self):
+        from strands_evals.experiment import _roll_up_status
+
+        outputs = [
+            EvaluationOutput(score=1.0, test_pass=True, status="graded"),
+            EvaluationOutput(score=0.5, test_pass=False, status="graded"),
+        ]
+        assert _roll_up_status(outputs) == "graded"
+
+    def test_mixed_graded_and_non_graded_returns_graded(self):
+        from strands_evals.experiment import _roll_up_status
+
+        outputs = [
+            EvaluationOutput(score=0.0, test_pass=False, status="could_not_evaluate"),
+            EvaluationOutput(score=1.0, test_pass=True, status="graded"),
+        ]
+        assert _roll_up_status(outputs) == "graded"
+
+    def test_all_could_not_evaluate_returns_first_status(self):
+        from strands_evals.experiment import _roll_up_status
+
+        outputs = [
+            EvaluationOutput(score=0.0, test_pass=False, status="could_not_evaluate"),
+            EvaluationOutput(score=0.0, test_pass=False, status="could_not_evaluate"),
+        ]
+        assert _roll_up_status(outputs) == "could_not_evaluate"
+
+    def test_all_informational_returns_first_status(self):
+        from strands_evals.experiment import _roll_up_status
+
+        outputs = [
+            EvaluationOutput(score=0.0, test_pass=False, status="informational"),
+        ]
+        assert _roll_up_status(outputs) == "informational"
+
+    def test_mixed_non_graded_returns_first_status(self):
+        from strands_evals.experiment import _roll_up_status
+
+        outputs = [
+            EvaluationOutput(score=0.0, test_pass=False, status="informational"),
+            EvaluationOutput(score=0.0, test_pass=False, status="could_not_evaluate"),
+        ]
+        assert _roll_up_status(outputs) == "informational"
+
+
+class TestEvaluationReportStatusesValidator:
+    """Tests for the statuses list padding validator on EvaluationReport."""
+
+    def test_statuses_padded_when_shorter_than_scores(self):
+        report = EvaluationReport(
+            overall_score=0.5,
+            scores=[0.5, 1.0, 0.8],
+            cases=[{"name": "c1"}, {"name": "c2"}, {"name": "c3"}],
+            test_passes=[True, True, True],
+            statuses=["graded"],
+        )
+        assert report.statuses == ["graded", "graded", "graded"]
+
+    def test_statuses_padded_when_empty(self):
+        report = EvaluationReport(
+            overall_score=0.5,
+            scores=[0.5, 1.0],
+            cases=[{"name": "c1"}, {"name": "c2"}],
+            test_passes=[True, True],
+        )
+        assert report.statuses == ["graded", "graded"]
+
+    def test_statuses_not_modified_when_already_correct_length(self):
+        report = EvaluationReport(
+            overall_score=0.5,
+            scores=[0.5, 1.0],
+            cases=[{"name": "c1"}, {"name": "c2"}],
+            test_passes=[True, True],
+            statuses=["graded", "could_not_evaluate"],
+        )
+        assert report.statuses == ["graded", "could_not_evaluate"]
+
+    def test_invalid_status_value_rejected(self):
+        """Literal typing should reject invalid status values via Pydantic validation."""
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError):
+            EvaluationReport(
+                overall_score=0.5,
+                scores=[0.5],
+                cases=[{"name": "c1"}],
+                test_passes=[True],
+                statuses=["invalid_status"],
+            )
