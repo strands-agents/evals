@@ -6,7 +6,7 @@ from strands.models.model import Model
 from typing_extensions import Any, Generic, TypeGuard
 
 from ..extractors import TraceExtractor
-from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
+from ..types.evaluation import GRADED, EvaluationData, EvaluationOutput, InputT, OutputT
 from ..types.trace import (
     AssistantMessage,
     Context,
@@ -79,13 +79,24 @@ class Evaluator(Generic[InputT, OutputT]):
 
     @staticmethod
     def _default_aggregator(outputs: list[EvaluationOutput]) -> tuple[float, bool, str]:
-        # Handle empty outputs list to avoid division by zero
-        if not outputs:
-            return (0.0, False, "No evaluation outputs produced")
+        # Only "graded" outputs contribute to the score/pass aggregates. Outputs
+        # marked "could_not_evaluate" or "informational" are excluded so a
+        # non-gradable result (e.g. a harness overflow, or an evaluator whose
+        # preconditions weren't met) doesn't silently drag the average up or down.
+        graded = [o for o in outputs if o.status == GRADED]
 
-        avg_score = sum(o.score for o in outputs) / len(outputs)
-        all_pass = all(o.test_pass for o in outputs)
-        combined_reason = " | ".join(o.reason for o in outputs if o.reason)
+        # No gradable outputs (empty list, or every output was non-graded): there
+        # is nothing to score. Report it as a non-failure so a fully-skipped
+        # evaluator doesn't read as a quality failure.
+        if not graded:
+            if not outputs:
+                return (0.0, False, "No evaluation outputs produced")
+            combined_reason = " | ".join(o.reason for o in outputs if o.reason)
+            return (0.0, False, combined_reason or "No gradable evaluation outputs produced")
+
+        avg_score = sum(o.score for o in graded) / len(graded)
+        all_pass = all(o.test_pass for o in graded)
+        combined_reason = " | ".join(o.reason for o in graded if o.reason)
         return avg_score, all_pass, combined_reason
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:

@@ -1161,6 +1161,40 @@ def test_experiment_run_evaluations_evaluator_error_isolated():
     assert "Evaluator error" in report.reasons[throwing_idx]
     assert "Evaluator exploded" in report.reasons[throwing_idx]
 
+    # A harness error is a capability failure, not a quality signal: the row is
+    # tagged could_not_evaluate so downstream aggregates exclude it. The
+    # succeeding evaluator's row stays graded.
+    assert report.cases[throwing_idx]["status"] == "could_not_evaluate"
+    assert report.cases[mock_idx]["status"] == "graded"
+
+
+def test_experiment_could_not_evaluate_excluded_from_overall_score():
+    """A throwing evaluator's could_not_evaluate row must not drag overall_score down.
+
+    Two cases run through a passing evaluator (both score 1.0) and a throwing one.
+    The two graded 1.0s should give overall_score 1.0 — not (1.0 + 1.0 + 0 + 0) / 4.
+    """
+    cases = [
+        Case(name="c1", input="hello", expected_output="hello"),
+        Case(name="c2", input="world", expected_output="world"),
+    ]
+    experiment = Experiment(cases=cases, evaluators=[MockEvaluator(), ThrowingEvaluator()])
+
+    def echo_task(c):
+        return c.input
+
+    report = experiment.run_evaluations(echo_task)
+
+    # Four rows: 2 cases x 2 evaluators. Raw per-case scores are preserved.
+    assert len(report.scores) == 4
+    graded = [c for c in report.cases if c["status"] == "graded"]
+    could_not = [c for c in report.cases if c["status"] == "could_not_evaluate"]
+    assert len(graded) == 2
+    assert len(could_not) == 2
+
+    # overall_score averages only the two graded 1.0s, excluding the two skipped 0s.
+    assert report.overall_score == pytest.approx(1.0)
+
 
 def testis_throttling_error_detects_model_throttled_exception():
     """Test that ModelThrottledException is detected as throttling error"""

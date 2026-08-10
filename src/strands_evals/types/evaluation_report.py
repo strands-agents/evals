@@ -4,7 +4,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from ..display.display_console import CollapsibleTableReportDisplay
-from ..types.evaluation import EvaluationOutput
+from ..types.evaluation import GRADED, EvaluationOutput
 
 
 class EvaluationReport(BaseModel):
@@ -52,8 +52,13 @@ class EvaluationReport(BaseModel):
                 diags.append(report.diagnoses[i] if i < len(report.diagnoses) else None)
                 recs.append(report.recommendations[i] if i < len(report.recommendations) else None)
 
+        # overall_score reflects only gradable cases. Each case dict carries a
+        # "status" (defaulting to "graded" for rows that predate the field), so a
+        # could_not_evaluate / informational row is excluded from the aggregate.
+        graded_scores = [s for s, case in zip(scores, cases, strict=False) if case.get("status", GRADED) == GRADED]
+
         return cls(
-            overall_score=sum(scores) / len(scores) if scores else 0.0,
+            overall_score=sum(graded_scores) / len(graded_scores) if graded_scores else 0.0,
             scores=scores,
             cases=cases,
             test_passes=passes,

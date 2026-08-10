@@ -45,7 +45,7 @@ from .evaluators.trajectory_evaluator import TrajectoryEvaluator
 from .telemetry import get_tracer, serialize
 from .telemetry._cloudwatch_logger import _send_to_cloudwatch
 from .types.detector import DiagnosisConfig
-from .types.evaluation import EvaluationData, InputT, OutputT
+from .types.evaluation import COULD_NOT_EVALUATE, GRADED, EvaluationData, EvaluationOutput, InputT, OutputT
 from .types.evaluation_report import EvaluationReport
 from .types.trace import Session
 from .utils import is_throttling_error
@@ -81,6 +81,19 @@ def _get_label_from_score(evaluator: Evaluator, score: float) -> str:
 
     # Otherwise, return YES/NO based on score
     return "YES" if score >= 0.5 else "NO"
+
+
+def _aggregate_status(outputs: list[EvaluationOutput]) -> str:
+    """Roll a list of per-output statuses up to a single evaluator-level status.
+
+    The evaluator result is "graded" if at least one output was graded; if every
+    output was non-graded, the whole result is non-gradable and is reported as
+    "could_not_evaluate" so downstream aggregates exclude it. Mirrors the
+    graded-only filter in ``Evaluator._default_aggregator``.
+    """
+    if any(o.status == GRADED for o in outputs):
+        return GRADED
+    return COULD_NOT_EVALUATE
 
 
 class Experiment(Generic[InputT, OutputT]):
@@ -421,6 +434,7 @@ class Experiment(Generic[InputT, OutputT]):
                     "test_pass": aggregate_pass,
                     "score": aggregate_score,
                     "reason": aggregate_reason or "",
+                    "status": _aggregate_status(evaluation_outputs),
                     "detailed_results": evaluation_outputs,
                 }
 
@@ -442,16 +456,21 @@ class Experiment(Generic[InputT, OutputT]):
                 "test_pass": False,
                 "score": 0,
                 "reason": f"Evaluator error: {str(original_exception)}",
+                "status": COULD_NOT_EVALUATE,
                 "detailed_results": [],
             }
         except Exception as e:
-            # Catch non-throttling errors and record as failure (error isolation)
+            # A harness error (e.g. context-window overflow) is a capability
+            # failure of the evaluation, not a quality signal about the agent.
+            # Mark it could_not_evaluate so it is excluded from aggregates rather
+            # than silently recorded as a score-0 quality failure.
             return {
                 "evaluator_name": evaluator.get_name(),
                 "evaluator_type": evaluator.get_type_name(),
                 "test_pass": False,
                 "score": 0,
                 "reason": f"Evaluator error: {str(e)}",
+                "status": COULD_NOT_EVALUATE,
                 "detailed_results": [],
             }
 
@@ -656,6 +675,7 @@ class Experiment(Generic[InputT, OutputT]):
                 "test_passes": [],
                 "cases": [],
                 "reasons": [],
+                "statuses": [],
                 "detailed_results": [],
                 "diagnoses": [],
                 "recommendations": [],
@@ -669,12 +689,21 @@ class Experiment(Generic[InputT, OutputT]):
             recommendation = result.get("recommendation")
             for eval_result in result["evaluator_results"]:
                 eval_name = eval_result["evaluator_name"]
+                # Default to GRADED for backward compatibility with results that
+                # predate the status field (e.g. custom evaluator result dicts).
+                status = eval_result.get("status", GRADED)
                 evaluator_data[eval_name]["cases"].append(
-                    {**case_data, "evaluator": eval_name, "evaluator_type": eval_result["evaluator_type"]}
+                    {
+                        **case_data,
+                        "evaluator": eval_name,
+                        "evaluator_type": eval_result["evaluator_type"],
+                        "status": status,
+                    }
                 )
                 evaluator_data[eval_name]["scores"].append(eval_result["score"])
                 evaluator_data[eval_name]["test_passes"].append(eval_result["test_pass"])
                 evaluator_data[eval_name]["reasons"].append(eval_result["reason"])
+                evaluator_data[eval_name]["statuses"].append(status)
                 evaluator_data[eval_name]["detailed_results"].append(eval_result["detailed_results"])
                 evaluator_data[eval_name]["diagnoses"].append(diagnosis)
                 evaluator_data[eval_name]["recommendations"].append(recommendation)
@@ -684,8 +713,12 @@ class Experiment(Generic[InputT, OutputT]):
             eval_name = evaluator.get_name()
             data = evaluator_data[eval_name]
             scores = data["scores"]
+            statuses = data["statuses"]
+            # overall_score reflects only gradable cases: a could_not_evaluate /
+            # informational row must not drag the aggregate up or down.
+            graded_scores = [s for s, st in zip(scores, statuses, strict=True) if st == GRADED]
             report = EvaluationReport(
-                overall_score=sum(scores) / len(scores) if scores else 0,
+                overall_score=sum(graded_scores) / len(graded_scores) if graded_scores else 0,
                 scores=scores,
                 test_passes=data["test_passes"],
                 cases=data["cases"],

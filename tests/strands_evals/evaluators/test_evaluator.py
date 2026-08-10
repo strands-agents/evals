@@ -411,3 +411,61 @@ class TestFormatTools:
         result = self.evaluator._format_tools(tools)
         expected = "- tool_a: First tool\n- tool_b: Second tool\n  Parameters:\n    - x (number (required)): A number"
         assert result == expected
+
+
+class TestDefaultAggregatorStatus:
+    """_default_aggregator excludes non-graded outputs from score/pass aggregates."""
+
+    def test_all_graded_averages_as_before(self):
+        """With no status set (defaults to graded), behavior is unchanged."""
+        outputs = [
+            EvaluationOutput(score=1.0, test_pass=True, reason="a"),
+            EvaluationOutput(score=0.0, test_pass=False, reason="b"),
+        ]
+        score, all_pass, reason = Evaluator._default_aggregator(outputs)
+        assert score == 0.5
+        assert all_pass is False
+        assert reason == "a | b"
+
+    def test_could_not_evaluate_excluded_from_average(self):
+        """A could_not_evaluate row must not drag the average down."""
+        outputs = [
+            EvaluationOutput(score=1.0, test_pass=True, reason="graded"),
+            EvaluationOutput(score=0.0, test_pass=False, reason="skip", status="could_not_evaluate"),
+        ]
+        score, all_pass, _ = Evaluator._default_aggregator(outputs)
+        # Only the single graded 1.0 counts — not (1.0 + 0.0) / 2.
+        assert score == 1.0
+        assert all_pass is True
+
+    def test_informational_excluded_from_average(self):
+        """An informational row never counts toward the numeric aggregate."""
+        outputs = [
+            EvaluationOutput(score=0.6, test_pass=True, reason="graded"),
+            EvaluationOutput(score=1.0, test_pass=True, reason="fyi", status="informational"),
+        ]
+        score, _, _ = Evaluator._default_aggregator(outputs)
+        assert score == 0.6
+
+    def test_all_non_graded_returns_non_failure(self):
+        """When every output is non-graded there is nothing to score.
+
+        It must not read as a quality failure: score 0.0 / pass False is the
+        signal, but the reason makes clear it's could-not-evaluate, and the
+        experiment layer rolls this up to a could_not_evaluate status that
+        downstream aggregates exclude.
+        """
+        outputs = [
+            EvaluationOutput(score=0.0, test_pass=False, reason="no errors to grade", status="could_not_evaluate"),
+        ]
+        score, all_pass, reason = Evaluator._default_aggregator(outputs)
+        assert score == 0.0
+        assert all_pass is False
+        assert reason == "no errors to grade"
+
+    def test_empty_outputs_unchanged(self):
+        """Empty list keeps its original sentinel result."""
+        score, all_pass, reason = Evaluator._default_aggregator([])
+        assert score == 0.0
+        assert all_pass is False
+        assert reason == "No evaluation outputs produced"

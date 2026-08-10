@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing_extensions import Any, Generic, TypedDict, TypeVar
+from typing_extensions import Any, Generic, Literal, TypedDict, TypeVar
 
 from .trace import Session
 
@@ -109,6 +109,14 @@ class EvaluationData(BaseModel, Generic[InputT, OutputT]):
     expected_environment_state: list[EnvironmentState] | None = None
 
 
+# Evaluation status values for EvaluationOutput.status.
+# Kept as plain strings (not an Enum) so new values can be added without a
+# breaking change; a Literal annotation documents the currently-defined set.
+GRADED = "graded"
+COULD_NOT_EVALUATE = "could_not_evaluate"
+INFORMATIONAL = "informational"
+
+
 class EvaluationOutput(BaseModel):
     """
     Structured output for LLM-based judge.
@@ -118,9 +126,20 @@ class EvaluationOutput(BaseModel):
         test_pass: Whether the test pass or fail.
         reason: The reason for the score for each test case.
         label: The categorical label corresponding to the score.
+        status: Whether this output is a real verdict and should count toward
+            aggregates. One of:
+              - "graded" (default): score/test_pass are real verdicts.
+              - "could_not_evaluate": the evaluator tried but could not grade
+                this case (preconditions not met, missing data, harness error);
+                excluded from pass-rate and score aggregates.
+              - "informational": surfaces content for human review and never
+                counts toward a numeric aggregate.
+            Defaults to "graded", so existing evaluators and consumers are
+            unaffected.
     """
 
     score: float
     test_pass: bool
     reason: str | None = None
     label: str | None = None
+    status: Literal["graded", "could_not_evaluate", "informational"] = GRADED

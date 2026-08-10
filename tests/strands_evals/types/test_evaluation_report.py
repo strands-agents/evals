@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from strands_evals.types.evaluation import EvaluationOutput
 from strands_evals.types.evaluation_report import EvaluationReport
 
 
@@ -95,6 +96,76 @@ class TestEvaluationReportFlatten:
         assert flattened.cases[0]["input"] == "test input"
         assert flattened.cases[0]["metadata"] == {"key": "value"}
         assert flattened.cases[0]["evaluator"] == "Test"
+
+
+class TestFlattenExcludesNonGradedFromScore:
+    """flatten() overall_score must ignore non-graded case rows."""
+
+    def test_could_not_evaluate_row_excluded_from_overall(self):
+        """A could_not_evaluate row (score 0.0) must not drag overall_score down."""
+        report = EvaluationReport(
+            overall_score=1.0,
+            scores=[1.0, 0.0],
+            cases=[
+                {"name": "c1", "evaluator": "E", "status": "graded"},
+                {"name": "c2", "evaluator": "E", "status": "could_not_evaluate"},
+            ],
+            test_passes=[True, False],
+            reasons=["ok", "overflowed"],
+        )
+
+        flattened = EvaluationReport.flatten([report])
+
+        # Only the graded 1.0 counts, not (1.0 + 0.0) / 2.
+        assert flattened.overall_score == 1.0
+        # Raw per-case lists are preserved untouched.
+        assert flattened.scores == [1.0, 0.0]
+
+    def test_rows_without_status_default_to_graded(self):
+        """Legacy case dicts with no status key are treated as graded."""
+        report = EvaluationReport(
+            overall_score=0.5,
+            scores=[1.0, 0.0],
+            cases=[
+                {"name": "c1", "evaluator": "E"},
+                {"name": "c2", "evaluator": "E"},
+            ],
+            test_passes=[True, False],
+            reasons=["a", "b"],
+        )
+
+        flattened = EvaluationReport.flatten([report])
+
+        assert flattened.overall_score == pytest.approx(0.5)
+
+    def test_all_rows_non_graded_scores_zero(self):
+        """If every row is non-graded there is nothing to average."""
+        report = EvaluationReport(
+            overall_score=0.0,
+            scores=[0.0, 0.0],
+            cases=[
+                {"name": "c1", "evaluator": "E", "status": "could_not_evaluate"},
+                {"name": "c2", "evaluator": "E", "status": "informational"},
+            ],
+            test_passes=[False, False],
+            reasons=["", ""],
+        )
+
+        flattened = EvaluationReport.flatten([report])
+
+        assert flattened.overall_score == 0.0
+
+
+class TestEvaluationOutputStatusDefault:
+    """EvaluationOutput.status defaults to graded for backward compatibility."""
+
+    def test_status_defaults_to_graded(self):
+        out = EvaluationOutput(score=1.0, test_pass=True)
+        assert out.status == "graded"
+
+    def test_status_can_be_set(self):
+        out = EvaluationOutput(score=0.0, test_pass=False, status="could_not_evaluate")
+        assert out.status == "could_not_evaluate"
 
     def test_flatten_averages_scores(self):
         report1 = EvaluationReport(
