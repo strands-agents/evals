@@ -18,6 +18,7 @@ from .output_evaluator import OutputEvaluator
 from .refusal_evaluator import RefusalEvaluator
 from .response_relevance_evaluator import ResponseRelevanceEvaluator
 from .stereotyping_evaluator import StereotypingEvaluator
+from .tool_efficiency_evaluator import ToolEfficiencyEvaluator
 from .tool_parameter_accuracy_evaluator import ToolParameterAccuracyEvaluator
 from .tool_selection_accuracy_evaluator import ToolSelectionAccuracyEvaluator
 from .trajectory_evaluator import TrajectoryEvaluator
@@ -40,6 +41,7 @@ __all__ = [
     "ResponseRelevanceEvaluator",
     "ToolSelectionAccuracyEvaluator",
     "ToolParameterAccuracyEvaluator",
+    "ToolEfficiencyEvaluator",
     "ConcisenessEvaluator",
     "CoherenceEvaluator",
     "RefusalEvaluator",
