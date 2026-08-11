@@ -53,6 +53,12 @@ _LLM_METADATA_KEYS = (
     "llm.token_count.total",
 )
 
+# Tool statuses that indicate a successful execution.
+# - "success": smolagents / LangChain default
+# - "completed": Claude Agent SDK synchronous tool completion
+# - "async_launched": Claude Agent SDK async sub-agent delegation
+_TOOL_SUCCESS_STATUSES = frozenset(("success", "completed", "async_launched"))
+
 
 class OpenInferenceSessionMapper(SessionMapper):
     """Maps OpenInference traces to Session format.
@@ -558,8 +564,7 @@ class OpenInferenceSessionMapper(SessionMapper):
         tool_call = ToolCall(name=tool_name, arguments=tool_parameters or {}, tool_call_id=tool_call_id)
         tool_result = ToolResult(
             content=tool_output_content or "",
-            # "success" = smolagents/LangChain default; "completed" = Claude Agent SDK
-            error=None if tool_status in ("success", "completed") else tool_status,
+            error=None if tool_status in _TOOL_SUCCESS_STATUSES else tool_status,
             tool_call_id=tool_call_id,
         )
 

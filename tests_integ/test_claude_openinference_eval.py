@@ -237,13 +237,16 @@ def test_claude_multi_agent_evaluation(telemetry):
         assert tool_span.tool_call.tool_call_id is not None, (
             f"tool_call_id should be populated, got None for tool '{tool_span.tool_call.name}'"
         )
-        # The Agent tool reports "async_launched" as an operational status, not a failure.
-        if tool_span.tool_call.name == "Agent" and tool_span.tool_result.error == "async_launched":
-            continue
         assert tool_span.tool_result.error is None, (
             f"tool '{tool_span.tool_call.name}' did not execute successfully: "
             f"error={tool_span.tool_result.error!r} content={tool_span.tool_result.content!r}"
         )
+
+    executed = [s for s in tool_spans if s.tool_call.name != "Agent" and s.tool_result.error is None]
+    assert executed, (
+        "Expected at least one successful sub-agent tool execution, got "
+        f"{[(s.tool_call.name, s.tool_result.error) for s in tool_spans]}"
+    )
 
     agent_spans = [s for t in session.traces for s in t.spans if isinstance(s, AgentInvocationSpan)]
     assert len(agent_spans) >= 1, "Expected at least one AgentInvocationSpan"

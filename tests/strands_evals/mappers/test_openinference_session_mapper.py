@@ -1717,6 +1717,29 @@ class TestClaudeAgentSdkScopeSupport:
         # Non-ASCII must be preserved literally, not escaped
         assert "\\u" not in tool_spans[0].tool_result.content
 
+    def test_claude_async_launched_tool_status_is_not_an_error(self):
+        """async_launched is an operational status for async sub-agent delegation, not a failure."""
+        span = make_span(
+            name="Agent",
+            scope_name=CLAUDE_SDK_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "TOOL",
+                "tool.id": "toolu_bdrk_async1",
+                "tool.name": "Agent",
+                "input.value": json.dumps(
+                    {"description": "Delegate", "subagent_type": "math-specialist", "prompt": "sqrt(1764)*3"}
+                ),
+                "output.value": json.dumps(
+                    {"status": "async_launched", "content": [{"type": "text", "text": "launched"}]}
+                ),
+            },
+        )
+        session = self.mapper.map_to_session([span], "sess-1")
+
+        tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+        assert tool_spans[0].tool_result.error is None
+
     @pytest.mark.parametrize(
         "status,span_events,expected_error",
         [
