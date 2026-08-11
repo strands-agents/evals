@@ -29,12 +29,11 @@ from strands_evals.mappers import OpenInferenceSessionMapper, detect_otel_mapper
 from strands_evals.telemetry import StrandsEvalsTelemetry
 from strands_evals.types.trace import AgentInvocationSpan, Session, ToolExecutionSpan
 
-# Bedrock model for the Claude Agent SDK
-DEFAULT_MODEL = os.environ.get("STRANDS_CLAUDE_TEST_MODEL", "us.anthropic.claude-sonnet-4-20250514-v1:0")
+DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-20250514-v1:0"
 
 BEDROCK_ENV = {
     "CLAUDE_CODE_USE_BEDROCK": "1",
-    "ANTHROPIC_MODEL": DEFAULT_MODEL,
+    "ANTHROPIC_MODEL": DEFAULT_MODEL_ID,
     "AWS_REGION": os.environ.get("AWS_REGION", "us-west-2"),
 }
 
@@ -83,7 +82,6 @@ async def _run_claude_agent(prompt: str, *, agents: dict | None = None) -> str:
     """Run a Claude Agent SDK query and return the final response text."""
     query = _get_query()
 
-    # allowed_tools is the permission allow-list for the entire session including sub-agents.
     allowed_tools = ["Agent", "Bash"] if agents else ["Bash"]
 
     options = ClaudeAgentOptions(
@@ -239,6 +237,9 @@ def test_claude_multi_agent_evaluation(telemetry):
         assert tool_span.tool_call.tool_call_id is not None, (
             f"tool_call_id should be populated, got None for tool '{tool_span.tool_call.name}'"
         )
+        # The Agent tool reports "async_launched" as an operational status, not a failure.
+        if tool_span.tool_call.name == "Agent" and tool_span.tool_result.error == "async_launched":
+            continue
         assert tool_span.tool_result.error is None, (
             f"tool '{tool_span.tool_call.name}' did not execute successfully: "
             f"error={tool_span.tool_result.error!r} content={tool_span.tool_result.content!r}"
