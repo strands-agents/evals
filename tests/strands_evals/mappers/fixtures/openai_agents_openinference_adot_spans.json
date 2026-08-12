@@ -1,0 +1,551 @@
+[
+  {
+    "trace_id": "6a7a3f1922f7ce5131daefbb30a8a41a",
+    "span_id": "816141f373160060",
+    "parent_span_id": "0d5ab39f79fe5e6a",
+    "name": "POST",
+    "start_time": 1786396451003697401,
+    "end_time": 1786396452796912644,
+    "attributes": {
+      "aws.local.service": "CWExperiment_OpenaiOpenInferenceMulti.DEFAULT",
+      "telemetry.extended": "true",
+      "http.url": "https://api.openai.com/v1/responses",
+      "aws.remote.service": "api.openai.com",
+      "aws.local.environment": "bedrock-agentcore:default",
+      "aws.remote.operation": "POST /v1",
+      "http.status_code": 200,
+      "aws.local.operation": "UnmappedOperation",
+      "aws.span.kind": "CLIENT",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "http.method": "POST",
+      "http.response.status_code": 200,
+      "session.id": "29fb7129-8624-4bd2-b37b-dea182f63ce8"
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.httpx",
+      "version": "0.65b0"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "6a7a3f1922f7ce5131daefbb30a8a41a",
+    "span_id": "0d5ab39f79fe5e6a",
+    "parent_span_id": "2a26ac2503900fc8",
+    "name": "response",
+    "start_time": 1786396450066328064,
+    "end_time": 1786396452989012992,
+    "attributes": {
+      "aws.local.service": "CWExperiment_OpenaiOpenInferenceMulti.DEFAULT",
+      "llm.input_messages.0.message.role": "system",
+      "llm.input_messages.1.message.role": "user",
+      "llm.token_count.prompt": 148,
+      "llm.model_name": "gpt-4o-2024-08-06",
+      "llm.invocation_parameters": "{\"id\": \"resp_0a31d412faab0244006a7a3f23b0b0819ca4b720ae546d47d4\", \"created_at\": 1786396451.0, \"instructions\": \"You are a coordinator agent. You delegate tasks to specialist agents:\\n- Hand off to math_specialist for any mathematical calculations\\n- Hand off to research_specialist for weather or stock price lookups\\nFor tasks that require both, hand off to each specialist as needed and synthesize their results into a final answer.\", \"metadata\": {}, \"model\": \"gpt-4o-2024-08-06\", \"parallel_tool_calls\": true, \"temperature\": 1.0, \"tool_choice\": \"auto\", \"top_p\": 1.0, \"background\": false, \"completed_at\": 1786396452.0, \"prompt_cache_key\": \"agents-sdk:run:6129c95be34d46e58677d0e7f9ee7425\", \"prompt_cache_retention\": \"in_memory\", \"reasoning\": {}, \"service_tier\": \"default\", \"text\": {\"format\": {\"type\": \"text\"}, \"verbosity\": \"medium\"}, \"top_logprobs\": 0, \"truncation\": \"disabled\", \"billing\": {\"payer\": \"developer\"}, \"frequency_penalty\": 0.0, \"presence_penalty\": 0.0, \"store\": true, \"tool_usage\": {\"image_gen\": {\"input_tokens\": 0, \"input_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"output_tokens\": 0, \"output_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"total_tokens\": 0}, \"web_search\": {\"num_requests\": 0}}}",
+      "llm.input_messages.1.message.content": "What is 42 * 7, and what's the weather in Seattle?",
+      "aws.local.environment": "bedrock-agentcore:default",
+      "gen_ai.provider.name": "openai",
+      "llm.output_messages.0.message.tool_calls.1.tool_call.id": "call_HxtaQFaymn4MK1H6XUUGChBm",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.id": "call_BcvqKc5BjhX0NeiqTG2eaeFA",
+      "llm.input_messages.0.message.content": "You are a coordinator agent. You delegate tasks to specialist agents:\n- Hand off to math_specialist for any mathematical calculations\n- Hand off to research_specialist for weather or stock price lookups\nFor tasks that require both, hand off to each specialist as needed and synthesize their results into a final answer.",
+      "output.mime_type": "application/json",
+      "gen_ai.request.model": "gpt-4o-2024-08-06",
+      "openinference.span.kind": "LLM",
+      "llm.tools.0.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"transfer_to_math_specialist\", \"description\": \"Handoff to the math_specialist agent to handle the request. \", \"parameters\": {\"additionalProperties\": false, \"type\": \"object\", \"properties\": {}, \"required\": []}, \"strict\": true}}",
+      "llm.system": "openai",
+      "gen_ai.usage.output_tokens": 47,
+      "output.value": "{\"id\":\"resp_0a31d412faab0244006a7a3f23b0b0819ca4b720ae546d47d4\",\"created_at\":1786396451.0,\"error\":null,\"incomplete_details\":null,\"instructions\":\"You are a coordinator agent. You delegate tasks to specialist agents:\\n- Hand off to math_specialist for any mathematical calculations\\n- Hand off to research_specialist for weather or stock price lookups\\nFor tasks that require both, hand off to each specialist as needed and synthesize their results into a final answer.\",\"metadata\":{},\"model\":\"gpt-4o-2024-08-06\",\"object\":\"response\",\"output\":[{\"arguments\":\"{}\",\"call_id\":\"call_BcvqKc5BjhX0NeiqTG2eaeFA\",\"name\":\"transfer_to_math_specialist\",\"type\":\"function_call\",\"id\":\"fc_0a31d412faab0244006a7a3f24abf8819cb86d11018bb0eefb\",\"caller\":null,\"namespace\":null,\"status\":\"completed\"},{\"arguments\":\"{}\",\"call_id\":\"call_HxtaQFaymn4MK1H6XUUGChBm\",\"name\":\"transfer_to_research_specialist\",\"type\":\"function_call\",\"id\":\"fc_0a31d412faab0244006a7a3f24ac08819c931277cf05c9096b\",\"caller\":null,\"namespace\":null,\"status\":\"completed\"}],\"parallel_tool_calls\":true,\"temperature\":1.0,\"tool_choice\":\"auto\",\"tools\":[{\"name\":\"transfer_to_math_specialist\",\"parameters\":{\"additionalProperties\":false,\"type\":\"object\",\"properties\":{},\"required\":[]},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Handoff to the math_specialist agent to handle the request. \",\"output_schema\":null},{\"name\":\"transfer_to_research_specialist\",\"parameters\":{\"additionalProperties\":false,\"type\":\"object\",\"properties\":{},\"required\":[]},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Handoff to the research_specialist agent to handle the request. \",\"output_schema\":null}],\"top_p\":1.0,\"background\":false,\"completed_at\":1786396452.0,\"conversation\":null,\"max_output_tokens\":null,\"max_tool_calls\":null,\"moderation\":null,\"previous_response_id\":null,\"prompt\":null,\"prompt_cache_key\":\"agents-sdk:run:6129c95be34d46e58677d0e7f9ee7425\",\"prompt_cache_options\":null,\"prompt_cache_retention\":\"in_memory\",\"reasoning\":{\"context\":null,\"effort\":null,\"generate_summary\":null,\"mode\":null,\"summary\":null},\"safety_identifier\":null,\"service_tier\":\"default\",\"status\":\"completed\",\"text\":{\"format\":{\"type\":\"text\"},\"verbosity\":\"medium\"},\"top_logprobs\":0,\"truncation\":\"disabled\",\"usage\":{\"input_tokens\":148,\"input_tokens_details\":{\"cache_write_tokens\":0,\"cached_tokens\":0},\"output_tokens\":47,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":195},\"user\":null,\"billing\":{\"payer\":\"developer\"},\"frequency_penalty\":0.0,\"presence_penalty\":0.0,\"store\":true,\"tool_usage\":{\"image_gen\":{\"input_tokens\":0,\"input_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"output_tokens\":0,\"output_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"total_tokens\":0},\"web_search\":{\"num_requests\":0}}}",
+      "llm.output_messages.0.message.tool_calls.1.tool_call.function.name": "transfer_to_research_specialist",
+      "aws.genai.span_kind": "LLM",
+      "llm.token_count.completion": 47,
+      "llm.token_count.completion_details.reasoning": 0,
+      "llm.output_messages.0.message.role": "assistant",
+      "llm.token_count.total": 195,
+      "llm.tools.1.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"transfer_to_research_specialist\", \"description\": \"Handoff to the research_specialist agent to handle the request. \", \"parameters\": {\"additionalProperties\": false, \"type\": \"object\", \"properties\": {}, \"required\": []}, \"strict\": true}}",
+      "input.mime_type": "application/json",
+      "llm.token_count.prompt_details.cache_read": 0,
+      "gen_ai.usage.input_tokens": 148,
+      "aws.genai.token_count_total": 195,
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.name": "transfer_to_math_specialist",
+      "input.value": "[{\"content\": \"What is 42 * 7, and what's the weather in Seattle?\", \"role\": \"user\"}]",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "session.id": "29fb7129-8624-4bd2-b37b-dea182f63ce8"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "2.0.0"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "6a7a3f1922f7ce5131daefbb30a8a41a",
+    "span_id": "d0fb2bfaa2e75b2a",
+    "parent_span_id": "2a26ac2503900fc8",
+    "name": "handoff to math_specialist",
+    "start_time": 1786396452990319872,
+    "end_time": 1786396452990628096,
+    "attributes": {
+      "aws.local.service": "CWExperiment_OpenaiOpenInferenceMulti.DEFAULT",
+      "output.value": "math_specialist",
+      "input.value": "coordinator",
+      "aws.genai.span_kind": "TOOL",
+      "openinference.span.kind": "TOOL",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "session.id": "29fb7129-8624-4bd2-b37b-dea182f63ce8",
+      "aws.local.environment": "bedrock-agentcore:default"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "2.0.0"
+    },
+    "status": {
+      "code": "ERROR"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "6a7a3f1922f7ce5131daefbb30a8a41a",
+    "span_id": "8c2c69973d95146c",
+    "parent_span_id": "f34af1c02ac46294",
+    "name": "coordinator",
+    "start_time": 1786396450058855936,
+    "end_time": 1786396452990868992,
+    "attributes": {
+      "aws.local.service": "CWExperiment_OpenaiOpenInferenceMulti.DEFAULT",
+      "graph.node.id": "coordinator",
+      "gen_ai.agent.name": "coordinator",
+      "agent.name": "coordinator",
+      "aws.genai.span_kind": "AGENT",
+      "openinference.span.kind": "AGENT",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "session.id": "29fb7129-8624-4bd2-b37b-dea182f63ce8",
+      "aws.local.environment": "bedrock-agentcore:default"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "2.0.0"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "6a7a3f1922f7ce5131daefbb30a8a41a",
+    "span_id": "2a26ac2503900fc8",
+    "parent_span_id": "8c2c69973d95146c",
+    "name": "turn",
+    "start_time": 1786396450059068928,
+    "end_time": 1786396452990804992,
+    "attributes": {
+      "aws.local.service": "CWExperiment_OpenaiOpenInferenceMulti.DEFAULT",
+      "aws.genai.span_kind": "CHAIN",
+      "openinference.span.kind": "CHAIN",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "session.id": "29fb7129-8624-4bd2-b37b-dea182f63ce8",
+      "aws.local.environment": "bedrock-agentcore:default"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "2.0.0"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "6a7a3f1922f7ce5131daefbb30a8a41a",
+    "span_id": "c27ea715481191d3",
+    "parent_span_id": "9dff5545acb5b39e",
+    "name": "POST",
+    "start_time": 1786396452999135652,
+    "end_time": 1786396453879628710,
+    "attributes": {
+      "aws.local.service": "CWExperiment_OpenaiOpenInferenceMulti.DEFAULT",
+      "telemetry.extended": "true",
+      "http.url": "https://api.openai.com/v1/responses",
+      "aws.remote.service": "api.openai.com",
+      "aws.local.environment": "bedrock-agentcore:default",
+      "aws.remote.operation": "POST /v1",
+      "http.status_code": 200,
+      "aws.local.operation": "UnmappedOperation",
+      "aws.span.kind": "CLIENT",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "http.method": "POST",
+      "http.response.status_code": 200,
+      "session.id": "29fb7129-8624-4bd2-b37b-dea182f63ce8"
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.httpx",
+      "version": "0.65b0"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "6a7a3f1922f7ce5131daefbb30a8a41a",
+    "span_id": "9dff5545acb5b39e",
+    "parent_span_id": "60be61a29768e79f",
+    "name": "response",
+    "start_time": 1786396452992902912,
+    "end_time": 1786396453884219904,
+    "attributes": {
+      "aws.local.service": "CWExperiment_OpenaiOpenInferenceMulti.DEFAULT",
+      "llm.input_messages.0.message.role": "system",
+      "llm.input_messages.1.message.role": "user",
+      "llm.input_messages.3.message.tool_calls.0.tool_call.id": "call_HxtaQFaymn4MK1H6XUUGChBm",
+      "llm.token_count.prompt": 257,
+      "llm.model_name": "gpt-4o-2024-08-06",
+      "llm.input_messages.4.message.tool_call_id": "call_HxtaQFaymn4MK1H6XUUGChBm",
+      "llm.invocation_parameters": "{\"id\": \"resp_0a31d412faab0244006a7a3f251624819cb6da61e3a5643d1a\", \"created_at\": 1786396453.0, \"instructions\": \"You are a math specialist agent. You solve mathematical problems using your available tools. Be precise and show your work.\", \"metadata\": {}, \"model\": \"gpt-4o-2024-08-06\", \"parallel_tool_calls\": true, \"temperature\": 1.0, \"tool_choice\": \"auto\", \"top_p\": 1.0, \"background\": false, \"completed_at\": 1786396453.0, \"prompt_cache_key\": \"agents-sdk:run:6129c95be34d46e58677d0e7f9ee7425\", \"prompt_cache_retention\": \"in_memory\", \"reasoning\": {}, \"service_tier\": \"default\", \"text\": {\"format\": {\"type\": \"text\"}, \"verbosity\": \"medium\"}, \"top_logprobs\": 0, \"truncation\": \"disabled\", \"billing\": {\"payer\": \"developer\"}, \"frequency_penalty\": 0.0, \"presence_penalty\": 0.0, \"store\": true, \"tool_usage\": {\"image_gen\": {\"input_tokens\": 0, \"input_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"output_tokens\": 0, \"output_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"total_tokens\": 0}, \"web_search\": {\"num_requests\": 0}}}",
+      "llm.input_messages.1.message.content": "What is 42 * 7, and what's the weather in Seattle?",
+      "llm.input_messages.4.message.content": "Multiple handoffs detected, ignoring this one.",
+      "aws.local.environment": "bedrock-agentcore:default",
+      "gen_ai.provider.name": "openai",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.id": "call_6OK7LCjPfCaxaJID3WPkrmds",
+      "llm.input_messages.0.message.content": "You are a math specialist agent. You solve mathematical problems using your available tools. Be precise and show your work.",
+      "output.mime_type": "application/json",
+      "gen_ai.request.model": "gpt-4o-2024-08-06",
+      "llm.input_messages.3.message.tool_calls.0.tool_call.function.name": "transfer_to_research_specialist",
+      "openinference.span.kind": "LLM",
+      "llm.tools.0.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"add_numbers\", \"description\": \"Return the sum of two numbers.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"First number.\", \"title\": \"A\", \"type\": \"number\"}, \"b\": {\"description\": \"Second number.\", \"title\": \"B\", \"type\": \"number\"}}, \"required\": [\"a\", \"b\"], \"title\": \"add_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
+      "llm.input_messages.5.message.content": "{\"assistant\": \"math_specialist\"}",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments": "{\"a\":42,\"b\":7}",
+      "llm.system": "openai",
+      "gen_ai.usage.output_tokens": 19,
+      "output.value": "{\"id\":\"resp_0a31d412faab0244006a7a3f251624819cb6da61e3a5643d1a\",\"created_at\":1786396453.0,\"error\":null,\"incomplete_details\":null,\"instructions\":\"You are a math specialist agent. You solve mathematical problems using your available tools. Be precise and show your work.\",\"metadata\":{},\"model\":\"gpt-4o-2024-08-06\",\"object\":\"response\",\"output\":[{\"arguments\":\"{\\\"a\\\":42,\\\"b\\\":7}\",\"call_id\":\"call_6OK7LCjPfCaxaJID3WPkrmds\",\"name\":\"multiply_numbers\",\"type\":\"function_call\",\"id\":\"fc_0a31d412faab0244006a7a3f25b06c819caa9a855b3cd6994e\",\"caller\":null,\"namespace\":null,\"status\":\"completed\"}],\"parallel_tool_calls\":true,\"temperature\":1.0,\"tool_choice\":\"auto\",\"tools\":[{\"name\":\"add_numbers\",\"parameters\":{\"properties\":{\"a\":{\"description\":\"First number.\",\"title\":\"A\",\"type\":\"number\"},\"b\":{\"description\":\"Second number.\",\"title\":\"B\",\"type\":\"number\"}},\"required\":[\"a\",\"b\"],\"title\":\"add_numbers_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Return the sum of two numbers.\",\"output_schema\":null},{\"name\":\"multiply_numbers\",\"parameters\":{\"properties\":{\"a\":{\"description\":\"First number.\",\"title\":\"A\",\"type\":\"number\"},\"b\":{\"description\":\"Second number.\",\"title\":\"B\",\"type\":\"number\"}},\"required\":[\"a\",\"b\"],\"title\":\"multiply_numbers_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Return the product of two numbers.\",\"output_schema\":null},{\"name\":\"divide_numbers\",\"parameters\":{\"properties\":{\"a\":{\"description\":\"Dividend.\",\"title\":\"A\",\"type\":\"number\"},\"b\":{\"description\":\"Divisor.\",\"title\":\"B\",\"type\":\"number\"}},\"required\":[\"a\",\"b\"],\"title\":\"divide_numbers_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Return a divided by b. Returns error message if b is zero.\",\"output_schema\":null}],\"top_p\":1.0,\"background\":false,\"completed_at\":1786396453.0,\"conversation\":null,\"max_output_tokens\":null,\"max_tool_calls\":null,\"moderation\":null,\"previous_response_id\":null,\"prompt\":null,\"prompt_cache_key\":\"agents-sdk:run:6129c95be34d46e58677d0e7f9ee7425\",\"prompt_cache_options\":null,\"prompt_cache_retention\":\"in_memory\",\"reasoning\":{\"context\":null,\"effort\":null,\"generate_summary\":null,\"mode\":null,\"summary\":null},\"safety_identifier\":null,\"service_tier\":\"default\",\"status\":\"completed\",\"text\":{\"format\":{\"type\":\"text\"},\"verbosity\":\"medium\"},\"top_logprobs\":0,\"truncation\":\"disabled\",\"usage\":{\"input_tokens\":257,\"input_tokens_details\":{\"cache_write_tokens\":0,\"cached_tokens\":0},\"output_tokens\":19,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":276},\"user\":null,\"billing\":{\"payer\":\"developer\"},\"frequency_penalty\":0.0,\"presence_penalty\":0.0,\"store\":true,\"tool_usage\":{\"image_gen\":{\"input_tokens\":0,\"input_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"output_tokens\":0,\"output_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"total_tokens\":0},\"web_search\":{\"num_requests\":0}}}",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.id": "call_BcvqKc5BjhX0NeiqTG2eaeFA",
+      "aws.genai.span_kind": "LLM",
+      "llm.token_count.completion": 19,
+      "llm.token_count.completion_details.reasoning": 0,
+      "llm.output_messages.0.message.role": "assistant",
+      "llm.token_count.total": 276,
+      "llm.input_messages.5.message.tool_call_id": "call_BcvqKc5BjhX0NeiqTG2eaeFA",
+      "llm.tools.1.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"multiply_numbers\", \"description\": \"Return the product of two numbers.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"First number.\", \"title\": \"A\", \"type\": \"number\"}, \"b\": {\"description\": \"Second number.\", \"title\": \"B\", \"type\": \"number\"}}, \"required\": [\"a\", \"b\"], \"title\": \"multiply_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
+      "input.mime_type": "application/json",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.function.name": "transfer_to_math_specialist",
+      "llm.token_count.prompt_details.cache_read": 0,
+      "llm.input_messages.5.message.role": "tool",
+      "gen_ai.usage.input_tokens": 257,
+      "aws.genai.token_count_total": 276,
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.name": "multiply_numbers",
+      "llm.input_messages.3.message.role": "assistant",
+      "input.value": "[{\"content\": \"What is 42 * 7, and what's the weather in Seattle?\", \"role\": \"user\"}, {\"arguments\": \"{}\", \"call_id\": \"call_BcvqKc5BjhX0NeiqTG2eaeFA\", \"name\": \"transfer_to_math_specialist\", \"type\": \"function_call\", \"id\": \"fc_0a31d412faab0244006a7a3f24abf8819cb86d11018bb0eefb\", \"status\": \"completed\"}, {\"arguments\": \"{}\", \"call_id\": \"call_HxtaQFaymn4MK1H6XUUGChBm\", \"name\": \"transfer_to_research_specialist\", \"type\": \"function_call\", \"id\": \"fc_0a31d412faab0244006a7a3f24ac08819c931277cf05c9096b\", \"status\": \"completed\"}, {\"call_id\": \"call_HxtaQFaymn4MK1H6XUUGChBm\", \"output\": \"Multiple handoffs detected, ignoring this one.\", \"type\": \"function_call_output\"}, {\"call_id\": \"call_BcvqKc5BjhX0NeiqTG2eaeFA\", \"output\": \"{\\\"assistant\\\": \\\"math_specialist\\\"}\", \"type\": \"function_call_output\"}]",
+      "llm.input_messages.4.message.role": "tool",
+      "llm.input_messages.2.message.role": "assistant",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "session.id": "29fb7129-8624-4bd2-b37b-dea182f63ce8",
+      "llm.tools.2.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"divide_numbers\", \"description\": \"Return a divided by b. Returns error message if b is zero.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"Dividend.\", \"title\": \"A\", \"type\": \"number\"}, \"b\": {\"description\": \"Divisor.\", \"title\": \"B\", \"type\": \"number\"}}, \"required\": [\"a\", \"b\"], \"title\": \"divide_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "2.0.0"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "6a7a3f1922f7ce5131daefbb30a8a41a",
+    "span_id": "60be61a29768e79f",
+    "parent_span_id": "2cbdd8e10afa264f",
+    "name": "turn",
+    "start_time": 1786396452991239936,
+    "end_time": 1786396453886953216,
+    "attributes": {
+      "aws.local.service": "CWExperiment_OpenaiOpenInferenceMulti.DEFAULT",
+      "aws.genai.span_kind": "CHAIN",
+      "openinference.span.kind": "CHAIN",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "session.id": "29fb7129-8624-4bd2-b37b-dea182f63ce8",
+      "aws.local.environment": "bedrock-agentcore:default"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "2.0.0"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "6a7a3f1922f7ce5131daefbb30a8a41a",
+    "span_id": "b66d0b3d5a01d316",
+    "parent_span_id": "60be61a29768e79f",
+    "name": "multiply_numbers",
+    "start_time": 1786396453885754112,
+    "end_time": 1786396453886648832,
+    "attributes": {
+      "aws.local.service": "CWExperiment_OpenaiOpenInferenceMulti.DEFAULT",
+      "input.mime_type": "application/json",
+      "output.value": "294.0",
+      "tool.description": "Return the product of two numbers.",
+      "tool.parameters": "{\"properties\": {\"a\": {\"description\": \"First number.\", \"title\": \"A\", \"type\": \"number\"}, \"b\": {\"description\": \"Second number.\", \"title\": \"B\", \"type\": \"number\"}}, \"required\": [\"a\", \"b\"], \"title\": \"multiply_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}",
+      "input.value": "{\"a\":42,\"b\":7}",
+      "aws.genai.span_kind": "TOOL",
+      "openinference.span.kind": "TOOL",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "session.id": "29fb7129-8624-4bd2-b37b-dea182f63ce8",
+      "tool.name": "multiply_numbers",
+      "aws.local.environment": "bedrock-agentcore:default"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "2.0.0"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "6a7a3f1922f7ce5131daefbb30a8a41a",
+    "span_id": "5368b1a556ebddf7",
+    "parent_span_id": "a3638478517b5bf0",
+    "name": "POST",
+    "start_time": 1786396453895167565,
+    "end_time": 1786396455139429318,
+    "attributes": {
+      "aws.local.service": "CWExperiment_OpenaiOpenInferenceMulti.DEFAULT",
+      "telemetry.extended": "true",
+      "http.url": "https://api.openai.com/v1/responses",
+      "aws.remote.service": "api.openai.com",
+      "aws.local.environment": "bedrock-agentcore:default",
+      "aws.remote.operation": "POST /v1",
+      "http.status_code": 200,
+      "aws.local.operation": "UnmappedOperation",
+      "aws.span.kind": "CLIENT",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "http.method": "POST",
+      "http.response.status_code": 200,
+      "session.id": "29fb7129-8624-4bd2-b37b-dea182f63ce8"
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.httpx",
+      "version": "0.65b0"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "6a7a3f1922f7ce5131daefbb30a8a41a",
+    "span_id": "a3638478517b5bf0",
+    "parent_span_id": "af3164b9d9f76356",
+    "name": "response",
+    "start_time": 1786396453887800832,
+    "end_time": 1786396455173500928,
+    "attributes": {
+      "llm.input_messages.0.message.role": "system",
+      "llm.input_messages.3.message.tool_calls.0.tool_call.id": "call_HxtaQFaymn4MK1H6XUUGChBm",
+      "llm.model_name": "gpt-4o-2024-08-06",
+      "llm.input_messages.4.message.tool_call_id": "call_HxtaQFaymn4MK1H6XUUGChBm",
+      "llm.input_messages.1.message.content": "What is 42 * 7, and what's the weather in Seattle?",
+      "llm.input_messages.4.message.content": "Multiple handoffs detected, ignoring this one.",
+      "llm.input_messages.7.message.content": "294.0",
+      "aws.local.environment": "bedrock-agentcore:default",
+      "gen_ai.provider.name": "openai",
+      "llm.output_messages.0.message.contents.0.message_content.type": "text",
+      "output.mime_type": "application/json",
+      "gen_ai.request.model": "gpt-4o-2024-08-06",
+      "llm.output_messages.0.message.contents.0.message_content.text": "The product of \\(42 \\times 7\\) is \\(294\\). As for the weather, I can\u2019t access current weather information. You might check a reliable weather service for that.",
+      "llm.output_messages.0.message.content": "The product of \\(42 \\times 7\\) is \\(294\\). As for the weather, I can\u2019t access current weather information. You might check a reliable weather service for that.",
+      "llm.input_messages.6.message.tool_calls.0.tool_call.function.arguments": "{\"a\":42,\"b\":7}",
+      "gen_ai.usage.output_tokens": 41,
+      "llm.input_messages.2.message.tool_calls.0.tool_call.id": "call_BcvqKc5BjhX0NeiqTG2eaeFA",
+      "llm.output_messages.0.message.role": "assistant",
+      "input.mime_type": "application/json",
+      "llm.input_messages.7.message.role": "tool",
+      "llm.input_messages.6.message.role": "assistant",
+      "llm.input_messages.5.message.role": "tool",
+      "llm.input_messages.3.message.role": "assistant",
+      "llm.input_messages.4.message.role": "tool",
+      "llm.input_messages.2.message.role": "assistant",
+      "llm.tools.2.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"divide_numbers\", \"description\": \"Return a divided by b. Returns error message if b is zero.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"Dividend.\", \"title\": \"A\", \"type\": \"number\"}, \"b\": {\"description\": \"Divisor.\", \"title\": \"B\", \"type\": \"number\"}}, \"required\": [\"a\", \"b\"], \"title\": \"divide_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
+      "aws.local.service": "CWExperiment_OpenaiOpenInferenceMulti.DEFAULT",
+      "llm.input_messages.7.message.tool_call_id": "call_6OK7LCjPfCaxaJID3WPkrmds",
+      "llm.input_messages.1.message.role": "user",
+      "llm.token_count.prompt": 287,
+      "llm.input_messages.6.message.tool_calls.0.tool_call.id": "call_6OK7LCjPfCaxaJID3WPkrmds",
+      "llm.invocation_parameters": "{\"id\": \"resp_0a31d412faab0244006a7a3f25ffcc819cb0e69b4478c7f955\", \"created_at\": 1786396454.0, \"instructions\": \"You are a math specialist agent. You solve mathematical problems using your available tools. Be precise and show your work.\", \"metadata\": {}, \"model\": \"gpt-4o-2024-08-06\", \"parallel_tool_calls\": true, \"temperature\": 1.0, \"tool_choice\": \"auto\", \"top_p\": 1.0, \"background\": false, \"completed_at\": 1786396454.0, \"prompt_cache_key\": \"agents-sdk:run:6129c95be34d46e58677d0e7f9ee7425\", \"prompt_cache_retention\": \"in_memory\", \"reasoning\": {}, \"service_tier\": \"default\", \"text\": {\"format\": {\"type\": \"text\"}, \"verbosity\": \"medium\"}, \"top_logprobs\": 0, \"truncation\": \"disabled\", \"billing\": {\"payer\": \"developer\"}, \"frequency_penalty\": 0.0, \"presence_penalty\": 0.0, \"store\": true, \"tool_usage\": {\"image_gen\": {\"input_tokens\": 0, \"input_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"output_tokens\": 0, \"output_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"total_tokens\": 0}, \"web_search\": {\"num_requests\": 0}}}",
+      "llm.input_messages.0.message.content": "You are a math specialist agent. You solve mathematical problems using your available tools. Be precise and show your work.",
+      "llm.input_messages.3.message.tool_calls.0.tool_call.function.name": "transfer_to_research_specialist",
+      "openinference.span.kind": "LLM",
+      "llm.input_messages.6.message.tool_calls.0.tool_call.function.name": "multiply_numbers",
+      "llm.tools.0.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"add_numbers\", \"description\": \"Return the sum of two numbers.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"First number.\", \"title\": \"A\", \"type\": \"number\"}, \"b\": {\"description\": \"Second number.\", \"title\": \"B\", \"type\": \"number\"}}, \"required\": [\"a\", \"b\"], \"title\": \"add_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
+      "llm.input_messages.5.message.content": "{\"assistant\": \"math_specialist\"}",
+      "llm.system": "openai",
+      "output.value": "{\"id\":\"resp_0a31d412faab0244006a7a3f25ffcc819cb0e69b4478c7f955\",\"created_at\":1786396454.0,\"error\":null,\"incomplete_details\":null,\"instructions\":\"You are a math specialist agent. You solve mathematical problems using your available tools. Be precise and show your work.\",\"metadata\":{},\"model\":\"gpt-4o-2024-08-06\",\"object\":\"response\",\"output\":[{\"id\":\"msg_0a31d412faab0244006a7a3f269180819c8e3de40ee99911e3\",\"content\":[{\"annotations\":[],\"text\":\"The product of \\\\(42 \\\\times 7\\\\) is \\\\(294\\\\). As for the weather, I can\u2019t access current weather information. You might check a reliable weather service for that.\",\"type\":\"output_text\",\"logprobs\":[]}],\"role\":\"assistant\",\"status\":\"completed\",\"type\":\"message\",\"phase\":null}],\"parallel_tool_calls\":true,\"temperature\":1.0,\"tool_choice\":\"auto\",\"tools\":[{\"name\":\"add_numbers\",\"parameters\":{\"properties\":{\"a\":{\"description\":\"First number.\",\"title\":\"A\",\"type\":\"number\"},\"b\":{\"description\":\"Second number.\",\"title\":\"B\",\"type\":\"number\"}},\"required\":[\"a\",\"b\"],\"title\":\"add_numbers_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Return the sum of two numbers.\",\"output_schema\":null},{\"name\":\"multiply_numbers\",\"parameters\":{\"properties\":{\"a\":{\"description\":\"First number.\",\"title\":\"A\",\"type\":\"number\"},\"b\":{\"description\":\"Second number.\",\"title\":\"B\",\"type\":\"number\"}},\"required\":[\"a\",\"b\"],\"title\":\"multiply_numbers_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Return the product of two numbers.\",\"output_schema\":null},{\"name\":\"divide_numbers\",\"parameters\":{\"properties\":{\"a\":{\"description\":\"Dividend.\",\"title\":\"A\",\"type\":\"number\"},\"b\":{\"description\":\"Divisor.\",\"title\":\"B\",\"type\":\"number\"}},\"required\":[\"a\",\"b\"],\"title\":\"divide_numbers_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Return a divided by b. Returns error message if b is zero.\",\"output_schema\":null}],\"top_p\":1.0,\"background\":false,\"completed_at\":1786396454.0,\"conversation\":null,\"max_output_tokens\":null,\"max_tool_calls\":null,\"moderation\":null,\"previous_response_id\":null,\"prompt\":null,\"prompt_cache_key\":\"agents-sdk:run:6129c95be34d46e58677d0e7f9ee7425\",\"prompt_cache_options\":null,\"prompt_cache_retention\":\"in_memory\",\"reasoning\":{\"context\":null,\"effort\":null,\"generate_summary\":null,\"mode\":null,\"summary\":null},\"safety_identifier\":null,\"service_tier\":\"default\",\"status\":\"completed\",\"text\":{\"format\":{\"type\":\"text\"},\"verbosity\":\"medium\"},\"top_logprobs\":0,\"truncation\":\"disabled\",\"usage\":{\"input_tokens\":287,\"input_tokens_details\":{\"cache_write_tokens\":0,\"cached_tokens\":0},\"output_tokens\":41,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":328},\"user\":null,\"billing\":{\"payer\":\"developer\"},\"frequency_penalty\":0.0,\"presence_penalty\":0.0,\"store\":true,\"tool_usage\":{\"image_gen\":{\"input_tokens\":0,\"input_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"output_tokens\":0,\"output_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"total_tokens\":0},\"web_search\":{\"num_requests\":0}}}",
+      "aws.genai.span_kind": "LLM",
+      "llm.token_count.completion": 41,
+      "llm.token_count.completion_details.reasoning": 0,
+      "llm.token_count.total": 328,
+      "llm.input_messages.5.message.tool_call_id": "call_BcvqKc5BjhX0NeiqTG2eaeFA",
+      "llm.tools.1.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"multiply_numbers\", \"description\": \"Return the product of two numbers.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"First number.\", \"title\": \"A\", \"type\": \"number\"}, \"b\": {\"description\": \"Second number.\", \"title\": \"B\", \"type\": \"number\"}}, \"required\": [\"a\", \"b\"], \"title\": \"multiply_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.function.name": "transfer_to_math_specialist",
+      "llm.token_count.prompt_details.cache_read": 0,
+      "gen_ai.usage.input_tokens": 287,
+      "aws.genai.token_count_total": 328,
+      "input.value": "[{\"content\": \"What is 42 * 7, and what's the weather in Seattle?\", \"role\": \"user\"}, {\"arguments\": \"{}\", \"call_id\": \"call_BcvqKc5BjhX0NeiqTG2eaeFA\", \"name\": \"transfer_to_math_specialist\", \"type\": \"function_call\", \"id\": \"fc_0a31d412faab0244006a7a3f24abf8819cb86d11018bb0eefb\", \"status\": \"completed\"}, {\"arguments\": \"{}\", \"call_id\": \"call_HxtaQFaymn4MK1H6XUUGChBm\", \"name\": \"transfer_to_research_specialist\", \"type\": \"function_call\", \"id\": \"fc_0a31d412faab0244006a7a3f24ac08819c931277cf05c9096b\", \"status\": \"completed\"}, {\"call_id\": \"call_HxtaQFaymn4MK1H6XUUGChBm\", \"output\": \"Multiple handoffs detected, ignoring this one.\", \"type\": \"function_call_output\"}, {\"call_id\": \"call_BcvqKc5BjhX0NeiqTG2eaeFA\", \"output\": \"{\\\"assistant\\\": \\\"math_specialist\\\"}\", \"type\": \"function_call_output\"}, {\"arguments\": \"{\\\"a\\\":42,\\\"b\\\":7}\", \"call_id\": \"call_6OK7LCjPfCaxaJID3WPkrmds\", \"name\": \"multiply_numbers\", \"type\": \"function_call\", \"id\": \"fc_0a31d412faab0244006a7a3f25b06c819caa9a855b3cd6994e\", \"status\": \"completed\"}, {\"call_id\": \"call_6OK7LCjPfCaxaJID3WPkrmds\", \"output\": \"294.0\", \"type\": \"function_call_output\"}]",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "session.id": "29fb7129-8624-4bd2-b37b-dea182f63ce8"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "2.0.0"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "6a7a3f1922f7ce5131daefbb30a8a41a",
+    "span_id": "aeec121eb055a683",
+    "parent_span_id": "c2faf1f60c3f0a09",
+    "name": "Agent workflow",
+    "start_time": 1786396450056901278,
+    "end_time": 1786396455175953806,
+    "attributes": {
+      "aws.local.service": "CWExperiment_OpenaiOpenInferenceMulti.DEFAULT",
+      "aws.genai.span_kind": "AGENT",
+      "openinference.span.kind": "AGENT",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "session.id": "29fb7129-8624-4bd2-b37b-dea182f63ce8",
+      "aws.local.environment": "bedrock-agentcore:default"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "2.0.0"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "6a7a3f1922f7ce5131daefbb30a8a41a",
+    "span_id": "f34af1c02ac46294",
+    "parent_span_id": "aeec121eb055a683",
+    "name": "Agent workflow",
+    "start_time": 1786396450057691136,
+    "end_time": 1786396455175892224,
+    "attributes": {
+      "aws.local.service": "CWExperiment_OpenaiOpenInferenceMulti.DEFAULT",
+      "aws.genai.span_kind": "CHAIN",
+      "openinference.span.kind": "CHAIN",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "session.id": "29fb7129-8624-4bd2-b37b-dea182f63ce8",
+      "aws.local.environment": "bedrock-agentcore:default"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "2.0.0"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "6a7a3f1922f7ce5131daefbb30a8a41a",
+    "span_id": "af3164b9d9f76356",
+    "parent_span_id": "2cbdd8e10afa264f",
+    "name": "turn",
+    "start_time": 1786396453887171072,
+    "end_time": 1786396455175024896,
+    "attributes": {
+      "aws.local.service": "CWExperiment_OpenaiOpenInferenceMulti.DEFAULT",
+      "aws.genai.span_kind": "CHAIN",
+      "openinference.span.kind": "CHAIN",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "session.id": "29fb7129-8624-4bd2-b37b-dea182f63ce8",
+      "aws.local.environment": "bedrock-agentcore:default"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "2.0.0"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "6a7a3f1922f7ce5131daefbb30a8a41a",
+    "span_id": "2cbdd8e10afa264f",
+    "parent_span_id": "f34af1c02ac46294",
+    "name": "math_specialist",
+    "start_time": 1786396452991072768,
+    "end_time": 1786396455175770880,
+    "attributes": {
+      "aws.local.service": "CWExperiment_OpenaiOpenInferenceMulti.DEFAULT",
+      "graph.node.id": "math_specialist",
+      "gen_ai.agent.name": "math_specialist",
+      "agent.name": "math_specialist",
+      "aws.genai.span_kind": "AGENT",
+      "openinference.span.kind": "AGENT",
+      "graph.node.parent_id": "coordinator",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "session.id": "29fb7129-8624-4bd2-b37b-dea182f63ce8",
+      "aws.local.environment": "bedrock-agentcore:default"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "2.0.0"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "6a7a3f1922f7ce5131daefbb30a8a41a",
+    "span_id": "c2faf1f60c3f0a09",
+    "parent_span_id": "96b00f8c6c642b55",
+    "name": "POST /invocations",
+    "start_time": 1786396450054724666,
+    "end_time": 1786396455176924115,
+    "attributes": {
+      "aws.local.service": "CWExperiment_OpenaiOpenInferenceMulti.DEFAULT",
+      "net.peer.port": 58482,
+      "telemetry.extended": "true",
+      "http.target": "/invocations",
+      "http.flavor": "1.1",
+      "http.url": "http://cell01.us-east-1.prod.arp.kepler-analytics.aws.dev/invocations",
+      "net.peer.ip": "127.0.0.1",
+      "http.host": "127.0.0.1:8080",
+      "aws.local.environment": "bedrock-agentcore:default",
+      "http.status_code": 200,
+      "aws.local.operation": "POST /invocations",
+      "aws.span.kind": "SERVER",
+      "http.server_name": "cell01.us-east-1.prod.arp.kepler-analytics.aws.dev",
+      "net.host.port": 8080,
+      "http.route": "/invocations",
+      "PlatformType": "AWS::BedrockAgentCore",
+      "http.method": "POST",
+      "http.response.status_code": 200,
+      "session.id": "29fb7129-8624-4bd2-b37b-dea182f63ce8",
+      "http.scheme": "http"
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.starlette",
+      "version": "0.65b0"
+    },
+    "status": {
+      "code": "UNSET"
+    },
+    "span_events": []
+  }
+]

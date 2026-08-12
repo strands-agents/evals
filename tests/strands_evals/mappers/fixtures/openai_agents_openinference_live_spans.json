@@ -1,0 +1,212 @@
+[
+  {
+    "trace_id": "8a0aec83b7264fd477a820bdd14053b2",
+    "span_id": "081f6d5504623843",
+    "parent_span_id": "f6c5b205471f7ef5",
+    "name": "response",
+    "start_time": 1785877073151115008,
+    "end_time": 1785877075525597952,
+    "attributes": {
+      "llm.system": "openai",
+      "output.mime_type": "application/json",
+      "output.value": "{\"id\":\"resp_097a7471aca34100006a7252526968819d9d13db8e4227576a\",\"created_at\":1785877074.0,\"error\":null,\"incomplete_details\":null,\"instructions\":\"You are a math assistant. Use the calculator tool to evaluate mathematical expressions.\",\"metadata\":{},\"model\":\"gpt-4o-mini-2024-07-18\",\"object\":\"response\",\"output\":[{\"arguments\":\"{\\\"expression\\\":\\\"15 * 37\\\"}\",\"call_id\":\"call_o7raJcELK9anpm7dbcgKVBvG\",\"name\":\"calculator\",\"type\":\"function_call\",\"id\":\"fc_097a7471aca34100006a725253228c819d9514d07cc87e164e\",\"caller\":null,\"namespace\":null,\"status\":\"completed\"}],\"parallel_tool_calls\":true,\"temperature\":1.0,\"tool_choice\":\"auto\",\"tools\":[{\"name\":\"calculator\",\"parameters\":{\"properties\":{\"expression\":{\"description\":\"A mathematical expression to evaluate, e.g. \\\"2 + 2\\\" or \\\"15 * 37\\\".\",\"title\":\"Expression\",\"type\":\"string\"}},\"required\":[\"expression\"],\"title\":\"calculator_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Evaluate a mathematical expression and return the result.\",\"output_schema\":null}],\"top_p\":1.0,\"background\":false,\"completed_at\":1785877075.0,\"conversation\":null,\"max_output_tokens\":null,\"max_tool_calls\":null,\"moderation\":null,\"previous_response_id\":null,\"prompt\":null,\"prompt_cache_key\":\"agents-sdk:run:803c1aa5637848ce8f22a05ac6f66d35\",\"prompt_cache_options\":null,\"prompt_cache_retention\":\"in_memory\",\"reasoning\":{\"context\":null,\"effort\":null,\"generate_summary\":null,\"mode\":null,\"summary\":null},\"safety_identifier\":null,\"service_tier\":\"default\",\"status\":\"completed\",\"text\":{\"format\":{\"type\":\"text\"},\"verbosity\":\"medium\"},\"top_logprobs\":0,\"truncation\":\"disabled\",\"usage\":{\"input_tokens\":97,\"input_tokens_details\":{\"cache_write_tokens\":0,\"cached_tokens\":0},\"output_tokens\":18,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":115},\"user\":null,\"billing\":{\"payer\":\"developer\"},\"frequency_penalty\":0.0,\"presence_penalty\":0.0,\"store\":true,\"tool_usage\":{\"image_gen\":{\"input_tokens\":0,\"input_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"output_tokens\":0,\"output_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"total_tokens\":0},\"web_search\":{\"num_requests\":0}}}",
+      "llm.tools.0.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"calculator\", \"description\": \"Evaluate a mathematical expression and return the result.\", \"parameters\": {\"properties\": {\"expression\": {\"description\": \"A mathematical expression to evaluate, e.g. \\\"2 + 2\\\" or \\\"15 * 37\\\".\", \"title\": \"Expression\", \"type\": \"string\"}}, \"required\": [\"expression\"], \"title\": \"calculator_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
+      "llm.token_count.completion": 18,
+      "llm.token_count.prompt": 97,
+      "llm.token_count.total": 115,
+      "llm.token_count.prompt_details.cache_read": 0,
+      "llm.token_count.completion_details.reasoning": 0,
+      "llm.output_messages.0.message.role": "assistant",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.id": "call_o7raJcELK9anpm7dbcgKVBvG",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.name": "calculator",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments": "{\"expression\":\"15 * 37\"}",
+      "llm.input_messages.0.message.role": "system",
+      "llm.input_messages.0.message.content": "You are a math assistant. Use the calculator tool to evaluate mathematical expressions.",
+      "llm.model_name": "gpt-4o-mini-2024-07-18",
+      "llm.invocation_parameters": "{\"id\": \"resp_097a7471aca34100006a7252526968819d9d13db8e4227576a\", \"created_at\": 1785877074.0, \"instructions\": \"You are a math assistant. Use the calculator tool to evaluate mathematical expressions.\", \"metadata\": {}, \"model\": \"gpt-4o-mini-2024-07-18\", \"parallel_tool_calls\": true, \"temperature\": 1.0, \"tool_choice\": \"auto\", \"top_p\": 1.0, \"background\": false, \"completed_at\": 1785877075.0, \"prompt_cache_key\": \"agents-sdk:run:803c1aa5637848ce8f22a05ac6f66d35\", \"prompt_cache_retention\": \"in_memory\", \"reasoning\": {}, \"service_tier\": \"default\", \"text\": {\"format\": {\"type\": \"text\"}, \"verbosity\": \"medium\"}, \"top_logprobs\": 0, \"truncation\": \"disabled\", \"billing\": {\"payer\": \"developer\"}, \"frequency_penalty\": 0.0, \"presence_penalty\": 0.0, \"store\": true, \"tool_usage\": {\"image_gen\": {\"input_tokens\": 0, \"input_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"output_tokens\": 0, \"output_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"total_tokens\": 0}, \"web_search\": {\"num_requests\": 0}}}",
+      "input.mime_type": "application/json",
+      "input.value": "[{\"content\": \"What is 15 multiplied by 37?\", \"role\": \"user\"}]",
+      "llm.input_messages.1.message.role": "user",
+      "llm.input_messages.1.message.content": "What is 15 multiplied by 37?",
+      "openinference.span.kind": "LLM"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.6.1"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "8a0aec83b7264fd477a820bdd14053b2",
+    "span_id": "433e33e095bb5261",
+    "parent_span_id": "f6c5b205471f7ef5",
+    "name": "calculator",
+    "start_time": 1785877075526331904,
+    "end_time": 1785877075526873088,
+    "attributes": {
+      "llm.system": "openai",
+      "tool.name": "calculator",
+      "input.value": "{\"expression\":\"15 * 37\"}",
+      "input.mime_type": "application/json",
+      "output.value": "555",
+      "openinference.span.kind": "TOOL"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.6.1"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "8a0aec83b7264fd477a820bdd14053b2",
+    "span_id": "f6c5b205471f7ef5",
+    "parent_span_id": "5019a36dc58d50a1",
+    "name": "turn",
+    "start_time": 1785877073147694080,
+    "end_time": 1785877075527059968,
+    "attributes": {
+      "llm.system": "openai",
+      "openinference.span.kind": "CHAIN"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.6.1"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "8a0aec83b7264fd477a820bdd14053b2",
+    "span_id": "c25e155a89bb1fc9",
+    "parent_span_id": "bee0d006b503c82f",
+    "name": "response",
+    "start_time": 1785877075527983872,
+    "end_time": 1785877076694274816,
+    "attributes": {
+      "llm.system": "openai",
+      "output.mime_type": "application/json",
+      "output.value": "{\"id\":\"resp_097a7471aca34100006a725253ad14819d8b1abb5e24c607b0\",\"created_at\":1785877075.0,\"error\":null,\"incomplete_details\":null,\"instructions\":\"You are a math assistant. Use the calculator tool to evaluate mathematical expressions.\",\"metadata\":{},\"model\":\"gpt-4o-mini-2024-07-18\",\"object\":\"response\",\"output\":[{\"id\":\"msg_097a7471aca34100006a72525479c0819d9d70b5e108c1f3cb\",\"content\":[{\"annotations\":[],\"text\":\"15 multiplied by 37 is 555.\",\"type\":\"output_text\",\"logprobs\":[]}],\"role\":\"assistant\",\"status\":\"completed\",\"type\":\"message\",\"phase\":null}],\"parallel_tool_calls\":true,\"temperature\":1.0,\"tool_choice\":\"auto\",\"tools\":[{\"name\":\"calculator\",\"parameters\":{\"properties\":{\"expression\":{\"description\":\"A mathematical expression to evaluate, e.g. \\\"2 + 2\\\" or \\\"15 * 37\\\".\",\"title\":\"Expression\",\"type\":\"string\"}},\"required\":[\"expression\"],\"title\":\"calculator_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Evaluate a mathematical expression and return the result.\",\"output_schema\":null}],\"top_p\":1.0,\"background\":false,\"completed_at\":1785877076.0,\"conversation\":null,\"max_output_tokens\":null,\"max_tool_calls\":null,\"moderation\":null,\"previous_response_id\":null,\"prompt\":null,\"prompt_cache_key\":\"agents-sdk:run:803c1aa5637848ce8f22a05ac6f66d35\",\"prompt_cache_options\":null,\"prompt_cache_retention\":\"in_memory\",\"reasoning\":{\"context\":null,\"effort\":null,\"generate_summary\":null,\"mode\":null,\"summary\":null},\"safety_identifier\":null,\"service_tier\":\"default\",\"status\":\"completed\",\"text\":{\"format\":{\"type\":\"text\"},\"verbosity\":\"medium\"},\"top_logprobs\":0,\"truncation\":\"disabled\",\"usage\":{\"input_tokens\":124,\"input_tokens_details\":{\"cache_write_tokens\":0,\"cached_tokens\":0},\"output_tokens\":11,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":135},\"user\":null,\"billing\":{\"payer\":\"developer\"},\"frequency_penalty\":0.0,\"presence_penalty\":0.0,\"store\":true,\"tool_usage\":{\"image_gen\":{\"input_tokens\":0,\"input_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"output_tokens\":0,\"output_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"total_tokens\":0},\"web_search\":{\"num_requests\":0}}}",
+      "llm.tools.0.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"calculator\", \"description\": \"Evaluate a mathematical expression and return the result.\", \"parameters\": {\"properties\": {\"expression\": {\"description\": \"A mathematical expression to evaluate, e.g. \\\"2 + 2\\\" or \\\"15 * 37\\\".\", \"title\": \"Expression\", \"type\": \"string\"}}, \"required\": [\"expression\"], \"title\": \"calculator_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
+      "llm.token_count.completion": 11,
+      "llm.token_count.prompt": 124,
+      "llm.token_count.total": 135,
+      "llm.token_count.prompt_details.cache_read": 0,
+      "llm.token_count.completion_details.reasoning": 0,
+      "llm.output_messages.0.message.role": "assistant",
+      "llm.output_messages.0.message.contents.0.message_content.type": "text",
+      "llm.output_messages.0.message.contents.0.message_content.text": "15 multiplied by 37 is 555.",
+      "llm.input_messages.0.message.role": "system",
+      "llm.input_messages.0.message.content": "You are a math assistant. Use the calculator tool to evaluate mathematical expressions.",
+      "llm.model_name": "gpt-4o-mini-2024-07-18",
+      "llm.invocation_parameters": "{\"id\": \"resp_097a7471aca34100006a725253ad14819d8b1abb5e24c607b0\", \"created_at\": 1785877075.0, \"instructions\": \"You are a math assistant. Use the calculator tool to evaluate mathematical expressions.\", \"metadata\": {}, \"model\": \"gpt-4o-mini-2024-07-18\", \"parallel_tool_calls\": true, \"temperature\": 1.0, \"tool_choice\": \"auto\", \"top_p\": 1.0, \"background\": false, \"completed_at\": 1785877076.0, \"prompt_cache_key\": \"agents-sdk:run:803c1aa5637848ce8f22a05ac6f66d35\", \"prompt_cache_retention\": \"in_memory\", \"reasoning\": {}, \"service_tier\": \"default\", \"text\": {\"format\": {\"type\": \"text\"}, \"verbosity\": \"medium\"}, \"top_logprobs\": 0, \"truncation\": \"disabled\", \"billing\": {\"payer\": \"developer\"}, \"frequency_penalty\": 0.0, \"presence_penalty\": 0.0, \"store\": true, \"tool_usage\": {\"image_gen\": {\"input_tokens\": 0, \"input_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"output_tokens\": 0, \"output_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"total_tokens\": 0}, \"web_search\": {\"num_requests\": 0}}}",
+      "input.mime_type": "application/json",
+      "input.value": "[{\"content\": \"What is 15 multiplied by 37?\", \"role\": \"user\"}, {\"arguments\": \"{\\\"expression\\\":\\\"15 * 37\\\"}\", \"call_id\": \"call_o7raJcELK9anpm7dbcgKVBvG\", \"name\": \"calculator\", \"type\": \"function_call\", \"id\": \"fc_097a7471aca34100006a725253228c819d9514d07cc87e164e\", \"status\": \"completed\"}, {\"call_id\": \"call_o7raJcELK9anpm7dbcgKVBvG\", \"output\": \"555\", \"type\": \"function_call_output\"}]",
+      "llm.input_messages.1.message.role": "user",
+      "llm.input_messages.1.message.content": "What is 15 multiplied by 37?",
+      "llm.input_messages.2.message.role": "assistant",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.id": "call_o7raJcELK9anpm7dbcgKVBvG",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.function.name": "calculator",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.function.arguments": "{\"expression\":\"15 * 37\"}",
+      "llm.input_messages.3.message.role": "tool",
+      "llm.input_messages.3.message.tool_call_id": "call_o7raJcELK9anpm7dbcgKVBvG",
+      "llm.input_messages.3.message.content": "555",
+      "openinference.span.kind": "LLM"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.6.1"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "8a0aec83b7264fd477a820bdd14053b2",
+    "span_id": "bee0d006b503c82f",
+    "parent_span_id": "5019a36dc58d50a1",
+    "name": "turn",
+    "start_time": 1785877075527185920,
+    "end_time": 1785877076696263936,
+    "attributes": {
+      "llm.system": "openai",
+      "openinference.span.kind": "CHAIN"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.6.1"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "8a0aec83b7264fd477a820bdd14053b2",
+    "span_id": "5019a36dc58d50a1",
+    "parent_span_id": "2c9afeee284e8853",
+    "name": "math_agent",
+    "start_time": 1785877073147622144,
+    "end_time": 1785877076696851968,
+    "attributes": {
+      "llm.system": "openai",
+      "graph.node.id": "math_agent",
+      "openinference.span.kind": "AGENT"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.6.1"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "8a0aec83b7264fd477a820bdd14053b2",
+    "span_id": "2c9afeee284e8853",
+    "parent_span_id": "1b114538da558d87",
+    "name": "Agent workflow",
+    "start_time": 1785877073146167040,
+    "end_time": 1785877076697249024,
+    "attributes": {
+      "llm.system": "openai",
+      "openinference.span.kind": "CHAIN"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.6.1"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "8a0aec83b7264fd477a820bdd14053b2",
+    "span_id": "1b114538da558d87",
+    "parent_span_id": null,
+    "name": "Agent workflow",
+    "start_time": 1785877073145938000,
+    "end_time": 1785877076697418000,
+    "attributes": {
+      "openinference.span.kind": "AGENT"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.6.1"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  }
+]

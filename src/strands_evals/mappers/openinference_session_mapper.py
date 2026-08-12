@@ -38,11 +38,12 @@ from ..types.trace import (
 from .constants import (
     SCOPE_OPENINFERENCE,
     SCOPE_OPENINFERENCE_CLAUDE_AGENT_SDK,
+    SCOPE_OPENINFERENCE_OPENAI_AGENTS,
     SCOPE_OPENINFERENCE_SMOLAGENTS,
     SCOPES_OPENINFERENCE_FAMILY,
 )
 from .session_mapper import SessionMapper
-from .utils import safe_json_parse
+from .utils import bridge_parent_gaps, safe_json_parse
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,11 @@ class OpenInferenceSessionMapper(SessionMapper):
         for span in openinference_spans:
             trace_id = span.get("trace_id", "")
             grouped[trace_id].append(span)
+
+        # OpenAI Agents SDK normalization requires the full trace group, so it runs after grouping.
+        for trace_spans in grouped.values():
+            if any(self._get_scope_name(s) == SCOPE_OPENINFERENCE_OPENAI_AGENTS for s in trace_spans):
+                self._normalize_openai_agents_trace(trace_spans)
 
         # Build traces
         result_traces: list[Trace] = []
@@ -258,6 +264,65 @@ class OpenInferenceSessionMapper(SessionMapper):
             # Fallback: no tool.parameters available to map positional args
             attrs["input.value"] = json.dumps({"args": args})
 
+    def _normalize_openai_agents_trace(self, spans: list[dict]) -> None:
+        """Normalize OpenAI Agents SDK AGENT spans in-place by injecting input/output.
+
+        OpenAI Agents SDK AGENT spans carry no input.value or output.value.
+        The user prompt and final response live on descendant LLM spans
+        (reachable through intermediate CHAIN "turn" spans).
+        """
+        # Collect all spans keyed by parent id for span traversal
+        spans_by_parent_id: dict[str, list[dict]] = defaultdict(list)
+        for s in spans:
+            parent = s.get("parent_span_id")
+            if parent:
+                spans_by_parent_id[parent].append(s)
+
+        for span in spans:
+            attrs = span.get("attributes", {})
+            span_id = span.get("span_id", "")
+            if attrs.get("openinference.span.kind") != "AGENT" or attrs.get("input.value") or not span_id:
+                continue
+
+            # Walk from agent spans to their descendant LLM spans
+            llm_spans: list[dict] = []
+            stack = [span_id]
+            while stack:
+                current = stack.pop()
+                for child in spans_by_parent_id.get(current, []):
+                    kind = child.get("attributes", {}).get("openinference.span.kind", "")
+                    if kind == "LLM":
+                        llm_spans.append(child)
+                    elif kind == "CHAIN":
+                        cid = child.get("span_id", "")
+                        if cid:
+                            stack.append(cid)
+
+            if not llm_spans:
+                continue
+            llm_spans.sort(key=lambda s: s.get("start_time", 0))
+
+            # Get first user message from the earliest LLM span
+            first_attrs = llm_spans[0].get("attributes", {})
+            user_prompt = first_attrs.get("llm.input_messages.1.message.content")
+            if user_prompt:
+                attrs["input.value"] = user_prompt
+
+            # Copy LLM tool schemas onto the AGENT span so _extract_tools_from_attributes
+            # finds this agent's own tools.
+            idx = 0
+            while first_attrs.get(f"llm.tools.{idx}.tool.json_schema") is not None:
+                attrs[f"llm.tools.{idx}.tool.json_schema"] = first_attrs[f"llm.tools.{idx}.tool.json_schema"]
+                idx += 1
+
+            # Get text output from the last LLM span
+            last_attrs = llm_spans[-1].get("attributes", {})
+            agent_response = last_attrs.get(
+                "llm.output_messages.0.message.contents.0.message_content.text"
+            ) or last_attrs.get("llm.output_messages.0.message.content")
+            if agent_response:
+                attrs["output.value"] = agent_response
+
     def _build_trace(self, trace_id: str, spans: list[dict], session_id: str) -> Trace:
         """Build a Trace from spans with the same trace_id."""
         converted_spans: list[InferenceSpan | ToolExecutionSpan | AgentInvocationSpan] = []
@@ -278,6 +343,10 @@ class OpenInferenceSessionMapper(SessionMapper):
                         converted_spans.append(agent_span)
             except Exception as e:
                 logger.warning(f"Failed to convert span {span.get('span_id', 'unknown')}: {e}")
+
+        # Fix parent_span_id on converted spans that point to skipped intermediaries
+        raw_parent_map = {s.get("span_id", ""): s.get("parent_span_id") for s in spans}
+        bridge_parent_gaps(converted_spans, raw_parent_map)
 
         # In multi-agent LangGraph systems, each nested sub-graph produces its own
         # LangGraph CHAIN span. Keep only the last one (root graph finishes last).
@@ -380,7 +449,11 @@ class OpenInferenceSessionMapper(SessionMapper):
         # routing nodes that aren't true agent invocations — reject those by default.
         if span_kind == "AGENT":
             scope_name = self._get_scope_name(span)
-            if scope_name in (SCOPE_OPENINFERENCE_SMOLAGENTS, SCOPE_OPENINFERENCE_CLAUDE_AGENT_SDK):
+            if scope_name in (
+                SCOPE_OPENINFERENCE_SMOLAGENTS,
+                SCOPE_OPENINFERENCE_CLAUDE_AGENT_SDK,
+                SCOPE_OPENINFERENCE_OPENAI_AGENTS,
+            ):
                 input_val = attrs.get("input.value")
                 if input_val:
                     output_val = attrs.get("output.value")
@@ -637,6 +710,9 @@ class OpenInferenceSessionMapper(SessionMapper):
             return None
 
         available_tools = sorted(
+            self._extract_tools_from_attributes(attrs),
+            key=lambda t: t.name,
+        ) or sorted(
             self._trace_tools_map.get(trace_id, {}).values(),
             key=lambda t: t.name,
         )
@@ -826,14 +902,17 @@ class OpenInferenceSessionMapper(SessionMapper):
             if key.startswith("llm.tools.") and key.endswith(".tool.json_schema"):
                 try:
                     tool_info = json.loads(value) if isinstance(value, str) else value
+                    # OpenAI format wraps under {"type": "function", "function": {...}}
+                    if "function" in tool_info and "name" not in tool_info:
+                        tool_info = tool_info["function"]
                     tools.append(
                         ToolConfig(
                             name=tool_info.get("name"),
                             description=tool_info.get("description"),
-                            parameters=tool_info.get("input_schema"),
+                            parameters=tool_info.get("input_schema") or tool_info.get("parameters"),
                         )
                     )
-                except (json.JSONDecodeError, AttributeError):
+                except (json.JSONDecodeError, AttributeError, ValueError):
                     pass
 
         return sorted(tools, key=lambda t: t.name or "")
