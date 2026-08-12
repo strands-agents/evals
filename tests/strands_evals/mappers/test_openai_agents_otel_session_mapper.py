@@ -160,6 +160,35 @@ class TestAdotSession:
         agent_spans = [s for s in all_spans if isinstance(s, AgentInvocationSpan)]
         assert len(agent_spans) > 0
 
+    def test_handoff_reparents_math_specialist_under_coordinator(self, adot_session):
+        """agent_handoff span should re-parent math_specialist under coordinator."""
+        all_spans = [s for t in adot_session.traces for s in t.spans]
+        agent_spans = [s for s in all_spans if isinstance(s, AgentInvocationSpan)]
+
+        coordinator = next(s for s in agent_spans if s.span_info.span_id == "1afcb5ca9fe89dda")
+        math_specialist = next(s for s in agent_spans if s.span_info.span_id == "c2828d53371818f0")
+
+        assert math_specialist.span_info.parent_span_id == coordinator.span_info.span_id
+        agent_span_ids = {s.span_info.span_id for s in agent_spans}
+        assert coordinator.span_info.parent_span_id not in agent_span_ids
+
+    def test_adot_coordinator_tools_empty(self, adot_session):
+        """ADOT coordinator has no structured tool calls (handoffs emitted as repr text)."""
+        all_spans = [s for t in adot_session.traces for s in t.spans]
+        coordinator = next(
+            s for s in all_spans if isinstance(s, AgentInvocationSpan) and s.span_info.span_id == "1afcb5ca9fe89dda"
+        )
+        assert coordinator.available_tools == []
+
+    def test_adot_math_specialist_tools(self, adot_session):
+        """ADOT math_specialist should have multiply_numbers back-filled."""
+        all_spans = [s for t in adot_session.traces for s in t.spans]
+        math_specialist = next(
+            s for s in all_spans if isinstance(s, AgentInvocationSpan) and s.span_info.span_id == "c2828d53371818f0"
+        )
+        tool_names = sorted(t.name for t in math_specialist.available_tools)
+        assert tool_names == ["multiply_numbers"]
+
 
 # =============================================================================
 # Per-Agent Tool Attribution Tests
@@ -194,8 +223,8 @@ class TestPerAgentToolAttribution:
         assert tool_names == ["divide_numbers", "multiply_numbers"]
 
     def test_tools_not_shared_across_agents(self, live_session):
-        """No tool should appear in both agents' available_tools lists."""
+        """No tool should appear in multiple agents' available_tools lists."""
         all_spans = [s for t in live_session.traces for s in t.spans]
         agent_spans = [s for s in all_spans if isinstance(s, AgentInvocationSpan)]
-        tool_sets = [frozenset(t.name for t in s.available_tools) for s in agent_spans]
-        assert tool_sets[0] & tool_sets[1] == frozenset()
+        tool_sets = [set(t.name for t in s.available_tools) for s in agent_spans]
+        assert not set.intersection(*tool_sets)
