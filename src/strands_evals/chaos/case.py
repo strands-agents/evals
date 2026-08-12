@@ -13,7 +13,7 @@ from typing_extensions import Generic
 
 from ..case import Case
 from ..types.evaluation import InputT, OutputT
-from .effects import ModelEffectUnion, ToolEffectUnion
+from .effects import ModelEffect, ModelEffectUnion, ToolEffect, ToolEffectUnion
 
 # Type alias for the effects dict structure
 EffectsDict = dict[str, dict[str, list[ToolEffectUnion | ModelEffectUnion]]]
@@ -94,12 +94,25 @@ class ChaosCase(Case, Generic[InputT, OutputT]):
                     f"Tool '{tool_name}' has {len(effects_list)} effects — only 1 is allowed per "
                     f"ChaosCase. Use separate ChaosCase instances to test effects independently."
                 )
+            # Fix A: enforce effect-family membership
+            for effect in effects_list:
+                if not isinstance(effect, ToolEffect):
+                    raise ValueError(
+                        f"Effect {type(effect).__name__} in tool_effects['{tool_name}'] is not a {ToolEffect.__name__}"
+                    )
 
         # Validate model_effects: dict[str, list[ModelEffectUnion]]
         model_effects_map = self.effects.get("model_effects", {})
         if model_effects_map:
             if not isinstance(model_effects_map, dict):
                 raise ValueError("'model_effects' must be a dict keyed by model name (or '*' wildcard).")
+            # Fix B: reject non-"*" keys
+            for model_name in model_effects_map:
+                if model_name != "*":
+                    raise ValueError(
+                        f"model_effects key '{model_name}' is not supported; "
+                        f"model targeting not yet implemented. Use '*' for all models."
+                    )
             for model_name, effects_list in model_effects_map.items():  # type: ignore[assignment]
                 if not isinstance(model_name, str):
                     raise ValueError(f"model_effects keys must be strings, got {type(model_name).__name__}.")
@@ -108,6 +121,13 @@ class ChaosCase(Case, Generic[InputT, OutputT]):
                         f"model_effects['{model_name}'] must be a list of model effects, "
                         f"got {type(effects_list).__name__}."
                     )
+                # Fix A: enforce effect-family membership
+                for effect in effects_list:
+                    if not isinstance(effect, ModelEffect):
+                        raise ValueError(
+                            f"Effect {type(effect).__name__} in model_effects['{model_name}'] "
+                            f"is not a {ModelEffect.__name__}"
+                        )
 
         return self
 

@@ -8,10 +8,18 @@ Tests cover:
 - 6.5: Post effects (Confabulation, MalformedJson-on-text, SuccessFraming) work
 - 6.6: Mixed pre+post still produces one turn (pre wins)
 - 6.7: MalformedJson DOES reach/corrupt structured-output toolUse
+- Effect family validation (Fix A): wrong-category effects rejected
+- Wildcard rejection (Fix B): non-'*' model_effects keys rejected
+- Ordinary dynamic tool not corrupted (Fix C): isinstance-based detection
 """
 
 import copy
 from unittest.mock import MagicMock
+
+import pytest
+from pydantic import ValidationError as PydanticValidationError
+from strands.hooks import BeforeModelCallEvent
+from strands.tools.structured_output.structured_output_tool import StructuredOutputTool
 
 from strands_evals.chaos._context import _current_chaos_case
 from strands_evals.chaos.case import ChaosCase
@@ -21,6 +29,7 @@ from strands_evals.chaos.effects import (
     FullRefusal,
     MalformedJson,
     SuccessFraming,
+    Timeout,
 )
 from strands_evals.chaos.plugin import ChaosPlugin
 
@@ -138,7 +147,7 @@ class TestEmptyResponsePreHook:
         """before_model_invocation sets event.cancel to ' ' (single space)."""
         _set_chaos_case([EmptyResponse()])
         plugin = ChaosPlugin()
-        event = MagicMock()
+        event = BeforeModelCallEvent(agent=MagicMock())
 
         plugin.before_model_invocation(event)
 
@@ -151,7 +160,7 @@ class TestEmptyResponsePreHook:
         plugin = ChaosPlugin()
 
         # Pre-hook fires
-        pre_event = MagicMock()
+        pre_event = BeforeModelCallEvent(agent=MagicMock())
         plugin.before_model_invocation(pre_event)
         assert pre_event.cancel == " "
 
@@ -179,7 +188,7 @@ class TestFullRefusalPreHook:
         """before_model_invocation sets event.cancel to a refusal template."""
         _set_chaos_case([FullRefusal()])
         plugin = ChaosPlugin()
-        event = MagicMock()
+        event = BeforeModelCallEvent(agent=MagicMock())
 
         plugin.before_model_invocation(event)
 
@@ -191,7 +200,7 @@ class TestFullRefusalPreHook:
         plugin = ChaosPlugin()
 
         # Step 1: before_model_invocation fires
-        pre_event = MagicMock()
+        pre_event = BeforeModelCallEvent(agent=MagicMock())
         plugin.before_model_invocation(pre_event)
         cancel_text = pre_event.cancel
         assert cancel_text in FullRefusal._REFUSAL_TEMPLATES
@@ -218,7 +227,7 @@ class TestMalformedJsonStructuredOutput:
     """MalformedJson DOES reach and corrupt structured-output toolUse blocks only."""
 
     def test_malformed_json_corrupts_structured_output_tooluse(self):
-        """MalformedJson corrupts toolUse input when tool is in dynamic_tools (structured-output)."""
+        """MalformedJson corrupts toolUse input when tool is a StructuredOutputTool."""
         _set_chaos_case([MalformedJson()])
         plugin = ChaosPlugin()
         message = {
@@ -228,7 +237,8 @@ class TestMalformedJsonStructuredOutput:
             ],
         }
         # Register "MyModel" as a structured-output dynamic tool
-        event = _make_event(message, dynamic_tools={"MyModel": MagicMock()})
+        mock_so_tool = MagicMock(spec=StructuredOutputTool)
+        event = _make_event(message, dynamic_tools={"MyModel": mock_so_tool})
 
         plugin.after_model_invocation(event)
 
@@ -269,7 +279,8 @@ class TestMalformedJsonStructuredOutput:
             ],
         }
         # Only "MyModel" is structured-output
-        event = _make_event(message, dynamic_tools={"MyModel": MagicMock()})
+        mock_so_tool = MagicMock(spec=StructuredOutputTool)
+        event = _make_event(message, dynamic_tools={"MyModel": mock_so_tool})
 
         plugin.after_model_invocation(event)
 
@@ -371,7 +382,7 @@ class TestMixedPrePostCase:
         plugin = ChaosPlugin()
 
         # Pre-hook fires and cancels
-        pre_event = MagicMock()
+        pre_event = BeforeModelCallEvent(agent=MagicMock())
         plugin.before_model_invocation(pre_event)
         cancel_text = pre_event.cancel
         assert cancel_text in FullRefusal._REFUSAL_TEMPLATES
@@ -391,7 +402,7 @@ class TestMixedPrePostCase:
         plugin = ChaosPlugin()
 
         # Pre-hook fires
-        pre_event = MagicMock()
+        pre_event = BeforeModelCallEvent(agent=MagicMock())
         plugin.before_model_invocation(pre_event)
         assert pre_event.cancel == " "
 
@@ -431,7 +442,8 @@ class TestMalformedJsonReachesStructuredOutput:
                 },
             ],
         }
-        event = _make_event(message, dynamic_tools={"MyModel": MagicMock()})
+        mock_so_tool = MagicMock(spec=StructuredOutputTool)
+        event = _make_event(message, dynamic_tools={"MyModel": mock_so_tool})
 
         plugin.after_model_invocation(event)
 
@@ -451,6 +463,96 @@ class TestMalformedJsonReachesStructuredOutput:
         plugin.after_model_invocation(event)
 
         # Content should be UNCHANGED — guard skipped corruption
+        assert message["content"] == original_content
+
+    def teardown_method(self):
+        _current_chaos_case.set(None)
+
+
+# ---------------------------------------------------------------------------
+# Effect family validation (Fix A)
+# ---------------------------------------------------------------------------
+
+
+class TestEffectFamilyValidation:
+    """Effects placed in the wrong category are rejected."""
+
+    def test_tool_effect_in_model_effects_rejected(self):
+        """A ToolEffect under model_effects raises ValueError."""
+        with pytest.raises(ValueError, match="is not a ModelEffect"):
+            ChaosCase(
+                name="bad",
+                input="test",
+                effects={"model_effects": {"*": [Timeout()]}},
+            )
+
+    def test_model_effect_in_tool_effects_rejected(self):
+        """A ModelEffect under tool_effects raises ValueError."""
+        with pytest.raises(ValueError, match="is not a ToolEffect"):
+            ChaosCase(
+                name="bad",
+                input="test",
+                effects={"tool_effects": {"search": [FullRefusal()]}},
+            )
+
+    def test_model_effect_in_tool_effects_rejected_via_model_validate(self):
+        """A ModelEffect under tool_effects is rejected on the model_validate (dict) path."""
+        with pytest.raises(PydanticValidationError, match="is not a ToolEffect"):
+            ChaosCase.model_validate(
+                {
+                    "name": "bad_tool",
+                    "input": "test",
+                    "effects": {"tool_effects": {"search": [{"effect_type": "full_refusal"}]}},
+                }
+            )
+
+    def test_tool_effect_in_model_effects_rejected_via_model_validate(self):
+        """A ToolEffect under model_effects is rejected on the model_validate (dict) path."""
+        with pytest.raises(PydanticValidationError, match="is not a ModelEffect"):
+            ChaosCase.model_validate(
+                {
+                    "name": "bad_model",
+                    "input": "test",
+                    "effects": {"model_effects": {"*": [{"effect_type": "timeout"}]}},
+                }
+            )
+
+    def test_named_model_key_rejected(self):
+        """A non-'*' key in model_effects is rejected."""
+        with pytest.raises(ValueError, match="model targeting not yet"):
+            ChaosCase(
+                name="bad",
+                input="test",
+                effects={"model_effects": {"claude-sonnet": [MalformedJson()]}},
+            )
+
+
+# ---------------------------------------------------------------------------
+# Ordinary dynamic tool not corrupted (Fix C)
+# ---------------------------------------------------------------------------
+
+
+class TestOrdinaryDynamicToolNotCorrupted:
+    """An ordinary dynamic tool (not StructuredOutputTool) is NOT corrupted."""
+
+    def test_ordinary_dynamic_tool_unchanged(self):
+        """MalformedJson does NOT corrupt a regular dynamic tool's toolUse."""
+        _set_chaos_case([MalformedJson()])
+        plugin = ChaosPlugin()
+        message = {
+            "role": "assistant",
+            "content": [
+                {"toolUse": {"toolUseId": "dt_1", "name": "my_dynamic_tool", "input": {"key": "val"}}},
+            ],
+        }
+        original_content = copy.deepcopy(message["content"])
+        # Register as a plain MagicMock (NOT spec'd to StructuredOutputTool)
+        mock_tool = MagicMock()
+        event = _make_event(message, dynamic_tools={"my_dynamic_tool": mock_tool})
+
+        plugin.after_model_invocation(event)
+
+        # Should be UNCHANGED — ordinary dynamic tool, not structured-output
         assert message["content"] == original_content
 
     def teardown_method(self):

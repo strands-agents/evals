@@ -385,6 +385,15 @@ class MalformedJson(ModelEffect):
             result.append(block)
         return result
 
+    def malform_tool_use_block(self, block: dict) -> dict:
+        """Corrupt a single toolUse block's input JSON."""
+        block = dict(block)
+        tool_use = dict(block["toolUse"])
+        raw = json.dumps(tool_use.get("input", {}))
+        tool_use["input"] = raw[:-1] if raw.endswith("}") else raw + "{{{"
+        block["toolUse"] = tool_use
+        return block
+
 
 # ---------------------------------------------------------------------------
 # b) EmptyResponse

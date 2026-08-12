@@ -166,21 +166,16 @@ class ChaosPlugin(Plugin):
             return
 
         message = event.message
-
-        # Guard 1: only assistant messages
-        if message.get("role") != "assistant":
+        if not self._is_final_model_output(message):
             return
 
         content = message.get("content")
-        if content is None:
-            return
 
-        # If any pre effects exist, they already produced the turn — skip post
+        # Pre effects already produced the turn — skip post
         pre_effects = [e for e in chaos_case.model_effects if e.hook == "pre"]
         if pre_effects:
             return
 
-        # Filter to post effects only
         post_effects = [e for e in chaos_case.model_effects if e.hook == "post"]
         if not post_effects:
             return
@@ -191,34 +186,52 @@ class ChaosPlugin(Plugin):
             if has_tool_use:
                 if not any(isinstance(e, MalformedJson) for e in post_effects):
                     return
-                # Only allow through if toolUse is a structured-output tool (dynamic_tools)
-                so_tool_names = set(event.agent.tool_registry.dynamic_tools.keys())
-                tool_use_names = {
-                    block["toolUse"]["name"] for block in content if isinstance(block, dict) and "toolUse" in block
-                }
-                if not tool_use_names & so_tool_names:
-                    return  # No structured-output toolUse — skip
+                structured_output_tool_names = self._get_structured_output_tool_names(event.agent)
+                if not self._has_structured_output_tool_use(content, structured_output_tool_names):
+                    return
+            else:
+                structured_output_tool_names = set()
+        else:
+            structured_output_tool_names = set()
 
-        # Resolve structured-output tool names for _apply_to_model_blocks
-        so_tool_names_set: set[str] = set()
-        if isinstance(content, list) and any(isinstance(b, dict) and "toolUse" in b for b in content):
-            so_tool_names_set = set(event.agent.tool_registry.dynamic_tools.keys())
-
-        # Apply model post effects
-        corrupted = self._apply_to_model_blocks(post_effects, content, so_tool_names_set)
+        corrupted = self._apply_to_model_blocks(post_effects, content, structured_output_tool_names)
         message["content"] = corrupted
 
         effect_names = ", ".join(type(e).__name__ for e in post_effects)
-        logger.info(
-            "effects=<%s> | applied model output chaos to assistant message",
-            effect_names,
+        logger.info("effects=<%s> | applied model output chaos", effect_names)
+
+    # -----------------------------------------------------------------------
+    # Model output helper methods
+    # -----------------------------------------------------------------------
+
+    def _is_final_model_output(self, message) -> bool:
+        """Check if message is a final assistant model output (role=assistant, has content)."""
+        return message.get("role") == "assistant" and message.get("content") is not None
+
+    def _get_structured_output_tool_names(self, agent) -> set[str]:  # type: ignore[type-arg]
+        """Identify structured-output tools via isinstance(tool, StructuredOutputTool)."""
+        from strands.tools.structured_output.structured_output_tool import StructuredOutputTool
+
+        return {
+            name for name, tool in agent.tool_registry.dynamic_tools.items() if isinstance(tool, StructuredOutputTool)
+        }
+
+    def _has_structured_output_tool_use(self, content: list, structured_output_tool_names: set[str]) -> bool:
+        """Check if content has any toolUse block matching a structured-output tool."""
+        return any(
+            isinstance(block, dict)
+            and "toolUse" in block
+            and block["toolUse"].get("name", "") in structured_output_tool_names
+            for block in content
         )
 
     # -----------------------------------------------------------------------
     # Model corruption helpers
     # -----------------------------------------------------------------------
 
-    def _apply_to_model_blocks(self, post_effects: list, content: list, so_tool_names: set[str] | None = None) -> list:
+    def _apply_to_model_blocks(
+        self, post_effects: list, content: list, structured_output_tool_names: set[str] | None = None
+    ) -> list:
         """Apply model post effects to content blocks sequentially.
 
         Handles text blocks (Confabulation, SuccessFraming, MalformedJson on text)
@@ -230,32 +243,27 @@ class ChaosPlugin(Plugin):
 
         corrupted = content
         for effect in primary:
-            if isinstance(effect, MalformedJson) and so_tool_names:
-                corrupted = self._apply_malformed_json_selective(effect, corrupted, so_tool_names)
+            if isinstance(effect, MalformedJson) and structured_output_tool_names:
+                corrupted = self._apply_malformed_json_selective(effect, corrupted, structured_output_tool_names)
             else:
                 corrupted = effect.apply(corrupted)
         for effect in framing:
             corrupted = effect.apply(corrupted)
         return corrupted
 
-    def _apply_malformed_json_selective(self, effect: MalformedJson, blocks: list, so_tool_names: set[str]) -> list:
-        """Apply MalformedJson only to structured-output toolUse blocks and text blocks.
-
-        Ordinary mid-turn toolUse blocks are left untouched.
-        """
+    def _apply_malformed_json_selective(
+        self, effect: MalformedJson, blocks: list, structured_output_tool_names: set[str]
+    ) -> list:
+        """Apply MalformedJson: text blocks get malformed; only SO toolUse blocks get corrupted."""
         result = []
         for block in blocks:
-            block = dict(block)
-            if "toolUse" in block:
+            if isinstance(block, dict) and "toolUse" in block:
                 tool_name = block["toolUse"].get("name", "")
-                if tool_name in so_tool_names:
-                    # Structured-output toolUse — corrupt the input JSON
-                    tool_use = dict(block["toolUse"])
-                    raw = json.dumps(tool_use.get("input", {}))
-                    tool_use["input"] = raw[:-1] if raw.endswith("}") else raw + "{{{"
-                    block["toolUse"] = tool_use
-                # else: ordinary mid-turn toolUse — leave untouched
-            elif "text" in block and isinstance(block["text"], str):
+                if tool_name in structured_output_tool_names:
+                    block = effect.malform_tool_use_block(block)
+                # else: ordinary toolUse — leave untouched
+            elif isinstance(block, dict) and "text" in block and isinstance(block["text"], str):
+                block = dict(block)
                 block["text"] = MalformedJson._malform_text(block["text"])
             result.append(block)
         return result
