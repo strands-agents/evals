@@ -87,6 +87,7 @@ class ChaosCase(Case, Generic[InputT, OutputT]):
     def _validate_effects(self) -> "ChaosCase":
         """Validate behavioral constraints the type system cannot express."""
         self._validate_tool_effects()
+        self._validate_pre_model_effects()
         return self
 
     def _validate_tool_effects(self) -> None:
@@ -97,6 +98,17 @@ class ChaosCase(Case, Generic[InputT, OutputT]):
                     f"Tool '{tool_name}' has {len(effects_list)} effects — only 1 is allowed per "
                     f"ChaosCase. Use separate ChaosCase instances to test effects independently."
                 )
+
+    def _validate_pre_model_effects(self) -> None:
+        """At most one pre-hook model effect: pre effects cancel the model call, so only one can win."""
+        pre_effects = [e for e in self.model_effects if e.hook == "pre"]
+        if len(pre_effects) > 1:
+            names = ", ".join(type(e).__name__ for e in pre_effects)
+            raise ValueError(
+                f"model_effects has {len(pre_effects)} pre-hook effects ({names}) — only 1 is allowed per "
+                f"ChaosCase. Pre-hook effects cancel the model call, so only one can take effect. "
+                f"Use separate ChaosCase instances to test them independently."
+            )
 
     @classmethod
     def expand(

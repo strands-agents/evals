@@ -475,6 +475,62 @@ class TestEffectFamilyValidation:
             )
 
 
+class TestSinglePreModelEffect:
+    """At most one pre-hook model effect per case — pre effects cancel the model call."""
+
+    def test_two_pre_effects_rejected(self):
+        """FullRefusal + EmptyResponse (both pre) is rejected, naming both effects."""
+        with pytest.raises(PydanticValidationError, match="only 1 is allowed"):
+            ChaosCase(
+                name="two_pre",
+                input="test",
+                effects={"model_effects": {"*": [FullRefusal(), EmptyResponse()]}},
+            )
+
+    def test_two_pre_effects_rejected_via_model_validate(self):
+        """Two pre effects are rejected on the model_validate (dict) path."""
+        with pytest.raises(PydanticValidationError, match="only 1 is allowed"):
+            ChaosCase.model_validate(
+                {
+                    "name": "two_pre",
+                    "input": "test",
+                    "effects": {
+                        "model_effects": {"*": [{"effect_type": "full_refusal"}, {"effect_type": "empty_response"}]}
+                    },
+                }
+            )
+
+    def test_rejection_names_both_effects(self):
+        """The error message identifies both offending pre effects."""
+        with pytest.raises(PydanticValidationError) as exc_info:
+            ChaosCase(
+                name="two_pre",
+                input="test",
+                effects={"model_effects": {"*": [FullRefusal(), EmptyResponse()]}},
+            )
+        message = str(exc_info.value)
+        assert "FullRefusal" in message
+        assert "EmptyResponse" in message
+
+    def test_single_pre_effect_accepted(self):
+        """One pre effect alone is valid."""
+        case = ChaosCase(
+            name="one_pre",
+            input="test",
+            effects={"model_effects": {"*": [FullRefusal()]}},
+        )
+        assert len(case.model_effects) == 1
+
+    def test_pre_plus_post_mix_accepted(self):
+        """A pre + post mix is valid — only multiple pre effects are rejected."""
+        case = ChaosCase(
+            name="mixed",
+            input="test",
+            effects={"model_effects": {"*": [FullRefusal(), MalformedJson()]}},
+        )
+        assert len(case.model_effects) == 2
+
+
 class TestOrdinaryDynamicToolNotCorrupted:
     """An ordinary dynamic tool (not StructuredOutputTool) is NOT corrupted."""
 

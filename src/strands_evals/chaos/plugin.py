@@ -12,6 +12,7 @@ native hook system. Handles BOTH tool-level and model-output chaos:
 import json
 import logging
 from enum import Enum, auto
+from typing import NamedTuple, Protocol, cast
 
 from strands.hooks import (
     AfterToolCallEvent,
@@ -33,12 +34,24 @@ logger = logging.getLogger(__name__)
 
 
 class MessageKind(Enum):
-    """Classification of messages for model output chaos routing."""
+    """Kind of corruptible model output."""
 
-    IRRELEVANT = auto()
-    ORDINARY_TOOL_USE = auto()
     STRUCTURED_OUTPUT = auto()
     FINAL_TEXT = auto()
+
+
+class ModelOutputTarget(NamedTuple):
+    """A model output eligible for corruption."""
+
+    kind: MessageKind
+    content: list
+    structured_output_tool_names: set[str]
+
+
+class PreModelEffect(Protocol):
+    """A model effect that cancels the model call with a message."""
+
+    def cancel_message(self) -> str: ...
 
 
 class ChaosPlugin(Plugin):
@@ -141,88 +154,75 @@ class ChaosPlugin(Plugin):
 
     @hook  # type: ignore[call-overload]
     def before_model_invocation(self, event: BeforeModelCallEvent) -> None:
-        """Intercept model calls to inject pre-hook effects (FullRefusal, EmptyResponse).
-
-        Cancels the model call by setting event.cancel to the effect's cancel_message.
-        No role/toolUse guard is needed — there is no message yet at pre time.
-        """
-        chaos_case = _current_chaos_case.get()
-        if chaos_case is None or not chaos_case.model_effects:
+        """Cancel the model call when a pre-hook model effect is configured."""
+        effect = self._select_pre_model_effect()
+        if effect is None:
             return
-
-        pre = [e for e in chaos_case.model_effects if e.hook == "pre"]
-        if not pre:
-            return
-
-        # First pre effect wins (cancel short-circuits, only one can win)
-        first_pre = pre[0]
-        if hasattr(first_pre, "cancel_message"):
-            event.cancel = first_pre.cancel_message()
-        logger.info("effect=<%s> | injected model pre-hook (cancel)", type(first_pre).__name__)
+        event.cancel = effect.cancel_message()
 
     @hook  # type: ignore[call-overload]
     def after_model_invocation(self, event: MessageAddedEvent) -> None:
-        """Apply post-hook model effects based on message classification."""
+        """Corrupt eligible model output with the configured post-hook model effects."""
+        effects = self._get_post_model_effects()
+        target = self._classify_model_output(event)
+        if target is None or not effects:
+            return
+        event.message["content"] = self._apply_model_effects(effects, target)
+
+    def _select_pre_model_effect(self) -> PreModelEffect | None:
+        """Return the single configured pre-hook model effect, or None.
+
+        ChaosCase validation guarantees at most one pre effect, so no ordering policy is needed.
+        """
         chaos_case = _current_chaos_case.get()
-        if chaos_case is None or not chaos_case.model_effects:
-            return
+        if chaos_case is None:
+            return None
+        for effect in chaos_case.model_effects:
+            if effect.hook == "pre":
+                return cast(PreModelEffect, effect)
+        return None
 
-        # Pre effects already produced the turn — skip post
+    def _get_post_model_effects(self) -> list:
+        """Return the configured post-hook model effects.
+
+        Empty when a pre effect is configured: the pre effect already produced the turn,
+        so applying post effects would corrupt it twice.
+        """
+        chaos_case = _current_chaos_case.get()
+        if chaos_case is None:
+            return []
         if any(e.hook == "pre" for e in chaos_case.model_effects):
-            return
+            return []
+        return [e for e in chaos_case.model_effects if e.hook == "post"]
 
-        post_effects = [e for e in chaos_case.model_effects if e.hook == "post"]
-        if not post_effects:
-            return
+    def _classify_model_output(self, event: MessageAddedEvent) -> ModelOutputTarget | None:
+        """Return the corruptible target for this message, or None if it must be left alone.
 
-        kind, content, so_tool_names = self._classify_model_message(event)
-
-        if kind == MessageKind.IRRELEVANT:
-            return
-        elif kind == MessageKind.ORDINARY_TOOL_USE:
-            return
-        elif kind == MessageKind.STRUCTURED_OUTPUT:
-            # Only MalformedJson reaches structured-output toolUse
-            if not any(isinstance(e, MalformedJson) for e in post_effects):
-                return
-            assert content is not None  # guaranteed by classifier for STRUCTURED_OUTPUT
-            corrupted = self._apply_to_model_blocks(post_effects, content, so_tool_names)
-        else:  # FINAL_TEXT
-            assert content is not None  # guaranteed by classifier for FINAL_TEXT
-            corrupted = self._apply_to_model_blocks(post_effects, content, set())
-
-        event.message["content"] = corrupted
-        effect_names = ", ".join(type(e).__name__ for e in post_effects)
-        logger.info("effects=<%s> | applied model output chaos", effect_names)
-
-    # Message classification
-
-    def _classify_model_message(self, event: MessageAddedEvent) -> tuple[MessageKind, list | None, set[str]]:
-        """Classify a message for chaos routing. Computed once per hook invocation."""
+        Ordinary tool dispatch is excluded: MessageAddedEvent fires before dispatch, so
+        corrupting those blocks breaks the agent loop.
+        """
         message = event.message
         if message.get("role") != "assistant":
-            return MessageKind.IRRELEVANT, None, set()
+            return None
         content = message.get("content")
         if content is None:
-            return MessageKind.IRRELEVANT, None, set()
+            return None
         if not isinstance(content, list):
-            return MessageKind.FINAL_TEXT, content, set()
+            return ModelOutputTarget(MessageKind.FINAL_TEXT, content, set())
 
-        has_tool_use = any(isinstance(block, dict) and "toolUse" in block for block in content)
-        if not has_tool_use:
-            return MessageKind.FINAL_TEXT, content, set()
+        if not any(isinstance(block, dict) and "toolUse" in block for block in content):
+            return ModelOutputTarget(MessageKind.FINAL_TEXT, content, set())
 
-        # Has toolUse — determine if it's structured-output
         structured_output_tool_names = self._get_structured_output_tool_names(event.agent)
-        has_so = any(
+        targets_structured_output = any(
             isinstance(block, dict)
             and "toolUse" in block
             and block["toolUse"].get("name", "") in structured_output_tool_names
             for block in content
         )
-        if has_so:
-            return MessageKind.STRUCTURED_OUTPUT, content, structured_output_tool_names
-        return MessageKind.ORDINARY_TOOL_USE, content, set()
+        if targets_structured_output:
+            return ModelOutputTarget(MessageKind.STRUCTURED_OUTPUT, content, structured_output_tool_names)
+        return None
 
     def _get_structured_output_tool_names(self, agent) -> set[str]:  # type: ignore[type-arg]
         """Identify structured-output tools via isinstance(tool, StructuredOutputTool)."""
@@ -232,16 +232,24 @@ class ChaosPlugin(Plugin):
             name for name, tool in agent.tool_registry.dynamic_tools.items() if isinstance(tool, StructuredOutputTool)
         }
 
-    # Model corruption helpers
+    def _apply_model_effects(self, effects: list, target: ModelOutputTarget) -> list:
+        """Corrupt the target content with the given post-hook model effects.
+
+        Structured-output toolUse is reachable only by MalformedJson; any other effect
+        would break the structured-output contract, so it is skipped for that target.
+        """
+        if target.kind is MessageKind.STRUCTURED_OUTPUT:
+            effects = [e for e in effects if isinstance(e, MalformedJson)]
+            if not effects:
+                return target.content
+        return self._apply_to_model_blocks(effects, target.content, target.structured_output_tool_names)
 
     def _apply_to_model_blocks(
         self, post_effects: list, content: list, structured_output_tool_names: set[str] | None = None
     ) -> list:
         """Apply model post effects to content blocks sequentially.
 
-        Handles text blocks (Confabulation, SuccessFraming, MalformedJson on text)
-        and toolUse blocks (MalformedJson on structured-output tool input only).
-        Ordinary mid-turn toolUse blocks are left untouched.
+        SuccessFraming runs last so it frames whatever the other effects produced.
         """
         primary = [e for e in post_effects if not isinstance(e, SuccessFraming)]
         framing = [e for e in post_effects if isinstance(e, SuccessFraming)]
