@@ -1,16 +1,16 @@
 """Unit tests for model output chaos via ChaosPlugin two-hook architecture.
 
 Tests cover:
-- 6.1: Effects constructed via keyed dict {"model_effects": {"*": [...]}}
-- 6.2: EmptyResponse as pre-hook: model not called, turn is single space
-- 6.3: FullRefusal as pre-hook: model not called, turn is refusal text
-- 6.4: MalformedJson on structured-output toolUse: toolUse input corrupted
-- 6.5: Post effects (Confabulation, MalformedJson-on-text, SuccessFraming) work
-- 6.6: Mixed pre+post still produces one turn (pre wins)
-- 6.7: MalformedJson DOES reach/corrupt structured-output toolUse
-- Effect family validation (Fix A): wrong-category effects rejected
-- Wildcard rejection (Fix B): non-'*' model_effects keys rejected
-- Ordinary dynamic tool not corrupted (Fix C): isinstance-based detection
+- Effects constructed via keyed dict {"model_effects": {"*": [...]}}
+- EmptyResponse as pre-hook: model not called, turn is single space
+- FullRefusal as pre-hook: model not called, turn is refusal text
+- MalformedJson on structured-output toolUse: toolUse input corrupted
+- Post effects (Confabulation, MalformedJson-on-text, SuccessFraming) work
+- Mixed pre+post still produces one turn (pre wins)
+- MalformedJson DOES reach/corrupt structured-output toolUse
+- Effect family validation: wrong-category effects rejected
+- Wildcard rejection: non-'*' model_effects keys rejected
+- Ordinary dynamic tool not corrupted: isinstance-based detection
 """
 
 import copy
@@ -32,10 +32,6 @@ from strands_evals.chaos.effects import (
     Timeout,
 )
 from strands_evals.chaos.plugin import ChaosPlugin
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_event(message: dict, dynamic_tools: dict | None = None) -> MagicMock:
@@ -101,11 +97,6 @@ def _set_chaos_case(model_effects):
     return case
 
 
-# ---------------------------------------------------------------------------
-# 6.1: Effects constructed via keyed dict
-# ---------------------------------------------------------------------------
-
-
 class TestKeyedDictConstruction:
     """Effects are constructed via keyed dict form."""
 
@@ -135,11 +126,6 @@ class TestKeyedDictConstruction:
         assert case.model_effects == []
 
 
-# ---------------------------------------------------------------------------
-# 6.2: EmptyResponse as pre-hook
-# ---------------------------------------------------------------------------
-
-
 class TestEmptyResponsePreHook:
     """EmptyResponse is a pre-hook effect — cancels model call with single space."""
 
@@ -151,7 +137,6 @@ class TestEmptyResponsePreHook:
 
         plugin.before_model_invocation(event)
 
-        # event.cancel should be set to single space
         assert event.cancel == " "
 
     def test_empty_response_model_not_called(self):
@@ -174,11 +159,6 @@ class TestEmptyResponsePreHook:
 
     def teardown_method(self):
         _current_chaos_case.set(None)
-
-
-# ---------------------------------------------------------------------------
-# 6.3: FullRefusal as pre-hook (unchanged behavior)
-# ---------------------------------------------------------------------------
 
 
 class TestFullRefusalPreHook:
@@ -218,11 +198,6 @@ class TestFullRefusalPreHook:
         _current_chaos_case.set(None)
 
 
-# ---------------------------------------------------------------------------
-# 6.4: MalformedJson on structured-output toolUse
-# ---------------------------------------------------------------------------
-
-
 class TestMalformedJsonStructuredOutput:
     """MalformedJson DOES reach and corrupt structured-output toolUse blocks only."""
 
@@ -236,13 +211,11 @@ class TestMalformedJsonStructuredOutput:
                 {"toolUse": {"toolUseId": "so_1", "name": "MyModel", "input": {"field1": "value1"}}},
             ],
         }
-        # Register "MyModel" as a structured-output dynamic tool
         mock_so_tool = MagicMock(spec=StructuredOutputTool)
         event = _make_event(message, dynamic_tools={"MyModel": mock_so_tool})
 
         plugin.after_model_invocation(event)
 
-        # toolUse input should be corrupted — now a truncated JSON string
         tool_use_block = message["content"][0]["toolUse"]
         corrupted_input = tool_use_block["input"]
         assert isinstance(corrupted_input, str)
@@ -259,12 +232,10 @@ class TestMalformedJsonStructuredOutput:
             ],
         }
         original_content = copy.deepcopy(message["content"])
-        # "search" is NOT in dynamic_tools — it's a regular tool
         event = _make_event(message, dynamic_tools={})
 
         plugin.after_model_invocation(event)
 
-        # Content should be UNCHANGED — Guard 2 rejects (no structured-output tool found)
         assert message["content"] == original_content
 
     def test_mixed_tooluse_only_structured_output_corrupted(self):
@@ -278,7 +249,6 @@ class TestMalformedJsonStructuredOutput:
                 {"toolUse": {"toolUseId": "so_1", "name": "MyModel", "input": {"field1": "value1"}}},
             ],
         }
-        # Only "MyModel" is structured-output
         mock_so_tool = MagicMock(spec=StructuredOutputTool)
         event = _make_event(message, dynamic_tools={"MyModel": mock_so_tool})
 
@@ -296,11 +266,6 @@ class TestMalformedJsonStructuredOutput:
         _current_chaos_case.set(None)
 
 
-# ---------------------------------------------------------------------------
-# 6.5: Post effects still work on text-only messages
-# ---------------------------------------------------------------------------
-
-
 class TestPostEffectsOnText:
     """Post effects (Confabulation, MalformedJson-on-text, SuccessFraming) work."""
 
@@ -316,7 +281,6 @@ class TestPostEffectsOnText:
 
         result_text = message["content"][0]["text"]
         assert result_text != original_text
-        # Should contain original text fragments
         assert "sunny" in result_text or "warm" in result_text
 
     def test_malformed_json_on_text(self):
@@ -330,7 +294,6 @@ class TestPostEffectsOnText:
 
         result_text = message["content"][0]["text"]
         assert result_text != '{"key": "value", "nested": {"a": 1}}'
-        # Should be truncated (roughly half the original)
         assert len(result_text) < len('{"key": "value", "nested": {"a": 1}}')
 
     def test_success_framing_prepends_prefix(self):
@@ -343,10 +306,8 @@ class TestPostEffectsOnText:
         plugin.after_model_invocation(event)
 
         result_text = message["content"][0]["text"]
-        # Should start with one of the success prefixes
         has_prefix = any(result_text.startswith(p) for p in SuccessFraming._SUCCESS_PREFIXES)
         assert has_prefix
-        # Original text should still be present
         assert "Here is the result." in result_text
 
     def test_confabulation_plus_success_framing(self):
@@ -360,17 +321,11 @@ class TestPostEffectsOnText:
         plugin.after_model_invocation(event)
 
         result_text = message["content"][0]["text"]
-        # Should start with a success prefix (SuccessFraming applied last)
         has_prefix = any(result_text.startswith(p) for p in SuccessFraming._SUCCESS_PREFIXES)
         assert has_prefix
 
     def teardown_method(self):
         _current_chaos_case.set(None)
-
-
-# ---------------------------------------------------------------------------
-# 6.6: Mixed pre+post still produces one turn (pre wins)
-# ---------------------------------------------------------------------------
 
 
 class TestMixedPrePostCase:
@@ -381,13 +336,11 @@ class TestMixedPrePostCase:
         _set_chaos_case([FullRefusal(), MalformedJson()])
         plugin = ChaosPlugin()
 
-        # Pre-hook fires and cancels
         pre_event = BeforeModelCallEvent(agent=MagicMock())
         plugin.before_model_invocation(pre_event)
         cancel_text = pre_event.cancel
         assert cancel_text in FullRefusal._REFUSAL_TEMPLATES
 
-        # SDK builds cancel message, MessageAddedEvent fires
         cancel_message = {"role": "assistant", "content": [{"text": cancel_text}]}
         post_event = _make_event(cancel_message)
         plugin.after_model_invocation(post_event)
@@ -401,12 +354,10 @@ class TestMixedPrePostCase:
         _set_chaos_case([EmptyResponse(), SuccessFraming()])
         plugin = ChaosPlugin()
 
-        # Pre-hook fires
         pre_event = BeforeModelCallEvent(agent=MagicMock())
         plugin.before_model_invocation(pre_event)
         assert pre_event.cancel == " "
 
-        # SDK builds cancel message with single space
         cancel_message = {"role": "assistant", "content": [{"text": " "}]}
         post_event = _make_event(cancel_message)
         plugin.after_model_invocation(post_event)
@@ -418,13 +369,8 @@ class TestMixedPrePostCase:
         _current_chaos_case.set(None)
 
 
-# ---------------------------------------------------------------------------
-# 6.7: MalformedJson DOES reach structured-output toolUse (replaces old guard test)
-# ---------------------------------------------------------------------------
-
-
 class TestMalformedJsonReachesStructuredOutput:
-    """MalformedJson reaches structured-output toolUse (Guard 2 relaxed for it)."""
+    """MalformedJson reaches structured-output toolUse (relaxed for it)."""
 
     def test_malformed_json_corrupts_structured_output_tooluse(self):
         """MalformedJson DOES corrupt a structured-output toolUse block."""
@@ -447,13 +393,12 @@ class TestMalformedJsonReachesStructuredOutput:
 
         plugin.after_model_invocation(event)
 
-        # The toolUse input should now be a corrupted string, not a dict
         tool_use_block = message["content"][0]["toolUse"]
         assert isinstance(tool_use_block["input"], str)
         assert not tool_use_block["input"].endswith("}")
 
     def test_other_post_effects_still_skip_tooluse(self):
-        """Confabulation on a toolUse message is skipped (Guard 2 only relaxed for MalformedJson)."""
+        """Confabulation on a toolUse message is skipped (only relaxed for MalformedJson)."""
         _set_chaos_case([Confabulation()])
         plugin = ChaosPlugin()
         message = _tooluse_assistant_message()
@@ -462,24 +407,18 @@ class TestMalformedJsonReachesStructuredOutput:
 
         plugin.after_model_invocation(event)
 
-        # Content should be UNCHANGED — guard skipped corruption
         assert message["content"] == original_content
 
     def teardown_method(self):
         _current_chaos_case.set(None)
 
 
-# ---------------------------------------------------------------------------
-# Effect family validation (Fix A)
-# ---------------------------------------------------------------------------
-
-
 class TestEffectFamilyValidation:
-    """Effects placed in the wrong category are rejected."""
+    """Effects placed in the wrong category are rejected structurally by Pydantic."""
 
     def test_tool_effect_in_model_effects_rejected(self):
-        """A ToolEffect under model_effects raises ValueError."""
-        with pytest.raises(ValueError, match="is not a ModelEffect"):
+        """A ToolEffect under model_effects is rejected by discriminated union."""
+        with pytest.raises(PydanticValidationError, match="union_tag_invalid"):
             ChaosCase(
                 name="bad",
                 input="test",
@@ -487,8 +426,8 @@ class TestEffectFamilyValidation:
             )
 
     def test_model_effect_in_tool_effects_rejected(self):
-        """A ModelEffect under tool_effects raises ValueError."""
-        with pytest.raises(ValueError, match="is not a ToolEffect"):
+        """A ModelEffect under tool_effects is rejected by discriminated union."""
+        with pytest.raises(PydanticValidationError, match="union_tag_invalid"):
             ChaosCase(
                 name="bad",
                 input="test",
@@ -497,7 +436,7 @@ class TestEffectFamilyValidation:
 
     def test_model_effect_in_tool_effects_rejected_via_model_validate(self):
         """A ModelEffect under tool_effects is rejected on the model_validate (dict) path."""
-        with pytest.raises(PydanticValidationError, match="is not a ToolEffect"):
+        with pytest.raises(PydanticValidationError, match="union_tag_invalid"):
             ChaosCase.model_validate(
                 {
                     "name": "bad_tool",
@@ -508,7 +447,7 @@ class TestEffectFamilyValidation:
 
     def test_tool_effect_in_model_effects_rejected_via_model_validate(self):
         """A ToolEffect under model_effects is rejected on the model_validate (dict) path."""
-        with pytest.raises(PydanticValidationError, match="is not a ModelEffect"):
+        with pytest.raises(PydanticValidationError, match="union_tag_invalid"):
             ChaosCase.model_validate(
                 {
                     "name": "bad_model",
@@ -518,18 +457,22 @@ class TestEffectFamilyValidation:
             )
 
     def test_named_model_key_rejected(self):
-        """A non-'*' key in model_effects is rejected."""
-        with pytest.raises(ValueError, match="model targeting not yet"):
+        """A non-'*' key in model_effects is rejected by Literal constraint."""
+        with pytest.raises(PydanticValidationError, match="literal_error"):
             ChaosCase(
                 name="bad",
                 input="test",
                 effects={"model_effects": {"claude-sonnet": [MalformedJson()]}},
             )
 
-
-# ---------------------------------------------------------------------------
-# Ordinary dynamic tool not corrupted (Fix C)
-# ---------------------------------------------------------------------------
+    def test_bogus_category_rejected(self):
+        """An unknown effects category is rejected by extra='forbid'."""
+        with pytest.raises(PydanticValidationError, match="extra_forbidden"):
+            ChaosCase(
+                name="bad",
+                input="test",
+                effects={"bogus": {"x": []}},
+            )
 
 
 class TestOrdinaryDynamicToolNotCorrupted:
@@ -552,16 +495,10 @@ class TestOrdinaryDynamicToolNotCorrupted:
 
         plugin.after_model_invocation(event)
 
-        # Should be UNCHANGED — ordinary dynamic tool, not structured-output
         assert message["content"] == original_content
 
     def teardown_method(self):
         _current_chaos_case.set(None)
-
-
-# ---------------------------------------------------------------------------
-# Guard tests (role filtering, passthrough)
-# ---------------------------------------------------------------------------
 
 
 class TestGuardRoleFiltering:

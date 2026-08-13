@@ -11,6 +11,7 @@ native hook system. Handles BOTH tool-level and model-output chaos:
 
 import json
 import logging
+from enum import Enum, auto
 
 from strands.hooks import (
     AfterToolCallEvent,
@@ -29,6 +30,15 @@ from .effects import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class MessageKind(Enum):
+    """Classification of messages for model output chaos routing."""
+
+    IRRELEVANT = auto()
+    ORDINARY_TOOL_USE = auto()
+    STRUCTURED_OUTPUT = auto()
+    FINAL_TEXT = auto()
 
 
 class ChaosPlugin(Plugin):
@@ -72,9 +82,7 @@ class ChaosPlugin(Plugin):
 
     name = "chaos-testing"
 
-    # -----------------------------------------------------------------------
     # Tool chaos hooks
-    # -----------------------------------------------------------------------
 
     @hook  # type: ignore[call-overload]
     def before_tool_call(self, event: BeforeToolCallEvent) -> None:
@@ -129,9 +137,7 @@ class ChaosPlugin(Plugin):
 
             logger.info("effect=<%s>, tool=<%s> | applied chaos post-hook", type(effect).__name__, tool_name)
 
-    # -----------------------------------------------------------------------
     # Model output chaos hooks
-    # -----------------------------------------------------------------------
 
     @hook  # type: ignore[call-overload]
     def before_model_invocation(self, event: BeforeModelCallEvent) -> None:
@@ -156,57 +162,67 @@ class ChaosPlugin(Plugin):
 
     @hook  # type: ignore[call-overload]
     def after_model_invocation(self, event: MessageAddedEvent) -> None:
-        """Intercept messages to corrupt the final assistant response.
-
-        Guards ensure corruption is only applied to appropriate messages.
-        Only post-hook effects are applied here.
-        """
+        """Apply post-hook model effects based on message classification."""
         chaos_case = _current_chaos_case.get()
         if chaos_case is None or not chaos_case.model_effects:
             return
 
-        message = event.message
-        if not self._is_final_model_output(message):
-            return
-
-        content = message.get("content")
-
         # Pre effects already produced the turn — skip post
-        pre_effects = [e for e in chaos_case.model_effects if e.hook == "pre"]
-        if pre_effects:
+        if any(e.hook == "pre" for e in chaos_case.model_effects):
             return
 
         post_effects = [e for e in chaos_case.model_effects if e.hook == "post"]
         if not post_effects:
             return
 
-        # Guard 2: skip toolUse messages (mid-turn dispatch); exception: MalformedJson on structured-output toolUse.
-        if isinstance(content, list):
-            has_tool_use = any(isinstance(block, dict) and "toolUse" in block for block in content)
-            if has_tool_use:
-                if not any(isinstance(e, MalformedJson) for e in post_effects):
-                    return
-                structured_output_tool_names = self._get_structured_output_tool_names(event.agent)
-                if not self._has_structured_output_tool_use(content, structured_output_tool_names):
-                    return
-            else:
-                structured_output_tool_names = set()
-        else:
-            structured_output_tool_names = set()
+        kind, content, so_tool_names = self._classify_model_message(event)
 
-        corrupted = self._apply_to_model_blocks(post_effects, content, structured_output_tool_names)
-        message["content"] = corrupted
+        if kind == MessageKind.IRRELEVANT:
+            return
+        elif kind == MessageKind.ORDINARY_TOOL_USE:
+            return
+        elif kind == MessageKind.STRUCTURED_OUTPUT:
+            # Only MalformedJson reaches structured-output toolUse
+            if not any(isinstance(e, MalformedJson) for e in post_effects):
+                return
+            assert content is not None  # guaranteed by classifier for STRUCTURED_OUTPUT
+            corrupted = self._apply_to_model_blocks(post_effects, content, so_tool_names)
+        else:  # FINAL_TEXT
+            assert content is not None  # guaranteed by classifier for FINAL_TEXT
+            corrupted = self._apply_to_model_blocks(post_effects, content, set())
 
+        event.message["content"] = corrupted
         effect_names = ", ".join(type(e).__name__ for e in post_effects)
         logger.info("effects=<%s> | applied model output chaos", effect_names)
 
-    # -----------------------------------------------------------------------
-    # Model output helper methods
-    # -----------------------------------------------------------------------
+    # Message classification
 
-    def _is_final_model_output(self, message) -> bool:
-        """Check if message is a final assistant model output (role=assistant, has content)."""
-        return message.get("role") == "assistant" and message.get("content") is not None
+    def _classify_model_message(self, event: MessageAddedEvent) -> tuple[MessageKind, list | None, set[str]]:
+        """Classify a message for chaos routing. Computed once per hook invocation."""
+        message = event.message
+        if message.get("role") != "assistant":
+            return MessageKind.IRRELEVANT, None, set()
+        content = message.get("content")
+        if content is None:
+            return MessageKind.IRRELEVANT, None, set()
+        if not isinstance(content, list):
+            return MessageKind.FINAL_TEXT, content, set()
+
+        has_tool_use = any(isinstance(block, dict) and "toolUse" in block for block in content)
+        if not has_tool_use:
+            return MessageKind.FINAL_TEXT, content, set()
+
+        # Has toolUse — determine if it's structured-output
+        structured_output_tool_names = self._get_structured_output_tool_names(event.agent)
+        has_so = any(
+            isinstance(block, dict)
+            and "toolUse" in block
+            and block["toolUse"].get("name", "") in structured_output_tool_names
+            for block in content
+        )
+        if has_so:
+            return MessageKind.STRUCTURED_OUTPUT, content, structured_output_tool_names
+        return MessageKind.ORDINARY_TOOL_USE, content, set()
 
     def _get_structured_output_tool_names(self, agent) -> set[str]:  # type: ignore[type-arg]
         """Identify structured-output tools via isinstance(tool, StructuredOutputTool)."""
@@ -216,18 +232,7 @@ class ChaosPlugin(Plugin):
             name for name, tool in agent.tool_registry.dynamic_tools.items() if isinstance(tool, StructuredOutputTool)
         }
 
-    def _has_structured_output_tool_use(self, content: list, structured_output_tool_names: set[str]) -> bool:
-        """Check if content has any toolUse block matching a structured-output tool."""
-        return any(
-            isinstance(block, dict)
-            and "toolUse" in block
-            and block["toolUse"].get("name", "") in structured_output_tool_names
-            for block in content
-        )
-
-    # -----------------------------------------------------------------------
     # Model corruption helpers
-    # -----------------------------------------------------------------------
 
     def _apply_to_model_blocks(
         self, post_effects: list, content: list, structured_output_tool_names: set[str] | None = None
@@ -260,17 +265,15 @@ class ChaosPlugin(Plugin):
             if isinstance(block, dict) and "toolUse" in block:
                 tool_name = block["toolUse"].get("name", "")
                 if tool_name in structured_output_tool_names:
-                    block = effect.malform_tool_use_block(block)
+                    block = MalformedJson.malform_tool_use_block(block)
                 # else: ordinary toolUse — leave untouched
             elif isinstance(block, dict) and "text" in block and isinstance(block["text"], str):
                 block = dict(block)
-                block["text"] = MalformedJson._malform_text(block["text"])
+                block["text"] = MalformedJson.malform_text(block["text"])
             result.append(block)
         return result
 
-    # -----------------------------------------------------------------------
     # Tool corruption helpers
-    # -----------------------------------------------------------------------
 
     def _apply_to_tool_blocks(self, effect: ChaosEffect, blocks: list) -> list:
         """Apply effect to text blocks in a tool content list."""

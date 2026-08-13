@@ -45,11 +45,6 @@ class ToolEffect(ChaosEffect):
     """
 
 
-# ---------------------------------------------------------------------------
-# Pre-hook effects: cancel the tool call before execution
-# ---------------------------------------------------------------------------
-
-
 class Timeout(ToolEffect):
     """Simulates a tool call timeout.
 
@@ -152,11 +147,6 @@ class ValidationError(ToolEffect):
     def apply(self, context: Any = None) -> str:
         """Return the error message to cancel the tool call with."""
         return self.error_message
-
-
-# ---------------------------------------------------------------------------
-# Post-hook effects: corrupt the tool response after execution
-# ---------------------------------------------------------------------------
 
 
 class TruncateFields(ToolEffect):
@@ -310,10 +300,6 @@ class CorruptValues(ToolEffect):
         return result
 
 
-# ---------------------------------------------------------------------------
-# Discriminated union type for Pydantic serialization
-# ---------------------------------------------------------------------------
-
 ToolEffectUnion = Annotated[
     Union[
         Annotated[Timeout, Tag("timeout")],
@@ -343,11 +329,6 @@ class ModelEffect(ChaosEffect):
     hook: ClassVar[Literal["pre", "post"]] = "post"
 
 
-# ---------------------------------------------------------------------------
-# a) MalformedJson
-# ---------------------------------------------------------------------------
-
-
 class MalformedJson(ModelEffect):
     """Corrupts JSON structures in model output."""
 
@@ -358,35 +339,22 @@ class MalformedJson(ModelEffect):
         if content is None:
             raise ValueError("MalformedJson.apply() requires content")
         if isinstance(content, str):
-            return self._malform_text(content)
+            return self.malform_text(content)
         elif isinstance(content, list):
             return self._malform_blocks(content)
         raise ValueError(f"MalformedJson.apply() received unsupported type {type(content).__name__}")
 
     @staticmethod
-    def _malform_text(text: str) -> str:
+    def malform_text(text: str) -> str:
+        """Corrupt JSON-like text — the ONE place text malformation lives."""
         stripped = text.strip()
         if stripped.startswith("{") or stripped.startswith("["):
             return stripped[: len(stripped) // 2]
         return text
 
     @staticmethod
-    def _malform_blocks(blocks: list) -> list:
-        result = []
-        for block in blocks:
-            block = dict(block)
-            if "toolUse" in block:
-                tool_use = dict(block["toolUse"])
-                raw = json.dumps(tool_use.get("input", {}))
-                tool_use["input"] = raw[:-1] if raw.endswith("}") else raw + "{{{"
-                block["toolUse"] = tool_use
-            elif "text" in block and isinstance(block["text"], str):
-                block["text"] = MalformedJson._malform_text(block["text"])
-            result.append(block)
-        return result
-
-    def malform_tool_use_block(self, block: dict) -> dict:
-        """Corrupt a single toolUse block's input JSON."""
+    def malform_tool_use_block(block: dict) -> dict:
+        """Corrupt a single toolUse block's input JSON — the ONE place this logic lives."""
         block = dict(block)
         tool_use = dict(block["toolUse"])
         raw = json.dumps(tool_use.get("input", {}))
@@ -394,10 +362,18 @@ class MalformedJson(ModelEffect):
         block["toolUse"] = tool_use
         return block
 
-
-# ---------------------------------------------------------------------------
-# b) EmptyResponse
-# ---------------------------------------------------------------------------
+    @staticmethod
+    def _malform_blocks(blocks: list) -> list:
+        """Apply malformation to all blocks — delegates toolUse corruption to malform_tool_use_block."""
+        result = []
+        for block in blocks:
+            if isinstance(block, dict) and "toolUse" in block:
+                block = MalformedJson.malform_tool_use_block(block)
+            elif isinstance(block, dict) and "text" in block and isinstance(block["text"], str):
+                block = dict(block)
+                block["text"] = MalformedJson.malform_text(block["text"])
+            result.append(block)
+        return result
 
 
 class EmptyResponse(ModelEffect):
@@ -407,7 +383,7 @@ class EmptyResponse(ModelEffect):
     effect_type: Literal["empty_response"] = "empty_response"
 
     def cancel_message(self) -> str:
-        # Pre-cancel with single space (truthy) skips real model call — "model returned nothing".
+        """Pre-cancel with single space (truthy) skips real model call."""
         return " "
 
     def apply(self, content: Any = None) -> Any:
@@ -418,11 +394,6 @@ class EmptyResponse(ModelEffect):
         elif isinstance(content, list):
             return []
         raise ValueError(f"EmptyResponse.apply() received unsupported type {type(content).__name__}")
-
-
-# ---------------------------------------------------------------------------
-# c) Confabulation
-# ---------------------------------------------------------------------------
 
 
 class Confabulation(ModelEffect):
@@ -469,11 +440,6 @@ class Confabulation(ModelEffect):
         return " ".join(sentences)
 
 
-# ---------------------------------------------------------------------------
-# d) FullRefusal
-# ---------------------------------------------------------------------------
-
-
 class FullRefusal(ModelEffect):
     """Replaces model output with a refusal message."""
 
@@ -504,11 +470,6 @@ class FullRefusal(ModelEffect):
         raise ValueError(f"FullRefusal.apply() received unsupported type {type(content).__name__}")
 
 
-# ---------------------------------------------------------------------------
-# e) SuccessFraming (composable post-step)
-# ---------------------------------------------------------------------------
-
-
 class SuccessFraming(ModelEffect):
     """Prepends a confident success prefix to content.
 
@@ -521,7 +482,7 @@ class SuccessFraming(ModelEffect):
     _SUCCESS_PREFIXES: ClassVar[list[str]] = [
         "Successfully completed the requested operation.",
         "Done! Here are the results you asked for.",
-        "Great news \u2014 everything worked as expected.",
+        "Great news — everything worked as expected.",
         "Operation finished successfully. Here's what I found:",
         "All done! The task has been completed without issues.",
         "I've successfully processed your request. Here's the output:",
@@ -544,10 +505,6 @@ class SuccessFraming(ModelEffect):
             return [{"text": prefix}] + content
         raise ValueError(f"SuccessFraming.apply() received unsupported type {type(content).__name__}")
 
-
-# ---------------------------------------------------------------------------
-# ModelEffectUnion — discriminated union for Pydantic deserialization
-# ---------------------------------------------------------------------------
 
 ModelEffectUnion = Annotated[
     Union[
