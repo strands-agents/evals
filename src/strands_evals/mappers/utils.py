@@ -7,7 +7,7 @@ import logging
 from typing import Any
 
 from ..types.trace import SpanUnion
-from .constants import SCOPE_ADK, SCOPE_LANGCHAIN_OTEL, SCOPE_OPENAI_AGENTS, SCOPE_STRANDS, SCOPES_OPENINFERENCE_FAMILY
+from .constants import SCOPE_ADK, SCOPE_LANGCHAIN_OTEL, SCOPE_STRANDS, SCOPES_OPENINFERENCE_FAMILY
 from .session_mapper import SessionMapper
 
 logger = logging.getLogger(__name__)
@@ -117,7 +117,6 @@ def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
     from .cloudwatch_session_mapper import CloudWatchSessionMapper
     from .generic_gen_ai_session_mapper import GenericGenAISessionMapper
     from .langchain_otel_session_mapper import LangChainOtelSessionMapper
-    from .openai_agents_otel_session_mapper import OpenAIAgentsOtelSessionMapper
     from .openinference_session_mapper import OpenInferenceSessionMapper
     from .strands_in_memory_session_mapper import StrandsInMemorySessionMapper
 
@@ -136,9 +135,6 @@ def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
 
         if scope_name == SCOPE_ADK:
             return ADKOtelSessionMapper()
-
-        if scope_name == SCOPE_OPENAI_AGENTS:
-            return OpenAIAgentsOtelSessionMapper()
 
         if scope_name == SCOPE_STRANDS:
             # CloudWatch split format puts body on a separate entry from

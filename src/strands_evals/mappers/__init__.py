@@ -5,7 +5,6 @@ from .cloudwatch_parser import CloudWatchLogsParser, parse_cloudwatch_logs
 from .cloudwatch_session_mapper import CloudWatchSessionMapper
 from .generic_gen_ai_session_mapper import GenericGenAISessionMapper
 from .langchain_otel_session_mapper import LangChainOtelSessionMapper
-from .openai_agents_otel_session_mapper import OpenAIAgentsOtelSessionMapper
 from .openinference_session_mapper import OpenInferenceSessionMapper
 from .opensearch_session_mapper import OpenSearchSessionMapper
 from .session_mapper import SessionMapper
@@ -24,7 +23,6 @@ __all__ = [
     "GenAIConventionVersion",
     "GenericGenAISessionMapper",
     "LangChainOtelSessionMapper",
-    "OpenAIAgentsOtelSessionMapper",
     "OpenInferenceSessionMapper",
     "OpenSearchSessionMapper",
     "SessionMapper",

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from strands_evals.mappers import GenericGenAISessionMapper, detect_otel_mapper
+from strands_evals.mappers.constants import SCOPE_OPENAI_AGENTS
 from strands_evals.types.trace import AgentInvocationSpan, InferenceSpan, ToolExecutionSpan
 
 
@@ -35,6 +36,16 @@ def make_span(
         "status": {"code": "OK"},
         "span_events": span_events or [],
     }
+
+
+def _user_msg(text):
+    """Build a gen_ai.input.messages JSON string with a single user text part."""
+    return json.dumps([{"role": "user", "parts": [{"type": "text", "content": text}]}])
+
+
+def _assistant_msg(text):
+    """Build a gen_ai.output.messages JSON string with a single assistant text part."""
+    return json.dumps([{"role": "assistant", "parts": [{"type": "text", "content": text}]}])
 
 
 class TestToolExecutionSpan:

@@ -1,0 +1,502 @@
+[
+  {
+    "trace_id": "9fa516c6d3cd456d5b2bf8349dcfa39b",
+    "span_id": "d58d9a3defe5fd21",
+    "parent_span_id": "d72488b1a2d28f70",
+    "name": "openai.response",
+    "start_time": 1786724979550236000,
+    "end_time": 1786724982074023000,
+    "attributes": {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.input.messages": "[{\"role\": \"system\", \"parts\": [{\"type\": \"text\", \"content\": \"You are a coordinator agent. You delegate tasks to specialist agents:\\n- Use ask_math_specialist for any mathematical calculations\\n- Use ask_research_specialist for weather or stock price lookups\\nFor tasks that require both, call each specialist as needed and synthesize their results into a final answer.\"}]}, {\"role\": \"user\", \"parts\": [{\"type\": \"text\", \"content\": \"Look up the stock price for AMZN, then calculate what 1000 shares would be worth by multiplying the price by 1000.\"}]}]",
+      "gen_ai.tool.definitions": "[{\"type\": \"function\", \"function\": {\"name\": \"ask_math_specialist\", \"description\": \"Delegate a math problem to the math specialist agent. Use this for any\\ncalculations involving addition, multiplication, or division.\", \"parameters\": {\"properties\": {\"query\": {\"description\": \"The math problem to solve.\", \"title\": \"Query\", \"type\": \"string\"}}, \"required\": [\"query\"], \"title\": \"ask_math_specialist_args\", \"type\": \"object\", \"additionalProperties\": false}}}, {\"type\": \"function\", \"function\": {\"name\": \"ask_research_specialist\", \"description\": \"Delegate a research question to the research specialist agent. Use this\\nfor weather lookups or stock price queries.\", \"parameters\": {\"properties\": {\"query\": {\"description\": \"The research question to answer.\", \"title\": \"Query\", \"type\": \"string\"}}, \"required\": [\"query\"], \"title\": \"ask_research_specialist_args\", \"type\": \"object\", \"additionalProperties\": false}}}]",
+      "gen_ai.request.temperature": 1.0,
+      "gen_ai.request.top_p": 1.0,
+      "gen_ai.response.model": "gpt-4o-mini-2024-07-18",
+      "gen_ai.response.id": "resp_0199dc379c066a05006a7f4274638887d2a73b90ef4ec3abf9",
+      "gen_ai.request.frequency_penalty": 0.0,
+      "gen_ai.output.messages": "[{\"role\": \"assistant\", \"parts\": [{\"type\": \"tool_call\", \"name\": \"ask_research_specialist\", \"id\": \"call_s6F0eFD5axqDZTStwEzNBOBw\", \"arguments\": {\"query\": \"current stock price of AMZN\"}}], \"finish_reason\": \"tool_call\"}]",
+      "gen_ai.response.finish_reasons": [
+        "tool_call"
+      ],
+      "gen_ai.usage.input_tokens": 225,
+      "gen_ai.usage.output_tokens": 23,
+      "gen_ai.usage.total_tokens": 248,
+      "gen_ai.usage.cache_read.input_tokens": 0,
+      "gen_ai.usage.reasoning_tokens": 0
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.openai_agents",
+      "version": "0.62.3"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "9fa516c6d3cd456d5b2bf8349dcfa39b",
+    "span_id": "f9d46950095d4a8d",
+    "parent_span_id": "54044faa1adce44c",
+    "name": "openai.response",
+    "start_time": 1786724982075769000,
+    "end_time": 1786724983181428000,
+    "attributes": {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.input.messages": "[{\"role\": \"system\", \"parts\": [{\"type\": \"text\", \"content\": \"You are a research specialist agent. You look up weather and stock prices. Provide clear, factual answers.\"}]}, {\"role\": \"user\", \"parts\": [{\"type\": \"text\", \"content\": \"current stock price of AMZN\"}]}]",
+      "gen_ai.tool.definitions": "[{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get the current weather for a city.\", \"parameters\": {\"properties\": {\"city\": {\"description\": \"The city name to get weather for.\", \"title\": \"City\", \"type\": \"string\"}}, \"required\": [\"city\"], \"title\": \"get_weather_args\", \"type\": \"object\", \"additionalProperties\": false}}}, {\"type\": \"function\", \"function\": {\"name\": \"lookup_stock_price\", \"description\": \"Look up the current stock price for a given ticker symbol. Returns simulated data.\", \"parameters\": {\"properties\": {\"ticker\": {\"description\": \"The stock ticker symbol, e.g. \\\"AMZN\\\".\", \"title\": \"Ticker\", \"type\": \"string\"}}, \"required\": [\"ticker\"], \"title\": \"lookup_stock_price_args\", \"type\": \"object\", \"additionalProperties\": false}}}]",
+      "gen_ai.request.temperature": 1.0,
+      "gen_ai.request.top_p": 1.0,
+      "gen_ai.response.model": "gpt-4o-mini-2024-07-18",
+      "gen_ai.response.id": "resp_04858446d5da5dbd006a7f427637c481a388bf053cbf95dbd4",
+      "gen_ai.request.frequency_penalty": 0.0,
+      "gen_ai.output.messages": "[{\"role\": \"assistant\", \"parts\": [{\"type\": \"tool_call\", \"name\": \"lookup_stock_price\", \"id\": \"call_z4eMjhGtXGUeK0qlT76u83cN\", \"arguments\": {\"ticker\": \"AMZN\"}}], \"finish_reason\": \"tool_call\"}]",
+      "gen_ai.response.finish_reasons": [
+        "tool_call"
+      ],
+      "gen_ai.usage.input_tokens": 141,
+      "gen_ai.usage.output_tokens": 17,
+      "gen_ai.usage.total_tokens": 158,
+      "gen_ai.usage.cache_read.input_tokens": 0,
+      "gen_ai.usage.reasoning_tokens": 0
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.openai_agents",
+      "version": "0.62.3"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "9fa516c6d3cd456d5b2bf8349dcfa39b",
+    "span_id": "9f21e95bd23400ff",
+    "parent_span_id": "54044faa1adce44c",
+    "name": "lookup_stock_price.tool",
+    "start_time": 1786724983181903000,
+    "end_time": 1786724983182425000,
+    "attributes": {
+      "traceloop.span.kind": "tool",
+      "gen_ai.tool.name": "lookup_stock_price",
+      "gen_ai.tool.type": "function",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.tool.call.arguments": "{\"ticker\":\"AMZN\"}",
+      "gen_ai.tool.call.result": "AMZN: $240.98"
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.openai_agents",
+      "version": "0.62.3"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "9fa516c6d3cd456d5b2bf8349dcfa39b",
+    "span_id": "f63d38771c89fc24",
+    "parent_span_id": "54044faa1adce44c",
+    "name": "openai.response",
+    "start_time": 1786724983183052000,
+    "end_time": 1786724984189516000,
+    "attributes": {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.input.messages": "[{\"role\": \"system\", \"parts\": [{\"type\": \"text\", \"content\": \"You are a research specialist agent. You look up weather and stock prices. Provide clear, factual answers.\"}]}, {\"role\": \"user\", \"parts\": [{\"type\": \"text\", \"content\": \"current stock price of AMZN\"}]}, {\"role\": \"assistant\", \"parts\": [{\"type\": \"tool_call\", \"name\": \"lookup_stock_price\", \"id\": \"fc_04858446d5da5dbd006a7f4276ecd081a38d36db0b254fe438\", \"arguments\": {\"ticker\": \"AMZN\"}}]}, {\"role\": \"tool\", \"parts\": [{\"type\": \"tool_call_response\", \"id\": \"call_z4eMjhGtXGUeK0qlT76u83cN\", \"response\": \"AMZN: $240.98\"}]}]",
+      "gen_ai.tool.definitions": "[{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get the current weather for a city.\", \"parameters\": {\"properties\": {\"city\": {\"description\": \"The city name to get weather for.\", \"title\": \"City\", \"type\": \"string\"}}, \"required\": [\"city\"], \"title\": \"get_weather_args\", \"type\": \"object\", \"additionalProperties\": false}}}, {\"type\": \"function\", \"function\": {\"name\": \"lookup_stock_price\", \"description\": \"Look up the current stock price for a given ticker symbol. Returns simulated data.\", \"parameters\": {\"properties\": {\"ticker\": {\"description\": \"The stock ticker symbol, e.g. \\\"AMZN\\\".\", \"title\": \"Ticker\", \"type\": \"string\"}}, \"required\": [\"ticker\"], \"title\": \"lookup_stock_price_args\", \"type\": \"object\", \"additionalProperties\": false}}}]",
+      "gen_ai.request.temperature": 1.0,
+      "gen_ai.request.top_p": 1.0,
+      "gen_ai.response.model": "gpt-4o-mini-2024-07-18",
+      "gen_ai.response.id": "resp_04858446d5da5dbd006a7f427750a881a38ffd13b1472d7541",
+      "gen_ai.request.frequency_penalty": 0.0,
+      "gen_ai.output.messages": "[{\"role\": \"assistant\", \"parts\": [{\"type\": \"text\", \"content\": \"The current stock price of Amazon (AMZN) is $240.98.\"}], \"finish_reason\": \"stop\"}]",
+      "gen_ai.response.finish_reasons": [
+        "stop"
+      ],
+      "gen_ai.usage.input_tokens": 174,
+      "gen_ai.usage.output_tokens": 18,
+      "gen_ai.usage.total_tokens": 192,
+      "gen_ai.usage.cache_read.input_tokens": 0,
+      "gen_ai.usage.reasoning_tokens": 0
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.openai_agents",
+      "version": "0.62.3"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "9fa516c6d3cd456d5b2bf8349dcfa39b",
+    "span_id": "54044faa1adce44c",
+    "parent_span_id": "20e16110c2caf0a9",
+    "name": "research_specialist.agent",
+    "start_time": 1786724982075316000,
+    "end_time": 1786724984190265000,
+    "attributes": {
+      "traceloop.span.kind": "agent",
+      "gen_ai.agent.name": "research_specialist",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.operation.name": "invoke_agent"
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.openai_agents",
+      "version": "0.62.3"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "9fa516c6d3cd456d5b2bf8349dcfa39b",
+    "span_id": "1c637e78d6d6ec31",
+    "parent_span_id": "d72488b1a2d28f70",
+    "name": "ask_research_specialist.tool",
+    "start_time": 1786724982074439000,
+    "end_time": 1786724984190449000,
+    "attributes": {
+      "traceloop.span.kind": "tool",
+      "gen_ai.tool.name": "ask_research_specialist",
+      "gen_ai.tool.type": "function",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.tool.call.arguments": "{\"query\":\"current stock price of AMZN\"}",
+      "gen_ai.tool.call.result": "The current stock price of Amazon (AMZN) is $240.98."
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.openai_agents",
+      "version": "0.62.3"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "9fa516c6d3cd456d5b2bf8349dcfa39b",
+    "span_id": "ccf56d79914e1984",
+    "parent_span_id": "d72488b1a2d28f70",
+    "name": "openai.response",
+    "start_time": 1786724984191003000,
+    "end_time": 1786724991199395000,
+    "attributes": {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.input.messages": "[{\"role\": \"system\", \"parts\": [{\"type\": \"text\", \"content\": \"You are a coordinator agent. You delegate tasks to specialist agents:\\n- Use ask_math_specialist for any mathematical calculations\\n- Use ask_research_specialist for weather or stock price lookups\\nFor tasks that require both, call each specialist as needed and synthesize their results into a final answer.\"}]}, {\"role\": \"user\", \"parts\": [{\"type\": \"text\", \"content\": \"Look up the stock price for AMZN, then calculate what 1000 shares would be worth by multiplying the price by 1000.\"}]}, {\"role\": \"assistant\", \"parts\": [{\"type\": \"tool_call\", \"name\": \"ask_research_specialist\", \"id\": \"fc_0199dc379c066a05006a7f4274f7e087d29e9838f52faf2c8a\", \"arguments\": {\"query\": \"current stock price of AMZN\"}}]}, {\"role\": \"tool\", \"parts\": [{\"type\": \"tool_call_response\", \"id\": \"call_s6F0eFD5axqDZTStwEzNBOBw\", \"response\": \"The current stock price of Amazon (AMZN) is $240.98.\"}]}]",
+      "gen_ai.tool.definitions": "[{\"type\": \"function\", \"function\": {\"name\": \"ask_math_specialist\", \"description\": \"Delegate a math problem to the math specialist agent. Use this for any\\ncalculations involving addition, multiplication, or division.\", \"parameters\": {\"properties\": {\"query\": {\"description\": \"The math problem to solve.\", \"title\": \"Query\", \"type\": \"string\"}}, \"required\": [\"query\"], \"title\": \"ask_math_specialist_args\", \"type\": \"object\", \"additionalProperties\": false}}}, {\"type\": \"function\", \"function\": {\"name\": \"ask_research_specialist\", \"description\": \"Delegate a research question to the research specialist agent. Use this\\nfor weather lookups or stock price queries.\", \"parameters\": {\"properties\": {\"query\": {\"description\": \"The research question to answer.\", \"title\": \"Query\", \"type\": \"string\"}}, \"required\": [\"query\"], \"title\": \"ask_research_specialist_args\", \"type\": \"object\", \"additionalProperties\": false}}}]",
+      "gen_ai.request.temperature": 1.0,
+      "gen_ai.request.top_p": 1.0,
+      "gen_ai.response.model": "gpt-4o-mini-2024-07-18",
+      "gen_ai.response.id": "resp_0199dc379c066a05006a7f4278505c87d2982c9542f8b466f9",
+      "gen_ai.request.frequency_penalty": 0.0,
+      "gen_ai.output.messages": "[{\"role\": \"assistant\", \"parts\": [{\"type\": \"tool_call\", \"name\": \"ask_math_specialist\", \"id\": \"call_FbrAp5TcHzzAQ8DDdAsEY0F3\", \"arguments\": {\"query\": \"240.98 multiplied by 1000\"}}], \"finish_reason\": \"tool_call\"}]",
+      "gen_ai.response.finish_reasons": [
+        "tool_call"
+      ],
+      "gen_ai.usage.input_tokens": 275,
+      "gen_ai.usage.output_tokens": 24,
+      "gen_ai.usage.total_tokens": 299,
+      "gen_ai.usage.cache_read.input_tokens": 0,
+      "gen_ai.usage.reasoning_tokens": 0
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.openai_agents",
+      "version": "0.62.3"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "9fa516c6d3cd456d5b2bf8349dcfa39b",
+    "span_id": "d27e0008f9b13c6f",
+    "parent_span_id": "186e8db9421d49d0",
+    "name": "openai.response",
+    "start_time": 1786724991200820000,
+    "end_time": 1786724992165163000,
+    "attributes": {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.input.messages": "[{\"role\": \"system\", \"parts\": [{\"type\": \"text\", \"content\": \"You are a math specialist agent. You solve mathematical problems using your available tools. Be precise and show your work.\"}]}, {\"role\": \"user\", \"parts\": [{\"type\": \"text\", \"content\": \"240.98 multiplied by 1000\"}]}]",
+      "gen_ai.tool.definitions": "[{\"type\": \"function\", \"function\": {\"name\": \"add_numbers\", \"description\": \"Return the sum of two numbers.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"First number.\", \"title\": \"A\", \"type\": \"integer\"}, \"b\": {\"description\": \"Second number.\", \"title\": \"B\", \"type\": \"integer\"}}, \"required\": [\"a\", \"b\"], \"title\": \"add_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}}}, {\"type\": \"function\", \"function\": {\"name\": \"multiply_numbers\", \"description\": \"Return the product of two numbers.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"First number.\", \"title\": \"A\", \"type\": \"integer\"}, \"b\": {\"description\": \"Second number.\", \"title\": \"B\", \"type\": \"integer\"}}, \"required\": [\"a\", \"b\"], \"title\": \"multiply_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}}}, {\"type\": \"function\", \"function\": {\"name\": \"divide_numbers\", \"description\": \"Return a divided by b. Returns error message if b is zero.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"Dividend.\", \"title\": \"A\", \"type\": \"number\"}, \"b\": {\"description\": \"Divisor.\", \"title\": \"B\", \"type\": \"number\"}}, \"required\": [\"a\", \"b\"], \"title\": \"divide_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}}}]",
+      "gen_ai.request.temperature": 1.0,
+      "gen_ai.request.top_p": 1.0,
+      "gen_ai.response.model": "gpt-4o-mini-2024-07-18",
+      "gen_ai.response.id": "resp_01b362a49195836c006a7f427f51988191a786587b908c63d0",
+      "gen_ai.request.frequency_penalty": 0.0,
+      "gen_ai.output.messages": "[{\"role\": \"assistant\", \"parts\": [{\"type\": \"tool_call\", \"name\": \"multiply_numbers\", \"id\": \"call_kUW5shFAUxcgPCnN10A0HB0Z\", \"arguments\": {\"a\": 240, \"b\": 1000}}], \"finish_reason\": \"tool_call\"}]",
+      "gen_ai.response.finish_reasons": [
+        "tool_call"
+      ],
+      "gen_ai.usage.input_tokens": 187,
+      "gen_ai.usage.output_tokens": 20,
+      "gen_ai.usage.total_tokens": 207,
+      "gen_ai.usage.cache_read.input_tokens": 0,
+      "gen_ai.usage.reasoning_tokens": 0
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.openai_agents",
+      "version": "0.62.3"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "9fa516c6d3cd456d5b2bf8349dcfa39b",
+    "span_id": "d4afdd5ac3fffcb4",
+    "parent_span_id": "186e8db9421d49d0",
+    "name": "multiply_numbers.tool",
+    "start_time": 1786724992165618000,
+    "end_time": 1786724992166080000,
+    "attributes": {
+      "traceloop.span.kind": "tool",
+      "gen_ai.tool.name": "multiply_numbers",
+      "gen_ai.tool.type": "function",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.tool.call.arguments": "{\"a\":240,\"b\":1000}",
+      "gen_ai.tool.call.result": "240000"
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.openai_agents",
+      "version": "0.62.3"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "9fa516c6d3cd456d5b2bf8349dcfa39b",
+    "span_id": "7bebb956c75af94c",
+    "parent_span_id": "186e8db9421d49d0",
+    "name": "openai.response",
+    "start_time": 1786724992166715000,
+    "end_time": 1786724993699273000,
+    "attributes": {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.input.messages": "[{\"role\": \"system\", \"parts\": [{\"type\": \"text\", \"content\": \"You are a math specialist agent. You solve mathematical problems using your available tools. Be precise and show your work.\"}]}, {\"role\": \"user\", \"parts\": [{\"type\": \"text\", \"content\": \"240.98 multiplied by 1000\"}]}, {\"role\": \"assistant\", \"parts\": [{\"type\": \"tool_call\", \"name\": \"multiply_numbers\", \"id\": \"fc_01b362a49195836c006a7f427fed6c8191b4a91d8d83bafcc3\", \"arguments\": {\"a\": 240, \"b\": 1000}}]}, {\"role\": \"tool\", \"parts\": [{\"type\": \"tool_call_response\", \"id\": \"call_kUW5shFAUxcgPCnN10A0HB0Z\", \"response\": \"240000\"}]}]",
+      "gen_ai.tool.definitions": "[{\"type\": \"function\", \"function\": {\"name\": \"add_numbers\", \"description\": \"Return the sum of two numbers.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"First number.\", \"title\": \"A\", \"type\": \"integer\"}, \"b\": {\"description\": \"Second number.\", \"title\": \"B\", \"type\": \"integer\"}}, \"required\": [\"a\", \"b\"], \"title\": \"add_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}}}, {\"type\": \"function\", \"function\": {\"name\": \"multiply_numbers\", \"description\": \"Return the product of two numbers.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"First number.\", \"title\": \"A\", \"type\": \"integer\"}, \"b\": {\"description\": \"Second number.\", \"title\": \"B\", \"type\": \"integer\"}}, \"required\": [\"a\", \"b\"], \"title\": \"multiply_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}}}, {\"type\": \"function\", \"function\": {\"name\": \"divide_numbers\", \"description\": \"Return a divided by b. Returns error message if b is zero.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"Dividend.\", \"title\": \"A\", \"type\": \"number\"}, \"b\": {\"description\": \"Divisor.\", \"title\": \"B\", \"type\": \"number\"}}, \"required\": [\"a\", \"b\"], \"title\": \"divide_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}}}]",
+      "gen_ai.request.temperature": 1.0,
+      "gen_ai.request.top_p": 1.0,
+      "gen_ai.response.model": "gpt-4o-mini-2024-07-18",
+      "gen_ai.response.id": "resp_01b362a49195836c006a7f428054a08191a533f0d5a513a46a",
+      "gen_ai.request.frequency_penalty": 0.0,
+      "gen_ai.output.messages": "[{\"role\": \"assistant\", \"parts\": [{\"type\": \"tool_call\", \"name\": \"multiply_numbers\", \"id\": \"call_2jEa4xlVJ5E5OgvUxduK4VKi\", \"arguments\": {\"a\": 0, \"b\": 1000}}], \"finish_reason\": \"tool_call\"}]",
+      "gen_ai.response.finish_reasons": [
+        "tool_call"
+      ],
+      "gen_ai.usage.input_tokens": 217,
+      "gen_ai.usage.output_tokens": 20,
+      "gen_ai.usage.total_tokens": 237,
+      "gen_ai.usage.cache_read.input_tokens": 0,
+      "gen_ai.usage.reasoning_tokens": 0
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.openai_agents",
+      "version": "0.62.3"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "9fa516c6d3cd456d5b2bf8349dcfa39b",
+    "span_id": "411ab6fc6a73892d",
+    "parent_span_id": "186e8db9421d49d0",
+    "name": "multiply_numbers.tool",
+    "start_time": 1786724993699804000,
+    "end_time": 1786724993700267000,
+    "attributes": {
+      "traceloop.span.kind": "tool",
+      "gen_ai.tool.name": "multiply_numbers",
+      "gen_ai.tool.type": "function",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.tool.call.arguments": "{\"a\":0,\"b\":1000}",
+      "gen_ai.tool.call.result": "0"
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.openai_agents",
+      "version": "0.62.3"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "9fa516c6d3cd456d5b2bf8349dcfa39b",
+    "span_id": "f9b5a86181a8ed32",
+    "parent_span_id": "186e8db9421d49d0",
+    "name": "openai.response",
+    "start_time": 1786724993700837000,
+    "end_time": 1786724995898866000,
+    "attributes": {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.input.messages": "[{\"role\": \"system\", \"parts\": [{\"type\": \"text\", \"content\": \"You are a math specialist agent. You solve mathematical problems using your available tools. Be precise and show your work.\"}]}, {\"role\": \"user\", \"parts\": [{\"type\": \"text\", \"content\": \"240.98 multiplied by 1000\"}]}, {\"role\": \"assistant\", \"parts\": [{\"type\": \"tool_call\", \"name\": \"multiply_numbers\", \"id\": \"fc_01b362a49195836c006a7f427fed6c8191b4a91d8d83bafcc3\", \"arguments\": {\"a\": 240, \"b\": 1000}}]}, {\"role\": \"tool\", \"parts\": [{\"type\": \"tool_call_response\", \"id\": \"call_kUW5shFAUxcgPCnN10A0HB0Z\", \"response\": \"240000\"}]}, {\"role\": \"assistant\", \"parts\": [{\"type\": \"tool_call\", \"name\": \"multiply_numbers\", \"id\": \"fc_01b362a49195836c006a7f42811c748191a25c3aba18a1b8b7\", \"arguments\": {\"a\": 0, \"b\": 1000}}]}, {\"role\": \"tool\", \"parts\": [{\"type\": \"tool_call_response\", \"id\": \"call_2jEa4xlVJ5E5OgvUxduK4VKi\", \"response\": \"0\"}]}]",
+      "gen_ai.tool.definitions": "[{\"type\": \"function\", \"function\": {\"name\": \"add_numbers\", \"description\": \"Return the sum of two numbers.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"First number.\", \"title\": \"A\", \"type\": \"integer\"}, \"b\": {\"description\": \"Second number.\", \"title\": \"B\", \"type\": \"integer\"}}, \"required\": [\"a\", \"b\"], \"title\": \"add_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}}}, {\"type\": \"function\", \"function\": {\"name\": \"multiply_numbers\", \"description\": \"Return the product of two numbers.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"First number.\", \"title\": \"A\", \"type\": \"integer\"}, \"b\": {\"description\": \"Second number.\", \"title\": \"B\", \"type\": \"integer\"}}, \"required\": [\"a\", \"b\"], \"title\": \"multiply_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}}}, {\"type\": \"function\", \"function\": {\"name\": \"divide_numbers\", \"description\": \"Return a divided by b. Returns error message if b is zero.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"Dividend.\", \"title\": \"A\", \"type\": \"number\"}, \"b\": {\"description\": \"Divisor.\", \"title\": \"B\", \"type\": \"number\"}}, \"required\": [\"a\", \"b\"], \"title\": \"divide_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}}}]",
+      "gen_ai.request.temperature": 1.0,
+      "gen_ai.request.top_p": 1.0,
+      "gen_ai.response.model": "gpt-4o-mini-2024-07-18",
+      "gen_ai.response.id": "resp_01b362a49195836c006a7f4281d2d8819185465e0b5f023f49",
+      "gen_ai.request.frequency_penalty": 0.0,
+      "gen_ai.output.messages": "[{\"role\": \"assistant\", \"parts\": [{\"type\": \"text\", \"content\": \"To calculate \\\\( 240.98 \\\\times 1000 \\\\):\\n\\n1. Break it down:\\n   - \\\\( 240 \\\\times 1000 = 240000 \\\\)\\n   - \\\\( 0.98 \\\\times 1000 = 980 \\\\)\\n\\n2. Add the results together:\\n   \\\\[\\n   240000 + 980 = 240980\\n   \\\\]\\n\\nTherefore, \\\\( 240.98 \\\\times 1000 = 240980 \\\\).\"}], \"finish_reason\": \"stop\"}]",
+      "gen_ai.response.finish_reasons": [
+        "stop"
+      ],
+      "gen_ai.usage.input_tokens": 246,
+      "gen_ai.usage.output_tokens": 98,
+      "gen_ai.usage.total_tokens": 344,
+      "gen_ai.usage.cache_read.input_tokens": 0,
+      "gen_ai.usage.reasoning_tokens": 0
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.openai_agents",
+      "version": "0.62.3"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "9fa516c6d3cd456d5b2bf8349dcfa39b",
+    "span_id": "186e8db9421d49d0",
+    "parent_span_id": "20e16110c2caf0a9",
+    "name": "math_specialist.agent",
+    "start_time": 1786724991200380000,
+    "end_time": 1786724995899447000,
+    "attributes": {
+      "traceloop.span.kind": "agent",
+      "gen_ai.agent.name": "math_specialist",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.operation.name": "invoke_agent"
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.openai_agents",
+      "version": "0.62.3"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "9fa516c6d3cd456d5b2bf8349dcfa39b",
+    "span_id": "e530dbba8c15859a",
+    "parent_span_id": "d72488b1a2d28f70",
+    "name": "ask_math_specialist.tool",
+    "start_time": 1786724991199826000,
+    "end_time": 1786724995899618000,
+    "attributes": {
+      "traceloop.span.kind": "tool",
+      "gen_ai.tool.name": "ask_math_specialist",
+      "gen_ai.tool.type": "function",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.tool.call.arguments": "{\"query\":\"240.98 multiplied by 1000\"}",
+      "gen_ai.tool.call.result": "To calculate \\( 240.98 \\times 1000 \\):\n\n1. Break it down:\n   - \\( 240 \\times 1000 = 240000 \\)\n   - \\( 0.98 \\times 1000 = 980 \\)\n\n2. Add the results together:\n   \\[\n   240000 + 980 = 240980\n   \\]\n\nTherefore, \\( 240.98 \\times 1000 = 240980 \\)."
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.openai_agents",
+      "version": "0.62.3"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "9fa516c6d3cd456d5b2bf8349dcfa39b",
+    "span_id": "6ccbe4bda1df4166",
+    "parent_span_id": "d72488b1a2d28f70",
+    "name": "openai.response",
+    "start_time": 1786724995900108000,
+    "end_time": 1786724998179862000,
+    "attributes": {
+      "gen_ai.operation.name": "chat",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.input.messages": "[{\"role\": \"system\", \"parts\": [{\"type\": \"text\", \"content\": \"You are a coordinator agent. You delegate tasks to specialist agents:\\n- Use ask_math_specialist for any mathematical calculations\\n- Use ask_research_specialist for weather or stock price lookups\\nFor tasks that require both, call each specialist as needed and synthesize their results into a final answer.\"}]}, {\"role\": \"user\", \"parts\": [{\"type\": \"text\", \"content\": \"Look up the stock price for AMZN, then calculate what 1000 shares would be worth by multiplying the price by 1000.\"}]}, {\"role\": \"assistant\", \"parts\": [{\"type\": \"tool_call\", \"name\": \"ask_research_specialist\", \"id\": \"fc_0199dc379c066a05006a7f4274f7e087d29e9838f52faf2c8a\", \"arguments\": {\"query\": \"current stock price of AMZN\"}}]}, {\"role\": \"tool\", \"parts\": [{\"type\": \"tool_call_response\", \"id\": \"call_s6F0eFD5axqDZTStwEzNBOBw\", \"response\": \"The current stock price of Amazon (AMZN) is $240.98.\"}]}, {\"role\": \"assistant\", \"parts\": [{\"type\": \"tool_call\", \"name\": \"ask_math_specialist\", \"id\": \"fc_0199dc379c066a05006a7f427ea61c87d2ba9660ff7f6cc427\", \"arguments\": {\"query\": \"240.98 multiplied by 1000\"}}]}, {\"role\": \"tool\", \"parts\": [{\"type\": \"tool_call_response\", \"id\": \"call_FbrAp5TcHzzAQ8DDdAsEY0F3\", \"response\": \"To calculate \\\\( 240.98 \\\\times 1000 \\\\):\\n\\n1. Break it down:\\n   - \\\\( 240 \\\\times 1000 = 240000 \\\\)\\n   - \\\\( 0.98 \\\\times 1000 = 980 \\\\)\\n\\n2. Add the results together:\\n   \\\\[\\n   240000 + 980 = 240980\\n   \\\\]\\n\\nTherefore, \\\\( 240.98 \\\\times 1000 = 240980 \\\\).\"}]}]",
+      "gen_ai.tool.definitions": "[{\"type\": \"function\", \"function\": {\"name\": \"ask_math_specialist\", \"description\": \"Delegate a math problem to the math specialist agent. Use this for any\\ncalculations involving addition, multiplication, or division.\", \"parameters\": {\"properties\": {\"query\": {\"description\": \"The math problem to solve.\", \"title\": \"Query\", \"type\": \"string\"}}, \"required\": [\"query\"], \"title\": \"ask_math_specialist_args\", \"type\": \"object\", \"additionalProperties\": false}}}, {\"type\": \"function\", \"function\": {\"name\": \"ask_research_specialist\", \"description\": \"Delegate a research question to the research specialist agent. Use this\\nfor weather lookups or stock price queries.\", \"parameters\": {\"properties\": {\"query\": {\"description\": \"The research question to answer.\", \"title\": \"Query\", \"type\": \"string\"}}, \"required\": [\"query\"], \"title\": \"ask_research_specialist_args\", \"type\": \"object\", \"additionalProperties\": false}}}]",
+      "gen_ai.request.temperature": 1.0,
+      "gen_ai.request.top_p": 1.0,
+      "gen_ai.response.model": "gpt-4o-mini-2024-07-18",
+      "gen_ai.response.id": "resp_0199dc379c066a05006a7f4284083087d2a433a4fd4d55aa5b",
+      "gen_ai.request.frequency_penalty": 0.0,
+      "gen_ai.output.messages": "[{\"role\": \"assistant\", \"parts\": [{\"type\": \"text\", \"content\": \"The current stock price of Amazon (AMZN) is $240.98. Therefore, 1,000 shares would be worth $240,980.\"}], \"finish_reason\": \"stop\"}]",
+      "gen_ai.response.finish_reasons": [
+        "stop"
+      ],
+      "gen_ai.usage.input_tokens": 405,
+      "gen_ai.usage.output_tokens": 33,
+      "gen_ai.usage.total_tokens": 438,
+      "gen_ai.usage.cache_read.input_tokens": 0,
+      "gen_ai.usage.reasoning_tokens": 0
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.openai_agents",
+      "version": "0.62.3"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "9fa516c6d3cd456d5b2bf8349dcfa39b",
+    "span_id": "d72488b1a2d28f70",
+    "parent_span_id": "20e16110c2caf0a9",
+    "name": "coordinator.agent",
+    "start_time": 1786724979549810000,
+    "end_time": 1786724998180451000,
+    "attributes": {
+      "traceloop.span.kind": "agent",
+      "gen_ai.agent.name": "coordinator",
+      "gen_ai.provider.name": "openai",
+      "gen_ai.operation.name": "invoke_agent"
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.openai_agents",
+      "version": "0.62.3"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "9fa516c6d3cd456d5b2bf8349dcfa39b",
+    "span_id": "20e16110c2caf0a9",
+    "parent_span_id": "d7c0afa1915f63ff",
+    "name": "Agent Workflow",
+    "start_time": 1786724979549470000,
+    "end_time": 1786724998180483000,
+    "attributes": {
+      "traceloop.span.kind": "workflow",
+      "gen_ai.provider.name": "openai",
+      "traceloop.workflow.name": "Agent Workflow"
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.openai_agents",
+      "version": "0.62.3"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  }
+]
