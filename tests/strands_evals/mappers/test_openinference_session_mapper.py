@@ -2279,7 +2279,9 @@ class TestOpenAIAgentsScopeSupport:
         assert agent_spans[0].user_prompt == "What is 15 multiplied by 37?"
         assert agent_spans[0].agent_response == "15 multiplied by 37 is 555."
         assert len(agent_spans[0].available_tools) == 1
-        assert agent_spans[0].available_tools[0].name == "calculator"
+        tool = agent_spans[0].available_tools[0]
+        assert tool.name == "calculator"
+        assert tool.parameters == {"type": "object", "properties": {"expression": {"type": "string"}}}
 
     def test_openai_tool_span_bare_string_output(self):
         """TOOL span with bare string output.value (not JSON) produces ToolExecutionSpan."""

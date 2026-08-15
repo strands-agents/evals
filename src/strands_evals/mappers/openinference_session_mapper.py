@@ -125,8 +125,11 @@ class OpenInferenceSessionMapper(SessionMapper):
         # Per-producer normalization: canonicalize encoding differences so the
         # shared conversion logic receives a uniform representation.
         for span in openinference_spans:
-            if self._get_scope_name(span) == SCOPE_OPENINFERENCE_SMOLAGENTS:
+            scope = self._get_scope_name(span)
+            if scope == SCOPE_OPENINFERENCE_SMOLAGENTS:
                 self._normalize_smolagents_span(span)
+            elif scope == SCOPE_OPENINFERENCE_OPENAI_AGENTS:
+                self._normalize_openai_agents_span(span)
 
         # Group spans by trace_id
         grouped = defaultdict(list)
@@ -264,6 +267,29 @@ class OpenInferenceSessionMapper(SessionMapper):
             # Fallback: no tool.parameters available to map positional args
             attrs["input.value"] = json.dumps({"args": args})
 
+    @classmethod
+    def _normalize_openai_agents_span(cls, span: dict) -> None:
+        """Normalize OpenAI tool schemas in-place.
+
+        This normalizes by:
+        1. Unwrapping tool schemas in the format {"type": "function", "function": {...}}.
+        2. Aliasing "parameters" to "input_schema".
+        """
+        attrs = span.get("attributes") or {}
+        for idx in cls._get_message_indices(attrs, "llm.tools."):
+            key = f"llm.tools.{idx}.tool.json_schema"
+            try:
+                schema = json.loads(attrs.get(key))
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(schema, dict):
+                continue
+            if "name" not in schema and isinstance(schema.get("function"), dict):
+                schema = schema["function"]
+            if "input_schema" not in schema and "parameters" in schema:
+                schema["input_schema"] = schema["parameters"]
+            attrs[key] = json.dumps(schema)
+
     def _normalize_openai_agents_trace(self, spans: list[dict]) -> None:
         """Normalize OpenAI Agents SDK AGENT spans in-place by injecting input/output.
 
@@ -293,8 +319,7 @@ class OpenInferenceSessionMapper(SessionMapper):
             if user_prompt:
                 attrs["input.value"] = user_prompt
 
-            # Copy LLM tool schemas onto the AGENT span so _extract_tools_from_attributes
-            # finds this agent's own tools.
+            # Copy LLM tool schemas onto the AGENT span so it carries its own tools.
             idx = 0
             while first_attrs.get(f"llm.tools.{idx}.tool.json_schema") is not None:
                 attrs[f"llm.tools.{idx}.tool.json_schema"] = first_attrs[f"llm.tools.{idx}.tool.json_schema"]
@@ -758,10 +783,7 @@ class OpenInferenceSessionMapper(SessionMapper):
             logger.warning(f"No agent_response for agent span {span.get('span_id')}")
             return None
 
-        available_tools = sorted(
-            self._extract_tools_from_attributes(attrs),
-            key=lambda t: t.name,
-        ) or sorted(
+        available_tools = self._extract_tools_from_attributes(attrs) or sorted(
             self._trace_tools_map.get(trace_id, {}).values(),
             key=lambda t: t.name,
         )
@@ -951,14 +973,11 @@ class OpenInferenceSessionMapper(SessionMapper):
             if key.startswith("llm.tools.") and key.endswith(".tool.json_schema"):
                 try:
                     tool_info = json.loads(value) if isinstance(value, str) else value
-                    # OpenAI format wraps under {"type": "function", "function": {...}}
-                    if "function" in tool_info and "name" not in tool_info:
-                        tool_info = tool_info["function"]
                     tools.append(
                         ToolConfig(
                             name=tool_info.get("name"),
                             description=tool_info.get("description"),
-                            parameters=tool_info.get("input_schema") or tool_info.get("parameters"),
+                            parameters=tool_info.get("input_schema"),
                         )
                     )
                 except (json.JSONDecodeError, AttributeError, ValueError):
