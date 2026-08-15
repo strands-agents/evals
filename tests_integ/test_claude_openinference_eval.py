@@ -181,15 +181,19 @@ def test_claude_single_agent_evaluation(telemetry):
 def test_claude_multi_agent_evaluation(telemetry):
     """Multi-agent delegation + tool call spans evaluate correctly."""
     agents = {
-        "math-specialist": AgentDefinition(
+        "weather-specialist": AgentDefinition(
             description=(
-                "Math specialist agent. Delegate any mathematical calculations "
-                "including arithmetic, algebra, square roots, and numeric computations."
+                "Weather specialist agent. Delegate any weather lookups to this agent. "
+                "It has access to a get_weather Bash tool that returns real-time weather data "
+                "for a given city. Only this agent can retrieve weather information."
             ),
             prompt=(
-                "You are a math specialist. Use Bash ONLY to run `python3 -c 'import math; print(...)'` "
-                "for calculations. Never use Bash for anything else. "
-                "Be precise and return just the numeric result."
+                "You are a weather specialist. To look up weather, run EXACTLY this Bash command:\n"
+                '  bash -c \'python3 -c "data={\\"seattle\\": \\"Rainy, 55F\\", '
+                '\\"new york\\": \\"Sunny, 72F\\", \\"london\\": \\"Cloudy, 60F\\", '
+                '\\"tokyo\\": \\"Clear, 68F\\"}; city=\\"CITY_HERE\\".lower(); '
+                'print(data.get(city, \\"Mild, 65F\\"))"\'\n'
+                "Replace CITY_HERE with the requested city. Return the weather result verbatim."
             ),
             tools=["Bash"],
         ),
@@ -197,12 +201,12 @@ def test_claude_multi_agent_evaluation(telemetry):
 
     test_cases = [
         Case[str, str](
-            name="multi-agent-math",
-            input="Calculate the square root of 1764, then multiply that result by 3.",
-            expected_output="126",
+            name="multi-agent-weather",
+            input="What is the current weather in Seattle?",
+            expected_output="Rainy, 55F",
             expected_assertion=(
-                "The agent computed the square root of 1764 (42), multiplied it by 3, "
-                "and responded with the final answer 126."
+                "The agent delegated to the weather-specialist which looked up "
+                "the weather for Seattle and responded with Rainy, 55F."
             ),
         ),
     ]
@@ -257,4 +261,4 @@ def test_claude_multi_agent_evaluation(telemetry):
 
     # Prove delegation actually happened
     delegations = [s.tool_call.arguments.get("subagent_type") for s in tool_spans if s.tool_call.name == "Agent"]
-    assert "math-specialist" in delegations, f"Expected delegation to math-specialist, got {delegations}"
+    assert "weather-specialist" in delegations, f"Expected delegation to weather-specialist, got {delegations}"
