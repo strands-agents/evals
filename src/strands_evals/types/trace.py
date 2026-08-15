@@ -135,18 +135,16 @@ def _to_aware_utc(dt: datetime) -> datetime:
 def _find_root_agent_span(agent_spans: Sequence[AgentInvocationSpan]) -> AgentInvocationSpan | None:
     """Search for a trace's root agent span.
 
-    Prefers a parentless agent that has content, then any parentless agent,
-    then the earliest by `start_time`. Returns `None` for an empty sequence.
+    Prefers a parentless agent with content, then any parentless agent, then all
+    agents; within the chosen tier the earliest `start_time` wins.
     """
     if not agent_spans:
         return None
-    for span in agent_spans:
-        if span.span_info.parent_span_id is None and (span.user_prompt or span.agent_response):
-            return span
-    for span in agent_spans:
-        if span.span_info.parent_span_id is None:
-            return span
-    return min(agent_spans, key=lambda s: _to_aware_utc(s.span_info.start_time))
+
+    parentless = [s for s in agent_spans if s.span_info.parent_span_id is None]
+    with_content = [s for s in parentless if s.user_prompt or s.agent_response]
+    candidates = with_content or parentless or list(agent_spans)
+    return min(candidates, key=lambda s: _to_aware_utc(s.span_info.start_time))
 
 
 class Trace(BaseModel):

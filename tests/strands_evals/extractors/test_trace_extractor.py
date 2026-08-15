@@ -453,3 +453,56 @@ def test_span_id_none_does_not_collide():
     result_b = next(r for r in result if r.tool_execution_details.tool_call.name == "tool_b")
     assert [t.name for t in result_a.available_tools] == ["tool_a"]
     assert [t.name for t in result_b.available_tools] == ["tool_b"]
+
+
+def test_tool_level_flat_multi_agent_anchors_to_earliest_coordinator():
+    """Flat trace, sub-agent first in list order: history and orphan tool anchor to the earliest coordinator."""
+    from datetime import timedelta
+
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    # Sub-agent listed first, but starts 5s after the coordinator.
+    sub = AgentInvocationSpan(
+        span_info=SpanInfo(
+            session_id="test",
+            span_id="sub",
+            parent_span_id=None,
+            start_time=base + timedelta(seconds=5),
+            end_time=base + timedelta(seconds=6),
+        ),
+        user_prompt="current weather in London",
+        agent_response="rainy",
+        available_tools=[ToolConfig(name="get_weather")],
+    )
+    coordinator = AgentInvocationSpan(
+        span_info=SpanInfo(
+            session_id="test",
+            span_id="coordinator",
+            parent_span_id=None,
+            start_time=base,
+            end_time=base + timedelta(seconds=10),
+        ),
+        user_prompt="weather in NY and London, then the difference",
+        agent_response="here is the difference",
+        available_tools=[ToolConfig(name="ask_research"), ToolConfig(name="ask_math")],
+    )
+    # Orphan tool span: no parent and no agent_span_id, so it falls back to the root.
+    orphan_tool = ToolExecutionSpan(
+        span_info=SpanInfo(
+            session_id="test",
+            span_id="tool",
+            parent_span_id=None,
+            start_time=base + timedelta(seconds=5),
+            end_time=base + timedelta(seconds=6),
+        ),
+        tool_call=ToolCall(name="get_weather", arguments={"city": "London"}),
+        tool_result=ToolResult(content="rainy"),
+    )
+    trace = Trace(spans=[sub, coordinator, orphan_tool], trace_id="t1", session_id="test")
+    session = Session(traces=[trace], session_id="test")
+
+    result = TraceExtractor(EvaluationLevel.TOOL_LEVEL).extract(session)
+
+    assert len(result) == 1
+    assert result[0].session_history[0].content[0].text == "weather in NY and London, then the difference"
+    assert result[0].tool_execution_details.agent_span_id == "coordinator"
+    assert [t.name for t in result[0].available_tools] == ["ask_research", "ask_math"]

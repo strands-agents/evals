@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from strands_evals.types.trace import (
     AgentInvocationSpan,
@@ -19,6 +19,7 @@ from strands_evals.types.trace import (
     Trace,
     TraceLevelInput,
     UserMessage,
+    _find_root_agent_span,
 )
 
 
@@ -348,3 +349,81 @@ def test_tools_without_span_ids_each_owned_by_their_own_agent():
 
     assert forecast.agent_span_id == "weather-agent"
     assert alerts.agent_span_id == "weather-agent"
+
+
+_ROOT_BASE = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def _root_agent(
+    span_id: str, *, parent: str | None = None, offset: int = 0, prompt: str = "", response: str = ""
+) -> AgentInvocationSpan:
+    """Build an AgentInvocationSpan starting `offset` seconds after a base time."""
+    start = _ROOT_BASE + timedelta(seconds=offset)
+    return AgentInvocationSpan(
+        span_info=SpanInfo(span_id=span_id, session_id="s", parent_span_id=parent, start_time=start, end_time=start),
+        user_prompt=prompt,
+        agent_response=response,
+        available_tools=[],
+    )
+
+
+class TestFindRootAgentSpan:
+    def test_empty_returns_none(self):
+        """An empty sequence yields None."""
+        assert _find_root_agent_span([]) is None
+
+    def test_earliest_parentless_with_content_wins_regardless_of_order(self):
+        """Among parentless-with-content agents the earliest start wins, not list order.
+
+        The coordinator is listed last but starts first — the old list-order logic
+        would have returned the first sub-agent instead.
+        """
+        spans = [
+            _root_agent("sub_a", offset=2, prompt="current weather in London"),
+            _root_agent("sub_b", offset=2, prompt="current weather in New York"),
+            _root_agent("coordinator", offset=0, prompt="weather in NY and London, then the difference"),
+        ]
+        assert _find_root_agent_span(spans).span_info.span_id == "coordinator"
+
+    def test_prefers_content_over_earlier_empty_parentless(self):
+        """A content span beats an earlier empty one; both prompt and response count as content."""
+        by_prompt = [_root_agent("empty", offset=0), _root_agent("with_prompt", offset=1, prompt="do the thing")]
+        assert _find_root_agent_span(by_prompt).span_info.span_id == "with_prompt"
+
+        by_response = [_root_agent("empty", offset=0), _root_agent("with_response", offset=1, response="done")]
+        assert _find_root_agent_span(by_response).span_info.span_id == "with_response"
+
+    def test_falls_back_to_parentless_when_none_have_content(self):
+        """When no parentless agent has content, the earliest parentless wins over any parented span."""
+        spans = [
+            _root_agent("parented", parent="p", offset=0),
+            _root_agent("late", offset=5),
+            _root_agent("early", offset=1),
+        ]
+        assert _find_root_agent_span(spans).span_info.span_id == "early"
+
+    def test_mixed_naive_and_aware_start_times(self):
+        """Naive and aware start times are compared as UTC without raising TypeError."""
+        aware = _root_agent("aware", offset=0, prompt="a")
+        naive_start = datetime(2026, 1, 1, 0, 0, 5)
+        naive = AgentInvocationSpan(
+            span_info=SpanInfo(
+                span_id="naive",
+                session_id="s",
+                parent_span_id=None,
+                start_time=naive_start,
+                end_time=naive_start,
+            ),
+            user_prompt="b",
+            agent_response="",
+            available_tools=[],
+        )
+        assert _find_root_agent_span([aware, naive]).span_info.span_id == "aware"
+
+    def test_falls_back_to_earliest_when_all_parented(self):
+        """When every agent has a parent, the earliest-start agent overall is chosen."""
+        spans = [
+            _root_agent("late", parent="p", offset=5, prompt="x"),
+            _root_agent("early", parent="p", offset=1, prompt="y"),
+        ]
+        assert _find_root_agent_span(spans).span_info.span_id == "early"
