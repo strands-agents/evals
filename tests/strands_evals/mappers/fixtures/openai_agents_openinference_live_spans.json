@@ -1,33 +1,34 @@
 [
   {
-    "trace_id": "8a0aec83b7264fd477a820bdd14053b2",
-    "span_id": "081f6d5504623843",
-    "parent_span_id": "f6c5b205471f7ef5",
+    "trace_id": "c60958e12a31f7bd1b19cc94b0a96dbe",
+    "span_id": "01647d903e5ce6db",
+    "parent_span_id": "0f61758b52ae63f8",
     "name": "response",
-    "start_time": 1785877073151115008,
-    "end_time": 1785877075525597952,
+    "start_time": 1786569488291881984,
+    "end_time": 1786569489779081216,
     "attributes": {
       "llm.system": "openai",
       "output.mime_type": "application/json",
-      "output.value": "{\"id\":\"resp_097a7471aca34100006a7252526968819d9d13db8e4227576a\",\"created_at\":1785877074.0,\"error\":null,\"incomplete_details\":null,\"instructions\":\"You are a math assistant. Use the calculator tool to evaluate mathematical expressions.\",\"metadata\":{},\"model\":\"gpt-4o-mini-2024-07-18\",\"object\":\"response\",\"output\":[{\"arguments\":\"{\\\"expression\\\":\\\"15 * 37\\\"}\",\"call_id\":\"call_o7raJcELK9anpm7dbcgKVBvG\",\"name\":\"calculator\",\"type\":\"function_call\",\"id\":\"fc_097a7471aca34100006a725253228c819d9514d07cc87e164e\",\"caller\":null,\"namespace\":null,\"status\":\"completed\"}],\"parallel_tool_calls\":true,\"temperature\":1.0,\"tool_choice\":\"auto\",\"tools\":[{\"name\":\"calculator\",\"parameters\":{\"properties\":{\"expression\":{\"description\":\"A mathematical expression to evaluate, e.g. \\\"2 + 2\\\" or \\\"15 * 37\\\".\",\"title\":\"Expression\",\"type\":\"string\"}},\"required\":[\"expression\"],\"title\":\"calculator_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Evaluate a mathematical expression and return the result.\",\"output_schema\":null}],\"top_p\":1.0,\"background\":false,\"completed_at\":1785877075.0,\"conversation\":null,\"max_output_tokens\":null,\"max_tool_calls\":null,\"moderation\":null,\"previous_response_id\":null,\"prompt\":null,\"prompt_cache_key\":\"agents-sdk:run:803c1aa5637848ce8f22a05ac6f66d35\",\"prompt_cache_options\":null,\"prompt_cache_retention\":\"in_memory\",\"reasoning\":{\"context\":null,\"effort\":null,\"generate_summary\":null,\"mode\":null,\"summary\":null},\"safety_identifier\":null,\"service_tier\":\"default\",\"status\":\"completed\",\"text\":{\"format\":{\"type\":\"text\"},\"verbosity\":\"medium\"},\"top_logprobs\":0,\"truncation\":\"disabled\",\"usage\":{\"input_tokens\":97,\"input_tokens_details\":{\"cache_write_tokens\":0,\"cached_tokens\":0},\"output_tokens\":18,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":115},\"user\":null,\"billing\":{\"payer\":\"developer\"},\"frequency_penalty\":0.0,\"presence_penalty\":0.0,\"store\":true,\"tool_usage\":{\"image_gen\":{\"input_tokens\":0,\"input_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"output_tokens\":0,\"output_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"total_tokens\":0},\"web_search\":{\"num_requests\":0}}}",
-      "llm.tools.0.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"calculator\", \"description\": \"Evaluate a mathematical expression and return the result.\", \"parameters\": {\"properties\": {\"expression\": {\"description\": \"A mathematical expression to evaluate, e.g. \\\"2 + 2\\\" or \\\"15 * 37\\\".\", \"title\": \"Expression\", \"type\": \"string\"}}, \"required\": [\"expression\"], \"title\": \"calculator_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
-      "llm.token_count.completion": 18,
-      "llm.token_count.prompt": 97,
-      "llm.token_count.total": 115,
+      "output.value": "{\"id\":\"resp_0e455d84153284dd006a7ce31109c4819e919d71ea0196f845\",\"created_at\":1786569489.0,\"error\":null,\"incomplete_details\":null,\"instructions\":\"You are a coordinator agent. You delegate tasks to specialist agents:\\n- Use ask_math_specialist for any mathematical calculations\\n- Use ask_research_specialist for weather or stock price lookups\\nFor tasks that require both, call each specialist as needed and synthesize their results into a final answer.\",\"metadata\":{},\"model\":\"gpt-4o-mini-2024-07-18\",\"object\":\"response\",\"output\":[{\"arguments\":\"{\\\"query\\\":\\\"42 multiplied by 17, then divided by 3\\\"}\",\"call_id\":\"call_Xw9gngSGFTuCw1vZ30iZHqhk\",\"name\":\"ask_math_specialist\",\"type\":\"function_call\",\"id\":\"fc_0e455d84153284dd006a7ce3118e50819eb35c4d67bde3bea1\",\"caller\":null,\"namespace\":null,\"status\":\"completed\"}],\"parallel_tool_calls\":true,\"temperature\":1.0,\"tool_choice\":\"auto\",\"tools\":[{\"name\":\"ask_math_specialist\",\"parameters\":{\"properties\":{\"query\":{\"description\":\"The math problem to solve.\",\"title\":\"Query\",\"type\":\"string\"}},\"required\":[\"query\"],\"title\":\"ask_math_specialist_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Delegate a math problem to the math specialist agent. Use this for any\\ncalculations involving addition, multiplication, or division.\",\"output_schema\":null},{\"name\":\"ask_research_specialist\",\"parameters\":{\"properties\":{\"query\":{\"description\":\"The research question to answer.\",\"title\":\"Query\",\"type\":\"string\"}},\"required\":[\"query\"],\"title\":\"ask_research_specialist_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Delegate a research question to the research specialist agent. Use this\\nfor weather lookups or stock price queries.\",\"output_schema\":null}],\"top_p\":1.0,\"background\":false,\"completed_at\":1786569489.0,\"conversation\":null,\"max_output_tokens\":null,\"max_tool_calls\":null,\"moderation\":null,\"previous_response_id\":null,\"prompt\":null,\"prompt_cache_key\":\"agents-sdk:run:2e6da150ddff48ccba7a48f9163b9253\",\"prompt_cache_options\":null,\"prompt_cache_retention\":\"in_memory\",\"reasoning\":{\"context\":null,\"effort\":null,\"generate_summary\":null,\"mode\":null,\"summary\":null},\"safety_identifier\":null,\"service_tier\":\"default\",\"status\":\"completed\",\"text\":{\"format\":{\"type\":\"text\"},\"verbosity\":\"medium\"},\"top_logprobs\":0,\"truncation\":\"disabled\",\"usage\":{\"input_tokens\":212,\"input_tokens_details\":{\"cache_write_tokens\":0,\"cached_tokens\":0},\"output_tokens\":27,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":239},\"user\":null,\"billing\":{\"payer\":\"developer\"},\"frequency_penalty\":0.0,\"presence_penalty\":0.0,\"store\":true,\"tool_usage\":{\"image_gen\":{\"input_tokens\":0,\"input_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"output_tokens\":0,\"output_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"total_tokens\":0},\"web_search\":{\"num_requests\":0}}}",
+      "llm.tools.0.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"ask_math_specialist\", \"description\": \"Delegate a math problem to the math specialist agent. Use this for any\\ncalculations involving addition, multiplication, or division.\", \"parameters\": {\"properties\": {\"query\": {\"description\": \"The math problem to solve.\", \"title\": \"Query\", \"type\": \"string\"}}, \"required\": [\"query\"], \"title\": \"ask_math_specialist_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
+      "llm.tools.1.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"ask_research_specialist\", \"description\": \"Delegate a research question to the research specialist agent. Use this\\nfor weather lookups or stock price queries.\", \"parameters\": {\"properties\": {\"query\": {\"description\": \"The research question to answer.\", \"title\": \"Query\", \"type\": \"string\"}}, \"required\": [\"query\"], \"title\": \"ask_research_specialist_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
+      "llm.token_count.completion": 27,
+      "llm.token_count.prompt": 212,
+      "llm.token_count.total": 239,
       "llm.token_count.prompt_details.cache_read": 0,
       "llm.token_count.completion_details.reasoning": 0,
       "llm.output_messages.0.message.role": "assistant",
-      "llm.output_messages.0.message.tool_calls.0.tool_call.id": "call_o7raJcELK9anpm7dbcgKVBvG",
-      "llm.output_messages.0.message.tool_calls.0.tool_call.function.name": "calculator",
-      "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments": "{\"expression\":\"15 * 37\"}",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.id": "call_Xw9gngSGFTuCw1vZ30iZHqhk",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.name": "ask_math_specialist",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments": "{\"query\":\"42 multiplied by 17, then divided by 3\"}",
       "llm.input_messages.0.message.role": "system",
-      "llm.input_messages.0.message.content": "You are a math assistant. Use the calculator tool to evaluate mathematical expressions.",
+      "llm.input_messages.0.message.content": "You are a coordinator agent. You delegate tasks to specialist agents:\n- Use ask_math_specialist for any mathematical calculations\n- Use ask_research_specialist for weather or stock price lookups\nFor tasks that require both, call each specialist as needed and synthesize their results into a final answer.",
       "llm.model_name": "gpt-4o-mini-2024-07-18",
-      "llm.invocation_parameters": "{\"id\": \"resp_097a7471aca34100006a7252526968819d9d13db8e4227576a\", \"created_at\": 1785877074.0, \"instructions\": \"You are a math assistant. Use the calculator tool to evaluate mathematical expressions.\", \"metadata\": {}, \"model\": \"gpt-4o-mini-2024-07-18\", \"parallel_tool_calls\": true, \"temperature\": 1.0, \"tool_choice\": \"auto\", \"top_p\": 1.0, \"background\": false, \"completed_at\": 1785877075.0, \"prompt_cache_key\": \"agents-sdk:run:803c1aa5637848ce8f22a05ac6f66d35\", \"prompt_cache_retention\": \"in_memory\", \"reasoning\": {}, \"service_tier\": \"default\", \"text\": {\"format\": {\"type\": \"text\"}, \"verbosity\": \"medium\"}, \"top_logprobs\": 0, \"truncation\": \"disabled\", \"billing\": {\"payer\": \"developer\"}, \"frequency_penalty\": 0.0, \"presence_penalty\": 0.0, \"store\": true, \"tool_usage\": {\"image_gen\": {\"input_tokens\": 0, \"input_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"output_tokens\": 0, \"output_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"total_tokens\": 0}, \"web_search\": {\"num_requests\": 0}}}",
+      "llm.invocation_parameters": "{\"id\": \"resp_0e455d84153284dd006a7ce31109c4819e919d71ea0196f845\", \"created_at\": 1786569489.0, \"instructions\": \"You are a coordinator agent. You delegate tasks to specialist agents:\\n- Use ask_math_specialist for any mathematical calculations\\n- Use ask_research_specialist for weather or stock price lookups\\nFor tasks that require both, call each specialist as needed and synthesize their results into a final answer.\", \"metadata\": {}, \"model\": \"gpt-4o-mini-2024-07-18\", \"parallel_tool_calls\": true, \"temperature\": 1.0, \"tool_choice\": \"auto\", \"top_p\": 1.0, \"background\": false, \"completed_at\": 1786569489.0, \"prompt_cache_key\": \"agents-sdk:run:2e6da150ddff48ccba7a48f9163b9253\", \"prompt_cache_retention\": \"in_memory\", \"reasoning\": {}, \"service_tier\": \"default\", \"text\": {\"format\": {\"type\": \"text\"}, \"verbosity\": \"medium\"}, \"top_logprobs\": 0, \"truncation\": \"disabled\", \"billing\": {\"payer\": \"developer\"}, \"frequency_penalty\": 0.0, \"presence_penalty\": 0.0, \"store\": true, \"tool_usage\": {\"image_gen\": {\"input_tokens\": 0, \"input_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"output_tokens\": 0, \"output_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"total_tokens\": 0}, \"web_search\": {\"num_requests\": 0}}}",
       "input.mime_type": "application/json",
-      "input.value": "[{\"content\": \"What is 15 multiplied by 37?\", \"role\": \"user\"}]",
+      "input.value": "[{\"content\": \"What is 42 multiplied by 17, then divided by 3?\", \"role\": \"user\"}]",
       "llm.input_messages.1.message.role": "user",
-      "llm.input_messages.1.message.content": "What is 15 multiplied by 37?",
+      "llm.input_messages.1.message.content": "What is 42 multiplied by 17, then divided by 3?",
       "openinference.span.kind": "LLM"
     },
     "scope": {
@@ -40,18 +41,63 @@
     "span_events": []
   },
   {
-    "trace_id": "8a0aec83b7264fd477a820bdd14053b2",
-    "span_id": "433e33e095bb5261",
-    "parent_span_id": "f6c5b205471f7ef5",
-    "name": "calculator",
-    "start_time": 1785877075526331904,
-    "end_time": 1785877075526873088,
+    "trace_id": "c60958e12a31f7bd1b19cc94b0a96dbe",
+    "span_id": "e2d2f86c9d8425c6",
+    "parent_span_id": "71cd419364298995",
+    "name": "response",
+    "start_time": 1786569489781728000,
+    "end_time": 1786569490768940032,
     "attributes": {
       "llm.system": "openai",
-      "tool.name": "calculator",
-      "input.value": "{\"expression\":\"15 * 37\"}",
+      "output.mime_type": "application/json",
+      "output.value": "{\"id\":\"resp_04f40cc6ac224de5006a7ce311ff48819d86b76b84d438b529\",\"created_at\":1786569490.0,\"error\":null,\"incomplete_details\":null,\"instructions\":\"You are a math specialist agent. You solve mathematical problems using your available tools. Be precise and show your work.\",\"metadata\":{},\"model\":\"gpt-4o-mini-2024-07-18\",\"object\":\"response\",\"output\":[{\"arguments\":\"{\\\"a\\\":42,\\\"b\\\":17}\",\"call_id\":\"call_lVUfG25SyOW6kvKsUFm0FAN9\",\"name\":\"multiply_numbers\",\"type\":\"function_call\",\"id\":\"fc_04f40cc6ac224de5006a7ce312c4d8819d8eb3fb3057d016d8\",\"caller\":null,\"namespace\":null,\"status\":\"completed\"},{\"arguments\":\"{\\\"a\\\":0,\\\"b\\\":3}\",\"call_id\":\"call_bxjY7m8PUxIHvFcq0iAIAnvT\",\"name\":\"divide_numbers\",\"type\":\"function_call\",\"id\":\"fc_04f40cc6ac224de5006a7ce312c4e4819daf074123c743a067\",\"caller\":null,\"namespace\":null,\"status\":\"completed\"}],\"parallel_tool_calls\":true,\"temperature\":1.0,\"tool_choice\":\"auto\",\"tools\":[{\"name\":\"add_numbers\",\"parameters\":{\"properties\":{\"a\":{\"description\":\"First number.\",\"title\":\"A\",\"type\":\"integer\"},\"b\":{\"description\":\"Second number.\",\"title\":\"B\",\"type\":\"integer\"}},\"required\":[\"a\",\"b\"],\"title\":\"add_numbers_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Return the sum of two numbers.\",\"output_schema\":null},{\"name\":\"multiply_numbers\",\"parameters\":{\"properties\":{\"a\":{\"description\":\"First number.\",\"title\":\"A\",\"type\":\"integer\"},\"b\":{\"description\":\"Second number.\",\"title\":\"B\",\"type\":\"integer\"}},\"required\":[\"a\",\"b\"],\"title\":\"multiply_numbers_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Return the product of two numbers.\",\"output_schema\":null},{\"name\":\"divide_numbers\",\"parameters\":{\"properties\":{\"a\":{\"description\":\"Dividend.\",\"title\":\"A\",\"type\":\"number\"},\"b\":{\"description\":\"Divisor.\",\"title\":\"B\",\"type\":\"number\"}},\"required\":[\"a\",\"b\"],\"title\":\"divide_numbers_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Return a divided by b. Returns error message if b is zero.\",\"output_schema\":null}],\"top_p\":1.0,\"background\":false,\"completed_at\":1786569490.0,\"conversation\":null,\"max_output_tokens\":null,\"max_tool_calls\":null,\"moderation\":null,\"previous_response_id\":null,\"prompt\":null,\"prompt_cache_key\":\"agents-sdk:run:edd36592ccd84859a7ab73e91845d96a\",\"prompt_cache_options\":null,\"prompt_cache_retention\":\"in_memory\",\"reasoning\":{\"context\":null,\"effort\":null,\"generate_summary\":null,\"mode\":null,\"summary\":null},\"safety_identifier\":null,\"service_tier\":\"default\",\"status\":\"completed\",\"text\":{\"format\":{\"type\":\"text\"},\"verbosity\":\"medium\"},\"top_logprobs\":0,\"truncation\":\"disabled\",\"usage\":{\"input_tokens\":190,\"input_tokens_details\":{\"cache_write_tokens\":0,\"cached_tokens\":0},\"output_tokens\":53,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":243},\"user\":null,\"billing\":{\"payer\":\"developer\"},\"frequency_penalty\":0.0,\"presence_penalty\":0.0,\"store\":true,\"tool_usage\":{\"image_gen\":{\"input_tokens\":0,\"input_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"output_tokens\":0,\"output_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"total_tokens\":0},\"web_search\":{\"num_requests\":0}}}",
+      "llm.tools.0.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"add_numbers\", \"description\": \"Return the sum of two numbers.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"First number.\", \"title\": \"A\", \"type\": \"integer\"}, \"b\": {\"description\": \"Second number.\", \"title\": \"B\", \"type\": \"integer\"}}, \"required\": [\"a\", \"b\"], \"title\": \"add_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
+      "llm.tools.1.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"multiply_numbers\", \"description\": \"Return the product of two numbers.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"First number.\", \"title\": \"A\", \"type\": \"integer\"}, \"b\": {\"description\": \"Second number.\", \"title\": \"B\", \"type\": \"integer\"}}, \"required\": [\"a\", \"b\"], \"title\": \"multiply_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
+      "llm.tools.2.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"divide_numbers\", \"description\": \"Return a divided by b. Returns error message if b is zero.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"Dividend.\", \"title\": \"A\", \"type\": \"number\"}, \"b\": {\"description\": \"Divisor.\", \"title\": \"B\", \"type\": \"number\"}}, \"required\": [\"a\", \"b\"], \"title\": \"divide_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
+      "llm.token_count.completion": 53,
+      "llm.token_count.prompt": 190,
+      "llm.token_count.total": 243,
+      "llm.token_count.prompt_details.cache_read": 0,
+      "llm.token_count.completion_details.reasoning": 0,
+      "llm.output_messages.0.message.tool_calls.0.tool_call.id": "call_lVUfG25SyOW6kvKsUFm0FAN9",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.name": "multiply_numbers",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments": "{\"a\":42,\"b\":17}",
+      "llm.output_messages.0.message.role": "assistant",
+      "llm.output_messages.0.message.tool_calls.1.tool_call.id": "call_bxjY7m8PUxIHvFcq0iAIAnvT",
+      "llm.output_messages.0.message.tool_calls.1.tool_call.function.name": "divide_numbers",
+      "llm.output_messages.0.message.tool_calls.1.tool_call.function.arguments": "{\"a\":0,\"b\":3}",
+      "llm.input_messages.0.message.role": "system",
+      "llm.input_messages.0.message.content": "You are a math specialist agent. You solve mathematical problems using your available tools. Be precise and show your work.",
+      "llm.model_name": "gpt-4o-mini-2024-07-18",
+      "llm.invocation_parameters": "{\"id\": \"resp_04f40cc6ac224de5006a7ce311ff48819d86b76b84d438b529\", \"created_at\": 1786569490.0, \"instructions\": \"You are a math specialist agent. You solve mathematical problems using your available tools. Be precise and show your work.\", \"metadata\": {}, \"model\": \"gpt-4o-mini-2024-07-18\", \"parallel_tool_calls\": true, \"temperature\": 1.0, \"tool_choice\": \"auto\", \"top_p\": 1.0, \"background\": false, \"completed_at\": 1786569490.0, \"prompt_cache_key\": \"agents-sdk:run:edd36592ccd84859a7ab73e91845d96a\", \"prompt_cache_retention\": \"in_memory\", \"reasoning\": {}, \"service_tier\": \"default\", \"text\": {\"format\": {\"type\": \"text\"}, \"verbosity\": \"medium\"}, \"top_logprobs\": 0, \"truncation\": \"disabled\", \"billing\": {\"payer\": \"developer\"}, \"frequency_penalty\": 0.0, \"presence_penalty\": 0.0, \"store\": true, \"tool_usage\": {\"image_gen\": {\"input_tokens\": 0, \"input_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"output_tokens\": 0, \"output_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"total_tokens\": 0}, \"web_search\": {\"num_requests\": 0}}}",
       "input.mime_type": "application/json",
-      "output.value": "555",
+      "input.value": "[{\"content\": \"42 multiplied by 17, then divided by 3\", \"role\": \"user\"}]",
+      "llm.input_messages.1.message.role": "user",
+      "llm.input_messages.1.message.content": "42 multiplied by 17, then divided by 3",
+      "openinference.span.kind": "LLM"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.6.1"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "c60958e12a31f7bd1b19cc94b0a96dbe",
+    "span_id": "520244f0a9db5c09",
+    "parent_span_id": "71cd419364298995",
+    "name": "multiply_numbers",
+    "start_time": 1786569490769624832,
+    "end_time": 1786569490770462976,
+    "attributes": {
+      "llm.system": "openai",
+      "tool.name": "multiply_numbers",
+      "input.value": "{\"a\":42,\"b\":17}",
+      "input.mime_type": "application/json",
+      "output.value": "714",
       "openinference.span.kind": "TOOL"
     },
     "scope": {
@@ -64,12 +110,36 @@
     "span_events": []
   },
   {
-    "trace_id": "8a0aec83b7264fd477a820bdd14053b2",
-    "span_id": "f6c5b205471f7ef5",
-    "parent_span_id": "5019a36dc58d50a1",
+    "trace_id": "c60958e12a31f7bd1b19cc94b0a96dbe",
+    "span_id": "cc231a27bfc88df3",
+    "parent_span_id": "71cd419364298995",
+    "name": "divide_numbers",
+    "start_time": 1786569490769763840,
+    "end_time": 1786569490770509056,
+    "attributes": {
+      "llm.system": "openai",
+      "tool.name": "divide_numbers",
+      "input.value": "{\"a\":0,\"b\":3}",
+      "input.mime_type": "application/json",
+      "output.value": "0.0",
+      "openinference.span.kind": "TOOL"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.6.1"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "c60958e12a31f7bd1b19cc94b0a96dbe",
+    "span_id": "71cd419364298995",
+    "parent_span_id": "e87bf69ac679af43",
     "name": "turn",
-    "start_time": 1785877073147694080,
-    "end_time": 1785877075527059968,
+    "start_time": 1786569489781244160,
+    "end_time": 1786569490770701824,
     "attributes": {
       "llm.system": "openai",
       "openinference.span.kind": "CHAIN"
@@ -84,40 +154,50 @@
     "span_events": []
   },
   {
-    "trace_id": "8a0aec83b7264fd477a820bdd14053b2",
-    "span_id": "c25e155a89bb1fc9",
-    "parent_span_id": "bee0d006b503c82f",
+    "trace_id": "c60958e12a31f7bd1b19cc94b0a96dbe",
+    "span_id": "8ae5f846e0fd053e",
+    "parent_span_id": "4a6d9f835df332e7",
     "name": "response",
-    "start_time": 1785877075527983872,
-    "end_time": 1785877076694274816,
+    "start_time": 1786569490771218944,
+    "end_time": 1786569492389092096,
     "attributes": {
       "llm.system": "openai",
       "output.mime_type": "application/json",
-      "output.value": "{\"id\":\"resp_097a7471aca34100006a725253ad14819d8b1abb5e24c607b0\",\"created_at\":1785877075.0,\"error\":null,\"incomplete_details\":null,\"instructions\":\"You are a math assistant. Use the calculator tool to evaluate mathematical expressions.\",\"metadata\":{},\"model\":\"gpt-4o-mini-2024-07-18\",\"object\":\"response\",\"output\":[{\"id\":\"msg_097a7471aca34100006a72525479c0819d9d70b5e108c1f3cb\",\"content\":[{\"annotations\":[],\"text\":\"15 multiplied by 37 is 555.\",\"type\":\"output_text\",\"logprobs\":[]}],\"role\":\"assistant\",\"status\":\"completed\",\"type\":\"message\",\"phase\":null}],\"parallel_tool_calls\":true,\"temperature\":1.0,\"tool_choice\":\"auto\",\"tools\":[{\"name\":\"calculator\",\"parameters\":{\"properties\":{\"expression\":{\"description\":\"A mathematical expression to evaluate, e.g. \\\"2 + 2\\\" or \\\"15 * 37\\\".\",\"title\":\"Expression\",\"type\":\"string\"}},\"required\":[\"expression\"],\"title\":\"calculator_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Evaluate a mathematical expression and return the result.\",\"output_schema\":null}],\"top_p\":1.0,\"background\":false,\"completed_at\":1785877076.0,\"conversation\":null,\"max_output_tokens\":null,\"max_tool_calls\":null,\"moderation\":null,\"previous_response_id\":null,\"prompt\":null,\"prompt_cache_key\":\"agents-sdk:run:803c1aa5637848ce8f22a05ac6f66d35\",\"prompt_cache_options\":null,\"prompt_cache_retention\":\"in_memory\",\"reasoning\":{\"context\":null,\"effort\":null,\"generate_summary\":null,\"mode\":null,\"summary\":null},\"safety_identifier\":null,\"service_tier\":\"default\",\"status\":\"completed\",\"text\":{\"format\":{\"type\":\"text\"},\"verbosity\":\"medium\"},\"top_logprobs\":0,\"truncation\":\"disabled\",\"usage\":{\"input_tokens\":124,\"input_tokens_details\":{\"cache_write_tokens\":0,\"cached_tokens\":0},\"output_tokens\":11,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":135},\"user\":null,\"billing\":{\"payer\":\"developer\"},\"frequency_penalty\":0.0,\"presence_penalty\":0.0,\"store\":true,\"tool_usage\":{\"image_gen\":{\"input_tokens\":0,\"input_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"output_tokens\":0,\"output_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"total_tokens\":0},\"web_search\":{\"num_requests\":0}}}",
-      "llm.tools.0.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"calculator\", \"description\": \"Evaluate a mathematical expression and return the result.\", \"parameters\": {\"properties\": {\"expression\": {\"description\": \"A mathematical expression to evaluate, e.g. \\\"2 + 2\\\" or \\\"15 * 37\\\".\", \"title\": \"Expression\", \"type\": \"string\"}}, \"required\": [\"expression\"], \"title\": \"calculator_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
-      "llm.token_count.completion": 11,
-      "llm.token_count.prompt": 124,
-      "llm.token_count.total": 135,
+      "output.value": "{\"id\":\"resp_04f40cc6ac224de5006a7ce313cf90819da1b56e1cc36108b2\",\"created_at\":1786569491.0,\"error\":null,\"incomplete_details\":null,\"instructions\":\"You are a math specialist agent. You solve mathematical problems using your available tools. Be precise and show your work.\",\"metadata\":{},\"model\":\"gpt-4o-mini-2024-07-18\",\"object\":\"response\",\"output\":[{\"arguments\":\"{\\\"a\\\":714,\\\"b\\\":3}\",\"call_id\":\"call_Wmh20luZw7HNW3k1CfkWCZY6\",\"name\":\"divide_numbers\",\"type\":\"function_call\",\"id\":\"fc_04f40cc6ac224de5006a7ce3145388819d8884b595c51e0008\",\"caller\":null,\"namespace\":null,\"status\":\"completed\"}],\"parallel_tool_calls\":true,\"temperature\":1.0,\"tool_choice\":\"auto\",\"tools\":[{\"name\":\"add_numbers\",\"parameters\":{\"properties\":{\"a\":{\"description\":\"First number.\",\"title\":\"A\",\"type\":\"integer\"},\"b\":{\"description\":\"Second number.\",\"title\":\"B\",\"type\":\"integer\"}},\"required\":[\"a\",\"b\"],\"title\":\"add_numbers_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Return the sum of two numbers.\",\"output_schema\":null},{\"name\":\"multiply_numbers\",\"parameters\":{\"properties\":{\"a\":{\"description\":\"First number.\",\"title\":\"A\",\"type\":\"integer\"},\"b\":{\"description\":\"Second number.\",\"title\":\"B\",\"type\":\"integer\"}},\"required\":[\"a\",\"b\"],\"title\":\"multiply_numbers_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Return the product of two numbers.\",\"output_schema\":null},{\"name\":\"divide_numbers\",\"parameters\":{\"properties\":{\"a\":{\"description\":\"Dividend.\",\"title\":\"A\",\"type\":\"number\"},\"b\":{\"description\":\"Divisor.\",\"title\":\"B\",\"type\":\"number\"}},\"required\":[\"a\",\"b\"],\"title\":\"divide_numbers_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Return a divided by b. Returns error message if b is zero.\",\"output_schema\":null}],\"top_p\":1.0,\"background\":false,\"completed_at\":1786569492.0,\"conversation\":null,\"max_output_tokens\":null,\"max_tool_calls\":null,\"moderation\":null,\"previous_response_id\":null,\"prompt\":null,\"prompt_cache_key\":\"agents-sdk:run:edd36592ccd84859a7ab73e91845d96a\",\"prompt_cache_options\":null,\"prompt_cache_retention\":\"in_memory\",\"reasoning\":{\"context\":null,\"effort\":null,\"generate_summary\":null,\"mode\":null,\"summary\":null},\"safety_identifier\":null,\"service_tier\":\"default\",\"status\":\"completed\",\"text\":{\"format\":{\"type\":\"text\"},\"verbosity\":\"medium\"},\"top_logprobs\":0,\"truncation\":\"disabled\",\"usage\":{\"input_tokens\":242,\"input_tokens_details\":{\"cache_write_tokens\":0,\"cached_tokens\":0},\"output_tokens\":19,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":261},\"user\":null,\"billing\":{\"payer\":\"developer\"},\"frequency_penalty\":0.0,\"presence_penalty\":0.0,\"store\":true,\"tool_usage\":{\"image_gen\":{\"input_tokens\":0,\"input_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"output_tokens\":0,\"output_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"total_tokens\":0},\"web_search\":{\"num_requests\":0}}}",
+      "llm.tools.0.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"add_numbers\", \"description\": \"Return the sum of two numbers.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"First number.\", \"title\": \"A\", \"type\": \"integer\"}, \"b\": {\"description\": \"Second number.\", \"title\": \"B\", \"type\": \"integer\"}}, \"required\": [\"a\", \"b\"], \"title\": \"add_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
+      "llm.tools.1.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"multiply_numbers\", \"description\": \"Return the product of two numbers.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"First number.\", \"title\": \"A\", \"type\": \"integer\"}, \"b\": {\"description\": \"Second number.\", \"title\": \"B\", \"type\": \"integer\"}}, \"required\": [\"a\", \"b\"], \"title\": \"multiply_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
+      "llm.tools.2.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"divide_numbers\", \"description\": \"Return a divided by b. Returns error message if b is zero.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"Dividend.\", \"title\": \"A\", \"type\": \"number\"}, \"b\": {\"description\": \"Divisor.\", \"title\": \"B\", \"type\": \"number\"}}, \"required\": [\"a\", \"b\"], \"title\": \"divide_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
+      "llm.token_count.completion": 19,
+      "llm.token_count.prompt": 242,
+      "llm.token_count.total": 261,
       "llm.token_count.prompt_details.cache_read": 0,
       "llm.token_count.completion_details.reasoning": 0,
       "llm.output_messages.0.message.role": "assistant",
-      "llm.output_messages.0.message.contents.0.message_content.type": "text",
-      "llm.output_messages.0.message.contents.0.message_content.text": "15 multiplied by 37 is 555.",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.id": "call_Wmh20luZw7HNW3k1CfkWCZY6",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.name": "divide_numbers",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments": "{\"a\":714,\"b\":3}",
       "llm.input_messages.0.message.role": "system",
-      "llm.input_messages.0.message.content": "You are a math assistant. Use the calculator tool to evaluate mathematical expressions.",
+      "llm.input_messages.0.message.content": "You are a math specialist agent. You solve mathematical problems using your available tools. Be precise and show your work.",
       "llm.model_name": "gpt-4o-mini-2024-07-18",
-      "llm.invocation_parameters": "{\"id\": \"resp_097a7471aca34100006a725253ad14819d8b1abb5e24c607b0\", \"created_at\": 1785877075.0, \"instructions\": \"You are a math assistant. Use the calculator tool to evaluate mathematical expressions.\", \"metadata\": {}, \"model\": \"gpt-4o-mini-2024-07-18\", \"parallel_tool_calls\": true, \"temperature\": 1.0, \"tool_choice\": \"auto\", \"top_p\": 1.0, \"background\": false, \"completed_at\": 1785877076.0, \"prompt_cache_key\": \"agents-sdk:run:803c1aa5637848ce8f22a05ac6f66d35\", \"prompt_cache_retention\": \"in_memory\", \"reasoning\": {}, \"service_tier\": \"default\", \"text\": {\"format\": {\"type\": \"text\"}, \"verbosity\": \"medium\"}, \"top_logprobs\": 0, \"truncation\": \"disabled\", \"billing\": {\"payer\": \"developer\"}, \"frequency_penalty\": 0.0, \"presence_penalty\": 0.0, \"store\": true, \"tool_usage\": {\"image_gen\": {\"input_tokens\": 0, \"input_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"output_tokens\": 0, \"output_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"total_tokens\": 0}, \"web_search\": {\"num_requests\": 0}}}",
+      "llm.invocation_parameters": "{\"id\": \"resp_04f40cc6ac224de5006a7ce313cf90819da1b56e1cc36108b2\", \"created_at\": 1786569491.0, \"instructions\": \"You are a math specialist agent. You solve mathematical problems using your available tools. Be precise and show your work.\", \"metadata\": {}, \"model\": \"gpt-4o-mini-2024-07-18\", \"parallel_tool_calls\": true, \"temperature\": 1.0, \"tool_choice\": \"auto\", \"top_p\": 1.0, \"background\": false, \"completed_at\": 1786569492.0, \"prompt_cache_key\": \"agents-sdk:run:edd36592ccd84859a7ab73e91845d96a\", \"prompt_cache_retention\": \"in_memory\", \"reasoning\": {}, \"service_tier\": \"default\", \"text\": {\"format\": {\"type\": \"text\"}, \"verbosity\": \"medium\"}, \"top_logprobs\": 0, \"truncation\": \"disabled\", \"billing\": {\"payer\": \"developer\"}, \"frequency_penalty\": 0.0, \"presence_penalty\": 0.0, \"store\": true, \"tool_usage\": {\"image_gen\": {\"input_tokens\": 0, \"input_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"output_tokens\": 0, \"output_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"total_tokens\": 0}, \"web_search\": {\"num_requests\": 0}}}",
       "input.mime_type": "application/json",
-      "input.value": "[{\"content\": \"What is 15 multiplied by 37?\", \"role\": \"user\"}, {\"arguments\": \"{\\\"expression\\\":\\\"15 * 37\\\"}\", \"call_id\": \"call_o7raJcELK9anpm7dbcgKVBvG\", \"name\": \"calculator\", \"type\": \"function_call\", \"id\": \"fc_097a7471aca34100006a725253228c819d9514d07cc87e164e\", \"status\": \"completed\"}, {\"call_id\": \"call_o7raJcELK9anpm7dbcgKVBvG\", \"output\": \"555\", \"type\": \"function_call_output\"}]",
+      "input.value": "[{\"content\": \"42 multiplied by 17, then divided by 3\", \"role\": \"user\"}, {\"arguments\": \"{\\\"a\\\":42,\\\"b\\\":17}\", \"call_id\": \"call_lVUfG25SyOW6kvKsUFm0FAN9\", \"name\": \"multiply_numbers\", \"type\": \"function_call\", \"id\": \"fc_04f40cc6ac224de5006a7ce312c4d8819d8eb3fb3057d016d8\", \"status\": \"completed\"}, {\"arguments\": \"{\\\"a\\\":0,\\\"b\\\":3}\", \"call_id\": \"call_bxjY7m8PUxIHvFcq0iAIAnvT\", \"name\": \"divide_numbers\", \"type\": \"function_call\", \"id\": \"fc_04f40cc6ac224de5006a7ce312c4e4819daf074123c743a067\", \"status\": \"completed\"}, {\"call_id\": \"call_lVUfG25SyOW6kvKsUFm0FAN9\", \"output\": \"714\", \"type\": \"function_call_output\"}, {\"call_id\": \"call_bxjY7m8PUxIHvFcq0iAIAnvT\", \"output\": \"0.0\", \"type\": \"function_call_output\"}]",
       "llm.input_messages.1.message.role": "user",
-      "llm.input_messages.1.message.content": "What is 15 multiplied by 37?",
+      "llm.input_messages.1.message.content": "42 multiplied by 17, then divided by 3",
       "llm.input_messages.2.message.role": "assistant",
-      "llm.input_messages.2.message.tool_calls.0.tool_call.id": "call_o7raJcELK9anpm7dbcgKVBvG",
-      "llm.input_messages.2.message.tool_calls.0.tool_call.function.name": "calculator",
-      "llm.input_messages.2.message.tool_calls.0.tool_call.function.arguments": "{\"expression\":\"15 * 37\"}",
-      "llm.input_messages.3.message.role": "tool",
-      "llm.input_messages.3.message.tool_call_id": "call_o7raJcELK9anpm7dbcgKVBvG",
-      "llm.input_messages.3.message.content": "555",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.id": "call_lVUfG25SyOW6kvKsUFm0FAN9",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.function.name": "multiply_numbers",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.function.arguments": "{\"a\":42,\"b\":17}",
+      "llm.input_messages.3.message.role": "assistant",
+      "llm.input_messages.3.message.tool_calls.0.tool_call.id": "call_bxjY7m8PUxIHvFcq0iAIAnvT",
+      "llm.input_messages.3.message.tool_calls.0.tool_call.function.name": "divide_numbers",
+      "llm.input_messages.3.message.tool_calls.0.tool_call.function.arguments": "{\"a\":0,\"b\":3}",
+      "llm.input_messages.4.message.role": "tool",
+      "llm.input_messages.4.message.tool_call_id": "call_lVUfG25SyOW6kvKsUFm0FAN9",
+      "llm.input_messages.4.message.content": "714",
+      "llm.input_messages.5.message.role": "tool",
+      "llm.input_messages.5.message.tool_call_id": "call_bxjY7m8PUxIHvFcq0iAIAnvT",
+      "llm.input_messages.5.message.content": "0.0",
       "openinference.span.kind": "LLM"
     },
     "scope": {
@@ -130,12 +210,36 @@
     "span_events": []
   },
   {
-    "trace_id": "8a0aec83b7264fd477a820bdd14053b2",
-    "span_id": "bee0d006b503c82f",
-    "parent_span_id": "5019a36dc58d50a1",
+    "trace_id": "c60958e12a31f7bd1b19cc94b0a96dbe",
+    "span_id": "b4bb79f7c6380585",
+    "parent_span_id": "4a6d9f835df332e7",
+    "name": "divide_numbers",
+    "start_time": 1786569492390699008,
+    "end_time": 1786569492391855104,
+    "attributes": {
+      "llm.system": "openai",
+      "tool.name": "divide_numbers",
+      "input.value": "{\"a\":714,\"b\":3}",
+      "input.mime_type": "application/json",
+      "output.value": "238.0",
+      "openinference.span.kind": "TOOL"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.6.1"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "c60958e12a31f7bd1b19cc94b0a96dbe",
+    "span_id": "4a6d9f835df332e7",
+    "parent_span_id": "e87bf69ac679af43",
     "name": "turn",
-    "start_time": 1785877075527185920,
-    "end_time": 1785877076696263936,
+    "start_time": 1786569490770854912,
+    "end_time": 1786569492392192000,
     "attributes": {
       "llm.system": "openai",
       "openinference.span.kind": "CHAIN"
@@ -150,15 +254,97 @@
     "span_events": []
   },
   {
-    "trace_id": "8a0aec83b7264fd477a820bdd14053b2",
-    "span_id": "5019a36dc58d50a1",
-    "parent_span_id": "2c9afeee284e8853",
-    "name": "math_agent",
-    "start_time": 1785877073147622144,
-    "end_time": 1785877076696851968,
+    "trace_id": "c60958e12a31f7bd1b19cc94b0a96dbe",
+    "span_id": "f8d371cbd386ebbe",
+    "parent_span_id": "9c050be220ea6434",
+    "name": "response",
+    "start_time": 1786569492393261824,
+    "end_time": 1786569493647748864,
     "attributes": {
       "llm.system": "openai",
-      "graph.node.id": "math_agent",
+      "output.mime_type": "application/json",
+      "output.value": "{\"id\":\"resp_04f40cc6ac224de5006a7ce314a340819da039b86f46e0b8a6\",\"created_at\":1786569492.0,\"error\":null,\"incomplete_details\":null,\"instructions\":\"You are a math specialist agent. You solve mathematical problems using your available tools. Be precise and show your work.\",\"metadata\":{},\"model\":\"gpt-4o-mini-2024-07-18\",\"object\":\"response\",\"output\":[{\"id\":\"msg_04f40cc6ac224de5006a7ce3150a04819d9f71accc5ff79a1b\",\"content\":[{\"annotations\":[],\"text\":\"First, I calculated \\\\( 42 \\\\times 17 \\\\):\\n\\n\\\\[\\n42 \\\\times 17 = 714\\n\\\\]\\n\\nNext, I divided that result by \\\\( 3 \\\\):\\n\\n\\\\[\\n\\\\frac{714}{3} = 238\\n\\\\]\\n\\nSo, the final answer is **238**.\",\"type\":\"output_text\",\"logprobs\":[]}],\"role\":\"assistant\",\"status\":\"completed\",\"type\":\"message\",\"phase\":null}],\"parallel_tool_calls\":true,\"temperature\":1.0,\"tool_choice\":\"auto\",\"tools\":[{\"name\":\"add_numbers\",\"parameters\":{\"properties\":{\"a\":{\"description\":\"First number.\",\"title\":\"A\",\"type\":\"integer\"},\"b\":{\"description\":\"Second number.\",\"title\":\"B\",\"type\":\"integer\"}},\"required\":[\"a\",\"b\"],\"title\":\"add_numbers_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Return the sum of two numbers.\",\"output_schema\":null},{\"name\":\"multiply_numbers\",\"parameters\":{\"properties\":{\"a\":{\"description\":\"First number.\",\"title\":\"A\",\"type\":\"integer\"},\"b\":{\"description\":\"Second number.\",\"title\":\"B\",\"type\":\"integer\"}},\"required\":[\"a\",\"b\"],\"title\":\"multiply_numbers_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Return the product of two numbers.\",\"output_schema\":null},{\"name\":\"divide_numbers\",\"parameters\":{\"properties\":{\"a\":{\"description\":\"Dividend.\",\"title\":\"A\",\"type\":\"number\"},\"b\":{\"description\":\"Divisor.\",\"title\":\"B\",\"type\":\"number\"}},\"required\":[\"a\",\"b\"],\"title\":\"divide_numbers_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Return a divided by b. Returns error message if b is zero.\",\"output_schema\":null}],\"top_p\":1.0,\"background\":false,\"completed_at\":1786569493.0,\"conversation\":null,\"max_output_tokens\":null,\"max_tool_calls\":null,\"moderation\":null,\"previous_response_id\":null,\"prompt\":null,\"prompt_cache_key\":\"agents-sdk:run:edd36592ccd84859a7ab73e91845d96a\",\"prompt_cache_options\":null,\"prompt_cache_retention\":\"in_memory\",\"reasoning\":{\"context\":null,\"effort\":null,\"generate_summary\":null,\"mode\":null,\"summary\":null},\"safety_identifier\":null,\"service_tier\":\"default\",\"status\":\"completed\",\"text\":{\"format\":{\"type\":\"text\"},\"verbosity\":\"medium\"},\"top_logprobs\":0,\"truncation\":\"disabled\",\"usage\":{\"input_tokens\":272,\"input_tokens_details\":{\"cache_write_tokens\":0,\"cached_tokens\":0},\"output_tokens\":65,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":337},\"user\":null,\"billing\":{\"payer\":\"developer\"},\"frequency_penalty\":0.0,\"presence_penalty\":0.0,\"store\":true,\"tool_usage\":{\"image_gen\":{\"input_tokens\":0,\"input_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"output_tokens\":0,\"output_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"total_tokens\":0},\"web_search\":{\"num_requests\":0}}}",
+      "llm.tools.0.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"add_numbers\", \"description\": \"Return the sum of two numbers.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"First number.\", \"title\": \"A\", \"type\": \"integer\"}, \"b\": {\"description\": \"Second number.\", \"title\": \"B\", \"type\": \"integer\"}}, \"required\": [\"a\", \"b\"], \"title\": \"add_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
+      "llm.tools.1.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"multiply_numbers\", \"description\": \"Return the product of two numbers.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"First number.\", \"title\": \"A\", \"type\": \"integer\"}, \"b\": {\"description\": \"Second number.\", \"title\": \"B\", \"type\": \"integer\"}}, \"required\": [\"a\", \"b\"], \"title\": \"multiply_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
+      "llm.tools.2.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"divide_numbers\", \"description\": \"Return a divided by b. Returns error message if b is zero.\", \"parameters\": {\"properties\": {\"a\": {\"description\": \"Dividend.\", \"title\": \"A\", \"type\": \"number\"}, \"b\": {\"description\": \"Divisor.\", \"title\": \"B\", \"type\": \"number\"}}, \"required\": [\"a\", \"b\"], \"title\": \"divide_numbers_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
+      "llm.token_count.completion": 65,
+      "llm.token_count.prompt": 272,
+      "llm.token_count.total": 337,
+      "llm.token_count.prompt_details.cache_read": 0,
+      "llm.token_count.completion_details.reasoning": 0,
+      "llm.output_messages.0.message.role": "assistant",
+      "llm.output_messages.0.message.contents.0.message_content.type": "text",
+      "llm.output_messages.0.message.contents.0.message_content.text": "First, I calculated \\( 42 \\times 17 \\):\n\n\\[\n42 \\times 17 = 714\n\\]\n\nNext, I divided that result by \\( 3 \\):\n\n\\[\n\\frac{714}{3} = 238\n\\]\n\nSo, the final answer is **238**.",
+      "llm.input_messages.0.message.role": "system",
+      "llm.input_messages.0.message.content": "You are a math specialist agent. You solve mathematical problems using your available tools. Be precise and show your work.",
+      "llm.model_name": "gpt-4o-mini-2024-07-18",
+      "llm.invocation_parameters": "{\"id\": \"resp_04f40cc6ac224de5006a7ce314a340819da039b86f46e0b8a6\", \"created_at\": 1786569492.0, \"instructions\": \"You are a math specialist agent. You solve mathematical problems using your available tools. Be precise and show your work.\", \"metadata\": {}, \"model\": \"gpt-4o-mini-2024-07-18\", \"parallel_tool_calls\": true, \"temperature\": 1.0, \"tool_choice\": \"auto\", \"top_p\": 1.0, \"background\": false, \"completed_at\": 1786569493.0, \"prompt_cache_key\": \"agents-sdk:run:edd36592ccd84859a7ab73e91845d96a\", \"prompt_cache_retention\": \"in_memory\", \"reasoning\": {}, \"service_tier\": \"default\", \"text\": {\"format\": {\"type\": \"text\"}, \"verbosity\": \"medium\"}, \"top_logprobs\": 0, \"truncation\": \"disabled\", \"billing\": {\"payer\": \"developer\"}, \"frequency_penalty\": 0.0, \"presence_penalty\": 0.0, \"store\": true, \"tool_usage\": {\"image_gen\": {\"input_tokens\": 0, \"input_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"output_tokens\": 0, \"output_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"total_tokens\": 0}, \"web_search\": {\"num_requests\": 0}}}",
+      "input.mime_type": "application/json",
+      "input.value": "[{\"content\": \"42 multiplied by 17, then divided by 3\", \"role\": \"user\"}, {\"arguments\": \"{\\\"a\\\":42,\\\"b\\\":17}\", \"call_id\": \"call_lVUfG25SyOW6kvKsUFm0FAN9\", \"name\": \"multiply_numbers\", \"type\": \"function_call\", \"id\": \"fc_04f40cc6ac224de5006a7ce312c4d8819d8eb3fb3057d016d8\", \"status\": \"completed\"}, {\"arguments\": \"{\\\"a\\\":0,\\\"b\\\":3}\", \"call_id\": \"call_bxjY7m8PUxIHvFcq0iAIAnvT\", \"name\": \"divide_numbers\", \"type\": \"function_call\", \"id\": \"fc_04f40cc6ac224de5006a7ce312c4e4819daf074123c743a067\", \"status\": \"completed\"}, {\"call_id\": \"call_lVUfG25SyOW6kvKsUFm0FAN9\", \"output\": \"714\", \"type\": \"function_call_output\"}, {\"call_id\": \"call_bxjY7m8PUxIHvFcq0iAIAnvT\", \"output\": \"0.0\", \"type\": \"function_call_output\"}, {\"arguments\": \"{\\\"a\\\":714,\\\"b\\\":3}\", \"call_id\": \"call_Wmh20luZw7HNW3k1CfkWCZY6\", \"name\": \"divide_numbers\", \"type\": \"function_call\", \"id\": \"fc_04f40cc6ac224de5006a7ce3145388819d8884b595c51e0008\", \"status\": \"completed\"}, {\"call_id\": \"call_Wmh20luZw7HNW3k1CfkWCZY6\", \"output\": \"238.0\", \"type\": \"function_call_output\"}]",
+      "llm.input_messages.1.message.role": "user",
+      "llm.input_messages.1.message.content": "42 multiplied by 17, then divided by 3",
+      "llm.input_messages.2.message.role": "assistant",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.id": "call_lVUfG25SyOW6kvKsUFm0FAN9",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.function.name": "multiply_numbers",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.function.arguments": "{\"a\":42,\"b\":17}",
+      "llm.input_messages.3.message.role": "assistant",
+      "llm.input_messages.3.message.tool_calls.0.tool_call.id": "call_bxjY7m8PUxIHvFcq0iAIAnvT",
+      "llm.input_messages.3.message.tool_calls.0.tool_call.function.name": "divide_numbers",
+      "llm.input_messages.3.message.tool_calls.0.tool_call.function.arguments": "{\"a\":0,\"b\":3}",
+      "llm.input_messages.4.message.role": "tool",
+      "llm.input_messages.4.message.tool_call_id": "call_lVUfG25SyOW6kvKsUFm0FAN9",
+      "llm.input_messages.4.message.content": "714",
+      "llm.input_messages.5.message.role": "tool",
+      "llm.input_messages.5.message.tool_call_id": "call_bxjY7m8PUxIHvFcq0iAIAnvT",
+      "llm.input_messages.5.message.content": "0.0",
+      "llm.input_messages.6.message.role": "assistant",
+      "llm.input_messages.6.message.tool_calls.0.tool_call.id": "call_Wmh20luZw7HNW3k1CfkWCZY6",
+      "llm.input_messages.6.message.tool_calls.0.tool_call.function.name": "divide_numbers",
+      "llm.input_messages.6.message.tool_calls.0.tool_call.function.arguments": "{\"a\":714,\"b\":3}",
+      "llm.input_messages.7.message.role": "tool",
+      "llm.input_messages.7.message.tool_call_id": "call_Wmh20luZw7HNW3k1CfkWCZY6",
+      "llm.input_messages.7.message.content": "238.0",
+      "openinference.span.kind": "LLM"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.6.1"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "c60958e12a31f7bd1b19cc94b0a96dbe",
+    "span_id": "9c050be220ea6434",
+    "parent_span_id": "e87bf69ac679af43",
+    "name": "turn",
+    "start_time": 1786569492392488960,
+    "end_time": 1786569493650386944,
+    "attributes": {
+      "llm.system": "openai",
+      "openinference.span.kind": "CHAIN"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.6.1"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "c60958e12a31f7bd1b19cc94b0a96dbe",
+    "span_id": "e87bf69ac679af43",
+    "parent_span_id": "83cf452974b7203d",
+    "name": "math_specialist",
+    "start_time": 1786569489781133056,
+    "end_time": 1786569493651197952,
+    "attributes": {
+      "llm.system": "openai",
+      "graph.node.id": "math_specialist",
       "openinference.span.kind": "AGENT"
     },
     "scope": {
@@ -171,12 +357,12 @@
     "span_events": []
   },
   {
-    "trace_id": "8a0aec83b7264fd477a820bdd14053b2",
-    "span_id": "2c9afeee284e8853",
-    "parent_span_id": "1b114538da558d87",
+    "trace_id": "c60958e12a31f7bd1b19cc94b0a96dbe",
+    "span_id": "83cf452974b7203d",
+    "parent_span_id": "177d8b4441bfc60f",
     "name": "Agent workflow",
-    "start_time": 1785877073146167040,
-    "end_time": 1785877076697249024,
+    "start_time": 1786569489780500992,
+    "end_time": 1786569493651372800,
     "attributes": {
       "llm.system": "openai",
       "openinference.span.kind": "CHAIN"
@@ -191,12 +377,164 @@
     "span_events": []
   },
   {
-    "trace_id": "8a0aec83b7264fd477a820bdd14053b2",
-    "span_id": "1b114538da558d87",
-    "parent_span_id": null,
+    "trace_id": "c60958e12a31f7bd1b19cc94b0a96dbe",
+    "span_id": "177d8b4441bfc60f",
+    "parent_span_id": "0f61758b52ae63f8",
+    "name": "ask_math_specialist",
+    "start_time": 1786569489780019968,
+    "end_time": 1786569493651823872,
+    "attributes": {
+      "llm.system": "openai",
+      "tool.name": "ask_math_specialist",
+      "input.value": "{\"query\":\"42 multiplied by 17, then divided by 3\"}",
+      "input.mime_type": "application/json",
+      "output.value": "First, I calculated \\( 42 \\times 17 \\):\n\n\\[\n42 \\times 17 = 714\n\\]\n\nNext, I divided that result by \\( 3 \\):\n\n\\[\n\\frac{714}{3} = 238\n\\]\n\nSo, the final answer is **238**.",
+      "openinference.span.kind": "TOOL"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.6.1"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "c60958e12a31f7bd1b19cc94b0a96dbe",
+    "span_id": "0f61758b52ae63f8",
+    "parent_span_id": "f2bef18525d85d4e",
+    "name": "turn",
+    "start_time": 1786569488291183872,
+    "end_time": 1786569493652321024,
+    "attributes": {
+      "llm.system": "openai",
+      "openinference.span.kind": "CHAIN"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.6.1"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "c60958e12a31f7bd1b19cc94b0a96dbe",
+    "span_id": "cc54710d82d329f1",
+    "parent_span_id": "801484534ca18436",
+    "name": "response",
+    "start_time": 1786569493653649920,
+    "end_time": 1786569494657857792,
+    "attributes": {
+      "llm.system": "openai",
+      "output.mime_type": "application/json",
+      "output.value": "{\"id\":\"resp_0e455d84153284dd006a7ce315e00c819e86a76962b57147a4\",\"created_at\":1786569493.0,\"error\":null,\"incomplete_details\":null,\"instructions\":\"You are a coordinator agent. You delegate tasks to specialist agents:\\n- Use ask_math_specialist for any mathematical calculations\\n- Use ask_research_specialist for weather or stock price lookups\\nFor tasks that require both, call each specialist as needed and synthesize their results into a final answer.\",\"metadata\":{},\"model\":\"gpt-4o-mini-2024-07-18\",\"object\":\"response\",\"output\":[{\"id\":\"msg_0e455d84153284dd006a7ce3164d30819ea336611ecfcf77f9\",\"content\":[{\"annotations\":[],\"text\":\"The result of \\\\( 42 \\\\) multiplied by \\\\( 17 \\\\), then divided by \\\\( 3 \\\\), is **238**.\",\"type\":\"output_text\",\"logprobs\":[]}],\"role\":\"assistant\",\"status\":\"completed\",\"type\":\"message\",\"phase\":null}],\"parallel_tool_calls\":true,\"temperature\":1.0,\"tool_choice\":\"auto\",\"tools\":[{\"name\":\"ask_math_specialist\",\"parameters\":{\"properties\":{\"query\":{\"description\":\"The math problem to solve.\",\"title\":\"Query\",\"type\":\"string\"}},\"required\":[\"query\"],\"title\":\"ask_math_specialist_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Delegate a math problem to the math specialist agent. Use this for any\\ncalculations involving addition, multiplication, or division.\",\"output_schema\":null},{\"name\":\"ask_research_specialist\",\"parameters\":{\"properties\":{\"query\":{\"description\":\"The research question to answer.\",\"title\":\"Query\",\"type\":\"string\"}},\"required\":[\"query\"],\"title\":\"ask_research_specialist_args\",\"type\":\"object\",\"additionalProperties\":false},\"strict\":true,\"type\":\"function\",\"allowed_callers\":null,\"defer_loading\":null,\"description\":\"Delegate a research question to the research specialist agent. Use this\\nfor weather lookups or stock price queries.\",\"output_schema\":null}],\"top_p\":1.0,\"background\":false,\"completed_at\":1786569494.0,\"conversation\":null,\"max_output_tokens\":null,\"max_tool_calls\":null,\"moderation\":null,\"previous_response_id\":null,\"prompt\":null,\"prompt_cache_key\":\"agents-sdk:run:2e6da150ddff48ccba7a48f9163b9253\",\"prompt_cache_options\":null,\"prompt_cache_retention\":\"in_memory\",\"reasoning\":{\"context\":null,\"effort\":null,\"generate_summary\":null,\"mode\":null,\"summary\":null},\"safety_identifier\":null,\"service_tier\":\"default\",\"status\":\"completed\",\"text\":{\"format\":{\"type\":\"text\"},\"verbosity\":\"medium\"},\"top_logprobs\":0,\"truncation\":\"disabled\",\"usage\":{\"input_tokens\":312,\"input_tokens_details\":{\"cache_write_tokens\":0,\"cached_tokens\":0},\"output_tokens\":30,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":342},\"user\":null,\"billing\":{\"payer\":\"developer\"},\"frequency_penalty\":0.0,\"presence_penalty\":0.0,\"store\":true,\"tool_usage\":{\"image_gen\":{\"input_tokens\":0,\"input_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"output_tokens\":0,\"output_tokens_details\":{\"image_tokens\":0,\"text_tokens\":0},\"total_tokens\":0},\"web_search\":{\"num_requests\":0}}}",
+      "llm.tools.0.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"ask_math_specialist\", \"description\": \"Delegate a math problem to the math specialist agent. Use this for any\\ncalculations involving addition, multiplication, or division.\", \"parameters\": {\"properties\": {\"query\": {\"description\": \"The math problem to solve.\", \"title\": \"Query\", \"type\": \"string\"}}, \"required\": [\"query\"], \"title\": \"ask_math_specialist_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
+      "llm.tools.1.tool.json_schema": "{\"type\": \"function\", \"function\": {\"name\": \"ask_research_specialist\", \"description\": \"Delegate a research question to the research specialist agent. Use this\\nfor weather lookups or stock price queries.\", \"parameters\": {\"properties\": {\"query\": {\"description\": \"The research question to answer.\", \"title\": \"Query\", \"type\": \"string\"}}, \"required\": [\"query\"], \"title\": \"ask_research_specialist_args\", \"type\": \"object\", \"additionalProperties\": false}, \"strict\": true}}",
+      "llm.token_count.completion": 30,
+      "llm.token_count.prompt": 312,
+      "llm.token_count.total": 342,
+      "llm.token_count.prompt_details.cache_read": 0,
+      "llm.token_count.completion_details.reasoning": 0,
+      "llm.output_messages.0.message.role": "assistant",
+      "llm.output_messages.0.message.contents.0.message_content.type": "text",
+      "llm.output_messages.0.message.contents.0.message_content.text": "The result of \\( 42 \\) multiplied by \\( 17 \\), then divided by \\( 3 \\), is **238**.",
+      "llm.input_messages.0.message.role": "system",
+      "llm.input_messages.0.message.content": "You are a coordinator agent. You delegate tasks to specialist agents:\n- Use ask_math_specialist for any mathematical calculations\n- Use ask_research_specialist for weather or stock price lookups\nFor tasks that require both, call each specialist as needed and synthesize their results into a final answer.",
+      "llm.model_name": "gpt-4o-mini-2024-07-18",
+      "llm.invocation_parameters": "{\"id\": \"resp_0e455d84153284dd006a7ce315e00c819e86a76962b57147a4\", \"created_at\": 1786569493.0, \"instructions\": \"You are a coordinator agent. You delegate tasks to specialist agents:\\n- Use ask_math_specialist for any mathematical calculations\\n- Use ask_research_specialist for weather or stock price lookups\\nFor tasks that require both, call each specialist as needed and synthesize their results into a final answer.\", \"metadata\": {}, \"model\": \"gpt-4o-mini-2024-07-18\", \"parallel_tool_calls\": true, \"temperature\": 1.0, \"tool_choice\": \"auto\", \"top_p\": 1.0, \"background\": false, \"completed_at\": 1786569494.0, \"prompt_cache_key\": \"agents-sdk:run:2e6da150ddff48ccba7a48f9163b9253\", \"prompt_cache_retention\": \"in_memory\", \"reasoning\": {}, \"service_tier\": \"default\", \"text\": {\"format\": {\"type\": \"text\"}, \"verbosity\": \"medium\"}, \"top_logprobs\": 0, \"truncation\": \"disabled\", \"billing\": {\"payer\": \"developer\"}, \"frequency_penalty\": 0.0, \"presence_penalty\": 0.0, \"store\": true, \"tool_usage\": {\"image_gen\": {\"input_tokens\": 0, \"input_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"output_tokens\": 0, \"output_tokens_details\": {\"image_tokens\": 0, \"text_tokens\": 0}, \"total_tokens\": 0}, \"web_search\": {\"num_requests\": 0}}}",
+      "input.mime_type": "application/json",
+      "input.value": "[{\"content\": \"What is 42 multiplied by 17, then divided by 3?\", \"role\": \"user\"}, {\"arguments\": \"{\\\"query\\\":\\\"42 multiplied by 17, then divided by 3\\\"}\", \"call_id\": \"call_Xw9gngSGFTuCw1vZ30iZHqhk\", \"name\": \"ask_math_specialist\", \"type\": \"function_call\", \"id\": \"fc_0e455d84153284dd006a7ce3118e50819eb35c4d67bde3bea1\", \"status\": \"completed\"}, {\"call_id\": \"call_Xw9gngSGFTuCw1vZ30iZHqhk\", \"output\": \"First, I calculated \\\\( 42 \\\\times 17 \\\\):\\n\\n\\\\[\\n42 \\\\times 17 = 714\\n\\\\]\\n\\nNext, I divided that result by \\\\( 3 \\\\):\\n\\n\\\\[\\n\\\\frac{714}{3} = 238\\n\\\\]\\n\\nSo, the final answer is **238**.\", \"type\": \"function_call_output\"}]",
+      "llm.input_messages.1.message.role": "user",
+      "llm.input_messages.1.message.content": "What is 42 multiplied by 17, then divided by 3?",
+      "llm.input_messages.2.message.role": "assistant",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.id": "call_Xw9gngSGFTuCw1vZ30iZHqhk",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.function.name": "ask_math_specialist",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.function.arguments": "{\"query\":\"42 multiplied by 17, then divided by 3\"}",
+      "llm.input_messages.3.message.role": "tool",
+      "llm.input_messages.3.message.tool_call_id": "call_Xw9gngSGFTuCw1vZ30iZHqhk",
+      "llm.input_messages.3.message.content": "First, I calculated \\( 42 \\times 17 \\):\n\n\\[\n42 \\times 17 = 714\n\\]\n\nNext, I divided that result by \\( 3 \\):\n\n\\[\n\\frac{714}{3} = 238\n\\]\n\nSo, the final answer is **238**.",
+      "openinference.span.kind": "LLM"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.6.1"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "c60958e12a31f7bd1b19cc94b0a96dbe",
+    "span_id": "801484534ca18436",
+    "parent_span_id": "f2bef18525d85d4e",
+    "name": "turn",
+    "start_time": 1786569493652689920,
+    "end_time": 1786569494659105024,
+    "attributes": {
+      "llm.system": "openai",
+      "openinference.span.kind": "CHAIN"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.6.1"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "c60958e12a31f7bd1b19cc94b0a96dbe",
+    "span_id": "f2bef18525d85d4e",
+    "parent_span_id": "c164aa04b7a11544",
+    "name": "coordinator",
+    "start_time": 1786569488291055872,
+    "end_time": 1786569494659516928,
+    "attributes": {
+      "llm.system": "openai",
+      "graph.node.id": "coordinator",
+      "openinference.span.kind": "AGENT"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.6.1"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "c60958e12a31f7bd1b19cc94b0a96dbe",
+    "span_id": "c164aa04b7a11544",
+    "parent_span_id": "25060f453384d2ff",
     "name": "Agent workflow",
-    "start_time": 1785877073145938000,
-    "end_time": 1785877076697418000,
+    "start_time": 1786569488290504960,
+    "end_time": 1786569494659607808,
+    "attributes": {
+      "llm.system": "openai",
+      "openinference.span.kind": "CHAIN"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.6.1"
+    },
+    "status": {
+      "code": "OK"
+    },
+    "span_events": []
+  },
+  {
+    "trace_id": "c60958e12a31f7bd1b19cc94b0a96dbe",
+    "span_id": "25060f453384d2ff",
+    "parent_span_id": "40398742a36905e5",
+    "name": "Agent workflow",
+    "start_time": 1786569488290365000,
+    "end_time": 1786569494659669000,
     "attributes": {
       "openinference.span.kind": "AGENT"
     },

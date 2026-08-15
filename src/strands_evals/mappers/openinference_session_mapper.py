@@ -279,32 +279,17 @@ class OpenInferenceSessionMapper(SessionMapper):
                 spans_by_parent_id[parent].append(s)
 
         for span in spans:
-            attrs = span.get("attributes", {})
+            attrs = span.get("attributes") or {}
             span_id = span.get("span_id", "")
             if attrs.get("openinference.span.kind") != "AGENT" or attrs.get("input.value") or not span_id:
                 continue
 
-            # Walk from agent spans to their descendant LLM spans
-            llm_spans: list[dict] = []
-            stack = [span_id]
-            while stack:
-                current = stack.pop()
-                for child in spans_by_parent_id.get(current, []):
-                    kind = child.get("attributes", {}).get("openinference.span.kind", "")
-                    if kind == "LLM":
-                        llm_spans.append(child)
-                    elif kind == "CHAIN":
-                        cid = child.get("span_id", "")
-                        if cid:
-                            stack.append(cid)
-
+            llm_spans = self._get_descendant_llm_spans(span_id, spans_by_parent_id)
             if not llm_spans:
                 continue
-            llm_spans.sort(key=lambda s: s.get("start_time", 0))
 
-            # Get first user message from the earliest LLM span
             first_attrs = llm_spans[0].get("attributes", {})
-            user_prompt = first_attrs.get("llm.input_messages.1.message.content")
+            user_prompt = self._get_last_message_text(first_attrs, "llm.input_messages.", role="user")
             if user_prompt:
                 attrs["input.value"] = user_prompt
 
@@ -315,13 +300,77 @@ class OpenInferenceSessionMapper(SessionMapper):
                 attrs[f"llm.tools.{idx}.tool.json_schema"] = first_attrs[f"llm.tools.{idx}.tool.json_schema"]
                 idx += 1
 
-            # Get text output from the last LLM span
             last_attrs = llm_spans[-1].get("attributes", {})
-            agent_response = last_attrs.get(
-                "llm.output_messages.0.message.contents.0.message_content.text"
-            ) or last_attrs.get("llm.output_messages.0.message.content")
+            agent_response = self._get_last_message_text(last_attrs, "llm.output_messages.")
+
+            # Fallback the response to the last message's tool calls if no LLM output was found
+            if not agent_response:
+                if tool_calls := self._get_last_tool_calls(last_attrs):
+                    agent_response = f"[delegated] {tool_calls}"
             if agent_response:
                 attrs["output.value"] = agent_response
+
+    def _get_descendant_llm_spans(self, span_id: str, spans_by_parent_id: dict[str, list[dict]]) -> list[dict]:
+        """Return the LLM spans descending from `span_id`, earliest first."""
+        llm_spans: list[dict] = []
+        stack = [span_id]
+        while stack:
+            current = stack.pop()
+            for child in spans_by_parent_id.get(current, []):
+                kind = (child.get("attributes") or {}).get("openinference.span.kind", "")
+                if kind == "LLM":
+                    llm_spans.append(child)
+                elif kind == "CHAIN":
+                    cid = child.get("span_id", "")
+                    if cid:
+                        stack.append(cid)
+        # Sort via parse_timestamp so heterogeneous start_time types (int / ISO str /
+        # None) are normalized to comparable datetimes instead of raising TypeError.
+        llm_spans.sort(key=lambda s: self.parse_timestamp(s.get("start_time")))
+        return llm_spans
+
+    @staticmethod
+    def _get_message_indices(attrs: dict, prefix: str) -> list[int]:
+        """Return the message indices present under `prefix`, highest first."""
+        indices: set[int] = set()
+        for key in attrs:
+            if key.startswith(prefix):
+                seg = key.removeprefix(prefix).split(".", 1)[0]
+                if seg.isdigit():
+                    indices.add(int(seg))
+        return sorted(indices, reverse=True)
+
+    @classmethod
+    def _get_last_message_text(cls, attrs: dict, prefix: str, role: str | None = None) -> str | None:
+        """Return the text of the last matching message, or None."""
+        for idx in cls._get_message_indices(attrs, prefix):
+            base = f"{prefix}{idx}.message"
+            role_match = role is None or attrs.get(f"{base}.role") == role
+            is_reasoning = attrs.get(f"{base}.contents.0.message_content.type") == "reasoning"
+            text = attrs.get(f"{base}.content") or attrs.get(f"{base}.contents.0.message_content.text")
+            if role_match and not is_reasoning and text:
+                return text
+        return None
+
+    @classmethod
+    def _get_last_tool_calls(cls, attrs: dict) -> str | None:
+        """Return a text rendering of the last assistant message's tool calls, or None."""
+        prefix = "llm.output_messages."
+        for idx in cls._get_message_indices(attrs, prefix):
+            base = f"{prefix}{idx}.message"
+            calls: list[str] = []
+            # Convert the tool calls to a string representation
+            i = 0
+            while True:
+                name = attrs.get(f"{base}.tool_calls.{i}.tool_call.function.name")
+                if not name:
+                    break
+                args = attrs.get(f"{base}.tool_calls.{i}.tool_call.function.arguments", "")
+                calls.append(f"{name}({args})" if args else f"{name}()")
+                i += 1
+            if calls:
+                return "; ".join(calls)
+        return None
 
     def _build_trace(self, trace_id: str, spans: list[dict], session_id: str) -> Trace:
         """Build a Trace from spans with the same trace_id."""
