@@ -7,7 +7,12 @@ import pytest
 
 from strands_evals.mappers import GenericGenAISessionMapper, detect_otel_mapper
 from strands_evals.mappers.constants import SCOPE_OPENAI_AGENTS
-from strands_evals.types.trace import AgentInvocationSpan, InferenceSpan, ToolExecutionSpan
+from strands_evals.types.trace import (
+    AgentInvocationSpan,
+    InferenceSpan,
+    ToolExecutionSpan,
+    _find_root_agent_span,
+)
 
 
 def make_span(

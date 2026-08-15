@@ -74,7 +74,9 @@ class GenericGenAISessionMapper(SessionMapper):
             return Session(traces=[], session_id=session_id)
 
         spans = self._normalize_to_flat_spans(data)
-        spans = self._normalize_openai_agents_spans(spans)
+
+        if any(get_scope_name(span) == SCOPE_OPENAI_AGENTS for span in spans):
+            spans = self._normalize_openai_agents_spans(spans)
 
         # Group by trace_id, optionally filtering by session.id.
         # Single pass: bucket spans by trace and track which traces match session_id.
@@ -622,8 +624,7 @@ class GenericGenAISessionMapper(SessionMapper):
     def _normalize_openai_agents_spans(spans: list[dict]) -> list[dict]:
         """Normalize OpenAI Agents spans to the canonical representation.
 
-        Drops the empty workflow wrapper masquerading as an agent span emitted by
-        OpenAI Agents + Traceloop.
+        Drops the empty workflow wrapper emitted by OpenAI Agents + Traceloop.
         """
         normalized_spans: list[dict] = []
         for span in spans:
@@ -641,55 +642,18 @@ class GenericGenAISessionMapper(SessionMapper):
         return normalized_spans
 
     def _enrich_openai_agent_spans(self, trace: Trace, raw_spans: list[dict]) -> None:
-        """Enrich OpenAI Agents spans instrumented with Traceloop using other spans in the trace.
+        """Enrich OpenAI Agents spans using other spans in the trace.
 
         This enriches by:
-        1. Re-parenting sub-agents using ``agent_handoff`` spans.
-        2. Backfilling ``user_prompt`` / ``agent_response`` from child chat spans.
-        3. Deriving each agent's ``available_tools`` from child spans
+        1. Backfilling ``user_prompt`` / ``agent_response`` from child chat spans.
+        2. Deriving each agent's ``available_tools`` from child spans.
         """
         agent_spans = {
             s.span_info.span_id: s for s in trace.spans if isinstance(s, AgentInvocationSpan) and s.span_info.span_id
         }
 
-        self._reparent_by_handoff(agent_spans, raw_spans)
         self._backfill_agent_prompts(trace, agent_spans)
         self._backfill_agent_tools(trace, agent_spans, raw_spans)
-
-    def _reparent_by_handoff(
-        self,
-        agent_spans: dict[str, AgentInvocationSpan],
-        raw_spans: list[dict],
-    ) -> None:
-        """Re-parent agent invocation spans using OpenAI Agent's agent_handoff span.
-
-        Uses agent name as span identity (last-write-wins for duplicate names or
-        competing handoffs).
-        """
-        agent_spans_by_name: dict[str, AgentInvocationSpan] = {}
-        handoffs: list[tuple[str, str]] = []
-
-        # Collect converted agent spans and handoff edges
-        for raw_span in raw_spans:
-            attrs = raw_span.get("attributes", {})
-            op = attrs.get("gen_ai.operation.name", "")
-            if op == "invoke_agent":
-                name = attrs.get("gen_ai.agent.name", "")
-                span_id = raw_span.get("span_id", "")
-                if name and span_id and span_id in agent_spans:
-                    agent_spans_by_name[name] = agent_spans[span_id]
-            elif op == "agent_handoff":
-                from_name = attrs.get("gen_ai.handoff.from_agent", "")
-                to_name = attrs.get("gen_ai.handoff.to_agent", "")
-                if from_name and to_name:
-                    handoffs.append((from_name, to_name))
-
-        # Re-parent sub-agents to parent agents
-        for from_name, to_name in handoffs:
-            from_span = agent_spans_by_name.get(from_name)
-            to_span = agent_spans_by_name.get(to_name)
-            if from_span and to_span and from_span.span_info.span_id:
-                to_span.span_info.parent_span_id = from_span.span_info.span_id
 
     def _backfill_agent_tools(
         self,
@@ -697,7 +661,7 @@ class GenericGenAISessionMapper(SessionMapper):
         agent_spans: dict[str, AgentInvocationSpan],
         raw_spans: list[dict],
     ) -> None:
-        """Populate available_tools on agent spans using their child spans"""
+        """Populate available_tools on agent spans using their child spans."""
         # Fill agent spans' available tools from child chat spans' tool definitions.
         raw_attrs_by_id = {raw.get("span_id"): raw.get("attributes", {}) for raw in raw_spans}
         for span in trace.spans:
@@ -710,7 +674,7 @@ class GenericGenAISessionMapper(SessionMapper):
             if configs:
                 agent.available_tools = list(configs)
 
-        # Fallback: get the names of tools the agents called.
+        # Fallback: get the names of tools the agent called.
         for span in trace.spans:
             if isinstance(span, ToolExecutionSpan) and span.tool_call.name:
                 agent = agent_spans.get(span.agent_span_id or "")
