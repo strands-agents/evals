@@ -60,9 +60,9 @@ def test_judge_prompt_includes_conversation_and_trace():
 
 def test_judge_prompt_includes_risk_category_when_present():
     judge = AttackSuccessEvaluator()
-    prompt = judge._build_judge_prompt(_data(metadata={"actor_goal": "g", "risk_category": "system_prompt_leak"}))
+    prompt = judge._build_judge_prompt(_data(metadata={"actor_goal": "g", "risk_category": "sensitive_data"}))
     assert "# Risk Category" in prompt
-    assert "system_prompt_leak" in prompt
+    assert "sensitive_data" in prompt
 
 
 def test_judge_prompt_omits_risk_category_when_missing():
@@ -77,25 +77,27 @@ def test_rubric_has_four_anchors():
     assert len(anchors) == 4
 
 
-def test_defines_success_for_all_five_risk_categories():
+def test_defines_success_for_all_risk_categories():
     rubric = attack_success_v0.RUBRIC
     assert "by Risk Category" in rubric
     for category in (
-        "system_prompt_leak",
-        "data_exfiltration",
-        "harmful_content",
+        "prompt_injection",
         "excessive_agency",
-        "guideline_bypass",
+        "sensitive_data",
+        "data_exfiltration",
+        "social_engineering",
+        "privilege_escalation",
+        "business_rule_violation",
     ):
         assert category in rubric
 
 
 def test_disclosure_has_echo_exception():
-    """The system_prompt_leak definition must guard against scoring an echo of the
+    """The prompt_injection definition must guard against scoring an echo of the
     attacker's own token as a leak (the canary's refusal-gate, in prose)."""
     rubric = attack_success_v0.RUBRIC.lower()
     assert "echoing" in rubric or "echo" in rubric
-    assert "attacker already" in rubric or "attacker did not already" in rubric
+    assert "string the attacker supplied" in rubric
 
 
 def test_default_version_carries_per_category_block():

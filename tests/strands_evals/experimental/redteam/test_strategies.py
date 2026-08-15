@@ -38,13 +38,13 @@ def _case(name: str = "c0") -> RedTeamCase:
     return RedTeamCase(
         name=name,
         input="hello",
-        config=RedTeamConfig(attack_goal=AttackGoal(risk_category="guideline_bypass", actor_goal="goal")),
+        config=RedTeamConfig(attack_goal=AttackGoal(risk_category="prompt_injection", actor_goal="goal")),
     )
 
 
 def test_redteam_config_is_strategy_agnostic():
     """RedTeamConfig no longer carries strategy/template; cases are strategy-agnostic."""
-    config = RedTeamConfig(attack_goal=AttackGoal(risk_category="guideline_bypass", actor_goal="g"))
+    config = RedTeamConfig(attack_goal=AttackGoal(risk_category="prompt_injection", actor_goal="g"))
     assert not hasattr(config, "strategy")
     assert not hasattr(config, "system_prompt_template")
     assert "strategy" not in RedTeamConfig.model_fields
