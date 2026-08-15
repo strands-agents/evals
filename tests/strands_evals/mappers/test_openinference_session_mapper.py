@@ -2546,16 +2546,14 @@ class TestOpenAIAgentsScopeSupport:
 
 
 # =============================================================================
-# Integration Tests: Real OpenAI Agents SDK fixture (single-agent, live spans)
-# (captured from openinference-instrumentation-openai-agents v1.6.1,
-#  OpenAI Agents SDK with gpt-4o-mini, scope
-#  "openinference.instrumentation.openai_agents")
+# Integration Tests: Real OpenAI Agents SDK fixture (Live)
+# (openinference.instrumentation.openai_agents)
 #
 # These tests use ACTUAL spans produced by the instrumentor, validating that the
 # mapper handles real-world OpenAI Agents SDK trace structure:
-# - LLM "response" spans with tool_calls in output attributes
-# - TOOL spans with bare-string output.value
-# - AGENT spans that have NO input/output (normalization must inject from LLM descendants)
+# - LLM "response" spans with tool_calls and plural contents.N message parts
+# - TOOL spans with bare-string output.value (the delegated sub-agent answer)
+# - AGENT spans with NO input/output (normalization injects from LLM descendants)
 # - CHAIN "turn" spans that are intermediaries (not mapped directly)
 # =============================================================================
 
@@ -2630,18 +2628,15 @@ class TestOpenAIAgentsLiveFixtureIntegration:
 
 
 # =============================================================================
-# Integration Tests: Real OpenAI Agents SDK fixture (multi-agent, ADOT/AgentCore)
-# (captured from openinference-instrumentation-openai-agents v2.0.0,
-#  OpenAI Agents SDK with coordinator + math_specialist handoff, scope
-#  "openinference.instrumentation.openai_agents")
+# Integration Tests: Real OpenAI Agents SDK fixture (ADOT)
+# (openinference.instrumentation.openai_agents)
 #
-# Multi-agent trace with:
-# - coordinator AGENT span that hands off to math_specialist
-# - math_specialist AGENT span that uses multiply_numbers tool
-# - "handoff to math_specialist" TOOL span (with ERROR status for failed handoff)
-# - multiply_numbers TOOL span
-# - Multiple LLM response spans across both agents
-# - httpx and starlette spans (non-openinference) that should be filtered out
+# These tests use ACTUAL spans produced by the instrumentor, validating that the
+# mapper handles real-world OpenAI Agents SDK trace structure:
+# - coordinator AGENT span whose LLM turn is tool-call-only (handoff, no text)
+# - "handoff to math_specialist" TOOL span; multiply_numbers TOOL span
+# - AGENT spans with NO input/output (normalization injects from LLM descendants)
+# - httpx / starlette spans (non-openinference) that must be filtered out
 # =============================================================================
 
 
@@ -2721,6 +2716,18 @@ class TestOpenAIAgentsAdotFixtureIntegration:
             s for s in all_spans if isinstance(s, ToolExecutionSpan) and s.tool_call.name.startswith("handoff")
         )
         assert handoff.agent_span_id == coordinator.span_info.span_id
+
+    def test_multiply_numbers_owned_by_math_specialist(self, openai_agents_adot_session):
+        """The multiply_numbers tool is attributed to the specialist that ran it."""
+        all_spans = [s for t in openai_agents_adot_session.traces for s in t.spans]
+        specialist = next(
+            s for s in all_spans if isinstance(s, AgentInvocationSpan) and "[delegated]" not in (s.agent_response or "")
+        )
+        multiply = next(
+            s for s in all_spans if isinstance(s, ToolExecutionSpan) and s.tool_call.name == "multiply_numbers"
+        )
+        assert multiply.agent_span_id == specialist.span_info.span_id
+        assert multiply.span_info.parent_span_id == specialist.span_info.span_id
 
     def test_all_spans_have_session_id(self, openai_agents_adot_session):
         """All converted spans carry the session_id."""

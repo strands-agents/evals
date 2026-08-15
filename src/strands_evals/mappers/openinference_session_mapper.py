@@ -126,10 +126,13 @@ class OpenInferenceSessionMapper(SessionMapper):
         # shared conversion logic receives a uniform representation.
         for span in openinference_spans:
             scope = self._get_scope_name(span)
-            if scope == SCOPE_OPENINFERENCE_SMOLAGENTS:
-                self._normalize_smolagents_span(span)
-            elif scope == SCOPE_OPENINFERENCE_OPENAI_AGENTS:
-                self._normalize_openai_agents_span(span)
+            try:
+                if scope == SCOPE_OPENINFERENCE_SMOLAGENTS:
+                    self._normalize_smolagents_span(span)
+                elif scope == SCOPE_OPENINFERENCE_OPENAI_AGENTS:
+                    self._normalize_openai_agents_span(span)
+            except Exception as e:
+                logger.warning(f"Failed to normalize {scope} span {span.get('span_id', 'unknown')}: {e}")
 
         # Group spans by trace_id
         grouped = defaultdict(list)
@@ -140,7 +143,10 @@ class OpenInferenceSessionMapper(SessionMapper):
         # OpenAI Agents SDK normalization requires the full trace group, so it runs after grouping.
         for trace_spans in grouped.values():
             if any(self._get_scope_name(s) == SCOPE_OPENINFERENCE_OPENAI_AGENTS for s in trace_spans):
-                self._normalize_openai_agents_trace(trace_spans)
+                try:
+                    self._normalize_openai_agents_trace(trace_spans)
+                except Exception as e:
+                    logger.warning(f"Failed to normalize openai agents trace: {e}")
 
         # Build traces
         result_traces: list[Trace] = []
@@ -269,19 +275,23 @@ class OpenInferenceSessionMapper(SessionMapper):
 
     @classmethod
     def _normalize_openai_agents_span(cls, span: dict) -> None:
-        """Normalize OpenAI tool schemas in-place.
+        """Normalize OpenAI agent spans in-place.
 
         This normalizes by:
         1. Unwrapping tool schemas in the format {"type": "function", "function": {...}}.
-        2. Aliasing "parameters" to "input_schema".
+        2. Aliasing "parameters" to "input_schema" on tool schemas.
         """
         attrs = span.get("attributes") or {}
         for idx in cls._get_message_indices(attrs, "llm.tools."):
             key = f"llm.tools.{idx}.tool.json_schema"
-            try:
-                schema = json.loads(attrs.get(key))
-            except (TypeError, json.JSONDecodeError):
-                continue
+            raw = attrs.get(key)
+            if isinstance(raw, str):
+                try:
+                    schema = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+            else:
+                schema = raw
             if not isinstance(schema, dict):
                 continue
             if "name" not in schema and isinstance(schema.get("function"), dict):
@@ -320,17 +330,19 @@ class OpenInferenceSessionMapper(SessionMapper):
                 attrs["input.value"] = user_prompt
 
             # Copy LLM tool schemas onto the AGENT span so it carries its own tools.
-            idx = 0
-            while first_attrs.get(f"llm.tools.{idx}.tool.json_schema") is not None:
-                attrs[f"llm.tools.{idx}.tool.json_schema"] = first_attrs[f"llm.tools.{idx}.tool.json_schema"]
-                idx += 1
+            for tool_idx in self._get_message_indices(first_attrs, "llm.tools."):
+                key = f"llm.tools.{tool_idx}.tool.json_schema"
+                schema = first_attrs.get(key)
+                if schema is not None:
+                    attrs[key] = schema
 
             last_attrs = llm_spans[-1].get("attributes", {})
             agent_response = self._get_last_message_text(last_attrs, "llm.output_messages.")
 
             # Fallback the response to the last message's tool calls if no LLM output was found
             if not agent_response:
-                if tool_calls := self._get_last_tool_calls(last_attrs):
+                tool_calls = self._get_last_tool_calls(last_attrs)
+                if tool_calls:
                     agent_response = f"[delegated] {tool_calls}"
             if agent_response:
                 attrs["output.value"] = agent_response
@@ -339,8 +351,12 @@ class OpenInferenceSessionMapper(SessionMapper):
         """Return the LLM spans descending from `span_id`, earliest first."""
         llm_spans: list[dict] = []
         stack = [span_id]
+        seen: set[str] = set()
         while stack:
             current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
             for child in spans_by_parent_id.get(current, []):
                 kind = (child.get("attributes") or {}).get("openinference.span.kind", "")
                 if kind == "LLM":
@@ -349,8 +365,6 @@ class OpenInferenceSessionMapper(SessionMapper):
                     cid = child.get("span_id", "")
                     if cid:
                         stack.append(cid)
-        # Sort via parse_timestamp so heterogeneous start_time types (int / ISO str /
-        # None) are normalized to comparable datetimes instead of raising TypeError.
         llm_spans.sort(key=lambda s: self.parse_timestamp(s.get("start_time")))
         return llm_spans
 
@@ -361,7 +375,7 @@ class OpenInferenceSessionMapper(SessionMapper):
         for key in attrs:
             if key.startswith(prefix):
                 seg = key.removeprefix(prefix).split(".", 1)[0]
-                if seg.isdigit():
+                if seg.isascii() and seg.isdigit():
                     indices.add(int(seg))
         return sorted(indices, reverse=True)
 
@@ -372,10 +386,30 @@ class OpenInferenceSessionMapper(SessionMapper):
             base = f"{prefix}{idx}.message"
             role_match = role is None or attrs.get(f"{base}.role") == role
             is_reasoning = attrs.get(f"{base}.contents.0.message_content.type") == "reasoning"
-            text = attrs.get(f"{base}.content") or attrs.get(f"{base}.contents.0.message_content.text")
+            text = attrs.get(f"{base}.content") or cls._join_content_text(attrs, base)
             if role_match and not is_reasoning and text:
                 return text
         return None
+
+    @staticmethod
+    def _join_content_text(attrs: dict, base: str) -> str | None:
+        """Concatenate all `text` parts under `{base}.contents.N`, or None.
+
+        Multimodal messages emit ordered parts (e.g. [image, text]), so scan every
+        part rather than only index 0.
+        """
+        parts: list[str] = []
+        i = 0
+        while True:
+            part_type = attrs.get(f"{base}.contents.{i}.message_content.type")
+            if part_type is None:
+                break
+            if part_type == "text":
+                text = attrs.get(f"{base}.contents.{i}.message_content.text")
+                if text:
+                    parts.append(text)
+            i += 1
+        return "".join(parts) or None
 
     @classmethod
     def _get_last_tool_calls(cls, attrs: dict) -> str | None:
