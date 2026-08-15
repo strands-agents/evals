@@ -200,6 +200,10 @@ def test_claude_multi_agent_evaluation(telemetry):
             name="multi-agent-math",
             input="Calculate the square root of 1764, then multiply that result by 3.",
             expected_output="126",
+            expected_assertion=(
+                "The agent computed the square root of 1764 (42), multiplied it by 3, "
+                "and responded with the final answer 126."
+            ),
         ),
     ]
 
