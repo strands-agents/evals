@@ -2518,7 +2518,7 @@ class TestOpenAIAgentsScopeSupport:
             "llm.input_messages.3.message.role": "user",
             "llm.input_messages.3.message.content": "Now divide it by 5",
         }
-        result = self.mapper._get_last_message_text(attrs, "llm.input_messages.", role="user")
+        result = self.mapper._get_last_message_text(attrs, "llm.input_messages", role="user")
         assert result == "Now divide it by 5"
 
     def test_get_last_message_text_skips_reasoning_item(self):
@@ -2530,7 +2530,7 @@ class TestOpenAIAgentsScopeSupport:
             "llm.output_messages.1.message.contents.0.message_content.type": "reasoning",
             "llm.output_messages.1.message.contents.0.message_content.text": "Let me think step by step...",
         }
-        result = self.mapper._get_last_message_text(attrs, "llm.output_messages.")
+        result = self.mapper._get_last_message_text(attrs, "llm.output_messages")
         assert result == "The answer is 8."
 
     def test_get_last_tool_calls_renders_names_and_args(self):

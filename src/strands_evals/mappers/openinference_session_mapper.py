@@ -132,7 +132,8 @@ class OpenInferenceSessionMapper(SessionMapper):
                 elif scope == SCOPE_OPENINFERENCE_OPENAI_AGENTS:
                     self._normalize_openai_agents_span(span)
             except Exception as e:
-                logger.warning(f"Failed to normalize {scope} span {span.get('span_id', 'unknown')}: {e}")
+                span_id = span.get("span_id", "unknown")
+                logger.warning("scope=<%s>, span_id=<%s> | failed to normalize span: %s", scope, span_id, e)
 
         # Group spans by trace_id
         grouped = defaultdict(list)
@@ -146,7 +147,7 @@ class OpenInferenceSessionMapper(SessionMapper):
                 try:
                     self._normalize_openai_agents_trace(trace_spans)
                 except Exception as e:
-                    logger.warning(f"Failed to normalize openai agents trace: {e}")
+                    logger.warning("failed to normalize openai agents trace: %s", e)
 
         # Build traces
         result_traces: list[Trace] = []
@@ -275,14 +276,14 @@ class OpenInferenceSessionMapper(SessionMapper):
 
     @classmethod
     def _normalize_openai_agents_span(cls, span: dict) -> None:
-        """Normalize OpenAI agent spans in-place.
+        """Normalize OpenAI Agents spans in-place.
 
         This normalizes by:
         1. Unwrapping tool schemas in the format {"type": "function", "function": {...}}.
         2. Aliasing "parameters" to "input_schema" on tool schemas.
         """
         attrs = span.get("attributes") or {}
-        for idx in cls._get_message_indices(attrs, "llm.tools."):
+        for idx in cls._get_message_indices(attrs, "llm.tools"):
             key = f"llm.tools.{idx}.tool.json_schema"
             raw = attrs.get(key)
             if isinstance(raw, str):
@@ -301,11 +302,12 @@ class OpenInferenceSessionMapper(SessionMapper):
             attrs[key] = json.dumps(schema)
 
     def _normalize_openai_agents_trace(self, spans: list[dict]) -> None:
-        """Normalize OpenAI Agents SDK AGENT spans in-place by injecting input/output.
+        """Normalize OpenAI Agents SDK trace in-place.
 
-        OpenAI Agents SDK AGENT spans carry no input.value or output.value.
-        The user prompt and final response live on descendant LLM spans
-        (reachable through intermediate CHAIN "turn" spans).
+        This normalizes by:
+        1. Copying the user prompt, assistant response, and tool schemas from
+           LLM spans to parent AGENT spans
+        2. Falling back the assistant response to the last tool calls in the message
         """
         # Collect all spans keyed by parent id for span traversal
         spans_by_parent_id: dict[str, list[dict]] = defaultdict(list)
@@ -325,19 +327,19 @@ class OpenInferenceSessionMapper(SessionMapper):
                 continue
 
             first_attrs = llm_spans[0].get("attributes", {})
-            user_prompt = self._get_last_message_text(first_attrs, "llm.input_messages.", role="user")
+            user_prompt = self._get_last_message_text(first_attrs, "llm.input_messages", role="user")
             if user_prompt:
                 attrs["input.value"] = user_prompt
 
-            # Copy LLM tool schemas onto the AGENT span so it carries its own tools.
-            for tool_idx in self._get_message_indices(first_attrs, "llm.tools."):
+            # Copy LLM tool schemas onto the AGENT span for available_tools back-filling
+            for tool_idx in self._get_message_indices(first_attrs, "llm.tools"):
                 key = f"llm.tools.{tool_idx}.tool.json_schema"
                 schema = first_attrs.get(key)
                 if schema is not None:
                     attrs[key] = schema
 
             last_attrs = llm_spans[-1].get("attributes", {})
-            agent_response = self._get_last_message_text(last_attrs, "llm.output_messages.")
+            agent_response = self._get_last_message_text(last_attrs, "llm.output_messages")
 
             # Fallback the response to the last message's tool calls if no LLM output was found
             if not agent_response:
@@ -351,6 +353,7 @@ class OpenInferenceSessionMapper(SessionMapper):
         """Return the LLM spans descending from `span_id`, earliest first."""
         llm_spans: list[dict] = []
         stack = [span_id]
+        # Traverse the spans in top-down order
         seen: set[str] = set()
         while stack:
             current = stack.pop()
@@ -370,11 +373,12 @@ class OpenInferenceSessionMapper(SessionMapper):
 
     @staticmethod
     def _get_message_indices(attrs: dict, prefix: str) -> list[int]:
-        """Return the message indices present under `prefix`, highest first."""
+        """Return the numeric indices N found in keys starting with `{prefix}.N.`, highest first."""
+        prefix_dot = f"{prefix}."
         indices: set[int] = set()
         for key in attrs:
-            if key.startswith(prefix):
-                seg = key.removeprefix(prefix).split(".", 1)[0]
+            if key.startswith(prefix_dot):
+                seg = key.removeprefix(prefix_dot).split(".", 1)[0]
                 if seg.isascii() and seg.isdigit():
                     indices.add(int(seg))
         return sorted(indices, reverse=True)
@@ -383,7 +387,7 @@ class OpenInferenceSessionMapper(SessionMapper):
     def _get_last_message_text(cls, attrs: dict, prefix: str, role: str | None = None) -> str | None:
         """Return the text of the last matching message, or None."""
         for idx in cls._get_message_indices(attrs, prefix):
-            base = f"{prefix}{idx}.message"
+            base = f"{prefix}.{idx}.message"
             role_match = role is None or attrs.get(f"{base}.role") == role
             is_reasoning = attrs.get(f"{base}.contents.0.message_content.type") == "reasoning"
             text = attrs.get(f"{base}.content") or cls._join_content_text(attrs, base)
@@ -414,9 +418,9 @@ class OpenInferenceSessionMapper(SessionMapper):
     @classmethod
     def _get_last_tool_calls(cls, attrs: dict) -> str | None:
         """Return a text rendering of the last assistant message's tool calls, or None."""
-        prefix = "llm.output_messages."
+        prefix = "llm.output_messages"
         for idx in cls._get_message_indices(attrs, prefix):
-            base = f"{prefix}{idx}.message"
+            base = f"{prefix}.{idx}.message"
             calls: list[str] = []
             # Convert the tool calls to a string representation
             i = 0
