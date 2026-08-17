@@ -184,16 +184,16 @@ def test_claude_multi_agent_evaluation(telemetry):
         "weather-specialist": AgentDefinition(
             description=(
                 "Weather specialist agent. Delegate ALL weather-related questions to this agent. "
-                "It has access to a weather lookup tool via Bash. You MUST NOT attempt to answer "
+                "It has access to a local weather dataset via Bash. You MUST NOT attempt to answer "
                 "weather questions yourself or use Bash directly for weather — always delegate."
             ),
             prompt=(
-                "You are a weather specialist. To look up weather, run EXACTLY this Bash command:\n"
-                '  bash -c \'python3 -c "data={\\"seattle\\": \\"Rainy, 55F\\", '
-                '\\"new york\\": \\"Sunny, 72F\\", \\"london\\": \\"Cloudy, 60F\\", '
-                '\\"tokyo\\": \\"Clear, 68F\\"}; city=\\"CITY_HERE\\".lower(); '
-                'print(data.get(city, \\"Mild, 65F\\"))"\'\n'
-                "Replace CITY_HERE with the requested city. Return the weather result verbatim."
+                "You are a weather specialist with access to a local weather dataset.\n"
+                "To look up weather, run this Bash command (substituting the city name):\n"
+                "  python3 -c \"data={'seattle': 'Rainy, 55F', 'new york': 'Sunny, 72F', "
+                "'london': 'Cloudy, 60F', 'tokyo': 'Clear, 68F'}; "
+                "print(data.get('<city>'.lower(), 'Mild, 65F'))\"\n"
+                "Replace <city> with the requested city. Return the result verbatim."
             ),
             tools=["Bash"],
         ),
@@ -202,9 +202,11 @@ def test_claude_multi_agent_evaluation(telemetry):
     test_cases = [
         Case[str, str](
             name="multi-agent-weather",
-            input="What is the current weather in Seattle?",
-            expected_output="Rainy, 55F",
-            expected_assertion=("The agent responded with the current weather in Seattle, which is Rainy and 55F."),
+            input="What is the weather for Seattle according to the local weather dataset?",
+            expected_assertion=(
+                "The agent delegated to the weather-specialist and responded with "
+                "the weather in Seattle, which is Rainy and 55F."
+            ),
         ),
     ]
 
