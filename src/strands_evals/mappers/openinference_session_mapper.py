@@ -42,7 +42,7 @@ from .constants import (
     SCOPES_OPENINFERENCE_FAMILY,
 )
 from .session_mapper import SessionMapper
-from .utils import safe_json_parse
+from .utils import bridge_parent_gaps, safe_json_parse
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +298,12 @@ class OpenInferenceSessionMapper(SessionMapper):
             for converted in converted_spans:
                 if isinstance(converted, AgentInvocationSpan) and not converted.available_tools:
                     converted.available_tools = tools_list
+
+        # Fix parent_span_id on converted spans that point to skipped intermediaries
+        raw_parent_map: dict[str, str | None] = {
+            sid: s.get("parent_span_id") for s in spans if (sid := s.get("span_id"))
+        }
+        converted_spans = bridge_parent_gaps(converted_spans, raw_parent_map)
 
         return Trace(spans=converted_spans, trace_id=trace_id, session_id=session_id)
 

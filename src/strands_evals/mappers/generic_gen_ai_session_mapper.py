@@ -30,7 +30,7 @@ from ..types.trace import (
     UserMessage,
 )
 from .session_mapper import SessionMapper
-from .utils import join_tool_result_content
+from .utils import bridge_parent_gaps, join_tool_result_content
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +149,12 @@ class GenericGenAISessionMapper(SessionMapper):
                     span.get("span_id", "?"),
                     e,
                 )
+
+        # Fix parent_span_id on converted spans that point to skipped intermediaries
+        raw_parent_map: dict[str, str | None] = {
+            sid: s.get("parent_span_id") for s in spans if (sid := s.get("span_id"))
+        }
+        converted_spans = bridge_parent_gaps(converted_spans, raw_parent_map)
 
         return Trace(spans=converted_spans, trace_id=trace_id, session_id=session_id)
 
