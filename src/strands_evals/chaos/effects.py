@@ -339,22 +339,22 @@ class MalformedJson(ModelEffect):
         if content is None:
             raise ValueError("MalformedJson.apply() requires content")
         if isinstance(content, str):
-            return self.malform_text(content)
+            return self._malform_text(content)
         elif isinstance(content, list):
             return self._malform_blocks(content)
         raise ValueError(f"MalformedJson.apply() received unsupported type {type(content).__name__}")
 
     @staticmethod
-    def malform_text(text: str) -> str:
-        """Corrupt JSON-like text — the ONE place text malformation lives."""
+    def _malform_text(text: str) -> str:
+        """Corrupt JSON-like text."""
         stripped = text.strip()
         if stripped.startswith("{") or stripped.startswith("["):
             return stripped[: len(stripped) // 2]
         return text
 
     @staticmethod
-    def malform_tool_use_block(block: dict) -> dict:
-        """Corrupt a single toolUse block's input JSON — the ONE place this logic lives."""
+    def _malform_tool_use_block(block: dict) -> dict:
+        """Corrupt a single toolUse block's input JSON."""
         block = dict(block)
         tool_use = dict(block["toolUse"])
         raw = json.dumps(tool_use.get("input", {}))
@@ -364,14 +364,14 @@ class MalformedJson(ModelEffect):
 
     @staticmethod
     def _malform_blocks(blocks: list) -> list:
-        """Apply malformation to all blocks — delegates toolUse corruption to malform_tool_use_block."""
+        """Apply malformation to all blocks, delegating toolUse corruption per block."""
         result = []
         for block in blocks:
             if isinstance(block, dict) and "toolUse" in block:
-                block = MalformedJson.malform_tool_use_block(block)
+                block = MalformedJson._malform_tool_use_block(block)
             elif isinstance(block, dict) and "text" in block and isinstance(block["text"], str):
                 block = dict(block)
-                block["text"] = MalformedJson.malform_text(block["text"])
+                block["text"] = MalformedJson._malform_text(block["text"])
             result.append(block)
         return result
 

@@ -6,10 +6,10 @@ base Case class.
 """
 
 import uuid
-from typing import Literal, TypedDict
+from typing import Literal
 
 from pydantic import ConfigDict, Field, model_validator
-from typing_extensions import Generic
+from typing_extensions import Generic, TypedDict
 
 from ..case import Case
 from ..types.evaluation import InputT, OutputT

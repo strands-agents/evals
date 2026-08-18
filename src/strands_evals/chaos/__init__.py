@@ -6,6 +6,7 @@ under tool failures and response corruption scenarios.
 
 from .case import ChaosCase, ChaosEffects
 from .effects import (
+    ChaosEffect,
     Confabulation,
     CorruptValues,
     EmptyResponse,
@@ -16,6 +17,8 @@ from .effects import (
     RemoveFields,
     SuccessFraming,
     Timeout,
+    ToolEffect,
+    ToolEffectUnion,
     TruncateFields,
     ValidationError,
 )
@@ -28,6 +31,10 @@ __all__ = [
     "ChaosEffects",
     "ChaosExperiment",
     "ChaosPlugin",
+    # Effect hierarchy
+    "ChaosEffect",
+    "ToolEffect",
+    "ToolEffectUnion",
     # Tool effects
     "Timeout",
     "NetworkError",

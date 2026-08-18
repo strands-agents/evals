@@ -19,7 +19,6 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 from strands.hooks import BeforeModelCallEvent
-from strands.tools.structured_output.structured_output_tool import StructuredOutputTool
 
 from strands_evals.chaos._context import _current_chaos_case
 from strands_evals.chaos.case import ChaosCase
@@ -202,7 +201,7 @@ class TestMalformedJsonStructuredOutput:
     """MalformedJson DOES reach and corrupt structured-output toolUse blocks only."""
 
     def test_malformed_json_corrupts_structured_output_tooluse(self):
-        """MalformedJson corrupts toolUse input when tool is a StructuredOutputTool."""
+        """MalformedJson corrupts toolUse input when the tool declares tool_type structured_output."""
         _set_chaos_case([MalformedJson()])
         plugin = ChaosPlugin()
         message = {
@@ -211,7 +210,7 @@ class TestMalformedJsonStructuredOutput:
                 {"toolUse": {"toolUseId": "so_1", "name": "MyModel", "input": {"field1": "value1"}}},
             ],
         }
-        mock_so_tool = MagicMock(spec=StructuredOutputTool)
+        mock_so_tool = MagicMock(tool_type="structured_output")
         event = _make_event(message, dynamic_tools={"MyModel": mock_so_tool})
 
         plugin.after_model_invocation(event)
@@ -249,7 +248,7 @@ class TestMalformedJsonStructuredOutput:
                 {"toolUse": {"toolUseId": "so_1", "name": "MyModel", "input": {"field1": "value1"}}},
             ],
         }
-        mock_so_tool = MagicMock(spec=StructuredOutputTool)
+        mock_so_tool = MagicMock(tool_type="structured_output")
         event = _make_event(message, dynamic_tools={"MyModel": mock_so_tool})
 
         plugin.after_model_invocation(event)
@@ -388,7 +387,7 @@ class TestMalformedJsonReachesStructuredOutput:
                 },
             ],
         }
-        mock_so_tool = MagicMock(spec=StructuredOutputTool)
+        mock_so_tool = MagicMock(tool_type="structured_output")
         event = _make_event(message, dynamic_tools={"MyModel": mock_so_tool})
 
         plugin.after_model_invocation(event)
@@ -532,7 +531,7 @@ class TestSinglePreModelEffect:
 
 
 class TestOrdinaryDynamicToolNotCorrupted:
-    """An ordinary dynamic tool (not StructuredOutputTool) is NOT corrupted."""
+    """An ordinary dynamic tool (tool_type != structured_output) is NOT corrupted."""
 
     def test_ordinary_dynamic_tool_unchanged(self):
         """MalformedJson does NOT corrupt a regular dynamic tool's toolUse."""
@@ -545,8 +544,8 @@ class TestOrdinaryDynamicToolNotCorrupted:
             ],
         }
         original_content = copy.deepcopy(message["content"])
-        # Register as a plain MagicMock (NOT spec'd to StructuredOutputTool)
-        mock_tool = MagicMock()
+        # Explicit non-structured-output tool_type so the check discriminates on the real property
+        mock_tool = MagicMock(tool_type="function")
         event = _make_event(message, dynamic_tools={"my_dynamic_tool": mock_tool})
 
         plugin.after_model_invocation(event)

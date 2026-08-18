@@ -159,15 +159,27 @@ class ChaosPlugin(Plugin):
         if effect is None:
             return
         event.cancel = effect.cancel_message()
+        logger.info("effect=<%s> | injected model pre-hook cancel", type(effect).__name__)
 
     @hook  # type: ignore[call-overload]
     def after_model_invocation(self, event: MessageAddedEvent) -> None:
         """Corrupt eligible model output with the configured post-hook model effects."""
         effects = self._get_post_model_effects()
-        target = self._classify_model_output(event)
-        if target is None or not effects:
+        if not effects:
             return
-        event.message["content"] = self._apply_model_effects(effects, target)
+        target = self._classify_model_output(event)
+        if target is None:
+            return
+        applicable = self._applicable_model_effects(effects, target)
+        if not applicable:
+            return
+        event.message["content"] = self._apply_to_model_blocks(
+            applicable, target.content, target.structured_output_tool_names
+        )
+        logger.info(
+            "effects=<%s> | applied model output chaos",
+            ", ".join(type(e).__name__ for e in applicable),
+        )
 
     def _select_pre_model_effect(self) -> PreModelEffect | None:
         """Return the single configured pre-hook model effect, or None.
@@ -225,24 +237,20 @@ class ChaosPlugin(Plugin):
         return None
 
     def _get_structured_output_tool_names(self, agent) -> set[str]:  # type: ignore[type-arg]
-        """Identify structured-output tools via isinstance(tool, StructuredOutputTool)."""
-        from strands.tools.structured_output.structured_output_tool import StructuredOutputTool
-
+        """Identify structured-output tools by their declared tool_type."""
         return {
-            name for name, tool in agent.tool_registry.dynamic_tools.items() if isinstance(tool, StructuredOutputTool)
+            name for name, tool in agent.tool_registry.dynamic_tools.items() if tool.tool_type == "structured_output"
         }
 
-    def _apply_model_effects(self, effects: list, target: ModelOutputTarget) -> list:
-        """Corrupt the target content with the given post-hook model effects.
+    def _applicable_model_effects(self, effects: list, target: ModelOutputTarget) -> list:
+        """Narrow the configured effects to those allowed against this target.
 
         Structured-output toolUse is reachable only by MalformedJson; any other effect
-        would break the structured-output contract, so it is skipped for that target.
+        would break the structured-output contract.
         """
         if target.kind is MessageKind.STRUCTURED_OUTPUT:
-            effects = [e for e in effects if isinstance(e, MalformedJson)]
-            if not effects:
-                return target.content
-        return self._apply_to_model_blocks(effects, target.content, target.structured_output_tool_names)
+            return [e for e in effects if isinstance(e, MalformedJson)]
+        return effects
 
     def _apply_to_model_blocks(
         self, post_effects: list, content: list, structured_output_tool_names: set[str] | None = None
@@ -273,11 +281,11 @@ class ChaosPlugin(Plugin):
             if isinstance(block, dict) and "toolUse" in block:
                 tool_name = block["toolUse"].get("name", "")
                 if tool_name in structured_output_tool_names:
-                    block = MalformedJson.malform_tool_use_block(block)
+                    block = effect._malform_tool_use_block(block)
                 # else: ordinary toolUse — leave untouched
             elif isinstance(block, dict) and "text" in block and isinstance(block["text"], str):
                 block = dict(block)
-                block["text"] = MalformedJson.malform_text(block["text"])
+                block["text"] = effect._malform_text(block["text"])
             result.append(block)
         return result
 
