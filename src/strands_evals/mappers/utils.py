@@ -281,12 +281,15 @@ def bridge_parent_gaps(
 ) -> list[SpanUnion]:
     """Return spans with parent_span_id adjusted to skip unconverted intermediates.
 
-    Walks up `raw_parent_map` to find the nearest converted ancestor. Sets
-    parent_span_id to None if no converted ancestor exists.
+    When a converted span's parent_span_id points to a span that wasn't
+    converted (e.g. execute_event_loop_cycle in Strands SDK, call_llm in ADK),
+    this walks up via raw_parent_map until it finds a converted ancestor — or
+    sets parent_span_id to None if no converted ancestor exists.
 
     Args:
-        converted_spans: Converted spans from a single trace.
-        raw_parent_map: span_id -> parent_span_id for all raw spans (including unconverted).
+        converted_spans: Flat list of converted spans from a single trace.
+        raw_parent_map: span_id -> parent_span_id for ALL raw spans, including
+            unconverted ones.
 
     Returns:
         New list of spans with corrected parent_span_id values.
@@ -295,7 +298,7 @@ def bridge_parent_gaps(
     result: list[SpanUnion] = []
     for span in converted_spans:
         parent_id = span.span_info.parent_span_id
-        # No-op if the parent id points to no span or a converted span
+        # Nothing to bridge: no parent, or the parent was converted
         if not parent_id or parent_id in converted_ids:
             result.append(span)
             continue

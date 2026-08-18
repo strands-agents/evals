@@ -1462,3 +1462,78 @@ class TestOtelConventionIntegration:
         # Wrong session_id → no traces
         session_wrong = mapper.map_to_session(otel_convention_spans, session_id="wrong-id")
         assert len(session_wrong.traces) == 0
+
+
+class TestUnconvertedSpanReparenting:
+    """Tool nested under an unconverted span reparents to the converted agent."""
+
+    def setup_method(self):
+        self.mapper = GenericGenAISessionMapper()
+
+    def test_tool_under_unconverted_span_reparents_to_agent(self):
+        """Tool whose raw parent is an unconverted workflow span gets reparented to the agent."""
+        agent = make_span(span_id="agent-1", operation_name="invoke_agent")
+        workflow = make_span(span_id="workflow-1", parent_span_id="agent-1", name="my_flow.workflow")
+        tool = make_span(
+            span_id="tool-1",
+            parent_span_id="workflow-1",
+            operation_name="execute_tool",
+            attributes={
+                "gen_ai.tool.name": "calculator",
+                "gen_ai.tool.call.id": "call-1",
+                "gen_ai.tool.input": '{"expr": "2+2"}',
+                "gen_ai.tool.output": "4",
+                "gen_ai.tool.status": "success",
+            },
+        )
+        session = self.mapper.map_to_session([agent, workflow, tool], "sess-1")
+
+        spans = session.traces[0].spans
+        assert [s.span_info.span_id for s in spans] == ["agent-1", "tool-1"]
+        tool_span = next(s for s in spans if isinstance(s, ToolExecutionSpan))
+        assert tool_span.span_info.parent_span_id == "agent-1"
+        assert tool_span.agent_span_id == "agent-1"
+
+    def test_deeply_nested_unconverted_spans_bridged(self):
+        """Tool under multiple unconverted intermediaries still reaches the converted agent."""
+        agent = make_span(span_id="agent-1", operation_name="invoke_agent")
+        mid_1 = make_span(span_id="mid-1", parent_span_id="agent-1", name="orchestrator")
+        mid_2 = make_span(span_id="mid-2", parent_span_id="mid-1", name="sub-orchestrator")
+        tool = make_span(
+            span_id="tool-1",
+            parent_span_id="mid-2",
+            operation_name="execute_tool",
+            attributes={
+                "gen_ai.tool.name": "search",
+                "gen_ai.tool.call.id": "call-2",
+                "gen_ai.tool.input": '{"q": "test"}',
+                "gen_ai.tool.output": "found",
+                "gen_ai.tool.status": "success",
+            },
+        )
+        session = self.mapper.map_to_session([agent, mid_1, mid_2, tool], "sess-1")
+
+        spans = session.traces[0].spans
+        tool_span = next(s for s in spans if isinstance(s, ToolExecutionSpan))
+        assert tool_span.span_info.parent_span_id == "agent-1"
+
+    def test_no_converted_ancestor_sets_parent_none(self):
+        """Tool whose ancestry chain has no converted span gets parent_span_id=None."""
+        workflow = make_span(span_id="workflow-1", name="background_task")
+        tool = make_span(
+            span_id="tool-1",
+            parent_span_id="workflow-1",
+            operation_name="execute_tool",
+            attributes={
+                "gen_ai.tool.name": "notify",
+                "gen_ai.tool.call.id": "call-3",
+                "gen_ai.tool.input": "{}",
+                "gen_ai.tool.output": "ok",
+                "gen_ai.tool.status": "success",
+            },
+        )
+        session = self.mapper.map_to_session([workflow, tool], "sess-1")
+
+        spans = session.traces[0].spans
+        assert len(spans) == 1
+        assert spans[0].span_info.parent_span_id is None
