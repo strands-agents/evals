@@ -6,6 +6,7 @@ from strands import Agent
 from strands.models.model import Model
 
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
+from ..types.evaluator_metadata import EvaluatorMetadata
 from ..types.trace import EvaluationLevel
 from .evaluator import Evaluator
 from .prompt_templates.faithfulness import get_template
@@ -52,6 +53,20 @@ class FaithfulnessEvaluator(Evaluator[InputT, OutputT]):
         self.system_prompt = system_prompt if system_prompt is not None else get_template(version).SYSTEM_PROMPT
         self.version = version
         self.model = model
+
+    def metadata(self) -> EvaluatorMetadata:
+        return {
+            "checks": "Whether the agent's response is grounded in the conversation history",
+            "method": {
+                "category": "llm_judge_output",
+                "summary": (
+                    "An LLM judge compares the agent's last response against prior "
+                    "tool outputs and conversation for unsupported claims."
+                ),
+            },
+            "threshold": "score >= 0.50",
+            "tier": "guardrail",
+        }
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         parsed_input = self._get_last_turn(evaluation_case)

@@ -1,6 +1,7 @@
 from typing_extensions import Any
 
 from ...types.evaluation import EnvironmentState, EvaluationData, EvaluationOutput, InputT, OutputT
+from ...types.evaluator_metadata import EvaluatorMetadata
 from ..evaluator import Evaluator
 
 
@@ -26,6 +27,17 @@ class StateEquals(Evaluator[InputT, OutputT]):
     def __init__(self, name: str, value: Any | None = None):
         super().__init__(name=name)
         self.value = value
+
+    def metadata(self) -> EvaluatorMetadata:
+        return {
+            "checks": f"Whether environment state '{self.name}' matches the expected value",
+            "method": {
+                "category": "deterministic_extraction",
+                "summary": "Exact equality comparison of a named environment state against an expected value.",
+            },
+            "threshold": "exact match",
+            "tier": "quality",
+        }
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         if not evaluation_case.actual_environment_state:

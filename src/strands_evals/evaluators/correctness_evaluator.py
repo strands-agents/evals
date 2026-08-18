@@ -6,6 +6,7 @@ from strands import Agent
 from strands.models.model import Model
 
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
+from ..types.evaluator_metadata import EvaluatorMetadata
 from ..types.trace import EvaluationLevel, TraceLevelInput
 from .evaluator import Evaluator
 from .prompt_templates.correctness import get_reference_template, get_template
@@ -86,6 +87,20 @@ class CorrectnessEvaluator(Evaluator[InputT, OutputT]):
         )
         self.version = version
         self.model = model
+
+    def metadata(self) -> EvaluatorMetadata:
+        return {
+            "checks": "Whether the agent's response is factually correct",
+            "method": {
+                "category": "llm_judge_output",
+                "summary": (
+                    "An LLM judge evaluates correctness of the response using either a "
+                    "3-level rubric or a binary reference comparison."
+                ),
+            },
+            "threshold": "score >= 1.0 (basic) or CORRECT verdict (reference)",
+            "tier": "quality",
+        }
 
     def _has_reference(self, evaluation_case: EvaluationData[InputT, OutputT]) -> bool:
         """Check if the evaluation case contains an expected_assertion for reference-based evaluation."""

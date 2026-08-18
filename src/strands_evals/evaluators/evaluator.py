@@ -7,6 +7,7 @@ from typing_extensions import Any, Generic, TypeGuard
 
 from ..extractors import TraceExtractor
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
+from ..types.evaluator_metadata import EvaluatorMetadata
 from ..types.trace import (
     AssistantMessage,
     Context,
@@ -56,6 +57,18 @@ class Evaluator(Generic[InputT, OutputT]):
             self._trace_extractor = trace_extractor
         elif self.evaluation_level:
             self._trace_extractor = TraceExtractor(self.evaluation_level)
+
+    def metadata(self) -> EvaluatorMetadata | None:
+        """Declare what this evaluator checks and how it works.
+
+        Subclasses override this method to return a typed dict describing
+        themselves. The base implementation returns None, which signals
+        that the evaluator has not declared metadata.
+
+        Returns:
+            An EvaluatorMetadata dict, or None if not declared.
+        """
+        return None
 
     def _get_model_id(self, model: Model | str | None) -> str:
         """Extract model_id from a Model instance or string for serialization.

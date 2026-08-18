@@ -47,6 +47,7 @@ from .telemetry._cloudwatch_logger import _send_to_cloudwatch
 from .types.detector import DiagnosisConfig
 from .types.evaluation import EvaluationData, InputT, OutputT
 from .types.evaluation_report import EvaluationReport
+from .types.evaluator_metadata import validate_metadata
 from .types.trace import Session
 from .utils import is_throttling_error
 
@@ -191,6 +192,19 @@ class Experiment(Generic[InputT, OutputT]):
                 f"Duplicates: {duplicates}. Pass `name=...` when constructing "
                 f"multiple instances of the same Evaluator subclass."
             )
+
+    def _validate_evaluator_metadata(self) -> None:
+        """Validate metadata for all evaluators that declare it.
+
+        Iterates over evaluators and calls validate_metadata on any that
+        return non-None from metadata(). Evaluators without metadata are
+        skipped silently.
+
+        Raises:
+            ValueError: If any evaluator's metadata has invalid structure.
+        """
+        for evaluator in self._evaluators:
+            validate_metadata(evaluator.metadata(), evaluator.get_name())
 
     def _validate_case_names(self) -> None:
         """Validate that all cases have unique, non-None names.
@@ -627,6 +641,7 @@ class Experiment(Generic[InputT, OutputT]):
             an `evaluator` key naming which evaluator produced it.
         """
         self._validate_evaluator_names()
+        self._validate_evaluator_metadata()
 
         if evaluation_data_store is not None:
             self._validate_case_names()

@@ -1,6 +1,7 @@
 from typing_extensions import Any
 
 from ...types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
+from ...types.evaluator_metadata import EvaluatorMetadata
 from ..evaluator import Evaluator
 
 
@@ -10,6 +11,17 @@ class Equals(Evaluator[InputT, OutputT]):
     def __init__(self, value: Any | None = None, name: str | None = None):
         super().__init__(name=name)
         self.value = value
+
+    def metadata(self) -> EvaluatorMetadata:
+        return {
+            "checks": "Whether actual_output exactly equals an expected value",
+            "method": {
+                "category": "deterministic_string",
+                "summary": "Exact equality comparison between actual_output and expected value.",
+            },
+            "threshold": "exact match",
+            "tier": "quality",
+        }
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         expected = self.value if self.value is not None else evaluation_case.expected_output
@@ -33,6 +45,18 @@ class Contains(Evaluator[InputT, OutputT]):
         super().__init__(name=name)
         self.value = value
         self.case_sensitive = case_sensitive
+
+    def metadata(self) -> EvaluatorMetadata:
+        sensitivity = "Case-sensitive" if self.case_sensitive else "Case-insensitive"
+        return {
+            "checks": "Whether actual_output contains a required substring",
+            "method": {
+                "category": "deterministic_string",
+                "summary": f"{sensitivity} substring search on actual_output.",
+            },
+            "threshold": "substring present",
+            "tier": "quality",
+        }
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         actual = str(evaluation_case.actual_output)
@@ -60,6 +84,18 @@ class StartsWith(Evaluator[InputT, OutputT]):
         super().__init__(name=name)
         self.value = value
         self.case_sensitive = case_sensitive
+
+    def metadata(self) -> EvaluatorMetadata:
+        sensitivity = "Case-sensitive" if self.case_sensitive else "Case-insensitive"
+        return {
+            "checks": "Whether actual_output starts with a required prefix",
+            "method": {
+                "category": "deterministic_string",
+                "summary": f"{sensitivity} prefix check on actual_output.",
+            },
+            "threshold": "prefix present",
+            "tier": "quality",
+        }
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         actual = str(evaluation_case.actual_output)
