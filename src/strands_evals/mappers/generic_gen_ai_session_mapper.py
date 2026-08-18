@@ -2,8 +2,7 @@
 GenericGenAISessionMapper - Maps dict-format spans with gen_ai.* attributes to Session format.
 
 Handles spans from any framework that uses OpenTelemetry GenAI semantic conventions
-(gen_ai.operation.name, gen_ai.tool.name, etc.) but has a scope name unrecognized
-by any other mappers.
+(gen_ai.operation.name, gen_ai.tool.name, etc.) but has an unrecognized scope name.
 
 This is the fallback mapper for spans that don't match any known instrumentor scope
 but still carry structured gen_ai.* attributes.
@@ -29,11 +28,9 @@ from ..types.trace import (
     ToolResultContent,
     Trace,
     UserMessage,
-    _to_aware_utc,
 )
-from .constants import SCOPE_OPENAI_AGENTS
 from .session_mapper import SessionMapper
-from .utils import bridge_parent_gaps, get_scope_name, join_tool_result_content
+from .utils import bridge_parent_gaps, join_tool_result_content
 
 logger = logging.getLogger(__name__)
 
@@ -117,9 +114,16 @@ class GenericGenAISessionMapper(SessionMapper):
 
     def _convert_trace(self, trace_id: str, spans: list[dict], session_id: str) -> Trace:
         """Convert a list of dict spans (same trace_id) to a Trace."""
+        # Build parent map from the original span hierarchy to bridge through filtered-out intermediaries.
+        raw_parent_map: dict[str, str | None] = {
+            sid: s.get("parent_span_id") for s in spans if (sid := s.get("span_id"))
+        }
+
+        spans_to_convert = self._prepare_trace_spans(spans)
+
         converted_spans: list[InferenceSpan | ToolExecutionSpan | AgentInvocationSpan] = []
 
-        for span in spans:
+        for span in spans_to_convert:
             try:
                 attrs = span.get("attributes", {})
                 operation_name = attrs.get("gen_ai.operation.name", "")
@@ -154,16 +158,39 @@ class GenericGenAISessionMapper(SessionMapper):
                 )
 
         # Fix parent_span_id on converted spans that point to skipped intermediaries
-        raw_parent_map: dict[str, str | None] = {
-            sid: s.get("parent_span_id") for s in spans if (sid := s.get("span_id"))
-        }
         converted_spans = bridge_parent_gaps(converted_spans, raw_parent_map)
 
         trace = Trace(spans=converted_spans, trace_id=trace_id, session_id=session_id)
+        return self._enrich_trace(trace, spans_to_convert)
 
-        if any(get_scope_name(span) == SCOPE_OPENAI_AGENTS for span in spans):
-            self._enrich_openai_agent_spans(trace, spans)
+    def _prepare_trace_spans(self, spans: list[dict]) -> list[dict]:
+        """Hook to prepare raw spans before conversion.
 
+        Subclasses can override this to add, remove, or replace spans before conversion.
+        Overrides should return the updated spans rather than mutating the originals in place.
+
+        Args:
+            spans: Raw span dicts belonging to a single trace.
+
+        Returns:
+            Spans to convert, which may be a subset, superset, or mutation of input.
+        """
+        return spans
+
+    def _enrich_trace(self, trace: Trace, spans: list[dict]) -> Trace:
+        """Hook to enrich a converted Trace using the prepared span dicts.
+
+        Subclasses can override this to backfill data from child spans or perform
+        framework-specific post-processing. Overrides may mutate the trace in-place.
+
+        Args:
+            trace: Fully converted Trace.
+            spans: Span dicts used for conversion. Useful for accessing
+                raw attributes not carried over into typed spans.
+
+        Returns:
+            The enriched Trace.
+        """
         return trace
 
     def _parse_json_attr(self, attributes: Any, key: str, default: str = "[]") -> Any:
@@ -618,133 +645,3 @@ class GenericGenAISessionMapper(SessionMapper):
                     )
                 )
         return result
-
-    # =========================================================================
-    # OpenAI Agents Handling
-    # =========================================================================
-
-    @staticmethod
-    def _normalize_openai_agents_spans(spans: list[dict]) -> list[dict]:
-        """Normalize OpenAI Agents spans to the canonical representation.
-
-        Drops the empty workflow wrapper emitted by OpenAI Agents + Traceloop.
-        """
-        normalized_spans: list[dict] = []
-        for span in spans:
-            attrs = span.get("attributes", {})
-            is_root_wrapper = (
-                get_scope_name(span) == SCOPE_OPENAI_AGENTS
-                and attrs.get("gen_ai.operation.name") == "invoke_agent"
-                and not attrs.get("gen_ai.agent.name")
-                and not attrs.get("gen_ai.input.messages")
-            )
-            if is_root_wrapper:
-                continue
-            normalized_spans.append(span)
-
-        return normalized_spans
-
-    def _enrich_openai_agent_spans(self, trace: Trace, raw_spans: list[dict]) -> None:
-        """Enrich OpenAI Agents spans using other spans in the trace.
-
-        This enriches by:
-        1. Backfilling ``user_prompt`` / ``agent_response`` from child chat spans.
-        2. Deriving each agent's ``available_tools`` from child spans.
-        """
-        openai_span_ids: set[str] = set()
-        for raw in raw_spans:
-            sid = raw.get("span_id")
-            if isinstance(sid, str) and get_scope_name(raw) == SCOPE_OPENAI_AGENTS:
-                openai_span_ids.add(sid)
-        agent_spans: dict[str, AgentInvocationSpan] = {
-            s.span_info.span_id: s
-            for s in trace.spans
-            if isinstance(s, AgentInvocationSpan) and s.span_info.span_id in openai_span_ids
-        }
-
-        self._backfill_agent_prompts(trace, agent_spans, openai_span_ids)
-        self._backfill_agent_tools(trace, agent_spans, raw_spans, openai_span_ids)
-
-    def _backfill_agent_tools(
-        self,
-        trace: Trace,
-        agent_spans: dict[str, AgentInvocationSpan],
-        raw_spans: list[dict],
-        scoped_span_ids: set[str],
-    ) -> None:
-        """Populate available_tools on agent spans using their child spans."""
-        # Fill agent spans' available tools from child chat spans' tool definitions.
-        raw_attrs_by_id = {raw.get("span_id"): raw.get("attributes", {}) for raw in raw_spans}
-        for span in trace.spans:
-            if not isinstance(span, InferenceSpan) or span.span_info.span_id not in scoped_span_ids:
-                continue
-            agent = agent_spans.get(span.span_info.parent_span_id or "")
-            if agent is None or agent.available_tools:
-                continue
-            configs = self._parse_tool_definitions(raw_attrs_by_id.get(span.span_info.span_id, {}))
-            if configs:
-                agent.available_tools = list(configs)
-
-        # Fallback: get the names of tools the agent called.
-        for span in trace.spans:
-            if isinstance(span, ToolExecutionSpan) and span.tool_call.name:
-                agent = agent_spans.get(span.agent_span_id or "")
-                if agent and not any(t.name == span.tool_call.name for t in agent.available_tools):
-                    agent.available_tools.append(ToolConfig(name=span.tool_call.name))
-
-    def _backfill_agent_prompts(
-        self,
-        trace: Trace,
-        agent_spans: dict[str, AgentInvocationSpan],
-        scoped_span_ids: set[str],
-    ) -> None:
-        """Backfill user_prompt and agent_response on OpenAI Agents invoke_agent spans."""
-        if not agent_spans:
-            return
-
-        # Collect inference spans under each agent span (only OpenAI-scoped)
-        inference_by_agent: dict[str, list[InferenceSpan]] = defaultdict(list)
-        for span in trace.spans:
-            if isinstance(span, InferenceSpan) and span.span_info.span_id in scoped_span_ids:
-                parent_id = span.span_info.parent_span_id
-                if parent_id and parent_id in agent_spans:
-                    inference_by_agent[parent_id].append(span)
-
-        # Get the first user text and last assistant text from inference spans
-        for agent_id, inference_spans in inference_by_agent.items():
-            agent = agent_spans[agent_id]
-            inference_spans.sort(key=lambda s: _to_aware_utc(s.span_info.start_time))
-
-            if not agent.user_prompt:
-                user_prompt = self._get_first_user_text(inference_spans)
-                if user_prompt:
-                    agent.user_prompt = user_prompt
-
-            if not agent.agent_response:
-                agent_response = self._get_last_assistant_text(inference_spans)
-                if agent_response:
-                    agent.agent_response = agent_response
-
-    @staticmethod
-    def _get_first_user_text(inference_spans: list[InferenceSpan]) -> str:
-        """Return the first user text content across ordered inference spans."""
-        for span in inference_spans:
-            for msg in span.messages:
-                if msg.role.value != "user":
-                    continue
-                for content in msg.content:
-                    if isinstance(content, TextContent) and content.text:
-                        return content.text
-        return ""
-
-    @staticmethod
-    def _get_last_assistant_text(inference_spans: list[InferenceSpan]) -> str:
-        """Return the last assistant text content across ordered inference spans."""
-        for span in reversed(inference_spans):
-            for msg in reversed(span.messages):
-                if msg.role.value != "assistant":
-                    continue
-                for content in reversed(msg.content):
-                    if isinstance(content, TextContent) and content.text:
-                        return content.text
-        return ""

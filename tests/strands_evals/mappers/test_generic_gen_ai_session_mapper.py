@@ -6,12 +6,10 @@ from pathlib import Path
 import pytest
 
 from strands_evals.mappers import GenericGenAISessionMapper, detect_otel_mapper
-from strands_evals.mappers.constants import SCOPE_OPENAI_AGENTS
 from strands_evals.types.trace import (
     AgentInvocationSpan,
     InferenceSpan,
     ToolExecutionSpan,
-    _find_root_agent_span,
 )
 
 
@@ -948,55 +946,6 @@ class TestSessionFilteringTraceLevel:
         assert len(session.traces[0].spans) == 2
         span_ids = {s.span_info.span_id for s in session.traces[0].spans}
         assert span_ids == {"s1", "s2"}
-
-    def test_wrapper_session_id_used_for_filtering_then_wrapper_dropped(self):
-        """Wrapper's session.id is used for filtering; the wrapper itself is excluded from output."""
-        mapper = GenericGenAISessionMapper()
-        spans = [
-            # Trace A: wrapper carries session A, child agent is untagged.
-            make_span(
-                trace_id="tA",
-                span_id="wrapper-a",
-                operation_name="invoke_agent",
-                attributes={"session.id": "sess-A"},
-                scope_name=SCOPE_OPENAI_AGENTS,
-            ),
-            make_span(
-                trace_id="tA",
-                span_id="agent-a",
-                parent_span_id="wrapper-a",
-                operation_name="invoke_agent",
-                attributes={"gen_ai.agent.name": "coordinator", "gen_ai.input.messages": "[]"},
-                scope_name=SCOPE_OPENAI_AGENTS,
-            ),
-            # Trace B: wrapper carries session B.
-            make_span(
-                trace_id="tB",
-                span_id="wrapper-b",
-                operation_name="invoke_agent",
-                attributes={"session.id": "sess-B"},
-                scope_name=SCOPE_OPENAI_AGENTS,
-            ),
-            make_span(
-                trace_id="tB",
-                span_id="agent-b",
-                parent_span_id="wrapper-b",
-                operation_name="invoke_agent",
-                attributes={"gen_ai.agent.name": "helper", "gen_ai.input.messages": "[]"},
-                scope_name=SCOPE_OPENAI_AGENTS,
-            ),
-        ]
-        # Session A includes only trace A; wrapper itself is suppressed.
-        session_a = mapper.map_to_session(spans, "sess-A")
-        assert len(session_a.traces) == 1
-        assert session_a.traces[0].trace_id == "tA"
-        span_ids = {s.span_info.span_id for s in session_a.traces[0].spans}
-        assert "wrapper-a" not in span_ids
-        assert "agent-a" in span_ids
-
-        # Wrong session_id returns nothing.
-        session_wrong = mapper.map_to_session(spans, "wrong-id")
-        assert len(session_wrong.traces) == 0
 
 
 class TestAgentResponseFromOutputMessages:

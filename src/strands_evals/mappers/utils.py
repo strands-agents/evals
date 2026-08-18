@@ -7,7 +7,7 @@ import logging
 from typing import Any
 
 from ..types.trace import SpanUnion
-from .constants import SCOPE_ADK, SCOPE_LANGCHAIN_OTEL, SCOPE_STRANDS, SCOPES_OPENINFERENCE_FAMILY
+from .constants import SCOPE_ADK, SCOPE_LANGCHAIN_OTEL, SCOPE_OPENAI_AGENTS, SCOPE_STRANDS, SCOPES_OPENINFERENCE_FAMILY
 from .session_mapper import SessionMapper
 
 logger = logging.getLogger(__name__)
@@ -117,6 +117,7 @@ def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
     from .cloudwatch_session_mapper import CloudWatchSessionMapper
     from .generic_gen_ai_session_mapper import GenericGenAISessionMapper
     from .langchain_otel_session_mapper import LangChainOtelSessionMapper
+    from .openai_agents_gen_ai_session_mapper import _OpenAIAgentsGenAISessionMapper
     from .openinference_session_mapper import OpenInferenceSessionMapper
     from .strands_in_memory_session_mapper import StrandsInMemorySessionMapper
 
@@ -136,6 +137,9 @@ def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
         if scope_name == SCOPE_ADK:
             return ADKOtelSessionMapper()
 
+        if scope_name == SCOPE_OPENAI_AGENTS:
+            return _OpenAIAgentsGenAISessionMapper()
+
         if scope_name == SCOPE_STRANDS:
             # CloudWatch split format puts body on a separate entry from
             # the scoped metadata entry. Break here and let the fallback
@@ -152,7 +156,7 @@ def detect_otel_mapper(spans: list[Any]) -> SessionMapper:
     # Fallback for dict spans with gen_ai.* attributes but unrecognized scope.
     # Only route to GenericGenAISessionMapper if the span has an unrecognized
     # (or missing) scope — Strands-scoped spans already fell through above.
-    known_scopes = {SCOPE_STRANDS, SCOPE_LANGCHAIN_OTEL, SCOPE_ADK} | SCOPES_OPENINFERENCE_FAMILY
+    known_scopes = {SCOPE_STRANDS, SCOPE_LANGCHAIN_OTEL, SCOPE_ADK, SCOPE_OPENAI_AGENTS} | SCOPES_OPENINFERENCE_FAMILY
     for span in spans:
         scope_name = get_scope_name(span)
         if scope_name not in known_scopes:
