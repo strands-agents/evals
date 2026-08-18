@@ -75,9 +75,6 @@ class GenericGenAISessionMapper(SessionMapper):
 
         spans = self._normalize_to_flat_spans(data)
 
-        if any(get_scope_name(span) == SCOPE_OPENAI_AGENTS for span in spans):
-            spans = self._normalize_openai_agents_spans(spans)
-
         # Group by trace_id, optionally filtering by session.id.
         # Single pass: bucket spans by trace and track which traces match session_id.
         all_traces: dict[str, list[dict]] = defaultdict(list)
@@ -450,8 +447,14 @@ class GenericGenAISessionMapper(SessionMapper):
                 fn = item["function"] if isinstance(item.get("function"), dict) else item
                 name = fn.get("name", "")
                 if name:
+                    description = fn.get("description")
+                    parameters = fn.get("parameters")
                     configs.append(
-                        ToolConfig(name=name, description=fn.get("description"), parameters=fn.get("parameters"))
+                        ToolConfig(
+                            name=name,
+                            description=str(description) if isinstance(description, str) else None,
+                            parameters=parameters if isinstance(parameters, dict) else None,
+                        )
                     )
         return configs
 
@@ -648,24 +651,32 @@ class GenericGenAISessionMapper(SessionMapper):
         1. Backfilling ``user_prompt`` / ``agent_response`` from child chat spans.
         2. Deriving each agent's ``available_tools`` from child spans.
         """
-        agent_spans = {
-            s.span_info.span_id: s for s in trace.spans if isinstance(s, AgentInvocationSpan) and s.span_info.span_id
+        openai_span_ids: set[str] = set()
+        for raw in raw_spans:
+            sid = raw.get("span_id")
+            if isinstance(sid, str) and get_scope_name(raw) == SCOPE_OPENAI_AGENTS:
+                openai_span_ids.add(sid)
+        agent_spans: dict[str, AgentInvocationSpan] = {
+            s.span_info.span_id: s
+            for s in trace.spans
+            if isinstance(s, AgentInvocationSpan) and s.span_info.span_id in openai_span_ids
         }
 
-        self._backfill_agent_prompts(trace, agent_spans)
-        self._backfill_agent_tools(trace, agent_spans, raw_spans)
+        self._backfill_agent_prompts(trace, agent_spans, openai_span_ids)
+        self._backfill_agent_tools(trace, agent_spans, raw_spans, openai_span_ids)
 
     def _backfill_agent_tools(
         self,
         trace: Trace,
         agent_spans: dict[str, AgentInvocationSpan],
         raw_spans: list[dict],
+        scoped_span_ids: set[str],
     ) -> None:
         """Populate available_tools on agent spans using their child spans."""
         # Fill agent spans' available tools from child chat spans' tool definitions.
         raw_attrs_by_id = {raw.get("span_id"): raw.get("attributes", {}) for raw in raw_spans}
         for span in trace.spans:
-            if not isinstance(span, InferenceSpan):
+            if not isinstance(span, InferenceSpan) or span.span_info.span_id not in scoped_span_ids:
                 continue
             agent = agent_spans.get(span.span_info.parent_span_id or "")
             if agent is None or agent.available_tools:
@@ -685,15 +696,16 @@ class GenericGenAISessionMapper(SessionMapper):
         self,
         trace: Trace,
         agent_spans: dict[str, AgentInvocationSpan],
+        scoped_span_ids: set[str],
     ) -> None:
         """Backfill user_prompt and agent_response on OpenAI Agents invoke_agent spans."""
         if not agent_spans:
             return
 
-        # Collect inference spans under each agent span
+        # Collect inference spans under each agent span (only OpenAI-scoped)
         inference_by_agent: dict[str, list[InferenceSpan]] = defaultdict(list)
         for span in trace.spans:
-            if isinstance(span, InferenceSpan):
+            if isinstance(span, InferenceSpan) and span.span_info.span_id in scoped_span_ids:
                 parent_id = span.span_info.parent_span_id
                 if parent_id and parent_id in agent_spans:
                     inference_by_agent[parent_id].append(span)
