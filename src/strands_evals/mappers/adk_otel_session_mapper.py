@@ -144,7 +144,7 @@ class ADKOtelSessionMapper(SessionMapper):
         }
 
         converted_spans.sort(key=lambda s: s.span_info.start_time)
-        bridge_parent_gaps(converted_spans, raw_parent_map)
+        converted_spans = bridge_parent_gaps(converted_spans, raw_parent_map)
 
         return Trace(spans=converted_spans, trace_id=trace_id, session_id=session_id)
 

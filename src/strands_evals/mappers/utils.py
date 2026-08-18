@@ -278,30 +278,40 @@ def readable_spans_to_dicts(spans: Any) -> list[dict]:
 def bridge_parent_gaps(
     converted_spans: list[SpanUnion],
     raw_parent_map: dict[str, str | None],
-) -> None:
-    """Patch parent_span_id on converted spans to skip unconverted intermediates.
+) -> list[SpanUnion]:
+    """Return spans with parent_span_id adjusted to skip unconverted intermediates.
 
-    When a converted span's parent_span_id points to a span that wasn't
-    converted (e.g. execute_event_loop_cycle in Strands SDK, call_llm in ADK),
-    this walks up via raw_parent_map until it finds a converted ancestor — or
-    sets parent_span_id to None if no converted ancestor exists.
+    Walks up `raw_parent_map` to find the nearest converted ancestor. Sets
+    parent_span_id to None if no converted ancestor exists.
 
     Args:
-        converted_spans: Flat list of converted spans from a single trace.
-        raw_parent_map: span_id -> parent_span_id for ALL raw spans, including
-            unconverted ones.
+        converted_spans: Converted spans from a single trace.
+        raw_parent_map: span_id -> parent_span_id for all raw spans (including unconverted).
+
+    Returns:
+        New list of spans with corrected parent_span_id values.
     """
     converted_ids = {s.span_info.span_id for s in converted_spans if s.span_info.span_id}
+    result: list[SpanUnion] = []
     for span in converted_spans:
         parent_id = span.span_info.parent_span_id
-        if parent_id and parent_id not in converted_ids:
-            visited: set[str] = set()
-            current: str | None = parent_id
-            while current and current not in visited:
-                visited.add(current)
-                if current in converted_ids:
-                    span.span_info.parent_span_id = current
-                    break
-                current = raw_parent_map.get(current)
-            else:
-                span.span_info.parent_span_id = None
+        # No-op if the parent id points to no span or a converted span
+        if not parent_id or parent_id in converted_ids:
+            result.append(span)
+            continue
+
+        # Walk up to find converted ancestor
+        visited: set[str] = set()
+        current: str | None = parent_id
+        new_parent: str | None = None
+        while current and current not in visited:
+            visited.add(current)
+            if current in converted_ids:
+                new_parent = current
+                break
+            current = raw_parent_map.get(current)
+        patched = span.model_copy(
+            update={"span_info": span.span_info.model_copy(update={"parent_span_id": new_parent})}
+        )
+        result.append(patched)
+    return result

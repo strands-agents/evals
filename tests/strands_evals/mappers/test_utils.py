@@ -374,9 +374,10 @@ class TestBridgeParentGaps:
         # call_llm is unconverted but its parent is the converted agent
         raw_parent_map = {"agent": None, "call_llm": "agent", "tool": "call_llm"}
 
-        bridge_parent_gaps([agent, tool], raw_parent_map)
+        result = bridge_parent_gaps([agent, tool], raw_parent_map)
 
-        assert tool.span_info.parent_span_id == "agent"
+        assert result[1].span_info.parent_span_id == "agent"
+        assert tool.span_info.parent_span_id == "call_llm"
 
     def test_sets_none_when_no_converted_ancestor(self):
         """Tool whose chain never reaches a converted span gets parent_span_id=None."""
@@ -387,6 +388,7 @@ class TestBridgeParentGaps:
         )
         raw_parent_map = {"orphan": "also_gone", "also_gone": None, "tool": "orphan"}
 
-        bridge_parent_gaps([tool], raw_parent_map)
+        result = bridge_parent_gaps([tool], raw_parent_map)
 
-        assert tool.span_info.parent_span_id is None
+        assert result[0].span_info.parent_span_id is None
+        assert tool.span_info.parent_span_id == "orphan"

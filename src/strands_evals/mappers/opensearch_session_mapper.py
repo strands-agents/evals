@@ -100,7 +100,7 @@ class OpenSearchSessionMapper(SessionMapper):
             r.span_id: (r.parent_span_id or None) for r in sorted_records if r.span_id
         }
 
-        bridge_parent_gaps(spans, raw_parent_map)
+        spans = bridge_parent_gaps(spans, raw_parent_map)
 
         return Trace(spans=spans, trace_id=trace_id, session_id=session_id)
 
