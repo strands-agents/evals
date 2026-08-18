@@ -91,6 +91,8 @@ class OpenInferenceSessionMapper(SessionMapper):
         self._trace_tools_map: dict[str, dict[str, ToolConfig]] = defaultdict(dict)
         # Track system prompts per trace
         self._trace_system_prompt_map: dict[str, str] = defaultdict(str)
+        # Track span_id -> parent_span_id for ALL raw spans (including non-OpenInference scopes)
+        self._raw_parent_map: dict[str, str | None] = {}
         # Cache: span_id -> (input_messages, output_messages) from _get_messages_from_span_events
         # Avoids re-parsing span_events body during detection and again during conversion.
         self._span_messages_cache: dict[str, tuple[list[dict], list[dict]]] = {}
@@ -118,6 +120,9 @@ class OpenInferenceSessionMapper(SessionMapper):
 
         # Normalize input to flat spans
         spans = self._normalize_to_flat_spans(data)
+
+        # Build parent map from ALL spans
+        self._raw_parent_map = {s.get("span_id", ""): s.get("parent_span_id") for s in spans}
 
         # Filter to only spans from this scope (including smolagents variant)
         openinference_spans = [s for s in spans if self._get_scope_name(s) in SCOPES_OPENINFERENCE_FAMILY]
@@ -456,10 +461,6 @@ class OpenInferenceSessionMapper(SessionMapper):
             except Exception as e:
                 logger.warning(f"Failed to convert span {span.get('span_id', 'unknown')}: {e}")
 
-        # Fix parent_span_id on converted spans that point to skipped intermediaries
-        raw_parent_map = {s.get("span_id", ""): s.get("parent_span_id") for s in spans}
-        bridge_parent_gaps(converted_spans, raw_parent_map)
-
         # In multi-agent LangGraph systems, each nested sub-graph produces its own
         # LangGraph CHAIN span. Keep only the last one (root graph finishes last).
         agent_spans = [s for s in converted_spans if isinstance(s, AgentInvocationSpan)]
@@ -485,6 +486,9 @@ class OpenInferenceSessionMapper(SessionMapper):
             for converted in converted_spans:
                 if isinstance(converted, AgentInvocationSpan) and not converted.system_prompt:
                     converted.system_prompt = system_prompt
+
+        # Fix parent_span_id on converted spans that point to skipped intermediaries.
+        bridge_parent_gaps(converted_spans, self._raw_parent_map)
 
         return Trace(spans=converted_spans, trace_id=trace_id, session_id=session_id)
 
