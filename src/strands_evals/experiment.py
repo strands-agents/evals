@@ -59,6 +59,23 @@ _INITIAL_RETRY_DELAY = 4
 _MAX_RETRY_DELAY = 240  # 4 minutes
 
 
+def _roll_up_status(evaluation_outputs: list) -> str:
+    """Derive the aggregate status for a case from its individual evaluation outputs.
+
+    Precedence (highest to lowest):
+        1. "graded" - if ANY output is graded, the roll-up is graded because
+           the evaluator produced at least one real verdict.
+        2. First output's status - when no output is graded, use the status
+           of the first output (could_not_evaluate or informational).
+        3. "graded" - fallback when outputs list is empty (defensive).
+    """
+    if not evaluation_outputs:
+        return "graded"
+    if any(o.status == "graded" for o in evaluation_outputs):
+        return "graded"
+    return evaluation_outputs[0].status
+
+
 def _get_label_from_score(evaluator: Evaluator, score: float) -> str:
     """
     Get the label from score using evaluator's _score_mapping if available.
@@ -422,6 +439,7 @@ class Experiment(Generic[InputT, OutputT]):
                     "score": aggregate_score,
                     "reason": aggregate_reason or "",
                     "detailed_results": evaluation_outputs,
+                    "status": _roll_up_status(evaluation_outputs),
                 }
 
         except RetryError as e:
@@ -443,6 +461,7 @@ class Experiment(Generic[InputT, OutputT]):
                 "score": 0,
                 "reason": f"Evaluator error: {str(original_exception)}",
                 "detailed_results": [],
+                "status": "could_not_evaluate",
             }
         except Exception as e:
             # Catch non-throttling errors and record as failure (error isolation)
@@ -453,6 +472,7 @@ class Experiment(Generic[InputT, OutputT]):
                 "score": 0,
                 "reason": f"Evaluator error: {str(e)}",
                 "detailed_results": [],
+                "status": "could_not_evaluate",
             }
 
     async def _run_diagnosis(
@@ -569,6 +589,7 @@ class Experiment(Generic[InputT, OutputT]):
                                     "score": 0,
                                     "reason": f"An error occurred: {str(e)}",
                                     "detailed_results": [],
+                                    "status": "could_not_evaluate",
                                 }
                             )
                         results[index] = {
@@ -659,6 +680,7 @@ class Experiment(Generic[InputT, OutputT]):
                 "detailed_results": [],
                 "diagnoses": [],
                 "recommendations": [],
+                "statuses": [],
             }
             for evaluator in self._evaluators
         }
@@ -678,14 +700,17 @@ class Experiment(Generic[InputT, OutputT]):
                 evaluator_data[eval_name]["detailed_results"].append(eval_result["detailed_results"])
                 evaluator_data[eval_name]["diagnoses"].append(diagnosis)
                 evaluator_data[eval_name]["recommendations"].append(recommendation)
+                evaluator_data[eval_name]["statuses"].append(eval_result.get("status", "graded"))
 
         reports = []
         for evaluator in self._evaluators:
             eval_name = evaluator.get_name()
             data = evaluator_data[eval_name]
             scores = data["scores"]
+            statuses = data["statuses"]
+            graded_scores = [s for s, st in zip(scores, statuses, strict=True) if st == "graded"]
             report = EvaluationReport(
-                overall_score=sum(scores) / len(scores) if scores else 0,
+                overall_score=sum(graded_scores) / len(graded_scores) if graded_scores else 0,
                 scores=scores,
                 test_passes=data["test_passes"],
                 cases=data["cases"],
@@ -693,6 +718,7 @@ class Experiment(Generic[InputT, OutputT]):
                 detailed_results=data["detailed_results"],
                 diagnoses=data["diagnoses"],
                 recommendations=data["recommendations"],
+                statuses=statuses,
             )
             reports.append(report)
 

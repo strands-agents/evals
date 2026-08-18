@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel
 from typing_extensions import Any, Generic, TypedDict, TypeVar
 
@@ -118,9 +120,22 @@ class EvaluationOutput(BaseModel):
         test_pass: Whether the test pass or fail.
         reason: The reason for the score for each test case.
         label: The categorical label corresponding to the score.
+        status: The grading status of the evaluation output. Controls whether
+            this result is included in aggregate score computations.
+
+            - "graded" (default): The score and test_pass are real verdicts.
+              Included in all aggregations. Backward compatible with every
+              existing evaluator.
+            - "could_not_evaluate": The evaluator tried to grade but could not
+              (preconditions not met, harness failure, missing data). Excluded
+              from pass-rate and score aggregations.
+            - "informational": The evaluator does not pass/fail by design. It
+              surfaces content for human review but is excluded from numeric
+              aggregates.
     """
 
     score: float
     test_pass: bool
     reason: str | None = None
     label: str | None = None
+    status: Literal["graded", "could_not_evaluate", "informational"] = "graded"
