@@ -11,7 +11,6 @@ Each concrete effect has an `effect_type` discriminator field for Pydantic
 discriminated-union serialization, ensuring full round-trip fidelity.
 """
 
-import json
 import math
 import random
 import re
@@ -330,7 +329,13 @@ class ModelEffect(ChaosEffect):
 
 
 class MalformedJson(ModelEffect):
-    """Corrupts JSON structures in model output."""
+    """Corrupts JSON structures in model output.
+
+    On final text responses this truncates JSON-like content. For structured output the
+    plugin instead injects a single parse failure per agent invocation at the tool
+    boundary, so the agent must recover; the corrected attempt is left untouched and a
+    typed caller still receives validated structured output.
+    """
 
     hook: ClassVar[Literal["pre", "post"]] = "post"
     effect_type: Literal["malformed_json"] = "malformed_json"
@@ -353,23 +358,11 @@ class MalformedJson(ModelEffect):
         return text
 
     @staticmethod
-    def _malform_tool_use_block(block: dict) -> dict:
-        """Corrupt a single toolUse block's input JSON."""
-        block = dict(block)
-        tool_use = dict(block["toolUse"])
-        raw = json.dumps(tool_use.get("input", {}))
-        tool_use["input"] = raw[:-1] if raw.endswith("}") else raw + "{{{"
-        block["toolUse"] = tool_use
-        return block
-
-    @staticmethod
     def _malform_blocks(blocks: list) -> list:
-        """Apply malformation to all blocks, delegating toolUse corruption per block."""
+        """Corrupt JSON-like text in each content block."""
         result = []
         for block in blocks:
-            if isinstance(block, dict) and "toolUse" in block:
-                block = MalformedJson._malform_tool_use_block(block)
-            elif isinstance(block, dict) and "text" in block and isinstance(block["text"], str):
+            if isinstance(block, dict) and "text" in block and isinstance(block["text"], str):
                 block = dict(block)
                 block["text"] = MalformedJson._malform_text(block["text"])
             result.append(block)

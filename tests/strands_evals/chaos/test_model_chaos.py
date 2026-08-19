@@ -1,19 +1,7 @@
-"""Unit tests for model output chaos via ChaosPlugin two-hook architecture.
-
-Tests cover:
-- Effects constructed via keyed dict {"model_effects": {"*": [...]}}
-- EmptyResponse as pre-hook: model not called, turn is single space
-- FullRefusal as pre-hook: model not called, turn is refusal text
-- MalformedJson on structured-output toolUse: toolUse input corrupted
-- Post effects (Confabulation, MalformedJson-on-text, SuccessFraming) work
-- Mixed pre+post still produces one turn (pre wins)
-- MalformedJson DOES reach/corrupt structured-output toolUse
-- Effect family validation: wrong-category effects rejected
-- Wildcard rejection: non-'*' model_effects keys rejected
-- Ordinary dynamic tool not corrupted: isinstance-based detection
-"""
+"""Tests for model output chaos (ChaosPlugin two-hook architecture)."""
 
 import copy
+import logging
 from unittest.mock import MagicMock
 
 import pytest
@@ -30,7 +18,7 @@ from strands_evals.chaos.effects import (
     SuccessFraming,
     Timeout,
 )
-from strands_evals.chaos.plugin import ChaosPlugin
+from strands_evals.chaos.plugin import _CHAOS_STATE_KEY, ChaosPlugin
 
 
 def _make_event(message: dict, dynamic_tools: dict | None = None) -> MagicMock:
@@ -197,12 +185,77 @@ class TestFullRefusalPreHook:
         _current_chaos_case.set(None)
 
 
-class TestMalformedJsonStructuredOutput:
-    """MalformedJson DOES reach and corrupt structured-output toolUse blocks only."""
+class TestStructuredOutputFailureInjection:
+    """MalformedJson injects one structured-output parse failure per invocation."""
 
-    def test_malformed_json_corrupts_structured_output_tooluse(self):
-        """MalformedJson corrupts toolUse input when the tool declares tool_type structured_output."""
+    _EXPECTED_MESSAGE = "Structured output was malformed and could not be parsed. Please produce a corrected response."
+
+    def _tool_event(self, tool_type, invocation_state=None):
+        event = MagicMock()
+        event.tool_use = {"name": "MyModel"}
+        event.selected_tool = MagicMock(tool_type=tool_type)
+        event.invocation_state = {} if invocation_state is None else invocation_state
+        event.cancel_tool = False
+        return event
+
+    def test_structured_output_attempt_is_failed(self, caplog):
+        """The first structured-output attempt is cancelled with the parse-failure message."""
         _set_chaos_case([MalformedJson()])
+        plugin = ChaosPlugin()
+        event = self._tool_event("structured_output")
+
+        with caplog.at_level(logging.INFO):
+            plugin.before_tool_call(event)
+
+        assert event.cancel_tool == self._EXPECTED_MESSAGE
+        assert "injected structured output parse failure" in caplog.text
+
+    def test_injection_is_one_shot_per_invocation(self):
+        """A second attempt in the same invocation passes through so the agent can recover."""
+        _set_chaos_case([MalformedJson()])
+        plugin = ChaosPlugin()
+        invocation_state = {}
+
+        first = self._tool_event("structured_output", invocation_state)
+        plugin.before_tool_call(first)
+        assert first.cancel_tool == self._EXPECTED_MESSAGE
+
+        second = self._tool_event("structured_output", invocation_state)
+        plugin.before_tool_call(second)
+        assert second.cancel_tool is False
+
+    def test_ordinary_tool_is_unaffected(self):
+        """A non-structured-output tool is not cancelled by MalformedJson."""
+        _set_chaos_case([MalformedJson()])
+        plugin = ChaosPlugin()
+        event = self._tool_event("function")
+
+        plugin.before_tool_call(event)
+
+        assert event.cancel_tool is False
+        assert _CHAOS_STATE_KEY not in event.invocation_state
+
+    def test_no_malformed_json_configured_writes_no_state(self):
+        """Without MalformedJson the structured-output tool runs and no marker is written."""
+        _set_chaos_case([Confabulation()])
+        plugin = ChaosPlugin()
+        event = self._tool_event("structured_output")
+
+        plugin.before_tool_call(event)
+
+        assert event.cancel_tool is False
+        assert _CHAOS_STATE_KEY not in event.invocation_state
+
+    def teardown_method(self):
+        _current_chaos_case.set(None)
+
+
+class TestToolUseMessagesNeverCorrupted:
+    """after_model_invocation leaves every message carrying a toolUse block untouched."""
+
+    def test_structured_output_tooluse_untouched(self, caplog):
+        """A structured-output toolUse message is not corrupted and nothing is logged."""
+        _set_chaos_case([MalformedJson(), SuccessFraming()])
         plugin = ChaosPlugin()
         message = {
             "role": "assistant",
@@ -210,56 +263,37 @@ class TestMalformedJsonStructuredOutput:
                 {"toolUse": {"toolUseId": "so_1", "name": "MyModel", "input": {"field1": "value1"}}},
             ],
         }
-        mock_so_tool = MagicMock(tool_type="structured_output")
-        event = _make_event(message, dynamic_tools={"MyModel": mock_so_tool})
+        original_content = copy.deepcopy(message["content"])
+        event = _make_event(message)
 
-        plugin.after_model_invocation(event)
+        with caplog.at_level(logging.INFO):
+            plugin.after_model_invocation(event)
 
-        tool_use_block = message["content"][0]["toolUse"]
-        corrupted_input = tool_use_block["input"]
-        assert isinstance(corrupted_input, str)
-        assert not corrupted_input.endswith("}")
+        assert message["content"] == original_content
+        assert "applied model output chaos" not in caplog.text
 
-    def test_plain_tooluse_not_corrupted_even_with_malformed_json(self):
-        """A plain mid-turn toolUse (not in dynamic_tools) is NOT corrupted by MalformedJson."""
+    def test_ordinary_tooluse_untouched(self):
+        """An ordinary mid-turn toolUse message is not corrupted."""
         _set_chaos_case([MalformedJson()])
         plugin = ChaosPlugin()
-        message = {
-            "role": "assistant",
-            "content": [
-                {"toolUse": {"toolUseId": "tu_1", "name": "search", "input": {"query": "test"}}},
-            ],
-        }
+        message = _tooluse_assistant_message()
         original_content = copy.deepcopy(message["content"])
-        event = _make_event(message, dynamic_tools={})
+        event = _make_event(message)
 
         plugin.after_model_invocation(event)
 
         assert message["content"] == original_content
 
-    def test_mixed_tooluse_only_structured_output_corrupted(self):
-        """In a message with both regular and structured-output toolUse, only SO is corrupted."""
+    def test_text_only_response_still_corrupted(self):
+        """Final text responses remain corruptible."""
         _set_chaos_case([MalformedJson()])
         plugin = ChaosPlugin()
-        message = {
-            "role": "assistant",
-            "content": [
-                {"toolUse": {"toolUseId": "tu_1", "name": "search", "input": {"query": "test"}}},
-                {"toolUse": {"toolUseId": "so_1", "name": "MyModel", "input": {"field1": "value1"}}},
-            ],
-        }
-        mock_so_tool = MagicMock(tool_type="structured_output")
-        event = _make_event(message, dynamic_tools={"MyModel": mock_so_tool})
+        message = _final_assistant_message('{"key": "value", "nested": {"a": 1}}')
+        event = _make_event(message)
 
         plugin.after_model_invocation(event)
 
-        # "search" toolUse should be UNCHANGED
-        search_block = message["content"][0]["toolUse"]
-        assert search_block["input"] == {"query": "test"}
-        # "MyModel" toolUse should be CORRUPTED
-        so_block = message["content"][1]["toolUse"]
-        assert isinstance(so_block["input"], str)
-        assert not so_block["input"].endswith("}")
+        assert message["content"][0]["text"] != '{"key": "value", "nested": {"a": 1}}'
 
     def teardown_method(self):
         _current_chaos_case.set(None)
@@ -363,50 +397,6 @@ class TestMixedPrePostCase:
 
         # SuccessFraming (post) should NOT have been applied
         assert cancel_message["content"] == [{"text": " "}]
-
-    def teardown_method(self):
-        _current_chaos_case.set(None)
-
-
-class TestMalformedJsonReachesStructuredOutput:
-    """MalformedJson reaches structured-output toolUse (relaxed for it)."""
-
-    def test_malformed_json_corrupts_structured_output_tooluse(self):
-        """MalformedJson DOES corrupt a structured-output toolUse block."""
-        _set_chaos_case([MalformedJson()])
-        plugin = ChaosPlugin()
-        message = {
-            "role": "assistant",
-            "content": [
-                {
-                    "toolUse": {
-                        "toolUseId": "so_1",
-                        "name": "MyModel",
-                        "input": {"field1": "value1"},
-                    }
-                },
-            ],
-        }
-        mock_so_tool = MagicMock(tool_type="structured_output")
-        event = _make_event(message, dynamic_tools={"MyModel": mock_so_tool})
-
-        plugin.after_model_invocation(event)
-
-        tool_use_block = message["content"][0]["toolUse"]
-        assert isinstance(tool_use_block["input"], str)
-        assert not tool_use_block["input"].endswith("}")
-
-    def test_other_post_effects_still_skip_tooluse(self):
-        """Confabulation on a toolUse message is skipped (only relaxed for MalformedJson)."""
-        _set_chaos_case([Confabulation()])
-        plugin = ChaosPlugin()
-        message = _tooluse_assistant_message()
-        original_content = copy.deepcopy(message["content"])
-        event = _make_event(message)
-
-        plugin.after_model_invocation(event)
-
-        assert message["content"] == original_content
 
     def teardown_method(self):
         _current_chaos_case.set(None)
@@ -528,32 +518,6 @@ class TestSinglePreModelEffect:
             effects={"model_effects": {"*": [FullRefusal(), MalformedJson()]}},
         )
         assert len(case.model_effects) == 2
-
-
-class TestOrdinaryDynamicToolNotCorrupted:
-    """An ordinary dynamic tool (tool_type != structured_output) is NOT corrupted."""
-
-    def test_ordinary_dynamic_tool_unchanged(self):
-        """MalformedJson does NOT corrupt a regular dynamic tool's toolUse."""
-        _set_chaos_case([MalformedJson()])
-        plugin = ChaosPlugin()
-        message = {
-            "role": "assistant",
-            "content": [
-                {"toolUse": {"toolUseId": "dt_1", "name": "my_dynamic_tool", "input": {"key": "val"}}},
-            ],
-        }
-        original_content = copy.deepcopy(message["content"])
-        # Explicit non-structured-output tool_type so the check discriminates on the real property
-        mock_tool = MagicMock(tool_type="function")
-        event = _make_event(message, dynamic_tools={"my_dynamic_tool": mock_tool})
-
-        plugin.after_model_invocation(event)
-
-        assert message["content"] == original_content
-
-    def teardown_method(self):
-        _current_chaos_case.set(None)
 
 
 class TestGuardRoleFiltering:
