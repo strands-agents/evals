@@ -1023,7 +1023,7 @@ class OpenInferenceSessionMapper(SessionMapper):
                             parameters=tool_info.get("input_schema"),
                         )
                     )
-                except (json.JSONDecodeError, AttributeError, ValueError):
+                except (json.JSONDecodeError, AttributeError):
                     pass
 
         return sorted(tools, key=lambda t: t.name or "")
