@@ -281,8 +281,7 @@ class OpenInferenceSessionMapper(SessionMapper):
             # Fallback: no tool.parameters available to map positional args
             attrs["input.value"] = json.dumps({"args": args})
 
-    @classmethod
-    def _normalize_openai_agents_span(cls, span: dict) -> None:
+    def _normalize_openai_agents_span(self, span: dict) -> None:
         """Normalize OpenAI Agents spans in-place.
 
         This normalizes by:
@@ -290,7 +289,7 @@ class OpenInferenceSessionMapper(SessionMapper):
         2. Aliasing "parameters" to "input_schema" on tool schemas.
         """
         attrs = span.get("attributes") or {}
-        for idx in cls._get_message_indices(attrs, "llm.tools"):
+        for idx in self._extract_message_indices(attrs, "llm.tools"):
             key = f"llm.tools.{idx}.tool.json_schema"
             raw = attrs.get(key)
             if isinstance(raw, str):
@@ -334,34 +333,34 @@ class OpenInferenceSessionMapper(SessionMapper):
             ):
                 continue
 
-            llm_spans = self._get_descendant_llm_spans(span_id, spans_by_parent_id)
+            llm_spans = self._collect_descendant_llm_spans(span_id, spans_by_parent_id)
             if not llm_spans:
                 continue
 
             first_attrs = llm_spans[0].get("attributes", {})
-            user_prompt = self._get_last_message_text(first_attrs, "llm.input_messages", role="user")
+            user_prompt = self._extract_last_message_text(first_attrs, "llm.input_messages", role="user")
             if user_prompt:
                 attrs["input.value"] = user_prompt
 
             # Copy LLM tool schemas onto the AGENT span for available_tools back-filling
-            for tool_idx in self._get_message_indices(first_attrs, "llm.tools"):
+            for tool_idx in self._extract_message_indices(first_attrs, "llm.tools"):
                 key = f"llm.tools.{tool_idx}.tool.json_schema"
                 schema = first_attrs.get(key)
                 if schema is not None:
                     attrs[key] = schema
 
             last_attrs = llm_spans[-1].get("attributes", {})
-            agent_response = self._get_last_message_text(last_attrs, "llm.output_messages")
+            agent_response = self._extract_last_message_text(last_attrs, "llm.output_messages")
 
             # Fallback the response to the last message's tool calls if no LLM output was found
             if not agent_response:
-                tool_calls = self._get_last_tool_calls(last_attrs)
+                tool_calls = self._extract_last_tool_calls(last_attrs)
                 if tool_calls:
                     agent_response = f"[delegated] {tool_calls}"
             if agent_response:
                 attrs["output.value"] = agent_response
 
-    def _get_descendant_llm_spans(self, span_id: str, spans_by_parent_id: dict[str, list[dict]]) -> list[dict]:
+    def _collect_descendant_llm_spans(self, span_id: str, spans_by_parent_id: dict[str, list[dict]]) -> list[dict]:
         """Return the LLM spans descending from `span_id`, earliest first."""
         llm_spans: list[dict] = []
         stack = [span_id]
@@ -382,70 +381,6 @@ class OpenInferenceSessionMapper(SessionMapper):
                         stack.append(cid)
         llm_spans.sort(key=lambda s: self.parse_timestamp(s.get("start_time")))
         return llm_spans
-
-    @staticmethod
-    def _get_message_indices(attrs: dict, prefix: str) -> list[int]:
-        """Return the numeric indices N found in keys starting with `{prefix}.N.`, highest first."""
-        prefix_dot = f"{prefix}."
-        indices: set[int] = set()
-        for key in attrs:
-            if key.startswith(prefix_dot):
-                seg = key.removeprefix(prefix_dot).split(".", 1)[0]
-                if seg.isascii() and seg.isdigit():
-                    indices.add(int(seg))
-        return sorted(indices, reverse=True)
-
-    @classmethod
-    def _get_last_message_text(cls, attrs: dict, prefix: str, role: str | None = None) -> str | None:
-        """Return the text of the last matching message, or None."""
-        for idx in cls._get_message_indices(attrs, prefix):
-            base = f"{prefix}.{idx}.message"
-            role_match = role is None or attrs.get(f"{base}.role") == role
-            is_reasoning = attrs.get(f"{base}.contents.0.message_content.type") == "reasoning"
-            text = attrs.get(f"{base}.content") or cls._join_content_text(attrs, base)
-            if role_match and not is_reasoning and text:
-                return text
-        return None
-
-    @staticmethod
-    def _join_content_text(attrs: dict, base: str) -> str | None:
-        """Concatenate all `text` parts under `{base}.contents.N`, or None.
-
-        Multimodal messages emit ordered parts (e.g. [image, text]), so scan every
-        part rather than only index 0.
-        """
-        parts: list[str] = []
-        i = 0
-        while True:
-            part_type = attrs.get(f"{base}.contents.{i}.message_content.type")
-            if part_type is None:
-                break
-            if part_type == "text":
-                text = attrs.get(f"{base}.contents.{i}.message_content.text")
-                if text:
-                    parts.append(text)
-            i += 1
-        return "".join(parts) or None
-
-    @classmethod
-    def _get_last_tool_calls(cls, attrs: dict) -> str | None:
-        """Return a text rendering of the last assistant message's tool calls, or None."""
-        prefix = "llm.output_messages"
-        for idx in cls._get_message_indices(attrs, prefix):
-            base = f"{prefix}.{idx}.message"
-            calls: list[str] = []
-            # Convert the tool calls to a string representation
-            i = 0
-            while True:
-                name = attrs.get(f"{base}.tool_calls.{i}.tool_call.function.name")
-                if not name:
-                    break
-                args = attrs.get(f"{base}.tool_calls.{i}.tool_call.function.arguments", "")
-                calls.append(f"{name}({args})" if args else f"{name}()")
-                i += 1
-            if calls:
-                return "; ".join(calls)
-        return None
 
     def _build_trace(self, trace_id: str, spans: list[dict], session_id: str) -> Trace:
         """Build a Trace from spans with the same trace_id."""
@@ -852,6 +787,65 @@ class OpenInferenceSessionMapper(SessionMapper):
     # =========================================================================
     # Helper Methods
     # =========================================================================
+
+    def _extract_message_indices(self, attrs: dict, prefix: str) -> list[int]:
+        """Return the numeric indices N found in keys starting with `{prefix}.N.`, highest first."""
+        prefix_dot = f"{prefix}."
+        indices: set[int] = set()
+        for key in attrs:
+            if key.startswith(prefix_dot):
+                seg = key.removeprefix(prefix_dot).split(".", 1)[0]
+                if seg.isascii() and seg.isdigit():
+                    indices.add(int(seg))
+        return sorted(indices, reverse=True)
+
+    def _extract_last_message_text(self, attrs: dict, prefix: str, role: str | None = None) -> str | None:
+        """Return the text of the last matching message, or None."""
+        for idx in self._extract_message_indices(attrs, prefix):
+            base = f"{prefix}.{idx}.message"
+            role_match = role is None or attrs.get(f"{base}.role") == role
+            is_reasoning = attrs.get(f"{base}.contents.0.message_content.type") == "reasoning"
+            text = attrs.get(f"{base}.content") or self._extract_text_from_content_parts(attrs, base)
+            if role_match and not is_reasoning and text:
+                return text
+        return None
+
+    def _extract_text_from_content_parts(self, attrs: dict, base: str) -> str | None:
+        """Concatenate all `text` parts under `{base}.contents.N`, or None.
+
+        Multimodal messages emit ordered parts (e.g. [image, text]), so scan every
+        part rather than only index 0.
+        """
+        parts: list[str] = []
+        i = 0
+        while True:
+            part_type = attrs.get(f"{base}.contents.{i}.message_content.type")
+            if part_type is None:
+                break
+            if part_type == "text":
+                text = attrs.get(f"{base}.contents.{i}.message_content.text")
+                if text:
+                    parts.append(text)
+            i += 1
+        return "".join(parts) or None
+
+    def _extract_last_tool_calls(self, attrs: dict) -> str | None:
+        """Return a text rendering of the last assistant message's tool calls, or None."""
+        prefix = "llm.output_messages"
+        for idx in self._extract_message_indices(attrs, prefix):
+            base = f"{prefix}.{idx}.message"
+            calls: list[str] = []
+            i = 0
+            while True:
+                name = attrs.get(f"{base}.tool_calls.{i}.tool_call.function.name")
+                if not name:
+                    break
+                args = attrs.get(f"{base}.tool_calls.{i}.tool_call.function.arguments", "")
+                calls.append(f"{name}({args})" if args else f"{name}()")
+                i += 1
+            if calls:
+                return "; ".join(calls)
+        return None
 
     @staticmethod
     def _extract_llm_metadata(attrs: dict) -> dict:

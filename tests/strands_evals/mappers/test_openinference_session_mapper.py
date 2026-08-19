@@ -2506,7 +2506,7 @@ class TestOpenAIAgentsScopeSupport:
         assert len(agent_spans) == 1
         assert agent_spans[0].user_prompt == "What is 5 + 3?"
 
-    def test_get_last_message_text_uses_current_turn_user_message(self):
+    def test_extract_last_message_text_uses_current_turn_user_message(self):
         """Multi-turn input: the highest-indexed user message wins, not the oldest."""
         attrs = {
             "llm.input_messages.0.message.role": "system",
@@ -2518,10 +2518,10 @@ class TestOpenAIAgentsScopeSupport:
             "llm.input_messages.3.message.role": "user",
             "llm.input_messages.3.message.content": "Now divide it by 5",
         }
-        result = self.mapper._get_last_message_text(attrs, "llm.input_messages", role="user")
+        result = self.mapper._extract_last_message_text(attrs, "llm.input_messages", role="user")
         assert result == "Now divide it by 5"
 
-    def test_get_last_message_text_skips_reasoning_item(self):
+    def test_extract_last_message_text_skips_reasoning_item(self):
         """A reasoning item at the highest output index is skipped for the real answer."""
         attrs = {
             "llm.output_messages.0.message.role": "assistant",
@@ -2530,10 +2530,10 @@ class TestOpenAIAgentsScopeSupport:
             "llm.output_messages.1.message.contents.0.message_content.type": "reasoning",
             "llm.output_messages.1.message.contents.0.message_content.text": "Let me think step by step...",
         }
-        result = self.mapper._get_last_message_text(attrs, "llm.output_messages")
+        result = self.mapper._extract_last_message_text(attrs, "llm.output_messages")
         assert result == "The answer is 8."
 
-    def test_get_last_tool_calls_renders_names_and_args(self):
+    def test_extract_last_tool_calls_renders_names_and_args(self):
         """Tool calls render as name(args); empty-arg calls render as name(); joined by '; '."""
         attrs = {
             "llm.output_messages.0.message.role": "assistant",
@@ -2541,7 +2541,7 @@ class TestOpenAIAgentsScopeSupport:
             "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments": '{"query":"42 * 17"}',
             "llm.output_messages.0.message.tool_calls.1.tool_call.function.name": "ask_research_specialist",
         }
-        result = self.mapper._get_last_tool_calls(attrs)
+        result = self.mapper._extract_last_tool_calls(attrs)
         assert result == 'ask_math_specialist({"query":"42 * 17"}); ask_research_specialist()'
 
     def test_bridge_crosses_foreign_scope_spans(self):
