@@ -5,6 +5,7 @@ Handles traces from any producer in the OpenInference family:
 - openinference.instrumentation.langchain (LangChain / LangGraph)
 - openinference.instrumentation.smolagents (HuggingFace smolagents)
 - openinference.instrumentation.claude_agent_sdk (Claude Agent SDK)
+- openinference.instrumentation.openai_agents (OpenAI Agents SDK)
 
 Each producer emits spans following the OpenInference semantic conventions but
 with producer-specific encoding differences (e.g. attribute paths for message
@@ -68,12 +69,13 @@ class OpenInferenceSessionMapper(SessionMapper):
     - openinference-instrumentation-langchain (LangChain / LangGraph)
     - openinference-instrumentation-smolagents (HuggingFace smolagents)
     - openinference-instrumentation-claude-agent-sdk (Claude Agent SDK)
+    - openinference-instrumentation-openai-agents (OpenAI Agents SDK)
 
     Span type identification uses the openinference.span.kind attribute:
     - Inference spans: "LLM"
     - Tool execution spans: "TOOL"
-    - Agent invocation spans: "AGENT" (smolagents CodeAgent.run, Claude Agent SDK query) or
-      "CHAIN" with name="LangGraph" (LangGraph root graph)
+    - Agent invocation spans: "AGENT" (smolagents CodeAgent.run, Claude Agent SDK query,
+      OpenAI Agents SDK agent) or "CHAIN" with name="LangGraph" (LangGraph root graph)
 
     Producer-specific encoding differences (e.g. message attribute paths,
     tool argument wrapping) are normalized before shared conversion logic runs.
