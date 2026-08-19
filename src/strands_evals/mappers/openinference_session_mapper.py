@@ -326,7 +326,12 @@ class OpenInferenceSessionMapper(SessionMapper):
         for span in spans:
             attrs = span.get("attributes") or {}
             span_id = span.get("span_id", "")
-            if attrs.get("openinference.span.kind") != "AGENT" or attrs.get("input.value") or not span_id:
+            if (
+                attrs.get("openinference.span.kind") != "AGENT"
+                or attrs.get("input.value")
+                or not span_id
+                or self._get_scope_name(span) != SCOPE_OPENINFERENCE_OPENAI_AGENTS
+            ):
                 continue
 
             llm_spans = self._get_descendant_llm_spans(span_id, spans_by_parent_id)
@@ -369,7 +374,7 @@ class OpenInferenceSessionMapper(SessionMapper):
             seen.add(current)
             for child in spans_by_parent_id.get(current, []):
                 kind = (child.get("attributes") or {}).get("openinference.span.kind", "")
-                if kind == "LLM":
+                if kind == "LLM" and self._get_scope_name(child) == SCOPE_OPENINFERENCE_OPENAI_AGENTS:
                     llm_spans.append(child)
                 elif kind == "CHAIN":
                     cid = child.get("span_id", "")

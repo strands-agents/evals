@@ -2580,6 +2580,43 @@ class TestOpenAIAgentsScopeSupport:
         assert tool_spans[0].span_info.parent_span_id == "agent-1"
         assert tool_spans[0].agent_span_id == "agent-1"
 
+    def test_foreign_scope_llm_not_used_for_agent_normalization(self):
+        """A non-OpenAI LLM span nested under an OpenAI AGENT is ignored during normalization."""
+        agent = make_span(
+            trace_id="t1",
+            span_id="agent-1",
+            name="coordinator",
+            scope_name=OPENAI_AGENTS_SCOPE_NAME,
+            attributes={"openinference.span.kind": "AGENT"},
+        )
+        turn = make_span(
+            trace_id="t1",
+            span_id="turn-1",
+            parent_span_id="agent-1",
+            name="turn",
+            scope_name=OPENAI_AGENTS_SCOPE_NAME,
+            attributes={"openinference.span.kind": "CHAIN"},
+        )
+        # A LangChain LLM span nested under the OpenAI agent's subtree
+        foreign_llm = make_span(
+            trace_id="t1",
+            span_id="foreign-llm",
+            parent_span_id="turn-1",
+            name="ChatOpenAI",
+            scope_name=SCOPE_NAME,  # langchain scope
+            attributes={
+                "openinference.span.kind": "LLM",
+                "llm.input_messages.0.message.role": "user",
+                "llm.input_messages.0.message.content": "foreign prompt",
+                "llm.output_messages.0.message.role": "assistant",
+                "llm.output_messages.0.message.content": "foreign answer",
+            },
+        )
+        session = self.mapper.map_to_session([agent, turn, foreign_llm], "sess-1")
+        # The OpenAI agent should NOT pick up the foreign LLM's messages
+        agent_spans = [s for t in session.traces for s in t.spans if isinstance(s, AgentInvocationSpan)]
+        assert len(agent_spans) == 0  # agent has no LLMs from its own scope → dropped
+
 
 # =============================================================================
 # Integration Tests: Real OpenAI Agents SDK fixture (Live)
