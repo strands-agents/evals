@@ -1,8 +1,8 @@
 """OpenAI Agents GenAI session mapper - converts OpenAI Agents SDK spans to Session format.
 
 Handles traces produced by the OpenAI Agents SDK and instrumented with
-Traceloop/OpenLLMetry (scope: opentelemetry.instrumentation.openai_agents), which
-follows GenAI conventions.
+Traceloop/OpenLLMetry (scope: opentelemetry.instrumentation.openai_agents), which emit
+spans that mostly follow the OTel GenAI semantic conventions.
 
 This mapper is private to avoid committing to a public-facing inheritance contract. This
 lets future mappers use other extension mechanisms as requirements change.
@@ -92,7 +92,7 @@ class _OpenAIAgentsGenAISessionMapper(GenericGenAISessionMapper):
             if configs:
                 agent.available_tools = list(configs)
 
-        # Fallback: get the names of tools the agent called (scoped to OpenAI spans only).
+        # Fallback: get the names of tools the agent called.
         for span in trace.spans:
             if (
                 isinstance(span, ToolExecutionSpan)

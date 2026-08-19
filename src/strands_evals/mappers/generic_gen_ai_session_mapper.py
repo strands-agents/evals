@@ -173,7 +173,7 @@ class GenericGenAISessionMapper(SessionMapper):
             spans: Raw span dicts belonging to a single trace.
 
         Returns:
-            Spans to convert, which may be a subset, superset, or mutation of input.
+            Spans to convert, which may be a subset, superset, or replacement of input.
         """
         return spans
 
