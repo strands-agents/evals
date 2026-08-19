@@ -2547,20 +2547,31 @@ class TestOpenAIAgentsScopeSupport:
     def test_bridge_crosses_foreign_scope_spans(self):
         """Spans bridge through filtered-out foreign-scope ancestors to reach converted parents."""
         agent = make_span(
-            trace_id="t1", span_id="agent-1", name="math_agent",
+            trace_id="t1",
+            span_id="agent-1",
+            name="math_agent",
             scope_name=OPENAI_AGENTS_SCOPE_NAME,
             attributes={"openinference.span.kind": "AGENT", "input.value": "q", "output.value": "a"},
         )
         http = make_span(
-            trace_id="t1", span_id="http-1", parent_span_id="agent-1", name="POST",
-            scope_name="opentelemetry.instrumentation.httpx", attributes={},
+            trace_id="t1",
+            span_id="http-1",
+            parent_span_id="agent-1",
+            name="POST",
+            scope_name="opentelemetry.instrumentation.httpx",
+            attributes={},
         )
         tool = make_span(
-            trace_id="t1", span_id="tool-1", parent_span_id="http-1", name="calculator",
+            trace_id="t1",
+            span_id="tool-1",
+            parent_span_id="http-1",
+            name="calculator",
             scope_name=OPENAI_AGENTS_SCOPE_NAME,
             attributes={
-                "openinference.span.kind": "TOOL", "tool.name": "calculator",
-                "input.value": "{}", "output.value": "42",
+                "openinference.span.kind": "TOOL",
+                "tool.name": "calculator",
+                "input.value": "{}",
+                "output.value": "42",
             },
         )
         session = self.mapper.map_to_session([agent, http, tool], "sess-1")
