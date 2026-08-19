@@ -236,6 +236,52 @@ class TestOpenAIAgentsPerAgentToolAttribution:
         tool_sets = [set(t.name for t in s.available_tools) for s in agent_spans]
         assert not set.intersection(*tool_sets)
 
+    def test_foreign_scope_tool_not_attributed_to_openai_agent(self):
+        """A tool span from a different scope should not appear in an OpenAI agent's tools."""
+        mapper = _OpenAIAgentsGenAISessionMapper()
+        spans = [
+            make_span(
+                trace_id="t1",
+                span_id="agent-1",
+                operation_name="invoke_agent",
+                attributes={
+                    "gen_ai.agent.name": "coordinator",
+                    "gen_ai.input.messages": json.dumps(
+                        [{"role": "user", "parts": [{"type": "text", "content": "hello"}]}]
+                    ),
+                },
+                scope_name=SCOPE_OPENAI_AGENTS,
+            ),
+            make_span(
+                trace_id="t1",
+                span_id="tool-openai",
+                parent_span_id="agent-1",
+                operation_name="execute_tool",
+                attributes={
+                    "gen_ai.tool.name": "search",
+                    "gen_ai.tool.call.id": "call-1",
+                },
+                scope_name=SCOPE_OPENAI_AGENTS,
+            ),
+            make_span(
+                trace_id="t1",
+                span_id="tool-foreign",
+                parent_span_id="agent-1",
+                operation_name="execute_tool",
+                attributes={
+                    "gen_ai.tool.name": "foreign_retriever",
+                    "gen_ai.tool.call.id": "call-2",
+                },
+                scope_name="custom-instrumentor",
+            ),
+        ]
+        session = mapper.map_to_session(spans, "test")
+        agent_spans = [s for t in session.traces for s in t.spans if isinstance(s, AgentInvocationSpan)]
+        assert len(agent_spans) == 1
+        tool_names = [t.name for t in agent_spans[0].available_tools]
+        assert "search" in tool_names
+        assert "foreign_retriever" not in tool_names
+
 
 # =============================================================================
 # Prompt enrichment

@@ -92,9 +92,13 @@ class _OpenAIAgentsGenAISessionMapper(GenericGenAISessionMapper):
             if configs:
                 agent.available_tools = list(configs)
 
-        # Fallback: get the names of tools the agent called.
+        # Fallback: get the names of tools the agent called (scoped to OpenAI spans only).
         for span in trace.spans:
-            if isinstance(span, ToolExecutionSpan) and span.tool_call.name:
+            if (
+                isinstance(span, ToolExecutionSpan)
+                and span.span_info.span_id in scoped_span_ids
+                and span.tool_call.name
+            ):
                 agent = agent_spans.get(span.agent_span_id or "")
                 if agent and not any(t.name == span.tool_call.name for t in agent.available_tools):
                     agent.available_tools.append(ToolConfig(name=span.tool_call.name))
