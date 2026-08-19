@@ -488,7 +488,7 @@ class OpenInferenceSessionMapper(SessionMapper):
                     converted.system_prompt = system_prompt
 
         # Fix parent_span_id on converted spans that point to skipped intermediaries.
-        bridge_parent_gaps(converted_spans, self._raw_parent_map)
+        converted_spans = bridge_parent_gaps(converted_spans, self._raw_parent_map)
 
         return Trace(spans=converted_spans, trace_id=trace_id, session_id=session_id)
 
