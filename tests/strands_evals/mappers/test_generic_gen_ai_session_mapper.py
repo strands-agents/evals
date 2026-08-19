@@ -295,6 +295,21 @@ class TestAgentInvocationSpan:
         assert good.description == "ok"
         assert good.parameters == {"x": {"type": "int"}}
 
+    def test_malformed_name_skips_tool_without_dropping_span(self):
+        """Non-str name is skipped rather than raising a ValidationError."""
+        attrs = {
+            "gen_ai.tool.definitions": json.dumps(
+                [
+                    {"type": "function", "function": {"name": {"nested": True}}},
+                    {"type": "function", "function": {"name": 123}},
+                    {"type": "function", "function": {"name": "valid_tool"}},
+                ]
+            )
+        }
+        configs = GenericGenAISessionMapper._parse_tool_definitions(attrs)
+        assert len(configs) == 1
+        assert configs[0].name == "valid_tool"
+
 
 class TestInferenceSpan:
     def setup_method(self):

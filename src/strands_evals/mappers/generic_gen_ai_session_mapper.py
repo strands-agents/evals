@@ -473,7 +473,7 @@ class GenericGenAISessionMapper(SessionMapper):
             elif isinstance(item, dict):
                 fn = item["function"] if isinstance(item.get("function"), dict) else item
                 name = fn.get("name", "")
-                if name:
+                if isinstance(name, str) and name:
                     description = fn.get("description")
                     parameters = fn.get("parameters")
                     configs.append(
