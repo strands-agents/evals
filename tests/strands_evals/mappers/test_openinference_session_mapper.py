@@ -2544,6 +2544,31 @@ class TestOpenAIAgentsScopeSupport:
         result = self.mapper._get_last_tool_calls(attrs)
         assert result == 'ask_math_specialist({"query":"42 * 17"}); ask_research_specialist()'
 
+    def test_bridge_crosses_foreign_scope_spans(self):
+        """Spans bridge through filtered-out foreign-scope ancestors to reach converted parents."""
+        agent = make_span(
+            trace_id="t1", span_id="agent-1", name="math_agent",
+            scope_name=OPENAI_AGENTS_SCOPE_NAME,
+            attributes={"openinference.span.kind": "AGENT", "input.value": "q", "output.value": "a"},
+        )
+        http = make_span(
+            trace_id="t1", span_id="http-1", parent_span_id="agent-1", name="POST",
+            scope_name="opentelemetry.instrumentation.httpx", attributes={},
+        )
+        tool = make_span(
+            trace_id="t1", span_id="tool-1", parent_span_id="http-1", name="calculator",
+            scope_name=OPENAI_AGENTS_SCOPE_NAME,
+            attributes={
+                "openinference.span.kind": "TOOL", "tool.name": "calculator",
+                "input.value": "{}", "output.value": "42",
+            },
+        )
+        session = self.mapper.map_to_session([agent, http, tool], "sess-1")
+        tool_spans = [s for t in session.traces for s in t.spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tool_spans) == 1
+        assert tool_spans[0].span_info.parent_span_id == "agent-1"
+        assert tool_spans[0].agent_span_id == "agent-1"
+
 
 # =============================================================================
 # Integration Tests: Real OpenAI Agents SDK fixture (Live)
