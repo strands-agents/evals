@@ -22,6 +22,7 @@ import logging
 from typing import Protocol, cast
 
 from strands.hooks import (
+    AfterInvocationEvent,
     AfterToolCallEvent,
     BeforeModelCallEvent,
     BeforeToolCallEvent,
@@ -41,6 +42,7 @@ from .effects import (
 logger = logging.getLogger(__name__)
 
 _CHAOS_STATE_KEY = "strands_evals.chaos"
+_MALFORMED_OUTPUT_APPLIED = "malformed_structured_output_applied"
 
 
 class PreModelEffect(Protocol):
@@ -136,9 +138,9 @@ class ChaosPlugin(Plugin):
             return False
 
         state = event.invocation_state.setdefault(_CHAOS_STATE_KEY, {})
-        if state.get("malformed_structured_output_applied"):
+        if state.get(_MALFORMED_OUTPUT_APPLIED):
             return False
-        state["malformed_structured_output_applied"] = True
+        state[_MALFORMED_OUTPUT_APPLIED] = True
 
         event.cancel_tool = (
             "Structured output was malformed and could not be parsed. Please produce a corrected response."
@@ -176,6 +178,21 @@ class ChaosPlugin(Plugin):
                 result["content"] = self._apply_to_tool_blocks(effect, content)  # type: ignore[assignment]
 
             logger.info("effect=<%s>, tool=<%s> | applied chaos post-hook", type(effect).__name__, tool_name)
+
+    @hook  # type: ignore[call-overload]
+    def after_invocation(self, event: AfterInvocationEvent) -> None:
+        """Clear per-invocation chaos state.
+
+        The SDK uses the caller-supplied invocation_state by reference and does not strip
+        plugin keys when the invocation ends, so a reused dict would suppress injection on
+        every subsequent invocation.
+        """
+        chaos_state = event.invocation_state.get(_CHAOS_STATE_KEY)
+        if not isinstance(chaos_state, dict):
+            return
+        chaos_state.pop(_MALFORMED_OUTPUT_APPLIED, None)
+        if not chaos_state:
+            event.invocation_state.pop(_CHAOS_STATE_KEY, None)
 
     @hook  # type: ignore[call-overload]
     def before_model_invocation(self, event: BeforeModelCallEvent) -> None:
