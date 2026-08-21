@@ -53,8 +53,8 @@ class TestChaosCase:
             )
 
     def test_unknown_effect_category_raises(self):
-        """Unknown effect category keys should be rejected."""
-        with pytest.raises(ValueError, match="Unknown effect categories"):
+        """Unknown effect category keys should be rejected by the ChaosEffects schema."""
+        with pytest.raises(ValueError, match="extra_forbidden"):
             ChaosCase(
                 name="bad_category",
                 input="hello",
