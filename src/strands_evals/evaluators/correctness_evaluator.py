@@ -51,9 +51,9 @@ class CorrectnessEvaluator(Evaluator[InputT, OutputT]):
     - **Basic mode**: Evaluates correctness based on the conversation context and the
       assistant's response alone. Uses a 3-level scoring rubric
       (Perfectly Correct=1.0, Partially Correct=0.5, Incorrect=0.0).
-    - **Reference mode**: When `expected_assertion` is provided on the evaluation case,
-      evaluates whether the agent's response is correct by comparing it to the reference.
-      Uses a binary CORRECT/INCORRECT scoring rubric (CORRECT=1.0, INCORRECT=0.0).
+    - **Reference mode**: When `expected_assertion` or `expected_output` is provided on the
+      evaluation case, evaluates whether the agent's response is correct by comparing it to
+      the reference. Uses a binary CORRECT/INCORRECT scoring rubric (CORRECT=1.0, INCORRECT=0.0).
     """
 
     evaluation_level = EvaluationLevel.TRACE_LEVEL
@@ -88,8 +88,9 @@ class CorrectnessEvaluator(Evaluator[InputT, OutputT]):
         self.model = model
 
     def _has_reference(self, evaluation_case: EvaluationData[InputT, OutputT]) -> bool:
-        """Check if the evaluation case contains an expected_assertion for reference-based evaluation."""
-        return bool(evaluation_case.expected_assertion)
+        """Check if the evaluation case contains an expected_assertion or expected_output for
+        reference-based evaluation."""
+        return bool(evaluation_case.expected_assertion) or bool(evaluation_case.expected_output)
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         parsed_input = self._get_last_turn(evaluation_case)
@@ -156,9 +157,11 @@ class CorrectnessEvaluator(Evaluator[InputT, OutputT]):
         # Extract user prompt from the last user message in session history
         user_prompt = self._extract_user_prompt(parsed_input)
 
+        expected_response = evaluation_case.expected_assertion or evaluation_case.expected_output
+
         parts = []
         parts.append(f"USER QUERY:\n{user_prompt}")
         parts.append(f"AGENT RESPONSE:\n{parsed_input.agent_response.text}")
-        parts.append(f"EXPECTED RESPONSE:\n{evaluation_case.expected_assertion}")
+        parts.append(f"EXPECTED RESPONSE:\n{expected_response}")
 
         return "\n\n".join(parts)
