@@ -112,7 +112,7 @@ def test_scripted_judge_finds_evidence_via_discovery():
     assert "query_db" in overview
 
     # Step 2: judge searches for the claim from the agent's answer
-    hits = search_spans(pattern=r"refund_amount=\$150")
+    hits = search_spans(pattern="refund_amount=$150")
     judge_context_chars += len(hits)
     assert hits.startswith("["), "evidence must be locatable"
     evidence_index = int(hits.split("]")[0][1:])
@@ -152,11 +152,11 @@ def test_scripted_judge_detects_fabrication():
     _, _, search_spans = index.tools
 
     # Judge searches for the claimed amount in tool evidence: not found
-    claimed = search_spans(pattern=r"refund_amount=\$999")
+    claimed = search_spans(pattern="refund_amount=$999")
     assert "No matches" in claimed
 
     # But the actual amount is present: the claim contradicts the evidence
-    actual = search_spans(pattern=r"refund_amount=\$150")
+    actual = search_spans(pattern="refund_amount=$150")
     assert actual.startswith("[")
 
 

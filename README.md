@@ -242,21 +242,36 @@ the full trajectory. The judge loads only the spans the rubric requires:
 ```python
 from strands_evals.evaluators import OutputEvaluator
 from strands_evals.tools.trace_index import TraceIndex
+from strands_evals.types import EvaluationData
 
 index = TraceIndex(session)  # session: a Session from any provider/mapper
 
+# for_judge() hands back both halves together so neither is forgotten:
+# the overview to put next to the answer, and the discovery tools for the judge.
+prompt_section, tools = index.for_judge()  # tools: list_spans, get_span, search_spans
+
 evaluator = OutputEvaluator(
-    rubric="Every factual claim must be supported by tool-result evidence in the trace.",
-    tools=index.tools,  # list_spans, get_span, search_spans
+    rubric=(
+        "Every factual claim must be supported by tool-result evidence in the trace. "
+        "Use the trace tools to verify each claim against the evidence before scoring."
+    ),
+    tools=tools,
 )
 
-# Compose the prompt with the compact overview instead of the full trajectory
-evaluation_output = f"{agent_answer}\n\n<TraceOverview>\n{index.overview()}\n</TraceOverview>"
+# Compose the overview into the judged output instead of the full trajectory:
+judged_output = f"{agent_answer}\n{prompt_section}"
+evaluator.evaluate(EvaluationData(input=user_prompt, actual_output=judged_output))
 ```
 
 The overview is one line per span (index, type, tool name, sizes, preview);
-`get_span` pages through oversized spans so no single tool return can overflow
-the judge's context.
+`list_spans` and `get_span` page through long traces and oversized spans so no
+single tool return can overflow the judge's context. The rubric must tell the
+judge to verify claims with the tools — otherwise it scores off the previews alone.
+
+> **Note:** this composes with `OutputEvaluator`, whose prompt is caller-controlled.
+> It does **not** work with `TrajectoryEvaluator`, which inlines the full
+> `actual_trajectory` unconditionally and would re-create the overflow this pattern
+> exists to prevent.
 
 ### Trace-based Helpfulness Evaluation
 
