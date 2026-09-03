@@ -45,10 +45,15 @@ from strands import tool
 from ..extractors.trace_extractor import _to_aware_utc
 from ..types.trace import (
     AgentInvocationSpan,
+    AssistantMessage,
     InferenceSpan,
     Session,
     SpanUnion,
+    TextContent,
+    ToolCallContent,
     ToolExecutionSpan,
+    ToolResultContent,
+    UserMessage,
 )
 
 _PREVIEW_CHARS = 120
@@ -92,6 +97,28 @@ def _span_text(span: SpanUnion) -> str:
     return json.dumps(span.model_dump(), default=str)
 
 
+def _render_message(msg: UserMessage | AssistantMessage) -> str:
+    """Plain-text rendering of one inference message from its fields.
+
+    Renders role + each content block by field (text, or tool name/args/result/
+    error) like the tool and agent branches, rather than dumping the pydantic dict.
+    A raw `model_dump()` repr leaks structural keys such as ``'error': None`` into the
+    text, which turns an "error" search into a false positive on every inference span
+    and hides genuine failures behind serialization noise.
+    """
+    parts = [msg.role.value]
+    for block in msg.content:
+        if isinstance(block, TextContent):
+            parts.append(block.text)
+        elif isinstance(block, ToolCallContent):
+            parts.append(f"{block.name}({json.dumps(block.arguments, default=str)})")
+        elif isinstance(block, ToolResultContent):
+            parts.append(str(block.content))
+            if block.error:
+                parts.append(f"error: {block.error}")
+    return " ".join(p for p in parts if p)
+
+
 def _search_haystack(span: SpanUnion) -> str:
     """Plain-text rendering of a span for search matching.
 
@@ -107,7 +134,10 @@ def _search_haystack(span: SpanUnion) -> str:
             str(span.tool_result.content),
         ]
         if span.tool_result.error:
-            parts.append(str(span.tool_result.error))
+            # Prefix with an "error:" token so a judge searching the overview's
+            # [ERROR] vocabulary finds the failed tool; the raw value alone
+            # (e.g. "CardDeclined: insufficient funds") carries no such token.
+            parts.append(f"error: {span.tool_result.error}")
         return "\n".join(parts)
     if isinstance(span, AgentInvocationSpan):
         parts = [span.user_prompt, span.agent_response]
@@ -116,7 +146,7 @@ def _search_haystack(span: SpanUnion) -> str:
         parts += [f"{t.name}: {t.description or ''}" for t in span.available_tools]
         return "\n".join(parts)
     if isinstance(span, InferenceSpan):
-        return "\n".join(str(m.model_dump()) for m in span.messages)
+        return "\n".join(_render_message(m) for m in span.messages)
     return str(span.model_dump())
 
 
@@ -144,8 +174,9 @@ def _describe(span: SpanUnion) -> str:
             f"-> response: {len(span.agent_response)} chars: {_preview(span.agent_response)}"
         )
     if isinstance(span, InferenceSpan):
-        size = sum(len(str(m.model_dump())) for m in span.messages)
-        preview = _preview(" ".join(str(m.model_dump()) for m in span.messages))
+        rendered = [_render_message(m) for m in span.messages]
+        size = sum(len(r) for r in rendered)
+        preview = _preview(" ".join(rendered))
         return f"INFERENCE {len(span.messages)} messages, {size} chars: {preview}"
     return f"{type(span).__name__}"
 
@@ -204,19 +235,24 @@ class TraceIndex:
         def search_spans(pattern: str, max_matches: int = 20, is_regex: bool = False) -> str:
             """Search all span content for a literal string (default) or a regex.
             Matching is case-insensitive and covers every visible field, including
-            system prompts and tool configs. Returns matching span indices with a
-            short excerpt and per-span match count. Use get_span to load a match in full.
+            system prompts and tool configs. Regex anchors ^/$ match line boundaries.
+            Returns matching span indices with a short excerpt and per-span match
+            count, capped at max_read_chars total; use get_span to load a match in full.
 
             Args:
                 pattern: Text to search for. Treated literally unless is_regex=True.
-                max_matches: Maximum number of matching spans to return.
+                max_matches: Maximum number of matching spans to return. Results are
+                    also capped at max_read_chars total, whichever comes first.
                 is_regex: Set True to treat pattern as a regular expression.
             """
             if is_regex:
                 try:
-                    rx = re.compile(pattern, re.IGNORECASE)
-                except re.error as e:
-                    return f"ERROR: invalid regex {pattern!r}: {e}. Retry with is_regex=False for a literal search."
+                    # MULTILINE so ^/$ anchor to line boundaries in the newline-joined
+                    # haystack — LLMs write anchored regexes and would otherwise read a
+                    # silent "No matches" as "claim unsupported".
+                    rx = re.compile(pattern, re.IGNORECASE | re.MULTILINE)
+                except re.error as exc:
+                    return f"ERROR: invalid regex {pattern!r}: {exc}. Retry with is_regex=False for a literal search."
                 matcher = lambda text: [(m.start(), m.end()) for m in rx.finditer(text)]  # noqa: E731
             else:
                 needle = pattern.lower()
@@ -228,10 +264,12 @@ class TraceIndex:
                         start = i + max(len(needle), 1)
                     return spans
 
-            hits, truncated = [], False
+            hits: list[str] = []
+            stop_reason: str | None = None
+            used = 0
             for i, span in enumerate(this._spans):
                 if len(hits) >= max_matches:
-                    truncated = True
+                    stop_reason = "max_matches"
                     break
                 text = _search_haystack(span)
                 positions = matcher(text)
@@ -241,11 +279,24 @@ class TraceIndex:
                 excerpt = _preview(text[max(0, s - 60) : e + 60], 160)
                 count = len(positions)
                 suffix = f" ({count} matches)" if count > 1 else ""
-                hits.append(f"[{i}]{suffix} ...{excerpt}...")
+                line = f"[{i}]{suffix} ...{excerpt}..."
+                # Bound the whole response by max_read_chars, not max_matches alone:
+                # a generous max_matches on a long trace would otherwise blow past the
+                # per-call budget every other tool honors. Always keep at least one hit.
+                if hits and used + len(line) + 1 > this.max_read_chars:
+                    stop_reason = "budget"
+                    break
+                hits.append(line)
+                used += len(line) + 1
             if not hits:
                 return f"No matches for {pattern!r}"
-            if truncated:
+            if stop_reason == "max_matches":
                 hits.append(f"[stopped at {max_matches} spans; refine the pattern or raise max_matches for more]")
+            elif stop_reason == "budget":
+                hits.append(
+                    f"[budget reached at {this.max_read_chars} chars ({len(hits)} spans shown); "
+                    f"refine the pattern to narrow results]"
+                )
             return "\n".join(hits)
 
         self.tools = [list_spans, get_span, search_spans]
@@ -268,7 +319,8 @@ class TraceIndex:
             f"Previews are truncated; call get_span/search_spans to load full content "
             f"(up to {self.max_read_chars} chars per call) and verify claims before scoring."
         )
-        lines, used, end = [], len(header), offset
+        lines: list[str] = []
+        used, end = len(header), offset
         for i in range(offset, total):
             line = self._describe_lines[i]
             if lines and used + len(line) + 1 > self.max_read_chars:

@@ -1,17 +1,21 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from strands_evals.tools.trace_index import TraceIndex
 from strands_evals.types.trace import (
     AgentInvocationSpan,
+    InferenceSpan,
     Session,
     SpanInfo,
+    TextContent,
     ToolCall,
     ToolConfig,
     ToolExecutionSpan,
     ToolResult,
+    ToolResultContent,
     Trace,
+    UserMessage,
 )
 
 
@@ -258,6 +262,109 @@ def test_search_no_matches(session):
     search_spans = index.tools[2]
 
     assert "No matches" in search_spans(pattern="nonexistent-zzz")
+
+
+def _many_matching_spans(n: int, content: str) -> Session:
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    spans = [
+        ToolExecutionSpan(
+            span_info=SpanInfo(
+                session_id="s1",
+                span_id=f"sp{i}",
+                start_time=base + timedelta(seconds=i),
+                end_time=base + timedelta(seconds=i + 1),
+            ),
+            tool_call=ToolCall(name="t", arguments={}),
+            tool_result=ToolResult(content=content),
+        )
+        for i in range(n)
+    ]
+    return Session(traces=[Trace(spans=spans, trace_id="t1", session_id="s1")], session_id="s1")
+
+
+def test_search_bounded_by_max_read_chars(session):
+    """Finding #1: search output must honor max_read_chars, not max_matches alone.
+
+    With a generous max_matches on a long trace, the accumulated excerpts must not
+    blow past the per-call budget every other tool respects.
+    """
+    sess = _many_matching_spans(800, "needle in a reasonably sized tool result payload")
+    search_spans = TraceIndex(sess, max_read_chars=2_000).tools[2]
+
+    result = search_spans(pattern="needle", max_matches=800)
+
+    assert len(result) <= 2_000 + 200  # bounded (+ slack for the closing marker line)
+    assert "budget reached" in result
+    # Far fewer than 800 spans are shown because the budget, not max_matches, stops it.
+    assert result.count("[") < 800
+
+
+def test_search_still_signals_max_matches_when_budget_not_hit(session):
+    """The max_matches marker (not the budget one) fires when the cap is the limit."""
+    sess = _many_matching_spans(5, "needle here")
+    search_spans = TraceIndex(sess).tools[2]  # default 8000-char budget, tiny lines
+
+    result = search_spans(pattern="needle", max_matches=2)
+
+    assert "stopped at 2" in result
+    assert "budget reached" not in result
+
+
+def test_search_regex_anchors_match_line_boundaries(session):
+    """Finding #3: ^/$ must anchor to lines in the newline-joined haystack (MULTILINE)."""
+    index = TraceIndex(session)
+    search_spans = index.tools[2]
+
+    # "lookup_ticket" is the tool name on its own line of the agent span's haystack.
+    assert search_spans(pattern=r"^lookup_ticket", is_regex=True).startswith("[")
+    # And a value ending a line is reachable with $.
+    assert "No matches" not in search_spans(pattern=r"\$150\.?$", is_regex=True)
+
+
+def _inference_session(*results: ToolResult) -> Session:
+    """A session with one inference span carrying tool-result content blocks."""
+    msg = UserMessage(
+        content=[TextContent(text="checking payment")]
+        + [ToolResultContent(content=r.content, error=r.error, tool_call_id="tc") for r in results]
+    )
+    spans = [InferenceSpan(span_info=_span_info(0), messages=[msg])]
+    return Session(traces=[Trace(spans=spans, trace_id="t1", session_id="s1")], session_id="s1")
+
+
+def test_search_error_no_false_positive_on_inference_span():
+    """Finding #2a: a successful inference span must not match 'error'.
+
+    Rendering messages via model_dump() leaks 'error': None into the haystack, so
+    every inference span with a tool result falsely matches an "error" search.
+    """
+    sess = _inference_session(ToolResult(content="payment approved"))  # error defaults None
+    search_spans = TraceIndex(sess).tools[2]
+
+    assert "No matches" in search_spans(pattern="error")
+
+
+def test_search_finds_genuine_inference_tool_error():
+    """Finding #2b: a real tool failure inside an inference span must be findable."""
+    sess = _inference_session(ToolResult(content="", error="CardDeclined: insufficient funds"))
+    search_spans = TraceIndex(sess).tools[2]
+
+    assert search_spans(pattern="error").startswith("[")
+    assert search_spans(pattern="CardDeclined").startswith("[")
+
+
+def test_search_finds_failed_tool_execution_via_error_token():
+    """A failed ToolExecutionSpan is reachable by the same 'error' vocabulary as the overview."""
+    spans = [
+        ToolExecutionSpan(
+            span_info=_span_info(0),
+            tool_call=ToolCall(name="charge", arguments={}),
+            tool_result=ToolResult(content="", error="CardDeclined: insufficient funds"),
+        ),
+    ]
+    sess = Session(traces=[Trace(spans=spans, trace_id="t1", session_id="s1")], session_id="s1")
+    search_spans = TraceIndex(sess).tools[2]
+
+    assert search_spans(pattern="error").startswith("[")
 
 
 def test_overview_flags_tool_errors(session):

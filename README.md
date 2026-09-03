@@ -264,9 +264,10 @@ evaluator.evaluate(EvaluationData(input=user_prompt, actual_output=judged_output
 ```
 
 The overview is one line per span (index, type, tool name, sizes, preview);
-`list_spans` and `get_span` page through long traces and oversized spans so no
-single tool return can overflow the judge's context. The rubric must tell the
-judge to verify claims with the tools — otherwise it scores off the previews alone.
+`list_spans`, `get_span`, and `search_spans` all page or cap their output at
+`max_read_chars` so no single tool return can overflow the judge's context. The
+rubric must tell the judge to verify claims with the tools — otherwise it scores
+off the previews alone.
 
 > **Note:** this composes with `OutputEvaluator`, whose prompt is caller-controlled.
 > It does **not** work with `TrajectoryEvaluator`, which inlines the full
