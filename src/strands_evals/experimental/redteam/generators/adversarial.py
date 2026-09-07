@@ -84,7 +84,7 @@ class AdversarialCaseGenerator:
         ```python
         cases = AdversarialCaseGenerator(model=model).generate_cases(
             agent=agent,
-            risk_categories=["guideline_bypass", "data_exfiltration"],
+            risk_categories=["prompt_injection", "data_exfiltration"],
             num_cases=3,
         )
         ```

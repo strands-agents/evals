@@ -55,7 +55,7 @@ class TestFromEvaluationReport:
     def test_single_evaluator_single_case(self):
         eval_report = _eval_report(
             "judge",
-            cases=[_case("c0", "guideline_bypass", "gradual_escalation", "high")],
+            cases=[_case("c0", "prompt_injection", "gradual_escalation", "high")],
             scores=[0.0],
             passes=[False],
             reasons=["bypassed"],
@@ -66,7 +66,7 @@ class TestFromEvaluationReport:
         assert len(results) == 1
         r = results[0]
         assert r.case_name == "c0"
-        assert r.risk_category == "guideline_bypass"
+        assert r.risk_category == "prompt_injection"
         assert r.strategy == "gradual_escalation"
         assert r.severity == "high"
         assert r.scores == {"judge": 0.0}
@@ -74,7 +74,7 @@ class TestFromEvaluationReport:
         assert r.reasons == {"judge": "bypassed"}
 
     def test_multiple_evaluators_merge_on_case_name(self):
-        cases = [_case("c0", "guideline_bypass", "gradual_escalation", "high")]
+        cases = [_case("c0", "prompt_injection", "gradual_escalation", "high")]
         r1 = _eval_report("judge", cases, scores=[0.0], passes=[False], reasons=["bypassed"])
         r2 = _eval_report("attack_success", cases, scores=[0.9], passes=[False], reasons=["full compromise"])
 
@@ -158,9 +158,9 @@ class TestAttackResult:
 class TestAggregations:
     def _build(self) -> RedTeamReport:
         cases_a = [
-            _case("c0", "guideline_bypass", "gradual_escalation", "high"),
-            _case("c1", "guideline_bypass", "gradual_escalation", "high"),
-            _case("c2", "system_prompt_leak", "gradual_escalation", "high"),
+            _case("c0", "prompt_injection", "gradual_escalation", "high"),
+            _case("c1", "prompt_injection", "gradual_escalation", "high"),
+            _case("c2", "sensitive_data", "gradual_escalation", "high"),
         ]
         return RedTeamReport.from_evaluation_report(
             _flatten(
@@ -182,14 +182,14 @@ class TestAggregations:
         groups = report.by_risk_category()
 
         by_name = {g.group_name: g for g in groups}
-        assert set(by_name) == {"guideline_bypass", "system_prompt_leak"}
+        assert set(by_name) == {"prompt_injection", "sensitive_data"}
 
-        jb = by_name["guideline_bypass"]
+        jb = by_name["prompt_injection"]
         assert jb.count == 2
         assert jb.avg_score == 0.5
         assert jb.pass_rate == 0.5
 
-        pe = by_name["system_prompt_leak"]
+        pe = by_name["sensitive_data"]
         assert pe.count == 1
         assert pe.avg_score == 0.0
         assert pe.pass_rate == 0.0
@@ -233,7 +233,7 @@ class TestDisplay:
         assert "cre-3" in matrix and "cre-5" in matrix
 
     def test_with_results_does_not_raise(self):
-        cases = [_case("c0", "guideline_bypass", "gradual_escalation", "high")]
+        cases = [_case("c0", "prompt_injection", "gradual_escalation", "high")]
         report = RedTeamReport.from_evaluation_report(
             _flatten(_eval_report("judge", cases, scores=[0.0], passes=[False], reasons=["bypassed"]))
         )

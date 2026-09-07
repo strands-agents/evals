@@ -53,7 +53,7 @@ def _case(
         input="hello",
         config=RedTeamConfig(
             attack_goal=AttackGoal(
-                risk_category="harmful_content",
+                risk_category="excessive_agency",
                 actor_goal=actor_goal,
                 success_criteria=success_criteria,
             )
@@ -202,7 +202,7 @@ class TestGenAttackerTurn:
         attacker = MagicMock()
         attacker.return_value.structured_output = _turn()
         goal = AttackGoal(
-            risk_category="harmful_content", actor_goal="produce {payload} and {{x}}", success_criteria=None
+            risk_category="excessive_agency", actor_goal="produce {payload} and {{x}}", success_criteria=None
         )
         gen_attacker_turn(attacker, goal, "{a}", "{b}", first_turn=False)
         prompt = attacker.call_args[0][0]
