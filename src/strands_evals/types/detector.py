@@ -33,11 +33,15 @@ class DiagnosisConfig(BaseModel):
         trigger: When to run diagnosis — "on_failure" or "always".
         model: The model to use for diagnosis.
         confidence_threshold: Minimum confidence level for failure detection.
+        max_workers: Maximum concurrent LLM calls inside per-session chunked
+            detection / RCA. Defaults to 5; raise for fast targets / generous
+            TPM budgets, drop to 1 for deterministic ordering.
     """
 
     trigger: DiagnosisTrigger = DiagnosisTrigger.ON_FAILURE
     model: Model | str | None = None
     confidence_threshold: ConfidenceLevel = ConfidenceLevel.MEDIUM
+    max_workers: int = Field(default=5, ge=1)
 
     model_config = {"arbitrary_types_allowed": True}
 

@@ -1,7 +1,7 @@
 """Tests for root cause analyzer."""
 
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -11,6 +11,7 @@ from strands_evals.detectors.root_cause_analyzer import (
     _prune_session_to_failure_paths,
     _trace_to_roots,
     analyze_root_cause,
+    analyze_root_cause_async,
 )
 from strands_evals.detectors.utils import _is_context_exceeded
 from strands_evals.types.detector import (
@@ -303,13 +304,18 @@ def test_analyze_root_cause_empty_failures():
     assert output.root_causes == []
 
 
+def _agent_with_result(structured_output):
+    """Build a mocked Agent whose .invoke_async returns a result with the given structured_output."""
+    agent = MagicMock()
+    result = MagicMock()
+    result.structured_output = structured_output
+    agent.invoke_async = AsyncMock(return_value=result)
+    return agent
+
+
 @patch("strands_evals.detectors.root_cause_analyzer.Agent")
 def test_analyze_root_cause_direct(mock_agent_cls):
-    mock_agent = MagicMock()
-    mock_agent_cls.return_value = mock_agent
-    mock_result = MagicMock()
-    mock_result.structured_output = _make_rca_structured_output(["span_2"])
-    mock_agent.return_value = mock_result
+    mock_agent_cls.return_value = _agent_with_result(_make_rca_structured_output(["span_2"]))
 
     session = _make_session()
     failures = _make_failures(["span_2"])
@@ -326,11 +332,7 @@ def test_analyze_root_cause_direct(mock_agent_cls):
 def test_analyze_root_cause_passes_model(mock_resolve, mock_agent_cls):
     mock_model = MagicMock()
     mock_resolve.return_value = mock_model
-    mock_agent = MagicMock()
-    mock_agent_cls.return_value = mock_agent
-    mock_result = MagicMock()
-    mock_result.structured_output = _make_rca_structured_output(["span_2"])
-    mock_agent.return_value = mock_result
+    mock_agent_cls.return_value = _agent_with_result(_make_rca_structured_output(["span_2"]))
 
     session = _make_session()
     failures = _make_failures(["span_2"])
@@ -345,15 +347,14 @@ def test_analyze_root_cause_passes_model(mock_resolve, mock_agent_cls):
 def test_analyze_root_cause_context_overflow_falls_to_pruning(mock_agent_cls):
     from strands.types.exceptions import ContextWindowOverflowException
 
-    mock_agent = MagicMock()
-    mock_agent_cls.return_value = mock_agent
-
     pruned_result = MagicMock()
     pruned_result.structured_output = _make_rca_structured_output(["span_2"])
-    mock_agent.side_effect = [
-        ContextWindowOverflowException("too big"),
-        pruned_result,
-    ]
+
+    overflow_agent = MagicMock()
+    overflow_agent.invoke_async = AsyncMock(side_effect=ContextWindowOverflowException("too big"))
+    pruned_agent = MagicMock()
+    pruned_agent.invoke_async = AsyncMock(return_value=pruned_result)
+    mock_agent_cls.side_effect = [overflow_agent, pruned_agent]
 
     session = _make_session()
     failures = _make_failures(["span_2"])
@@ -365,9 +366,9 @@ def test_analyze_root_cause_context_overflow_falls_to_pruning(mock_agent_cls):
 
 @patch("strands_evals.detectors.root_cause_analyzer.Agent")
 def test_analyze_root_cause_non_context_error_raises(mock_agent_cls):
-    mock_agent = MagicMock()
-    mock_agent_cls.return_value = mock_agent
-    mock_agent.side_effect = RuntimeError("Something else broke")
+    agent = MagicMock()
+    agent.invoke_async = AsyncMock(side_effect=RuntimeError("Something else broke"))
+    mock_agent_cls.return_value = agent
 
     session = _make_session()
     failures = _make_failures(["span_2"])
@@ -375,30 +376,26 @@ def test_analyze_root_cause_non_context_error_raises(mock_agent_cls):
         analyze_root_cause(session, failures)
 
 
-@patch("strands_evals.detectors.root_cause_analyzer.detect_failures")
+@patch("strands_evals.detectors.root_cause_analyzer.detect_failures_async", new_callable=AsyncMock)
 @patch("strands_evals.detectors.root_cause_analyzer.Agent")
 def test_analyze_root_cause_auto_detects_failures(mock_agent_cls, mock_detect):
-    """When failures=None, detect_failures is called automatically."""
+    """When failures=None, detect_failures_async is called automatically."""
     from strands_evals.types.detector import FailureOutput
 
     mock_detect.return_value = FailureOutput(
         session_id="sess_1",
         failures=_make_failures(["span_2"]),
     )
-    mock_agent = MagicMock()
-    mock_agent_cls.return_value = mock_agent
-    mock_result = MagicMock()
-    mock_result.structured_output = _make_rca_structured_output(["span_2"])
-    mock_agent.return_value = mock_result
+    mock_agent_cls.return_value = _agent_with_result(_make_rca_structured_output(["span_2"]))
 
     session = _make_session()
     output = analyze_root_cause(session, failures=None)
 
-    mock_detect.assert_called_once()
+    mock_detect.assert_awaited_once()
     assert len(output.root_causes) == 1
 
 
-@patch("strands_evals.detectors.root_cause_analyzer.detect_failures")
+@patch("strands_evals.detectors.root_cause_analyzer.detect_failures_async", new_callable=AsyncMock)
 def test_analyze_root_cause_auto_detect_no_failures(mock_detect):
     """When auto-detection finds no failures, return empty RCAOutput."""
     from strands_evals.types.detector import FailureOutput
@@ -420,3 +417,54 @@ def test_analyze_root_cause_multiple_root_causes():
     for i, sid in enumerate(["span_1", "span_2", "span_3"]):
         assert result[i].failure_span_id == sid
         assert result[i].root_cause_explanation == f"Failure at {sid} due to test issue"
+
+
+# --- async tests ---
+
+
+@patch("strands_evals.detectors.root_cause_analyzer.Agent")
+async def test_analyze_root_cause_async_direct(mock_agent_cls):
+    mock_agent_cls.return_value = _agent_with_result(_make_rca_structured_output(["span_2"]))
+
+    output = await analyze_root_cause_async(_make_session(), _make_failures(["span_2"]))
+
+    assert len(output.root_causes) == 1
+    assert output.root_causes[0].failure_span_id == "span_2"
+
+
+async def test_analyze_root_cause_async_empty_failures():
+    output = await analyze_root_cause_async(_make_session(), failures=[])
+    assert output.root_causes == []
+
+
+@patch("strands_evals.detectors.root_cause_analyzer.detect_failures_async", new_callable=AsyncMock)
+@patch("strands_evals.detectors.root_cause_analyzer.Agent")
+async def test_analyze_root_cause_async_auto_detects(mock_agent_cls, mock_detect):
+    from strands_evals.types.detector import FailureOutput
+
+    mock_detect.return_value = FailureOutput(session_id="sess_1", failures=_make_failures(["span_2"]))
+    mock_agent_cls.return_value = _agent_with_result(_make_rca_structured_output(["span_2"]))
+
+    output = await analyze_root_cause_async(_make_session(), failures=None, max_workers=2)
+
+    mock_detect.assert_awaited_once()
+    # max_workers should propagate into auto-detection
+    assert mock_detect.call_args.kwargs["max_workers"] == 2
+    assert len(output.root_causes) == 1
+
+
+# --- sync-wrapper-from-inside-event-loop regression ---
+
+
+@patch("strands_evals.detectors.root_cause_analyzer.Agent")
+async def test_analyze_root_cause_sync_works_inside_running_loop(mock_agent_cls):
+    """`analyze_root_cause` (the sync wrapper) must be safe to call from inside
+    an async function. `pyproject.toml` sets `asyncio_mode = "auto"`, so this
+    test body runs inside an event loop.
+    """
+    mock_agent_cls.return_value = _agent_with_result(_make_rca_structured_output(["span_2"]))
+
+    output = analyze_root_cause(_make_session(), _make_failures(["span_2"]))
+
+    assert isinstance(output, RCAOutput)
+    assert len(output.root_causes) == 1
