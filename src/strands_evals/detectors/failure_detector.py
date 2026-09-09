@@ -176,11 +176,93 @@ def _call_model(model: Model, *, system_prompt: str, user_prompt: str) -> str:
 
 
 def _extract_json(text: str) -> str:
-    """Extract JSON from LLM response, stripping markdown fences if present."""
+    """Extract JSON from an LLM response.
+
+    Handles three shapes the model emits in practice:
+      1. A fenced block: ```json ... ``` (or a bare ``` ... ``` fence).
+      2. A prose preamble followed by a bare JSON object/array, e.g.
+         "Looking at the session, here are the failures:\n{ ... }".
+      3. Clean JSON with no wrapping.
+
+    For (2) we scan for balanced ``{...}``/``[...]`` spans (tracking string
+    literals and escapes so brackets inside strings don't fool the matcher)
+    and return the first one that actually parses as JSON. Candidates that
+    don't parse — e.g. a regex like ``[a-z0-9-]`` the model mentioned in its
+    prose — are skipped rather than returned. Objects are preferred over
+    arrays since the detector schema is a JSON object. Falls back to the
+    stripped text so the caller's json parser produces the original,
+    actionable error if nothing JSON-like is found.
+    """
     match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     if match:
         return match.group(1).strip()
+
+    extracted = _extract_balanced_json(text)
+    if extracted is not None:
+        return extracted
+
     return text.strip()
+
+
+def _iter_balanced_spans(text: str, open_ch: str, close_ch: str):
+    """Yield every balanced ``open_ch``…``close_ch`` substring in ``text``.
+
+    Respects string literals and escape sequences so brackets inside quoted
+    strings don't affect nesting. Handles multiple, possibly nested spans;
+    truncated (never-closing) spans are simply not yielded.
+    """
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] != open_ch:
+            i += 1
+            continue
+        depth = 0
+        in_string = False
+        escaped = False
+        for j in range(i, n):
+            ch = text[j]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == open_ch:
+                depth += 1
+            elif ch == close_ch:
+                depth -= 1
+                if depth == 0:
+                    yield text[i : j + 1]
+                    break
+        # Advance past this opener regardless of whether it balanced, so we
+        # keep looking for a later, valid span.
+        i += 1
+
+
+def _extract_balanced_json(text: str) -> str | None:
+    """Return the first balanced JSON value embedded in ``text`` that parses.
+
+    Scans for balanced ``{...}`` spans first (the detector's structured
+    output is a JSON object), then ``[...]`` spans, and returns the first
+    candidate that ``json.loads`` accepts. This skips prose brackets that
+    merely look like JSON — e.g. a regex ``[a-z0-9-]`` — instead of
+    returning them and forcing a parse error downstream. Returns None if no
+    candidate parses.
+    """
+    for open_ch, close_ch in (("{", "}"), ("[", "]")):
+        for span in _iter_balanced_spans(text, open_ch, close_ch):
+            candidate = span.strip()
+            try:
+                json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            return candidate
+    return None
 
 
 def _parse_text_result(text: str) -> list[FailureItem]:
