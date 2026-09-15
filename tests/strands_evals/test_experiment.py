@@ -8,7 +8,7 @@ import pytest
 from botocore.exceptions import ClientError
 from strands import tool as strands_tool
 from strands.models.model import Model
-from strands.types.exceptions import EventLoopException, ModelThrottledException
+from strands.types.exceptions import ContextWindowOverflowException, EventLoopException, ModelThrottledException
 
 from strands_evals import Case, DiagnosisConfig, Experiment
 from strands_evals import evaluators as builtin_evaluators
@@ -58,6 +58,13 @@ class ThrowingEvaluator(Evaluator[str, str]):
 
     def evaluate(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
         raise RuntimeError("Evaluator exploded")
+
+
+class OverflowEvaluator(Evaluator[str, str]):
+    """Evaluator whose judge prompt overflows the context window - used to test could-not-evaluate."""
+
+    def evaluate(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
+        raise ContextWindowOverflowException("Input is too long for requested model")
 
 
 @pytest.fixture
@@ -1229,6 +1236,52 @@ def test_experiment_run_evaluations_evaluator_error_isolated():
     assert report.test_passes[throwing_idx] is False
     assert "Evaluator error" in report.reasons[throwing_idx]
     assert "Evaluator exploded" in report.reasons[throwing_idx]
+
+
+def test_experiment_run_evaluations_context_overflow_is_not_applicable():
+    """A judge whose prompt overflows the context window yields a could-not-evaluate result.
+
+    The overflow is recorded as a NOT_APPLICABLE row (test_pass=True) rather than a quality-0
+    failure, so it is dropped from the overall score instead of silently dragging it down. A
+    genuine evaluator error still surfaces as a score-0 failure.
+    """
+    case = Case(name="test", input="hello", expected_output="hello")
+
+    # MockEvaluator succeeds (1.0); OverflowEvaluator's judge overflows.
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator(), OverflowEvaluator()])
+
+    def echo_task(c):
+        return c.input
+
+    report = experiment.run_evaluations(echo_task)
+
+    rows_by_evaluator = {row["evaluator"]: i for i, row in enumerate(report.cases)}
+    overflow_idx = rows_by_evaluator["OverflowEvaluator"]
+
+    # Overflow becomes a could-not-evaluate row: passes (not a failure) and labeled NOT_APPLICABLE.
+    assert report.test_passes[overflow_idx] is True
+    assert "Could not evaluate" in report.reasons[overflow_idx]
+    overflow_rows = report.detailed_results[overflow_idx]
+    assert len(overflow_rows) == 1
+    assert overflow_rows[0].label == NOT_APPLICABLE
+    assert overflow_rows[0].not_applicable is True
+
+    # The not-applicable case is excluded from the overall score, so only MockEvaluator's 1.0 counts.
+    assert report.overall_score == 1.0
+
+
+def test_experiment_run_evaluations_evaluator_error_still_fails():
+    """A non-overflow evaluator error stays a genuine score-0 failure (not dropped as N/A)."""
+    case = Case(name="test", input="hello", expected_output="hello")
+    experiment = Experiment(cases=[case], evaluators=[ThrowingEvaluator()])
+
+    report = experiment.run_evaluations(lambda c: c.input)
+
+    assert report.scores[0] == 0
+    assert report.test_passes[0] is False
+    assert report.detailed_results[0] == []
+    # Empty detailed_results is applicable, so this failure counts toward the score.
+    assert report.overall_score == 0.0
 
 
 def testis_throttling_error_detects_model_throttled_exception():

@@ -18,6 +18,7 @@ from typing_extensions import Any, Generic
 
 from .case import Case
 from .detectors.diagnosis import diagnose_session
+from .detectors.utils import _is_context_exceeded
 from .evaluation_data_store import EvaluationDataStore
 from .evaluators.coherence_evaluator import CoherenceEvaluator
 from .evaluators.conciseness_evaluator import ConcisenessEvaluator
@@ -457,6 +458,28 @@ class Experiment(Generic[InputT, OutputT]):
                 "detailed_results": [],
             }
         except Exception as e:
+            # A judge whose prompt overflowed the model's context window produced no verdict, so
+            # the case is not-applicable rather than a quality-0 failure: emit a NOT_APPLICABLE row
+            # (the same shape a declining evaluator emits) so is_applicable/calculate_overall_score
+            # drop it from the average instead of scoring it 0. Every other error is a genuine
+            # failure and keeps its empty-detailed-results, score-0 shape (which is_applicable
+            # counts as a real failure).
+            if _is_context_exceeded(e):
+                return {
+                    "evaluator_name": evaluator.get_name(),
+                    "evaluator_type": evaluator.get_type_name(),
+                    "test_pass": True,
+                    "score": 0,
+                    "reason": f"Could not evaluate: judge context window exceeded ({str(e)})",
+                    "detailed_results": [
+                        EvaluationOutput(
+                            score=0.0,
+                            test_pass=True,
+                            reason=f"Could not evaluate: judge context window exceeded ({str(e)})",
+                            label=NOT_APPLICABLE,
+                        )
+                    ],
+                }
             # Catch non-throttling errors and record as failure (error isolation)
             return {
                 "evaluator_name": evaluator.get_name(),
