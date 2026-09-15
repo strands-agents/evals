@@ -201,6 +201,76 @@ evaluator = TrajectoryEvaluator(
 )
 ```
 
+### Evaluating Large Traces with Progressive Disclosure
+
+When a session is too large to inline into a judge prompt (large tool results,
+many turns), give the judge a compact overview plus discovery tools instead of
+the full trajectory. The judge loads only the spans the rubric requires:
+
+```python
+from strands_evals.evaluators import OutputEvaluator
+from strands_evals.tools.trace_index import TraceIndex
+from strands_evals.types import EvaluationData
+
+index = TraceIndex(session)  # session: a Session from any provider/mapper
+
+# for_judge() hands back both halves together so neither is forgotten:
+# the overview to put next to the answer, and the discovery tools for the judge.
+prompt_section, tools = index.for_judge()  # tools: list_spans, get_span, search_spans
+
+evaluator = OutputEvaluator(
+    rubric=(
+        "Every factual claim must be supported by tool-result evidence in the trace. "
+        "Use the trace tools to verify each claim against the evidence before scoring."
+    ),
+    tools=tools,
+)
+
+# Compose the overview into the judged output instead of the full trajectory:
+judged_output = f"{agent_answer}\n{prompt_section}"
+evaluator.evaluate(EvaluationData(input=user_prompt, actual_output=judged_output))
+```
+
+The overview is one line per span (index, type, tool name, sizes, preview);
+`list_spans`, `get_span`, and `search_spans` all page or cap their output at
+`max_read_chars` so no single tool return can overflow the judge's context. The
+rubric must tell the judge to verify claims with the tools — otherwise it scores
+off the previews alone.
+
+> **Note:** this composes with `OutputEvaluator`, whose prompt is caller-controlled.
+> It does **not** work with `TrajectoryEvaluator`, which inlines the full
+> `actual_trajectory` unconditionally and would re-create the overflow this pattern
+> exists to prevent.
+
+#### Large reference knowledge with `KnowledgeIndex`
+
+Some rubrics need the judge to check the trace against knowledge that lives
+**outside** it — the catalog of tools/skills the agent could have used, API
+specs, or policy documents. That corpus overflows the judge for the same reason a
+large trace does, and the `Session` can't answer capability questions (it only
+holds what a run *actually invoked*). `KnowledgeIndex` gives the same list / get /
+search treatment to any keyed corpus, in two modes:
+
+```python
+from strands_evals.tools.knowledge_index import KnowledgeIndex
+
+index = KnowledgeIndex(tool_catalog)  # {key: document text}, e.g. tool schemas by name
+
+# --- Mode A: retrieve-then-inject (default; deterministic, one LLM call) ---
+# The metric selects the trace-relevant keys and injects only that bounded slice.
+knowledge_block = index.render(keys=plan_tool_names)   # a <Knowledge> block
+judged_output = f"{agent_answer}\n{knowledge_block}"
+
+# --- Mode B: agentic discovery (reserve for open-ended lookup) ---
+# When the needed entry can't be predetermined ("does *any* tool cover this?").
+prompt_section, tools = index.for_judge()              # overview + list/get/search
+```
+
+Use **Mode A** whenever the relevant keys are derivable from the trace (the tools
+the plan called, the domains it touched) — it's one call and deterministic. Reach
+for **Mode B** only when the lookup is genuinely open-ended. Both honor the same
+`max_read_chars` bound and case-insensitive literal-or-regex search as `TraceIndex`.
+
 ### Trace-based Helpfulness Evaluation
 
 Evaluate agent helpfulness using OpenTelemetry traces with seven-level scoring:
