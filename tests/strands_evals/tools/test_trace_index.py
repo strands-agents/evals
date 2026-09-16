@@ -418,7 +418,11 @@ def test_for_judge_returns_overview_block_and_tools(session):
     assert prompt_section.startswith("<TraceOverview>")
     assert prompt_section.endswith("</TraceOverview>")
     assert index.overview() in prompt_section
-    assert tools is index.tools
+    # Same tools, but a copy: mutating the returned list must not touch the index's set.
+    assert tools == index.tools
+    assert tools is not index.tools
+    tools.clear()
+    assert len(index.tools) == 3
 
 
 def test_tools_are_strands_tools(session):
@@ -426,3 +430,35 @@ def test_tools_are_strands_tools(session):
 
     for t in index.tools:
         assert hasattr(t, "tool_spec") or hasattr(t, "TOOL_SPEC") or callable(t)
+
+
+def test_search_matches_phrase_straddling_a_newline_in_source():
+    """A literal a judge copies from the (whitespace-collapsed) preview matches source text
+    that had a newline where the preview shows a space."""
+    spans = [
+        ToolExecutionSpan(
+            span_info=_span_info(0),
+            tool_call=ToolCall(name="refund", arguments={}),
+            tool_result=ToolResult(content="Refund approved.\nAmount: $150 total."),
+        )
+    ]
+    index = TraceIndex(Session(traces=[Trace(spans=spans, trace_id="t1", session_id="s1")], session_id="s1"))
+    search = index.tools[2]
+
+    # The phrase spans the newline in the source but appears with a space in the preview.
+    result = search(pattern="approved. Amount")
+    assert "No matches" not in result
+    assert "[0]" in result
+
+
+def test_search_rejects_empty_pattern(session):
+    search = TraceIndex(session).tools[2]
+
+    assert search(pattern="") == "ERROR: empty pattern; provide text to search for"
+    assert search(pattern="   ") == "ERROR: empty pattern; provide text to search for"
+
+
+def test_get_span_on_empty_session_reports_no_spans():
+    get_span = TraceIndex(Session(traces=[], session_id="s1")).tools[1]
+
+    assert get_span(index=0) == "ERROR: trace has no spans"

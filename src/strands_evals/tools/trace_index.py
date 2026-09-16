@@ -41,6 +41,7 @@ import json
 import re
 
 from strands import tool
+from strands.types.tools import AgentTool
 
 from ..extractors.trace_extractor import _to_aware_utc
 from ..types.trace import (
@@ -150,8 +151,19 @@ def _search_haystack(span: SpanUnion) -> str:
     return str(span.model_dump())
 
 
+def _normalize_ws(text: str) -> str:
+    """Collapse runs of whitespace to single spaces, matching `_preview`.
+
+    The overview preview normalizes whitespace, so a phrase a judge copies from a
+    preview has its interior newlines/tabs collapsed. Literal search normalizes the
+    haystack the same way so such a copied phrase still matches text that straddled a
+    line break in the source.
+    """
+    return re.sub(r"\s+", " ", text)
+
+
 def _preview(text: str, limit: int = _PREVIEW_CHARS) -> str:
-    text = re.sub(r"\s+", " ", text).strip()
+    text = _normalize_ws(text).strip()
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
@@ -227,6 +239,8 @@ class TraceIndex:
                 index: Span index as shown by list_spans.
                 offset: Character offset for paging through oversized spans.
             """
+            if not this._spans:
+                return "ERROR: trace has no spans"
             if not 0 <= index < len(this._spans):
                 return f"ERROR: index {index} out of range (0..{len(this._spans) - 1})"
             return this._window(_span_text(this._spans[index]), offset)
@@ -245,6 +259,8 @@ class TraceIndex:
                     also capped at max_read_chars total, whichever comes first.
                 is_regex: Set True to treat pattern as a regular expression.
             """
+            if not pattern.strip():
+                return "ERROR: empty pattern; provide text to search for"
             if is_regex:
                 try:
                     # MULTILINE so ^/$ anchor to line boundaries in the newline-joined
@@ -255,7 +271,9 @@ class TraceIndex:
                     return f"ERROR: invalid regex {pattern!r}: {exc}. Retry with is_regex=False for a literal search."
                 matcher = lambda text: [(m.start(), m.end()) for m in rx.finditer(text)]  # noqa: E731
             else:
-                needle = pattern.lower()
+                # Normalize the needle the same way the haystack is normalized below, so a
+                # phrase copied from a whitespace-collapsed preview still matches.
+                needle = _normalize_ws(pattern).lower()
 
                 def matcher(text: str) -> list[tuple[int, int]]:
                     spans, low, start = [], text.lower(), 0
@@ -271,7 +289,11 @@ class TraceIndex:
                 if len(hits) >= max_matches:
                     stop_reason = "max_matches"
                     break
+                # Regex matches raw text so ^/$ anchors line boundaries; literal search
+                # matches the whitespace-normalized text so copy-from-preview phrases hit.
                 text = _search_haystack(span)
+                if not is_regex:
+                    text = _normalize_ws(text)
                 positions = matcher(text)
                 if not positions:
                     continue
@@ -299,7 +321,7 @@ class TraceIndex:
                 )
             return "\n".join(hits)
 
-        self.tools = [list_spans, get_span, search_spans]
+        self.tools: list[AgentTool] = [list_spans, get_span, search_spans]
 
     def overview(self, offset: int = 0) -> str:
         """Compact one-line-per-span overview of the session, paged by span index.
@@ -334,7 +356,7 @@ class TraceIndex:
             parts.append(f"[MORE: {total - end} spans remain; call again with offset={end}]")
         return "\n".join(parts)
 
-    def for_judge(self) -> tuple[str, list]:
+    def for_judge(self) -> tuple[str, list[AgentTool]]:
         """Return the two pieces a judge needs, together, so neither is forgotten.
 
         Composing a `TraceIndex` into an evaluator has two halves — the overview must
@@ -353,7 +375,9 @@ class TraceIndex:
             output; ``tools`` is `self.tools`.
         """
         prompt_section = f"<TraceOverview>\n{self.overview()}\n</TraceOverview>"
-        return prompt_section, self.tools
+        # Hand back a copy so a caller mutating the returned list (or two indexes wired to
+        # one judge) can't mutate this index's tool set.
+        return prompt_section, list(self.tools)
 
     def _window(self, text: str, offset: int) -> str:
         if offset < 0:
