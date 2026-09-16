@@ -9,6 +9,7 @@ import functools
 import json
 import logging
 import re
+from collections.abc import Iterator
 
 from pydantic import ValidationError
 from strands.models.model import Model
@@ -176,11 +177,108 @@ def _call_model(model: Model, *, system_prompt: str, user_prompt: str) -> str:
 
 
 def _extract_json(text: str) -> str:
-    """Extract JSON from LLM response, stripping markdown fences if present."""
+    """Extract JSON from an LLM response.
+
+    Handles three shapes the model emits in practice:
+      1. A fenced block: ```json ... ``` (or a bare ``` ... ``` fence).
+      2. A prose preamble followed by a bare JSON object/array, e.g.
+         "Looking at the session, here are the failures:\n{ ... }".
+      3. Clean JSON with no wrapping.
+
+    For (2) we scan for balanced `{...}`/`[...]` spans (tracking string
+    literals and escapes so brackets inside strings don't fool the matcher)
+    and pick the one most likely to be the detector payload: a JSON object
+    carrying the top-level `"errors"` key wins over one that merely parses
+    as JSON, so a decoy object in the model's prose (e.g. a format example
+    like `{"category": "tool_error"}`) doesn't shadow the real result.
+    Candidates that don't parse — e.g. a regex like `[a-z0-9-]` the model
+    mentioned in its prose — are skipped. Objects are preferred over arrays
+    since the detector schema is a JSON object. Falls back to the stripped
+    text so the caller's json parser produces the original, actionable
+    error if nothing JSON-like is found.
+    """
     match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     if match:
         return match.group(1).strip()
+
+    extracted = _extract_balanced_json(text)
+    if extracted is not None:
+        return extracted
+
     return text.strip()
+
+
+def _iter_balanced_spans(text: str, open_ch: str, close_ch: str) -> Iterator[str]:
+    """Yield every balanced `open_ch`…`close_ch` substring in `text`.
+
+    Respects string literals and escape sequences so brackets inside quoted
+    strings don't affect nesting. Handles multiple, possibly nested spans;
+    truncated (never-closing) spans are simply not yielded.
+    """
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] != open_ch:
+            i += 1
+            continue
+        depth = 0
+        in_string = False
+        escaped = False
+        for j in range(i, n):
+            ch = text[j]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == open_ch:
+                depth += 1
+            elif ch == close_ch:
+                depth -= 1
+                if depth == 0:
+                    yield text[i : j + 1]
+                    break
+        # Advance past this opener regardless of whether it balanced, so we
+        # keep looking for a later, valid span.
+        i += 1
+
+
+def _extract_balanced_json(text: str) -> str | None:
+    """Return the balanced JSON value embedded in `text` most likely to be the payload.
+
+    Scans for balanced `{...}` spans first (the detector's structured
+    output is a JSON object), then `[...]` spans. Among the spans that
+    parse as JSON, one shaped like the detector payload — a JSON object
+    carrying the top-level `"errors"` key — is preferred over one that
+    merely parses. That way a decoy object earlier in the model's prose
+    (e.g. a format example like `{"category": "tool_error"}`) doesn't
+    shadow the real result and reintroduce a silent-empty diagnosis. The
+    `"errors"` key (rather than full `FailureDetectionStructuredOutput`
+    validation) is used as the discriminator so extraction stays tolerant
+    of minor per-entry issues and leaves strict validation to
+    `_parse_text_result`. If nothing carries the key, the first parseable
+    candidate is returned so the caller still gets a concrete value to
+    surface an actionable error. Spans that don't parse — e.g. a regex like
+    `[a-z0-9-]` — are skipped. Returns None if no candidate parses.
+    """
+    first_parseable: str | None = None
+    for open_ch, close_ch in (("{", "}"), ("[", "]")):
+        for span in _iter_balanced_spans(text, open_ch, close_ch):
+            candidate = span.strip()
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if first_parseable is None:
+                first_parseable = candidate
+            if isinstance(parsed, dict) and "errors" in parsed:
+                return candidate
+    return first_parseable
 
 
 def _parse_text_result(text: str) -> list[FailureItem]:
