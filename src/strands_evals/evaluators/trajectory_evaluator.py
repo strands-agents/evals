@@ -6,7 +6,8 @@ from typing_extensions import Any
 
 from ..tools.evaluation_tools import any_order_match_scorer, exact_match_scorer, in_order_match_scorer
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
-from .evaluator import Evaluator
+from ._trace_index import TraceIndex
+from .evaluator import DisclosureMode, Evaluator
 from .prompt_templates.case_prompt_template import compose_test_prompt
 from .prompt_templates.prompt_templates import judge_trajectory_template_tools as SYSTEM_PROMPT
 
@@ -36,6 +37,7 @@ class TrajectoryEvaluator(Evaluator[InputT, OutputT]):
         include_inputs: bool = True,
         name: str | None = None,
         tools: list[Any] | None = None,
+        disclosure: DisclosureMode = "auto",
     ):
         super().__init__(name=name)
         self.rubric = rubric
@@ -49,6 +51,7 @@ class TrajectoryEvaluator(Evaluator[InputT, OutputT]):
             *(tools or []),
         ]
         self.system_prompt = system_prompt
+        self.disclosure = self._validate_disclosure(disclosure)
 
     def update_trajectory_description(self, new_description: dict) -> None:
         """
@@ -69,14 +72,14 @@ class TrajectoryEvaluator(Evaluator[InputT, OutputT]):
         Returns:
             The results of the evaluation as EvaluationOutput.
         """
-        evaluator_agent = Agent(
-            model=self.model, system_prompt=self.system_prompt, tools=self._tools, callback_handler=None
+        evaluation_prompt, disclosure_tools = self._render_with_disclosure(
+            evaluation_case, lambda idx: self._compose(evaluation_case, idx)
         )
-        evaluation_prompt = compose_test_prompt(
-            evaluation_case=evaluation_case,
-            rubric=self.rubric,
-            include_inputs=self.include_inputs,
-            uses_trajectory=True,
+        evaluator_agent = Agent(
+            model=self.model,
+            system_prompt=self.system_prompt,
+            tools=[*self._tools, *disclosure_tools],
+            callback_handler=None,
         )
         result = evaluator_agent(evaluation_prompt, structured_output_model=EvaluationOutput)
         return [cast(EvaluationOutput, result.structured_output)]
@@ -91,14 +94,25 @@ class TrajectoryEvaluator(Evaluator[InputT, OutputT]):
         Returns:
             The results of the evaluation as EvaluationOutput.
         """
-        evaluator_agent = Agent(
-            model=self.model, system_prompt=self.system_prompt, tools=self._tools, callback_handler=None
+        evaluation_prompt, disclosure_tools = self._render_with_disclosure(
+            evaluation_case, lambda idx: self._compose(evaluation_case, idx)
         )
-        evaluation_prompt = compose_test_prompt(
+        evaluator_agent = Agent(
+            model=self.model,
+            system_prompt=self.system_prompt,
+            tools=[*self._tools, *disclosure_tools],
+            callback_handler=None,
+        )
+        result = await evaluator_agent.invoke_async(evaluation_prompt, structured_output_model=EvaluationOutput)
+        return [cast(EvaluationOutput, result.structured_output)]
+
+    def _compose(self, evaluation_case: EvaluationData[InputT, OutputT], trace_index: TraceIndex | None) -> str:
+        """Compose the trajectory judge prompt, substituting the trace overview on overflow."""
+        override = self._disclosed_trace_section(trace_index) if trace_index is not None else None
+        return compose_test_prompt(
             evaluation_case=evaluation_case,
             rubric=self.rubric,
             include_inputs=self.include_inputs,
             uses_trajectory=True,
+            trajectory_override=override,
         )
-        result = await evaluator_agent.invoke_async(evaluation_prompt, structured_output_model=EvaluationOutput)
-        return [cast(EvaluationOutput, result.structured_output)]

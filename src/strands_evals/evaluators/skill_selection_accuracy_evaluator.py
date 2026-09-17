@@ -12,7 +12,8 @@ from ..extractors.skills import (
     parse_available_skills,
 )
 from ..types.evaluation import NOT_APPLICABLE, EvaluationData, EvaluationOutput, InputT, OutputT
-from .evaluator import Evaluator
+from ._trace_index import TraceIndex
+from .evaluator import DisclosureMode, Evaluator
 from .prompt_templates.skill_selection_accuracy import get_template
 from .prompt_templates.trajectory_prompt_template import serialize_trajectory
 
@@ -51,11 +52,13 @@ class SkillSelectionAccuracyEvaluator(Evaluator[InputT, OutputT]):
         model: Model | str | None = None,
         system_prompt: str | None = None,
         name: str | None = None,
+        disclosure: DisclosureMode = "auto",
     ):
         super().__init__(name=name)
         self.system_prompt = system_prompt if system_prompt is not None else get_template(version).SYSTEM_PROMPT
         self.version = version
         self.model = model
+        self.disclosure = self._validate_disclosure(disclosure)
         # A case with nothing to select from contributes a placeholder 0.0 row; averaging it in
         # would report a run that had no decision to make as a failed one.
         self.aggregator = self._aggregate_dropping_na
@@ -79,17 +82,23 @@ class SkillSelectionAccuracyEvaluator(Evaluator[InputT, OutputT]):
     def _has_catalog(self, evaluation_case: EvaluationData[InputT, OutputT]) -> bool:
         return bool(parse_available_skills(evaluation_case.actual_trajectory))
 
-    def _case_context(self, evaluation_case: EvaluationData[InputT, OutputT]) -> tuple[str, str]:
+    def _case_context(
+        self, evaluation_case: EvaluationData[InputT, OutputT], trace_index: TraceIndex | None = None
+    ) -> tuple[str, str]:
         """The two halves of the prompt that do not depend on which decision is being judged.
 
         Built once per case: the skill catalog and the serialized trajectory are the same for
         every invoked skill, and serializing a long trajectory once per skill is wasted work.
+        When `trace_index` is provided the trajectory would overflow the judge, so the paged
+        trace-overview block replaces the inlined serialization.
         """
         head = f"## Task\n{evaluation_case.input}\n\n## Available skills\n{self._available_str(evaluation_case)}\n\n"
-        tail = (
-            f"## Agent trajectory\n{serialize_trajectory(evaluation_case.actual_trajectory)}\n\n"
-            f"## Agent's final response\n{evaluation_case.actual_output}"
+        trajectory = (
+            self._disclosed_trace_section(trace_index)
+            if trace_index is not None
+            else serialize_trajectory(evaluation_case.actual_trajectory)
         )
+        tail = f"## Agent trajectory\n{trajectory}\n\n## Agent's final response\n{evaluation_case.actual_output}"
         return head, tail
 
     @staticmethod
@@ -134,21 +143,22 @@ class SkillSelectionAccuracyEvaluator(Evaluator[InputT, OutputT]):
             label=rating.score.value,
         )
 
-    def _new_judge(self) -> Agent:
+    def _new_judge(self, tools: list | None = None) -> Agent:
         """A fresh judge per decision.
 
         Each skill is judged independently, so reusing one `Agent` across the loop would both
         carry the previous verdicts into the next prompt as conversation history and resend the
-        whole trajectory on top of it, growing every request.
+        whole trajectory on top of it, growing every request. `tools` carries the trace-disclosure
+        tools when the trajectory is read on demand instead of inlined.
         """
-        return Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
+        return Agent(model=self.model, system_prompt=self.system_prompt, tools=tools or [], callback_handler=None)
 
-    def _judge(self, prompt: str) -> SkillSelectionRating:
-        result = self._new_judge()(prompt, structured_output_model=SkillSelectionRating)
+    def _judge(self, prompt: str, tools: list | None = None) -> SkillSelectionRating:
+        result = self._new_judge(tools)(prompt, structured_output_model=SkillSelectionRating)
         return cast(SkillSelectionRating, result.structured_output)
 
-    async def _judge_async(self, prompt: str) -> SkillSelectionRating:
-        result = await self._new_judge().invoke_async(prompt, structured_output_model=SkillSelectionRating)
+    async def _judge_async(self, prompt: str, tools: list | None = None) -> SkillSelectionRating:
+        result = await self._new_judge(tools).invoke_async(prompt, structured_output_model=SkillSelectionRating)
         return cast(SkillSelectionRating, result.structured_output)
 
     @staticmethod
@@ -182,10 +192,10 @@ class SkillSelectionAccuracyEvaluator(Evaluator[InputT, OutputT]):
         invoked = extract_selected_skills(evaluation_case.actual_trajectory)
         if not invoked:
             return [self._no_invocation_row(self._has_catalog(evaluation_case))]
-        context = self._case_context(evaluation_case)
+        context, tools = self._case_context_and_tools(evaluation_case)
         results = []
         for skill in invoked:
-            rating = self._judge(self._prompt_for(context, skill))
+            rating = self._judge(self._prompt_for(context, skill), tools)
             results.append(self._rating_to_output(rating, decision=skill.name))
         return results
 
@@ -195,9 +205,21 @@ class SkillSelectionAccuracyEvaluator(Evaluator[InputT, OutputT]):
         invoked = extract_selected_skills(evaluation_case.actual_trajectory)
         if not invoked:
             return [self._no_invocation_row(self._has_catalog(evaluation_case))]
-        context = self._case_context(evaluation_case)
+        context, tools = self._case_context_and_tools(evaluation_case)
         results = []
         for skill in invoked:
-            rating = await self._judge_async(self._prompt_for(context, skill))
+            rating = await self._judge_async(self._prompt_for(context, skill), tools)
             results.append(self._rating_to_output(rating, decision=skill.name))
         return results
+
+    def _case_context_and_tools(self, evaluation_case: EvaluationData[InputT, OutputT]) -> tuple[tuple[str, str], list]:
+        """Case context plus the disclosure tools, deciding disclosure once for all skills.
+
+        The trajectory is the same for every invoked skill, so the overflow decision and the
+        trace tools are resolved once here and reused across the per-skill prompts.
+        """
+        inline_context = self._case_context(evaluation_case)
+        index = self._resolve_disclosure_index(evaluation_case, inline_context[1])
+        if index is None:
+            return inline_context, []
+        return self._case_context(evaluation_case, index), list(index.tools)

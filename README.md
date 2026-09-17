@@ -201,6 +201,37 @@ evaluator = TrajectoryEvaluator(
 )
 ```
 
+### Evaluating Large Traces with Progressive Disclosure
+
+When a session is too large to inline into a judge prompt (large tool results,
+many turns), inlining the whole trajectory overflows the judge's context window
+and the case is scored as a failure even when the agent was correct. The judge
+evaluators handle this automatically: before each call they preflight the
+rendered prompt against the judge model's context window, and when it would
+overflow they hand the judge a compact overview plus discovery tools instead of
+the full trajectory, so the judge loads only the spans the rubric requires.
+
+```python
+from strands_evals.evaluators import TrajectoryEvaluator
+
+# disclosure="auto" (the default): inline the trajectory when it fits, fall back
+# to overview + tools only when it would overflow the judge's context window.
+evaluator = TrajectoryEvaluator(
+    rubric=(
+        "Every factual claim must be supported by tool-result evidence in the trace. "
+        "Verify each claim against the trace before scoring."
+    ),
+    disclosure="auto",
+)
+```
+
+`disclosure` accepts `"auto"` (default), `"always"` (always use the overview +
+tools), or `"never"` (always inline, restoring the prior behavior where a
+genuine overflow surfaces as a judge error). On the disclosure path the judge
+gets a one-line-per-span overview and three tools — `list_spans`, `get_span`,
+and `search_spans` — that page or cap their output at `max_read_chars` so no
+single tool return can overflow the judge's context.
+
 ### Trace-based Helpfulness Evaluation
 
 Evaluate agent helpfulness using OpenTelemetry traces with seven-level scoring:

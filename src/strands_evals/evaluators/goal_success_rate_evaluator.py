@@ -7,7 +7,8 @@ from strands.models.model import Model
 
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from ..types.trace import EvaluationLevel, SessionLevelInput
-from .evaluator import Evaluator
+from ._trace_index import TraceIndex
+from .evaluator import DisclosureMode, Evaluator
 from .prompt_templates.goal_success_rate import get_assertion_template, get_template
 
 
@@ -73,6 +74,7 @@ class GoalSuccessRateEvaluator(Evaluator[InputT, OutputT]):
         system_prompt: str | None = None,
         assertion_system_prompt: str | None = None,
         name: str | None = None,
+        disclosure: DisclosureMode = "auto",
     ):
         super().__init__(name=name)
         self.system_prompt = system_prompt if system_prompt is not None else get_template(version).SYSTEM_PROMPT
@@ -83,6 +85,7 @@ class GoalSuccessRateEvaluator(Evaluator[InputT, OutputT]):
         )
         self.version = version
         self.model = model
+        self.disclosure = self._validate_disclosure(disclosure)
 
     def _has_assertion(self, evaluation_case: EvaluationData[InputT, OutputT]) -> bool:
         """Check if the evaluation case contains expected_assertion for assertion mode."""
@@ -94,12 +97,16 @@ class GoalSuccessRateEvaluator(Evaluator[InputT, OutputT]):
         if self._has_assertion(evaluation_case):
             return self._evaluate_with_assertion(session_input, evaluation_case)
 
-        return self._evaluate_basic(session_input)
+        return self._evaluate_basic(session_input, evaluation_case)
 
-    def _evaluate_basic(self, session_input: SessionLevelInput) -> list[EvaluationOutput]:
+    def _evaluate_basic(
+        self, session_input: SessionLevelInput, evaluation_case: EvaluationData[InputT, OutputT]
+    ) -> list[EvaluationOutput]:
         """Evaluate goal success using the basic prompt (no criteria)."""
-        prompt = self._format_prompt(session_input)
-        evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
+        prompt, tools = self._render_with_disclosure(
+            evaluation_case, lambda idx: self._format_prompt(session_input, idx)
+        )
+        evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, tools=tools, callback_handler=None)
         result = evaluator_agent(prompt, structured_output_model=GoalSuccessRating)
         rating = cast(GoalSuccessRating, result.structured_output)
         normalized_score = self._score_mapping[rating.score]
@@ -118,8 +125,12 @@ class GoalSuccessRateEvaluator(Evaluator[InputT, OutputT]):
         evaluation_case: EvaluationData[InputT, OutputT],
     ) -> list[EvaluationOutput]:
         """Evaluate goal success using assertion-based prompt."""
-        prompt = self._format_assertion_prompt(session_input, evaluation_case)
-        evaluator_agent = Agent(model=self.model, system_prompt=self.assertion_system_prompt, callback_handler=None)
+        prompt, tools = self._render_with_disclosure(
+            evaluation_case, lambda idx: self._format_assertion_prompt(session_input, evaluation_case, idx)
+        )
+        evaluator_agent = Agent(
+            model=self.model, system_prompt=self.assertion_system_prompt, tools=tools, callback_handler=None
+        )
         result = evaluator_agent(prompt, structured_output_model=GoalSuccessAssertionRating)
         rating = cast(GoalSuccessAssertionRating, result.structured_output)
         normalized_score = self._assertion_score_mapping[rating.verdict]
@@ -132,14 +143,16 @@ class GoalSuccessRateEvaluator(Evaluator[InputT, OutputT]):
             )
         ]
 
-    def _format_prompt(self, session_input: SessionLevelInput) -> str:
+    def _format_prompt(self, session_input: SessionLevelInput, trace_index: TraceIndex | None = None) -> str:
         """Format evaluation prompt from session-level input."""
         parts = []
 
         if session_input.available_tools:
             parts.append(f"# Available tools\n{self._format_tools(session_input.available_tools)}")
 
-        if session_input.session_history:
+        if trace_index is not None:
+            parts.append(f"# Conversation record\n{self._format_session_history([], trace_index)}")
+        elif session_input.session_history:
             parts.append(f"# Conversation record\n{self._format_session_history(session_input.session_history)}")
 
         return "\n\n".join(parts)
@@ -148,13 +161,16 @@ class GoalSuccessRateEvaluator(Evaluator[InputT, OutputT]):
         self,
         session_input: SessionLevelInput,
         evaluation_case: EvaluationData[InputT, OutputT],
+        trace_index: TraceIndex | None = None,
     ) -> str:
         """Format evaluation prompt for assertion-based evaluation."""
         assertions = evaluation_case.expected_assertion or ""
 
         parts = []
 
-        if session_input.session_history:
+        if trace_index is not None:
+            parts.append(f"CONVERSATION RECORD:\n{self._format_session_history([], trace_index)}")
+        elif session_input.session_history:
             parts.append(f"CONVERSATION RECORD:\n{self._format_session_history(session_input.session_history)}")
 
         parts.append(f"SUCCESS ASSERTIONS:\n{assertions}")
