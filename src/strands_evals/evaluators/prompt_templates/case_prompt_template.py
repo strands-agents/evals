@@ -8,6 +8,7 @@ def compose_test_prompt(
     uses_trajectory: bool = False,
     trajectory_description: dict | None = None,
     uses_environment_state: bool = False,
+    trajectory_override: str | None = None,
 ) -> str:
     """
     Compose the prompt for a test case evaluation.
@@ -19,6 +20,9 @@ def compose_test_prompt(
         uses_trajectory: Whether this is a trajectory-based evaluation
         trajectory_description: A dictionary describing the type of trajectory expected for this evaluation.
         uses_environment_state: Whether this is an environment-state-based evaluation
+        trajectory_override: When set (and uses_trajectory), the string placed inside
+            <Trajectory> instead of the full actual_trajectory — used to substitute a
+            compact trace overview when the trajectory would overflow the judge.
 
     Returns:
         str: The formatted evaluation prompt
@@ -48,7 +52,8 @@ def compose_test_prompt(
     if uses_trajectory:  # trajectory evaluations require actual_trajectory
         if evaluation_case.actual_trajectory is None:
             raise Exception("Please make sure the task function return a dictionary with the key 'trajectory'.")
-        evaluation_prompt += f"<Trajectory>{evaluation_case.actual_trajectory}</Trajectory>\n"
+        trajectory_body = trajectory_override if trajectory_override is not None else evaluation_case.actual_trajectory
+        evaluation_prompt += f"<Trajectory>{trajectory_body}</Trajectory>\n"
 
         if evaluation_case.expected_trajectory:
             evaluation_prompt += f"<ExpectedTrajectory>{evaluation_case.expected_trajectory}</ExpectedTrajectory>\n"

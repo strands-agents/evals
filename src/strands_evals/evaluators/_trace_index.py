@@ -1,4 +1,4 @@
-"""Progressive trace disclosure for judge agents.
+"""Progressive trace disclosure for judge agents (internal engine).
 
 A large agent trajectory does not fit in a judge's context window. Rather than
 inlining the whole Session into the evaluation prompt (which overflows and gets
@@ -14,27 +14,11 @@ This is the same list / get / search shape used to query any indexed collection:
 the overview is the "name + description" line; the tools load the full content on
 demand.
 
-`TraceIndex` composes with `OutputEvaluator`, whose prompt is caller-controlled —
-put the overview in the judged output and pass the tools. It does **not** compose
-with `TrajectoryEvaluator`, which inlines the full `actual_trajectory`
-unconditionally and so re-creates the overflow this class exists to prevent.
-
-Example::
-
-    from strands_evals.evaluators import OutputEvaluator
-    from strands_evals.tools.trace_index import TraceIndex
-
-    index = TraceIndex(session)
-    prompt_section, tools = index.for_judge()  # overview + tools together
-    evaluator = OutputEvaluator(
-        rubric=(
-            "Every claim in the final response must be supported by a tool result. "
-            "Use the trace tools to verify each claim before scoring."
-        ),
-        tools=tools,
-    )
-    # Put the compact overview next to the answer instead of the full trajectory:
-    judged_output = f"{agent_answer}\n{prompt_section}"
+This module is internal (note the leading underscore). Callers do not build a
+`TraceIndex` themselves: the evaluator base class preflights each judge prompt and,
+when the rendered trajectory would overflow the judge model's context window,
+substitutes `for_judge()`'s overview for the inlined trajectory and attaches its
+tools to the judge `Agent` automatically. See `Evaluator._apply_disclosure`.
 """
 
 import json

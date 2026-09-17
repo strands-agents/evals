@@ -41,19 +41,23 @@ class ToolParameterAccuracyEvaluator(Evaluator[InputT, OutputT]):
         model: Model | str | None = None,
         system_prompt: str | None = None,
         name: str | None = None,
+        disclosure: str = "auto",
     ):
         super().__init__(name=name)
         self.system_prompt = system_prompt if system_prompt is not None else get_template(version).SYSTEM_PROMPT
         self.version = version
         self.model = model
+        self.disclosure = self._validate_disclosure(disclosure)
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         tool_inputs = self._parse_trajectory(evaluation_case)
         results = []
 
         for tool_input in tool_inputs:
-            prompt = self._format_tool_level_prompt(tool_input)
-            evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
+            prompt, tools = self._render_with_disclosure(evaluation_case, self._tool_level_render(tool_input))
+            evaluator_agent = Agent(
+                model=self.model, system_prompt=self.system_prompt, tools=tools, callback_handler=None
+            )
             result = evaluator_agent(prompt, structured_output_model=ToolParameterAccuracyRating)
             rating = cast(ToolParameterAccuracyRating, result.structured_output)
             normalized_score = self._score_mapping[rating.score]
@@ -73,8 +77,10 @@ class ToolParameterAccuracyEvaluator(Evaluator[InputT, OutputT]):
         results = []
 
         for tool_input in tool_inputs:
-            prompt = self._format_tool_level_prompt(tool_input)
-            evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
+            prompt, tools = self._render_with_disclosure(evaluation_case, self._tool_level_render(tool_input))
+            evaluator_agent = Agent(
+                model=self.model, system_prompt=self.system_prompt, tools=tools, callback_handler=None
+            )
             result = await evaluator_agent.invoke_async(prompt, structured_output_model=ToolParameterAccuracyRating)
             rating = cast(ToolParameterAccuracyRating, result.structured_output)
             normalized_score = self._score_mapping[rating.score]

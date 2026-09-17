@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from strands_evals.tools.trace_index import TraceIndex
+from strands_evals.evaluators._trace_index import TraceIndex
 from strands_evals.types.trace import (
     AgentInvocationSpan,
     InferenceSpan,

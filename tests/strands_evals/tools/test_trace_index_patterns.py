@@ -16,8 +16,8 @@ import pytest
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.trace import SpanContext, SpanKind, TraceFlags
 
+from strands_evals.evaluators._trace_index import TraceIndex
 from strands_evals.mappers import OpenInferenceSessionMapper, StrandsInMemorySessionMapper
-from strands_evals.tools.trace_index import TraceIndex
 from strands_evals.types.trace import Session
 
 _FIXTURES_DIR = Path(__file__).parent.parent / "mappers" / "fixtures"

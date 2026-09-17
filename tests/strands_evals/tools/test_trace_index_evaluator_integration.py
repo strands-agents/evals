@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 from strands_evals.evaluators import OutputEvaluator
-from strands_evals.tools.trace_index import TraceIndex
+from strands_evals.evaluators._trace_index import TraceIndex
 from strands_evals.types import EvaluationData, EvaluationOutput
 from strands_evals.types.trace import (
     AgentInvocationSpan,

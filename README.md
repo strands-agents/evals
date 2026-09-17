@@ -236,43 +236,33 @@ evaluator = TrajectoryEvaluator(
 ### Evaluating Large Traces with Progressive Disclosure
 
 When a session is too large to inline into a judge prompt (large tool results,
-many turns), give the judge a compact overview plus discovery tools instead of
-the full trajectory. The judge loads only the spans the rubric requires:
+many turns), inlining the whole trajectory overflows the judge's context window
+and the case is scored as a failure even when the agent was correct. The judge
+evaluators handle this automatically: before each call they preflight the
+rendered prompt against the judge model's context window, and when it would
+overflow they hand the judge a compact overview plus discovery tools instead of
+the full trajectory, so the judge loads only the spans the rubric requires.
 
 ```python
-from strands_evals.evaluators import OutputEvaluator
-from strands_evals.tools.trace_index import TraceIndex
-from strands_evals.types import EvaluationData
+from strands_evals.evaluators import TrajectoryEvaluator
 
-index = TraceIndex(session)  # session: a Session from any provider/mapper
-
-# for_judge() hands back both halves together so neither is forgotten:
-# the overview to put next to the answer, and the discovery tools for the judge.
-prompt_section, tools = index.for_judge()  # tools: list_spans, get_span, search_spans
-
-evaluator = OutputEvaluator(
+# disclosure="auto" (the default): inline the trajectory when it fits, fall back
+# to overview + tools only when it would overflow the judge's context window.
+evaluator = TrajectoryEvaluator(
     rubric=(
         "Every factual claim must be supported by tool-result evidence in the trace. "
-        "Use the trace tools to verify each claim against the evidence before scoring."
+        "Verify each claim against the trace before scoring."
     ),
-    tools=tools,
+    disclosure="auto",
 )
-
-# Compose the overview into the judged output instead of the full trajectory:
-judged_output = f"{agent_answer}\n{prompt_section}"
-evaluator.evaluate(EvaluationData(input=user_prompt, actual_output=judged_output))
 ```
 
-The overview is one line per span (index, type, tool name, sizes, preview);
-`list_spans`, `get_span`, and `search_spans` all page or cap their output at
-`max_read_chars` so no single tool return can overflow the judge's context. The
-rubric must tell the judge to verify claims with the tools — otherwise it scores
-off the previews alone.
-
-> **Note:** this composes with `OutputEvaluator`, whose prompt is caller-controlled.
-> It does **not** work with `TrajectoryEvaluator`, which inlines the full
-> `actual_trajectory` unconditionally and would re-create the overflow this pattern
-> exists to prevent.
+`disclosure` accepts `"auto"` (default), `"always"` (always use the overview +
+tools), or `"never"` (always inline; a genuine overflow is then reported as
+*could-not-evaluate* rather than a failure). On the disclosure path the judge
+gets a one-line-per-span overview and three tools — `list_spans`, `get_span`,
+and `search_spans` — that page or cap their output at `max_read_chars` so no
+single tool return can overflow the judge's context.
 
 ### Trace-based Helpfulness Evaluation
 
