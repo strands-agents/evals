@@ -1,7 +1,15 @@
 from .coherence_evaluator import CoherenceEvaluator
 from .conciseness_evaluator import ConcisenessEvaluator
 from .correctness_evaluator import CorrectnessEvaluator
-from .deterministic import Contains, Equals, SkillInvoked, StartsWith, StateEquals, ToolCalled
+from .deterministic import (
+    Contains,
+    Equals,
+    SkillInvoked,
+    StartsWith,
+    StateEquals,
+    StructuredOutput,
+    ToolCalled,
+)
 from .evaluator import Evaluator
 from .faithfulness_evaluator import FaithfulnessEvaluator
 from .goal_success_rate_evaluator import GoalSuccessRateEvaluator
@@ -30,6 +38,7 @@ __all__ = [
     "SkillInvoked",
     "Evaluator",
     "OutputEvaluator",
+    "StructuredOutput",
     "MultimodalOutputEvaluator",
     "MultimodalCorrectnessEvaluator",
     "MultimodalFaithfulnessEvaluator",
