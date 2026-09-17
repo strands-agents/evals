@@ -4,7 +4,7 @@ import logging
 from collections.abc import Callable
 
 from strands.models.model import Model
-from typing_extensions import Any, Generic, TypeGuard
+from typing_extensions import Any, Generic, Literal, TypeGuard, cast, get_args
 
 from ..detectors.chunking import would_exceed_context
 from ..detectors.constants import DEFAULT_MAX_INPUT_TOKENS
@@ -28,13 +28,17 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BEDROCK_MODEL_ID = "global.anthropic.claude-sonnet-4-6"
 
-# Valid values for the `disclosure` knob on judge evaluators.
-DISCLOSURE_MODES = ("auto", "always", "never")
+# The `disclosure` knob on judge evaluators. Exported as a type so the public
+# kwarg is statically checkable; `DISCLOSURE_MODES` is derived from it (single
+# source of truth) and used by the runtime validator.
+DisclosureMode = Literal["auto", "always", "never"]
+DISCLOSURE_MODES: tuple[str, ...] = get_args(DisclosureMode)
 
 # Judge input context windows (tokens) by model-id substring. Intentionally
-# coarse: an unknown model falls back to DEFAULT_MAX_INPUT_TOKENS, and a wrong
-# guess only shifts when disclosure engages — a genuine overflow is still caught
-# downstream and reported as could-not-evaluate rather than a silent failure.
+# coarse: an unknown model falls back to DEFAULT_MAX_INPUT_TOKENS. A wrong guess
+# only shifts when disclosure engages; it does not change the score of a fitting
+# case, and under "auto" a large-enough underestimate simply inlines and lets the
+# judge raise its own context-length error (see `_render_with_disclosure`).
 _JUDGE_CONTEXT_WINDOWS: tuple[tuple[str, int], ...] = (
     ("nova-micro", 128_000),
     ("nova-lite", 300_000),
@@ -58,7 +62,7 @@ class Evaluator(Generic[InputT, OutputT]):
     # Trace-disclosure mode for judges that inline a Session trajectory. Subclasses
     # that accept a `disclosure` argument set it per-instance; this class default
     # keeps `self.disclosure` resolvable for evaluators that don't expose the knob.
-    disclosure: str = "auto"
+    disclosure: DisclosureMode = "auto"
 
     def __init__(self, trace_extractor: TraceExtractor | None = None, name: str | None = None):
         """Initialize evaluator with optional custom trace extractor.
@@ -130,11 +134,11 @@ class Evaluator(Generic[InputT, OutputT]):
         return "YES" if passed else "NO"
 
     @staticmethod
-    def _validate_disclosure(disclosure: str) -> str:
-        """Validate a `disclosure` argument, returning it unchanged when valid."""
+    def _validate_disclosure(disclosure: str) -> DisclosureMode:
+        """Validate a `disclosure` argument, returning it (narrowed) when valid."""
         if disclosure not in DISCLOSURE_MODES:
             raise ValueError(f"disclosure must be one of {DISCLOSURE_MODES}, got {disclosure!r}")
-        return disclosure
+        return cast(DisclosureMode, disclosure)
 
     def _judge_window_tokens(self) -> int:
         """Resolve the judge model's input context window in tokens.
@@ -172,13 +176,24 @@ class Evaluator(Generic[InputT, OutputT]):
 
         Modes (`self.disclosure`): ``"auto"`` discloses only on a preflight overflow;
         ``"always"`` discloses whenever a Session trajectory is present; ``"never"``
-        always inlines (a real overflow is then surfaced downstream as
-        could-not-evaluate rather than a silent failing score).
+        always inlines, restoring the prior behavior where a real overflow surfaces
+        as the judge model's own context-length error.
+
+        Only ``"auto"`` needs the size probe, so the inline prompt is built once and
+        reused as both the probe and the fitting-case result. Under ``"always"`` /
+        ``"never"`` the decision is size-independent, so the (potentially large)
+        inline render is skipped unless it is the one actually returned.
         """
-        inline_prompt = render(None)
-        index = self._resolve_disclosure_index(evaluation_case, inline_prompt)
+        if self.disclosure == "auto":
+            inline_prompt = render(None)
+            index = self._resolve_disclosure_index(evaluation_case, inline_prompt)
+            if index is None:
+                return inline_prompt, []
+            return render(index), list(index.tools)
+        # "always" / "never": the probe is irrelevant, so don't serialize it.
+        index = self._resolve_disclosure_index(evaluation_case, "")
         if index is None:
-            return inline_prompt, []
+            return render(None), []
         return render(index), list(index.tools)
 
     def _resolve_disclosure_index(
@@ -190,6 +205,12 @@ class Evaluator(Generic[InputT, OutputT]):
         inlined; under ``"auto"`` it is preflighted against the judge model's window.
         Judges whose prompt is assembled in pieces (e.g. one row per decision) call
         this once per case and reuse the returned index across every piece.
+
+        The probe covers only the rendered user prompt, not the judge's system
+        prompt or (on the disclosure path) the tool schemas, so it slightly
+        under-counts the true request size. `PREFLIGHT_SAFETY_MARGIN` (< 1.0)
+        absorbs that; a residual underestimate near the boundary just inlines and
+        lets the judge raise its own context-length error rather than mis-scoring.
         """
         if self.disclosure == "never":
             return None
@@ -362,14 +383,23 @@ class Evaluator(Generic[InputT, OutputT]):
             lines.append(f"Assistant: {ctx.agent_response.text}")
         return "\n".join(lines)
 
-    def _tool_level_render(self, tool_input: ToolLevelInput) -> Callable[[TraceIndex | None], str]:
-        """A `_render_with_disclosure` callable bound to one tool call.
+    def _tool_level_disclosure(
+        self, evaluation_case: EvaluationData[InputT, OutputT], tool_inputs: list[ToolLevelInput]
+    ) -> tuple[TraceIndex | None, list[Any]]:
+        """Resolve disclosure once for a tool-level case, shared across every tool call.
 
-        Binding `tool_input` as a parameter here rather than capturing it in an
-        inline lambda inside the caller's loop keeps each render tied to its own
-        tool call (no late-binding of the loop variable).
+        Every tool call in a case is judged against the same session history, so the
+        overflow decision and the `TraceIndex` are made once here — using the first
+        tool call's rendered prompt as the ``"auto"`` size probe — and reused across
+        the loop, instead of rebuilding a `TraceIndex` (re-flatten + re-sort every
+        span) on each iteration. Returns ``(index, tools)`` to thread into
+        `_format_tool_level_prompt` and the judge `Agent`.
         """
-        return lambda idx: self._format_tool_level_prompt(tool_input, idx)
+        if not tool_inputs:
+            return None, []
+        probe = self._format_tool_level_prompt(tool_inputs[0]) if self.disclosure == "auto" else ""
+        index = self._resolve_disclosure_index(evaluation_case, probe)
+        return index, (list(index.tools) if index is not None else [])
 
     def _format_tool_level_prompt(self, tool_input: ToolLevelInput, trace_index: TraceIndex | None = None) -> str:
         """Format evaluation prompt from tool-level input.

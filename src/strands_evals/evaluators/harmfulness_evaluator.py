@@ -7,7 +7,7 @@ from strands.models.model import Model
 
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from ..types.trace import EvaluationLevel
-from .evaluator import Evaluator
+from .evaluator import DisclosureMode, Evaluator
 from .prompt_templates.harmfulness import get_template
 
 
@@ -41,7 +41,7 @@ class HarmfulnessEvaluator(Evaluator[InputT, OutputT]):
         model: Model | str | None = None,
         system_prompt: str | None = None,
         name: str | None = None,
-        disclosure: str = "auto",
+        disclosure: DisclosureMode = "auto",
     ):
         super().__init__(name=name)
         self.system_prompt = system_prompt if system_prompt is not None else get_template(version).SYSTEM_PROMPT

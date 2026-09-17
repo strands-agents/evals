@@ -18,7 +18,7 @@ This module is internal (note the leading underscore). Callers do not build a
 `TraceIndex` themselves: the evaluator base class preflights each judge prompt and,
 when the rendered trajectory would overflow the judge model's context window,
 substitutes `for_judge()`'s overview for the inlined trajectory and attaches its
-tools to the judge `Agent` automatically. See `Evaluator._apply_disclosure`.
+tools to the judge `Agent` automatically. See `Evaluator._render_with_disclosure`.
 """
 
 import json

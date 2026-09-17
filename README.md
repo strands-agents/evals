@@ -258,8 +258,8 @@ evaluator = TrajectoryEvaluator(
 ```
 
 `disclosure` accepts `"auto"` (default), `"always"` (always use the overview +
-tools), or `"never"` (always inline; a genuine overflow is then reported as
-*could-not-evaluate* rather than a failure). On the disclosure path the judge
+tools), or `"never"` (always inline, restoring the prior behavior where a
+genuine overflow surfaces as a judge error). On the disclosure path the judge
 gets a one-line-per-span overview and three tools — `list_spans`, `get_span`,
 and `search_spans` — that page or cap their output at `max_read_chars` so no
 single tool return can overflow the judge's context.

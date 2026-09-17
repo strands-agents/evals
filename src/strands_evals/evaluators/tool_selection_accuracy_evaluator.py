@@ -7,7 +7,7 @@ from strands.models.model import Model
 
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from ..types.trace import EvaluationLevel
-from .evaluator import Evaluator
+from .evaluator import DisclosureMode, Evaluator
 from .prompt_templates.tool_selection_accuracy import get_template
 
 
@@ -41,7 +41,7 @@ class ToolSelectionAccuracyEvaluator(Evaluator[InputT, OutputT]):
         model: Model | str | None = None,
         system_prompt: str | None = None,
         name: str | None = None,
-        disclosure: str = "auto",
+        disclosure: DisclosureMode = "auto",
     ):
         super().__init__(name=name)
         self.system_prompt = system_prompt if system_prompt is not None else get_template(version).SYSTEM_PROMPT
@@ -51,10 +51,11 @@ class ToolSelectionAccuracyEvaluator(Evaluator[InputT, OutputT]):
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         tool_inputs = self._parse_trajectory(evaluation_case)
+        index, tools = self._tool_level_disclosure(evaluation_case, tool_inputs)
         results = []
 
         for tool_input in tool_inputs:
-            prompt, tools = self._render_with_disclosure(evaluation_case, self._tool_level_render(tool_input))
+            prompt = self._format_tool_level_prompt(tool_input, index)
             evaluator_agent = Agent(
                 model=self.model, system_prompt=self.system_prompt, tools=tools, callback_handler=None
             )
@@ -74,10 +75,11 @@ class ToolSelectionAccuracyEvaluator(Evaluator[InputT, OutputT]):
 
     async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         tool_inputs = self._parse_trajectory(evaluation_case)
+        index, tools = self._tool_level_disclosure(evaluation_case, tool_inputs)
         results = []
 
         for tool_input in tool_inputs:
-            prompt, tools = self._render_with_disclosure(evaluation_case, self._tool_level_render(tool_input))
+            prompt = self._format_tool_level_prompt(tool_input, index)
             evaluator_agent = Agent(
                 model=self.model, system_prompt=self.system_prompt, tools=tools, callback_handler=None
             )

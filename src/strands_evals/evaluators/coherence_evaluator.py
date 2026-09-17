@@ -8,7 +8,7 @@ from strands.models.model import Model
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from ..types.trace import EvaluationLevel, TextContent, ToolExecution, TraceLevelInput
 from ._trace_index import TraceIndex
-from .evaluator import Evaluator
+from .evaluator import DisclosureMode, Evaluator
 from .prompt_templates.coherence import get_template
 
 
@@ -61,7 +61,7 @@ class CoherenceEvaluator(Evaluator[InputT, OutputT]):
         system_prompt: str | None = None,
         include_inputs: bool = True,
         name: str | None = None,
-        disclosure: str = "auto",
+        disclosure: DisclosureMode = "auto",
     ):
         super().__init__(name=name)
         self.system_prompt = system_prompt or get_template(version).SYSTEM_PROMPT

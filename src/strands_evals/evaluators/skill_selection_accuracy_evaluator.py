@@ -13,7 +13,7 @@ from ..extractors.skills import (
 )
 from ..types.evaluation import NOT_APPLICABLE, EvaluationData, EvaluationOutput, InputT, OutputT
 from ._trace_index import TraceIndex
-from .evaluator import Evaluator
+from .evaluator import DisclosureMode, Evaluator
 from .prompt_templates.skill_selection_accuracy import get_template
 from .prompt_templates.trajectory_prompt_template import serialize_trajectory
 
@@ -52,7 +52,7 @@ class SkillSelectionAccuracyEvaluator(Evaluator[InputT, OutputT]):
         model: Model | str | None = None,
         system_prompt: str | None = None,
         name: str | None = None,
-        disclosure: str = "auto",
+        disclosure: DisclosureMode = "auto",
     ):
         super().__init__(name=name)
         self.system_prompt = system_prompt if system_prompt is not None else get_template(version).SYSTEM_PROMPT

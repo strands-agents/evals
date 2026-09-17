@@ -7,7 +7,7 @@ from typing_extensions import Any
 from ..tools.evaluation_tools import any_order_match_scorer, exact_match_scorer, in_order_match_scorer
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from ._trace_index import TraceIndex
-from .evaluator import Evaluator
+from .evaluator import DisclosureMode, Evaluator
 from .prompt_templates.case_prompt_template import compose_test_prompt
 from .prompt_templates.prompt_templates import judge_trajectory_template_tools as SYSTEM_PROMPT
 
@@ -37,7 +37,7 @@ class TrajectoryEvaluator(Evaluator[InputT, OutputT]):
         include_inputs: bool = True,
         name: str | None = None,
         tools: list[Any] | None = None,
-        disclosure: str = "auto",
+        disclosure: DisclosureMode = "auto",
     ):
         super().__init__(name=name)
         self.rubric = rubric

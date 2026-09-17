@@ -8,7 +8,7 @@ from strands.models.model import Model
 from ..extractors.skills import InvokedSkill, extract_selected_skills
 from ..types.evaluation import NOT_APPLICABLE, EvaluationData, EvaluationOutput, InputT, OutputT
 from ._trace_index import TraceIndex
-from .evaluator import Evaluator
+from .evaluator import DisclosureMode, Evaluator
 from .prompt_templates.skill_instruction_following import get_template
 from .prompt_templates.trajectory_prompt_template import serialize_trajectory
 
@@ -135,7 +135,7 @@ class SkillInstructionFollowingEvaluator(Evaluator[InputT, OutputT]):
         model: Model | str | None = None,
         system_prompt: str | None = None,
         name: str | None = None,
-        disclosure: str = "auto",
+        disclosure: DisclosureMode = "auto",
     ):
         super().__init__(name=name)
         self.system_prompt = system_prompt if system_prompt is not None else get_template(version).SYSTEM_PROMPT
@@ -189,10 +189,16 @@ class SkillInstructionFollowingEvaluator(Evaluator[InputT, OutputT]):
         )
 
     def _resolve_case_disclosure(
-        self, evaluation_case: EvaluationData[InputT, OutputT]
+        self, evaluation_case: EvaluationData[InputT, OutputT], probe_skill: InvokedSkill
     ) -> tuple[TraceIndex | None, list]:
-        """Decide disclosure once per case; the trajectory is shared across every invoked skill."""
-        probe = serialize_trajectory(evaluation_case.actual_trajectory)
+        """Decide disclosure once per case; the trajectory is shared across every invoked skill.
+
+        Under ``"auto"`` the probe is the full inline prompt for one representative
+        skill (so the skill body and final response are counted, not just the
+        trajectory); under ``"always"`` / ``"never"`` the size is irrelevant and the
+        probe is skipped.
+        """
+        probe = self._build_prompt(probe_skill, evaluation_case) if self.disclosure == "auto" else ""
         index = self._resolve_disclosure_index(evaluation_case, probe)
         return index, (list(index.tools) if index is not None else [])
 
@@ -222,7 +228,7 @@ class SkillInstructionFollowingEvaluator(Evaluator[InputT, OutputT]):
         invoked = extract_selected_skills(evaluation_case.actual_trajectory)
         if not invoked:
             return [self._not_applicable_row("no skill invoked")]
-        index, tools = self._resolve_case_disclosure(evaluation_case)
+        index, tools = self._resolve_case_disclosure(evaluation_case, invoked[0])
         results = []
         for skill in invoked:
             if reason := self._unscorable_reason(skill):
@@ -243,7 +249,7 @@ class SkillInstructionFollowingEvaluator(Evaluator[InputT, OutputT]):
         invoked = extract_selected_skills(evaluation_case.actual_trajectory)
         if not invoked:
             return [self._not_applicable_row("no skill invoked")]
-        index, tools = self._resolve_case_disclosure(evaluation_case)
+        index, tools = self._resolve_case_disclosure(evaluation_case, invoked[0])
         results = []
         for skill in invoked:
             if reason := self._unscorable_reason(skill):

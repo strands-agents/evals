@@ -6,7 +6,7 @@ from strands.models.model import Model
 
 from ...types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from ...types.trace import EvaluationLevel
-from ..evaluator import Evaluator
+from ..evaluator import DisclosureMode, Evaluator
 from .prompt_templates.partial_completion import get_template
 
 
@@ -28,7 +28,7 @@ class PartialCompletionEvaluator(Evaluator[InputT, OutputT]):
         model: Model | str | None = None,
         system_prompt: str | None = None,
         name: str | None = None,
-        disclosure: str = "auto",
+        disclosure: DisclosureMode = "auto",
     ):
         super().__init__(name=name)
         self.version = version
