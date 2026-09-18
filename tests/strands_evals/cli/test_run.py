@@ -313,8 +313,8 @@ def test_run_data_store_creates_directory(experiment_file: Path, tmp_path: Path)
     )
     assert exit_code == 0
     assert store_dir.is_dir()
-    # One file per case (case 'c1' in the fixture).
-    assert (store_dir / "c1.json").exists()
+    # One directory per case and one file per run (case 'c1' in the fixture).
+    assert (store_dir / "c1" / "run_0.json").exists()
 
 
 def test_run_exit_zero_overrides_fail_on(experiment_file: Path, tmp_path: Path):

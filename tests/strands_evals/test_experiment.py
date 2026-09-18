@@ -1839,13 +1839,19 @@ class DictEvaluationDataStore:
     """Simple in-memory store for testing."""
 
     def __init__(self):
-        self._data: dict[str, EvaluationData] = {}
+        self._data: dict[tuple[str, int], EvaluationData] = {}
 
-    def load(self, case_name: str) -> EvaluationData | None:
-        return self._data.get(case_name)
+    def load(self, case_name: str, run_index: int = 0) -> EvaluationData | None:
+        return self._data.get((case_name, run_index))
 
-    def save(self, case_name: str, result: EvaluationData) -> None:
-        self._data[case_name] = result
+    def save(self, case_name: str, result: EvaluationData, run_index: int = 0) -> None:
+        self._data[(case_name, run_index)] = result
+
+    def completed_run_count(self, case_name: str) -> int:
+        count = 0
+        while (case_name, count) in self._data:
+            count += 1
+        return count
 
 
 class TestEvaluationDataStore:
