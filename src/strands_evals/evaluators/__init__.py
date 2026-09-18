@@ -1,7 +1,7 @@
 from .coherence_evaluator import CoherenceEvaluator
 from .conciseness_evaluator import ConcisenessEvaluator
 from .correctness_evaluator import CorrectnessEvaluator
-from .deterministic import Contains, Equals, SkillInvoked, StartsWith, StateEquals, ToolCalled
+from .deterministic import Contains, Equals, FuzzyEquals, SkillInvoked, StartsWith, StateEquals, ToolCalled
 from .evaluator import Evaluator
 from .faithfulness_evaluator import FaithfulnessEvaluator
 from .goal_success_rate_evaluator import GoalSuccessRateEvaluator
@@ -52,6 +52,7 @@ __all__ = [
     "InstructionFollowingEvaluator",
     "Contains",
     "Equals",
+    "FuzzyEquals",
     "StartsWith",
     "StateEquals",
     "ToolCalled",
