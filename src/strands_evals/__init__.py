@@ -1,9 +1,11 @@
 from . import chaos, detectors, evaluators, extractors, generators, providers, simulation, telemetry, types
+from .batch import evaluate_sessions
 from .case import Case
 from .eval_task_handler import EvalTaskHandler, TracedHandler, eval_task
 from .evaluation_data_store import EvaluationDataStore
 from .experiment import Experiment
 from .local_file_task_result_store import LocalFileTaskResultStore
+from .providers import SessionFilter
 from .simulation import ActorSimulator, UserSimulator
 from .telemetry import StrandsEvalsTelemetry, get_tracer
 from .types.detector import DiagnosisConfig
@@ -19,6 +21,8 @@ __all__ = [
     "EvalTaskHandler",
     "TracedHandler",
     "eval_task",
+    "evaluate_sessions",
+    "SessionFilter",
     "chaos",
     "detectors",
     "evaluators",

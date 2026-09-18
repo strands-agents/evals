@@ -1,5 +1,8 @@
 """Tests for TraceProvider ABC and exception hierarchy."""
 
+from collections.abc import Iterator
+from datetime import datetime
+
 import pytest
 
 from strands_evals.providers.exceptions import (
@@ -8,6 +11,7 @@ from strands_evals.providers.exceptions import (
     TraceProviderError,
 )
 from strands_evals.providers.trace_provider import (
+    SessionFilter,
     TraceProvider,
 )
 from strands_evals.types.evaluation import TaskOutput
@@ -27,6 +31,23 @@ class ConcreteProvider(TraceProvider):
             output="test response",
             trajectory=self._session,
         )
+
+
+class DiscoverableProvider(ConcreteProvider):
+    """Provider that overrides list_sessions to support discovery."""
+
+    def __init__(self, session_ids: list[str], session: Session | None = None):
+        super().__init__(session=session)
+        self._session_ids = session_ids
+        self.last_filter: SessionFilter | None = None
+
+    def list_sessions(self, session_filter: SessionFilter | None = None) -> Iterator[str]:
+        self.last_filter = session_filter
+        limit = session_filter.limit if session_filter else None
+        for i, session_id in enumerate(self._session_ids):
+            if limit is not None and i >= limit:
+                return
+            yield session_id
 
 
 class TestExceptionHierarchy:
@@ -89,3 +110,39 @@ class TestTraceProviderABC:
         result = task(FakeCase())
         assert result["output"] == "test response"
         assert result["trajectory"] == session
+
+
+class TestSessionFilter:
+    def test_defaults_are_none_and_empty(self):
+        f = SessionFilter()
+        assert f.start_time is None
+        assert f.end_time is None
+        assert f.limit is None
+        assert f.additional_fields == {}
+
+    def test_accepts_universal_and_additional_fields(self):
+        start = datetime(2026, 1, 1)
+        end = datetime(2026, 1, 2)
+        f = SessionFilter(start_time=start, end_time=end, limit=5, additional_fields={"env": "prod"})
+        assert f.start_time == start
+        assert f.end_time == end
+        assert f.limit == 5
+        assert f.additional_fields == {"env": "prod"}
+
+
+class TestListSessions:
+    def test_default_list_sessions_raises_not_implemented(self):
+        provider = ConcreteProvider()
+        with pytest.raises(NotImplementedError, match="does not support session discovery"):
+            list(provider.list_sessions())
+
+    def test_overridden_list_sessions_yields_ids(self):
+        provider = DiscoverableProvider(["s1", "s2", "s3"])
+        assert list(provider.list_sessions()) == ["s1", "s2", "s3"]
+
+    def test_list_sessions_receives_filter(self):
+        provider = DiscoverableProvider(["s1", "s2", "s3"])
+        f = SessionFilter(limit=2)
+        result = list(provider.list_sessions(f))
+        assert result == ["s1", "s2"]
+        assert provider.last_filter is f
