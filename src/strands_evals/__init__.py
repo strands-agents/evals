@@ -1,5 +1,6 @@
 from . import chaos, detectors, evaluators, extractors, generators, providers, simulation, telemetry, types
 from .case import Case
+from .classification import RiskLabel, classify_risk, classify_task_risk
 from .eval_task_handler import EvalTaskHandler, TracedHandler, eval_task
 from .evaluation_data_store import EvaluationDataStore
 from .experiment import Experiment
@@ -32,4 +33,7 @@ __all__ = [
     "get_tracer",
     "ActorSimulator",
     "UserSimulator",
+    "RiskLabel",
+    "classify_risk",
+    "classify_task_risk",
 ]
