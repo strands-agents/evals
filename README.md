@@ -264,6 +264,11 @@ gets a one-line-per-span overview and three tools — `list_spans`, `get_span`,
 and `search_spans` — that page or cap their output at `max_read_chars` so no
 single tool return can overflow the judge's context.
 
+Disclosure requires a `Session` trajectory (`actual_trajectory`): it indexes the
+session's spans, so a raw message list is inlined as before, and `"always"` logs
+a warning when it can't build an index. `OutputEvaluator` scores a final output
+without a trajectory, so it does not take a `disclosure` argument.
+
 ### Trace-based Helpfulness Evaluation
 
 Evaluate agent helpfulness using OpenTelemetry traces with seven-level scoring:

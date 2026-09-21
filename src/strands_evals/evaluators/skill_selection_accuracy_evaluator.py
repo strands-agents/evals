@@ -217,9 +217,15 @@ class SkillSelectionAccuracyEvaluator(Evaluator[InputT, OutputT]):
 
         The trajectory is the same for every invoked skill, so the overflow decision and the
         trace tools are resolved once here and reused across the per-skill prompts.
+
+        The ``"auto"`` probe is the full inline context (task + skill catalog + trajectory +
+        response), not the trajectory alone: the head can itself be large, and the decision
+        must fit the whole prompt the judge actually receives. The per-skill decision block is
+        small and roughly constant, so head+tail is a faithful size estimate.
         """
         inline_context = self._case_context(evaluation_case)
-        index = self._resolve_disclosure_index(evaluation_case, inline_context[1])
+        probe = "".join(inline_context) if self.disclosure == "auto" else ""
+        index = self._resolve_disclosure_index(evaluation_case, probe)
         if index is None:
             return inline_context, []
         return self._case_context(evaluation_case, index), list(index.tools)

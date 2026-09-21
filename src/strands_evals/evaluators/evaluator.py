@@ -216,6 +216,16 @@ class Evaluator(Generic[InputT, OutputT]):
             return None
         session = self._session_of(evaluation_case)
         if session is None:
+            # `"always"` asks for disclosure unconditionally, but a trace index can only be
+            # built from a Session. A non-Session trajectory (e.g. a raw message list) is
+            # silently inlined instead, so warn — otherwise an explicit `"always"` looks like
+            # it did nothing. `"auto"` inlining a list is just the pre-disclosure behavior.
+            if self.disclosure == "always" and evaluation_case.actual_trajectory is not None:
+                logger.warning(
+                    "disclosure='always' but actual_trajectory is %s, not a Session; "
+                    "cannot build a trace index, inlining instead (disclosure needs a Session).",
+                    type(evaluation_case.actual_trajectory).__name__,
+                )
             return None
         if self.disclosure == "auto" and not would_exceed_context(inline_probe, self._judge_window_tokens()):
             return None
@@ -389,15 +399,23 @@ class Evaluator(Generic[InputT, OutputT]):
         """Resolve disclosure once for a tool-level case, shared across every tool call.
 
         Every tool call in a case is judged against the same session history, so the
-        overflow decision and the `TraceIndex` are made once here — using the first
-        tool call's rendered prompt as the ``"auto"`` size probe — and reused across
+        overflow decision and the `TraceIndex` are made once here — and reused across
         the loop, instead of rebuilding a `TraceIndex` (re-flatten + re-sort every
         span) on each iteration. Returns ``(index, tools)`` to thread into
         `_format_tool_level_prompt` and the judge `Agent`.
+
+        Because the decision is all-or-nothing for the case, the ``"auto"`` size probe
+        is the *largest* rendered tool prompt, not the first: the tool call and its
+        result vary per row, so probing the first row would inline a later, larger row
+        straight into an overflow. Rows are rendered in the loop anyway.
         """
         if not tool_inputs:
             return None, []
-        probe = self._format_tool_level_prompt(tool_inputs[0]) if self.disclosure == "auto" else ""
+        probe = (
+            max((self._format_tool_level_prompt(ti) for ti in tool_inputs), key=len)
+            if self.disclosure == "auto"
+            else ""
+        )
         index = self._resolve_disclosure_index(evaluation_case, probe)
         return index, (list(index.tools) if index is not None else [])
 

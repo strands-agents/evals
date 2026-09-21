@@ -12,7 +12,18 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from strands_evals.evaluators import Evaluator, TrajectoryEvaluator
+from strands_evals.evaluators import (
+    CoherenceEvaluator,
+    ConcisenessEvaluator,
+    Evaluator,
+    FaithfulnessEvaluator,
+    GoalSuccessRateEvaluator,
+    HelpfulnessEvaluator,
+    ResponseRelevanceEvaluator,
+    ToolParameterAccuracyEvaluator,
+    ToolSelectionAccuracyEvaluator,
+    TrajectoryEvaluator,
+)
 from strands_evals.evaluators._trace_index import TraceIndex
 from strands_evals.types import EvaluationData, EvaluationOutput
 from strands_evals.types.trace import (
@@ -221,3 +232,63 @@ def test_trajectory_never_inlines_on_overflow(mock_agent_class):
     # "never" restores today's behavior: the full trajectory is inlined, so a real
     # overflow is surfaced downstream as could-not-evaluate rather than disclosed here.
     assert "too large to inline" not in mock_agent.call_args[0][0]
+
+
+# --- every judge forwards the disclosure tools to its Agent -----------------
+
+# (module under strands_evals.evaluators, factory) for the judges that take a
+# Session trajectory and disclose it: each must pass the three trace tools to the
+# Agent it builds. Only TrajectoryEvaluator was pinned before, so a dropped
+# `tools=tools` on any of the others would ship the worst failure shape — a prompt
+# that says "read the trace via the tools" with no tools attached. `disclosure=
+# "always"` forces the disclosure path for any Session regardless of how each judge
+# renders its prompt, so this isolates the wiring, not per-judge overflow behavior.
+_TOOL_FORWARDING_JUDGES = [
+    ("helpfulness_evaluator", lambda: HelpfulnessEvaluator(disclosure="always")),
+    ("coherence_evaluator", lambda: CoherenceEvaluator(disclosure="always")),
+    ("conciseness_evaluator", lambda: ConcisenessEvaluator(disclosure="always")),
+    ("faithfulness_evaluator", lambda: FaithfulnessEvaluator(disclosure="always")),
+    ("response_relevance_evaluator", lambda: ResponseRelevanceEvaluator(disclosure="always")),
+    ("goal_success_rate_evaluator", lambda: GoalSuccessRateEvaluator(disclosure="always")),
+    ("trajectory_evaluator", lambda: TrajectoryEvaluator(rubric="r", disclosure="always")),
+    ("tool_selection_accuracy_evaluator", lambda: ToolSelectionAccuracyEvaluator(disclosure="always")),
+    ("tool_parameter_accuracy_evaluator", lambda: ToolParameterAccuracyEvaluator(disclosure="always")),
+]
+
+
+@pytest.mark.parametrize("module, factory", _TOOL_FORWARDING_JUDGES)
+def test_judge_forwards_disclosure_tools(module, factory):
+    with patch(f"strands_evals.evaluators.{module}.Agent") as mock_agent_class:
+        mock_agent = Mock()
+        mock_agent.return_value = Mock(structured_output=Mock())
+        mock_agent_class.return_value = mock_agent
+
+        # The Agent is constructed with tools= before its (mocked) invocation, so the
+        # tools are captured regardless of any downstream error from the Mock rating.
+        try:
+            factory().evaluate(_case(_huge_session()))
+        except Exception:  # noqa: BLE001 - only the tools= wiring is under test here
+            pass
+
+        assert mock_agent_class.call_args is not None, "judge never constructed an Agent"
+        tools = mock_agent_class.call_args[1]["tools"]
+        tool_names = {getattr(t, "tool_name", getattr(t, "__name__", "")) for t in tools}
+        assert {"list_spans", "get_span", "search_spans"} <= tool_names
+
+
+def test_always_warns_when_trajectory_is_not_a_session(caplog):
+    """An explicit `always` that can't build an index shouldn't silently inline."""
+    ev = Evaluator()
+    ev.disclosure = "always"
+    with caplog.at_level("WARNING"):
+        assert ev._resolve_disclosure_index(_case(["step one", "step two"]), "") is None
+    assert any("not a Session" in r.message for r in caplog.records)
+
+
+def test_auto_does_not_warn_on_non_session_trajectory(caplog):
+    """`auto` inlining a list is the pre-disclosure behavior, not a misuse to warn about."""
+    ev = Evaluator()
+    ev.disclosure = "auto"
+    with caplog.at_level("WARNING"):
+        assert ev._resolve_disclosure_index(_case(["step one"]), _OVERFLOW_PROBE) is None
+    assert not any("not a Session" in r.message for r in caplog.records)
