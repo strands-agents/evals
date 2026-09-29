@@ -306,7 +306,11 @@ class EvaluationReport(BaseModel):
                   Only .json format is supported.
 
         Raises:
-            ValueError: If the path has a non-JSON extension.
+            ValueError: If the path has a non-JSON extension, or if the report contains
+                values that are not allowed in valid JSON, such as NaN or Infinity floats,
+                or strings with unpaired surrogates.
+            TypeError: If the report contains objects that are not JSON-serializable,
+                such as a custom class instance in a case record.
         """
         file_path = Path(path)
 
@@ -319,10 +323,22 @@ class EvaluationReport(BaseModel):
         else:
             file_path = file_path.with_suffix(".json")
 
-        file_path.parent.mkdir(parents=True, exist_ok=True)
+        # Serialize before touching the file. If the data cannot become valid JSON,
+        # the error is raised here and any existing file stays intact.
+        report_dict = self.to_dict()
+        try:
+            data = json.dumps(report_dict, indent=2, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except ValueError as e:
+            # UnicodeEncodeError is a subclass of ValueError, so this also catches
+            # unpaired surrogates. The original error stays attached as __cause__.
+            raise ValueError(
+                f"Cannot write report to {file_path}: it contains values that are not "
+                f"allowed in valid JSON, such as NaN or Infinity floats, or strings with "
+                f"unpaired surrogates. Check the scores and case records."
+            ) from e
 
-        with open(file_path, "w") as f:
-            json.dump(self.to_dict(), f, indent=2)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_bytes(data)
 
     @classmethod
     def from_file(cls, path: str):
@@ -345,7 +361,7 @@ class EvaluationReport(BaseModel):
                 f"Only .json format is supported. Got file: {path}. Please provide a path with .json extension."
             )
 
-        with open(file_path, "r") as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         return cls.from_dict(data)
