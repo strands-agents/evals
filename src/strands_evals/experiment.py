@@ -44,6 +44,7 @@ from .evaluators.stereotyping_evaluator import StereotypingEvaluator
 from .evaluators.tool_parameter_accuracy_evaluator import ToolParameterAccuracyEvaluator
 from .evaluators.tool_selection_accuracy_evaluator import ToolSelectionAccuracyEvaluator
 from .evaluators.trajectory_evaluator import TrajectoryEvaluator
+from .model_router import ModelRouter
 from .telemetry import get_tracer, serialize
 from .telemetry._cloudwatch_logger import _send_to_cloudwatch
 from .types.detector import DiagnosisConfig
@@ -105,6 +106,8 @@ class Experiment(Generic[InputT, OutputT]):
     Attributes:
         cases: A list of test cases in the experiment.
         evaluators: The list of evaluators to be used on the test cases.
+        model_router: Optional ModelRouter that selects a model per (evaluator, case)
+            pair. Only applies to evaluators constructed without an explicit model.
 
     Example:
         experiment = Experiment[str, str](
@@ -135,6 +138,7 @@ class Experiment(Generic[InputT, OutputT]):
         cases: list[Case[InputT, OutputT]] | None = None,
         evaluators: list[Evaluator[InputT, OutputT]] | None = None,
         diagnosis_config: DiagnosisConfig | None = None,
+        model_router: ModelRouter | None = None,
     ):
         self._cases = cases or []
         self._evaluators = evaluators or [Evaluator()]
@@ -142,6 +146,7 @@ class Experiment(Generic[InputT, OutputT]):
 
         self._config_id = os.environ.get("EVALUATION_RESULTS_LOG_GROUP", "default-strands-evals")
         self._diagnosis_config = diagnosis_config
+        self._model_router = model_router
 
     @property
     def cases(self) -> list[Case[InputT, OutputT]]:
@@ -350,6 +355,8 @@ class Experiment(Generic[InputT, OutputT]):
         Returns:
             A dict with evaluator_name, test_pass, score, reason, and detailed_results.
         """
+        if self._model_router is not None:
+            evaluator = self._model_router.route(evaluator, evaluation_context)
 
         @retry(
             retry=retry_if_exception(is_throttling_error),
