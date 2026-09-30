@@ -407,3 +407,119 @@ async def test_output_evaluator_evaluate_async_passes_tools_to_agent(
         model=None, tools=[verify_claim], system_prompt=evaluator.system_prompt, callback_handler=None
     )
     assert result[0].score == 0.8
+
+
+# --- cache_config tests ---
+
+
+def test_output_evaluator_init_cache_config_defaults_to_none():
+    """Test OutputEvaluator has no cache_config by default"""
+    evaluator = OutputEvaluator(rubric="Test rubric")
+    assert evaluator.cache_config is None
+
+
+def test_output_evaluator_init_with_cache_config():
+    """Test OutputEvaluator accepts a CacheConfig"""
+    from strands.models.model import CacheConfig
+
+    config = CacheConfig(strategy="auto")
+    evaluator = OutputEvaluator(rubric="Test rubric", cache_config=config)
+    assert evaluator.cache_config is config
+    assert evaluator.cache_config.strategy == "auto"
+
+
+@patch("strands_evals.evaluators.output_evaluator.Agent")
+def test_output_evaluator_evaluate_creates_bedrock_model_with_cache_config(
+    mock_agent_class, evaluation_data, mock_agent
+):
+    """Test that cache_config creates a BedrockModel when model is a string"""
+    from strands.models.model import CacheConfig
+
+    mock_agent_class.return_value = mock_agent
+    config = CacheConfig(strategy="auto")
+    evaluator = OutputEvaluator(rubric="Test rubric", model="us.anthropic.claude-sonnet-4-6", cache_config=config)
+
+    with patch("strands.models.bedrock.BedrockModel") as mock_bedrock:
+        mock_bedrock_instance = Mock()
+        mock_bedrock.return_value = mock_bedrock_instance
+
+        # Re-patch Agent at module level since _resolve_model imports BedrockModel
+        evaluator.evaluate(evaluation_data)
+
+    # BedrockModel should have been created in _resolve_model
+    # and passed to Agent
+    call_kwargs = mock_agent_class.call_args[1]
+    assert call_kwargs["callback_handler"] is None
+
+
+@patch("strands_evals.evaluators.output_evaluator.Agent")
+def test_output_evaluator_evaluate_no_bedrock_model_when_model_is_instance(
+    mock_agent_class, evaluation_data, mock_agent
+):
+    """Test that cache_config does not wrap an already-instantiated Model"""
+    from strands.models.model import CacheConfig
+
+    mock_agent_class.return_value = mock_agent
+    config = CacheConfig(strategy="auto")
+    mock_model = Mock(spec=["converse"])
+    evaluator = OutputEvaluator(rubric="Test rubric", model=mock_model, cache_config=config)
+
+    evaluator.evaluate(evaluation_data)
+
+    # Model should be passed through unchanged (it's already a Model instance, not a string)
+    call_kwargs = mock_agent_class.call_args[1]
+    assert call_kwargs["model"] is mock_model
+
+
+@patch("strands_evals.evaluators.output_evaluator.Agent")
+def test_output_evaluator_evaluate_no_bedrock_model_without_cache_config(
+    mock_agent_class, evaluation_data, mock_agent
+):
+    """Test that string model is passed through unchanged when no cache_config"""
+    mock_agent_class.return_value = mock_agent
+    evaluator = OutputEvaluator(rubric="Test rubric", model="us.anthropic.claude-sonnet-4-6")
+
+    evaluator.evaluate(evaluation_data)
+
+    call_kwargs = mock_agent_class.call_args[1]
+    assert call_kwargs["model"] == "us.anthropic.claude-sonnet-4-6"
+
+
+def test_output_evaluator_to_dict_includes_cache_config():
+    """Test that to_dict serializes cache_config"""
+    from strands.models.model import CacheConfig
+
+    config = CacheConfig(strategy="auto", ttl="5m")
+    evaluator = OutputEvaluator(rubric="Test rubric", cache_config=config)
+    result = evaluator.to_dict()
+
+    assert "cache_config" in result
+    assert result["cache_config"]["strategy"] == "auto"
+    assert result["cache_config"]["ttl"] == "5m"
+    json.dumps(result)
+
+
+def test_output_evaluator_to_dict_excludes_cache_config_when_none():
+    """Test that to_dict omits cache_config when not set"""
+    evaluator = OutputEvaluator(rubric="Test rubric")
+    result = evaluator.to_dict()
+
+    assert "cache_config" not in result
+
+
+@pytest.mark.asyncio
+@patch("strands_evals.evaluators.output_evaluator.Agent")
+async def test_output_evaluator_evaluate_async_with_cache_config(
+    mock_agent_class, evaluation_data, mock_async_agent
+):
+    """Test that async path also resolves model with cache_config"""
+    from strands.models.model import CacheConfig
+
+    mock_agent_class.return_value = mock_async_agent
+    config = CacheConfig(strategy="auto")
+    evaluator = OutputEvaluator(rubric="Test rubric", model="us.anthropic.claude-sonnet-4-6", cache_config=config)
+
+    result = await evaluator.evaluate_async(evaluation_data)
+
+    assert len(result) == 1
+    assert result[0].score == 0.8
