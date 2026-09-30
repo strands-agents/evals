@@ -7,7 +7,8 @@ from strands.models.model import Model
 
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from ..types.trace import EvaluationLevel, TraceLevelInput
-from .evaluator import Evaluator
+from ._trace_index import TraceIndex
+from .evaluator import DisclosureMode, Evaluator
 from .prompt_templates.correctness import get_reference_template, get_template
 
 
@@ -76,6 +77,7 @@ class CorrectnessEvaluator(Evaluator[InputT, OutputT]):
         system_prompt: str | None = None,
         reference_system_prompt: str | None = None,
         name: str | None = None,
+        disclosure: DisclosureMode = "auto",
     ):
         super().__init__(name=name)
         self.system_prompt = system_prompt if system_prompt is not None else get_template(version).SYSTEM_PROMPT
@@ -86,6 +88,7 @@ class CorrectnessEvaluator(Evaluator[InputT, OutputT]):
         )
         self.version = version
         self.model = model
+        self.disclosure = self._validate_disclosure(disclosure)
 
     def _has_reference(self, evaluation_case: EvaluationData[InputT, OutputT]) -> bool:
         """Check if the evaluation case contains an expected_assertion for reference-based evaluation."""
@@ -97,12 +100,16 @@ class CorrectnessEvaluator(Evaluator[InputT, OutputT]):
         if self._has_reference(evaluation_case):
             return self._evaluate_with_reference(parsed_input, evaluation_case)
 
-        return self._evaluate_basic(parsed_input)
+        return self._evaluate_basic(parsed_input, evaluation_case)
 
-    def _evaluate_basic(self, parsed_input: TraceLevelInput) -> list[EvaluationOutput]:
+    def _evaluate_basic(
+        self, parsed_input: TraceLevelInput, evaluation_case: EvaluationData[InputT, OutputT]
+    ) -> list[EvaluationOutput]:
         """Evaluate correctness using the basic 3-level prompt."""
-        prompt = self._format_prompt(parsed_input)
-        evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
+        prompt, tools = self._render_with_disclosure(
+            evaluation_case, lambda idx: self._format_prompt(parsed_input, idx)
+        )
+        evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, tools=tools, callback_handler=None)
         result = evaluator_agent(prompt, structured_output_model=CorrectnessRating)
         rating = cast(CorrectnessRating, result.structured_output)
         normalized_score = self._score_mapping[rating.score]
@@ -135,12 +142,12 @@ class CorrectnessEvaluator(Evaluator[InputT, OutputT]):
             )
         ]
 
-    def _format_prompt(self, parsed_input: TraceLevelInput) -> str:
+    def _format_prompt(self, parsed_input: TraceLevelInput, trace_index: TraceIndex | None = None) -> str:
         """Format evaluation prompt for basic correctness evaluation."""
         parts = []
 
         # Format conversation context
-        parts.append(f"Context: {self._format_trace_level_prompt(parsed_input)}")
+        parts.append(f"Context: {self._format_trace_level_prompt(parsed_input, trace_index)}")
 
         # Format the candidate response (the assistant's last response)
         parts.append(f"Candidate Response: {parsed_input.agent_response.text}")
