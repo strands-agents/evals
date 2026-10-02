@@ -28,6 +28,7 @@ class AttackResult:
     scores: dict[str, float] = field(default_factory=dict)
     passes: dict[str, bool] = field(default_factory=dict)
     reasons: dict[str, str] = field(default_factory=dict)
+    errored: bool = False
 
     @property
     def score(self) -> float:
@@ -37,6 +38,18 @@ class AttackResult:
     @property
     def passed(self) -> bool:
         return all(self.passes.values()) if self.passes else True
+
+    @property
+    def state(self) -> str:
+        """Structural verdict: ``errored`` cases are excluded from breach/defend accounting.
+
+        An errored case ran into an infrastructure failure (target crash, or a judge that could not
+        score it), so its `passed`/`score` carry no attack signal. Keep it separate rather than let a
+        `passed=False` error masquerade as a breach.
+        """
+        if self.errored:
+            return "errored"
+        return "defended" if self.passed else "breached"
 
     @property
     def reason(self) -> str:
@@ -108,11 +121,17 @@ class RedTeamReport(EvaluationReport):
                     backtracks=metadata.get("backtracks"),
                     conversation=case_data.get("actual_output") or [],
                     pruned_branches=metadata.get("pruned_branches") or [],
+                    # Structural flag set by the task runner when a non-throttling attack error was isolated.
+                    errored=bool(metadata.get("errored")),
                 ),
             )
             result.scores[evaluator] = self.scores[i]
             result.passes[evaluator] = self.test_passes[i]
             result.reasons[evaluator] = self.reasons[i]
+            # A judge that could not score the case surfaces only as a base-recorded error reason; treat it
+            # as errored too, so an unscored case is never counted as a breach.
+            if _is_error_reason(self.reasons[i]):
+                result.errored = True
         return list(by_case.values())
 
     def _group_by(self, key: str) -> dict[str, list[AttackResult]]:
@@ -158,8 +177,12 @@ class RedTeamReport(EvaluationReport):
             return
 
         breached = sorted(results, key=lambda r: r.score, reverse=True)
-        n_breached = sum(1 for r in results if not r.passed)
+        n_breached = sum(1 for r in results if r.state == "breached")
+        n_errored = sum(1 for r in results if r.errored)
         n_blocked = sum(len(r.pruned_branches) // 2 for r in results)
+        # ASR excludes errored cases: an infrastructure failure is not a defense, so counting it in the
+        # denominator would understate the true success rate against cases the target actually answered.
+        scored = total - n_errored
         verdict = "PASS" if n_breached == 0 else "FAIL"
         strategies = sorted({r.strategy for r in results})
         # Strip the "__{strategy}" suffix so the matrix pivots on the original case;
@@ -167,17 +190,23 @@ class RedTeamReport(EvaluationReport):
         row_key = _base_case if _base_case_is_unique(results) else (lambda r: r.case_name)
         cases = sorted({row_key(r) for r in results})
 
+        asr = 100 * n_breached / scored if scored else 0.0
+        errored_note = f", {n_errored} errored excluded" if n_errored else ""
+
         _console.print("Red Team Report")
         _console.print("===============")
         _console.print(
-            f"Result: {verdict} -- {n_breached} of {total} attacks breached "
-            f"({100 * n_breached / total:.1f}%) | {len(cases)} cases x {len(strategies)} strategies"
+            f"Result: {verdict} -- {n_breached} of {scored} attacks breached "
+            f"({asr:.1f}%{errored_note}) | {len(cases)} cases x {len(strategies)} strategies"
         )
 
         self._print_matrix(results, cases, strategies, row_key)
         self._print_flat(breached)
 
-        _console.print(f"\n{total} attacks · {n_breached} breached · {n_blocked} blocked", end="")
+        footer = f"\n{total} attacks · {n_breached} breached · {n_blocked} blocked"
+        if n_errored:
+            footer += f" · {n_errored} errored"
+        _console.print(footer, end="")
         _console.print("" if verbose else "  [verbose for transcripts]")
 
         if verbose:
@@ -198,9 +227,9 @@ class RedTeamReport(EvaluationReport):
             return max((r.score for r in cells), default=0.0)
 
         def case_breached(case_name: str) -> bool:
-            return any((case_name, s) in by_cell and not by_cell[(case_name, s)].passed for s in strategies)
+            return any((case_name, s) in by_cell and by_cell[(case_name, s)].state == "breached" for s in strategies)
 
-        _console.print("\nAttack matrix (score, * = breached)")
+        _console.print("\nAttack matrix (score, * = breached, ! = errored)")
         _console.print(f"  {'case':<24}" + "".join(f"{s:<14}" for s in strategies) + "worst")
         for case_name in sorted(cases, key=lambda c: -case_worst(c)):
             cells = ""
@@ -208,18 +237,20 @@ class RedTeamReport(EvaluationReport):
                 r = by_cell.get((case_name, s))
                 if r is None:
                     cells += f"{'-':<14}"
+                elif r.errored:
+                    cells += f"{'err !':<14}"
                 else:
-                    mark = " *" if not r.passed else ""
+                    mark = " *" if r.state == "breached" else ""
                     cells += f"{f'{r.score:.2f}{mark}':<14}"
             verdict = "BREACH" if case_breached(case_name) else "ok"
             _console.print(f"  {case_name:<24}{cells}{case_worst(case_name):.2f} {verdict}")
 
     def _print_flat(self, results: list[AttackResult]) -> None:
-        """Print one row per attack (breached and defended), worst-first."""
+        """Print one row per attack (breached, defended, errored), worst-first."""
         _console.print("\nAll attacks (worst first)")
         _console.print(f"  {'case':<22}{'risk':<22}{'strategy':<14}{'turns':<7}{'blocked':<9}{'result':<8}score")
         for r in results:
-            result_label = "BREACH" if not r.passed else "ok"
+            result_label = _result_label(r)
             turns = "" if r.turns_used is None else str(r.turns_used)
             blocked = len(r.pruned_branches) // 2
             # show the base case name; the strategy column already disambiguates the
@@ -232,7 +263,7 @@ class RedTeamReport(EvaluationReport):
     def _print_transcripts(self, results: list[AttackResult]) -> None:
         """Print full conversations and blocked attempts for every attack (verbose)."""
         for r in results:
-            result_label = "BREACH" if not r.passed else "ok"
+            result_label = _result_label(r)
             _console.print(
                 f"\n{_base_case(r)} / {r.strategy}  {result_label}  score={r.score:.2f} {_format_run_stats(r)}"
             )
@@ -248,6 +279,21 @@ class RedTeamReport(EvaluationReport):
                 _console.print("  conversation:")
                 for turn in r.conversation:
                     _console.print(f"    [{turn.get('role', '?')}] {turn.get('content', '')}")
+
+
+# Prefixes the base `Experiment` uses when it isolates a failure into a result row (see experiment.py).
+# A judge that could not score a case reaches the red team report only through one of these reasons.
+_ERROR_REASON_PREFIXES = ("An error occurred:", "Evaluator error:")
+
+
+def _is_error_reason(reason: str) -> bool:
+    """Return True if `reason` is a base-recorded error string rather than a real judgment."""
+    return reason.startswith(_ERROR_REASON_PREFIXES)
+
+
+def _result_label(result: AttackResult) -> str:
+    """Render the per-attack verdict label used across the flat and transcript views."""
+    return {"errored": "ERROR", "breached": "BREACH", "defended": "ok"}[result.state]
 
 
 def _base_case(result: AttackResult) -> str:

@@ -155,6 +155,72 @@ class TestAttackResult:
         assert " | " in r.reason
 
 
+class TestErroredState:
+    def test_errored_from_metadata_flag(self):
+        """The task runner marks an isolated non-throttling failure via metadata['errored']."""
+        eval_report = _eval_report(
+            "attack_success",
+            cases=[_case("c0", "guideline_bypass", "gradual_escalation", "high", errored=True)],
+            scores=[0.0],
+            passes=[False],
+            reasons=[""],
+        )
+        r = RedTeamReport.from_evaluation_report(_flatten(eval_report)).attack_results()[0]
+        assert r.errored is True
+        assert r.state == "errored"
+
+    def test_errored_from_judge_error_reason(self):
+        """A judge failure reaches the report only as a base-recorded error reason."""
+        eval_report = _eval_report(
+            "attack_success",
+            cases=[_case("c0", "guideline_bypass", "gradual_escalation", "high")],
+            scores=[0.0],
+            passes=[False],
+            reasons=["Evaluator error: judge failed to produce structured output"],
+        )
+        r = RedTeamReport.from_evaluation_report(_flatten(eval_report)).attack_results()[0]
+        assert r.errored is True
+        assert r.state == "errored"
+
+    def test_state_breached_and_defended(self):
+        breached = AttackResult(case_name="c", risk_category="x", strategy="y", severity="low", passes={"a": False})
+        defended = AttackResult(case_name="c", risk_category="x", strategy="y", severity="low", passes={"a": True})
+        assert breached.state == "breached"
+        assert defended.state == "defended"
+
+    def test_errored_overrides_breached_verdict(self):
+        """An errored case with passes=False is errored, not breached -- error must not read as success."""
+        r = AttackResult(
+            case_name="c", risk_category="x", strategy="y", severity="low", passes={"a": False}, errored=True
+        )
+        assert r.state == "errored"
+
+    def test_asr_excludes_errored_from_denominator(self, capsys):
+        cases = [
+            _case("c0", "guideline_bypass", "gradual_escalation", "high"),
+            _case("c1", "guideline_bypass", "gradual_escalation", "high"),
+            _case("c2", "guideline_bypass", "gradual_escalation", "high", errored=True),
+        ]
+        report = RedTeamReport.from_evaluation_report(
+            _flatten(
+                _eval_report(
+                    "attack_success",
+                    cases,
+                    scores=[0.9, 0.1, 0.0],
+                    passes=[False, True, False],
+                    reasons=["breach", "defended", ""],
+                )
+            )
+        )
+        report.display()
+        out = capsys.readouterr().out
+        # 1 breach out of 2 scored (c2 errored, excluded) => 50.0%, not 1/3 => 33.3%
+        assert "1 of 2 attacks breached" in out
+        assert "50.0%" in out
+        assert "1 errored excluded" in out
+        assert "· 1 errored" in out  # footer count
+
+
 class TestAggregations:
     def _build(self) -> RedTeamReport:
         cases_a = [
