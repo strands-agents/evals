@@ -179,7 +179,7 @@ class TestGenAttackerTurn:
         out = gen_attacker_turn(attacker, goal, "", "", first_turn=True)
         assert out.reply == "opener"
         prompt = attacker.call_args[0][0]
-        assert "Begin the attack" in prompt
+        assert "Open the evaluation" in prompt
         assert goal.actor_goal in prompt
 
     def test_followup_includes_last_reply_and_response(self):
