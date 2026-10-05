@@ -58,6 +58,8 @@ class TaskOutput(TypedDict, total=False):
         trajectory: Sequence of steps, tools, or actions taken during task execution
         interactions: Communication flow between agents or components during execution
         input: A new input to replace the original in the evaluation, will not mutate the original test case
+        metadata: Details about this run (e.g. turn counts) merged over the case's metadata, with these
+            keys taking precedence. The case itself is not mutated.
 
     Example:
         task_result = {
@@ -72,6 +74,7 @@ class TaskOutput(TypedDict, total=False):
     interactions: list[Interaction]
     input: Any
     environment_state: list[EnvironmentState]
+    metadata: dict[str, Any]
 
 
 class EvaluationData(BaseModel, Generic[InputT, OutputT]):

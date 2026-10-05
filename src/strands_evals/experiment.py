@@ -279,6 +279,14 @@ class Experiment(Generic[InputT, OutputT, ReportT]):
             evaluation_context.actual_trajectory = task_output.get("trajectory")
             evaluation_context.actual_interactions = task_output.get("interactions")
             evaluation_context.actual_environment_state = task_output.get("environment_state")
+            task_metadata = task_output.get("metadata")
+            if task_metadata is not None:
+                if not isinstance(task_metadata, dict):
+                    raise TypeError(
+                        f"Task output 'metadata' must be a dict, got {type(task_metadata).__name__} "
+                        f"for case {case.name!r}."
+                    )
+                evaluation_context.metadata = {**(evaluation_context.metadata or {}), **task_metadata}
             # allows the user to update the input in the task function
             new_input = task_output.get("input", None)
             if new_input is not None:

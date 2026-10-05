@@ -228,6 +228,116 @@ async def test_experiment__run_task_async_with_async_task():
     assert evaluation_context.expected_output == "world"
 
 
+@pytest.mark.asyncio
+async def test_experiment__run_task_async_merges_task_metadata():
+    """Task metadata is merged over the case metadata, with the task's keys taking precedence"""
+    case = Case(name="test", input="hello", metadata={"category": "math", "source": "case"})
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
+
+    def task(c):
+        return {"output": "hi", "metadata": {"turns_used": 3, "source": "task"}}
+
+    evaluation_context = await experiment._run_task_async(task, case)
+
+    assert evaluation_context.metadata == {"category": "math", "source": "task", "turns_used": 3}
+
+
+@pytest.mark.asyncio
+async def test_experiment__run_task_async_task_metadata_does_not_mutate_case():
+    """Merging task metadata leaves the case's own metadata dict untouched"""
+    case = Case(name="test", input="hello", metadata={"category": "math"})
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
+
+    def task(c):
+        return {"output": "hi", "metadata": {"turns_used": 3}}
+
+    await experiment._run_task_async(task, case)
+
+    assert case.metadata == {"category": "math"}
+
+
+@pytest.mark.asyncio
+async def test_experiment__run_task_async_task_metadata_without_case_metadata():
+    """Task metadata is kept when the case has no metadata"""
+    case = Case(name="test", input="hello")
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
+
+    def task(c):
+        return {"output": "hi", "metadata": {"turns_used": 3}}
+
+    evaluation_context = await experiment._run_task_async(task, case)
+
+    assert evaluation_context.metadata == {"turns_used": 3}
+
+
+@pytest.mark.asyncio
+async def test_experiment__run_task_async_without_task_metadata_keeps_case_metadata():
+    """A task that returns no metadata leaves the case metadata as is"""
+    case = Case(name="test", input="hello", metadata={"category": "math"})
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
+
+    def task(c):
+        return {"output": "hi"}
+
+    evaluation_context = await experiment._run_task_async(task, case)
+
+    assert evaluation_context.metadata == {"category": "math"}
+
+
+@pytest.mark.asyncio
+async def test_experiment__run_task_async_rejects_non_dict_task_metadata():
+    """Task metadata that is not a dict raises a TypeError naming the case"""
+    case = Case(name="test", input="hello")
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
+
+    def task(c):
+        return {"output": "hi", "metadata": ["turns_used", 3]}
+
+    with pytest.raises(TypeError, match="metadata' must be a dict, got list for case 'test'"):
+        await experiment._run_task_async(task, case)
+
+
+def test_experiment_run_evaluations_task_metadata_reaches_evaluator_and_report():
+    """Evaluators and report rows see the merged metadata"""
+    seen_metadata = []
+
+    class MetadataCapturingEvaluator(Evaluator[str, str]):
+        def evaluate(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
+            seen_metadata.append(evaluation_case.metadata)
+            return [EvaluationOutput(score=1.0, test_pass=True, reason="ok")]
+
+    case = Case(name="test", input="hello", metadata={"category": "math"})
+    experiment = Experiment(cases=[case], evaluators=[MetadataCapturingEvaluator()])
+
+    def task(c):
+        return {"output": "hi", "metadata": {"turns_used": 3}}
+
+    report = experiment.run_evaluations(task)
+
+    assert seen_metadata == [{"category": "math", "turns_used": 3}]
+    assert report.cases[0]["metadata"] == {"category": "math", "turns_used": 3}
+
+
+def test_experiment_run_evaluations_task_metadata_survives_result_store():
+    """Task metadata is saved with the cached result and comes back on a cached replay"""
+    store = DictEvaluationDataStore()
+    case = Case(name="test", input="hello", metadata={"category": "math"})
+
+    def task(c):
+        return {"output": "hi", "metadata": {"turns_used": 3}}
+
+    Experiment(cases=[case], evaluators=[MockEvaluator()]).run_evaluations(task, evaluation_data_store=store)
+
+    def task_must_not_run(c):
+        raise AssertionError("cached case should not re-run the task")
+
+    report = Experiment(cases=[case], evaluators=[MockEvaluator()]).run_evaluations(
+        task_must_not_run, evaluation_data_store=store
+    )
+
+    assert report.cases[0]["metadata"] == {"category": "math", "turns_used": 3}
+
+
 def test_experiment_run_evaluations(mock_evaluator):
     """Test complete evaluation run"""
     cases = [
