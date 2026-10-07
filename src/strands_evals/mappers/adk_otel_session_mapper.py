@@ -53,7 +53,11 @@ from .utils import bridge_parent_gaps, get_scope_name, safe_json_parse
 logger = logging.getLogger(__name__)
 
 # ADK relays other agents' turns (e.g. a coordinator's transfer_to_agent call) to a
-# sub-agent as user-role text whose first part starts with this preamble.
+# sub-agent as user-role text whose first part is a fixed preamble: exactly
+# "For context:" in google-adk 2.0-2.7, and a longer fenced preamble starting with
+# _ADK_OTHER_AGENT_CONTEXT_PREFIX from 2.8. The short form is matched exactly so a
+# real user turn that merely opens with "For context:" is kept.
+_ADK_LEGACY_OTHER_AGENT_CONTEXT_PREAMBLE = "For context:"
 _ADK_OTHER_AGENT_CONTEXT_PREFIX = "For context: below is a transcript of what another agent did"
 
 
@@ -386,7 +390,11 @@ class ADKOtelSessionMapper(SessionMapper):
                 texts = [
                     part["text"] for part in content_item.get("parts", []) if "text" in part and not part.get("thought")
                 ]
-                if texts and not texts[0].startswith(_ADK_OTHER_AGENT_CONTEXT_PREFIX):
+                if (
+                    texts
+                    and texts[0] != _ADK_LEGACY_OTHER_AGENT_CONTEXT_PREAMBLE
+                    and not texts[0].startswith(_ADK_OTHER_AGENT_CONTEXT_PREFIX)
+                ):
                     return "".join(texts)
         return ""
 
