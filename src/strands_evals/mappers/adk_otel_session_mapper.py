@@ -52,6 +52,10 @@ from .utils import bridge_parent_gaps, get_scope_name, safe_json_parse
 
 logger = logging.getLogger(__name__)
 
+# ADK relays other agents' turns (e.g. a coordinator's transfer_to_agent call) to a
+# sub-agent as user-role text whose first part starts with this preamble.
+_ADK_OTHER_AGENT_CONTEXT_PREFIX = "For context: below is a transcript of what another agent did"
+
 
 class ADKOtelSessionMapper(SessionMapper):
     """Maps Google ADK OTel spans to Session format.
@@ -373,14 +377,16 @@ class ADKOtelSessionMapper(SessionMapper):
         """Extract the latest user text from llm_request.contents.
 
         ADK requests carry accumulated conversation history; the last user
-        message is the prompt that triggered this invocation.
+        message is the prompt that triggered this invocation. Messages ADK
+        relays from other agents are also user-role; they are not the prompt,
+        so they are passed over here (they remain in the inference span messages).
         """
         for content_item in reversed(llm_request.get("contents", [])):
             if content_item.get("role") == "user":
                 texts = [
                     part["text"] for part in content_item.get("parts", []) if "text" in part and not part.get("thought")
                 ]
-                if texts:
+                if texts and not texts[0].startswith(_ADK_OTHER_AGENT_CONTEXT_PREFIX):
                     return "".join(texts)
         return ""
 

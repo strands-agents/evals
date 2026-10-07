@@ -598,6 +598,41 @@ class TestAgentInvocationSpan:
         assert agent.user_prompt == "Second question"
         assert agent.agent_response == "30"
 
+    def test_user_prompt_skips_other_agent_context(self):
+        """A sub-agent's user_prompt is the real user query, not the coordinator turn ADK relays as user text."""
+        history = [
+            {"parts": [{"text": "What's the weather in Seattle?"}], "role": "user"},
+            {
+                "parts": [
+                    {"text": "For context: below is a transcript of what another agent did, quoted between markers."},
+                    {"text": "[coordinator] called tool `transfer_to_agent` with parameters:\n{'agent_name': 'w'}"},
+                    {"text": "[coordinator] `transfer_to_agent` tool returned result:\n{'result': None}"},
+                ],
+                "role": "user",
+            },
+            {"parts": [{"function_call": {"name": "get_weather", "args": {"city": "Seattle"}}}], "role": "model"},
+            {"parts": [{"function_response": {"name": "get_weather", "response": {"result": "Rain"}}}], "role": "user"},
+        ]
+        spans = [
+            make_span(
+                span_id="agent-1",
+                name="invoke_agent w",
+                attributes={"gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "w"},
+            ),
+            make_span(
+                span_id="callllm-1",
+                parent_span_id="agent-1",
+                name="call_llm",
+                attributes={
+                    "gcp.vertex.agent.llm_request": make_llm_request(history=history),
+                    "gcp.vertex.agent.llm_response": make_llm_response_text("It is rainy."),
+                },
+            ),
+        ]
+        session = self.mapper.map_to_session(spans, SESSION_ID)
+        agent = [s for s in session.traces[0].spans if isinstance(s, AgentInvocationSpan)][0]
+        assert (agent.user_prompt, agent.agent_response) == ("What's the weather in Seattle?", "It is rainy.")
+
 
 # ============================================================================
 # Tests: Session-Level Behavior
