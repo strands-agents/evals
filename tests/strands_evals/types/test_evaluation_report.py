@@ -473,3 +473,63 @@ class TestEvaluationReportFileOperations:
 
             assert report.overall_score == 0.5
             assert report.cases[0]["evaluator"] == "LegacyEval"
+
+
+class TestToFileStrictJson:
+    """to_file() must produce strict, UTF-8 JSON and never damage an existing file (issue #384)."""
+
+    def _report(self, **overrides) -> EvaluationReport:
+        fields = {
+            "overall_score": 1.0,
+            "scores": [1.0],
+            "cases": [{"name": "ok", "evaluator": "Eval"}],
+            "test_passes": [True],
+        }
+        fields.update(overrides)
+        return EvaluationReport(**fields)
+
+    def test_to_file_rejects_nan_without_corrupting_existing_file(self, tmp_path):
+        """NaN scores raise instead of being written as the invalid literal `NaN`, and an
+        existing report at the same path is left untouched."""
+        file_path = tmp_path / "report.json"
+        self._report().to_file(str(file_path))
+        original = file_path.read_bytes()
+
+        bad = self._report(overall_score=float("nan"), scores=[float("nan")])
+        with pytest.raises(ValueError, match="Cannot write report"):
+            bad.to_file(str(file_path))
+
+        assert file_path.read_bytes() == original
+
+    def test_to_file_rejects_unpaired_surrogates_without_writing(self, tmp_path):
+        """Strings with unpaired surrogates raise instead of leaving a truncated file behind."""
+        file_path = tmp_path / "report.json"
+        bad = self._report(cases=[{"name": "path_\udcff", "evaluator": "Eval"}])
+
+        with pytest.raises(ValueError, match="Cannot write report"):
+            bad.to_file(str(file_path))
+
+        assert not file_path.exists()
+
+    def test_to_file_leaves_existing_file_intact_when_serialization_fails(self, tmp_path):
+        """A non-serializable value raises before the destination is opened, so a previous
+        report at the same path survives."""
+        file_path = tmp_path / "report.json"
+        self._report().to_file(str(file_path))
+        original = file_path.read_bytes()
+
+        bad = self._report(cases=[{"name": "bad", "evaluator": "Eval", "obj": object()}])
+        with pytest.raises(TypeError):
+            bad.to_file(str(file_path))
+
+        assert file_path.read_bytes() == original
+
+    def test_to_file_writes_utf8_and_round_trips(self, tmp_path):
+        """Non-ASCII text is written as UTF-8 bytes, independent of the locale, and reads back."""
+        file_path = tmp_path / "report.json"
+        report = self._report(cases=[{"name": "café ☕", "evaluator": "Eval"}])
+
+        report.to_file(str(file_path))
+
+        assert "café ☕".encode("utf-8") in file_path.read_bytes()
+        assert EvaluationReport.from_file(str(file_path)).cases[0]["name"] == "café ☕"
