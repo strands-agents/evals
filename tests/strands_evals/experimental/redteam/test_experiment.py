@@ -3,6 +3,9 @@
 import pytest
 from strands.models.model import Model
 
+from strands_evals import LocalFileTaskResultStore
+from strands_evals.evaluators import Evaluator
+from strands_evals.evaluators.prompt_templates.case_prompt_template import compose_test_prompt
 from strands_evals.experimental.redteam.case import RedTeamCase
 from strands_evals.experimental.redteam.evaluators import AttackSuccessEvaluator
 from strands_evals.experimental.redteam.experiment import RedTeamExperiment
@@ -15,8 +18,9 @@ from strands_evals.experimental.redteam.strategies import (
     PromptStrategy,
     SequentialBreakStrategy,
 )
-from strands_evals.experimental.redteam.strategies.base import AttackRunResult, AttackStrategy
+from strands_evals.experimental.redteam.strategies.base import RUN_RESULTS, AttackRunResult, AttackStrategy
 from strands_evals.experimental.redteam.types import AttackGoal, RedTeamConfig
+from strands_evals.types import EvaluationOutput
 
 
 class _StubModel(Model):
@@ -193,7 +197,7 @@ async def test_parallel_report_per_case_isolation():
     """End-to-end: under `max_workers > 1`, each case's output lands on its own report row.
 
     Pins the property the parallel path is *for* -- that concurrent cases don't bleed each
-    other's outputs through the shared strategy / shared `_run_meta` dict.
+    other's outputs through the shared strategy.
     """
 
     class _EchoStrategy(AttackStrategy):
@@ -494,3 +498,101 @@ def test_run_evaluations_twice_is_idempotent():
     assert runs[0] == runs[1]  # second run identical, not squared
     # held cases were never mutated
     assert [c.name for c in exp.cases] == ["c0"]
+
+
+class _PassEvaluator(Evaluator):
+    """Deterministic evaluator so report tests don't call a judge model."""
+
+    def evaluate(self, evaluation_case):
+        return [EvaluationOutput(score=0.0, test_pass=True, reason="defended")]
+
+
+_PRUNED = [{"role": "attacker", "content": "direct ask"}, {"role": "target", "content": "no"}]
+
+
+class _RunStatsStrategy(AttackStrategy):
+    """Returns fixed run stats so tests can check they reach the report."""
+
+    @property
+    def name(self) -> str:
+        return "stats"
+
+    def run_attack(self, case, target_session, *, max_turns, model=None, **kwargs) -> AttackRunResult:
+        return AttackRunResult(conversation=[], metadata={"turns_used": 3, "backtracks": 1}, pruned_branches=_PRUNED)
+
+
+def test_custom_task_run_results_reach_report():
+    """A user task that returns `to_environment_state()` fills the report's run stats; no side channel needed."""
+    strategy = _RunStatsStrategy()
+
+    def task(case):
+        session = _FakeSession()
+        result = strategy.run_attack(case, session, max_turns=5)
+        return {
+            "output": result.conversation,
+            "trajectory": list(session.trace),
+            "environment_state": [result.to_environment_state()],
+        }
+
+    exp = RedTeamExperiment(cases=[_case("c0")], attack_strategies=[strategy], evaluators=[_PassEvaluator()])
+    (result,) = exp.run_evaluations(task=task).attack_results()
+
+    assert result.turns_used == 3
+    assert result.backtracks == 1
+    assert result.pruned_branches == _PRUNED
+
+
+class _EnvStatePromptEvaluator(Evaluator):
+    """Records the judge prompt an `uses_environment_state=True` evaluator would send."""
+
+    def __init__(self):
+        super().__init__()
+        self.prompts: list[str] = []
+
+    def evaluate(self, evaluation_case):
+        self.prompts.append(compose_test_prompt(evaluation_case, "rubric", False, uses_environment_state=True))
+        return [EvaluationOutput(score=0.0, test_pass=True, reason="defended")]
+
+
+def test_environment_state_evaluator_sees_run_results():
+    """Pins a known trade-off: evaluators that read environment state now see the run stats.
+
+    Before run stats moved into `environment_state`, such an evaluator raised for a red team run; now it
+    receives the `RUN_RESULTS` entry, including the full `pruned_branches` payload.
+    """
+    evaluator = _EnvStatePromptEvaluator()
+    exp = RedTeamExperiment(
+        cases=[_case("c0")], agent=_FakeSession(), attack_strategies=[_RunStatsStrategy()], evaluators=[evaluator]
+    )
+    exp.run_evaluations()
+
+    (prompt,) = evaluator.prompts
+    assert f"<ActualEnvironmentState>[EnvironmentState(name='{RUN_RESULTS}'" in prompt
+    assert "'turns_used': 3" in prompt
+    assert "'pruned_branches': " + repr(_PRUNED) in prompt
+
+
+def test_cached_rerun_keeps_run_stats(tmp_path):
+    """A rerun served from the evaluation data store still shows turns and blocked attempts."""
+    runs = 0
+
+    def factory():
+        nonlocal runs
+        runs += 1
+        return _FakeSession()
+
+    store = LocalFileTaskResultStore(tmp_path)
+    exp = RedTeamExperiment(
+        cases=[_case("c0")],
+        agent_factory=factory,
+        attack_strategies=[_RunStatsStrategy()],
+        evaluators=[_PassEvaluator()],
+    )
+    first = exp.run_evaluations(evaluation_data_store=store).attack_results()
+    second = exp.run_evaluations(evaluation_data_store=store).attack_results()
+
+    assert runs == 1  # the second run came from the cache
+    for (result,) in (first, second):
+        assert result.turns_used == 3
+        assert result.backtracks == 1
+        assert result.pruned_branches == _PRUNED

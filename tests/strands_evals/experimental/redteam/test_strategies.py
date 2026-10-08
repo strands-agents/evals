@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from strands_evals.experimental.redteam.case import RedTeamCase
-from strands_evals.experimental.redteam.strategies import BUILTIN_STRATEGIES, PromptStrategy
+from strands_evals.experimental.redteam.strategies import BUILTIN_STRATEGIES, RUN_RESULTS, PromptStrategy
 from strands_evals.experimental.redteam.strategies.base import AttackRunResult
 from strands_evals.experimental.redteam.strategies.target_session import TargetCheckpoint
 from strands_evals.experimental.redteam.types import AttackGoal, RedTeamConfig
@@ -49,6 +49,32 @@ def test_redteam_config_is_strategy_agnostic():
     assert not hasattr(config, "system_prompt_template")
     assert "strategy" not in RedTeamConfig.model_fields
     assert "system_prompt_template" not in RedTeamConfig.model_fields
+
+
+def test_attack_run_result_to_environment_state_keeps_all_metadata():
+    pruned = [{"role": "attacker", "content": "a"}, {"role": "target", "content": "no"}]
+    result = AttackRunResult(
+        conversation=[{"role": "attacker", "content": "hi"}],
+        strategy_succeeded=True,
+        strategy_score=0.9,
+        metadata={"turns_used": 3, "backtracks": 1, "reasoning_trace": [{"o": "x"}]},
+        pruned_branches=pruned,
+    )
+    state = result.to_environment_state()
+
+    assert state.name == RUN_RESULTS == "redteam_run_results"
+    # Strategy-specific keys (e.g. GOAT's reasoning_trace) pass through alongside the report's fields.
+    assert state.state == {
+        "turns_used": 3,
+        "backtracks": 1,
+        "reasoning_trace": [{"o": "x"}],
+        "pruned_branches": pruned,
+    }
+
+
+def test_attack_run_result_to_environment_state_omits_unrecorded_keys():
+    state = AttackRunResult(conversation=[], metadata={"turns_used": 2}).to_environment_state()
+    assert state.state == {"turns_used": 2, "pruned_branches": []}
 
 
 def test_prompt_strategy_label_defaults_to_name():

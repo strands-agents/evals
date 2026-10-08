@@ -1,6 +1,11 @@
 """Tests for RedTeamReport."""
 
+import warnings
+
+import pytest
+
 from strands_evals.experimental.redteam.report import AttackResult, RedTeamReport
+from strands_evals.experimental.redteam.strategies.base import RUN_RESULTS
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
 from strands_evals.types.evaluation_report import EvaluationReport
 
@@ -86,6 +91,65 @@ class TestFromEvaluationReport:
         assert r.scores == {"judge": 0.0}
         assert r.passes == {"judge": False}
         assert r.reasons == {"judge": "bypassed"}
+
+    def test_run_stats_read_from_run_results_environment_state(self):
+        """The stats come from the `RUN_RESULTS` state, not same-named metadata or other states."""
+        pruned = [{"role": "attacker", "content": "a"}, {"role": "target", "content": "no"}]
+        case = _case("c0", "guideline_bypass", "crescendo", "high", turns_used=99)
+        case["actual_environment_state"] = [
+            {"name": "other", "state": {"turns_used": 7}},
+            {"name": RUN_RESULTS, "state": {"turns_used": 3, "backtracks": 1, "pruned_branches": pruned}},
+        ]
+        report = RedTeamReport.from_evaluation_report(
+            _flatten(_eval_report("judge", [case], scores=[0.0], passes=[True], reasons=[""]))
+        )
+
+        (r,) = report.attack_results()
+        assert r.turns_used == 3
+        assert r.backtracks == 1
+        assert r.pruned_branches == pruned
+
+    def test_non_dict_run_results_state_yields_empty_stats(self):
+        """A custom task's own non-dict state under the reserved name must not crash the report."""
+        case = _case("c0", "guideline_bypass", "crescendo", "high", turns_used=99)
+        case["actual_environment_state"] = [{"name": RUN_RESULTS, "state": [{"test": "t1", "ok": True}]}]
+        report = RedTeamReport.from_evaluation_report(
+            _flatten(_eval_report("judge", [case], scores=[0.0], passes=[True], reasons=[""]))
+        )
+
+        (r,) = report.attack_results()
+        assert r.turns_used is None
+        assert r.backtracks is None
+        assert r.pruned_branches == []
+
+    def test_run_stats_fall_back_to_metadata_without_run_results(self):
+        case = _case("c0", "guideline_bypass", "crescendo", "high", turns_used=5, backtracks=2)
+        case["actual_environment_state"] = [{"name": "other", "state": {"turns_used": 7}}]
+        report = RedTeamReport.from_evaluation_report(
+            _flatten(_eval_report("judge", [case], scores=[0.0], passes=[True], reasons=[""]))
+        )
+
+        (r,) = report.attack_results()
+        assert r.turns_used == 5
+        assert r.backtracks == 2
+        assert r.pruned_branches == []
+
+    def test_run_meta_is_deprecated_but_still_merged(self):
+        case = _case("c0", "guideline_bypass", "crescendo", "high")
+        eval_report = _eval_report("judge", [case], scores=[0.0], passes=[True], reasons=[""])
+
+        with pytest.warns(DeprecationWarning, match="run_meta"):
+            report = RedTeamReport.from_evaluation_report(eval_report, run_meta={"c0": {"turns_used": 4}})
+
+        assert report.attack_results()[0].turns_used == 4
+
+    def test_no_deprecation_warning_without_run_meta(self):
+        case = _case("c0", "guideline_bypass", "crescendo", "high")
+        eval_report = _eval_report("judge", [case], scores=[0.0], passes=[True], reasons=[""])
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            RedTeamReport.from_evaluation_report(eval_report)
 
     def test_multiple_evaluators_merge_on_case_name(self):
         cases = [_case("c0", "guideline_bypass", "gradual_escalation", "high")]

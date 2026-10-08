@@ -72,9 +72,6 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
         self._attack_strategies = attack_strategies or []
         self._by_label = self._build_by_label(self._attack_strategies)
         self._model = model
-        # case name -> strategy run metadata; the base Experiment drops task-returned
-        # metadata, so we join this onto the report ourselves.
-        self._run_meta: dict[str, dict[str, Any]] = {}
 
     @property
     def agent(self) -> Agent | MultiAgentBase | TargetSession | None:
@@ -177,12 +174,11 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
         """
         if max_workers < 1:
             raise ValueError(f"max_workers must be >= 1, got {max_workers}")
-        self._run_meta.clear()
         if task is None:
             task = self._default_task(parallel=max_workers > 1)
         # Swap _cases for the expanded cross-product. Each case has a unique name (case x strategy
         # label), so parallel workers never collide on the same key in the base runner's results
-        # buffer or in `self._run_meta`.
+        # buffer.
         original_cases = self._cases
         self._cases = self._expand_cross_product()
         try:
@@ -191,7 +187,7 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
             )
         finally:
             self._cases = original_cases
-        return RedTeamReport.from_evaluation_report(report, run_meta=self._run_meta)
+        return RedTeamReport.from_evaluation_report(report)
 
     def _default_task(self, *, parallel: bool = False) -> Callable[[Case[InputT, OutputT]], Any]:
         if self._agent is None and self._agent_factory is None:
@@ -206,7 +202,6 @@ class RedTeamExperiment(Experiment[InputT, OutputT]):
                 self._by_label,
                 agent_factory=self._agent_factory,
                 model=self._model,
-                run_meta=self._run_meta,
                 parallel=parallel,
             ),
         )

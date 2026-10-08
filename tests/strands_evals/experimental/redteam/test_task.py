@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from strands_evals.experimental.redteam.case import RedTeamCase
-from strands_evals.experimental.redteam.strategies.base import AttackRunResult, AttackStrategy
+from strands_evals.experimental.redteam.strategies.base import RUN_RESULTS, AttackRunResult, AttackStrategy
 from strands_evals.experimental.redteam.task import (
     MAX_ALLOWED_TURNS,
     _build_attacker_task,
@@ -90,21 +90,35 @@ def test_task_fn_calls_run_attack_and_maps_result():
 
     result = task(_case())
 
-    # Only the keys the base Experiment reads are returned; run stats flow via run_meta.
-    assert set(result) == {"output", "trajectory"}
+    # Only the keys the base Experiment reads are returned; run stats flow via environment_state.
+    assert set(result) == {"output", "trajectory", "environment_state"}
     assert result["output"][1]["content"] == "target reply"
     assert strat.reset_count == 1
 
 
-def test_task_fn_records_run_stats_into_run_meta():
-    """Strategy metadata reaches the experiment via run_meta, not the returned dict."""
-    strat = _StubStrategy()
-    run_meta: dict[str, dict] = {}
-    task = _build_attacker_task(_FakeSession(lambda _msg: "target reply"), _by_label(strat), run_meta=run_meta)
+@pytest.mark.parametrize("parallel", [False, True])
+def test_task_fn_returns_run_results_in_environment_state(parallel):
+    """Both task paths return the strategy's run stats as the `RUN_RESULTS` environment state."""
+    pruned = [{"role": "attacker", "content": "a"}, {"role": "target", "content": "no"}]
+    strat = _StubStrategy(
+        result=AttackRunResult(
+            conversation=[],
+            strategy_succeeded=True,
+            metadata={"turns_used": 3, "backtracks": 1, "target_calls": 4},
+            pruned_branches=pruned,
+        )
+    )
+    if parallel:
+        task = _build_attacker_task(
+            None, _by_label(strat), agent_factory=lambda: _FakeSession(lambda _msg: "ok"), parallel=True
+        )
+    else:
+        task = _build_attacker_task(_FakeSession(lambda _msg: "ok"), _by_label(strat))
 
-    task(_case("c0"))
+    (state,) = task(_case())["environment_state"]
 
-    assert run_meta["c0"]["turns_used"] == 1
+    assert state.name == RUN_RESULTS
+    assert state.state == {"turns_used": 3, "backtracks": 1, "target_calls": 4, "pruned_branches": pruned}
 
 
 class _RaisingStrategy(_StubStrategy):
@@ -121,13 +135,11 @@ class _RaisingStrategy(_StubStrategy):
 def test_task_fn_propagates_attack_error():
     """A crash must propagate: the base Experiment records it as an error reason and skips caching it,
     so a replay against the same evaluation_data_store re-runs the case instead of reading it as defended."""
-    run_meta: dict[str, dict] = {}
     strat = _RaisingStrategy(RuntimeError("target blew up"))
-    task = _build_attacker_task(_FakeSession(lambda _msg: "ok"), _by_label(strat), run_meta=run_meta)
+    task = _build_attacker_task(_FakeSession(lambda _msg: "ok"), _by_label(strat))
 
     with pytest.raises(RuntimeError, match="target blew up"):
         task(_case("c0"))
-    assert "c0" not in run_meta
 
 
 def test_task_fn_resets_strategy_each_case():

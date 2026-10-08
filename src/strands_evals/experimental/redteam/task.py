@@ -25,14 +25,17 @@ def _build_attacker_task(
     *,
     agent_factory: Callable[[], Agent | MultiAgentBase | TargetSession] | None = None,
     model: Model | str | None = None,
-    run_meta: dict[str, dict[str, Any]] | None = None,
     parallel: bool = False,
 ) -> Callable[[RedTeamCase], dict]:
-    """Build a `task(case) -> {"output": conversation, "trajectory": tool_uses}` callable.
+    """Build a `task(case) -> {"output", "trajectory", "environment_state"}` callable.
 
     Looks up each case's strategy by `metadata["strategy"]` and delegates the multi-turn loop to
-    `strategy.run_attack`, injecting a `TargetSession`. `MAX_ALLOWED_TURNS` is the hard ceiling. Run metadata
-    is recorded into `run_meta` keyed by case name.
+    `strategy.run_attack`, injecting a `TargetSession`. `MAX_ALLOWED_TURNS` is the hard ceiling.
+
+    The returned dict holds:
+        output: The attacker/target conversation.
+        trajectory: The target's tool uses.
+        environment_state: `[result.to_environment_state()]`, the run stats `RedTeamReport` reads.
 
     Args:
         agent: The shared target for sequential runs. Required when `agent_factory` is None.
@@ -40,7 +43,6 @@ def _build_attacker_task(
         agent_factory: Zero-arg callable returning a fresh target for each case. Required for parallel
             runs (`parallel=True`); takes precedence over `agent` when both are set.
         model: Model passed through to `strategy.run_attack` for strategy-internal LLM calls.
-        run_meta: Per-case strategy metadata sink, keyed by `case.name`.
         parallel: When True, every case is built from `agent_factory` so concurrent cases never share
             mutable state. When False, all cases share one target and rewind to a once-captured baseline
             between cases.
@@ -57,7 +59,6 @@ def _build_attacker_task(
             agent_factory=agent_factory,
             by_label=by_label,
             model=model,
-            run_meta=run_meta,
         )
 
     # Sequential path: `agent` is guaranteed non-None here -- the upfront check rejects (None,
@@ -66,7 +67,6 @@ def _build_attacker_task(
         agent=agent,  # type: ignore[arg-type]
         by_label=by_label,
         model=model,
-        run_meta=run_meta,
     )
 
 
@@ -75,7 +75,6 @@ def _build_shared_target_task_fn(
     agent: Agent | MultiAgentBase | TargetSession,
     by_label: dict[str, AttackStrategy],
     model: Model | str | None,
-    run_meta: dict[str, dict[str, Any]] | None,
 ) -> Callable[[RedTeamCase], dict]:
     """Build a task fn that drives one shared target across cases, rewinding to a fixed baseline.
 
@@ -97,7 +96,7 @@ def _build_shared_target_task_fn(
         session = _build_session(agent, baseline=initial_snapshot)
         session.reset()
 
-        return _run_attack(strategy, case, session, model=model, run_meta=run_meta)
+        return _run_attack(strategy, case, session, model=model)
 
     return task_fn
 
@@ -108,7 +107,6 @@ def _build_per_case_task_fn(
     agent_factory: Callable[[], Agent | MultiAgentBase | TargetSession] | None,
     by_label: dict[str, AttackStrategy],
     model: Model | str | None,
-    run_meta: dict[str, dict[str, Any]] | None,
 ) -> Callable[[RedTeamCase], dict]:
     """Build a per-case task fn that constructs its own target every case.
 
@@ -127,9 +125,7 @@ def _build_per_case_task_fn(
         session = _build_session(make_target(), baseline=None)
         session.reset()
 
-        # CPython dict assignment for a single distinct key is atomic, and case names are unique
-        # per cross-product expansion, so concurrent writers never target the same key.
-        return _run_attack(strategy, case, session, model=model, run_meta=run_meta)
+        return _run_attack(strategy, case, session, model=model)
 
     return task_fn
 
@@ -140,20 +136,18 @@ def _run_attack(
     session: TargetSession,
     *,
     model: Model | str | None,
-    run_meta: dict[str, dict[str, Any]] | None,
 ) -> dict:
-    """Run one attack and record its strategy metadata into `run_meta`.
+    """Run one attack and return its conversation, tool uses and run stats.
 
     Errors propagate: the base `Experiment` retries throttling, records any other failure as an
     error reason (which the report classifies as errored), and skips caching the failed case.
     """
     result = strategy.run_attack(case, session, max_turns=MAX_ALLOWED_TURNS, model=model)
-    if run_meta is not None and case.name is not None:
-        run_meta[case.name] = {**result.metadata, "pruned_branches": result.pruned_branches}
     return {
         "output": result.conversation,
         # Snapshot of the trace; the next case's session.reset() clears this list in place.
         "trajectory": list(session.trace),
+        "environment_state": [result.to_environment_state()],
     }
 
 
