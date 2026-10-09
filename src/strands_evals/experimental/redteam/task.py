@@ -21,7 +21,6 @@ MAX_ALLOWED_TURNS = 50
 
 def _build_attacker_task(
     agent: Agent | MultiAgentBase | TargetSession | None,
-    by_label: dict[str, AttackStrategy],
     *,
     agent_factory: Callable[[], Agent | MultiAgentBase | TargetSession] | None = None,
     model: Model | str | None = None,
@@ -30,13 +29,12 @@ def _build_attacker_task(
 ) -> Callable[[RedTeamCase], dict]:
     """Build a `task(case) -> {"output": conversation, "trajectory": tool_uses}` callable.
 
-    Looks up each case's strategy by `metadata["strategy"]` and delegates the multi-turn loop to
-    `strategy.run_attack`, injecting a `TargetSession`. `MAX_ALLOWED_TURNS` is the hard ceiling. Run metadata
-    is recorded into `run_meta` keyed by case name.
+    Reads each case's strategy from `case.strategy` (set by `RedTeamExperiment`) and delegates the multi-turn
+    loop to `strategy.run_attack`, injecting a `TargetSession`. `MAX_ALLOWED_TURNS` is the hard ceiling. Run
+    metadata is recorded into `run_meta` keyed by case name.
 
     Args:
         agent: The shared target for sequential runs. Required when `agent_factory` is None.
-        by_label: Strategy registry keyed by `metadata["strategy"]` label.
         agent_factory: Zero-arg callable returning a fresh target for each case. Required for parallel
             runs (`parallel=True`); takes precedence over `agent` when both are set.
         model: Model passed through to `strategy.run_attack` for strategy-internal LLM calls.
@@ -55,7 +53,6 @@ def _build_attacker_task(
         return _build_per_case_task_fn(
             agent=agent,
             agent_factory=agent_factory,
-            by_label=by_label,
             model=model,
             run_meta=run_meta,
         )
@@ -64,7 +61,6 @@ def _build_attacker_task(
     # None), and `agent_factory is not None` would have routed us to the per-case builder above.
     return _build_shared_target_task_fn(
         agent=agent,  # type: ignore[arg-type]
-        by_label=by_label,
         model=model,
         run_meta=run_meta,
     )
@@ -73,7 +69,6 @@ def _build_attacker_task(
 def _build_shared_target_task_fn(
     *,
     agent: Agent | MultiAgentBase | TargetSession,
-    by_label: dict[str, AttackStrategy],
     model: Model | str | None,
     run_meta: dict[str, dict[str, Any]] | None,
 ) -> Callable[[RedTeamCase], dict]:
@@ -91,7 +86,7 @@ def _build_shared_target_task_fn(
         initial_snapshot = None
 
     def task_fn(case: RedTeamCase) -> dict:
-        strategy = _resolve_case_strategy(case, by_label)
+        strategy = case.strategy
         strategy.reset()
 
         session = _build_session(agent, baseline=initial_snapshot)
@@ -106,7 +101,6 @@ def _build_per_case_task_fn(
     *,
     agent: Agent | MultiAgentBase | TargetSession | None,
     agent_factory: Callable[[], Agent | MultiAgentBase | TargetSession] | None,
-    by_label: dict[str, AttackStrategy],
     model: Model | str | None,
     run_meta: dict[str, dict[str, Any]] | None,
 ) -> Callable[[RedTeamCase], dict]:
@@ -119,7 +113,7 @@ def _build_per_case_task_fn(
     make_target = _resolve_target_source(agent=agent, agent_factory=agent_factory)
 
     def task_fn(case: RedTeamCase) -> dict:
-        strategy = _resolve_case_strategy(case, by_label)
+        strategy = case.strategy
         strategy.reset()
 
         # No baseline: each case starts from a freshly built target, and `session.reset()` only
@@ -210,15 +204,3 @@ def _build_session(
         f"got {type(agent).__name__!r}; wrap a custom target in a TargetSession so the strategy "
         "can snapshot/restore its state."
     )
-
-
-def _resolve_case_strategy(case: RedTeamCase, by_label: dict[str, AttackStrategy]) -> AttackStrategy:
-    """Look up the strategy for `case` from its `metadata["strategy"]` label."""
-    metadata = case.metadata or {}
-    label = metadata.get("strategy")
-    if label is None:
-        raise ValueError(f"RedTeamCase {case.name!r}: metadata is missing the 'strategy' label.")
-    strategy = by_label.get(label)
-    if strategy is None:
-        raise ValueError(f"RedTeamCase {case.name!r}: no strategy registered for label {label!r}.")
-    return strategy
