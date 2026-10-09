@@ -48,28 +48,25 @@ cases = AdversarialCaseGenerator().generate_cases(
 # Run the case x strategy cross-product in parallel (defaults to max_workers=5).
 experiment = RedTeamExperiment(
     cases=cases,
-    agent_factory=agent_factory,
     attack_strategies=[CrescendoStrategy(), GoatStrategy()],
 )
-report = asyncio.run(experiment.run_evaluations_async())  # or `await ...` from an async caller
+report = asyncio.run(experiment.run_evaluations_async(agent_factory=agent_factory))  # or `await ...`
 report.display()
 ```
 
 `run_evaluations_async()` runs each strategy against each case and returns a `RedTeamReport`. It defaults to `max_workers=5` — a conservative cap that fits most provider tiers without user-side rate-limit tuning. Raise it for fast targets / generous TPM budgets, or drop to `1` for deterministic ordering and single-case debugging.
 
+The experiment holds no live target: `agent_factory` is passed to the run method, which calls it once per case. Pass your own `task=` instead when you need to build the target yourself.
+
 ### Sequential / sync convenience
 
-For a quick interactive run — a notebook smoke test, local debugging — pass `agent=` and use the sync entry point. The runner drives cases sequentially against one shared target, rewinding it to a clean baseline between cases via snapshot/restore:
+For a quick interactive run — a notebook smoke test, local debugging — use the sync entry point:
 
 ```python
-agent = Agent(system_prompt="You are a helpful customer-support assistant.")
-experiment = RedTeamExperiment(
-    cases=cases, agent=agent, attack_strategies=[CrescendoStrategy()]
-)
-report = experiment.run_evaluations()  # sync; equivalent to run_evaluations_async(max_workers=1)
+report = experiment.run_evaluations(agent_factory=agent_factory)  # equivalent to run_evaluations_async(max_workers=1)
 ```
 
-`agent=` is for sequential runs only — parallel runs reject it with a `TypeError` at config time, because Strands targets carry non-deepcopyable client state (the default `BedrockModel` holds an httplib pool with thread locks) and the runner cannot safely clone a shared agent across workers. For CI sweeps and parallel runs, use the `agent_factory` path above.
+> **Deprecated:** passing `agent=` or `agent_factory=` to the `RedTeamExperiment` constructor, or setting `exp.agent` / `exp.agent_factory`, still works for one minor version but emits a `DeprecationWarning`. The shared `agent=` target only ever worked sequentially (Strands targets carry non-deepcopyable client state, so parallel runs rejected it); pass `agent_factory=` to the run method instead. Plain `Case` inputs are deprecated too; use `RedTeamCase`.
 
 ## Attack strategies
 
@@ -153,8 +150,8 @@ cases = AdversarialCaseGenerator().generate_cases(
 
 ## Persistence (CI / save-and-replay)
 
-A `RedTeamExperiment` serializes its cases and strategies but **not** the live target —
-neither `agent` nor `agent_factory` is JSON-serializable, so the canonical CI flow is
+A `RedTeamExperiment` serializes its cases and strategies. The target isn't part of the
+experiment — `agent_factory` is passed at run time — so the canonical CI flow is
 generate-once, persist, replay against a freshly built target later:
 
 ```python
@@ -162,14 +159,12 @@ generate-once, persist, replay against a freshly built target later:
 exp = RedTeamExperiment(cases=cases, attack_strategies=[CrescendoStrategy(), GoatStrategy()])
 exp.to_file("redteam_suite.json")
 
-# Run phase: reload, attach a factory, run.
+# Run phase: reload and run with a factory; nothing to reattach.
 exp = RedTeamExperiment.from_file("redteam_suite.json")
-exp.agent_factory = agent_factory          # required before run_evaluations_async() -- raises otherwise
-report = asyncio.run(exp.run_evaluations_async())
+report = asyncio.run(exp.run_evaluations_async(agent_factory=agent_factory))
 ```
 
-(`exp.agent = ...` also works for sequential `run_evaluations()`; pick the path that matches
-how you intend to run.) If your suite uses a custom strategy class, pass it via
+If your suite uses a custom strategy class, pass it via
 `from_file(..., custom_strategies=[MyStrategy])` so the loader can re-instantiate it.
 
 ## Reading the report

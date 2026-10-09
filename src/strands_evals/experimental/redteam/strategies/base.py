@@ -8,9 +8,14 @@ from typing import TYPE_CHECKING, Any
 
 from strands.models.model import Model
 
+from ....types import EnvironmentState
+
 if TYPE_CHECKING:
     from ..case import RedTeamCase
     from .target_session import TargetSession
+
+# Name of the task-output `environment_state` entry `RedTeamReport` reads run stats from.
+RUN_RESULTS = "redteam_run_results"
 
 
 @dataclass
@@ -34,6 +39,13 @@ class AttackRunResult:
     strategy_score: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     pruned_branches: list[dict[str, Any]] = field(default_factory=list)
+
+    def to_environment_state(self) -> EnvironmentState:
+        """Return the `RUN_RESULTS` entry a task puts in its `environment_state` for `RedTeamReport` to read.
+
+        The state holds the strategy's `metadata` plus `pruned_branches`.
+        """
+        return EnvironmentState(name=RUN_RESULTS, state={**self.metadata, "pruned_branches": self.pruned_branches})
 
 
 class AttackStrategy(ABC):

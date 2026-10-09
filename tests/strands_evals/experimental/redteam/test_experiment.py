@@ -1,8 +1,14 @@
 """Tests for RedTeamExperiment."""
 
+import warnings
+
 import pytest
 from strands.models.model import Model
 
+from strands_evals import LocalFileTaskResultStore
+from strands_evals.case import Case
+from strands_evals.evaluators import Evaluator
+from strands_evals.evaluators.prompt_templates.case_prompt_template import compose_test_prompt
 from strands_evals.experimental.redteam.case import RedTeamCase
 from strands_evals.experimental.redteam.evaluators import AttackSuccessEvaluator
 from strands_evals.experimental.redteam.experiment import RedTeamExperiment
@@ -15,8 +21,9 @@ from strands_evals.experimental.redteam.strategies import (
     PromptStrategy,
     SequentialBreakStrategy,
 )
-from strands_evals.experimental.redteam.strategies.base import AttackRunResult, AttackStrategy
+from strands_evals.experimental.redteam.strategies.base import RUN_RESULTS, AttackRunResult, AttackStrategy
 from strands_evals.experimental.redteam.types import AttackGoal, RedTeamConfig
+from strands_evals.types import EvaluationOutput
 
 
 class _StubModel(Model):
@@ -102,21 +109,80 @@ def test_run_evaluations_returns_red_team_report():
     assert isinstance(report, RedTeamReport)
 
 
-def test_run_evaluations_uses_default_task_when_agent_provided():
-    """Agent on construction enables run_evaluations() with no explicit task."""
-    exp = RedTeamExperiment(
-        cases=[_case()],
-        agent=_FakeSession(),
-        attack_strategies=[_StubStrategy()],
-    )
-    report = exp.run_evaluations()
+def test_run_evaluations_uses_default_task_with_agent_factory():
+    """A run-time `agent_factory` enables run_evaluations() with no explicit task."""
+    exp = RedTeamExperiment(cases=[_case()], attack_strategies=[_StubStrategy()])
+    report = exp.run_evaluations(agent_factory=_FakeSession)
     assert isinstance(report, RedTeamReport)
 
 
-def test_run_evaluations_raises_when_neither_agent_nor_task():
+def test_run_evaluations_raises_when_neither_task_nor_agent_factory():
     exp = RedTeamExperiment(cases=[_case()])
-    with pytest.raises(ValueError, match="agent.*task"):
+    with pytest.raises(ValueError, match="task.*agent_factory"):
         exp.run_evaluations()
+
+
+def test_run_evaluations_rejects_task_and_agent_factory():
+    exp = RedTeamExperiment(cases=[_case()], attack_strategies=[_StubStrategy()])
+    with pytest.raises(ValueError, match="either `task` or `agent_factory`"):
+        exp.run_evaluations(task=lambda case: {"output": []}, agent_factory=_FakeSession)
+
+
+def test_run_time_path_emits_no_deprecation_warning():
+    """The supported shortcut (RedTeamCase inputs, run-time factory) warns about nothing."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        exp = RedTeamExperiment(cases=[_case()], attack_strategies=[_StubStrategy()])
+        exp.run_evaluations(agent_factory=_FakeSession)
+
+
+def test_constructor_agent_is_deprecated_but_still_runs():
+    with pytest.warns(DeprecationWarning, match="`agent`"):
+        exp = RedTeamExperiment(cases=[_case()], agent=_FakeSession(), attack_strategies=[_StubStrategy()])
+    assert isinstance(exp.run_evaluations(), RedTeamReport)
+
+
+def test_constructor_agent_factory_is_deprecated_fallback():
+    calls: list[_FakeSession] = []
+
+    def factory():
+        calls.append(_FakeSession())
+        return calls[-1]
+
+    with pytest.warns(DeprecationWarning, match="`agent_factory`"):
+        exp = RedTeamExperiment(cases=[_case()], agent_factory=factory, attack_strategies=[_StubStrategy()])
+    exp.run_evaluations()
+    assert len(calls) == 1
+
+
+def test_run_time_agent_factory_wins_over_constructor_values():
+    """The run-time factory takes precedence over the deprecated constructor `agent` / `agent_factory`."""
+    run_time_calls: list[_FakeSession] = []
+    constructor_calls: list[_FakeSession] = []
+
+    def run_time_factory():
+        run_time_calls.append(_FakeSession())
+        return run_time_calls[-1]
+
+    def constructor_factory():
+        constructor_calls.append(_FakeSession())
+        return constructor_calls[-1]
+
+    with pytest.warns(DeprecationWarning):
+        exp = RedTeamExperiment(
+            cases=[_case("c0"), _case("c1")],
+            agent=_FakeSession(),
+            agent_factory=constructor_factory,
+            attack_strategies=[_StubStrategy()],
+        )
+    exp.run_evaluations(agent_factory=run_time_factory)
+    assert len(run_time_calls) == 2
+    assert constructor_calls == []
+
+
+def test_plain_case_is_deprecated():
+    with pytest.warns(DeprecationWarning, match="RedTeamCase"):
+        RedTeamExperiment(cases=[Case(name="c0", input="hello")])
 
 
 def test_duplicate_strategy_label_raises():
@@ -138,7 +204,6 @@ def test_cross_product_expands_cases():
 
     exp = RedTeamExperiment(
         cases=[_case("c0"), _case("c1")],
-        agent=_FakeSession(),
         attack_strategies=[_StubStrategy(label="cre-10"), _StubStrategy(label="cre-30")],
     )
     exp.run_evaluations(task=task)
@@ -147,25 +212,25 @@ def test_cross_product_expands_cases():
 
 
 async def test_run_evaluations_async_returns_report():
-    exp = RedTeamExperiment(
-        cases=[_case()],
-        agent=_FakeSession(),
-        attack_strategies=[_StubStrategy()],
-    )
-    # Sequential -- a TargetSession can't be deep-copied, and parallel paths are covered below.
-    report = await exp.run_evaluations_async(max_workers=1)
+    exp = RedTeamExperiment(cases=[_case()], attack_strategies=[_StubStrategy()])
+    report = await exp.run_evaluations_async(agent_factory=_FakeSession)
     assert isinstance(report, RedTeamReport)
 
 
+def test_report_cls_is_red_team_report():
+    assert RedTeamExperiment.report_cls is RedTeamReport
+
+
 async def test_max_workers_must_be_positive():
-    exp = RedTeamExperiment(cases=[_case()], agent=_FakeSession(), attack_strategies=[_StubStrategy()])
+    exp = RedTeamExperiment(cases=[_case()], attack_strategies=[_StubStrategy()])
     with pytest.raises(ValueError, match="max_workers"):
-        await exp.run_evaluations_async(max_workers=0)
+        await exp.run_evaluations_async(max_workers=0, agent_factory=_FakeSession)
 
 
-async def test_parallel_requires_agent_factory():
-    """Parallel runs always require `agent_factory` -- the runner does not deepcopy targets."""
-    exp = RedTeamExperiment(cases=[_case()], agent=_FakeSession(), attack_strategies=[_StubStrategy()])
+async def test_parallel_rejects_deprecated_shared_agent():
+    """Parallel runs always require `agent_factory` -- the runner does not deepcopy a shared target."""
+    with pytest.warns(DeprecationWarning):
+        exp = RedTeamExperiment(cases=[_case()], agent=_FakeSession(), attack_strategies=[_StubStrategy()])
     with pytest.raises(TypeError, match="agent_factory"):
         await exp.run_evaluations_async(max_workers=2)
 
@@ -181,10 +246,9 @@ async def test_parallel_uses_agent_factory_per_case():
 
     exp = RedTeamExperiment(
         cases=[_case("c0"), _case("c1"), _case("c2")],
-        agent_factory=factory,
         attack_strategies=[_StubStrategy()],
     )
-    report = await exp.run_evaluations_async(max_workers=3)
+    report = await exp.run_evaluations_async(max_workers=3, agent_factory=factory)
     assert isinstance(report, RedTeamReport)
     assert len(factory_calls) == 3
 
@@ -193,7 +257,7 @@ async def test_parallel_report_per_case_isolation():
     """End-to-end: under `max_workers > 1`, each case's output lands on its own report row.
 
     Pins the property the parallel path is *for* -- that concurrent cases don't bleed each
-    other's outputs through the shared strategy / shared `_run_meta` dict.
+    other's outputs through the shared strategy.
     """
 
     class _EchoStrategy(AttackStrategy):
@@ -215,12 +279,8 @@ async def test_parallel_report_per_case_isolation():
     for i, case in enumerate(cases):
         case.input = f"msg-{i}"
 
-    exp = RedTeamExperiment(
-        cases=cases,
-        agent_factory=factory,
-        attack_strategies=[_EchoStrategy()],
-    )
-    report = await exp.run_evaluations_async(max_workers=4)
+    exp = RedTeamExperiment(cases=cases, attack_strategies=[_EchoStrategy()])
+    report = await exp.run_evaluations_async(max_workers=4, agent_factory=factory)
 
     by_name = {r.case_name: r for r in report.attack_results()}
     assert set(by_name) == {"c0__echo", "c1__echo", "c2__echo", "c3__echo", "c4__echo"}
@@ -229,44 +289,26 @@ async def test_parallel_report_per_case_isolation():
         assert attack.conversation == [{"role": "attacker", "content": f"msg-{i}"}]
 
 
-async def test_factory_wins_in_sequential_runs():
-    """`agent_factory` overrides `agent` even at `max_workers=1` -- factory is the source of truth."""
-    factory_calls: list[_FakeSession] = []
-
-    def factory():
-        sess = _FakeSession()
-        factory_calls.append(sess)
-        return sess
-
-    shared = _FakeSession()
-    exp = RedTeamExperiment(
-        cases=[_case("c0"), _case("c1")],
-        agent=shared,
-        agent_factory=factory,
-        attack_strategies=[_StubStrategy()],
-    )
-    report = await exp.run_evaluations_async(max_workers=1)
-    assert isinstance(report, RedTeamReport)
-    assert len(factory_calls) == 2
-    assert shared not in factory_calls
-
-
 def test_async_task_rejected():
     async def _async_task(case):
         return {"output": []}
 
-    exp = RedTeamExperiment(cases=[_case()], agent=_FakeSession(), attack_strategies=[_StubStrategy()])
+    exp = RedTeamExperiment(cases=[_case()], attack_strategies=[_StubStrategy()])
     with pytest.raises(ValueError, match="Async task is not supported"):
         exp.run_evaluations(task=_async_task)
 
 
-def test_agent_setter_round_trip():
-    """`exp.agent = ...` is the canonical way to attach a target after `from_file`."""
+def test_agent_setters_are_deprecated():
     exp = RedTeamExperiment(cases=[_case()], attack_strategies=[_StubStrategy()])
     assert exp.agent is None
+    assert exp.agent_factory is None
     sess = _FakeSession()
-    exp.agent = sess
+    with pytest.warns(DeprecationWarning, match="`agent`"):
+        exp.agent = sess
+    with pytest.warns(DeprecationWarning, match="`agent_factory`"):
+        exp.agent_factory = _FakeSession
     assert exp.agent is sess
+    assert exp.agent_factory is _FakeSession
 
 
 def test_to_dict_persists_strategies_and_model():
@@ -397,8 +439,8 @@ def test_round_trip_preserves_all_builtin_strategies(tmp_path):
     assert [s.label for s in loaded.attack_strategies] == ["cre", "prompt", "blj", "goat", "pair", "sb"]
 
 
-def test_from_dict_round_trip_runs_after_setting_agent(tmp_path):
-    """Reload via to_file/from_file, then attach an agent and run."""
+def test_from_dict_round_trip_runs(tmp_path):
+    """Reload via to_file/from_file, then run with a task; no target needs reattaching."""
     exp = RedTeamExperiment(
         cases=[_case("c0"), _case("c1")],
         attack_strategies=[CrescendoStrategy(max_turns=3, label="cre")],
@@ -418,12 +460,11 @@ def test_from_dict_round_trip_runs_after_setting_agent(tmp_path):
     # would be caught here in one assertion, complementing the per-field checks above.
     assert RedTeamExperiment.from_dict(exp.to_dict()).to_dict() == exp.to_dict()
 
-    # Without agent, run_evaluations raises the existing message.
-    with pytest.raises(ValueError, match="agent.*task"):
+    # Without a task or agent_factory there is nothing to run.
+    with pytest.raises(ValueError, match="task.*agent_factory"):
         loaded.run_evaluations()
 
-    # Attach an agent and supply a stub task to skip real LLM calls.
-    loaded.agent = _FakeSession()
+    # A stub task skips real LLM calls.
     report = loaded.run_evaluations(task=lambda case: {"output": []})
     assert isinstance(report, RedTeamReport)
 
@@ -477,7 +518,6 @@ def test_run_evaluations_twice_is_idempotent():
 
     exp = RedTeamExperiment(
         cases=[_case("c0")],
-        agent=_FakeSession(),
         attack_strategies=[_StubStrategy(label="a"), _StubStrategy(label="b")],
     )
     for _ in range(2):
@@ -494,3 +534,118 @@ def test_run_evaluations_twice_is_idempotent():
     assert runs[0] == runs[1]  # second run identical, not squared
     # held cases were never mutated
     assert [c.name for c in exp.cases] == ["c0"]
+
+
+class _PassEvaluator(Evaluator):
+    """Deterministic evaluator so report tests don't call a judge model."""
+
+    def evaluate(self, evaluation_case):
+        return [EvaluationOutput(score=0.0, test_pass=True, reason="defended")]
+
+
+_PRUNED = [{"role": "attacker", "content": "direct ask"}, {"role": "target", "content": "no"}]
+
+
+class _RunStatsStrategy(AttackStrategy):
+    """Returns fixed run stats so tests can check they reach the report."""
+
+    @property
+    def name(self) -> str:
+        return "stats"
+
+    def run_attack(self, case, target_session, *, max_turns, model=None, **kwargs) -> AttackRunResult:
+        return AttackRunResult(conversation=[], metadata={"turns_used": 3, "backtracks": 1}, pruned_branches=_PRUNED)
+
+
+def test_custom_task_run_results_reach_report():
+    """A user task that returns `to_environment_state()` fills the report's run stats; no side channel needed."""
+    strategy = _RunStatsStrategy()
+
+    def task(case):
+        session = _FakeSession()
+        result = strategy.run_attack(case, session, max_turns=5)
+        return {
+            "output": result.conversation,
+            "trajectory": list(session.trace),
+            "environment_state": [result.to_environment_state()],
+        }
+
+    exp = RedTeamExperiment(cases=[_case("c0")], attack_strategies=[strategy], evaluators=[_PassEvaluator()])
+    (result,) = exp.run_evaluations(task=task).attack_results()
+
+    assert result.turns_used == 3
+    assert result.backtracks == 1
+    assert result.pruned_branches == _PRUNED
+
+
+class _EnvStatePromptEvaluator(Evaluator):
+    """Records the judge prompt an `uses_environment_state=True` evaluator would send."""
+
+    def __init__(self):
+        super().__init__()
+        self.prompts: list[str] = []
+
+    def evaluate(self, evaluation_case):
+        self.prompts.append(compose_test_prompt(evaluation_case, "rubric", False, uses_environment_state=True))
+        return [EvaluationOutput(score=0.0, test_pass=True, reason="defended")]
+
+
+def test_environment_state_evaluator_sees_run_results():
+    """Pins a known trade-off: evaluators that read environment state now see the run stats.
+
+    Before run stats moved into `environment_state`, such an evaluator raised for a red team run; now it
+    receives the `RUN_RESULTS` entry, including the full `pruned_branches` payload.
+    """
+    evaluator = _EnvStatePromptEvaluator()
+    exp = RedTeamExperiment(cases=[_case("c0")], attack_strategies=[_RunStatsStrategy()], evaluators=[evaluator])
+    exp.run_evaluations(agent_factory=_FakeSession)
+
+    (prompt,) = evaluator.prompts
+    assert f"<ActualEnvironmentState>[EnvironmentState(name='{RUN_RESULTS}'" in prompt
+    assert "'turns_used': 3" in prompt
+    assert "'pruned_branches': " + repr(_PRUNED) in prompt
+
+
+def test_cached_rerun_keeps_run_stats(tmp_path):
+    """A rerun served from the evaluation data store still shows turns and blocked attempts."""
+    runs = 0
+
+    def factory():
+        nonlocal runs
+        runs += 1
+        return _FakeSession()
+
+    store = LocalFileTaskResultStore(tmp_path)
+    exp = RedTeamExperiment(cases=[_case("c0")], attack_strategies=[_RunStatsStrategy()], evaluators=[_PassEvaluator()])
+    first = exp.run_evaluations(evaluation_data_store=store, agent_factory=factory).attack_results()
+    second = exp.run_evaluations(evaluation_data_store=store, agent_factory=factory).attack_results()
+
+    assert runs == 1  # the second run came from the cache
+    for (result,) in (first, second):
+        assert result.turns_used == 3
+        assert result.backtracks == 1
+        assert result.pruned_branches == _PRUNED
+
+
+class _BreachEvaluator(Evaluator):
+    """Scores every attack as a full breach."""
+
+    def evaluate(self, evaluation_case):
+        return [EvaluationOutput(score=1.0, test_pass=False, reason="breached")]
+
+
+def test_overall_score_excludes_errored_attacks():
+    """`overall_score` keeps the red team rule: an errored attack is not a 0.0 judgment."""
+
+    def task(case):
+        if case.name.startswith("c1"):
+            raise RuntimeError("target down")
+        return {"output": []}
+
+    exp = RedTeamExperiment(
+        cases=[_case("c0"), _case("c1")], attack_strategies=[_StubStrategy()], evaluators=[_BreachEvaluator()]
+    )
+    report = exp.run_evaluations(task=task)
+
+    assert [r.state for r in report.attack_results()] == ["breached", "errored"]
+    assert report.overall_score == 1.0

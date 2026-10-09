@@ -83,13 +83,10 @@ def _patched_evaluator_judge():
 
 def test_handcrafted_cases_end_to_end():
     """Path B: hand-written cases (no generator) run through the full pipeline."""
-    exp = RedTeamExperiment(
-        cases=_handcrafted_cases(),
-        agent=_FakeSession("sure, here is some detail you asked for"),  # engaging (non-refusal)
-        attack_strategies=[_stub_crescendo()],
-    )
+    exp = RedTeamExperiment(cases=_handcrafted_cases(), attack_strategies=[_stub_crescendo()])
     with _patched_evaluator_judge():
-        report = exp.run_evaluations()
+        # engaging (non-refusal) target
+        report = exp.run_evaluations(agent_factory=lambda: _FakeSession("sure, here is some detail you asked for"))
 
     assert isinstance(report, RedTeamReport)
     results = report.attack_results()
@@ -135,13 +132,9 @@ def test_generated_cases_end_to_end():
     assert len(cases) == 1
     assert "__" not in cases[0].name  # strategy-agnostic
 
-    exp = RedTeamExperiment(
-        cases=cases,
-        agent=_FakeSession("engaging response"),
-        attack_strategies=[_stub_crescendo()],
-    )
+    exp = RedTeamExperiment(cases=cases, attack_strategies=[_stub_crescendo()])
     with _patched_evaluator_judge():
-        report = exp.run_evaluations()
+        report = exp.run_evaluations(agent_factory=lambda: _FakeSession("engaging response"))
     assert isinstance(report, RedTeamReport)
     assert len(report.attack_results()) == 1
 

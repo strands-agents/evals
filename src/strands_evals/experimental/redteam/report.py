@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -9,6 +10,7 @@ from rich.console import Console
 
 from ...types.evaluation import EvaluationOutput
 from ...types.evaluation_report import EvaluationReport
+from .strategies.base import RUN_RESULTS
 
 _console = Console()
 
@@ -91,9 +93,18 @@ class RedTeamReport(EvaluationReport):
 
         Args:
             report: Flattened report from the base experiment, one row per (case, evaluator).
-            run_meta: Per-case strategy run metadata keyed by case name; merged into each case's metadata so
-                the report sees it.
+            run_meta: Deprecated. Per-case strategy run metadata keyed by case name; merged into each case's
+                metadata so the report sees it. Return `AttackRunResult.to_environment_state()` in the task's
+                `environment_state` instead.
         """
+        if run_meta is not None:
+            warnings.warn(
+                "`run_meta` is deprecated and will be removed in a future release. Return "
+                "`AttackRunResult.to_environment_state()` in the task's `environment_state` instead; the run "
+                "stats are then read from the case's `actual_environment_state`, not its `metadata`.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         run_meta = run_meta or {}
         n = len(report.cases)
         if not (len(report.scores) == n and len(report.test_passes) == n and len(report.reasons) == n):
@@ -125,6 +136,7 @@ class RedTeamReport(EvaluationReport):
             name = case_data.get("name", f"case_{i}")
             evaluator = case_data.get("evaluator", "evaluator")
             metadata = case_data.get("metadata") or {}
+            run_results = _run_results(case_data)
             result = by_case.setdefault(
                 name,
                 AttackResult(
@@ -133,10 +145,10 @@ class RedTeamReport(EvaluationReport):
                     strategy=metadata.get("strategy", "unknown"),
                     severity=metadata.get("severity", "unknown"),
                     objective=metadata.get("actor_goal", ""),
-                    turns_used=metadata.get("turns_used"),
-                    backtracks=metadata.get("backtracks"),
+                    turns_used=run_results.get("turns_used"),
+                    backtracks=run_results.get("backtracks"),
                     conversation=case_data.get("actual_output") or [],
-                    pruned_branches=metadata.get("pruned_branches") or [],
+                    pruned_branches=run_results.get("pruned_branches") or [],
                 ),
             )
             result.reasons[evaluator] = self.reasons[i]
@@ -348,6 +360,16 @@ def _base_case_is_unique(results: list[AttackResult]) -> bool:
     """Return True if `(base_case, strategy)` keys stay 1:1 after stripping the suffix."""
     keys = [(_base_case(r), r.strategy) for r in results]
     return len(set(keys)) == len(keys)
+
+
+def _run_results(case_data: dict) -> dict:
+    """Return the row's `RUN_RESULTS` environment state, falling back to `metadata` for older reports."""
+    for state in case_data.get("actual_environment_state") or []:
+        if state.get("name") == RUN_RESULTS:
+            run_results = state.get("state")
+            # Custom tasks own `environment_state`; tolerate a non-dict state rather than crash the report.
+            return run_results if isinstance(run_results, dict) else {}
+    return case_data.get("metadata") or {}
 
 
 def _format_run_stats(result: AttackResult) -> str:
