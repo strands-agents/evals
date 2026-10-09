@@ -46,7 +46,7 @@ def _case(name: str = "c0", label: str = "stub") -> RedTeamCase:
     return RedTeamCase(
         name=name,
         input="hello",
-        config=RedTeamConfig(attack_goal=AttackGoal(risk_category="guideline_bypass", actor_goal="goal")),
+        config=RedTeamConfig(attack_goal=AttackGoal(risk_category="prompt_injection", actor_goal="goal")),
         metadata={"strategy": label},
     )
 

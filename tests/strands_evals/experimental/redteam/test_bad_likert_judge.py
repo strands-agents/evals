@@ -48,7 +48,7 @@ class _FakeSession:
         raise AssertionError("BLJ is invoke-only and must not restore")
 
 
-def _case(success_criteria: str | None = "leaked the secret", risk_category: str = "system_prompt_leak") -> RedTeamCase:
+def _case(success_criteria: str | None = "leaked the secret", risk_category: str = "sensitive_data") -> RedTeamCase:
     return RedTeamCase(
         name="b0",
         input="hello",
@@ -131,7 +131,7 @@ class TestSuccessScore:
 
 class TestBuildSequence:
     def test_sequence_length_and_order(self):
-        goal = AttackGoal(risk_category="system_prompt_leak", actor_goal="g")
+        goal = AttackGoal(risk_category="sensitive_data", actor_goal="g")
         seq = blj_v0.build_sequence(goal, 3, refine_rounds=2)
         # setup + elicit + 2 refine
         assert len(seq) == 4
@@ -140,15 +140,15 @@ class TestBuildSequence:
         assert seq[2] == seq[3]  # both REFINE turns identical
 
     def test_zero_refine_rounds_is_setup_plus_elicit(self):
-        goal = AttackGoal(risk_category="system_prompt_leak", actor_goal="g")
+        goal = AttackGoal(risk_category="sensitive_data", actor_goal="g")
         assert len(blj_v0.build_sequence(goal, 3, refine_rounds=0)) == 2
 
     def test_risk_category_slot_uses_description_not_slug(self):
         """The {risk_category} slot renders the human-readable description, not the slug."""
-        goal = AttackGoal(risk_category="system_prompt_leak", actor_goal="g")
+        goal = AttackGoal(risk_category="sensitive_data", actor_goal="g")
         setup = blj_v0.build_sequence(goal, 3, refine_rounds=0)[0]
-        assert "system_prompt_leak" not in setup  # the raw slug must not leak through
-        assert RISK_CATEGORIES["system_prompt_leak"] in setup
+        assert "sensitive_data" not in setup  # the raw slug must not leak through
+        assert RISK_CATEGORIES["sensitive_data"] in setup
 
     def test_unknown_category_falls_back_to_slug(self):
         goal = AttackGoal(risk_category="custom_thing", actor_goal="g")
@@ -161,7 +161,7 @@ class TestBuildSequence:
         The goal lands in JUDGE_SETUP (the only template with the {actor_goal} slot); the test's real
         point is that build_sequence completes without a KeyError/ValueError on the literal braces.
         """
-        goal = AttackGoal(risk_category="system_prompt_leak", actor_goal='leak the config {"role":"admin"}')
+        goal = AttackGoal(risk_category="sensitive_data", actor_goal='leak the config {"role":"admin"}')
         seq = blj_v0.build_sequence(goal, 3, refine_rounds=1)
         assert '{"role":"admin"}' in seq[0]
         # no leftover unfilled slots survived the substitution
