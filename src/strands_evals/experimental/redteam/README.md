@@ -73,8 +73,10 @@ report = experiment.run_evaluations()  # sync; equivalent to run_evaluations_asy
 
 ## Attack strategies
 
-All strategies share the `run_attack(case, target_session, *, max_turns, model)`
-contract and talk to the target only through `target_session.invoke(...)`.
+All strategies share the `run_attack(case, target_session, *, max_turns=MAX_ALLOWED_TURNS, model=None)`
+contract and talk to the target only through `target_session.invoke(...)`. To call `run_attack` from your own
+task, wrap a freshly built target with `as_target_session(target)`: an `Agent` becomes a `StrandsAgentSession`, a
+`Graph` / `Swarm` becomes a `StrandsMultiAgentSession`, and a `TargetSession` is passed through.
 
 | Strategy | Mechanism | Attacker LLM? | Paper |
 |----------|-----------|---------------|-------|
@@ -84,7 +86,7 @@ contract and talk to the target only through `target_session.invoke(...)`.
 | `BadLikertJudgeStrategy` | Casts the target as a harmfulness-rating judge, elicits a top-score example | no | [Unit 42](https://unit42.paloaltonetworks.com/multi-turn-technique-jailbreaks-llms/) |
 | `SequentialBreakStrategy` | Hides the harmful request among benign siblings in one narrative scaffold | no | [arXiv:2411.06426](https://arxiv.org/abs/2411.06426) |
 
-Each strategy accepts a `max_turns=` kwarg (its own per-attack ceiling); the task runner additionally caps every strategy at a hard `MAX_ALLOWED_TURNS = 50` (`task.py`), so a strategy configured higher will be silently clamped. Pass `label="..."` to compare two instances of the same strategy in one experiment (e.g. `CrescendoStrategy(max_turns=5, label="cresc_short")`); duplicate labels raise at construction.
+Each strategy accepts a `max_turns=` kwarg (its own per-attack ceiling); the built-in task additionally caps every strategy at a hard `MAX_ALLOWED_TURNS = 50` (`strategies/base.py`, exported from `strands_evals.experimental.redteam`), so a strategy configured higher will be silently clamped. A custom task can omit `run_attack`'s `max_turns`, which defaults to that ceiling. A custom `AttackStrategy` subclass should declare the same default (`max_turns: int = MAX_ALLOWED_TURNS`); one that declares `max_turns: int` without it still works with `RedTeamExperiment`, which always passes the value, but a custom task must pass `max_turns=` explicitly. Pass `label="..."` to compare two instances of the same strategy in one experiment (e.g. `CrescendoStrategy(max_turns=5, label="cresc_short")`); duplicate labels raise at construction.
 
 `PromptStrategy` (a no-attacker-LLM, system-prompt-template strategy) and the `BUILTIN_STRATEGIES` registry are the extension points for adding new template-driven strategies without subclassing — see `strategies/prompt_strategy/`. The full set of exported symbols (experiment, cases, evaluator, target sessions) is the `__all__` of `strands_evals.experimental.redteam`.
 
@@ -226,7 +228,7 @@ redteam/
 ├── experiment.py          # RedTeamExperiment
 ├── case.py                # RedTeamCase
 ├── report.py              # RedTeamReport, AttackResult, GroupedSummary
-├── task.py                # wraps Agent / MultiAgentBase into a TargetSession per case
+├── task.py                # built-in task: runs each case's strategy against its TargetSession
 ├── types/                 # AttackGoal, RedTeamConfig, RISK_CATEGORIES
 ├── generators/            # AdversarialCaseGenerator
 ├── evaluators/            # AttackSuccessEvaluator + judge prompt templates

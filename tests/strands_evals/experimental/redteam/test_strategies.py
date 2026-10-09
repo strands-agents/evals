@@ -1,10 +1,24 @@
 """Tests for AttackStrategy implementations."""
 
+import inspect
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from strands_evals.experimental import redteam
+from strands_evals.experimental.redteam import strategies, task
 from strands_evals.experimental.redteam.case import RedTeamCase
-from strands_evals.experimental.redteam.strategies import BUILTIN_STRATEGIES, PromptStrategy
-from strands_evals.experimental.redteam.strategies.base import AttackRunResult
+from strands_evals.experimental.redteam.strategies import (
+    BUILTIN_STRATEGIES,
+    BadLikertJudgeStrategy,
+    CrescendoStrategy,
+    GoatStrategy,
+    PairStrategy,
+    PromptStrategy,
+    SequentialBreakStrategy,
+    base,
+)
+from strands_evals.experimental.redteam.strategies.base import AttackRunResult, AttackStrategy
 from strands_evals.experimental.redteam.strategies.target_session import TargetCheckpoint
 from strands_evals.experimental.redteam.types import AttackGoal, RedTeamConfig
 
@@ -97,6 +111,51 @@ def test_prompt_strategy_ctor_max_turns_caps_below_ceiling(mock_simulator_cls):
     strategy.run_attack(_case(), _FakeSession(lambda _m: "r"), max_turns=50)  # ceiling 50
 
     assert mock_simulator_cls.call_args.kwargs["max_turns"] == 3
+
+
+def test_max_allowed_turns_importable_from_every_location():
+    """The constant moved to strategies/base.py; the old task.py import and the package roots still work."""
+    assert redteam.MAX_ALLOWED_TURNS is strategies.MAX_ALLOWED_TURNS is task.MAX_ALLOWED_TURNS is base.MAX_ALLOWED_TURNS
+    assert base.MAX_ALLOWED_TURNS == 50
+
+
+@pytest.mark.parametrize(
+    "strategy_cls",
+    [
+        AttackStrategy,
+        BadLikertJudgeStrategy,
+        CrescendoStrategy,
+        GoatStrategy,
+        PairStrategy,
+        PromptStrategy,
+        SequentialBreakStrategy,
+    ],
+)
+def test_run_attack_max_turns_defaults_to_ceiling(strategy_cls):
+    """A custom task can omit max_turns on every strategy."""
+    default = inspect.signature(strategy_cls.run_attack).parameters["max_turns"].default
+    assert default == base.MAX_ALLOWED_TURNS
+
+
+@patch("strands_evals.experimental.redteam.strategies.prompt_strategy.ActorSimulator")
+def test_run_attack_without_max_turns_runs_under_ceiling(mock_simulator_cls):
+    mock_simulator_cls.return_value.has_next.return_value = False
+
+    strategy = PromptStrategy("gradual_escalation", "p {max_turns}", max_turns=100)
+    strategy.run_attack(_case(), _FakeSession(lambda _m: "r"))
+
+    assert mock_simulator_cls.call_args.kwargs["max_turns"] == base.MAX_ALLOWED_TURNS
+
+
+@patch("strands_evals.experimental.redteam.strategies.prompt_strategy.ActorSimulator")
+def test_run_attack_explicit_max_turns_above_ceiling_is_honored(mock_simulator_cls):
+    """Only the built-in task enforces MAX_ALLOWED_TURNS; a direct caller's explicit value is not clamped."""
+    mock_simulator_cls.return_value.has_next.return_value = False
+
+    strategy = PromptStrategy("gradual_escalation", "p {max_turns}", max_turns=100)
+    strategy.run_attack(_case(), _FakeSession(lambda _m: "r"), max_turns=80)
+
+    assert mock_simulator_cls.call_args.kwargs["max_turns"] == 80
 
 
 @patch("strands_evals.experimental.redteam.strategies.prompt_strategy.ActorSimulator")

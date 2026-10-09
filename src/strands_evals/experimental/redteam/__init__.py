@@ -4,6 +4,7 @@ from .experiment import RedTeamExperiment
 from .generators import AdversarialCaseGenerator, TargetSpec
 from .report import AttackResult, GroupedSummary, RedTeamReport
 from .strategies import (
+    MAX_ALLOWED_TURNS,
     AttackRunResult,
     AttackStrategy,
     BadLikertJudgeStrategy,
@@ -16,10 +17,12 @@ from .strategies import (
     StrandsMultiAgentSession,
     TargetCheckpoint,
     TargetSession,
+    as_target_session,
 )
 from .types import RISK_CATEGORIES, AttackGoal, RedTeamConfig
 
 __all__ = [
+    "MAX_ALLOWED_TURNS",
     "RISK_CATEGORIES",
     "AdversarialCaseGenerator",
     "AttackGoal",
@@ -43,4 +46,5 @@ __all__ = [
     "TargetCheckpoint",
     "TargetSession",
     "TargetSpec",
+    "as_target_session",
 ]

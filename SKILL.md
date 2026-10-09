@@ -418,7 +418,7 @@ Built-in strategies:
 | `BadLikertJudgeStrategy(...)` | Likert-scale judge-prompt attack |
 | `SequentialBreakStrategy(...)` | Narrative-scaffold attack (PR #254) |
 
-Targets and sessions in `redteam.strategies`: `StrandsAgentSession`, `StrandsMultiAgentSession`, `TargetCheckpoint`, `TargetSession` (Protocol).
+Targets and sessions in `redteam.strategies`: `StrandsAgentSession`, `StrandsMultiAgentSession`, `TargetCheckpoint`, `TargetSession` (Protocol), and `as_target_session(target)`, which wraps an `Agent` / `MultiAgentBase` in the right session for a custom task.
 
 Cases are typed `RedTeamCase` carrying a `RedTeamConfig(attack_goal=AttackGoal(risk_category=..., actor_goal=..., severity=..., success_criteria=...), traits={...})`. `RISK_CATEGORIES` is the canonical category list for case generation.
 
@@ -426,7 +426,7 @@ Cases are typed `RedTeamCase` carrying a `RedTeamConfig(attack_goal=AttackGoal(r
 
 `RedTeamReport` adds case-centric grouping: one `AttackResult` per case, plus `GroupedSummary` aggregations exposed via `report.by_risk_category()` and `report.by_strategy()`. Severity is recorded on each `AttackResult` (no `by_severity()` aggregator). `trajectory` holds raw tool I/O — sanitize before sharing if tools return sensitive data.
 
-**Hard turn cap:** `task.py` enforces `MAX_ALLOWED_TURNS = 50` regardless of a strategy's own `max_turns`. A `CrescendoStrategy(max_turns=100)` will still stop at 50 inside `RedTeamExperiment`. Lower turn budgets honor the strategy setting.
+**Hard turn cap:** the built-in task passes `MAX_ALLOWED_TURNS = 50` (`strategies/base.py`) regardless of a strategy's own `max_turns`, and `run_attack`'s `max_turns` defaults to it. A `CrescendoStrategy(max_turns=100)` will still stop at 50 inside `RedTeamExperiment`. Lower turn budgets honor the strategy setting.
 
 Stability: `experimental.redteam` APIs may change in a minor release. Breaking changes (renames, removed args, changed defaults) go through a deprecation cycle with a `DeprecationWarning` for at least one minor version.
 

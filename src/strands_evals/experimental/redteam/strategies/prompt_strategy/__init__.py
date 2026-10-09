@@ -9,7 +9,7 @@ from strands.models.model import Model
 
 from .....simulation.actor_simulator import ActorSimulator
 from .....types.simulation import ActorProfile
-from ..base import AttackRunResult, AttackStrategy
+from ..base import MAX_ALLOWED_TURNS, AttackRunResult, AttackStrategy
 
 if TYPE_CHECKING:
     from ...case import RedTeamCase
@@ -42,7 +42,7 @@ class PromptStrategy(AttackStrategy):
         case: RedTeamCase,
         target_session: TargetSession,
         *,
-        max_turns: int,
+        max_turns: int = MAX_ALLOWED_TURNS,
         model: Model | str | None = None,
         **kwargs: Any,
     ) -> AttackRunResult:

@@ -1,5 +1,5 @@
 from .bad_likert_judge import BadLikertJudgeStrategy
-from .base import AttackRunResult, AttackStrategy
+from .base import MAX_ALLOWED_TURNS, AttackRunResult, AttackStrategy
 from .crescendo import CrescendoStrategy
 from .goat import GoatStrategy
 from .pair import PairStrategy
@@ -12,6 +12,7 @@ from .target_session import (
     TargetCheckpoint,
     TargetSession,
     ToolUseEntry,
+    as_target_session,
 )
 
 # Ready-made strategy instances users can pass to RedTeamExperiment(attack_strategies=[...]).
@@ -24,6 +25,7 @@ BUILTIN_STRATEGIES: dict[str, AttackStrategy] = {
 
 __all__ = [
     "BUILTIN_STRATEGIES",
+    "MAX_ALLOWED_TURNS",
     "AttackRunResult",
     "AttackStrategy",
     "BadLikertJudgeStrategy",
@@ -37,4 +39,5 @@ __all__ = [
     "TargetCheckpoint",
     "TargetSession",
     "ToolUseEntry",
+    "as_target_session",
 ]

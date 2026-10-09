@@ -12,11 +12,10 @@ from strands.multiagent.base import MultiAgentBase
 
 from .case import RedTeamCase
 from .strategies import AttackStrategy
-from .strategies.target_session import StrandsAgentSession, StrandsMultiAgentSession, TargetSession
+from .strategies.base import MAX_ALLOWED_TURNS as MAX_ALLOWED_TURNS  # re-exported for the pre-move import path
+from .strategies.target_session import StrandsMultiAgentSession, TargetSession, _build_session, as_target_session
 
 logger = logging.getLogger(__name__)
-
-MAX_ALLOWED_TURNS = 50
 
 
 def _build_attacker_task(
@@ -124,7 +123,7 @@ def _build_per_case_task_fn(
 
         # No baseline: each case starts from a freshly built target, and `session.reset()` only
         # needs to clear the per-case trace.
-        session = _build_session(make_target(), baseline=None)
+        session = as_target_session(make_target())
         session.reset()
 
         # CPython dict assignment for a single distinct key is atomic, and case names are unique
@@ -147,6 +146,7 @@ def _run_attack(
     Errors propagate: the base `Experiment` retries throttling, records any other failure as an
     error reason (which the report classifies as errored), and skips caching the failed case.
     """
+    # Passed explicitly: custom strategies written against the old contract declare `max_turns` without a default.
     result = strategy.run_attack(case, session, max_turns=MAX_ALLOWED_TURNS, model=model)
     if run_meta is not None and case.name is not None:
         run_meta[case.name] = {**result.metadata, "pruned_branches": result.pruned_branches}
@@ -177,38 +177,6 @@ def _resolve_target_source(
         "instances cannot be deep-copied per worker (their default model client holds non-pickleable "
         f"state); got agent={type(agent).__name__!r}, agent_factory=None. Pass a zero-arg factory "
         "that returns a fresh target for each case."
-    )
-
-
-def _build_session(
-    agent: Agent | MultiAgentBase | TargetSession,
-    *,
-    baseline: Any = None,
-) -> TargetSession:
-    """Wrap an `Agent` / `MultiAgentBase`, or pass a `TargetSession` through.
-
-    Args:
-        agent: The target to wrap, or a ready `TargetSession`.
-        baseline: Clean snapshot the wrapped session resets to between cases. Ignored for a passed-in
-            `TargetSession`. Typed `Any` because the two session types use different opaque baseline shapes.
-
-    Raises:
-        TypeError: If `agent` is not an `Agent`, `MultiAgentBase`, or a structural `TargetSession` (must expose
-            `invoke`/`reset`/`snapshot`/`restore` and a `trace: list`).
-    """
-    if isinstance(agent, Agent):
-        return StrandsAgentSession(agent, baseline=baseline)
-    if isinstance(agent, MultiAgentBase):
-        return StrandsMultiAgentSession(agent, baseline=baseline)
-    # Structural check: TargetSession is a Protocol. The `trace: list` check is
-    # load-bearing because the task runner dereferences `.trace` directly.
-    has_methods = all(callable(getattr(agent, method, None)) for method in ("invoke", "reset", "snapshot", "restore"))
-    if has_methods and isinstance(getattr(agent, "trace", None), list):
-        return agent
-    raise TypeError(
-        f"agent must be a strands.Agent, strands.multiagent.MultiAgentBase, or a TargetSession, "
-        f"got {type(agent).__name__!r}; wrap a custom target in a TargetSession so the strategy "
-        "can snapshot/restore its state."
     )
 
 

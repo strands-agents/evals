@@ -106,16 +106,17 @@ strands-evals/
 │   │       ├── README.md                     # Module quick-start + walkthrough
 │   │       ├── case.py                       # RedTeamCase + RedTeamConfig
 │   │       ├── experiment.py                 # RedTeamExperiment (case × strategy cross-product)
-│   │       ├── task.py                       # _build_attacker_task; MAX_ALLOWED_TURNS = 50 (hard cap)
+│   │       ├── task.py                       # _build_attacker_task
 │   │       ├── utils.py                      # _put_model_field (used by to_dict)
 │   │       ├── report.py                     # RedTeamReport / AttackResult / GroupedSummary
 │   │       ├── evaluators/                   # AttackSuccessEvaluator
 │   │       ├── generators/                   # AdversarialCaseGenerator + TargetSpec
 │   │       ├── strategies/                   # AttackStrategy base + per-strategy subpackages
-│   │       │   ├── base.py                   # AttackStrategy ABC + AttackRunResult
+│   │       │   ├── base.py                   # AttackStrategy ABC + AttackRunResult; MAX_ALLOWED_TURNS = 50 (hard cap)
 │   │       │   ├── _common.py                # Shared helpers
 │   │       │   ├── target_session.py         # TargetSession Protocol + StrandsAgentSession,
-│   │       │   │                             # StrandsMultiAgentSession, TargetCheckpoint, ToolUseEntry
+│   │       │   │                             # StrandsMultiAgentSession, TargetCheckpoint, ToolUseEntry,
+│   │       │   │                             # as_target_session
 │   │       │   ├── bad_likert_judge/         # BadLikertJudgeStrategy
 │   │       │   ├── crescendo/                # CrescendoStrategy + crescendo_v0 prompt
 │   │       │   ├── goat/                     # GoatStrategy + goat_v0 prompt

@@ -4,13 +4,17 @@ from unittest.mock import MagicMock
 
 import pytest
 from strands import Agent
+from strands.multiagent import Swarm
 
+from strands_evals.experimental import redteam
 from strands_evals.experimental.redteam.strategies.target_session import (
     MALFORMED_TOOL_NAME,
     StrandsAgentSession,
+    StrandsMultiAgentSession,
     TargetCheckpoint,
     _single_shot_attempts,
     _tool_uses_in,
+    as_target_session,
 )
 
 
@@ -293,3 +297,52 @@ class TestSingleShotAttempts:
             begin_attempt()  # attempt 3: restores to entry
             seen.append(session.state)  # 0 again
         assert seen == [0, 0]
+
+
+# ---------------------------------------------------------------------------
+# as_target_session — public wrapper for custom tasks
+# ---------------------------------------------------------------------------
+
+
+class _GuardedSession(StrandsAgentSession):
+    """A user subclass of a built-in session; must come back as is, not re-wrapped."""
+
+
+class _NoTraceSession:
+    """Has the four TargetSession methods but no `trace` list."""
+
+    def invoke(self, message):
+        return ""
+
+    def reset(self):
+        pass
+
+    def snapshot(self):
+        return None
+
+    def restore(self, checkpoint):
+        pass
+
+
+class TestAsTargetSession:
+    def test_wraps_agent(self):
+        assert isinstance(as_target_session(Agent(model=None, callback_handler=None)), StrandsAgentSession)
+
+    def test_wraps_multi_agent(self):
+        swarm = Swarm([Agent(model=None, callback_handler=None)])
+        assert isinstance(as_target_session(swarm), StrandsMultiAgentSession)
+
+    def test_passes_target_session_through(self):
+        session = _GuardedSession(Agent(model=None, callback_handler=None))
+        assert as_target_session(session) is session
+
+    def test_rejects_session_without_trace_list(self):
+        with pytest.raises(TypeError, match="TargetSession"):
+            as_target_session(_NoTraceSession())
+
+    def test_rejects_bare_callable(self):
+        with pytest.raises(TypeError, match="^target must be .*TargetSession"):
+            as_target_session(lambda message: "reply")
+
+    def test_exported_from_package_root(self):
+        assert redteam.as_target_session is as_target_session
