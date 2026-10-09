@@ -7,7 +7,7 @@ from strands.models.model import Model
 
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from ..types.trace import EvaluationLevel
-from .evaluator import Evaluator
+from .evaluator import DisclosureMode, Evaluator
 from .prompt_templates.conciseness import get_template
 
 
@@ -44,24 +44,30 @@ class ConcisenessEvaluator(Evaluator[InputT, OutputT]):
         system_prompt: str | None = None,
         include_inputs: bool = True,
         name: str | None = None,
+        disclosure: DisclosureMode = "auto",
     ):
         super().__init__(name=name)
         self.system_prompt = system_prompt or get_template(version).SYSTEM_PROMPT
         self.version = version
         self.model = model
         self.include_inputs = include_inputs
+        self.disclosure = self._validate_disclosure(disclosure)
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         parsed_input = self._get_last_turn(evaluation_case)
-        prompt = self._format_trace_level_prompt(parsed_input)
-        evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
+        prompt, tools = self._render_with_disclosure(
+            evaluation_case, lambda idx: self._format_trace_level_prompt(parsed_input, idx)
+        )
+        evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, tools=tools, callback_handler=None)
         result = evaluator_agent(prompt, structured_output_model=ConcisenessRating)
         return self._create_evaluation_output(result)
 
     async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         parsed_input = self._get_last_turn(evaluation_case)
-        prompt = self._format_trace_level_prompt(parsed_input)
-        evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
+        prompt, tools = self._render_with_disclosure(
+            evaluation_case, lambda idx: self._format_trace_level_prompt(parsed_input, idx)
+        )
+        evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, tools=tools, callback_handler=None)
         result = await evaluator_agent.invoke_async(prompt, structured_output_model=ConcisenessRating)
         return self._create_evaluation_output(result)
 
