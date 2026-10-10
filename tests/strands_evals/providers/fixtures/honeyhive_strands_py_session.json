@@ -1,0 +1,276 @@
+{
+  "events": [
+    {
+      "event_id": "088e9f1f-273a-45f4-ab62-8fa4c7506c29",
+      "session_id": "67ea28fe-8901-4cfb-8e48-bca9f888ecf1",
+      "parent_id": "4381245a-2c2e-4bd7-ba36-44b86e0ddb16",
+      "event_type": "chain",
+      "event_name": "execute_event_loop_cycle",
+      "inputs": {
+        "chat_history": [
+          {
+            "content": "What is 25 * 4?",
+            "role": "user"
+          },
+          {
+            "content": [
+              {
+                "toolUse": {
+                  "input": {
+                    "a": 25,
+                    "b": 4
+                  },
+                  "name": "calculator",
+                  "toolUseId": "call_6XFSwDQzukj98QJLEZUv0cLG"
+                }
+              }
+            ],
+            "role": "assistant"
+          },
+          {
+            "content": "{\"toolResult\": {\"toolUseId\": \"call_6XFSwDQzukj98QJLEZUv0cLG\", \"status\": \"success\", \"content\": [{\"text\": \"100.0\"}]}}",
+            "role": "tool"
+          }
+        ]
+      },
+      "outputs": {},
+      "source": "otlp",
+      "duration": 956,
+      "metadata": {
+        "event_type": "chain",
+        "model_name": "unknown",
+        "operation_name": "execute_event_loop_cycle",
+        "parent_span_id": "d8a4e36b80a6ee77",
+        "span_id": "a4ae1a683715b704",
+        "trace_id": "65a83aff82d6276100b53d5c9604f9bd"
+      },
+      "start_time": 1790834068008,
+      "end_time": 1790834068964
+    },
+    {
+      "event_id": "23e8d0cf-419c-42a9-8bf8-ef7c13c90a3f",
+      "session_id": "67ea28fe-8901-4cfb-8e48-bca9f888ecf1",
+      "parent_id": "088e9f1f-273a-45f4-ab62-8fa4c7506c29",
+      "event_type": "model",
+      "event_name": "chat",
+      "config": {
+        "model": "gpt-4.1-mini",
+        "provider": "strands-agents",
+        "system": "strands-agents"
+      },
+      "inputs": {
+        "chat_history": [
+          {
+            "content": "What is 25 * 4?",
+            "role": "user"
+          },
+          {
+            "content": [
+              {
+                "toolUse": {
+                  "input": {
+                    "a": 25,
+                    "b": 4
+                  },
+                  "name": "calculator",
+                  "toolUseId": "call_6XFSwDQzukj98QJLEZUv0cLG"
+                }
+              }
+            ],
+            "role": "assistant"
+          },
+          {
+            "content": "{\"toolResult\": {\"toolUseId\": \"call_6XFSwDQzukj98QJLEZUv0cLG\", \"status\": \"success\", \"content\": [{\"text\": \"100.0\"}]}}",
+            "role": "tool"
+          }
+        ]
+      },
+      "outputs": {
+        "content": "25 multiplied by 4 is 100.",
+        "finish_reason": "end_turn",
+        "role": "assistant"
+      },
+      "source": "otlp",
+      "duration": 955,
+      "metadata": {
+        "event_type": "model",
+        "input_tokens": 87,
+        "model_name": "gpt-4.1-mini",
+        "operation_name": "chat",
+        "output_tokens": 10,
+        "parent_span_id": "a4ae1a683715b704",
+        "span_id": "e0ea69ac51ed4c68",
+        "trace_id": "65a83aff82d6276100b53d5c9604f9bd"
+      },
+      "start_time": 1790834068008,
+      "end_time": 1790834068964
+    },
+    {
+      "event_id": "200eabb8-a7fc-4489-b1f0-8a90f5ca88da",
+      "session_id": "67ea28fe-8901-4cfb-8e48-bca9f888ecf1",
+      "parent_id": "aaede4f4-e3fd-43fa-9c81-5266580bc3e7",
+      "event_type": "tool",
+      "event_name": "execute_tool calculator",
+      "config": {
+        "provider": "strands-agents",
+        "system": "strands-agents",
+        "tool_description": "Multiply two numbers.",
+        "tool_name": "calculator"
+      },
+      "inputs": {
+        "parameters": {
+          "a": 25,
+          "b": 4
+        }
+      },
+      "outputs": {
+        "result": "100.0",
+        "tool_call_id": "call_6XFSwDQzukj98QJLEZUv0cLG"
+      },
+      "source": "otlp",
+      "duration": 3,
+      "metadata": {
+        "event_type": "tool",
+        "model_name": "unknown",
+        "operation_name": "execute_tool",
+        "parent_span_id": "231edf093faa6b4f",
+        "span_id": "a14bcaa7e0295168",
+        "trace_id": "65a83aff82d6276100b53d5c9604f9bd"
+      },
+      "start_time": 1790834068004,
+      "end_time": 1790834068007
+    },
+    {
+      "event_id": "956ec87f-5d5a-45b1-a1bb-ca5327efe5b2",
+      "session_id": "67ea28fe-8901-4cfb-8e48-bca9f888ecf1",
+      "parent_id": "aaede4f4-e3fd-43fa-9c81-5266580bc3e7",
+      "event_type": "model",
+      "event_name": "chat",
+      "config": {
+        "model": "gpt-4.1-mini",
+        "provider": "strands-agents",
+        "system": "strands-agents"
+      },
+      "inputs": {
+        "chat_history": [
+          {
+            "content": "What is 25 * 4?",
+            "role": "user"
+          }
+        ]
+      },
+      "outputs": {
+        "content": [
+          {
+            "toolUse": {
+              "input": {
+                "a": 25,
+                "b": 4
+              },
+              "name": "calculator",
+              "toolUseId": "call_6XFSwDQzukj98QJLEZUv0cLG"
+            }
+          }
+        ],
+        "finish_reason": "tool_use",
+        "role": "assistant"
+      },
+      "source": "otlp",
+      "duration": 3111,
+      "metadata": {
+        "event_type": "model",
+        "input_tokens": 59,
+        "model_name": "gpt-4.1-mini",
+        "operation_name": "chat",
+        "output_tokens": 18,
+        "parent_span_id": "231edf093faa6b4f",
+        "span_id": "6237a8d92ad31ea8",
+        "trace_id": "65a83aff82d6276100b53d5c9604f9bd"
+      },
+      "start_time": 1790834064891,
+      "end_time": 1790834068003
+    },
+    {
+      "event_id": "aaede4f4-e3fd-43fa-9c81-5266580bc3e7",
+      "session_id": "67ea28fe-8901-4cfb-8e48-bca9f888ecf1",
+      "parent_id": "4381245a-2c2e-4bd7-ba36-44b86e0ddb16",
+      "event_type": "chain",
+      "event_name": "execute_event_loop_cycle",
+      "inputs": {
+        "chat_history": [
+          {
+            "content": "What is 25 * 4?",
+            "role": "user"
+          }
+        ]
+      },
+      "outputs": {
+        "content": "[{\"toolUse\":{\"input\":{\"a\":25,\"b\":4},\"name\":\"calculator\",\"toolUseId\":\"call_6XFSwDQzukj98QJLEZUv0cLG\"}}]"
+      },
+      "source": "otlp",
+      "duration": 3117,
+      "metadata": {
+        "event_type": "chain",
+        "model_name": "unknown",
+        "operation_name": "execute_event_loop_cycle",
+        "parent_span_id": "d8a4e36b80a6ee77",
+        "span_id": "231edf093faa6b4f",
+        "trace_id": "65a83aff82d6276100b53d5c9604f9bd"
+      },
+      "start_time": 1790834064891,
+      "end_time": 1790834068008
+    },
+    {
+      "event_id": "4381245a-2c2e-4bd7-ba36-44b86e0ddb16",
+      "session_id": "67ea28fe-8901-4cfb-8e48-bca9f888ecf1",
+      "parent_id": "be54e2fb-dd2d-460e-ad3c-279bf8538298",
+      "event_type": "chain",
+      "event_name": "invoke_agent Strands Agents",
+      "config": {
+        "model": "gpt-4.1-mini",
+        "tools": [
+          "calculator"
+        ]
+      },
+      "inputs": {
+        "chat_history": [
+          {
+            "content": "What is 25 * 4?",
+            "role": "user"
+          }
+        ]
+      },
+      "outputs": {
+        "content": "25 multiplied by 4 is 100.\n"
+      },
+      "source": "otlp",
+      "duration": 4074,
+      "metadata": {
+        "agent_name": "Strands Agents",
+        "event_type": "chain",
+        "input_tokens": 146,
+        "model_name": "gpt-4.1-mini",
+        "operation_name": "invoke_agent",
+        "output_tokens": 28,
+        "parent_span_id": "a700f14023fed164",
+        "span_id": "d8a4e36b80a6ee77",
+        "trace_id": "65a83aff82d6276100b53d5c9604f9bd"
+      },
+      "start_time": 1790834064890,
+      "end_time": 1790834068964
+    },
+    {
+      "event_id": "67ea28fe-8901-4cfb-8e48-bca9f888ecf1",
+      "session_id": "67ea28fe-8901-4cfb-8e48-bca9f888ecf1",
+      "event_type": "session",
+      "event_name": "strands-evals:mul-1",
+      "inputs": {},
+      "outputs": {},
+      "source": "otlp",
+      "duration": 4074,
+      "metadata": {},
+      "start_time": 1790834064890,
+      "end_time": 1790834068964
+    }
+  ]
+}

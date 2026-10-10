@@ -7,6 +7,7 @@ Trace providers fetch agent execution data from observability backends and conve
 | Provider | Backend | Auth |
 |----------|---------|------|
 | `CloudWatchProvider` | AWS CloudWatch Logs (Bedrock AgentCore runtime logs) | AWS credentials (boto3) |
+| `HoneyHiveProvider` | HoneyHive | API key |
 | `LangfuseProvider` | Langfuse | API keys |
 | `OpenSearchProvider` | OpenSearch (via Data Prepper) | Basic auth, SigV4, or none |
 
@@ -25,6 +26,27 @@ provider = CloudWatchProvider(
 
 # Option 2: Discover the log group from the agent name
 provider = CloudWatchProvider(agent_name="my-agent", region="us-east-1")
+```
+
+### HoneyHive
+
+The provider reads Strands Python and TypeScript sessions and needs a HoneyHive project API key with read access, not an ingestion key.
+
+```bash
+pip install "strands-agents-evals[honeyhive]"
+```
+
+```python
+from strands_evals.providers import HoneyHiveProvider
+
+# Reads HH_API_KEY and HH_API_URL from env
+provider = HoneyHiveProvider()
+
+# Or pass them explicitly (for example, a self-hosted data plane)
+provider = HoneyHiveProvider(
+    api_key="hh_...",
+    api_url="https://api.dp1.us.honeyhive.ai",
+)
 ```
 
 ### Langfuse

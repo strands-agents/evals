@@ -18,7 +18,7 @@ When helping someone contribute, you are a guide — not a gatekeeper, not a sub
 - LLM-as-a-Judge evaluators with built-in rubrics (correctness, faithfulness, helpfulness, etc.)
 - Multimodal evaluators (image-to-text tasks)
 - Deterministic evaluators (output/trajectory/environment-state)
-- Trace-based evaluation over OpenTelemetry sessions from CloudWatch, Langfuse, OpenSearch, LangChain, and Strands in-memory
+- Trace-based evaluation over OpenTelemetry sessions from CloudWatch, HoneyHive, Langfuse, OpenSearch, LangChain, and Strands in-memory
 - Multi-turn conversation simulators (ActorSimulator / UserSimulator / ToolSimulator)
 - Failure detection and root-cause analysis (`detectors` module)
 - Chaos testing — deterministic tool failure / response corruption (`chaos` module)
@@ -165,6 +165,7 @@ strands-evals/
 │   ├── providers/                            # External trace providers
 │   │   ├── trace_provider.py                 # Base interface
 │   │   ├── cloudwatch_provider.py
+│   │   ├── honeyhive_provider.py
 │   │   ├── langfuse_provider.py
 │   │   ├── opensearch_provider.py
 │   │   └── exceptions.py
