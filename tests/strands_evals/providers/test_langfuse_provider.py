@@ -872,6 +872,59 @@ class TestLangChainChainType:
         assert agents[0].agent_response == "Hello!"
 
 
+class TestLangfuseAgentType:
+    """AGENT-type observations (Langfuse v4+ / Strands via OTEL)."""
+
+    def _get_spans(self, provider, mock_client, observations):
+        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
+        mock_client.api.observations.get_many.return_value = _paginated(observations)
+        return provider.get_evaluation_data("s1")["trajectory"].traces[0].spans
+
+    def test_agent_with_parent_produces_agent_invocation(self, provider, mock_client):
+        """AGENT nested under a SPAN parent → AgentInvocationSpan (issue #311)."""
+        spans = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs(
+                    "o-agent",
+                    "t1",
+                    "AGENT",
+                    name="invoke_agent Strands Agents",
+                    obs_input="What is 2+2?",
+                    obs_output="4",
+                    parent_observation_id="o-span",
+                ),
+            ],
+        )
+        agents = [s for s in spans if isinstance(s, AgentInvocationSpan)]
+        assert len(agents) == 1
+        assert agents[0].user_prompt == "What is 2+2?"
+        assert agents[0].agent_response == "4"
+
+    def test_root_agent_produces_agent_invocation(self, provider, mock_client):
+        """AGENT at the root (no parent) → AgentInvocationSpan."""
+        spans = self._get_spans(
+            provider,
+            mock_client,
+            [
+                _obs(
+                    "o-agent",
+                    "t1",
+                    "AGENT",
+                    name="invoke_agent Strands Agents",
+                    obs_input="Hello",
+                    obs_output="Hi!",
+                    parent_observation_id=None,
+                ),
+            ],
+        )
+        agents = [s for s in spans if isinstance(s, AgentInvocationSpan)]
+        assert len(agents) == 1
+        assert agents[0].user_prompt == "Hello"
+        assert agents[0].agent_response == "Hi!"
+
+
 class TestLangChainEndToEnd:
     """Full LangChain agent trace: CHAIN + GENERATION + TOOL."""
 
