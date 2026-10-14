@@ -18,6 +18,7 @@ from strands.models.model import Model
 from strands.types.exceptions import ContextWindowOverflowException
 from typing_extensions import cast
 
+from .._async import bounded_gather_fail_fast, run_async
 from ..types.detector import FailureItem, RCAItem, RCAOutput, RCAStructuredOutput
 from ..types.trace import Session, SpanUnion
 from .chunking import would_exceed_context
@@ -26,7 +27,7 @@ from .constants import (
     RCA_MIN_WINDOW_SIZE,
     RCA_WINDOW_SPLIT_FACTOR,
 )
-from .failure_detector import detect_failures
+from .failure_detector import detect_failures_async
 from .prompt_templates.root_cause import get_merge_template, get_template
 from .utils import (
     _is_context_exceeded,
@@ -50,10 +51,9 @@ def analyze_root_cause(
 ) -> RCAOutput:
     """Perform root cause analysis on detected failures in a session.
 
-    Uses a 3-tier fallback strategy for handling large sessions:
-    1. Direct: analyze full session in one LLM call
-    2. Pruned: keep only spans on failure paths, retry
-    3. Chunked: split pruned session into windows, analyze each, merge
+    Synchronous wrapper around `analyze_root_cause_async`. Safe to call from
+    sync code or from inside a running event loop (Jupyter, FastAPI, async
+    tests) — the work runs on a dedicated worker thread with its own loop.
 
     Args:
         session: The Session object to analyze.
@@ -67,8 +67,36 @@ def analyze_root_cause(
         causality, propagation_impact, root_cause_explanation, fix_type, and
         fix_recommendation.
     """
+    return run_async(lambda: analyze_root_cause_async(session, failures, model=model))
+
+
+async def analyze_root_cause_async(
+    session: Session,
+    failures: list[FailureItem] | None = None,
+    *,
+    model: Model | str | None = None,
+    max_workers: int = 5,
+) -> RCAOutput:
+    """Async variant of `analyze_root_cause`.
+
+    Chunked RCA fans windows out concurrently, capped at `max_workers`.
+
+    Uses a 3-tier fallback strategy for handling large sessions:
+    1. Direct: analyze full session in one LLM call
+    2. Pruned: keep only spans on failure paths, retry
+    3. Chunked: split pruned session into windows, analyze each, merge
+
+    Args:
+        session: The Session object to analyze.
+        failures: List of FailureItems. If None, detection runs automatically.
+        model: A Model instance, model ID string, or None.
+        max_workers: Maximum concurrent LLM calls during chunked RCA.
+
+    Returns:
+        RCAOutput. See `analyze_root_cause`.
+    """
     if failures is None:
-        failures = detect_failures(session, model=model).failures
+        failures = (await detect_failures_async(session, model=model, max_workers=max_workers)).failures
     if not failures:
         return RCAOutput()
 
@@ -85,7 +113,7 @@ def analyze_root_cause(
 
     if not would_exceed_context(system_prompt):
         try:
-            raw = _rca_direct(system_prompt, effective_model)
+            raw = await _rca_direct_async(system_prompt, effective_model)
             return RCAOutput(root_causes=raw)
         except Exception as e:
             if not _is_context_exceeded(e):
@@ -104,7 +132,7 @@ def analyze_root_cause(
 
     if not would_exceed_context(pruned_prompt):
         try:
-            raw = _rca_direct(pruned_prompt, effective_model)
+            raw = await _rca_direct_async(pruned_prompt, effective_model)
             return RCAOutput(root_causes=raw)
         except Exception as e:
             if not _is_context_exceeded(e):
@@ -112,26 +140,27 @@ def analyze_root_cause(
             logger.warning("Pruned session still exceeds context, falling back to chunking")
 
     # Tier 3: Chunked analysis with merge
-    raw = _rca_chunked(pruned_session, failures, effective_model)
+    raw = await _rca_chunked_async(pruned_session, failures, effective_model, max_workers)
     return RCAOutput(root_causes=raw)
 
 
-def _rca_direct(system_prompt: str, model: Model) -> list[RCAItem]:
+async def _rca_direct_async(system_prompt: str, model: Model) -> list[RCAItem]:
     agent = Agent(
         model=model,
         system_prompt=system_prompt,
         callback_handler=None,
     )
-    result = agent(_TEMPLATE.USER_PROMPT, structured_output_model=RCAStructuredOutput)
+    result = await agent.invoke_async(_TEMPLATE.USER_PROMPT, structured_output_model=RCAStructuredOutput)
     return _parse_structured_result(cast(RCAStructuredOutput, result.structured_output))
 
 
-def _rca_chunked(
+async def _rca_chunked_async(
     pruned_session: Session,
     failures: list[FailureItem],
     model: Model,
+    max_workers: int,
 ) -> list[RCAItem]:
-    """Split pruned session into per-trace windows, analyze each, merge results."""
+    """Split pruned session into per-trace windows, analyze each concurrently, merge."""
     total_spans = sum(len(t.spans) for t in pruned_session.traces)
 
     if total_spans <= RCA_MIN_WINDOW_SIZE:
@@ -147,40 +176,45 @@ def _rca_chunked(
         window_size,
     )
 
-    chunk_results: list[str] = []
-    window_num = 0
-
+    windows: list[list[SpanUnion]] = []
     for trace in pruned_session.traces:
         if not trace.spans:
             continue
-
         for i in range(0, len(trace.spans), window_size):
-            window_spans = trace.spans[i : i + window_size]
-            window_num += 1
+            windows.append(trace.spans[i : i + window_size])
 
-            window_span_ids = {_get_span_id(s) for s in window_spans}
-            window_failures = [f for f in failures if f.span_id in window_span_ids]
-            window_failures_json = _serialize_failures(window_failures) if window_failures else failures_json
+    async def _process_window(window_num: int, window_spans: list[SpanUnion]) -> str | None:
+        window_span_ids = {_get_span_id(s) for s in window_spans}
+        window_failures = [f for f in failures if f.span_id in window_span_ids]
+        window_failures_json = _serialize_failures(window_failures) if window_failures else failures_json
 
-            window_json = _serialize_spans(window_spans)
-            system_prompt = _TEMPLATE.build_prompt(
-                execution_json=window_json,
-                execution_failures_json=window_failures_json,
-            )
+        window_json = _serialize_spans(window_spans)
+        system_prompt = _TEMPLATE.build_prompt(
+            execution_json=window_json,
+            execution_failures_json=window_failures_json,
+        )
 
-            try:
-                agent = Agent(model=model, system_prompt=system_prompt, callback_handler=None)
-                result = agent(_TEMPLATE.USER_PROMPT, structured_output_model=RCAStructuredOutput)
-                structured = cast(RCAStructuredOutput, result.structured_output)
-                chunk_results.append(structured.model_dump_json(by_alias=True, indent=2))
-                logger.info("RCA chunk %d: processed %d spans", window_num, len(window_spans))
-            except ContextWindowOverflowException:
-                logger.warning("RCA chunk %d still too large, skipping", window_num)
-            except Exception as e:
-                if _is_context_exceeded(e):
-                    logger.warning("RCA chunk %d context exceeded (string match), skipping", window_num)
-                else:
-                    raise
+        try:
+            agent = Agent(model=model, system_prompt=system_prompt, callback_handler=None)
+            result = await agent.invoke_async(_TEMPLATE.USER_PROMPT, structured_output_model=RCAStructuredOutput)
+            structured = cast(RCAStructuredOutput, result.structured_output)
+            logger.info("RCA chunk %d: processed %d spans", window_num, len(window_spans))
+            return structured.model_dump_json(by_alias=True, indent=2)
+        except ContextWindowOverflowException:
+            logger.warning("RCA chunk %d still too large, skipping", window_num)
+            return None
+        except Exception as e:
+            if _is_context_exceeded(e):
+                logger.warning("RCA chunk %d context exceeded (string match), skipping", window_num)
+                return None
+            raise
+
+    gathered = await bounded_gather_fail_fast(
+        (_process_window(i + 1, w) for i, w in enumerate(windows)),
+        max_workers,
+    )
+
+    chunk_results: list[str] = [outcome for outcome in gathered if outcome is not None]
 
     if not chunk_results:
         return []
@@ -197,7 +231,7 @@ def _rca_chunked(
     )
 
     agent = Agent(model=model, system_prompt=merge_prompt, callback_handler=None)
-    result = agent(_MERGE_TEMPLATE.USER_PROMPT, structured_output_model=RCAStructuredOutput)
+    result = await agent.invoke_async(_MERGE_TEMPLATE.USER_PROMPT, structured_output_model=RCAStructuredOutput)
     return _parse_structured_result(cast(RCAStructuredOutput, result.structured_output))
 
 
