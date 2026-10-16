@@ -1,3 +1,5 @@
+import json
+import logging
 from unittest.mock import Mock, patch
 
 import pytest
@@ -311,3 +313,91 @@ def test_trajectory_evaluator_evaluate_passes_custom_tools_to_agent(mock_agent_c
         callback_handler=None,
     )
     assert result[0].score == 0.9
+
+
+def test_trajectory_evaluator_tools_property_excludes_default_scorers():
+    """Test that the public tools attribute exposes only user-supplied tools, not the
+    built-in exact/in-order/any-order scorers that _tools always carries (issue #381)"""
+
+    def verify_step(step: str) -> str:
+        return "valid"
+
+    evaluator = TrajectoryEvaluator(rubric="Test rubric", tools=[verify_step])
+
+    assert evaluator.tools == [verify_step]
+
+
+def test_trajectory_evaluator_init_without_tools_defaults_to_none():
+    """Test TrajectoryEvaluator has no user tools by default"""
+    evaluator = TrajectoryEvaluator(rubric="Test rubric")
+
+    assert evaluator.tools is None
+    assert "tools" not in evaluator.to_dict()
+
+
+def test_trajectory_evaluator_to_dict_skips_non_serializable_tools(caplog):
+    """Test that to_dict() output is JSON-serializable when callable tools are set,
+    instead of silently dropping them with no public attribute to notice by (issue #381)"""
+
+    def verify_step(step: str) -> str:
+        return "valid"
+
+    evaluator = TrajectoryEvaluator(rubric="Test rubric", tools=[verify_step])
+    with caplog.at_level(logging.WARNING):
+        evaluator_dict = evaluator.to_dict()
+
+    assert "tools" not in evaluator_dict
+    json.dumps(evaluator_dict)
+    assert "skipping tool that cannot be written as valid utf-8 JSON" in caplog.text
+
+
+def test_trajectory_evaluator_to_dict_skips_circular_reference_tools_with_no_name(caplog):
+    """Test that a nameless tool raising ValueError (circular reference) is skipped by
+    a truncated ascii() preview rather than crashing on a missing tool_name/__name__"""
+    circular: dict = {"name": "x" * 100}
+    circular["self"] = circular
+
+    evaluator = TrajectoryEvaluator(rubric="Test rubric", tools=[circular])
+    with caplog.at_level(logging.WARNING):
+        evaluator_dict = evaluator.to_dict()
+
+    assert "tools" not in evaluator_dict
+    json.dumps(evaluator_dict)
+    assert "skipping tool that cannot be written as valid utf-8 JSON" in caplog.text
+
+
+def test_trajectory_evaluator_to_dict_keeps_serializable_tools(caplog):
+    """Test that a serializable user tool round-trips through to_dict() while the
+    built-in scorers are never included (issue #381)"""
+
+    def verify_step(step: str) -> str:
+        return "valid"
+
+    evaluator = TrajectoryEvaluator(rubric="Test rubric", tools=["my_pkg.calculator", verify_step])
+    with caplog.at_level(logging.WARNING):
+        evaluator_dict = evaluator.to_dict()
+
+    assert evaluator_dict["tools"] == ["my_pkg.calculator"]
+    json.dumps(evaluator_dict)
+    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 1  # the serializable tool and the default scorers must not warn
+    assert "verify_step" in warnings[0].getMessage()
+
+
+def test_trajectory_evaluator_tools_setter_stays_in_sync_with_tools():
+    """Test that reassigning tools updates both the public attribute and the merged
+    list the evaluator agent actually runs with"""
+    from strands_evals.tools.evaluation_tools import (
+        any_order_match_scorer,
+        exact_match_scorer,
+        in_order_match_scorer,
+    )
+
+    def verify_step(step: str) -> str:
+        return "valid"
+
+    evaluator = TrajectoryEvaluator(rubric="Test rubric")
+    evaluator.tools = [verify_step]
+
+    assert evaluator.tools == [verify_step]
+    assert evaluator._tools == [exact_match_scorer, in_order_match_scorer, any_order_match_scorer, verify_step]
