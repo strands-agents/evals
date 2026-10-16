@@ -3,7 +3,7 @@ import logging
 from typing import Any, cast
 
 from strands import Agent
-from strands.models.model import Model
+from strands.models.model import CacheConfig, Model
 
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from .evaluator import Evaluator
@@ -26,6 +26,10 @@ class OutputEvaluator(Evaluator[InputT, OutputT]):
         include_inputs: Whether to include inputs to the task in the evaluation or not.
         tools: Optional tools for the evaluator agent (e.g., domain-specific verification
                     functions the judge can call). Defaults to None (no tools).
+        cache_config: Optional CacheConfig for prompt caching. When set and model is a
+                    string, the evaluator creates a BedrockModel with caching enabled so the
+                    system prompt (rubric) is cached across evaluations, reducing input token
+                    consumption by up to 90% for the cached prefix. Defaults to None.
     """
 
     def __init__(
@@ -37,6 +41,7 @@ class OutputEvaluator(Evaluator[InputT, OutputT]):
         uses_environment_state: bool = False,
         name: str | None = None,
         tools: list[Any] | None = None,
+        cache_config: CacheConfig | None = None,
     ):
         super().__init__(name=name)
         self.rubric = rubric
@@ -44,6 +49,7 @@ class OutputEvaluator(Evaluator[InputT, OutputT]):
         self.include_inputs = include_inputs
         self.system_prompt = system_prompt
         self.uses_environment_state = uses_environment_state
+        self.cache_config = cache_config
         # Stored privately so the base to_dict() skips it; to_dict() below re-adds
         # the JSON-serializable subset so tools like module path strings round-trip.
         self._tools = tools
@@ -63,6 +69,24 @@ class OutputEvaluator(Evaluator[InputT, OutputT]):
     def tools(self, value: list[Any] | None) -> None:
         self._tools = value
 
+    def _resolve_model(self) -> Model | str | None:
+        """Resolve the model, applying cache_config when the model is a string ID.
+
+        When cache_config is set and model is a plain string (model ID), creates a
+        BedrockModel with caching enabled. This allows the system prompt (rubric) to be
+        cached across evaluation calls within the provider's cache window, reducing input
+        token consumption for repeated evaluations with the same rubric.
+
+        Returns:
+            The resolved model: a BedrockModel with caching if applicable, or the
+            original model value unchanged.
+        """
+        if self.cache_config is not None and isinstance(self.model, str):
+            from strands.models.bedrock import BedrockModel
+
+            return BedrockModel(model_id=self.model, cache_config=self.cache_config)
+        return self.model
+
     def to_dict(self) -> dict:
         """
         Convert the evaluator into a dictionary.
@@ -74,6 +98,10 @@ class OutputEvaluator(Evaluator[InputT, OutputT]):
             with a warning and must be re-attached after `from_dict()`.
         """
         _dict = super().to_dict()
+        if self.cache_config is not None:
+            from dataclasses import asdict
+
+            _dict["cache_config"] = asdict(self.cache_config)
         if self._tools:
             serializable_tools = []
             for tool in self._tools:
@@ -130,8 +158,9 @@ class OutputEvaluator(Evaluator[InputT, OutputT]):
         Returns:
             The results of the evaluation as EvaluationOutput.
         """
+        model = self._resolve_model()
         evaluator_agent = Agent(
-            model=self.model, tools=self.tools, system_prompt=self.system_prompt, callback_handler=None
+            model=model, tools=self.tools, system_prompt=self.system_prompt, callback_handler=None
         )
         evaluation_prompt = self._build_prompt(evaluation_case)
         result = evaluator_agent(evaluation_prompt, structured_output_model=EvaluationOutput)
@@ -147,8 +176,9 @@ class OutputEvaluator(Evaluator[InputT, OutputT]):
         Returns:
             The results of the evaluation as EvaluationOutput.
         """
+        model = self._resolve_model()
         evaluator_agent = Agent(
-            model=self.model, tools=self.tools, system_prompt=self.system_prompt, callback_handler=None
+            model=model, tools=self.tools, system_prompt=self.system_prompt, callback_handler=None
         )
         evaluation_prompt = self._build_prompt(evaluation_case)
         result = await evaluator_agent.invoke_async(evaluation_prompt, structured_output_model=EvaluationOutput)
