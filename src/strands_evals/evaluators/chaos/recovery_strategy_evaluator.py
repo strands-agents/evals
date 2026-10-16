@@ -47,7 +47,7 @@ class RecoveryStrategyEvaluator(Evaluator[InputT, OutputT]):
         model: Model | str | None = None,
         system_prompt: str | None = None,
         name: str | None = None,
-        disclosure: DisclosureMode = "auto",
+        disclosure: DisclosureMode = "never",
     ):
         super().__init__(name=name)
         self.version = version

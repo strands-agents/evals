@@ -37,7 +37,7 @@ class TrajectoryEvaluator(Evaluator[InputT, OutputT]):
         include_inputs: bool = True,
         name: str | None = None,
         tools: list[Any] | None = None,
-        disclosure: DisclosureMode = "auto",
+        disclosure: DisclosureMode = "never",
     ):
         super().__init__(name=name)
         self.rubric = rubric

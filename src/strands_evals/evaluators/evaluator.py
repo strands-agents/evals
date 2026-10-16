@@ -62,7 +62,7 @@ class Evaluator(Generic[InputT, OutputT]):
     # Trace-disclosure mode for judges that inline a Session trajectory. Subclasses
     # that accept a `disclosure` argument set it per-instance; this class default
     # keeps `self.disclosure` resolvable for evaluators that don't expose the knob.
-    disclosure: DisclosureMode = "auto"
+    disclosure: DisclosureMode = "never"
 
     def __init__(self, trace_extractor: TraceExtractor | None = None, name: str | None = None):
         """Initialize evaluator with optional custom trace extractor.
@@ -167,21 +167,21 @@ class Evaluator(Generic[InputT, OutputT]):
         """Render a judge prompt, falling back to trace tools when it would overflow.
 
         `render(None)` builds the prompt with the trajectory inlined (today's
-        behavior); `render(index)` builds it with a paged ``<TraceOverview>`` in
-        place of the inlined trajectory. Returns ``(prompt, tools)``: on the inline
+        behavior); `render(index)` builds it with a paged `<TraceOverview>` in
+        place of the inlined trajectory. Returns `(prompt, tools)`: on the inline
         path `tools` is empty and the prompt is byte-identical to before, so a case
         that fits the judge window is unchanged. On the disclosure path the judge
         gets the overview plus `list_spans` / `get_span` / `search_spans` and reads
         the trace on demand instead of overflowing on an inlined dump.
 
-        Modes (`self.disclosure`): ``"auto"`` discloses only on a preflight overflow;
-        ``"always"`` discloses whenever a Session trajectory is present; ``"never"``
+        Modes (`self.disclosure`): `"auto"` discloses only on a preflight overflow;
+        `"always"` discloses whenever a Session trajectory is present; `"never"`
         always inlines, restoring the prior behavior where a real overflow surfaces
         as the judge model's own context-length error.
 
-        Only ``"auto"`` needs the size probe, so the inline prompt is built once and
-        reused as both the probe and the fitting-case result. Under ``"always"`` /
-        ``"never"`` the decision is size-independent, so the (potentially large)
+        Only `"auto"` needs the size probe, so the inline prompt is built once and
+        reused as both the probe and the fitting-case result. Under `"always"` /
+        `"never"` the decision is size-independent, so the (potentially large)
         inline render is skipped unless it is the one actually returned.
         """
         if self.disclosure == "auto":
@@ -202,7 +202,7 @@ class Evaluator(Generic[InputT, OutputT]):
         """Decide whether to disclose, returning a `TraceIndex` to use or None to inline.
 
         `inline_probe` is the prompt (or its trajectory-bearing part) that would be
-        inlined; under ``"auto"`` it is preflighted against the judge model's window.
+        inlined; under `"auto"` it is preflighted against the judge model's window.
         Judges whose prompt is assembled in pieces (e.g. one row per decision) call
         this once per case and reuse the returned index across every piece.
 
@@ -393,31 +393,29 @@ class Evaluator(Generic[InputT, OutputT]):
             lines.append(f"Assistant: {ctx.agent_response.text}")
         return "\n".join(lines)
 
-    def _tool_level_disclosure(
+    def _tool_level_prompts(
         self, evaluation_case: EvaluationData[InputT, OutputT], tool_inputs: list[ToolLevelInput]
-    ) -> tuple[TraceIndex | None, list[Any]]:
-        """Resolve disclosure once for a tool-level case, shared across every tool call.
+    ) -> tuple[list[str], list[Any]]:
+        """Render every tool-level prompt for a case, deciding disclosure once for all of them.
 
-        Every tool call in a case is judged against the same session history, so the
-        overflow decision and the `TraceIndex` are made once here — and reused across
-        the loop, instead of rebuilding a `TraceIndex` (re-flatten + re-sort every
-        span) on each iteration. Returns ``(index, tools)`` to thread into
-        `_format_tool_level_prompt` and the judge `Agent`.
+        Returns `(prompts, tools)`: one prompt per tool input, in order, plus the trace
+        tools to give the judge (empty unless disclosure engaged). Each prompt is rendered
+        once and reused for both the `"auto"` size check and the judge call.
 
-        Because the decision is all-or-nothing for the case, the ``"auto"`` size probe
-        is the *largest* rendered tool prompt, not the first: the tool call and its
-        result vary per row, so probing the first row would inline a later, larger row
-        straight into an overflow. Rows are rendered in the loop anyway.
+        Every tool call in a case is judged against the same session, so the overflow
+        decision and the `TraceIndex` are made once here rather than per row. The decision
+        is all-or-nothing for the case, so `"auto"` sizes it off the *largest* row: session
+        history accumulates across rows, so the first row is the smallest.
         """
-        if not tool_inputs:
-            return None, []
-        probe = (
-            max((self._format_tool_level_prompt(ti) for ti in tool_inputs), key=len)
-            if self.disclosure == "auto"
-            else ""
-        )
-        index = self._resolve_disclosure_index(evaluation_case, probe)
-        return index, (list(index.tools) if index is not None else [])
+        # Without a Session there is nothing to index, so skip the decision entirely and
+        # render inline. `"always"` still goes through the resolver so it can warn.
+        if self.disclosure == "never" or (self._session_of(evaluation_case) is None and self.disclosure != "always"):
+            return [self._format_tool_level_prompt(ti) for ti in tool_inputs], []
+        inline = [self._format_tool_level_prompt(ti) for ti in tool_inputs] if self.disclosure == "auto" else None
+        index = self._resolve_disclosure_index(evaluation_case, max(inline, key=len) if inline else "")
+        if index is None:
+            return (inline if inline is not None else [self._format_tool_level_prompt(ti) for ti in tool_inputs]), []
+        return [self._format_tool_level_prompt(ti, index) for ti in tool_inputs], list(index.tools)
 
     def _format_tool_level_prompt(self, tool_input: ToolLevelInput, trace_index: TraceIndex | None = None) -> str:
         """Format evaluation prompt from tool-level input.

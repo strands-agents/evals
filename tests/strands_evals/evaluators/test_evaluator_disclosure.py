@@ -25,6 +25,9 @@ from strands_evals.evaluators import (
     TrajectoryEvaluator,
 )
 from strands_evals.evaluators._trace_index import TraceIndex
+from strands_evals.evaluators.skill_instruction_following_evaluator import SkillInstructionFollowingEvaluator
+from strands_evals.evaluators.skill_selection_accuracy_evaluator import SkillSelectionAccuracyEvaluator
+from strands_evals.extractors.skills.models import InvokedSkill
 from strands_evals.types import EvaluationData, EvaluationOutput
 from strands_evals.types.trace import (
     AgentInvocationSpan,
@@ -230,7 +233,7 @@ def test_trajectory_never_inlines_on_overflow(mock_agent_class):
     tool_names = {getattr(t, "tool_name", getattr(t, "__name__", "")) for t in mock_agent_class.call_args[1]["tools"]}
     assert not ({"list_spans", "get_span", "search_spans"} & tool_names)
     # "never" restores today's behavior: the full trajectory is inlined, so a real
-    # overflow is surfaced downstream as could-not-evaluate rather than disclosed here.
+    # overflow reaches the judge, which raises its own context-length error.
     assert "too large to inline" not in mock_agent.call_args[0][0]
 
 
@@ -292,3 +295,70 @@ def test_auto_does_not_warn_on_non_session_trajectory(caplog):
     with caplog.at_level("WARNING"):
         assert ev._resolve_disclosure_index(_case(["step one"]), _OVERFLOW_PROBE) is None
     assert not any("not a Session" in r.message for r in caplog.records)
+
+
+# --- opt-in default and render-once behavior ---------------------------------
+
+
+@pytest.mark.parametrize(
+    "factory", [lambda: TrajectoryEvaluator(rubric="r"), HelpfulnessEvaluator, ToolSelectionAccuracyEvaluator]
+)
+def test_disclosure_is_opt_in(factory):
+    assert factory().disclosure == "never"
+
+
+@patch("strands_evals.evaluators.trajectory_evaluator.Agent")
+def test_default_inlines_even_on_overflow(mock_agent_class):
+    mock_agent = Mock()
+    mock_agent.return_value = Mock(structured_output=EvaluationOutput(score=1.0, test_pass=True, reason="ok"))
+    mock_agent_class.return_value = mock_agent
+
+    TrajectoryEvaluator(rubric="r").evaluate(_case(_huge_session()))
+
+    tool_names = {getattr(t, "tool_name", getattr(t, "__name__", "")) for t in mock_agent_class.call_args[1]["tools"]}
+    assert not ({"list_spans", "get_span", "search_spans"} & tool_names)
+
+
+def test_tool_level_renders_each_prompt_once():
+    ev = ToolSelectionAccuracyEvaluator(disclosure="auto")
+    with patch.object(ev, "_format_tool_level_prompt", side_effect=lambda ti, idx=None: f"prompt {ti}") as fmt:
+        prompts, tools = ev._tool_level_prompts(_case(_small_session()), [1, 2, 3])
+    # The size check and the judge call share one render per tool input.
+    assert fmt.call_count == 3
+    assert prompts == ["prompt 1", "prompt 2", "prompt 3"]
+    assert tools == []
+
+
+def test_tool_level_skips_the_size_check_without_a_session():
+    ev = ToolSelectionAccuracyEvaluator(disclosure="auto")
+    with (
+        patch.object(ev, "_format_tool_level_prompt", side_effect=lambda ti, idx=None: "p"),
+        patch.object(ev, "_resolve_disclosure_index") as resolve,
+    ):
+        prompts, tools = ev._tool_level_prompts(_case(["step one"]), [1, 2])
+    resolve.assert_not_called()
+    assert prompts == ["p", "p"] and tools == []
+
+
+def test_skill_instruction_serializes_trajectory_once_per_case():
+    ev = SkillInstructionFollowingEvaluator(disclosure="auto")
+    skills = [InvokedSkill(name=f"s{i}", body=f"step {i}") for i in range(3)]
+    case = _case(_small_session())
+    with patch(
+        "strands_evals.evaluators.skill_instruction_following_evaluator.serialize_trajectory", return_value="TRAJ"
+    ) as ser:
+        trajectory, tools = ev._case_trajectory(case, skills)
+        prompts = [ev._build_prompt(s, case, trajectory) for s in skills]
+    assert ser.call_count == 1
+    assert trajectory == "TRAJ" and tools == []
+    assert all("TRAJ" in p for p in prompts)
+
+
+def test_skill_selection_always_does_not_build_the_inline_context():
+    ev = SkillSelectionAccuracyEvaluator(disclosure="always")
+    with patch.object(ev, "_case_context", wraps=ev._case_context) as ctx:
+        _, tools = ev._case_context_and_tools(_case(_small_session()))
+    # Only the disclosed context is built; the inline one would be thrown away.
+    assert ctx.call_count == 1
+    assert ctx.call_args[0][1] is not None
+    assert {getattr(t, "tool_name", "") for t in tools} == {"list_spans", "get_span", "search_spans"}

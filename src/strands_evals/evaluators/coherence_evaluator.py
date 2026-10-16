@@ -61,7 +61,7 @@ class CoherenceEvaluator(Evaluator[InputT, OutputT]):
         system_prompt: str | None = None,
         include_inputs: bool = True,
         name: str | None = None,
-        disclosure: DisclosureMode = "auto",
+        disclosure: DisclosureMode = "never",
     ):
         super().__init__(name=name)
         self.system_prompt = system_prompt or get_template(version).SYSTEM_PROMPT

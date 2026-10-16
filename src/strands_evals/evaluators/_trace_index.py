@@ -27,7 +27,6 @@ import re
 from strands import tool
 from strands.types.tools import AgentTool
 
-from ..extractors.trace_extractor import _to_aware_utc
 from ..types.trace import (
     AgentInvocationSpan,
     AssistantMessage,
@@ -39,6 +38,7 @@ from ..types.trace import (
     ToolExecutionSpan,
     ToolResultContent,
     UserMessage,
+    _to_aware_utc,
 )
 
 _PREVIEW_CHARS = 120
@@ -87,7 +87,7 @@ def _render_message(msg: UserMessage | AssistantMessage) -> str:
 
     Renders role + each content block by field (text, or tool name/args/result/
     error) like the tool and agent branches, rather than dumping the pydantic dict.
-    A raw `model_dump()` repr leaks structural keys such as ``'error': None`` into the
+    A raw `model_dump()` repr leaks structural keys such as `'error': None` into the
     text, which turns an "error" search into a false positive on every inference span
     and hides genuine failures behind serialization noise.
     """
@@ -108,7 +108,7 @@ def _search_haystack(span: SpanUnion) -> str:
     """Plain-text rendering of a span for search matching.
 
     Unlike `_span_text`, this joins the raw field values without JSON escaping so
-    a literal a judge copies from the overview (``$150``, ``refund_amount``) matches
+    a literal a judge copies from the overview (`$150`, `refund_amount`) matches
     the bytes it sees, and every human-visible field — including `system_prompt`
     and `available_tools` — is searchable.
     """
@@ -354,9 +354,9 @@ class TraceIndex:
             evaluator.evaluate(EvaluationData(input=..., actual_output=output))
 
         Returns:
-            A ``(prompt_section, tools)`` pair. ``prompt_section`` is the overview
-            wrapped in a ``<TraceOverview>`` block ready to concatenate onto the judged
-            output; ``tools`` is `self.tools`.
+            A `(prompt_section, tools)` pair. `prompt_section` is the overview
+            wrapped in a `<TraceOverview>` block ready to concatenate onto the judged
+            output; `tools` is `self.tools`.
         """
         prompt_section = f"<TraceOverview>\n{self.overview()}\n</TraceOverview>"
         # Hand back a copy so a caller mutating the returned list (or two indexes wired to

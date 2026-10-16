@@ -52,7 +52,7 @@ class SkillSelectionAccuracyEvaluator(Evaluator[InputT, OutputT]):
         model: Model | str | None = None,
         system_prompt: str | None = None,
         name: str | None = None,
-        disclosure: DisclosureMode = "auto",
+        disclosure: DisclosureMode = "never",
     ):
         super().__init__(name=name)
         self.system_prompt = system_prompt if system_prompt is not None else get_template(version).SYSTEM_PROMPT
@@ -218,14 +218,15 @@ class SkillSelectionAccuracyEvaluator(Evaluator[InputT, OutputT]):
         The trajectory is the same for every invoked skill, so the overflow decision and the
         trace tools are resolved once here and reused across the per-skill prompts.
 
-        The ``"auto"`` probe is the full inline context (task + skill catalog + trajectory +
+        The `"auto"` probe is the full inline context (task + skill catalog + trajectory +
         response), not the trajectory alone: the head can itself be large, and the decision
         must fit the whole prompt the judge actually receives. The per-skill decision block is
         small and roughly constant, so head+tail is a faithful size estimate.
         """
-        inline_context = self._case_context(evaluation_case)
-        probe = "".join(inline_context) if self.disclosure == "auto" else ""
-        index = self._resolve_disclosure_index(evaluation_case, probe)
+        # The inline context is serialized only when it is the size probe ("auto") or the prompt
+        # actually returned; under "always" it would be built and then thrown away.
+        inline_context = self._case_context(evaluation_case) if self.disclosure == "auto" else None
+        index = self._resolve_disclosure_index(evaluation_case, "".join(inline_context) if inline_context else "")
         if index is None:
-            return inline_context, []
+            return (inline_context if inline_context is not None else self._case_context(evaluation_case)), []
         return self._case_context(evaluation_case, index), list(index.tools)
