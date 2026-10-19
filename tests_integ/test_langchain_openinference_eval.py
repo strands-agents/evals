@@ -25,7 +25,7 @@ from strands_evals.types import EvaluationData, EvaluationOutput
 from strands_evals.types.trace import ToolExecutionSpan
 
 # Use the same model that works in CI (same as evaluators use)
-DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
+DEFAULT_MODEL_ID = "global.anthropic.claude-sonnet-4-6"
 
 
 class ToolUsageEvaluator(Evaluator[str, str]):
