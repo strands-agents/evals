@@ -25,11 +25,12 @@ from strands_evals.evaluators import (
     GoalSuccessRateEvaluator,
     ToolSelectionAccuracyEvaluator,
 )
+from strands_evals.evaluators.evaluator import DEFAULT_BEDROCK_MODEL_ID
 from strands_evals.mappers import OpenInferenceSessionMapper, detect_otel_mapper, readable_spans_to_dicts
 from strands_evals.telemetry import StrandsEvalsTelemetry
 from strands_evals.types.trace import AgentInvocationSpan, Session, ToolExecutionSpan
 
-DEFAULT_MODEL_ID = "global.anthropic.claude-sonnet-4-6"
+DEFAULT_MODEL_ID = DEFAULT_BEDROCK_MODEL_ID
 
 BEDROCK_ENV = {
     "CLAUDE_CODE_USE_BEDROCK": "1",
