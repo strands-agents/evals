@@ -74,7 +74,7 @@ def test_resolve_model_none():
 def test_resolve_model_string():
     from strands.models.bedrock import BedrockModel
 
-    model = _resolve_model("us.anthropic.claude-sonnet-4-20250514-v1:0")
+    model = _resolve_model("global.anthropic.claude-sonnet-4-6")
     assert isinstance(model, BedrockModel)
 
 
@@ -380,10 +380,10 @@ def test_detect_failures_passes_model(mock_call_model, mock_resolve_model):
     mock_call_model.return_value = _make_json_response([])
 
     session = _make_session()
-    detect_failures(session, model="us.anthropic.claude-sonnet-4-20250514-v1:0")
+    detect_failures(session, model="global.anthropic.claude-sonnet-4-6")
 
     # Verify _resolve_model was called with the custom model string
-    mock_resolve_model.assert_called_once_with("us.anthropic.claude-sonnet-4-20250514-v1:0")
+    mock_resolve_model.assert_called_once_with("global.anthropic.claude-sonnet-4-6")
     # Verify _call_model was called with the resolved model
     mock_call_model.assert_called_once()
     assert mock_call_model.call_args.args[0] is mock_model

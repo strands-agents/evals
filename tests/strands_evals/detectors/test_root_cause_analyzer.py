@@ -334,9 +334,9 @@ def test_analyze_root_cause_passes_model(mock_resolve, mock_agent_cls):
 
     session = _make_session()
     failures = _make_failures(["span_2"])
-    analyze_root_cause(session, failures, model="us.anthropic.claude-sonnet-4-20250514-v1:0")
+    analyze_root_cause(session, failures, model="global.anthropic.claude-sonnet-4-6")
 
-    mock_resolve.assert_called_once_with("us.anthropic.claude-sonnet-4-20250514-v1:0")
+    mock_resolve.assert_called_once_with("global.anthropic.claude-sonnet-4-6")
     mock_agent_cls.assert_called_once()
     assert mock_agent_cls.call_args.kwargs["model"] is mock_model
 
