@@ -29,7 +29,7 @@ from strands_evals.mappers import OpenInferenceSessionMapper, detect_otel_mapper
 from strands_evals.telemetry import StrandsEvalsTelemetry
 from strands_evals.types.trace import AgentInvocationSpan, Session, ToolExecutionSpan
 
-DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-20250514-v1:0"
+DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
 
 BEDROCK_ENV = {
     "CLAUDE_CODE_USE_BEDROCK": "1",
