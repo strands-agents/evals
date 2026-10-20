@@ -571,13 +571,14 @@ class Experiment(Generic[InputT, OutputT, ReportT]):
                                 await asyncio.to_thread(evaluation_data_store.save, case.name, evaluation_context)
                         trace_id = format_trace_id(case_span.get_span_context().trace_id)
 
-                        # Evaluate with each evaluator
-                        evaluator_results = []
-                        for evaluator in self._evaluators:
-                            result = await self._run_evaluator(
-                                evaluator, evaluation_context, case_name, trace_id, case.session_id
+                        # Evaluate with each evaluator concurrently; _run_evaluator isolates errors
+                        # and gather keeps results in evaluator order
+                        evaluator_results = await asyncio.gather(
+                            *(
+                                self._run_evaluator(evaluator, evaluation_context, case_name, trace_id, case.session_id)
+                                for evaluator in self._evaluators
                             )
-                            evaluator_results.append(result)
+                        )
 
                         # Run diagnosis on failing cases if enabled
                         diagnosis = None

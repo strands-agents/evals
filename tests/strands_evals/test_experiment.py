@@ -926,6 +926,38 @@ async def test_experiment_run_evaluations_async_preserves_input_order():
 
 
 @pytest.mark.asyncio
+async def test_experiment_run_evaluations_async_runs_case_evaluators_concurrently():
+    """Test that a case's evaluators run concurrently and keep their declared order in the report"""
+    running = 0
+    peak = 0
+
+    class SleepingEvaluator(Evaluator[str, str]):
+        def __init__(self, name: str, delay: float):
+            super().__init__(name=name)
+            self.delay = delay
+
+        def evaluate(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
+            raise NotImplementedError
+
+        async def evaluate_async(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
+            nonlocal running, peak
+            running += 1
+            peak = max(peak, running)
+            await asyncio.sleep(self.delay)
+            running -= 1
+            return [EvaluationOutput(score=1.0, test_pass=True, reason=self.get_name())]
+
+    experiment = Experiment(
+        cases=[Case(name="case", input="hello")],
+        evaluators=[SleepingEvaluator("slow", 0.05), SleepingEvaluator("fast", 0.01)],
+    )
+    report = await experiment.run_evaluations_async(lambda c: c.input, max_workers=1)
+
+    assert peak == 2
+    assert [case_data["evaluator"] for case_data in report.cases] == ["slow", "fast"]
+
+
+@pytest.mark.asyncio
 async def test_experiment_run_evaluations_async_with_errors():
     """Test run_evaluations_async handles errors gracefully"""
 
