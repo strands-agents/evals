@@ -185,7 +185,13 @@ Analyze agent tool usage and action sequences with helper scoring functions:
 ```python
 from strands_evals.evaluators import TrajectoryEvaluator
 from strands_evals.extractors import tools_use_extractor
-from strands_tools import calculator
+from strands import tool
+
+@tool
+def calculator(a: float, b: float, operation: str) -> float:
+    """Apply an arithmetic operation (add, subtract, multiply, divide) to two numbers."""
+    ops = {"add": a + b, "subtract": a - b, "multiply": a * b, "divide": a / b if b else float("nan")}
+    return ops[operation]
 
 def get_response_with_tools(case: Case) -> dict:
     agent = Agent(tools=[calculator])

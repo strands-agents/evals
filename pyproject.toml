@@ -25,7 +25,6 @@ dependencies = [
     "pydantic>=2.4.0,<3.0.0",
     "rich>=15.0.0,<16.0.0",
     "strands-agents>=1.45.0",
-    "strands-agents-tools>=0.1.0,<1.0.0",
     "typing-extensions>=4.13.2,<5.0.0",
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
@@ -127,6 +126,8 @@ features = ["otel", "langfuse", "langchain", "opensearch", "stickler"]
 dependencies = [
   "mypy>=1.15.0,<3.0.0",
   "ruff>=0.13.0,<0.17.0",
+  # PIL is an optional import in types/multimodal.py
+  "pillow>=12.1.1,<13.0.0",
   # Include required pacakge dependencies for mypy
   "strands-agents-evals @ {root:uri}",
 ]
