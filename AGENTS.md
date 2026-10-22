@@ -508,5 +508,4 @@ When reviewing a PR in this repo, scan for all of the following:
 - [STYLE_GUIDE.md](./STYLE_GUIDE.md) — Logging and style conventions
 - [Strands Agents Documentation](https://strandsagents.com/)
 - [Strands Agents Python SDK](https://github.com/strands-agents/sdk-python)
-- [Strands Agents Tools](https://github.com/strands-agents/tools)
 - [Strands Agents Samples](https://github.com/strands-agents/samples)

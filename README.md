@@ -28,10 +28,15 @@
   <p>
     <a href="https://strandsagents.com/">Documentation</a>
     ◆ <a href="https://github.com/strands-agents/samples">Samples</a>
-    ◆ <a href="https://github.com/strands-agents/sdk-python">Python SDK</a>
-    ◆ <a href="https://github.com/strands-agents/sdk-typescript">Typescript SDK</a>
-    ◆ <a href="https://github.com/strands-agents/tools">Tools</a>
-    ◆ <a href="https://github.com/strands-agents/evals">Evaluations</a>
+    ◆ <a href="https://github.com/strands-agents/harness-sdk/tree/main/strands-cli">CLI</a>
+    ◆ <a href="https://github.com/strands-agents/harness-sdk/tree/main/strands-mcp">MCP Server</a>
+    <br>
+    Harness (<a href="https://github.com/strands-agents/harness-sdk/tree/main/harness-py">Python</a>, <a href="https://github.com/strands-agents/harness-sdk/tree/main/harness-ts">TypeScript</a>)
+    ◆ SDK (<a href="https://github.com/strands-agents/harness-sdk/tree/main/strands-py">Python</a>, <a href="https://github.com/strands-agents/harness-sdk/tree/main/strands-ts">TypeScript</a>)
+    ◆ <a href="https://github.com/strands-agents/box">Box</a>
+    ◆ <a href="https://github.com/strands-agents/shell">Shell</a>
+    ◆ <a href="https://github.com/strands-agents/evals">Evals</a>
+    ◆ <a href="https://github.com/strands-labs">Labs</a>
   </p>
 </div>
 
@@ -183,9 +188,24 @@ evaluator = OutputEvaluator(
 Analyze agent tool usage and action sequences with helper scoring functions:
 
 ```python
+import operator
+
+from strands import Agent, tool
+from strands_evals import Case
 from strands_evals.evaluators import TrajectoryEvaluator
 from strands_evals.extractors import tools_use_extractor
-from strands_tools import calculator
+
+@tool
+def calculator(operation: str, a: float, b: float) -> float:
+    """Apply a basic arithmetic operation to two numbers.
+
+    Args:
+        operation: One of "add", "subtract", "multiply" or "divide".
+        a: First operand.
+        b: Second operand.
+    """
+    operations = {"add": operator.add, "subtract": operator.sub, "multiply": operator.mul, "divide": operator.truediv}
+    return operations[operation](a, b)
 
 def get_response_with_tools(case: Case) -> dict:
     agent = Agent(tools=[calculator])
