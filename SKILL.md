@@ -412,7 +412,7 @@ Built-in strategies:
 | Strategy | Use |
 | --- | --- |
 | `PromptStrategy(label, system_prompt_template)` | Single-prompt attacker; one is registered as `BUILTIN_STRATEGIES["gradual_escalation"]` |
-| `CrescendoStrategy(max_turns=...)` | Multi-turn ramp from benign to harmful |
+| `CrescendoStrategy(max_turns=...)` | Multi-turn ramp from benign to harmful; `stop_on_tool_call=False` for read-only-tool targets |
 | `GoatStrategy(...)` | Generative Offensive Agent Tester loop |
 | `PairStrategy(max_turns=...)` | Prompt Automatic Iterative Refinement |
 | `BadLikertJudgeStrategy(...)` | Likert-scale judge-prompt attack |

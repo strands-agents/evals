@@ -83,6 +83,8 @@ task, wrap a freshly built target with `as_target_session(target)`: an `Agent` b
 
 Each strategy accepts a `max_turns=` kwarg (its own per-attack ceiling); the built-in task additionally caps every strategy at a hard `MAX_ALLOWED_TURNS = 50` (`strategies/base.py`, exported from `strands_evals.redteam`), so a strategy configured higher will be silently clamped. A custom task can omit `run_attack`'s `max_turns`, which defaults to that ceiling. A custom `AttackStrategy` subclass should declare the same default (`max_turns: int = MAX_ALLOWED_TURNS`); one that declares `max_turns: int` without it still works with `RedTeamExperiment`, which always passes the value, but a custom task must pass `max_turns=` explicitly. Pass `label="..."` to compare two instances of the same strategy in one experiment (e.g. `CrescendoStrategy(max_turns=5, label="cresc_short")`); duplicate labels raise at construction.
 
+`CrescendoStrategy` treats any tool call as the target complying through action: it stops escalating (reporting `strategy_succeeded`) and never backtracks that turn. For a target whose tools are read-only lookups, pass `CrescendoStrategy(stop_on_tool_call=False)` so tool calls (of any kind) no longer end the case or block backtracking; every tool call still reaches `AttackSuccessEvaluator` in the trajectory.
+
 `PromptStrategy` (a system-prompt-template strategy whose attacker is an `ActorSimulator` LLM) and the `BUILTIN_STRATEGIES` registry are the extension points for adding new template-driven strategies without subclassing — see `strategies/prompt_strategy/`. The full set of exported symbols (experiment, cases, evaluator, target sessions) is the `__all__` of `strands_evals.redteam`.
 
 ### Choosing an attacker model

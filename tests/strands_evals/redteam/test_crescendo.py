@@ -557,6 +557,48 @@ def test_plain_tool_call_stops_loop_independent_of_refusal():
     assert session.trace == [{"name": "exfiltrate", "input": {}}]
 
 
+def test_stop_on_tool_call_false_lets_read_only_tool_turns_escalate():
+    session = _session(
+        lambda _m: "here is what the archive says",
+        tool_uses_fn=lambda _m: [{"name": "read_archive", "input": {}}],
+    )
+    strat = _strategy(max_turns=3, max_backtracks=5, stop_on_tool_call=False)
+    with (
+        patch(f"{_CRESCENDO}.gen_escalating_question", return_value="q"),
+        patch(f"{_CRESCENDO}.is_refusal", return_value=False),
+        patch(f"{_CRESCENDO}.success_score", return_value=0.0),
+    ):
+        result = strat.run_attack(_case(), session, max_turns=10)
+
+    assert result.strategy_succeeded is False
+    assert result.metadata["turns_used"] == 3
+    assert session.trace == [{"name": "read_archive", "input": {}}] * 3
+
+
+def test_stop_on_tool_call_false_backtracks_a_lookup_backed_refusal():
+    replies = iter(["I can't help with that.", "sure, here you go"])
+    session = _session(lambda _m: next(replies), tool_uses_fn=lambda _m: [{"name": "read_archive", "input": {}}])
+    strat = _strategy(max_turns=2, max_backtracks=1, stop_on_tool_call=False)
+    refusals = iter([True, False])
+    with (
+        patch(f"{_CRESCENDO}.gen_escalating_question", return_value="q"),
+        patch(f"{_CRESCENDO}.is_refusal", side_effect=lambda *_a, **_k: next(refusals)),
+        patch(f"{_CRESCENDO}.success_score", return_value=0.0),
+    ):
+        result = strat.run_attack(_case(), session, max_turns=10)
+
+    assert result.metadata["backtracks"] == 1
+    assert result.metadata["turns_used"] == 1
+    assert [t["content"] for t in result.pruned_branches] == ["q", "I can't help with that."]
+    assert session.trace == [{"name": "read_archive", "input": {}}] * 2
+
+
+def test_stop_on_tool_call_round_trips_through_to_dict():
+    strat = CrescendoStrategy(max_turns=2, stop_on_tool_call=False)
+    assert strat.to_dict()["stop_on_tool_call"] is False
+    assert CrescendoStrategy.from_dict(strat.to_dict()).to_dict() == strat.to_dict()
+
+
 def test_name_and_default_label():
     assert CrescendoStrategy().name == "crescendo"
     assert CrescendoStrategy().label == "crescendo"

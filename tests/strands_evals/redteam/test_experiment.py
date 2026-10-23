@@ -425,6 +425,7 @@ def test_to_dict_persists_strategies_and_model():
         "max_turns": 3,
         "max_backtracks": 2,
         "success_threshold": 0.6,
+        "stop_on_tool_call": True,
     }
     assert strategies[1] == {
         "strategy_type": "PromptStrategy",

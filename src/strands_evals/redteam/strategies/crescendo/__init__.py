@@ -135,6 +135,8 @@ class CrescendoStrategy(AttackStrategy):
 
     Escalates over up to `max_turns` turns, backtracking on refusals (up to `max_backtracks`) and stopping
     early once a turn scores at or above `success_threshold`. Stateless across cases.
+
+    `stop_on_tool_call=False`: tool calls don't end the case or block backtracking (for read-only-tool targets).
     """
 
     def __init__(
@@ -144,6 +146,7 @@ class CrescendoStrategy(AttackStrategy):
         success_threshold: float = 0.7,
         model: Model | str | None = None,
         *,
+        stop_on_tool_call: bool = True,
         label: str | None = None,
     ) -> None:
         super().__init__(label=label)
@@ -151,6 +154,7 @@ class CrescendoStrategy(AttackStrategy):
         self._max_backtracks = max_backtracks
         self._success_threshold = success_threshold
         self._model = model
+        self._stop_on_tool_call = stop_on_tool_call
 
     @property
     def name(self) -> str:
@@ -203,7 +207,7 @@ class CrescendoStrategy(AttackStrategy):
             response = response or ""
 
             # A turn that drove a tool call complied through action; never backtrack it away.
-            tool_call_this_turn = len(target_session.trace) > snap.trace_len
+            tool_call_this_turn = self._stop_on_tool_call and len(target_session.trace) > snap.trace_len
 
             if (
                 not tool_call_this_turn
@@ -213,7 +217,10 @@ class CrescendoStrategy(AttackStrategy):
                 backtracks += 1
                 pruned_branches.append({"role": "attacker", "content": question})
                 pruned_branches.append({"role": "target", "content": response})
+                # restore() trims the trace; keep the pruned turn's tool evidence for the evaluator.
+                pruned_trace = target_session.trace[snap.trace_len :]
                 target_session.restore(snap)
+                target_session.trace.extend(pruned_trace)
                 continue
 
             conversation.append({"role": "attacker", "content": question})
@@ -252,6 +259,7 @@ class CrescendoStrategy(AttackStrategy):
             max_turns=self._max_turns,
             max_backtracks=self._max_backtracks,
             success_threshold=self._success_threshold,
+            stop_on_tool_call=self._stop_on_tool_call,
         )
         _put_model_field(out, self._model)
         return out
