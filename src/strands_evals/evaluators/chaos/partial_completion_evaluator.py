@@ -6,7 +6,7 @@ from strands.models.model import Model
 
 from ...types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from ...types.trace import EvaluationLevel
-from ..evaluator import Evaluator
+from ..evaluator import DisclosureMode, Evaluator
 from .prompt_templates.partial_completion import get_template
 
 
@@ -28,12 +28,14 @@ class PartialCompletionEvaluator(Evaluator[InputT, OutputT]):
         model: Model | str | None = None,
         system_prompt: str | None = None,
         name: str | None = None,
+        disclosure: DisclosureMode = "auto",
     ):
         super().__init__(name=name)
         self.version = version
         default_prompt = get_template(version).SYSTEM_PROMPT
         self.system_prompt = system_prompt if system_prompt is not None else default_prompt
         self.model = model
+        self.disclosure = self._validate_disclosure(disclosure)
 
     def _build_output(self, rating: PartialCompletionRating) -> list[EvaluationOutput]:
         return [
@@ -47,16 +49,20 @@ class PartialCompletionEvaluator(Evaluator[InputT, OutputT]):
 
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         parsed_input = self._get_last_turn(evaluation_case)
-        prompt = self._format_trace_level_prompt(parsed_input)
-        evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
+        prompt, tools = self._render_with_disclosure(
+            evaluation_case, lambda idx: self._format_trace_level_prompt(parsed_input, idx)
+        )
+        evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, tools=tools, callback_handler=None)
         result = evaluator_agent(prompt, structured_output_model=PartialCompletionRating)
         rating = cast(PartialCompletionRating, result.structured_output)
         return self._build_output(rating)
 
     async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         parsed_input = self._get_last_turn(evaluation_case)
-        prompt = self._format_trace_level_prompt(parsed_input)
-        evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
+        prompt, tools = self._render_with_disclosure(
+            evaluation_case, lambda idx: self._format_trace_level_prompt(parsed_input, idx)
+        )
+        evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, tools=tools, callback_handler=None)
         result = await evaluator_agent.invoke_async(prompt, structured_output_model=PartialCompletionRating)
         rating = cast(PartialCompletionRating, result.structured_output)
         return self._build_output(rating)

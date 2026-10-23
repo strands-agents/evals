@@ -1,0 +1,464 @@
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from strands_evals.evaluators._trace_index import TraceIndex
+from strands_evals.types.trace import (
+    AgentInvocationSpan,
+    InferenceSpan,
+    Session,
+    SpanInfo,
+    TextContent,
+    ToolCall,
+    ToolConfig,
+    ToolExecutionSpan,
+    ToolResult,
+    ToolResultContent,
+    Trace,
+    UserMessage,
+)
+
+
+def _span_info(second: int, tz: timezone | None = timezone.utc) -> SpanInfo:
+    return SpanInfo(
+        session_id="s1",
+        span_id=f"sp{second}",
+        start_time=datetime(2026, 1, 1, 0, 0, second, tzinfo=tz),
+        end_time=datetime(2026, 1, 1, 0, 0, second + 1, tzinfo=tz),
+    )
+
+
+@pytest.fixture
+def session():
+    spans = [
+        AgentInvocationSpan(
+            span_info=_span_info(0),
+            user_prompt="Look up ticket TKT-1042",
+            agent_response="Ticket TKT-1042 was refunded $150.",
+            system_prompt="You are a support agent. Never issue a refund over $500.",
+            available_tools=[ToolConfig(name="lookup_ticket", description="Look up a ticket by id")],
+        ),
+        ToolExecutionSpan(
+            span_info=_span_info(1),
+            tool_call=ToolCall(name="lookup_ticket", arguments={"id": "TKT-1042"}),
+            tool_result=ToolResult(content="x" * 20_000 + " refund_amount=$150"),
+        ),
+        ToolExecutionSpan(
+            span_info=_span_info(2),
+            tool_call=ToolCall(name="get_customer", arguments={"id": "C-7"}),
+            tool_result=ToolResult(content="customer name: Alex"),
+        ),
+    ]
+    return Session(traces=[Trace(spans=spans, trace_id="t1", session_id="s1")], session_id="s1")
+
+
+def test_overview_is_compact_and_ordered(session):
+    index = TraceIndex(session)
+    overview = index.overview()
+
+    lines = overview.splitlines()
+    assert "3 spans" in lines[0]
+    # Header + "Showing spans" banner precede the span lines.
+    span_lines = [ln for ln in lines if ln.startswith("[")]
+    assert span_lines[0].startswith("[0] AGENT")
+    assert "lookup_ticket" in span_lines[1]
+    assert "get_customer" in span_lines[2]
+    # Overview must not inline the 20K-char tool result.
+    assert len(overview) < 2_000
+    # Result size of the big span is surfaced exactly.
+    assert "20019 chars" in span_lines[1]
+
+
+def test_overview_header_tells_the_model_previews_are_truncated(session):
+    index = TraceIndex(session)
+    header = index.overview().splitlines()[0]
+    assert "truncated" in header.lower()
+    assert "verify" in header.lower()
+    assert "8000" in header  # max_read_chars surfaced so N-chars counts are actionable
+
+
+def test_overview_pages_when_it_exceeds_max_read_chars(session):
+    # Tiny budget forces paging across the three spans.
+    index = TraceIndex(session, max_read_chars=200)
+    first = index.overview()
+    assert "Showing spans 0-" in first
+    assert "MORE:" in first
+
+    # Follow the offset the tool reported, not a hand-computed one.
+    next_offset = int(first.split("offset=")[1].split("]")[0])
+    assert next_offset > 0
+    second = index.overview(offset=next_offset)
+    assert f"Showing spans {next_offset}-" in second
+
+    # Every span shows up exactly once across the pages.
+    seen = set()
+    offset, guard = 0, 0
+    while True:
+        page = index.overview(offset=offset)
+        for ln in page.splitlines():
+            idx = ln[1 : ln.index("]")] if ln.startswith("[") and "]" in ln else ""
+            if idx.isdigit():
+                seen.add(int(idx))
+        if "MORE:" not in page:
+            break
+        offset = int(page.split("offset=")[1].split("]")[0])
+        guard += 1
+        assert guard < 10, "paging did not terminate"
+    assert seen == {0, 1, 2}
+
+
+def test_overview_rejects_out_of_range_offset(session):
+    index = TraceIndex(session)
+    assert "ERROR" in index.overview(offset=99)
+    assert "ERROR" in index.overview(offset=-1)
+
+
+def test_list_spans_tool_is_paged(session):
+    index = TraceIndex(session, max_read_chars=200)
+    list_spans = index.tools[0]
+    assert list_spans(offset=0) == index.overview(0)
+    assert "MORE:" in list_spans(offset=0)
+
+
+def test_max_read_chars_must_be_positive(session):
+    with pytest.raises(ValueError, match="max_read_chars"):
+        TraceIndex(session, max_read_chars=0)
+    with pytest.raises(ValueError, match="max_read_chars"):
+        TraceIndex(session, max_read_chars=-5)
+
+
+def test_get_span_returns_full_content_for_small_span(session):
+    index = TraceIndex(session)
+    get_span = index.tools[1]
+
+    content = get_span(index=2)
+
+    assert "customer name: Alex" in content
+    assert "TRUNCATED" not in content
+
+
+def test_get_span_exposes_system_prompt_and_tools(session):
+    index = TraceIndex(session)
+    get_span = index.tools[1]
+
+    content = get_span(index=0)
+
+    assert "Never issue a refund over $500" in content
+    assert "lookup_ticket" in content
+
+
+def test_get_span_windows_oversized_content_and_pages(session):
+    index = TraceIndex(session, max_read_chars=5_000)
+    get_span = index.tools[1]
+
+    first = get_span(index=1)
+    assert "TRUNCATED" in first
+    assert "offset=5000" in first
+
+    second = get_span(index=1, offset=5_000)
+    assert second.startswith("x") or '"' in second  # continuation, not a restart
+    assert first[:100] != second[:100]
+
+
+def test_get_span_index_out_of_range(session):
+    index = TraceIndex(session)
+    get_span = index.tools[1]
+
+    assert "ERROR" in get_span(index=99)
+    assert "ERROR" in get_span(index=-1)
+
+
+def test_get_span_rejects_negative_offset(session):
+    index = TraceIndex(session)
+    get_span = index.tools[1]
+    out = get_span(index=2, offset=-10)
+    assert "ERROR" in out
+    assert "-10" not in out.split("offset=")[-1] if "offset=" in out else True
+
+
+def test_search_finds_literal_the_judge_would_quote(session):
+    """The flagship case: a literal '$150' the judge copies from the overview must
+    match without the judge knowing to escape regex metacharacters."""
+    index = TraceIndex(session)
+    search_spans = index.tools[2]
+
+    result = search_spans(pattern="$150")
+
+    assert result.startswith("[0]") or "\n[0]" in result  # agent_response has "$150"
+    assert "[1]" in result  # tool result has "refund_amount=$150"
+    assert "No matches" not in result
+
+
+def test_search_literal_does_not_treat_pattern_as_regex(session):
+    index = TraceIndex(session)
+    search_spans = index.tools[2]
+    # refund_amount=$150 as a literal matches the tool result exactly.
+    result = search_spans(pattern="refund_amount=$150")
+    assert result.startswith("[1]")
+
+
+def test_search_regex_opt_in(session):
+    index = TraceIndex(session)
+    search_spans = index.tools[2]
+    result = search_spans(pattern=r"refund_amount=\$\d+", is_regex=True)
+    assert "[1]" in result
+
+
+def test_search_invalid_regex_reports_error_not_silent_miss(session):
+    index = TraceIndex(session)
+    search_spans = index.tools[2]
+    result = search_spans(pattern="refund[", is_regex=True)
+    assert "ERROR" in result
+    assert "is_regex=False" in result  # actionable hint
+
+
+def test_search_covers_system_prompt(session):
+    index = TraceIndex(session)
+    search_spans = index.tools[2]
+    result = search_spans(pattern="Never issue a refund")
+    assert result.startswith("[0]")
+
+
+def test_search_does_not_false_positive_on_serialization_artifacts(session):
+    """'error' must not match the JSON key that every successful tool span carries."""
+    index = TraceIndex(session)
+    search_spans = index.tools[2]
+    assert "No matches" in search_spans(pattern="error")
+
+
+def test_search_reports_per_span_match_count(session):
+    spans = [
+        ToolExecutionSpan(
+            span_info=_span_info(0),
+            tool_call=ToolCall(name="t", arguments={}),
+            tool_result=ToolResult(content="foo foo foo bar"),
+        ),
+    ]
+    sess = Session(traces=[Trace(spans=spans, trace_id="t1", session_id="s1")], session_id="s1")
+    search_spans = TraceIndex(sess).tools[2]
+    result = search_spans(pattern="foo")
+    assert "3 matches" in result
+
+
+def test_search_signals_truncation_at_max_matches(session):
+    # Build many matching spans, cap below the total.
+    spans = [
+        ToolExecutionSpan(
+            span_info=_span_info(i),
+            tool_call=ToolCall(name="t", arguments={}),
+            tool_result=ToolResult(content="needle here"),
+        )
+        for i in range(5)
+    ]
+    sess = Session(traces=[Trace(spans=spans, trace_id="t1", session_id="s1")], session_id="s1")
+    search_spans = TraceIndex(sess).tools[2]
+    result = search_spans(pattern="needle", max_matches=2)
+    assert "stopped at 2" in result
+    assert result.count("[") >= 3  # 2 hits + the truncation marker line
+
+
+def test_search_no_matches(session):
+    index = TraceIndex(session)
+    search_spans = index.tools[2]
+
+    assert "No matches" in search_spans(pattern="nonexistent-zzz")
+
+
+def _many_matching_spans(n: int, content: str) -> Session:
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    spans = [
+        ToolExecutionSpan(
+            span_info=SpanInfo(
+                session_id="s1",
+                span_id=f"sp{i}",
+                start_time=base + timedelta(seconds=i),
+                end_time=base + timedelta(seconds=i + 1),
+            ),
+            tool_call=ToolCall(name="t", arguments={}),
+            tool_result=ToolResult(content=content),
+        )
+        for i in range(n)
+    ]
+    return Session(traces=[Trace(spans=spans, trace_id="t1", session_id="s1")], session_id="s1")
+
+
+def test_search_bounded_by_max_read_chars(session):
+    """Finding #1: search output must honor max_read_chars, not max_matches alone.
+
+    With a generous max_matches on a long trace, the accumulated excerpts must not
+    blow past the per-call budget every other tool respects.
+    """
+    sess = _many_matching_spans(800, "needle in a reasonably sized tool result payload")
+    search_spans = TraceIndex(sess, max_read_chars=2_000).tools[2]
+
+    result = search_spans(pattern="needle", max_matches=800)
+
+    assert len(result) <= 2_000 + 200  # bounded (+ slack for the closing marker line)
+    assert "budget reached" in result
+    # Far fewer than 800 spans are shown because the budget, not max_matches, stops it.
+    assert result.count("[") < 800
+
+
+def test_search_still_signals_max_matches_when_budget_not_hit(session):
+    """The max_matches marker (not the budget one) fires when the cap is the limit."""
+    sess = _many_matching_spans(5, "needle here")
+    search_spans = TraceIndex(sess).tools[2]  # default 8000-char budget, tiny lines
+
+    result = search_spans(pattern="needle", max_matches=2)
+
+    assert "stopped at 2" in result
+    assert "budget reached" not in result
+
+
+def test_search_regex_anchors_match_line_boundaries(session):
+    """Finding #3: ^/$ must anchor to lines in the newline-joined haystack (MULTILINE)."""
+    index = TraceIndex(session)
+    search_spans = index.tools[2]
+
+    # "lookup_ticket" is the tool name on its own line of the agent span's haystack.
+    assert search_spans(pattern=r"^lookup_ticket", is_regex=True).startswith("[")
+    # And a value ending a line is reachable with $.
+    assert "No matches" not in search_spans(pattern=r"\$150\.?$", is_regex=True)
+
+
+def _inference_session(*results: ToolResult) -> Session:
+    """A session with one inference span carrying tool-result content blocks."""
+    msg = UserMessage(
+        content=[TextContent(text="checking payment")]
+        + [ToolResultContent(content=r.content, error=r.error, tool_call_id="tc") for r in results]
+    )
+    spans = [InferenceSpan(span_info=_span_info(0), messages=[msg])]
+    return Session(traces=[Trace(spans=spans, trace_id="t1", session_id="s1")], session_id="s1")
+
+
+def test_search_error_no_false_positive_on_inference_span():
+    """Finding #2a: a successful inference span must not match 'error'.
+
+    Rendering messages via model_dump() leaks 'error': None into the haystack, so
+    every inference span with a tool result falsely matches an "error" search.
+    """
+    sess = _inference_session(ToolResult(content="payment approved"))  # error defaults None
+    search_spans = TraceIndex(sess).tools[2]
+
+    assert "No matches" in search_spans(pattern="error")
+
+
+def test_search_finds_genuine_inference_tool_error():
+    """Finding #2b: a real tool failure inside an inference span must be findable."""
+    sess = _inference_session(ToolResult(content="", error="CardDeclined: insufficient funds"))
+    search_spans = TraceIndex(sess).tools[2]
+
+    assert search_spans(pattern="error").startswith("[")
+    assert search_spans(pattern="CardDeclined").startswith("[")
+
+
+def test_search_finds_failed_tool_execution_via_error_token():
+    """A failed ToolExecutionSpan is reachable by the same 'error' vocabulary as the overview."""
+    spans = [
+        ToolExecutionSpan(
+            span_info=_span_info(0),
+            tool_call=ToolCall(name="charge", arguments={}),
+            tool_result=ToolResult(content="", error="CardDeclined: insufficient funds"),
+        ),
+    ]
+    sess = Session(traces=[Trace(spans=spans, trace_id="t1", session_id="s1")], session_id="s1")
+    search_spans = TraceIndex(sess).tools[2]
+
+    assert search_spans(pattern="error").startswith("[")
+
+
+def test_overview_flags_tool_errors(session):
+    spans = [
+        ToolExecutionSpan(
+            span_info=_span_info(0),
+            tool_call=ToolCall(name="fetch", arguments={}),
+            tool_result=ToolResult(content="", error="ConnectionError: timed out"),
+        ),
+    ]
+    sess = Session(traces=[Trace(spans=spans, trace_id="t1", session_id="s1")], session_id="s1")
+    overview = TraceIndex(sess).overview()
+    assert "[ERROR]" in overview
+    assert "ConnectionError" in overview
+
+
+def test_flatten_tolerates_mixed_naive_and_aware_timestamps():
+    """Different mappers can emit naive and aware start_time; construction must not crash."""
+    spans = [
+        ToolExecutionSpan(
+            span_info=_span_info(1, tz=None),  # naive
+            tool_call=ToolCall(name="a", arguments={}),
+            tool_result=ToolResult(content="first"),
+        ),
+        ToolExecutionSpan(
+            span_info=_span_info(0, tz=timezone.utc),  # aware, earlier
+            tool_call=ToolCall(name="b", arguments={}),
+            tool_result=ToolResult(content="second"),
+        ),
+    ]
+    sess = Session(traces=[Trace(spans=spans, trace_id="t1", session_id="s1")], session_id="s1")
+    index = TraceIndex(sess)  # must not raise TypeError
+    overview = index.overview()
+    # Sorted by normalized time: the aware second==0 span comes first.
+    span_lines = [ln for ln in overview.splitlines() if ln.startswith("[")]
+    assert "TOOL b" in span_lines[0]
+    assert "TOOL a" in span_lines[1]
+
+
+def test_list_spans_tool_matches_overview(session):
+    index = TraceIndex(session)
+    list_spans = index.tools[0]
+
+    assert list_spans() == index.overview()
+
+
+def test_for_judge_returns_overview_block_and_tools(session):
+    index = TraceIndex(session)
+    prompt_section, tools = index.for_judge()
+
+    assert prompt_section.startswith("<TraceOverview>")
+    assert prompt_section.endswith("</TraceOverview>")
+    assert index.overview() in prompt_section
+    # Same tools, but a copy: mutating the returned list must not touch the index's set.
+    assert tools == index.tools
+    assert tools is not index.tools
+    tools.clear()
+    assert len(index.tools) == 3
+
+
+def test_tools_are_strands_tools(session):
+    index = TraceIndex(session)
+
+    for t in index.tools:
+        assert hasattr(t, "tool_spec") or hasattr(t, "TOOL_SPEC") or callable(t)
+
+
+def test_search_matches_phrase_straddling_a_newline_in_source():
+    """A literal a judge copies from the (whitespace-collapsed) preview matches source text
+    that had a newline where the preview shows a space."""
+    spans = [
+        ToolExecutionSpan(
+            span_info=_span_info(0),
+            tool_call=ToolCall(name="refund", arguments={}),
+            tool_result=ToolResult(content="Refund approved.\nAmount: $150 total."),
+        )
+    ]
+    index = TraceIndex(Session(traces=[Trace(spans=spans, trace_id="t1", session_id="s1")], session_id="s1"))
+    search = index.tools[2]
+
+    # The phrase spans the newline in the source but appears with a space in the preview.
+    result = search(pattern="approved. Amount")
+    assert "No matches" not in result
+    assert "[0]" in result
+
+
+def test_search_rejects_empty_pattern(session):
+    search = TraceIndex(session).tools[2]
+
+    assert search(pattern="") == "ERROR: empty pattern; provide text to search for"
+    assert search(pattern="   ") == "ERROR: empty pattern; provide text to search for"
+
+
+def test_get_span_on_empty_session_reports_no_spans():
+    get_span = TraceIndex(Session(traces=[], session_id="s1")).tools[1]
+
+    assert get_span(index=0) == "ERROR: trace has no spans"
