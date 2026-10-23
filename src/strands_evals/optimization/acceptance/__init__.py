@@ -1,0 +1,1 @@
+"""Decides, never proposes."""
