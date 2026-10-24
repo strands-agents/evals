@@ -1,0 +1,247 @@
+{
+  "events": [
+    {
+      "event_id": "0839fcc6-a680-4f6f-8f17-ef5ae6fe27f0",
+      "session_id": "6e131476-30ea-4148-b81a-382161ffc170",
+      "parent_id": "9ef12d67-4a65-441f-bac3-8f2978e35643",
+      "event_type": "model",
+      "event_name": "chat",
+      "config": {
+        "model": "gpt-4.1-mini",
+        "provider": "strands-ts-agent",
+        "system": "strands-ts-agent"
+      },
+      "inputs": {
+        "chat_history": [
+          {
+            "content": "Use the calculator tool for arithmetic.",
+            "role": "system"
+          },
+          {
+            "content": "What is 25 * 4?",
+            "role": "user"
+          },
+          {
+            "content": [
+              {
+                "toolUse": {
+                  "input": {
+                    "a": 25,
+                    "b": 4
+                  },
+                  "name": "calculator",
+                  "toolUseId": "call_ThhviDE31EAWHhHZZStFA2ec"
+                }
+              }
+            ],
+            "role": "assistant"
+          },
+          {
+            "content": "{\"toolResult\":{\"toolUseId\":\"call_ThhviDE31EAWHhHZZStFA2ec\",\"status\":\"success\",\"content\":[{\"text\":\"100\"}]}}",
+            "role": "tool"
+          }
+        ]
+      },
+      "outputs": {
+        "content": "25 multiplied by 4 is 100.",
+        "finish_reason": "endTurn",
+        "role": "assistant"
+      },
+      "source": "otlp",
+      "duration": 636,
+      "metadata": {
+        "event_type": "model",
+        "input_tokens": 82,
+        "model_name": "gpt-4.1-mini",
+        "operation_name": "chat",
+        "output_tokens": 11,
+        "parent_span_id": "8789b0fe47958c6d",
+        "span_id": "2df3e9dbda3a9560",
+        "trace_id": "6714ec9b72104090832afd2ce1435620"
+      },
+      "start_time": 1790833754319,
+      "end_time": 1790833754955
+    },
+    {
+      "event_id": "9ef12d67-4a65-441f-bac3-8f2978e35643",
+      "session_id": "6e131476-30ea-4148-b81a-382161ffc170",
+      "parent_id": "19445eeb-8d8f-45d9-a741-20a41677b555",
+      "event_type": "tool",
+      "event_name": "execute_agent_loop_cycle",
+      "inputs": {
+        "parameters": "100"
+      },
+      "outputs": {},
+      "source": "otlp",
+      "duration": 637,
+      "metadata": {
+        "event_type": "tool",
+        "model_name": "unknown",
+        "parent_span_id": "77b63e025d5fe65a",
+        "span_id": "8789b0fe47958c6d",
+        "trace_id": "6714ec9b72104090832afd2ce1435620"
+      },
+      "start_time": 1790833754318,
+      "end_time": 1790833754955
+    },
+    {
+      "event_id": "6685ede5-c23b-4478-9220-131582f0d467",
+      "session_id": "6e131476-30ea-4148-b81a-382161ffc170",
+      "parent_id": "ba805c77-4416-4ff8-8914-83ed25c08076",
+      "event_type": "tool",
+      "event_name": "execute_tool calculator",
+      "config": {
+        "provider": "strands-ts-agent",
+        "system": "strands-ts-agent",
+        "tool_name": "calculator"
+      },
+      "inputs": {
+        "parameters": {
+          "a": 25,
+          "b": 4
+        }
+      },
+      "outputs": {
+        "result": 100,
+        "tool_call_id": "call_ThhviDE31EAWHhHZZStFA2ec"
+      },
+      "source": "otlp",
+      "duration": 3,
+      "metadata": {
+        "event_type": "tool",
+        "model_name": "unknown",
+        "operation_name": "execute_tool",
+        "parent_span_id": "4a0c3850d0a53cf7",
+        "span_id": "0e27ef57f6fcea18",
+        "trace_id": "6714ec9b72104090832afd2ce1435620"
+      },
+      "start_time": 1790833754314,
+      "end_time": 1790833754317
+    },
+    {
+      "event_id": "df8c6a7c-d48b-43a5-84ef-a3b878b3a8eb",
+      "session_id": "6e131476-30ea-4148-b81a-382161ffc170",
+      "parent_id": "ba805c77-4416-4ff8-8914-83ed25c08076",
+      "event_type": "model",
+      "event_name": "chat",
+      "config": {
+        "model": "gpt-4.1-mini",
+        "provider": "strands-ts-agent",
+        "system": "strands-ts-agent"
+      },
+      "inputs": {
+        "chat_history": [
+          {
+            "content": "Use the calculator tool for arithmetic.",
+            "role": "system"
+          },
+          {
+            "content": "What is 25 * 4?",
+            "role": "user"
+          }
+        ]
+      },
+      "outputs": {
+        "content": [
+          {
+            "input": {
+              "a": 25,
+              "b": 4
+            },
+            "name": "calculator",
+            "toolUseId": "call_ThhviDE31EAWHhHZZStFA2ec",
+            "type": "toolUse"
+          }
+        ],
+        "finish_reason": "toolUse",
+        "role": "assistant"
+      },
+      "source": "otlp",
+      "duration": 1285,
+      "metadata": {
+        "event_type": "model",
+        "input_tokens": 57,
+        "model_name": "gpt-4.1-mini",
+        "operation_name": "chat",
+        "output_tokens": 19,
+        "parent_span_id": "4a0c3850d0a53cf7",
+        "span_id": "f5447adf511bd6e9",
+        "trace_id": "6714ec9b72104090832afd2ce1435620"
+      },
+      "start_time": 1790833753025,
+      "end_time": 1790833754310
+    },
+    {
+      "event_id": "ba805c77-4416-4ff8-8914-83ed25c08076",
+      "session_id": "6e131476-30ea-4148-b81a-382161ffc170",
+      "parent_id": "19445eeb-8d8f-45d9-a741-20a41677b555",
+      "event_type": "tool",
+      "event_name": "execute_agent_loop_cycle",
+      "inputs": {},
+      "outputs": {},
+      "source": "otlp",
+      "duration": 1295,
+      "metadata": {
+        "event_type": "tool",
+        "model_name": "unknown",
+        "parent_span_id": "77b63e025d5fe65a",
+        "span_id": "4a0c3850d0a53cf7",
+        "trace_id": "6714ec9b72104090832afd2ce1435620"
+      },
+      "start_time": 1790833753022,
+      "end_time": 1790833754317
+    },
+    {
+      "event_id": "6e131476-30ea-4148-b81a-382161ffc170",
+      "session_id": "6e131476-30ea-4148-b81a-382161ffc170",
+      "event_type": "session",
+      "event_name": "strands-ts-agent",
+      "inputs": {},
+      "outputs": {},
+      "source": "otlp",
+      "duration": 1935,
+      "metadata": {},
+      "start_time": 1790833753021,
+      "end_time": 1790833754956
+    },
+    {
+      "event_id": "19445eeb-8d8f-45d9-a741-20a41677b555",
+      "session_id": "6e131476-30ea-4148-b81a-382161ffc170",
+      "parent_id": "6e131476-30ea-4148-b81a-382161ffc170",
+      "event_type": "chain",
+      "event_name": "invoke_agent Strands Agent",
+      "config": {
+        "model": "gpt-4.1-mini",
+        "tools": [
+          "calculator"
+        ]
+      },
+      "inputs": {
+        "chat_history": [
+          {
+            "content": "What is 25 * 4?",
+            "role": "user"
+          }
+        ]
+      },
+      "outputs": {
+        "content": "25 multiplied by 4 is 100."
+      },
+      "source": "otlp",
+      "duration": 1935,
+      "metadata": {
+        "agent_name": "Strands Agent",
+        "event_type": "chain",
+        "input_tokens": 139,
+        "model_name": "gpt-4.1-mini",
+        "operation_name": "invoke_agent",
+        "output_tokens": 30,
+        "parent_span_id": "",
+        "span_id": "77b63e025d5fe65a",
+        "trace_id": "6714ec9b72104090832afd2ce1435620"
+      },
+      "start_time": 1790833753021,
+      "end_time": 1790833754956
+    }
+  ]
+}
