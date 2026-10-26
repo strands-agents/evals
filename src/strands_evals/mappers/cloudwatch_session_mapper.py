@@ -13,7 +13,6 @@ import json
 import logging
 import warnings
 from collections import defaultdict
-from datetime import datetime, timezone
 from typing import Any
 
 from ..mappers.session_mapper import SessionMapper
@@ -94,7 +93,9 @@ class CloudWatchSessionMapper(SessionMapper):
     def _convert_trace(self, trace_id: str, spans: list[dict[str, Any]], session_id: str) -> Trace:
         """Convert spans with the same trace_id into a Trace with typed spans."""
         # Sort by start_time or timestamp
-        sorted_spans = sorted(spans, key=lambda s: s.get("start_time") or s.get("timeUnixNano", 0))
+        sorted_spans = sorted(
+            spans, key=lambda s: self.parse_timestamp(s.get("start_time") or s.get("timeUnixNano") or 0)
+        )
 
         result_spans: list[InferenceSpan | ToolExecutionSpan | AgentInvocationSpan] = []
 
@@ -161,11 +162,8 @@ class CloudWatchSessionMapper(SessionMapper):
         parent_span_id = span.get("parent_span_id") or span.get("parentSpanId")
 
         # Handle timestamps
-        time_value = span.get("start_time") or span.get("timeUnixNano", 0)
-        if isinstance(time_value, (int, float)) and time_value > 0:
-            ts = datetime.fromtimestamp(time_value / 1e9, tz=timezone.utc)
-        else:
-            ts = datetime.now(timezone.utc)
+        # OTLP/JSON encodes timeUnixNano as a decimal string; parse_timestamp handles both forms.
+        ts = self.parse_timestamp(span.get("start_time") or span.get("timeUnixNano") or None)
 
         return SpanInfo(
             trace_id=trace_id,
