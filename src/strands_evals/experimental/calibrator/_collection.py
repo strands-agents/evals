@@ -1,5 +1,6 @@
 """Private repeated-evaluation collection helpers."""
 
+import copy
 from collections.abc import Callable
 from typing import Any
 
@@ -64,6 +65,7 @@ async def _collect_repeated_reports(
     agent_runs: int,
     judge_replays: int,
     max_workers: int,
+    calibration_context: dict[str, Any] | None,
 ) -> list[list[EvaluationReport]]:
     """Run agent attempts and replay evaluators against each fixed output."""
     reports_by_run: list[list[EvaluationReport]] = []
@@ -83,6 +85,7 @@ async def _collect_repeated_reports(
                     _partial_reports(reports_by_run, replay_reports),
                 ) from error
 
+            report.calibration_context = copy.deepcopy(calibration_context)
             replay_reports.append(report)
             try:
                 _extract_report_scores(report)

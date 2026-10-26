@@ -1,6 +1,7 @@
 """Experimental evaluator calibration facade."""
 
 import asyncio
+import copy
 import inspect
 import math
 from collections.abc import Awaitable, Callable, Mapping
@@ -16,12 +17,14 @@ from ...types.evaluation import EvaluationData, InputT, OutputT
 from ...types.evaluation_report import EvaluationReport
 from ._bootstrap import (
     BootstrapDiagnostics,
+    BootstrapSummary,
     compute_candidate_weights,
     run_bootstrap,
     validate_bootstrap_options,
 )
 from ._calibration import (
     CalibrationStatus,
+    _build_calibration_context,
     _CalibrationDataset,
     _CalibrationState,
     _extract_case_signatures_from_cases,
@@ -35,13 +38,18 @@ from ._calibration import (
 )
 from ._collection import CalibrationRunError, _collect_repeated_reports
 from .algorithm import (
+    DIAGNOSTIC_WEIGHTING_METHODS,
+    WEIGHTING_METHODS,
     CalibrationAlgorithm,
     CalibrationData,
     CalibrationModel,
+    DiagnosticWeightingAlgorithm,
     VarianceSource,
     WeightingMethod,
+    _compute_weight_vector,
     _equal_weights,
 )
+from .calibration_profile import CalibrationProfile, ProfileCompatibility
 from .equal_weighting import EqualWeightingAlgorithm, EqualWeightingModel
 
 
@@ -64,6 +72,7 @@ class CalibrationResult(BaseModel):
     repeatabilities: dict[str, float]
     bootstrap: BootstrapDiagnostics | None
     status: CalibrationStatus
+    calibration_context: dict[str, Any] | None
 
     @field_serializer("bootstrap")
     def _serialize_bootstrap(self, bootstrap: BootstrapDiagnostics | None) -> dict[str, object] | None:
@@ -145,6 +154,61 @@ class Calibrator:
             "inverse_sqrt_step": None,
         }
         self._bootstrap: BootstrapDiagnostics | None = None
+        self._profile: CalibrationProfile | None = None
+
+    @classmethod
+    def from_profile(
+        cls,
+        profile: CalibrationProfile,
+        *,
+        algorithm: CalibrationAlgorithm | None = None,
+    ) -> Self:
+        """Restore a fitted calibrator from a compatible profile.
+
+        Args:
+            profile: Validated calibration profile to restore.
+            algorithm: Algorithm implementation used to restore a custom
+                fitted model. Built-in profiles restore automatically.
+
+        Returns:
+            A calibrator with the profile's model and diagnostics.
+
+        Raises:
+            ValueError: If the profile is incompatible or requires a
+                custom algorithm that cannot restore saved parameters.
+        """
+        validated_profile = CalibrationProfile.from_dict(profile.to_dict())
+        selected_algorithm = (
+            _built_in_algorithm_for_profile(validated_profile) if algorithm is None else _validate_algorithm(algorithm)
+        )
+        compatibility = validated_profile.algorithm_compatibility(selected_algorithm.identity)
+        if compatibility != ProfileCompatibility.COMPATIBLE:
+            raise ValueError(f"cannot restore {compatibility.value} calibration profile")
+
+        try:
+            restored_model = selected_algorithm.restore(
+                MappingProxyType(copy.deepcopy(validated_profile.model_parameters))
+            )
+        except NotImplementedError as error:
+            raise ValueError("profile restoration requires an algorithm that implements restore") from error
+        fitted_model = _validate_fitted_model(restored_model, set(validated_profile.step_sizes))
+        if _normalized_model_parameters(fitted_model) != validated_profile.model_parameters:
+            raise ValueError("restored model parameters do not match the calibration profile")
+        restored_weights = None if fitted_model.weights is None else dict(fitted_model.weights)
+        if restored_weights != validated_profile.weights:
+            raise ValueError("restored model weights do not match the calibration profile")
+
+        calibrator = cls(
+            step_sizes=dict(validated_profile.step_sizes),
+            algorithm=selected_algorithm,
+        )
+        calibrator._state = _state_from_profile(validated_profile)
+        calibrator._model = fitted_model
+        calibrator._algorithm_identity = selected_algorithm.identity
+        calibrator._candidate_weights = _candidate_weights_from_profile(validated_profile)
+        calibrator._bootstrap = _bootstrap_from_profile(validated_profile)
+        calibrator._profile = validated_profile.model_copy(deep=True)
+        return calibrator
 
     @property
     def algorithm_identity(self) -> str:
@@ -159,10 +223,12 @@ class Calibrator:
     @property
     def model_parameters(self) -> dict[str, Any]:
         """Return deterministic JSON-compatible fitted model parameters."""
-        normalized = _normalize_configuration_value(dict(self._model.parameters))
-        if not isinstance(normalized, dict):
-            raise ValueError("fitted model parameters must normalize to a mapping")
-        return normalized
+        return _normalized_model_parameters(self._model)
+
+    @property
+    def profile(self) -> CalibrationProfile | None:
+        """Return a copy of the fitted calibration profile, if available."""
+        return None if self._profile is None else self._profile.model_copy(deep=True)
 
     @property
     def calibration_design(self) -> dict[str, int] | None:
@@ -174,6 +240,11 @@ class Calibrator:
             "agent_runs": agent_runs,
             "judge_replays": judge_replays,
         }
+
+    @property
+    def calibration_context(self) -> dict[str, Any] | None:
+        """Return the fitted experiment compatibility fingerprint."""
+        return copy.deepcopy(self._state.calibration_context)
 
     @property
     def variance_components(self) -> dict[str, dict[VarianceSource, float]]:
@@ -313,10 +384,26 @@ class Calibrator:
         case_signatures = _extract_case_signatures_from_cases(
             {key: value for key, value in case.model_dump().items() if key in report_case_fields} for case in cases
         )
+        calibration_context = (
+            None
+            if self.is_fitted and self._state.calibration_context is None
+            else _build_calibration_context(
+                cases,
+                experiment.evaluators,
+                self._step_sizes,
+            )
+        )
         _validate_calibration_compatibility(
             expected_design=self._state.calibration_design,
+            expected_context=self._state.calibration_context,
             actual_design=(agent_runs, judge_replays),
+            actual_context=calibration_context,
+            step_sizes=self._step_sizes,
             operation="evaluation",
+            expected_structure_fingerprint=(
+                self._state.fit_structure_fingerprint if self._state.calibration_structure is None else None
+            ),
+            actual_structure=(tuple(sorted(evaluator_names)), case_signatures),
         )
         if self._state.calibration_structure is not None:
             fitted_cases = {name for name, _ in self._state.calibration_structure[1]}
@@ -336,6 +423,7 @@ class Calibrator:
             agent_runs=agent_runs,
             judge_replays=judge_replays,
             max_workers=max_workers,
+            calibration_context=calibration_context,
         )
         try:
             self.fit(
@@ -360,6 +448,7 @@ class Calibrator:
             repeatabilities=self.repeatabilities,
             bootstrap=self.bootstrap,
             status=self.status,
+            calibration_context=self.calibration_context,
         )
 
     def fit(
@@ -387,8 +476,11 @@ class Calibrator:
         dataset = _prepare_calibration_dataset(
             reports_by_run,
             configured_evaluators=set(self._step_sizes),
+            step_sizes=self._step_sizes,
             expected_design=self._state.calibration_design,
+            expected_context=self._state.calibration_context,
             expected_structure=self._state.calibration_structure,
+            expected_structure_fingerprint=self._state.fit_structure_fingerprint,
             operation="fit",
         )
         fitted_state = _fit_dataset(dataset)
@@ -413,11 +505,19 @@ class Calibrator:
             if bootstrap_replicates
             else None
         )
+        fitted_profile = _profile_from_state(
+            fitted_state,
+            fitted_model,
+            self._algorithm.identity,
+            self._step_sizes,
+            bootstrap,
+        )
         self._state = fitted_state
         self._model = fitted_model
         self._algorithm_identity = self._algorithm.identity
         self._candidate_weights = candidate_weights
         self._bootstrap = bootstrap
+        self._profile = fitted_profile
         return self
 
     def score(self, reports_by_run: list[list[EvaluationReport]]) -> float:
@@ -440,8 +540,11 @@ class Calibrator:
         dataset = _prepare_calibration_dataset(
             reports_by_run,
             configured_evaluators=set(self._step_sizes),
+            step_sizes=self._step_sizes,
             expected_design=self._state.calibration_design,
+            expected_context=self._state.calibration_context,
             expected_structure=self._state.calibration_structure,
+            expected_structure_fingerprint=self._state.fit_structure_fingerprint,
             operation="scoring",
             scoring=True,
         )
@@ -455,8 +558,11 @@ class Calibrator:
         dataset = _prepare_calibration_dataset(
             reports_by_run,
             configured_evaluators=set(self._step_sizes),
+            step_sizes=self._step_sizes,
             expected_design=self._state.calibration_design,
+            expected_context=self._state.calibration_context,
             expected_structure=self._state.calibration_structure,
+            expected_structure_fingerprint=self._state.fit_structure_fingerprint,
             operation="scoring",
             scoring=True,
         )
@@ -472,6 +578,117 @@ class Calibrator:
             )
             for method, weights in self._candidate_weights.items()
         }
+
+
+def _profile_from_state(
+    state: _CalibrationState,
+    model: CalibrationModel,
+    algorithm_identity: str,
+    step_sizes: dict[str, float],
+    bootstrap: BootstrapDiagnostics | None,
+) -> CalibrationProfile:
+    """Convert fitted runtime state and model parameters into a profile."""
+    if state.calibration_design is None or state.case_count is None:
+        raise ValueError("calibrator must be fitted before creating a calibration profile")
+    agent_runs, judge_replays = state.calibration_design
+    return CalibrationProfile.create(
+        algorithm_identity=algorithm_identity,
+        model_parameters=_normalized_model_parameters(model),
+        weights=None if model.weights is None else dict(model.weights),
+        status=state.status,
+        step_sizes=dict(step_sizes),
+        variance_components={name: dict(components) for name, components in state.variance_components.items()},
+        repeatabilities=dict(state.repeatabilities),
+        bootstrap=None if bootstrap is None else bootstrap.to_dict(),
+        case_count=state.case_count,
+        agent_runs=agent_runs,
+        judge_replays=judge_replays,
+        calibration_context=copy.deepcopy(state.calibration_context),
+        fit_structure_fingerprint=state.fit_structure_fingerprint,
+    )
+
+
+def _state_from_profile(profile: CalibrationProfile) -> _CalibrationState:
+    """Restore measurement diagnostics and compatibility state from a profile."""
+    return _CalibrationState(
+        variance_components={
+            name: {
+                "judge": components["judge"],
+                "agent": components["agent"],
+                "case": components["case"],
+            }
+            for name, components in profile.variance_components.items()
+        },
+        repeatabilities=dict(profile.repeatabilities),
+        calibration_design=(profile.agent_runs, profile.judge_replays),
+        calibration_context=copy.deepcopy(profile.calibration_context),
+        case_count=profile.case_count,
+        calibration_structure=None,
+        fit_structure_fingerprint=profile.fit_structure_fingerprint,
+        status=profile.status,
+    )
+
+
+def _candidate_weights_from_profile(
+    profile: CalibrationProfile,
+) -> dict[WeightingMethod, dict[str, float] | None]:
+    """Rebuild diagnostic candidate weights from saved measurements."""
+    return {
+        method: _compute_weight_vector(
+            method,
+            list(profile.step_sizes),
+            profile.repeatabilities,
+            profile.step_sizes,
+        )
+        for method in WEIGHTING_METHODS
+    }
+
+
+def _built_in_algorithm_for_profile(
+    profile: CalibrationProfile,
+) -> CalibrationAlgorithm:
+    """Resolve a built-in restorable algorithm from a profile identity."""
+    equal_weighting = EqualWeightingAlgorithm()
+    if profile.algorithm_identity == equal_weighting.identity:
+        return EqualWeightingAlgorithm()
+    for method in DIAGNOSTIC_WEIGHTING_METHODS:
+        algorithm = DiagnosticWeightingAlgorithm(method)
+        if profile.algorithm_identity == algorithm.identity:
+            return algorithm
+    raise ValueError("custom calibration profiles require a restorable algorithm")
+
+
+def _bootstrap_from_profile(profile: CalibrationProfile) -> BootstrapDiagnostics | None:
+    """Restore immutable bootstrap diagnostics from a profile."""
+    if profile.bootstrap is None:
+        return None
+    data = profile.bootstrap.model_dump()
+    return BootstrapDiagnostics(
+        replicates=data["replicates"],
+        seed=data["seed"],
+        repeatability_intervals={
+            name: BootstrapSummary(**summary) for name, summary in data["repeatability_intervals"].items()
+        },
+        variance_component_intervals={
+            name: {source: BootstrapSummary(**summary) for source, summary in intervals.items()}
+            for name, intervals in data["variance_component_intervals"].items()
+        },
+        candidate_weight_intervals={
+            method: {name: BootstrapSummary(**summary) for name, summary in intervals.items()}
+            for method, intervals in data["candidate_weight_intervals"].items()
+        },
+        composite_score_intervals={
+            method: BootstrapSummary(**summary) for method, summary in data["composite_score_intervals"].items()
+        },
+    )
+
+
+def _normalized_model_parameters(model: CalibrationModel) -> dict[str, Any]:
+    """Return deterministic JSON-compatible parameters for a fitted model."""
+    normalized = _normalize_configuration_value(dict(model.parameters))
+    if not isinstance(normalized, dict):
+        raise ValueError("fitted model parameters must normalize to a mapping")
+    return normalized
 
 
 def _build_algorithm_data(

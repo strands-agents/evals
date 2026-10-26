@@ -155,6 +155,10 @@ class CalibrationAlgorithm(ABC):
         """Fit and return a scoring model."""
         ...
 
+    def restore(self, parameters: Mapping[str, Any]) -> CalibrationModel:
+        """Restore a fitted model from saved parameters when supported."""
+        raise NotImplementedError("this calibration algorithm does not support profile restoration")
+
 
 @dataclass(frozen=True, kw_only=True)
 class DiagnosticWeightingModel(CalibrationModel):
@@ -245,6 +249,19 @@ class DiagnosticWeightingAlgorithm(CalibrationAlgorithm):
             used_equal_fallback=used_equal_fallback,
         )
 
+    def restore(self, parameters: Mapping[str, Any]) -> DiagnosticWeightingModel:
+        """Restore a diagnostic model from saved profile parameters."""
+        if parameters.get("weighting_method") != self.method:
+            raise ValueError("saved weighting method does not match the configured algorithm")
+        used_equal_fallback = parameters.get("used_equal_fallback", False)
+        if not isinstance(used_equal_fallback, bool):
+            raise ValueError("saved used_equal_fallback must be a boolean")
+        return DiagnosticWeightingModel(
+            weighting_method=self.method,
+            evaluator_weights=_restore_weights(parameters),
+            used_equal_fallback=used_equal_fallback,
+        )
+
 
 def _compute_weight_vector(
     method: WeightingMethod,
@@ -280,3 +297,18 @@ def _equal_weights(evaluator_names: tuple[str, ...] | list[str]) -> dict[str, fl
     """Return an equal-weight vector for the supplied evaluators."""
     weight = 1.0 / len(evaluator_names)
     return {name: weight for name in evaluator_names}
+
+
+def _restore_weights(parameters: Mapping[str, Any]) -> dict[str, float]:
+    """Validate and copy a saved evaluator-weight mapping."""
+    raw_weights = parameters.get("weights")
+    if not isinstance(raw_weights, Mapping):
+        raise ValueError("saved model parameters must contain a weights mapping")
+    weights: dict[str, float] = {}
+    for evaluator_name, weight in raw_weights.items():
+        if not isinstance(evaluator_name, str):
+            raise ValueError("saved weight names must be strings")
+        if not isinstance(weight, (int, float)) or isinstance(weight, bool):
+            raise ValueError("saved weights must be numeric")
+        weights[evaluator_name] = float(weight)
+    return weights

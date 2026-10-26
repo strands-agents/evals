@@ -1,6 +1,8 @@
 """Private data and statistical helpers for evaluator calibration."""
 
+import copy
 import hashlib
+import inspect
 import json
 import math
 from collections.abc import Iterable
@@ -10,12 +12,16 @@ from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel
+from strands.models.model import Model
 
+from ...case import Case
+from ...evaluators.evaluator import Evaluator
 from ...types.evaluation_report import EvaluationReport
 from .algorithm import CalibrationObservation, CalibrationSample, VarianceSource
 
 _EPSILON = 1e-15
 _ERROR_REASON_PREFIXES = ("An error occurred:", "Evaluator error:")
+_CALIBRATION_CONTEXT_VERSION = "1"
 _RUNTIME_CASE_FIELDS = {
     "actual_environment_state",
     "actual_interactions",
@@ -49,7 +55,10 @@ class _CalibrationState:
     variance_components: dict[str, dict[VarianceSource, float]]
     repeatabilities: dict[str, float]
     calibration_design: tuple[int, int] | None
+    calibration_context: dict[str, Any] | None
+    case_count: int | None
     calibration_structure: _CalibrationStructure | None
+    fit_structure_fingerprint: str | None
     status: CalibrationStatus
 
 
@@ -68,6 +77,7 @@ class _CalibrationDataset:
     case_signatures: _CaseSignatures
     run_count: int
     replay_count: int
+    calibration_context: dict[str, Any] | None
 
     @property
     def structure(self) -> _CalibrationStructure:
@@ -93,6 +103,14 @@ class _CalibrationDataset:
             raise ValueError("each agent run must contain at least one judge replay")
         if any(not isinstance(report, EvaluationReport) for reports in reports_by_run for report in reports):
             raise ValueError("every judge replay must be an EvaluationReport")
+
+        contexts = [report.calibration_context for reports in reports_by_run for report in reports]
+        present_contexts = [context for context in contexts if context is not None]
+        if present_contexts and len(present_contexts) != len(contexts):
+            raise ValueError("calibration reports must either all include a calibration context or all omit it")
+        if present_contexts and any(context != present_contexts[0] for context in present_contexts[1:]):
+            raise ValueError("calibration reports contain incompatible calibration contexts")
+        calibration_context = None if not present_contexts else copy.deepcopy(present_contexts[0])
 
         replay_count = len(reports_by_run[0])
         if any(len(reports) != replay_count for reports in reports_by_run):
@@ -131,6 +149,7 @@ class _CalibrationDataset:
             case_signatures=case_signatures,
             run_count=run_count,
             replay_count=replay_count,
+            calibration_context=calibration_context,
         )
 
     def observations(self) -> tuple[CalibrationObservation, ...]:
@@ -184,8 +203,11 @@ def _prepare_calibration_dataset(
     reports_by_run: list[list[EvaluationReport]],
     *,
     configured_evaluators: set[str],
+    step_sizes: dict[str, float],
     expected_design: tuple[int, int] | None,
+    expected_context: dict[str, Any] | None,
     expected_structure: _CalibrationStructure | None,
+    expected_structure_fingerprint: str | None,
     operation: str,
     scoring: bool = False,
 ) -> _CalibrationDataset:
@@ -197,25 +219,136 @@ def _prepare_calibration_dataset(
     )
     _validate_calibration_compatibility(
         expected_design=expected_design,
+        expected_context=expected_context,
         actual_design=(dataset.run_count, dataset.replay_count),
+        actual_context=dataset.calibration_context,
+        step_sizes=step_sizes,
         operation=operation,
         expected_structure=expected_structure,
+        expected_structure_fingerprint=expected_structure_fingerprint,
         actual_structure=dataset.structure,
         scoring=scoring,
     )
     return dataset
 
 
+def _build_calibration_context(
+    cases: list[Case],
+    evaluators: list[Evaluator],
+    step_sizes: dict[str, float],
+) -> dict[str, Any]:
+    """Fingerprint experiment inputs and retain safe audit metadata."""
+    case_payloads = [
+        _normalize_configuration_value(
+            case.model_dump(exclude={"session_id"}),
+        )
+        for case in cases
+    ]
+    case_payloads.sort(key=_canonical_json)
+
+    evaluator_payloads = [_evaluator_configuration(evaluator) for evaluator in evaluators]
+    evaluator_payloads.sort(key=_canonical_json)
+    evaluator_metadata = [_evaluator_profile_metadata(payload) for payload in evaluator_payloads]
+
+    components = {
+        "dataset": _fingerprint(case_payloads),
+        "evaluators": _fingerprint(evaluator_payloads),
+        "step_sizes": _step_size_fingerprint(step_sizes),
+    }
+    return {
+        "version": _CALIBRATION_CONTEXT_VERSION,
+        **components,
+        "overall": _fingerprint(components),
+        "metadata": {
+            "dataset": {
+                "fingerprint": components["dataset"],
+                "case_count": len(cases),
+                "named_case_count": sum(case.name is not None for case in cases),
+            },
+            "evaluators": evaluator_metadata,
+            "step_sizes": {name: step_sizes[name] for name in sorted(step_sizes)},
+        },
+    }
+
+
+def _evaluator_profile_metadata(configuration: dict[str, Any]) -> dict[str, Any]:
+    """Reduce evaluator configuration to safe, inspectable profile metadata."""
+    parameters = configuration["parameters"]
+    metadata: dict[str, Any] = {
+        "implementation": configuration["implementation"],
+        "name": configuration["name"],
+        "configuration_fingerprint": _fingerprint(configuration),
+    }
+
+    model = parameters.get("model")
+    if isinstance(model, dict):
+        metadata["judge_model"] = {"model_id": model.get("model_id", "")}
+
+    for rubric_field in ("rubric", "system_prompt"):
+        rubric = parameters.get(rubric_field)
+        if isinstance(rubric, str):
+            metadata[rubric_field] = {
+                "sha256": hashlib.sha256(rubric.encode("utf-8")).hexdigest(),
+                "character_count": len(rubric),
+            }
+    return metadata
+
+
+def _evaluator_configuration(evaluator: Evaluator) -> dict[str, Any]:
+    """Extract constructor-backed evaluator configuration without runtime state."""
+    parameters: dict[str, Any] = {}
+    signature = inspect.signature(evaluator.__class__.__init__)
+    for name, parameter in signature.parameters.items():
+        if name == "self" or parameter.kind in {
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        }:
+            continue
+        if name == "name":
+            parameters[name] = evaluator.get_name()
+            continue
+        if hasattr(evaluator, name):
+            value = getattr(evaluator, name)
+        elif hasattr(evaluator, f"_{name}"):
+            value = getattr(evaluator, f"_{name}")
+        else:
+            return {
+                "implementation": f"{evaluator.__class__.__module__}.{evaluator.__class__.__qualname__}",
+                "name": evaluator.get_name(),
+                "parameters": _normalize_configuration_value(evaluator.to_dict()),
+            }
+
+        if name == "model":
+            model_config: dict[str, Any] = {
+                "model_id": evaluator._get_model_id(value),
+            }
+            if isinstance(value, Model):
+                model_config["config"] = _normalize_configuration_value(value.config)
+            parameters[name] = model_config
+        else:
+            parameters[name] = _normalize_configuration_value(value)
+
+    return {
+        "implementation": (f"{evaluator.__class__.__module__}.{evaluator.__class__.__qualname__}"),
+        "name": evaluator.get_name(),
+        "parameters": parameters,
+    }
+
+
 def _validate_calibration_compatibility(
     *,
     expected_design: tuple[int, int] | None,
+    expected_context: dict[str, Any] | None,
     actual_design: tuple[int, int],
+    actual_context: dict[str, Any] | None,
+    step_sizes: dict[str, float],
     operation: str,
     expected_structure: _CalibrationStructure | None = None,
+    expected_structure_fingerprint: str | None = None,
     actual_structure: _CalibrationStructure | None = None,
     scoring: bool = False,
 ) -> None:
-    """Require the fitted structure while allowing new scoring samples."""
+    """Require compatible evaluators while allowing new scoring samples."""
     if not scoring and expected_design is not None and actual_design != expected_design:
         expected_runs, expected_replays = expected_design
         actual_runs, actual_replays = actual_design
@@ -225,17 +358,55 @@ def _validate_calibration_compatibility(
             f"got agent_runs={actual_runs}, judge_replays={actual_replays}"
         )
 
-    if expected_structure is None or actual_structure is None:
-        return
+    if expected_structure is not None and actual_structure is not None:
+        changed_components: list[str] = []
+        if actual_structure[0] != expected_structure[0]:
+            changed_components.append("evaluators")
+        if not scoring and actual_structure[1] != expected_structure[1]:
+            changed_components.append("cases")
+        if changed_components:
+            raise ValueError(
+                f"{operation} report structure is incompatible with the fitted calibration; "
+                f"changed_components={changed_components}"
+            )
 
-    changed_components: list[str] = []
-    if actual_structure[0] != expected_structure[0]:
-        changed_components.append("evaluators")
-    if not scoring and actual_structure[1] != expected_structure[1]:
-        changed_components.append("cases")
+    if (
+        not scoring
+        and expected_structure_fingerprint is not None
+        and (
+            actual_structure is None
+            or _report_structure_fingerprint(actual_structure) != expected_structure_fingerprint
+        )
+    ):
+        raise ValueError(f"{operation} report structure is incompatible with the fitted calibration")
+
+    if actual_context is not None:
+        if actual_context.get("version") != _CALIBRATION_CONTEXT_VERSION:
+            raise ValueError(f"{operation} calibration context has an unsupported version")
+        expected_step_sizes = _step_size_fingerprint(step_sizes)
+        if actual_context.get("step_sizes") != expected_step_sizes:
+            raise ValueError(f"{operation} calibration context does not match the configured evaluator step sizes")
+
+    if expected_design is None:
+        return
+    if expected_context is None and actual_context is None:
+        return
+    if scoring and actual_context is None:
+        return
+    if expected_context is None or actual_context is None:
+        raise ValueError(
+            f"{operation} calibration context must match the fitted context; "
+            "cannot mix fingerprinted reports with context-free reports"
+        )
+    compared_components = {"evaluators", "step_sizes"} if scoring else {"dataset", "evaluators", "step_sizes"}
+    changed_components = sorted(
+        component
+        for component in compared_components
+        if actual_context.get(component) != expected_context.get(component)
+    )
     if changed_components:
         raise ValueError(
-            f"{operation} report structure is incompatible with the fitted calibration; "
+            f"{operation} calibration context is incompatible with the fitted context; "
             f"changed_components={changed_components}"
         )
 
@@ -280,6 +451,21 @@ def _normalize_configuration_value(value: Any) -> Any:
     raise ValueError(
         f"unsupported configuration value type {value_type!r}; use JSON-compatible values or a Pydantic model"
     )
+
+
+def _fingerprint(value: Any) -> str:
+    """Hash normalized configuration data."""
+    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _step_size_fingerprint(step_sizes: dict[str, float]) -> str:
+    """Fingerprint a normalized evaluator step-size registry."""
+    return _fingerprint({name: step_sizes[name] for name in sorted(step_sizes)})
+
+
+def _report_structure_fingerprint(structure: _CalibrationStructure) -> str:
+    """Fingerprint evaluator names and stable case definitions."""
+    return _fingerprint(structure)
 
 
 def _extract_report_scores(report: EvaluationReport) -> dict[str, dict[str, float]]:
@@ -398,7 +584,10 @@ def _initial_calibration_state() -> _CalibrationState:
         variance_components={},
         repeatabilities={},
         calibration_design=None,
+        calibration_context=None,
+        case_count=None,
         calibration_structure=None,
+        fit_structure_fingerprint=None,
         status="uncalibrated",
     )
 
@@ -416,7 +605,12 @@ def _fit_dataset(dataset: _CalibrationDataset) -> _CalibrationState:
         variance_components=variance_components,
         repeatabilities=repeatabilities,
         calibration_design=(dataset.run_count, dataset.replay_count),
+        calibration_context=copy.deepcopy(dataset.calibration_context),
+        case_count=len(dataset.case_names),
         calibration_structure=dataset.structure,
+        fit_structure_fingerprint=(
+            _report_structure_fingerprint(dataset.structure) if dataset.calibration_context is None else None
+        ),
         status="calibrated",
     )
 

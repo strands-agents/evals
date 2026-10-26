@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
-from .algorithm import CalibrationAlgorithm, CalibrationData, CalibrationModel
+from .algorithm import CalibrationAlgorithm, CalibrationData, CalibrationModel, _restore_weights
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -56,4 +56,10 @@ class EqualWeightingAlgorithm(CalibrationAlgorithm):
         weight = 1.0 / len(data.evaluator_names)
         return EqualWeightingModel(
             evaluator_weights={name: weight for name in data.evaluator_names},
+        )
+
+    def restore(self, parameters: Mapping[str, Any]) -> EqualWeightingModel:
+        """Restore an equal-weight model from saved parameters."""
+        return EqualWeightingModel(
+            evaluator_weights=_restore_weights(parameters),
         )

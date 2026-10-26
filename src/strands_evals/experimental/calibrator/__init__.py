@@ -13,6 +13,7 @@ from .algorithm import (
     WeightingMethod,
 )
 from .calibration import CalibrationResult, Calibrator
+from .calibration_profile import CalibrationProfile, ProfileCompatibility
 from .equal_weighting import EqualWeightingAlgorithm, EqualWeightingModel
 
 __all__ = [
@@ -23,6 +24,7 @@ __all__ = [
     "CalibrationModel",
     "CalibrationObservation",
     "CalibrationSample",
+    "CalibrationProfile",
     "CalibrationResult",
     "CalibrationRunError",
     "CalibrationStatus",
@@ -31,6 +33,7 @@ __all__ = [
     "DiagnosticWeightingMethod",
     "EqualWeightingAlgorithm",
     "EqualWeightingModel",
+    "ProfileCompatibility",
     "WeightingMethod",
     "VarianceSource",
 ]
