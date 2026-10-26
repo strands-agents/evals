@@ -132,6 +132,7 @@ strands-evals/
 │   │       ├── algorithm.py                  # Pluggable fitting/model interfaces
 │   │       ├── equal_weighting.py            # Equal-weight baseline algorithm
 │   │       ├── calibration.py                # Public calibration facade
+│   │       ├── _bootstrap.py                 # Hierarchical bootstrap diagnostics
 │   │       ├── _calibration.py               # Private report/statistics helpers
 │   │       └── _collection.py                # Fixed-output replay collection
 │   │
@@ -232,9 +233,10 @@ strands-evals/
 │   ├── experimental/
 │   │   └── calibrator/
 │   │       ├── test_algorithm.py
-│   │       ├── test_equal_weighting.py
+│   │       ├── test_bootstrap.py
 │   │       ├── test_calibration.py
-│   │       └── test_collection.py
+│   │       ├── test_collection.py
+│   │       └── test_equal_weighting.py
 │   ├── redteam/                          # Mirrors src/strands_evals/redteam/
 │   ├── simulation/
 │   ├── extractors/

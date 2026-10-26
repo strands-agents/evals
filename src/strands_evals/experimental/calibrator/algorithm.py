@@ -1,5 +1,6 @@
 """Pluggable algorithms for experimental evaluator calibration."""
 
+import math
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Mapping
@@ -9,6 +10,22 @@ from types import MappingProxyType
 from typing import Any, Literal
 
 VarianceSource = Literal["judge", "agent", "case"]
+
+_EPSILON = 1e-15
+
+WeightingMethod = Literal["equal", "repeatability", "inverse_step", "inverse_sqrt_step"]
+WEIGHTING_METHODS: tuple[WeightingMethod, ...] = (
+    "equal",
+    "repeatability",
+    "inverse_step",
+    "inverse_sqrt_step",
+)
+DiagnosticWeightingMethod = Literal["repeatability", "inverse_step", "inverse_sqrt_step"]
+DIAGNOSTIC_WEIGHTING_METHODS: tuple[DiagnosticWeightingMethod, ...] = (
+    "repeatability",
+    "inverse_step",
+    "inverse_sqrt_step",
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -137,3 +154,129 @@ class CalibrationAlgorithm(ABC):
     def fit(self, data: CalibrationData) -> CalibrationModel:
         """Fit and return a scoring model."""
         ...
+
+
+@dataclass(frozen=True, kw_only=True)
+class DiagnosticWeightingModel(CalibrationModel):
+    """Fitted weighting model retained for stability diagnostics."""
+
+    weighting_method: DiagnosticWeightingMethod
+    evaluator_weights: Mapping[str, float]
+    used_equal_fallback: bool = False
+
+    def __post_init__(self) -> None:
+        """Copy fitted weights into an immutable mapping."""
+        object.__setattr__(
+            self,
+            "evaluator_weights",
+            MappingProxyType(dict(self.evaluator_weights)),
+        )
+
+    @property
+    def weights(self) -> Mapping[str, float]:
+        """Return the normalized evaluator weights."""
+        return self.evaluator_weights
+
+    @property
+    def parameters(self) -> Mapping[str, Any]:
+        """Return the fitted diagnostic weighting parameters."""
+        return {
+            "weighting_method": self.weighting_method,
+            "weights": dict(self.evaluator_weights),
+            "used_equal_fallback": self.used_equal_fallback,
+        }
+
+    def predict(self, evaluator_scores: Mapping[str, float]) -> float:
+        """Return the normalized weighted average of evaluator scores."""
+        if set(evaluator_scores) != set(self.evaluator_weights):
+            missing = sorted(set(self.evaluator_weights) - set(evaluator_scores))
+            unexpected = sorted(set(evaluator_scores) - set(self.evaluator_weights))
+            raise ValueError(
+                f"evaluator scores do not match the fitted model; missing={missing}, unexpected={unexpected}"
+            )
+        score = sum(self.evaluator_weights[name] * evaluator_scores[name] for name in evaluator_scores)
+        return min(max(score, 0.0), 1.0)
+
+
+class DiagnosticWeightingAlgorithm(CalibrationAlgorithm):
+    """Explicit opt-in adapter for repeatability and score-step diagnostics.
+
+    `repeatability` weights directly by measurement repeatability.
+    `inverse_step` divides repeatability by the evaluator's meaningful score
+    increment, while `inverse_sqrt_step` applies the milder square-root
+    adjustment. These rules measure stability and score resolution; they do
+    not establish semantic relevance or correctness against a quality target.
+    """
+
+    def __init__(self, method: DiagnosticWeightingMethod) -> None:
+        """Initialize one diagnostic weighting rule.
+
+        Args:
+            method: Diagnostic weighting rule applied to measurement results.
+
+        Raises:
+            ValueError: If the method is not a supported diagnostic rule.
+        """
+        if method not in DIAGNOSTIC_WEIGHTING_METHODS:
+            raise ValueError(
+                f"unknown diagnostic weighting method {method!r}; expected one of {list(DIAGNOSTIC_WEIGHTING_METHODS)}"
+            )
+        self.method = method
+
+    @property
+    def identity(self) -> str:
+        """Return the stable identity for this diagnostic rule."""
+        return f"diagnostic_{self.method}_weighting:v1"
+
+    def fit(self, data: CalibrationData) -> DiagnosticWeightingModel:
+        """Fit a normalized diagnostic weighted-average model."""
+        weights = _compute_weight_vector(
+            self.method,
+            data.evaluator_names,
+            data.repeatabilities,
+            data.step_sizes,
+        )
+        used_equal_fallback = weights is None
+        if weights is None:
+            weights = _equal_weights(data.evaluator_names)
+        return DiagnosticWeightingModel(
+            weighting_method=self.method,
+            evaluator_weights=weights,
+            used_equal_fallback=used_equal_fallback,
+        )
+
+
+def _compute_weight_vector(
+    method: WeightingMethod,
+    evaluator_names: tuple[str, ...] | list[str],
+    repeatabilities: Mapping[str, float],
+    step_sizes: Mapping[str, float],
+) -> dict[str, float] | None:
+    """Compute and normalize one candidate evaluator-weight vector."""
+    if method == "equal":
+        return _equal_weights(evaluator_names)
+
+    unnormalized: dict[str, float] = {}
+    for evaluator_name in evaluator_names:
+        repeatability = repeatabilities[evaluator_name]
+        step = step_sizes[evaluator_name]
+        if method == "repeatability":
+            value = repeatability
+        elif method == "inverse_step":
+            value = repeatability / step
+        elif method == "inverse_sqrt_step":
+            value = repeatability / math.sqrt(step)
+        else:
+            raise ValueError(f"unknown weighting method: {method!r}")
+        unnormalized[evaluator_name] = value
+
+    total = sum(unnormalized.values())
+    if total <= _EPSILON:
+        return None
+    return {name: value / total for name, value in unnormalized.items()}
+
+
+def _equal_weights(evaluator_names: tuple[str, ...] | list[str]) -> dict[str, float]:
+    """Return an equal-weight vector for the supplied evaluators."""
+    weight = 1.0 / len(evaluator_names)
+    return {name: weight for name in evaluator_names}

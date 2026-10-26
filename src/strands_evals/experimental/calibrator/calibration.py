@@ -7,13 +7,19 @@ from collections.abc import Awaitable, Callable, Mapping
 from types import MappingProxyType
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer
 from typing_extensions import Self
 
 from ...case import Case
 from ...experiment import Experiment
 from ...types.evaluation import EvaluationData, InputT, OutputT
 from ...types.evaluation_report import EvaluationReport
+from ._bootstrap import (
+    BootstrapDiagnostics,
+    compute_candidate_weights,
+    run_bootstrap,
+    validate_bootstrap_options,
+)
 from ._calibration import (
     CalibrationStatus,
     _CalibrationDataset,
@@ -33,6 +39,8 @@ from .algorithm import (
     CalibrationData,
     CalibrationModel,
     VarianceSource,
+    WeightingMethod,
+    _equal_weights,
 )
 from .equal_weighting import EqualWeightingAlgorithm, EqualWeightingModel
 
@@ -54,7 +62,13 @@ class CalibrationResult(BaseModel):
     calibration_design: dict[str, int] | None
     variance_components: dict[str, dict[VarianceSource, float]]
     repeatabilities: dict[str, float]
+    bootstrap: BootstrapDiagnostics | None
     status: CalibrationStatus
+
+    @field_serializer("bootstrap")
+    def _serialize_bootstrap(self, bootstrap: BootstrapDiagnostics | None) -> dict[str, object] | None:
+        """Serialize immutable bootstrap mappings without Pydantic warnings."""
+        return None if bootstrap is None else bootstrap.to_dict()
 
 
 class Calibrator:
@@ -124,6 +138,13 @@ class Calibrator:
         )
         self._algorithm_identity = default_algorithm.identity
         self._state = _initial_calibration_state()
+        self._candidate_weights: dict[WeightingMethod, dict[str, float] | None] = {
+            "equal": _equal_weights(tuple(self._step_sizes)),
+            "repeatability": None,
+            "inverse_step": None,
+            "inverse_sqrt_step": None,
+        }
+        self._bootstrap: BootstrapDiagnostics | None = None
 
     @property
     def algorithm_identity(self) -> str:
@@ -169,6 +190,18 @@ class Calibrator:
         return dict(self._state.repeatabilities)
 
     @property
+    def candidate_weights(self) -> dict[WeightingMethod, dict[str, float] | None]:
+        """Return weight vectors for every diagnostic candidate rule."""
+        return {
+            method: None if weights is None else dict(weights) for method, weights in self._candidate_weights.items()
+        }
+
+    @property
+    def bootstrap(self) -> BootstrapDiagnostics | None:
+        """Return diagnostics from the latest bootstrap fit, if requested."""
+        return self._bootstrap
+
+    @property
     def is_fitted(self) -> bool:
         """Whether measurement data has been fitted to the configured algorithm."""
         return self._state.calibration_design is not None
@@ -186,6 +219,8 @@ class Calibrator:
         agent_runs: int,
         judge_replays: int,
         max_workers: int = 1,
+        bootstrap_replicates: int = 0,
+        bootstrap_seed: int = 0,
     ) -> CalibrationResult:
         """Run repeated evaluations, fit the algorithm, and return the result.
 
@@ -196,6 +231,9 @@ class Calibrator:
             agent_runs: Number of independent task executions per case.
             judge_replays: Number of evaluator passes over each fixed output.
             max_workers: Maximum parallel case workers used by the experiment.
+            bootstrap_replicates: Number of hierarchical bootstrap samples.
+                Zero disables bootstrap diagnostics.
+            bootstrap_seed: Random seed used for reproducible resampling.
 
         Returns:
             The composite score, raw reports, and fitted calibration snapshot.
@@ -215,6 +253,8 @@ class Calibrator:
                 agent_runs=agent_runs,
                 judge_replays=judge_replays,
                 max_workers=max_workers,
+                bootstrap_replicates=bootstrap_replicates,
+                bootstrap_seed=bootstrap_seed,
             )
         )
 
@@ -229,6 +269,8 @@ class Calibrator:
         agent_runs: int,
         judge_replays: int,
         max_workers: int = 10,
+        bootstrap_replicates: int = 0,
+        bootstrap_seed: int = 0,
     ) -> CalibrationResult:
         """Collect repeated reports, fit the algorithm, and return a snapshot.
 
@@ -239,6 +281,9 @@ class Calibrator:
             agent_runs: Number of independent task executions per case.
             judge_replays: Number of evaluator passes over each fixed output.
             max_workers: Maximum parallel case workers used by the experiment.
+            bootstrap_replicates: Number of hierarchical bootstrap samples.
+                Zero disables bootstrap diagnostics.
+            bootstrap_seed: Random seed used for reproducible resampling.
 
         Returns:
             The composite score, raw reports, and fitted calibration snapshot.
@@ -248,6 +293,7 @@ class Calibrator:
                 retains every report collected before the failure.
             ValueError: If pre-flight validation fails.
         """
+        validate_bootstrap_options(bootstrap_replicates, bootstrap_seed)
         _validate_repetition_counts(agent_runs, judge_replays)
         cases = experiment.cases
         if len(cases) < 2:
@@ -292,7 +338,11 @@ class Calibrator:
             max_workers=max_workers,
         )
         try:
-            self.fit(reports_by_run)
+            self.fit(
+                reports_by_run,
+                bootstrap_replicates=bootstrap_replicates,
+                bootstrap_seed=bootstrap_seed,
+            )
             score = self.score(reports_by_run)
         except Exception as error:
             raise CalibrationRunError(
@@ -308,14 +358,24 @@ class Calibrator:
             calibration_design=self.calibration_design,
             variance_components=self.variance_components,
             repeatabilities=self.repeatabilities,
+            bootstrap=self.bootstrap,
             status=self.status,
         )
 
-    def fit(self, reports_by_run: list[list[EvaluationReport]]) -> Self:
+    def fit(
+        self,
+        reports_by_run: list[list[EvaluationReport]],
+        *,
+        bootstrap_replicates: int = 0,
+        bootstrap_seed: int = 0,
+    ) -> Self:
         """Fit the configured algorithm from repeated evaluation reports.
 
         Args:
             reports_by_run: Reports grouped by agent run and judge replay.
+            bootstrap_replicates: Number of hierarchical bootstrap samples.
+                Zero disables bootstrap diagnostics.
+            bootstrap_seed: Random seed used for reproducible resampling.
 
         Returns:
             This calibrator with its fitted scoring model updated.
@@ -323,6 +383,7 @@ class Calibrator:
         Raises:
             ValueError: If reports are incomplete or structurally incompatible.
         """
+        validate_bootstrap_options(bootstrap_replicates, bootstrap_seed)
         dataset = _prepare_calibration_dataset(
             reports_by_run,
             configured_evaluators=set(self._step_sizes),
@@ -337,9 +398,26 @@ class Calibrator:
             set(self._step_sizes),
         )
         _score_dataset(fitted_model, dataset)
+        candidate_weights = compute_candidate_weights(
+            dataset,
+            self._step_sizes,
+            fitted_state.repeatabilities,
+        )
+        bootstrap = (
+            run_bootstrap(
+                dataset,
+                self._step_sizes,
+                bootstrap_replicates,
+                bootstrap_seed,
+            )
+            if bootstrap_replicates
+            else None
+        )
         self._state = fitted_state
         self._model = fitted_model
         self._algorithm_identity = self._algorithm.identity
+        self._candidate_weights = candidate_weights
+        self._bootstrap = bootstrap
         return self
 
     def score(self, reports_by_run: list[list[EvaluationReport]]) -> float:
@@ -368,6 +446,32 @@ class Calibrator:
             scoring=True,
         )
         return _score_dataset(self._model, dataset)
+
+    def score_candidates(
+        self,
+        reports_by_run: list[list[EvaluationReport]],
+    ) -> dict[WeightingMethod, float | None]:
+        """Score reports under every diagnostic candidate weighting rule."""
+        dataset = _prepare_calibration_dataset(
+            reports_by_run,
+            configured_evaluators=set(self._step_sizes),
+            expected_design=self._state.calibration_design,
+            expected_structure=self._state.calibration_structure,
+            operation="scoring",
+            scoring=True,
+        )
+        evaluator_scores = dataset.evaluator_scores()
+        return {
+            method: (
+                None
+                if weights is None
+                else min(
+                    max(sum(weights[name] * evaluator_scores[name] for name in evaluator_scores), 0.0),
+                    1.0,
+                )
+            )
+            for method, weights in self._candidate_weights.items()
+        }
 
 
 def _build_algorithm_data(

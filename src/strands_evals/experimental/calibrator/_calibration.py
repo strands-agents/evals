@@ -149,6 +149,21 @@ class _CalibrationDataset:
             for case_name in self.case_names
         )
 
+    def evaluator_scores(self) -> dict[str, float]:
+        """Collapse the hierarchy to one suite score per evaluator."""
+        evaluator_scores: dict[str, float] = {}
+        for evaluator_name in self.evaluator_names:
+            case_scores: list[float] = []
+            for case_name in self.case_names:
+                values = [
+                    report_scores[evaluator_name][case_name]
+                    for run_reports in self.parsed
+                    for report_scores in run_reports
+                ]
+                case_scores.append(_mean(values))
+            evaluator_scores[evaluator_name] = _mean(case_scores)
+        return evaluator_scores
+
     def samples(self) -> tuple[CalibrationSample, ...]:
         """Aggregate judge replays to one feature vector per case and agent run."""
         return tuple(
