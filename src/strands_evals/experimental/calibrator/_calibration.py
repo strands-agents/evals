@@ -3,6 +3,7 @@
 import hashlib
 import json
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from enum import Enum
@@ -314,13 +315,20 @@ def _extract_report_scores(report: EvaluationReport) -> dict[str, dict[str, floa
 
 def _extract_case_signatures(report: EvaluationReport) -> _CaseSignatures:
     """Fingerprint stable case fields while ignoring run and evaluator output."""
+    return _extract_case_signatures_from_cases(report.cases)
+
+
+def _extract_case_signatures_from_cases(cases: Iterable[dict[str, Any]]) -> _CaseSignatures:
+    """Fingerprint stable fields from case dictionaries."""
     signatures: dict[str, str] = {}
-    for index, case in enumerate(report.cases):
+    for index, case in enumerate(cases):
         case_name = case.get("name")
         if not isinstance(case_name, str) or not case_name:
             raise ValueError(f"report row {index} is missing a case name")
 
-        stable_case = {key: value for key, value in case.items() if key not in _RUNTIME_CASE_FIELDS}
+        stable_case = {
+            key: value for key, value in case.items() if key not in _RUNTIME_CASE_FIELDS and value is not None
+        }
         signature = hashlib.sha256(
             _canonical_json(_normalize_configuration_value(stable_case)).encode("utf-8")
         ).hexdigest()
@@ -400,9 +408,9 @@ def _fit_dataset(dataset: _CalibrationDataset) -> _CalibrationState:
 
 def _validate_repetition_counts(agent_runs: int, judge_replays: int) -> None:
     """Validate the balanced design has enough observations for variance."""
-    if agent_runs < 2:
+    if not isinstance(agent_runs, int) or isinstance(agent_runs, bool) or agent_runs < 2:
         raise ValueError(f"agent_runs must be >= 2, got {agent_runs}")
-    if judge_replays < 2:
+    if not isinstance(judge_replays, int) or isinstance(judge_replays, bool) or judge_replays < 2:
         raise ValueError(f"judge_replays must be >= 2, got {judge_replays}")
 
 

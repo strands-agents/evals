@@ -1,22 +1,33 @@
 """Experimental evaluator calibration facade."""
 
+import asyncio
+import inspect
 import math
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from types import MappingProxyType
 from typing import Any
 
+from pydantic import BaseModel
 from typing_extensions import Self
 
+from ...case import Case
+from ...experiment import Experiment
+from ...types.evaluation import InputT, OutputT
 from ...types.evaluation_report import EvaluationReport
 from ._calibration import (
     CalibrationStatus,
     _CalibrationDataset,
     _CalibrationState,
+    _extract_case_signatures_from_cases,
     _fit_dataset,
     _initial_calibration_state,
     _normalize_configuration_value,
     _prepare_calibration_dataset,
+    _validate_calibration_compatibility,
+    _validate_evaluator_names,
+    _validate_repetition_counts,
 )
+from ._collection import CalibrationRunError, _collect_repeated_reports
 from .algorithm import (
     CalibrationAlgorithm,
     CalibrationData,
@@ -24,6 +35,26 @@ from .algorithm import (
     VarianceSource,
 )
 from .equal_weighting import EqualWeightingAlgorithm, EqualWeightingModel
+
+
+class CalibrationResult(BaseModel):
+    """Point-in-time calibration result for in-memory inspection.
+
+    Mutating `reports_by_run` does not recompute `score` or update the
+    fitted calibrator. This model is not a stable persistence format, and custom
+    `EvaluationReport` subclasses are not guaranteed to survive serialization
+    and deserialization.
+    """
+
+    score: float
+    reports_by_run: list[list[EvaluationReport]]
+    weights: dict[str, float] | None
+    algorithm_identity: str
+    model_parameters: dict[str, Any]
+    calibration_design: dict[str, int] | None
+    variance_components: dict[str, dict[VarianceSource, float]]
+    repeatabilities: dict[str, float]
+    status: CalibrationStatus
 
 
 class Calibrator:
@@ -48,8 +79,10 @@ class Calibrator:
     design. Within each agent run, every replay must judge the same fixed
     output.
 
-    Scoring may use new cases and different positive run or replay counts as
-    long as the evaluator set matches the fitted model.
+    Direct calls to `score` may use new cases and different positive run or
+    replay counts as long as the evaluator set matches the fitted model.
+    `run_evaluations` collects and fits, so reusing it after fitting requires
+    the original cases and repetition design.
     """
 
     def __init__(
@@ -144,6 +177,136 @@ class Calibrator:
     def status(self) -> CalibrationStatus:
         """Return the current calibration readiness status."""
         return self._state.status
+
+    def run_evaluations(
+        self,
+        experiment: Experiment[InputT, OutputT],
+        task: Callable[[Case[InputT, OutputT]], OutputT | dict[str, Any]],
+        *,
+        agent_runs: int,
+        judge_replays: int,
+        max_workers: int = 1,
+    ) -> CalibrationResult:
+        """Run repeated evaluations, fit the algorithm, and return the result.
+
+        Args:
+            experiment: Existing experiment containing cases and evaluators.
+            task: Task function evaluated by the experiment. Returned values
+                must support deep copying so judge replays remain isolated.
+            agent_runs: Number of independent task executions per case.
+            judge_replays: Number of evaluator passes over each fixed output.
+            max_workers: Maximum parallel case workers used by the experiment.
+
+        Returns:
+            The composite score, raw reports, and fitted calibration snapshot.
+
+        Raises:
+            CalibrationRunError: If collection or fitting fails. The error
+                retains every report collected before the failure.
+            ValueError: If pre-flight validation fails or `task` is async.
+        """
+        if inspect.iscoroutinefunction(task):
+            raise ValueError("Async task is not supported. Please use run_evaluations_async instead.")
+
+        return asyncio.run(
+            self.run_evaluations_async(
+                experiment,
+                task,
+                agent_runs=agent_runs,
+                judge_replays=judge_replays,
+                max_workers=max_workers,
+            )
+        )
+
+    async def run_evaluations_async(
+        self,
+        experiment: Experiment[InputT, OutputT],
+        task: Callable[
+            [Case[InputT, OutputT]],
+            OutputT | dict[str, Any] | Awaitable[OutputT | dict[str, Any]],
+        ],
+        *,
+        agent_runs: int,
+        judge_replays: int,
+        max_workers: int = 10,
+    ) -> CalibrationResult:
+        """Collect repeated reports, fit the algorithm, and return a snapshot.
+
+        Args:
+            experiment: Existing experiment containing cases and evaluators.
+            task: Synchronous or asynchronous task function. Returned values
+                must support deep copying so judge replays remain isolated.
+            agent_runs: Number of independent task executions per case.
+            judge_replays: Number of evaluator passes over each fixed output.
+            max_workers: Maximum parallel case workers used by the experiment.
+
+        Returns:
+            The composite score, raw reports, and fitted calibration snapshot.
+
+        Raises:
+            CalibrationRunError: If collection or fitting fails. The error
+                retains every report collected before the failure.
+            ValueError: If pre-flight validation fails.
+        """
+        _validate_repetition_counts(agent_runs, judge_replays)
+        cases = experiment.cases
+        if len(cases) < 2:
+            raise ValueError("calibration requires at least two cases")
+        case_names: list[str] = []
+        for case in cases:
+            if not isinstance(case.name, str) or not case.name:
+                raise ValueError("calibration requires every case to have a unique, non-empty name")
+            case_names.append(case.name)
+        if len(set(case_names)) != len(case_names):
+            raise ValueError("calibration requires every case to have a unique, non-empty name")
+        if not isinstance(max_workers, int) or isinstance(max_workers, bool) or max_workers < 1:
+            raise ValueError(f"max_workers must be >= 1, got {max_workers}")
+        evaluator_names = {evaluator.get_name() for evaluator in experiment.evaluators}
+        _validate_evaluator_names(evaluator_names, set(self._step_sizes))
+        case_signatures = _extract_case_signatures_from_cases(case.model_dump() for case in cases)
+        _validate_calibration_compatibility(
+            expected_design=self._state.calibration_design,
+            actual_design=(agent_runs, judge_replays),
+            operation="evaluation",
+        )
+        if self._state.calibration_structure is not None:
+            fitted_cases = {name for name, _ in self._state.calibration_structure[1]}
+            actual_cases = set(case_names)
+            if actual_cases != fitted_cases:
+                raise ValueError(
+                    "evaluation cases must match the fitted calibration cases; "
+                    f"missing={sorted(fitted_cases - actual_cases)}, "
+                    f"unexpected={sorted(actual_cases - fitted_cases)}"
+                )
+            if case_signatures != self._state.calibration_structure[1]:
+                raise ValueError("evaluation case definitions must match the fitted calibration cases")
+
+        reports_by_run = await _collect_repeated_reports(
+            experiment,
+            task,
+            agent_runs=agent_runs,
+            judge_replays=judge_replays,
+            max_workers=max_workers,
+        )
+        try:
+            self.fit(reports_by_run)
+            score = self.score(reports_by_run)
+        except Exception as error:
+            raise CalibrationRunError(
+                f"calibration fitting failed: {error}",
+                reports_by_run,
+            ) from error
+        return CalibrationResult(
+            score=score,
+            reports_by_run=reports_by_run,
+            weights=self.weights,
+            algorithm_identity=self.algorithm_identity,
+            model_parameters=self.model_parameters,
+            calibration_design=self.calibration_design,
+            variance_components=self.variance_components,
+            repeatabilities=self.repeatabilities,
+            status=self.status,
+        )
 
     def fit(self, reports_by_run: list[list[EvaluationReport]]) -> Self:
         """Fit the configured algorithm from repeated evaluation reports.
