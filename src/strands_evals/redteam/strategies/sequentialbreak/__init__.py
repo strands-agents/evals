@@ -15,14 +15,14 @@ from __future__ import annotations
 import logging
 import math
 from functools import partial
-from typing import TYPE_CHECKING, Any, Callable, cast
+from typing import TYPE_CHECKING, Any, Callable
 
 from pydantic import BaseModel, Field
 from strands import Agent
 from strands.models.model import Model
 
 from ...utils import _put_model_field
-from ..base import MAX_ALLOWED_TURNS, AttackRunResult, AttackStrategy
+from ..base import MAX_ALLOWED_TURNS, AttackRunResult, AttackStrategy, _structured_output_or_none
 from ..target_session import _single_shot_attempts
 from . import sequentialbreak_v0
 
@@ -54,8 +54,7 @@ def success_score(make_judge: Callable[[], Agent], goal: AttackGoal, response: s
         return 0.0
     judge = make_judge()
     prompt = f"# Success Criteria\n{goal.success_criteria}\n\n# Target Response\n{response}"
-    result = judge(prompt, structured_output_model=SuccessRating)
-    rating = cast("SuccessRating | None", result.structured_output)
+    rating = _structured_output_or_none(judge, prompt, SuccessRating)
     if rating is None:
         logger.warning("reason=<parse_failure> | success judge produced no structured output | defaulting to 0")
         return 0.0

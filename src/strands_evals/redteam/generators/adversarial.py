@@ -10,6 +10,7 @@ from typing import Any, TypedDict, cast
 from pydantic import BaseModel, Field
 from strands import Agent
 from strands.models.model import Model
+from strands.types.exceptions import StructuredOutputException
 
 from ...types.redteam import DEFAULT_SEVERITY, RISK_CATEGORIES, AttackGoal, RedTeamConfig
 from ...types.redteam.risk_category import resolve_risk_category
@@ -185,8 +186,12 @@ class AdversarialCaseGenerator:
             categories=categories_desc,
         )
         agent = Agent(model=self.model, callback_handler=None)
-        response = await agent.invoke_async(prompt, structured_output_model=RiskCategorySelection)
-        result = cast(RiskCategorySelection, response.structured_output)
+        try:
+            response = await agent.invoke_async(prompt, structured_output_model=RiskCategorySelection)
+            result = cast(RiskCategorySelection | None, response.structured_output)
+        except StructuredOutputException as e:
+            logger.debug("error=<%s> | risk-category inference raised", e)
+            result = None
         if result is None:
             logger.warning("reason=<no_structured_output> | risk-category inference empty | using all")
             return list(RISK_CATEGORIES.keys())
