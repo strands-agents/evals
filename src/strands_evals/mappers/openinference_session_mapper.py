@@ -41,6 +41,7 @@ from .constants import (
     SCOPE_OPENINFERENCE_CLAUDE_AGENT_SDK,
     SCOPE_OPENINFERENCE_OPENAI_AGENTS,
     SCOPE_OPENINFERENCE_SMOLAGENTS,
+    SCOPE_STRANDS,
     SCOPES_OPENINFERENCE_FAMILY,
 )
 from .session_mapper import SessionMapper
@@ -126,8 +127,12 @@ class OpenInferenceSessionMapper(SessionMapper):
         # Build parent map from ALL spans
         self._raw_parent_map = {s.get("span_id", ""): s.get("parent_span_id") for s in spans}
 
-        # Filter to only spans from this scope (including smolagents variant)
-        openinference_spans = [s for s in spans if self._get_scope_name(s) in SCOPES_OPENINFERENCE_FAMILY]
+        # Keep spans from known OpenInference scopes, plus any span carrying an
+        # `openinference.span.kind` attribute. The attribute check covers spans
+        # whose scope is not an OpenInference one, e.g. Strands spans rewritten
+        # by `StrandsAgentsToOpenInferenceProcessor`, which keep the original
+        # `strands.telemetry.tracer` scope.
+        openinference_spans = [s for s in spans if self._is_openinference_span(s)]
 
         # Per-producer normalization: canonicalize encoding differences so the
         # shared conversion logic receives a uniform representation.
@@ -487,9 +492,9 @@ class OpenInferenceSessionMapper(SessionMapper):
 
         Detection:
         1. Live instrumentation (LangGraph): CHAIN + name=LangGraph
-        2. Live instrumentation (smolagents/Claude Agent SDK): AGENT span kind
-           from a known scope, with input.value present and either output.value
-           present or status.code == ERROR.
+        2. Live instrumentation (smolagents/Claude Agent SDK/OpenAI Agents/Strands):
+           AGENT span kind from a known scope, with input.value present and either
+           output.value present or status.code == ERROR.
         3. ADOT body: root LangGraph graph node — input has "messages" without
            "remaining_steps" (intermediate nodes always have "remaining_steps"),
            and output has "messages".
@@ -511,6 +516,7 @@ class OpenInferenceSessionMapper(SessionMapper):
                 SCOPE_OPENINFERENCE_SMOLAGENTS,
                 SCOPE_OPENINFERENCE_CLAUDE_AGENT_SDK,
                 SCOPE_OPENINFERENCE_OPENAI_AGENTS,
+                SCOPE_STRANDS,
             ):
                 input_val = attrs.get("input.value")
                 if input_val:
@@ -869,6 +875,13 @@ class OpenInferenceSessionMapper(SessionMapper):
                 if name and name not in tools:
                     tools[name] = ToolConfig(name=name, description=None, parameters=None)
         return tools
+
+    def _is_openinference_span(self, span: dict) -> bool:
+        """Whether a span is OpenInference, by scope or by `openinference.span.kind`."""
+        if self._get_scope_name(span) in SCOPES_OPENINFERENCE_FAMILY:
+            return True
+        attrs = span.get("attributes")
+        return isinstance(attrs, dict) and bool(attrs.get("openinference.span.kind"))
 
     def _get_scope_name(self, span: dict) -> str:
         """Extract scope name from span."""
