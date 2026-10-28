@@ -29,6 +29,8 @@ provider = CloudWatchProvider(agent_name="my-agent", region="us-east-1")
 
 ### Langfuse
 
+Requires the `langfuse` extra (Langfuse Python SDK >= 4) and a Langfuse server that serves the v2 observations API (`/api/public/v2/observations`). Sessions are read with one cursor-paginated query filtered by session ID.
+
 ```python
 from strands_evals.providers import LangfuseProvider
 
