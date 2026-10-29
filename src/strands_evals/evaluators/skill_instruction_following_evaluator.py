@@ -7,7 +7,7 @@ from strands.models.model import Model
 
 from ..extractors.skills import InvokedSkill, extract_selected_skills
 from ..types.evaluation import NOT_APPLICABLE, EvaluationData, EvaluationOutput, InputT, OutputT
-from .evaluator import Evaluator
+from .evaluator import DisclosureMode, Evaluator
 from .prompt_templates.skill_instruction_following import get_template
 from .prompt_templates.trajectory_prompt_template import serialize_trajectory
 
@@ -134,11 +134,13 @@ class SkillInstructionFollowingEvaluator(Evaluator[InputT, OutputT]):
         model: Model | str | None = None,
         system_prompt: str | None = None,
         name: str | None = None,
+        disclosure: DisclosureMode = "never",
     ):
         super().__init__(name=name)
         self.system_prompt = system_prompt if system_prompt is not None else get_template(version).SYSTEM_PROMPT
         self.version = version
         self.model = model
+        self.disclosure = self._validate_disclosure(disclosure)
         # Drop not-applicable rows from the aggregate so no-skill runs don't deflate the mean.
         self.aggregator = self._aggregate_dropping_na
 
@@ -166,14 +168,49 @@ class SkillInstructionFollowingEvaluator(Evaluator[InputT, OutputT]):
             return f"{skill.name}: skill body unavailable"
         return None
 
-    def _build_prompt(self, skill: InvokedSkill, evaluation_case: EvaluationData[InputT, OutputT]) -> str:
+    def _build_prompt(
+        self,
+        skill: InvokedSkill,
+        evaluation_case: EvaluationData[InputT, OutputT],
+        trajectory: str | None = None,
+    ) -> str:
+        """Prompt for one invoked skill.
+
+        `trajectory` is the case's shared trajectory section (inlined, or the disclosed trace
+        overview). Callers judging several skills pass it in so the trajectory is serialized
+        once per case; when omitted it is serialized here.
+        """
         body = _strip_harness_metadata(_strip_frontmatter(skill.body or ""))
+        if trajectory is None:
+            trajectory = serialize_trajectory(evaluation_case.actual_trajectory)
         return (
             f"## Skill: {skill.name}\n\n"
             f"## SKILL.md instructions\n{body}\n\n"
-            f"## Agent trajectory\n{serialize_trajectory(evaluation_case.actual_trajectory)}\n\n"
+            f"## Agent trajectory\n{trajectory}\n\n"
             f"## Agent's final response\n{evaluation_case.actual_output}"
         )
+
+    def _case_trajectory(
+        self, evaluation_case: EvaluationData[InputT, OutputT], invoked_skills: list[InvokedSkill]
+    ) -> tuple[str, list]:
+        """The trajectory section shared by every invoked skill's prompt, plus any trace tools.
+
+        The trajectory is the same for every skill, so it is serialized once per case and the
+        disclosure decision is made once. Under `"auto"` the size check uses the *largest*
+        per-skill prompt (SKILL.md bodies vary), built from that one serialization.
+        """
+        if self.disclosure == "never" or (self._session_of(evaluation_case) is None and self.disclosure != "always"):
+            return serialize_trajectory(evaluation_case.actual_trajectory), []
+        inline = serialize_trajectory(evaluation_case.actual_trajectory) if self.disclosure == "auto" else None
+        probe = (
+            max((self._build_prompt(s, evaluation_case, inline) for s in invoked_skills), key=len)
+            if inline is not None
+            else ""
+        )
+        index = self._resolve_disclosure_index(evaluation_case, probe)
+        if index is None:
+            return (inline if inline is not None else serialize_trajectory(evaluation_case.actual_trajectory)), []
+        return self._disclosed_trace_section(index), list(index.tools)
 
     def _rating_to_output(self, skill: InvokedSkill, rating: SkillFollowingRating) -> EvaluationOutput:
         # A skill that prescribes nothing has nothing to follow, so scoring it either way would be
@@ -201,13 +238,16 @@ class SkillInstructionFollowingEvaluator(Evaluator[InputT, OutputT]):
         invoked = extract_selected_skills(evaluation_case.actual_trajectory)
         if not invoked:
             return [self._not_applicable_row("no skill invoked")]
+        trajectory, tools = self._case_trajectory(evaluation_case, invoked)
         results = []
         for skill in invoked:
             if reason := self._unscorable_reason(skill):
                 results.append(self._not_applicable_row(reason))
                 continue
-            prompt = self._build_prompt(skill, evaluation_case)
-            evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
+            prompt = self._build_prompt(skill, evaluation_case, trajectory)
+            evaluator_agent = Agent(
+                model=self.model, system_prompt=self.system_prompt, tools=tools, callback_handler=None
+            )
             result = evaluator_agent(prompt, structured_output_model=SkillFollowingRating)
             rating = cast(SkillFollowingRating, result.structured_output)
             results.append(self._rating_to_output(skill, rating))
@@ -219,13 +259,16 @@ class SkillInstructionFollowingEvaluator(Evaluator[InputT, OutputT]):
         invoked = extract_selected_skills(evaluation_case.actual_trajectory)
         if not invoked:
             return [self._not_applicable_row("no skill invoked")]
+        trajectory, tools = self._case_trajectory(evaluation_case, invoked)
         results = []
         for skill in invoked:
             if reason := self._unscorable_reason(skill):
                 results.append(self._not_applicable_row(reason))
                 continue
-            prompt = self._build_prompt(skill, evaluation_case)
-            evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
+            prompt = self._build_prompt(skill, evaluation_case, trajectory)
+            evaluator_agent = Agent(
+                model=self.model, system_prompt=self.system_prompt, tools=tools, callback_handler=None
+            )
             result = await evaluator_agent.invoke_async(prompt, structured_output_model=SkillFollowingRating)
             rating = cast(SkillFollowingRating, result.structured_output)
             results.append(self._rating_to_output(skill, rating))
