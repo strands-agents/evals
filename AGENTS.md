@@ -40,6 +40,7 @@ strands-evals depends on **`strands-agents`** (the Python SDK) for all LLM inter
   - `strands.types.content.Message`
   - `strands.types.exceptions` (`EventLoopException`, `ModelThrottledException`)
   - `strands.Skill` (public, exported in `strands.__all__` from `strands.vended_plugins.skills.skill`), used by the skill extractors to read `SKILL.md` frontmatter
+  - `strands.decisions` (`DecisionModel`, `DecisionResult`, `Question`, `Uncertain`), used by `TypedRubricEvaluator`; it reads the per-question `probabilities` in `DecisionResult.metadata`
 - **Not used as SDK imports (do not add to the list without verifying a real import):**
   - `strands.types.traces` — this repo defines its own `strands_evals.types.trace` for session/span modeling; the SDK's trace types are not imported.
   - `strands.telemetry` — the evals repo has its own `strands_evals.telemetry` module. The only reference to `strands.telemetry` is the literal string `"strands.telemetry.tracer"` used as an OpenTelemetry scope name in `mappers/constants.py`.
@@ -79,6 +80,7 @@ strands-evals/
 │   │   ├── tool_parameter_accuracy_evaluator.py
 │   │   ├── tool_selection_accuracy_evaluator.py
 │   │   ├── trajectory_evaluator.py
+│   │   ├── typed_rubric_evaluator.py         # TypedRubricEvaluator + Noul / Score / Choice (DecisionModel-backed)
 │   │   ├── multimodal_*.py                   # Multimodal evaluators (MLLM-as-a-Judge)
 │   │   ├── chaos/                            # Chaos-aware evaluators
 │   │   │   ├── failure_communication_evaluator.py
@@ -491,7 +493,7 @@ If you are an agent opening a PR on behalf of a contributor, the human is the au
 
 When reviewing a PR in this repo, scan for all of the following:
 
-1. **Evaluator changes**: confirm the class still extends `Evaluator[InputT, OutputT]`, still returns `list[EvaluationOutput]`, and still uses `Agent(...)` for LLM calls. Confirm the default model has not silently regressed from the current default.
+1. **Evaluator changes**: confirm the class still extends `Evaluator[InputT, OutputT]`, still returns `list[EvaluationOutput]`, and still uses `Agent(...)` for LLM calls. Decision-model evaluators (`TypedRubricEvaluator`) are the exception: they call a `strands.decisions.DecisionModel` and make no `Agent` call. Confirm the default model has not silently regressed from the current default.
 2. **Prompt changes**: check that a new version module (`{name}_v1.py`) was added rather than overwriting `_v0.py`, if the PR is billed as a prompt change rather than a bugfix.
 3. **Detector changes**: preserve the text-mode streaming in `failure_detector.py` and the three-tier fallback in `root_cause_analyzer.py` unless explicitly targeted.
 4. **Session/trace schema**: if the PR changes fields on `Session`, `Trace`, or `SpanUnion`, every mapper in `mappers/` must still produce valid instances. Check each.

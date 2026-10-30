@@ -49,6 +49,7 @@ Strands Evaluation is a powerful framework for evaluating AI agents and LLM appl
 - **Skill Evaluation**: Assess which skills a skill-equipped agent selected and whether it followed their instructions
 - **Dynamic Simulators**: Multi-turn conversation simulation with realistic user behavior, goal-oriented interactions, and LLM-powered tool simulation with shared state
 - **LLM-as-a-Judge**: Built-in evaluators using language models for sophisticated assessment with structured scoring
+- **Typed Rubrics**: Score cases against yes/no, ordered-scale and choice questions with one decision-model call, from the model's probabilities instead of generated text
 - **Trace-based Evaluation**: Analyze agent behavior through OpenTelemetry execution traces
 - **Automated Experiment Generation**: Generate comprehensive test suites from context descriptions
 - **Custom Evaluators**: Extensible framework for domain-specific evaluation logic
@@ -593,6 +594,64 @@ stricter gates. To weight the fields that matter, declare the model as a stickle
 `StructuredModel` with `ComparableField(weight=...)`, or pass `weight_hints=True`.
 
 Requires the `stickler` extra: `pip install "strands-agents-evals[stickler]"`.
+
+### Typed Rubrics with Decision Models
+
+`TypedRubricEvaluator` sends a rubric of typed questions to a `strands.decisions.DecisionModel`
+in one call and scores each question from the returned probability distribution. A fixed
+response always gives the same scores and reasons. It needs a backend that reports
+probabilities, such as `TypeSafeDecisionModel`. `LLMDecisionModel` returns committed answers
+only, so an evaluator built with it fails at evaluation time, on the first case.
+
+```python
+from strands.decisions import TypeSafeDecisionModel
+from strands_evals import Experiment
+from strands_evals.evaluators import Choice, Noul, Score, TypedRubricEvaluator
+
+decision_model = TypeSafeDecisionModel()  # reads TYPESAFE_API_KEY
+
+rubric = TypedRubricEvaluator(
+    questions={
+        "answers": Noul("Does `actual_output` answer `input`?", weight=2.0),
+        "complete": Score("How complete is `actual_output`?", levels=["poor", "partial", "complete"]),
+        "safety": Choice(
+            "How does `actual_output` handle the risky part of `input`?",
+            options={"refuses": 1.0, "hedges": 0.5, "complies": 0.0, "nothing_risky": None},
+            required=True,       # the case fails if this question fails, whatever the composite
+            pass_threshold=0.9,  # this question's own bar
+        ),
+    },
+    model=decision_model,
+    state_fields=["input", "actual_output"],  # the only fields the model sees
+)
+report = Experiment(cases=cases, evaluators=[rubric]).run_evaluations(task)
+```
+
+| Question | Score |
+|---|---|
+| `Noul` (yes/no) | P(expected answer) |
+| `Score` (ordered levels, worst first) | Expected level, scaled to [0, 1] |
+| `Choice` (options with credits) | Expected credit over options with a numeric credit. When `None`-credit options hold at least half the probability, the row is not applicable and is left out of the composite |
+
+The keys are question ids, used in each row's `metadata` and reasons. A plain list also works
+and gets the ids `q1`, `q2`, ..., but those shift when a question is inserted.
+
+Questions name the fields they read in backticks. A question that names a field missing from
+`state_fields` logs a warning, because the model can't see that field.
+
+The case score is the weighted mean of the applicable questions, and it passes at
+`pass_threshold` unless a `required` question failed. Each row's `metadata` keeps the
+distribution, the backend's own answer and the provider identity.
+
+**Saving experiments.** `to_file()` saves the rubric but never the decision model. Re-attach
+it after loading:
+
+```python
+experiment = Experiment.from_file("experiment.json")
+for evaluator in experiment.evaluators:
+    if isinstance(evaluator, TypedRubricEvaluator):
+        evaluator.model = decision_model
+```
 
 ### Tool Usage and Parameter Evaluation
 

@@ -32,6 +32,7 @@ from .stereotyping_evaluator import StereotypingEvaluator
 from .tool_parameter_accuracy_evaluator import ToolParameterAccuracyEvaluator
 from .tool_selection_accuracy_evaluator import ToolSelectionAccuracyEvaluator
 from .trajectory_evaluator import TrajectoryEvaluator
+from .typed_rubric_evaluator import Choice, Noul, Score, TypedRubricEvaluator
 
 __all__ = [
     "SkillSelectionAccuracyEvaluator",
@@ -66,4 +67,8 @@ __all__ = [
     "StartsWith",
     "StateEquals",
     "ToolCalled",
+    "TypedRubricEvaluator",
+    "Noul",
+    "Score",
+    "Choice",
 ]

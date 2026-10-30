@@ -3,7 +3,7 @@ import inspect
 import logging
 
 from strands.models.model import Model
-from typing_extensions import Any, Generic, TypeGuard
+from typing_extensions import Any, ClassVar, Generic, TypeGuard
 
 from ..extractors import TraceExtractor
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
@@ -35,6 +35,9 @@ class Evaluator(Generic[InputT, OutputT]):
     # Optional: subclasses can set this to enable trace parsing
     evaluation_level: EvaluationLevel | None = None
     _trace_extractor: TraceExtractor | None = None
+    # Set True when the pass rule is not `score >= 0.5` (for example a hard-gated rubric), so
+    # experiment telemetry labels the case from its aggregate `test_pass` instead of its score.
+    _label_from_test_pass: ClassVar[bool] = False
 
     def __init__(self, trace_extractor: TraceExtractor | None = None, name: str | None = None):
         """Initialize evaluator with optional custom trace extractor.
