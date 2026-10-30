@@ -90,14 +90,14 @@ def test_init_with_custom_values():
     assert evaluator.system_prompt == "Custom"
 
 
-@patch("strands_evals.evaluators.response_relevance_evaluator.Agent")
+@patch("strands_evals.evaluators.evaluator.Agent")
 def test_evaluate(mock_agent_class, evaluation_data):
     mock_agent = Mock()
     mock_result = Mock()
     mock_result.structured_output = ResponseRelevanceRating(
         reasoning="The response directly answers the question", score=ResponseRelevanceScore.COMPLETELY_YES
     )
-    mock_agent.return_value = mock_result
+    mock_agent.structured_output = Mock(return_value=mock_result.structured_output)
     mock_agent_class.return_value = mock_agent
     evaluator = ResponseRelevanceEvaluator()
 
@@ -110,9 +110,9 @@ def test_evaluate(mock_agent_class, evaluation_data):
     assert result[0].label == ResponseRelevanceScore.COMPLETELY_YES
 
     # Verify that the prompt includes tool execution information
-    mock_agent.assert_called_once()
-    call_args = mock_agent.call_args[0]
-    prompt = call_args[0]
+    mock_agent_class.assert_called_once()
+    call_args = mock_agent.structured_output.call_args[0]
+    prompt = call_args[1]
     assert "Tool call: search_web(" in prompt
     assert "Tool result: Paris is the capital and most populous city of France" in prompt
 
@@ -127,12 +127,12 @@ def test_evaluate(mock_agent_class, evaluation_data):
         (ResponseRelevanceScore.COMPLETELY_YES, 1.0, True),
     ],
 )
-@patch("strands_evals.evaluators.response_relevance_evaluator.Agent")
+@patch("strands_evals.evaluators.evaluator.Agent")
 def test_score_mapping(mock_agent_class, evaluation_data, score, expected_value, expected_pass):
     mock_agent = Mock()
     mock_result = Mock()
     mock_result.structured_output = ResponseRelevanceRating(reasoning="Test", score=score)
-    mock_agent.return_value = mock_result
+    mock_agent.structured_output = Mock(return_value=mock_result.structured_output)
     mock_agent_class.return_value = mock_agent
     evaluator = ResponseRelevanceEvaluator()
 
@@ -145,7 +145,7 @@ def test_score_mapping(mock_agent_class, evaluation_data, score, expected_value,
 
 
 @pytest.mark.asyncio
-@patch("strands_evals.evaluators.response_relevance_evaluator.Agent")
+@patch("strands_evals.evaluators.evaluator.Agent")
 async def test_evaluate_async(mock_agent_class, evaluation_data):
     mock_agent = Mock()
     mock_result = Mock()
@@ -154,7 +154,7 @@ async def test_evaluate_async(mock_agent_class, evaluation_data):
     )
 
     # Create a proper async mock that returns the result
-    mock_agent.invoke_async = AsyncMock(return_value=mock_result)
+    mock_agent.structured_output_async = AsyncMock(return_value=mock_result.structured_output)
     mock_agent_class.return_value = mock_agent
     evaluator = ResponseRelevanceEvaluator()
 
@@ -167,8 +167,8 @@ async def test_evaluate_async(mock_agent_class, evaluation_data):
     assert result[0].label == ResponseRelevanceScore.COMPLETELY_YES
 
     # Verify that the prompt includes tool execution information
-    mock_agent.invoke_async.assert_called_once()
-    call_args = mock_agent.invoke_async.call_args[0]
-    prompt = call_args[0]
+    mock_agent.structured_output_async.assert_called_once()
+    call_args = mock_agent.structured_output_async.call_args[0]
+    prompt = call_args[1]
     assert "Tool call: search_web(" in prompt
     assert "Tool result: Paris is the capital and most populous city of France" in prompt
