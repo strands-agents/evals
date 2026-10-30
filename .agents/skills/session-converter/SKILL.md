@@ -1,6 +1,6 @@
 ---
 name: session-converter
-description: Use when the user wants to turn past local agent conversations (Codex, Claude Code, Kiro CLI, Strands CLI, or any other harness) into strands-evals experiments. Locates the relevant session files on the local filesystem and extracts their episodes (turns with a focused user goal). Skip for traces stored in trace providers (CloudWatch, Langfuse, OpenSearch).
+description: Use when the user wants to turn past local agent conversations (Codex, Claude Code, Kiro CLI, Strands CLI, or any other harness) into strands-evals experiments. Locates the relevant session files on the local filesystem, extracts their episodes (turns with a focused user goal), suggests evaluators, and writes an experiment JSON file. Skip for traces stored in trace providers (CloudWatch, Langfuse, OpenSearch).
 version: 0.1.0
 ---
 
@@ -55,6 +55,71 @@ Delegate the session files from step 1 to subagents that follow [assets/segmente
 
 If you cannot spawn subagents, follow the segmenter document's steps yourself for every session file.
 
+### 3. Suggest evaluators
+
+Read the strands-evals authoring skill at [../../../SKILL.md](../../../SKILL.md) to learn what each evaluator scores. If it is missing, read [../../../AGENTS.md](../../../AGENTS.md) instead.
+
+Use the episode summaries from step 2 for their topics and their `expected_assertion`s for the user's intent. Every evaluator runs on every case, so pick 3-5 evaluators that fit the episodes taken together.:
+
+- **GoalSuccessRateEvaluator**: most episodes work toward a goal over several turns (follow-ups, corrections, retries).
+- **CorrectnessEvaluator**: most episodes ask for a verifiable answer (a fact, a fix, a computed result).
+- **HelpfulnessEvaluator**: most episodes are open-ended requests for help, where the answer has no single right form.
+- **FaithfulnessEvaluator**: users corrected claims that didn't match the files, docs, or tool results the agent read.
+- **InstructionFollowingEvaluator**: user inputs carry explicit constraints (format, length, scope, things not to do).
+- **ConcisenessEvaluator**: users asked for shorter answers or cut off verbose ones.
+- **ResponseRelevanceEvaluator**: users had to redirect the agent back to what they asked.
+- **CoherenceEvaluator**: episodes need long, multi-step explanations or reasoning.
+- **HarmfulnessEvaluator**, **RefusalEvaluator**, **StereotypingEvaluator**: only when episodes touch sensitive content, or the agent refused or should have.
+- **ToolSelectionAccuracyEvaluator**: users corrected which tool or action the agent chose (read the wrong file, ran the wrong command).
+- **ToolParameterAccuracyEvaluator**: users corrected the arguments the agent used (wrong path, query, flag, or value).
+- **SkillSelectionAccuracyEvaluator**, **SkillInstructionFollowingEvaluator**: episodes invoke skills, or users corrected which skill the agent used or how it followed one. Runs that invoke no skill score as not applicable.
+
+Only CorrectnessEvaluator and GoalSuccessRateEvaluator read `expected_assertion` (reference mode); the rest need no expected values. Don't suggest:
+
+- **ToolCalled**, **SkillInvoked**: they check one exact tool or skill name on every case, which rarely fits arbitrary episodes.
+- **Contains**, **StartsWith**, **StateEquals**: they check the same value on every case, which rarely fits arbitrary episodes.
+- **Equals**, **StructuredOutputSimilarity**: they need `expected_output` on every case, which this skill doesn't set.
+- **OutputEvaluator**, **TrajectoryEvaluator**: they need a custom rubric; the built-in judges above cover the same ground.
+- **InteractionsEvaluator**: it scores multi-agent handoffs, which single-agent sessions don't have.
+- **Multimodal\*** evaluators: they need image inputs, and episode inputs are text.
+- **FailureCommunicationEvaluator**, **PartialCompletionEvaluator**, **RecoveryStrategyEvaluator**: they score chaos runs with injected faults.
+- **AttackSuccessEvaluator**: it scores red-team runs.
+
+### 4. Output the experiment file
+
+Write the experiment JSON file to the directory the user gives, defaulting to `./experiments`. Create the directory if it doesn't exist. Name the file `<timestamp>_<uuid>.json`, where `<timestamp>` is the current UTC time as `YYYYMMDDTHHMMSSZ` and `<uuid>` is a random UUID4.
+
+```json
+{
+  "cases": [
+    {
+      "name": "<name>",
+      "input": "<input>",
+      "expected_assertion": "<expected_assertion>",
+      "metadata": {
+        "session_file": "<session_file>",
+        "conversation_id": "<conversation_id>",
+        "timestamp": "<timestamp>",
+        "episode_index": "<episode_index>",
+      }
+    }
+  ],
+  "evaluators": [
+    {"evaluator_type": "<evaluator>"}
+  ]
+}
+```
+
+Write one case per kept episode from step 2, and one evaluator entry per evaluator from step 3.
+
+- `name`: a short kebab-case phrase generated from the episode's `summary`, unique within the file.
+- `input`: episode's user input
+- `session_file` the file path of the episode's session.
+- `conversation_id`: the conversation id of the episode's session.
+- `timestamp`: the episode timestamp.
+- `episode_index`: the episode's index within its session.
+- `evaluator`: the name of a chosen evaluator.
+
 ## Output
 
-Stop after step 2. Report the outputs from all subagent runs (or your own output from step 2 if no subagents were spawned). Converting these sessions into an experiment is not part of this skill yet, so don't write experiment code; ask the user what they want to do with the results you found.
+Report the experiment file path, the number of cases, and the total number of sessions.
