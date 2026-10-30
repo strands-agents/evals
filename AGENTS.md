@@ -51,6 +51,9 @@ strands-evals depends on **`strands-agents`** (the Python SDK) for all LLM inter
 ```
 strands-evals/
 │
+├── .agents/skills/                           # Agent skills (not shipped in the wheel)
+│   └── session-experiment/SKILL.md           # Convert local agent sessions into experiments
+│
 ├── src/strands_evals/                        # Main package source code
 │   ├── __init__.py                           # Public API exports
 │   ├── case.py                               # Case[InputT, OutputT] test scenario
@@ -247,6 +250,7 @@ strands-evals/
 
 ### Directory Purposes
 
+- **`.agents/skills/`**: Agent skills, one directory per skill containing a `SKILL.md`; the folder name must match the skill's `name` frontmatter
 - **`src/strands_evals/`**: All production code
 - **`src/strands_evals/cli/`**: `strands-evals` console script — six subcommands (`run`, `validate`, `report`, `diagnose`, `generate`, `fetch`) plus the `module:attr` resolver and synthesized task wrapper used by `--agent`. `fetch` has per-provider sub-subcommands (`cloudwatch`, `langfuse`, `opensearch`); langfuse / opensearch are imported lazily so they only fail when invoked without their extra installed.
 - **`tests/strands_evals/`**: Unit tests mirroring src/ structure
