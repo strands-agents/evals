@@ -828,3 +828,87 @@ def test_expanded_display_shows_na_instead_of_a_placeholder_zero(monkeypatch):
     _display_expanded(_report_with_one_not_applicable_case(), include_recommendations=False)
 
     assert [row["details"]["score"] for row in captured["items"].values()] == ["1.00", "n/a"]
+
+
+@pytest.fixture
+def multi_case_experiment_file(tmp_path: Path) -> Path:
+    """Three cases (one literally named "0", one unnamed) scored by two deterministic evaluators."""
+    path = tmp_path / "multi.json"
+    data = {
+        "cases": [
+            {"name": "alpha", "input": "a"},
+            {"name": "0", "input": "zero"},
+            {"input": "unnamed"},
+        ],
+        "evaluators": [
+            {"evaluator_type": "AlwaysPasses"},
+            {"evaluator_type": "Contains", "value": "answered"},
+        ],
+    }
+    path.write_text(json.dumps(data))
+    return path
+
+
+def _run_case(experiment_path: Path, selector: str, out_path: Path) -> int:
+    return main(
+        [
+            "--json",
+            "run",
+            str(experiment_path),
+            "--task",
+            "tests.strands_evals.cli.fixtures.tasks:answer",
+            "--custom-evaluator",
+            "tests.strands_evals.cli.fixtures.evaluators:AlwaysPasses",
+            "--case",
+            selector,
+            "-o",
+            str(out_path),
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    ("selector", "expected_name"),
+    [("0", "0"), ("2", None)],
+    ids=["name-beats-index", "by-index-unnamed-stays-unnamed"],
+)
+def test_run_case_runs_only_selected_case_against_all_evaluators(
+    multi_case_experiment_file: Path, tmp_path: Path, selector: str, expected_name: str | None
+):
+    out_path = tmp_path / "reports.json"
+    assert _run_case(multi_case_experiment_file, selector, out_path) == 0
+    rows = json.loads(out_path.read_text())["cases"]
+    assert [(row["name"], row["evaluator"]) for row in rows] == [
+        (expected_name, "AlwaysPasses"),
+        (expected_name, "Contains"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("cases", "selector", "message"),
+    [
+        (
+            [{"input": "x"}, {"name": "b", "input": "y"}],
+            "2",
+            "matches no case name or index 0-1; available cases: 0: (unnamed), 1: 'b'",
+        ),
+        ([{"input": "x"}, {"name": "b", "input": "y"}], "+1", "matches no case name or index 0-1"),
+        (
+            [{"name": "a", "input": "x"}, {"name": "a", "input": "y"}],
+            "a",
+            "matches 2 cases with that name; select one by index: 0, 1",
+        ),
+        ([], "0", "the experiment has no cases"),
+    ],
+    ids=["index-out-of-range", "non-digit-index", "duplicate-name", "empty"],
+)
+def test_run_case_invalid_selector_exits_bad_input(tmp_path: Path, capsys, cases, selector: str, message: str):
+    path = tmp_path / "exp.json"
+    path.write_text(json.dumps({"cases": cases, "evaluators": [{"evaluator_type": "AlwaysPasses"}]}))
+    assert _run_case(path, selector, tmp_path / "reports.json") == 2
+    assert message in capsys.readouterr().err
+
+
+def test_run_case_requires_experiment_file(capsys):
+    assert main(["run", "--task", "tests.strands_evals.cli.fixtures.tasks:answer", "--case", "0"]) == 2
+    assert "--case requires EXPERIMENT_FILE" in capsys.readouterr().err
