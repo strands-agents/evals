@@ -57,8 +57,6 @@ If you cannot spawn subagents, follow the segmenter document's steps yourself fo
 
 ### 3. Suggest evaluators
 
-Read the strands-evals authoring skill at [../../../SKILL.md](../../../SKILL.md) to learn what each evaluator scores. If it is missing, read [../../../AGENTS.md](../../../AGENTS.md) instead.
-
 Group the `failure`s from every episode's error analysis in step 2 into the failure modes below, and count the episodes that show each mode. Every evaluator runs on every case, so suggest an evaluator only when its failure mode shows up in at least 10% of all episodes. Map each failure mode to its evaluator:
 
 - **GoalSuccessRateEvaluator**: the episode ended unresolved or abandoned, or the user needed several retries to reach the goal (ex. "still failing, third time I'm asking").
@@ -94,7 +92,7 @@ Write the experiment JSON file to the directory the user gives, defaulting to `.
         "session_file": "<session_file>",
         "conversation_id": "<conversation_id>",
         "timestamp": "<timestamp>",
-        "episode_index": "<episode_index>",
+        "episode_index": <episode_index>
       }
     }
   ],
