@@ -87,9 +87,9 @@ class Observation(BaseModel):
             opener is told the round's best. None otherwise.
         objective: The candidate's `Assessment.objective` right after the step's refit (a snapshot); None if
             never measured.
-        objectives: Each objective term's raw value (not oriented: the resolved estimate, else the measured
-            mean), in objective order, taken with `objective`; what `TPE` is told under `Pareto`. None when
-            `objective` is None.
+        term_values: Each objective term's raw value (not oriented, unlike `Assessment.terms`: the resolved
+            estimate, else the measured mean), in objective order, taken with `objective`; what `TPE` is told
+            under `Pareto`. None when `objective` is None.
         reason: One sentence from train data, e.g. "tokens <= 4000: mean 4210 violates by 210".
         violations: Per constraint, <= 0 when met, taken with `objective`; None when `objective` is None.
     """
@@ -101,7 +101,7 @@ class Observation(BaseModel):
     values: dict[str, Value] | None
     source_id: str | None = None
     objective: float | None
-    objectives: list[float] | None
+    term_values: list[float] | None
     outcome: ObservationOutcome
     reason: str
     violations: list[float] | None
@@ -110,7 +110,7 @@ class Observation(BaseModel):
 class Evidence(BaseModel):
     """A candidate another block proposed, told to every other block's proposer.
 
-    `objective`, `objectives`, and `violations` are snapshots, as in `Observation`.
+    `objective`, `term_values`, and `violations` are snapshots, as in `Observation`.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -119,6 +119,6 @@ class Evidence(BaseModel):
     values: dict[str, Value]
     origin: str
     objective: float | None
-    objectives: list[float] | None
+    term_values: list[float] | None
     violations: list[float] | None
     outcome: ObservationOutcome

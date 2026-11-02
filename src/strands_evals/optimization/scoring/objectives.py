@@ -86,37 +86,34 @@ class WeightedSum:
 class Pareto:
     """Several objectives optimized jointly; one champion ships, and the front is reported.
 
-    `Pareto(Maximize("Helpfulness"), Minimize("tokens", scale=1000))`. The ranking (parents, inheritance,
-    `Nested`'s round best, the pick) uses the weighted gain, computed as `WeightedSum`'s value with these
-    weights: the highest-gain candidate of a pool is never dominated, so this matches taking the front's
-    highest-gain member again and again. `TPE` is told each objective's value (a multi-objective study);
-    `Thompson` weighs the objectives with fresh random weights per draw. In the end phase the finalists are
-    the feasible train front, the champion is the validated front's highest-gain member (the baseline when
-    nothing feasible beats it), and every validated front member is tested against the baseline.
-    Constraints only filter candidates; they are never front dimensions. A `Pareto` of one objective is
-    that objective.
+    `Pareto(Maximize("Helpfulness", weight=2), Minimize("tokens", scale=1000))`. The ranking (parents,
+    inheritance, `Nested`'s round best, the pick) uses the weighted gain, computed as `WeightedSum`'s value
+    with each objective's own `weight` and `scale`: the highest-gain candidate of a pool is never dominated,
+    so this matches taking the front's highest-gain member again and again. `TPE` is told each objective's
+    value (a multi-objective study); `Thompson` weighs the objectives with fresh random weights per draw. In
+    the end phase the finalists are the feasible train front, the champion is the validated front's
+    highest-gain member (the baseline when nothing feasible beats it), and every validated front member is
+    tested against the baseline. Constraints only filter candidates; they are never front dimensions. A
+    `Pareto` of one objective is that objective.
     """
 
     objectives: tuple[Maximize | Minimize, ...]
-    weights: tuple[float, ...] | None
 
-    def __init__(self, *objectives: Maximize | Minimize, weights: Sequence[float] | None = None):
-        """Combine objectives jointly.
+    def __init__(self, *objectives: Maximize | Minimize):
+        """Combine objectives jointly; each objective's `weight` sets its share of the gain.
 
         Args:
             *objectives: At least one `Maximize` or `Minimize`.
-            weights: One per objective, each > 0, for the gain; None means each objective's own `weight`.
 
         Raises:
             TypeError: No objectives, or one that isn't a `Maximize` / `Minimize`.
-            ValueError: `WeightedSum`'s checks; `weights` of another length than `objectives`, or a weight
-                <= 0; `weights` next to an objective with a non-default `weight=` (one would be ignored).
+            ValueError: `WeightedSum`'s checks.
         """
         raise NotImplementedError
 
     def __str__(self) -> str:
-        """E.g. `"Pareto(Maximize(Helpfulness), Minimize(tokens, scale=1000))"`, plus `", weights=[2.0, 1.0]"`
-        when given; stored in `run.json` and compared on resume."""
+        """E.g. `"Pareto(Maximize(Helpfulness, weight=2), Minimize(tokens, scale=1000))"`; stored in `run.json`
+        and compared on resume."""
         raise NotImplementedError
 
 
@@ -225,7 +222,7 @@ class Criteria:
         """The objective from per-metric values, always higher-is-better (`Minimize` negates).
 
         A lone `Maximize` / `Minimize` gives the metric's value; `WeightedSum` and `Pareto` the weighted mean
-        (a `Pareto`'s `weights=` when given), with no baseline subtraction. Applied to measured values (per
+        (each objective's `weight`), with no baseline subtraction. Applied to measured values (per
         case or per run, measured means, the test report) and, by the ranking, to each goal metric's estimate
         from a fit, never to a fitted scalar.
         None when the values leave it unmeasured.

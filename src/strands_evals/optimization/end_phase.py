@@ -15,6 +15,7 @@ from .score_model.ranking import _MEAN, PickRule
 from .scoring.objectives import Criteria
 
 TEST_LEVEL = 0.90  # the test report's interval level (report only), matching the 90% effects
+PARETO_MIN_FINALISTS = 5  # under Pareto, max(finalists, this) front members go to validation; the reserves use it too
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -24,7 +25,7 @@ class FinalPick:
     Only a candidate meeting every constraint ships (no `unmet="closest"`). `rule` is `Mean()` or
     `LowerBound(q)` to ship cautiously; the search's ranking always uses `Mean()`. Read back from
     `run.json` on resume (`from_config`), never passed again. Under a `Pareto` objective up to
-    `max(finalists, 5)` front members go to validation.
+    `max(finalists, PARETO_MIN_FINALISTS)` front members go to validation.
     """
 
     finalists: int = 3
@@ -60,7 +61,7 @@ def choose_finalists(
     Args:
         ranking: Every eligible candidate in ranking order (feasible first, then by objective).
         baseline_id: Left out; it is always measured on validation anyway.
-        n: `FinalPick.finalists`, or `max(finalists, 5)` under `Pareto`.
+        n: `FinalPick.finalists`, or `max(finalists, PARETO_MIN_FINALISTS)` under `Pareto`.
         front: Under `Pareto`, `pareto_front` over the search assessments, in ranking order; None otherwise.
     """
     raise NotImplementedError
