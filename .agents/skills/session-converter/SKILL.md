@@ -59,31 +59,25 @@ If you cannot spawn subagents, follow the segmenter document's steps yourself fo
 
 Read the strands-evals authoring skill at [../../../SKILL.md](../../../SKILL.md) to learn what each evaluator scores. If it is missing, read [../../../AGENTS.md](../../../AGENTS.md) instead.
 
-Use the episode summaries from step 2 for their topics and their `expected_assertion`s for the user's intent. Every evaluator runs on every case, so pick 3-5 evaluators that fit the episodes taken together.:
+Group the `failure`s from every episode's error analysis in step 2 into the failure modes below, and count the episodes that show each mode. Every evaluator runs on every case, so suggest an evaluator only when its failure mode shows up in at least 10% of all episodes. Map each failure mode to its evaluator:
 
-- **GoalSuccessRateEvaluator**: most episodes work toward a goal over several turns (follow-ups, corrections, retries).
-- **CorrectnessEvaluator**: most episodes ask for a verifiable answer (a fact, a fix, a computed result).
-- **HelpfulnessEvaluator**: most episodes are open-ended requests for help, where the answer has no single right form.
-- **FaithfulnessEvaluator**: users corrected claims that didn't match the files, docs, or tool results the agent read.
-- **InstructionFollowingEvaluator**: user inputs carry explicit constraints (format, length, scope, things not to do).
-- **ConcisenessEvaluator**: users asked for shorter answers or cut off verbose ones.
-- **ResponseRelevanceEvaluator**: users had to redirect the agent back to what they asked.
-- **CoherenceEvaluator**: episodes need long, multi-step explanations or reasoning.
-- **HarmfulnessEvaluator**, **RefusalEvaluator**, **StereotypingEvaluator**: only when episodes touch sensitive content, or the agent refused or should have.
-- **ToolSelectionAccuracyEvaluator**: users corrected which tool or action the agent chose (read the wrong file, ran the wrong command).
-- **ToolParameterAccuracyEvaluator**: users corrected the arguments the agent used (wrong path, query, flag, or value).
-- **SkillSelectionAccuracyEvaluator**, **SkillInstructionFollowingEvaluator**: episodes invoke skills, or users corrected which skill the agent used or how it followed one. Runs that invoke no skill score as not applicable.
+- **GoalSuccessRateEvaluator**: the episode ended unresolved or abandoned, or the user needed several retries to reach the goal (ex. "still failing, third time I'm asking").
+- **CorrectnessEvaluator**: the agent gave a wrong fact, fix, or computed result (ex. "that's not the default, it's 30 seconds").
+- **HelpfulnessEvaluator**: the answer was accurate but didn't help, so the user re-asked or asked for more detail or examples (ex. "ok but how do I actually use it?").
+- **FaithfulnessEvaluator**: the agent made claims that didn't match the files, docs, or tool results it read (ex. "there's no retry option in that file").
+- **InstructionFollowingEvaluator**: the agent broke an explicit constraint in the user input (format, length, scope, things not to do) (ex. "I said don't touch the tests").
+- **ConcisenessEvaluator**: users asked for shorter answers or cut off verbose ones (ex. "too long, just give me the command").
+- **ResponseRelevanceEvaluator**: users had to redirect the agent back to what they asked (ex. "I asked about the parser, not the CLI").
+- **CoherenceEvaluator**: the agent's explanation or reasoning contradicted itself or was hard to follow (ex. "you just said the opposite above").
+- **HarmfulnessEvaluator**: the agent produced or repeated harmful language, such as insults, hate, or violence (ex. "don't call my coworker an idiot in the reply").
+- **RefusalEvaluator**: the agent refused a legitimate request (ex. "it's my own server, just show me how to scan it").
+- **StereotypingEvaluator**: the agent produced biased or stereotyped content (ex. "why did you assume the engineer is a he?").
+- **ToolSelectionAccuracyEvaluator**: the agent chose the wrong tool or action (ex. "why did you run the whole test suite? I asked you to read the file").
+- **ToolParameterAccuracyEvaluator**: the agent used the wrong arguments (ex. "wrong path, it's under src/").
+- **SkillSelectionAccuracyEvaluator**: the agent used the wrong skill (ex. "use the code-review skill, not implement").
+- **SkillInstructionFollowingEvaluator**: the agent didn't follow the skill it used (ex. "the skill says to ask before posting").
 
-Only CorrectnessEvaluator and GoalSuccessRateEvaluator read `expected_assertion` (reference mode); the rest need no expected values. Don't suggest:
-
-- **ToolCalled**, **SkillInvoked**: they check one exact tool or skill name on every case, which rarely fits arbitrary episodes.
-- **Contains**, **StartsWith**, **StateEquals**: they check the same value on every case, which rarely fits arbitrary episodes.
-- **Equals**, **StructuredOutputSimilarity**: they need `expected_output` on every case, which this skill doesn't set.
-- **OutputEvaluator**, **TrajectoryEvaluator**: they need a custom rubric; the built-in judges above cover the same ground.
-- **InteractionsEvaluator**: it scores multi-agent handoffs, which single-agent sessions don't have.
-- **Multimodal\*** evaluators: they need image inputs, and episode inputs are text.
-- **FailureCommunicationEvaluator**, **PartialCompletionEvaluator**, **RecoveryStrategyEvaluator**: they score chaos runs with injected faults.
-- **AttackSuccessEvaluator**: it scores red-team runs.
+Only suggest evaluators listed above. If no failure mode reaches 10% of episodes, suggest GoalSuccessRateEvaluator alone.
 
 ### 4. Output the experiment file
 
