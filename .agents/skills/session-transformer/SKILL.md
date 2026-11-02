@@ -1,6 +1,6 @@
 ---
 name: session-transformer
-description: Use when the user wants to turn past local agent conversations (Claude Code, Kiro CLI, Strands CLI, or any other harness) into strands-evals experiments. Locates the relevant session files on the local filesystem and extracts their episodes (turns with a focused user goal). Skip for traces stored in trace providers (CloudWatch, Langfuse, OpenSearch).
+description: Use when the user wants to turn past local agent conversations (Codex, Claude Code, Kiro CLI, Strands CLI, or any other harness) into strands-evals experiments. Locates the relevant session files on the local filesystem and extracts their episodes (turns with a focused user goal). Skip for traces stored in trace providers (CloudWatch, Langfuse, OpenSearch).
 version: 0.1.0
 ---
 
@@ -39,6 +39,11 @@ The following session file paths are best-effort and can change between releases
   ```
 - Sessions started outside a workspace live under `~/.kiro/sessions/_global/`.
 - Some versions also write a flat store: `~/.kiro/sessions/cli/<session_uuid>.jsonl` with a `<session_uuid>.json` metadata sidecar.
+
+**Codex**
+- Session file: `~/.codex/sessions/<year>/<month>/<day>/rollout-<timestamp>-<session_uuid>.jsonl`.
+- Read the `session_meta` record to get `payload.session_id`, `payload.cwd`, and the initial `payload.timestamp`.
+- Match a workspace against `payload.cwd`. `~/.codex/history.jsonl` and `~/.codex/state_*.sqlite` are history and local-state stores, not session transcripts.
 
 **Other harnesses**: find the harness's session store (its docs, or recently modified `*.json` / `*.jsonl` files under its home directory) and apply the same prompt criteria.
 
