@@ -6,7 +6,7 @@ Processes the session files you were given, along with any content criteria.
 
 ### 1. Read sessions
 
-For each session file you were given, use `jq` to extract the user inputs and assistant responses, in order, as `{role, text}`. Skip tool calls, tool results, reasoning, and harness bookkeeping. Session files can be large, so stream them through `jq` instead of reading them whole. Derive path names with shell parameter expansion (`${f##*/}`) instead of `basename`.
+For each session file you were given, use `jq` to extract the user inputs and assistant responses, in order, as `{role, text, timestamp}`. Skip tool calls, tool results, reasoning, and harness bookkeeping. Session files can be large, so stream them through `jq` instead of reading them whole. Derive path names with shell parameter expansion (`${f##*/}`) instead of `basename`.
 
 If the known fields below don't fit, print a condensed view of the file's shape:
 
@@ -32,7 +32,7 @@ Split each session's turns from step 1 into episodes: turns that serve one user 
 
 ## Output
 
-Return every episode to the main agent in this format.
+Return each remaining episode to the main agent in this format.
 
 ```
 Session: <session_file_path>
