@@ -193,13 +193,16 @@ class Search:
     def resolve(self, space: Space) -> tuple[list[tuple[Block, list[str]]], Schedule]:
         """Each block with its expanded keys, and the schedule to run them with.
 
-        Variables in no block go to their type's default block: text/file ->
-        `Reflection()` ("text"); `choice()` -> `TPE(n_startup_trials=2)` ("structure"); `Int`, `Float`,
-        `OneOf` -> `TPE()` ("numbers"); appended after the user's blocks, so `Search()` is the default
-        search. `Thompson` is never a default block.
+        Keys in no block go to their kind's default block, key by key: text/file keys ->
+        `Reflection()` ("text"); a `choice()`'s selector key -> `TPE(n_startup_trials=2)` ("structure");
+        `int`, `float`, and `one_of` keys, those under a choice's alternatives included -> `TPE()`
+        ("numbers"). So `manager` goes to "structure" and `manager.window.window_size` to "numbers". A
+        choice key with one option (a bare `component()`) goes to no block, since nothing can change it.
+        Default blocks are appended after the user's blocks, so `Search()` is the default search.
+        `Thompson` is never a default block.
 
         The schedule is `self.schedule`, else the default built over every resolved block, defaults
-        included: one `Nested` per structural block (one owning `choice()` variables), outermost first,
+        included: one `Nested` per structural block (one holding a choice key with 2+ options), outermost first,
         around `Alternate()`; when every block is structural, the innermost isn't nested; `Joint()` when
         there is no structural block.
 
