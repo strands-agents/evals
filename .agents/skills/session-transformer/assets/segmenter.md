@@ -28,7 +28,7 @@ Split each session's turns from step 1 into episodes: turns that serve one user 
 
 - **Starts a new episode**: a new task, an unrelated question, or a switch to a different artifact or topic.
 - **Continues the episode**: a follow-up, clarification, correction, retry, approval, answer to the assistant's question, or a change in scope of the same deliverable. This includes inputs that can't stand alone (ex. "do it", "accurate?"), errors pasted from running the assistant's suggestion, requests to undo the assistant's change, and returning to the goal after a brief side question.
-- **No goal**: drop episodes with nothing to evaluate: no request (ex. greetings, thanks), a request that only changes local setup (ex. "install the session-experiment skill"), or a request that depends on a specific skill, MCP, or tool another agent may not have. Episodes requiring common tools, like file, shell, and web tools, may be kept.
+- **No goal**: drop episodes with nothing to evaluate: no request (ex. greetings, thanks), a request that only changes local setup (ex. "install the session-transformer skill"), or a request that depends on a specific skill, MCP, or tool another agent may not have. Episodes requiring common tools, like file, shell, and web tools, may be kept.
 
 ## Output
 
