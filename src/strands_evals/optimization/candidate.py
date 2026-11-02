@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from ..types.optimization import Value, Values
 from .declaration.space import Space
@@ -80,13 +81,20 @@ class Candidate:
         raise NotImplementedError
 
 
-def diff(space: Space, base: Candidate, other: Candidate) -> str:
-    """A valid unified diff of text and file-backed values, on the real file paths.
+def diff(space: Space, base: Candidate, other: Candidate, *, root: Path) -> str:
+    """A valid unified diff of every changed text value, for review.
+
+    File-backed values are hunks on their real files, headed `--- a/<path>` / `+++ b/<path>` with the
+    path relative to `root` (absolute for a file outside it); a `JsonField`'s hunk is on its whole
+    file. Each changed non-file text value follows as a hunk headed `--- <key>` / `+++ <key>`. Not
+    promised to apply with `git apply`: the CLI applies a candidate from its values. Numbers and
+    choices never appear (see `changed_values`).
 
     Args:
         space: Maps file-backed keys to their real paths.
         base: The candidate diffed against, usually the baseline.
         other: The candidate shown.
+        root: The run's working directory (`run.json` `workdir`); paths are shown relative to it.
     """
     raise NotImplementedError
 

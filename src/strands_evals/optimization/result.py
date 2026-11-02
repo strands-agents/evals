@@ -17,7 +17,7 @@ Grain = Literal["iteration", "proposal", "case"]
 class CandidateView:
     """A candidate as the results show it."""
 
-    def __init__(self, candidate: Candidate, baseline: Candidate, space: Space, number: int):
+    def __init__(self, candidate: Candidate, baseline: Candidate, space: Space, number: int, root: Path):
         """Built by the optimizer; users never construct one.
 
         Args:
@@ -25,6 +25,7 @@ class CandidateView:
             baseline: The run's baseline, for diffs.
             space: Maps file-backed keys to their real paths.
             number: Its display number; `summary()` shows "candidate 3 (3f9a1c0b7e2d)".
+            root: The run's working directory (`run.json` `workdir`); diff paths are shown relative to it.
         """
         raise NotImplementedError
 
@@ -44,11 +45,30 @@ class CandidateView:
         raise NotImplementedError
 
     def diff(self) -> str:
-        """Unified diff of text and file-backed values against the baseline, on the real paths."""
+        """Unified diff of every changed text against the baseline, for review.
+
+        File-backed values on their real paths (relative to the run's working directory), then non-file
+        text values headed by their key. Numbers and choices are in `changed_values()`.
+        """
         raise NotImplementedError
 
     def changed_values(self) -> dict[str, tuple[Value, Value]]:
         """Changed numbers and choices against the baseline."""
+        raise NotImplementedError
+
+    def write_diff(self, path: str | Path) -> Path:
+        """Write this candidate's changes as the run writes the champion's (`best.diff`), for review.
+
+        `path` gets `diff()`; `path.with_suffix(".values.json")` gets the changed numbers and choices as
+        `{key: {"old": ..., "new": ...}}`, with one side only for a key active on one side. Both are always
+        written (empty or `{}` when nothing of that kind changed). Applying is the CLI's job.
+
+        Args:
+            path: Where the diff goes.
+
+        Returns:
+            The diff path.
+        """
         raise NotImplementedError
 
 

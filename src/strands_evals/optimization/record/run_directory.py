@@ -80,3 +80,16 @@ class RunDirectory:
     def save_effects(self, effects: Mapping[str, Any]) -> None:
         """`<root>/effects.json`."""
         raise NotImplementedError
+
+    def save_diff(self, stem: str, diff: str, values: Mapping[str, Any]) -> None:
+        """`<root>/<stem>.diff` and `<root>/<stem>.values.json`, written at the end after `effects.json`.
+
+        For review only. Derived from the events, so a resumed finished run rewrites them with the same
+        content.
+
+        Args:
+            stem: `"best"` for the champion, or `"front/<number>-<id>"` for a `Pareto` front member.
+            diff: The review diff (`diff(...)`).
+            values: The changed numbers and choices, `{key: {"old": ..., "new": ...}}`.
+        """
+        raise NotImplementedError
