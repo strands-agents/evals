@@ -14,6 +14,7 @@ from ...generators import ExperimentGenerator
 from .._common import EXIT_BAD_INPUT, EXIT_OK, emit_error
 from .._entrypoint import resolve_custom_evaluators
 from .._io import write_text_output
+from .._project_generation import generate_project_drafts
 
 # `ExperimentGenerator.construct_evaluator_async` only supports these three.
 # The CLI restricts `--evaluator` to the same set so users get a fast,
@@ -30,7 +31,7 @@ def _validate_args(args: argparse.Namespace) -> str | None:
     """Return an error string if argument combinations are invalid, else None.
 
     The argparse mutually-exclusive group already enforces "exactly one of
-    --context/--experiment". This layer guards mode-specific flag misuse:
+    --context/--experiment/--project". This layer guards mode-specific flag misuse:
 
     - `--evaluator` and `--num-topics` only apply to context mode; the
       `from_experiment_async` library API derives evaluators from the source
@@ -41,6 +42,17 @@ def _validate_args(args: argparse.Namespace) -> str | None:
       `--context` and there's no source experiment to load custom evaluators
       for.
     """
+    if args.project is not None:
+        if args.model is None or not args.model.strip():
+            return "--project requires an explicit --model."
+        if not 1 <= args.num_cases <= 50:
+            return "--num-cases must be between 1 and 50 for --project."
+        for flag in ("output", "evaluator", "num_topics", "extra_information", "custom_evaluator"):
+            if getattr(args, flag) is not None:
+                return f"--{flag.replace('_', '-')} is not supported with --project (review drafts use stdout only)."
+        return None
+    if args.runner is not None:
+        return "--runner requires --project."
     if args.experiment is not None:
         if args.evaluator is not None:
             return "--evaluator is not supported with --experiment (evaluators are inherited from the source)."
@@ -59,6 +71,18 @@ def _run(args: argparse.Namespace) -> int:
     if error is not None:
         emit_error(error)
         return EXIT_BAD_INPUT
+
+    if args.project is not None:
+        drafts = generate_project_drafts(
+            project=args.project,
+            runner=args.runner,
+            num_cases=args.num_cases,
+            model=args.model,
+            task_description=args.task_description or "",
+        )
+        write_text_output(json.dumps(drafts, indent=2, ensure_ascii=False, allow_nan=False), None)
+        print(f"generated {len(drafts['drafts'])} unreviewed draft(s)", file=sys.stderr)  # noqa: T201
+        return EXIT_OK
 
     generator: ExperimentGenerator[str, str] = ExperimentGenerator(input_type=str, output_type=str, model=args.model)
 
@@ -111,12 +135,15 @@ def add_subparser(
         parents=[parent],
         help="generate a starter Experiment via ExperimentGenerator",
         description=(
-            "Synthesize an Experiment by wrapping ExperimentGenerator. Two "
+            "Synthesize an Experiment by wrapping ExperimentGenerator. Three "
             "modes: --context creates cases (and an optional rubric) from a "
             "free-form description via from_context_async; --experiment "
             "derives new cases from an existing Experiment file via "
             "from_experiment_async, inheriting the source's evaluators. "
-            "--context/--experiment are mutually exclusive. With -o the "
+            "--project inspects authored instructions and tool schemas to generate "
+            "unreviewed drafts (requires --model, 1..50 cases). These are stdout-only "
+            "suggestions, never written to a dataset or cases directory. "
+            "--context/--experiment/--project are mutually exclusive. With -o the "
             "experiment is written via Experiment.to_file (.json enforced); "
             "without -o the JSON document is emitted on stdout."
         ),
@@ -141,6 +168,19 @@ def add_subparser(
             "(from_experiment_async). Cases are inspired by the source; "
             "evaluators are derived from the source's defaults."
         ),
+    )
+
+    source.add_argument(
+        "--project",
+        metavar="PATH",
+        default=None,
+        help="generate review-only JSON drafts from a trusted source project (stdout only; requires --model)",
+    )
+    parser.add_argument(
+        "--runner",
+        metavar="EXEC",
+        default=None,
+        help="--project only: external runner executable supporting action=inspect (required for JS/TS)",
     )
 
     parser.add_argument(

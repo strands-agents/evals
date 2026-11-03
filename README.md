@@ -110,15 +110,19 @@ report.run_display()
 
 ## Command-Line Interface
 
-Installing `strands-agents-evals` also installs the `strands-evals` console script, a thin wrapper over the Python API for CI and one-off use. It has five subcommands:
+Installing `strands-agents-evals` also installs the `strands-evals` console script, a thin wrapper over the Python API for CI and one-off use. It has seven subcommands:
 
 | Command | Purpose |
 | --- | --- |
-| `strands-evals run` | Execute an Experiment against an `--agent` factory or `--task` callable, or run a single ad-hoc case via `--input` + `--evaluator`/`--expected-output`/`--rubric`. |
+| `strands-evals run` | Execute an Experiment against an `--agent` factory or `--task` callable, run a single ad-hoc case, or evaluate source with `--project PATH --cases DIRECTORY`. |
 | `strands-evals validate` | Schema-check a serialized Experiment JSON file (CI gate before `run`). |
 | `strands-evals report` | Render an existing `EvaluationReport` JSON via Rich, or dump it as JSON. |
 | `strands-evals diagnose` | Run `detect_failures`, `analyze_root_cause`, or the full `diagnose_session` pipeline on a Session JSON file. |
 | `strands-evals generate` | Synthesize an Experiment via `ExperimentGenerator` from a free-form `--context` or an existing `--experiment` file. |
+| `strands-evals fetch` | Fetch a session from a supported telemetry provider for local inspection. |
+| `strands-evals optimize` | Run bounded, instructions-only optimization with training and holdout gates; write a patch for manual review without editing project source (POC). |
+
+For source-project evaluation, capture case format, external runners, and optimization costs and limitations, see [Project development](./PROJECT_DEVELOPMENT.md).
 
 Common flows:
 

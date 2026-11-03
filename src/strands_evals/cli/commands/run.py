@@ -28,6 +28,7 @@ from .._entrypoint import (
     resolve_task,
 )
 from .._io import read_text_input, write_text_output
+from .._project import AssertionContains, ProjectError, ProjectRunner, evaluate_project, load_project_cases
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +184,16 @@ def _validate_args(args: argparse.Namespace) -> str | None:
       3. In ad-hoc mode at least one evaluator must be derivable: an explicit
          `--evaluator` or an `--expected-output` (which defaults to `Contains`).
     """
+    if args.project is not None:
+        if not args.cases:
+            return "--project requires --cases DIRECTORY"
+        if args.experiment_file or args.input is not None or args.input_file or args.agent or args.task:
+            return "--project cannot be combined with experiment, ad-hoc input, --agent, or --task"
+        return None
+    if args.cases or args.runner or args.collector_endpoint or args.contains is not None:
+        return "--cases, --runner, --collector-endpoint and --contains require --project"
+    if not args.agent and not args.task:
+        return "one of --agent or --task is required"
     ad_hoc = _ad_hoc_flags_set(args)
     if args.experiment_file is not None and ad_hoc:
         joined = ", ".join(ad_hoc)
@@ -309,6 +320,38 @@ def _run(args: argparse.Namespace) -> int:
         return EXIT_BAD_INPUT
 
     diagnosis_config = _build_diagnosis_config(args)
+
+    if args.project is not None:
+        try:
+            runner = ProjectRunner(args.project, runner=args.runner, collector_endpoint=args.collector_endpoint)
+            cases = load_project_cases(args.cases)
+            evaluators: list[Evaluator] = []
+            for spec in args.evaluator or []:
+                if spec == "contains":
+                    evaluators.append(
+                        Contains(value=args.contains) if args.contains is not None else AssertionContains()
+                    )
+                else:
+                    evaluators.append(resolve_evaluator_spec(spec))
+            if not evaluators and args.contains is not None:
+                evaluators.append(Contains(value=args.contains))
+            if not evaluators and args.rubric is not None:
+                evaluators.append(OutputEvaluator(rubric=args.rubric))
+            report = evaluate_project(runner, cases, evaluators or None)
+        except (ProjectError, EntryPointError) as exc:
+            emit_error(str(exc))
+            return EXIT_BAD_INPUT
+        except Exception as exc:
+            emit_error(f"Project execution failed: {exc}")
+            return EXIT_FAILURES
+        if args.output is not None:
+            write_text_output(report.model_dump_json(indent=2), args.output)
+        elif not (args.display or args.interactive):
+            sys.stdout.write(report.model_dump_json(indent=2) + "\n")
+        if args.display or args.interactive:
+            _display_expanded(report, include_recommendations=False, interactive=args.interactive)
+        _print_summary(report)
+        return EXIT_OK if args.exit_zero else _decide_exit_code(report, args.fail_on)
 
     if args.experiment_file is not None:
         custom_evaluators = resolve_custom_evaluators(args.custom_evaluator or [])
@@ -473,7 +516,12 @@ def add_subparser(
         ),
     )
 
+    parser.add_argument("--cases", metavar="DIRECTORY", help="directory of CLI capture-v1 JSON cases")
+    parser.add_argument("--runner", metavar="EXECUTABLE", help="external project JSONL runner")
+    parser.add_argument("--collector-endpoint", metavar="URL", help="OTLP collector HTTP(S) endpoint")
+    parser.add_argument("--contains", metavar="TEXT", help="fixed substring for project contains evaluation")
     target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--project", metavar="PATH", help="source project entry point or directory")
     target.add_argument(
         "--agent",
         metavar="MODULE:ATTR",
