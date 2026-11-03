@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -217,7 +218,8 @@ def create_agent(instructions=None, temperature=0.7):
             counter = HERE / "calls.txt"
             count = int(counter.read_text()) + 1 if counter.exists() else 1
             counter.write_text(str(count))
-            if (HERE / "kill").exists() and count == 6:
+            kill = HERE / "kill"
+            if kill.exists() and count == int(kill.read_text() or "6"):
                 raise KeyboardInterrupt
             return "Paris" if "geography" in instructions and temperature < 0.5 else "unknown"
 
@@ -309,3 +311,36 @@ def test_stdout_carries_only_the_json_when_the_agent_writes_to_file_descriptor_1
     captured = capfd.readouterr()
     assert json.loads(captured.out)["improved"] is True
     assert "noise from a tool" in captured.err
+
+
+def test_a_second_resume_keeps_the_budget_of_the_first_resume(project, capsys):
+    agent = project / "agent"
+    (agent / "agent.py").write_text(KILLABLE_AGENT)
+    (agent / "kill").write_text("6")
+    with pytest.raises(KeyboardInterrupt):
+        main(arguments(project, "--max-rollouts", "60"))
+    (run_dir,) = (agent / ".strands-evals" / "optimization" / "runs").iterdir()
+    (agent / "kill").write_text("10")
+    with pytest.raises(KeyboardInterrupt):
+        main(arguments(project, "--resume", str(run_dir), "--max-rollouts", "200"))
+    (agent / "kill").unlink()
+    capsys.readouterr()
+
+    assert main(arguments(project, "--resume", str(run_dir), "--max-rollouts", "100")) == 2
+    assert "at least the saved 200" in capsys.readouterr().err
+    assert main(arguments(project, "--resume", str(run_dir))) == 0
+
+    events = [json.loads(line) for line in (run_dir / "events.jsonl").read_text().splitlines()]
+    assert [event["budget"]["max_rollouts"] for event in events if event["event"] == "resume"] == [200, 200]
+
+
+def test_resume_rejects_another_project(project, capsys):
+    assert main(arguments(project)) == 0
+    run_dir = json.loads(capsys.readouterr().out)["run_dir"]
+    copy = project / "copy"
+    shutil.copytree(project / "agent", copy, ignore=shutil.ignore_patterns(".strands-evals"))
+    command = arguments(project, "--resume", run_dir)
+    command[1] = str(copy)
+
+    assert main(command) == 2
+    assert "project changed" in capsys.readouterr().err

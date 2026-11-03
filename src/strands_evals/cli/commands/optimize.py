@@ -11,6 +11,7 @@ import importlib.metadata
 import json
 import math
 import os
+import shutil
 import sys
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
@@ -68,6 +69,8 @@ READ_ON_RESUME = (
     "base_dir",
 )
 COMPARED_ON_RESUME = (
+    "project",
+    "runner",
     "cases",
     "space",
     "objective",
@@ -150,7 +153,7 @@ def _optimize(args: argparse.Namespace) -> dict[str, Any]:
     evaluators = _evaluators(args)
     registry = MetricRegistry({evaluator.get_name(): _score_range(evaluator) for evaluator in evaluators})
     run = RunDirectory.open(Path(args.resume)) if args.resume else None
-    saved = run.config() if run else {}
+    saved = {**run.config(), "budget": _saved_budget(run)} if run else {}
     criteria = Criteria(build_objective(args.objective or [], registry), registry, _crash_score(args, saved))
     seed = saved.get("seed", args.seed if args.seed is not None else DEFAULT_SEED)
     proposers = _proposers(args, space, seed, required=not args.dry_run)
@@ -276,6 +279,12 @@ def _proposers(args: argparse.Namespace, space: CliSpace, seed: int, *, required
     return blocks
 
 
+def _saved_budget(run: RunDirectory) -> dict[str, Any]:
+    """The budget of the last `resume` event, else the one in `run.json`: a resume keeps the last budget given."""
+    resumed = [event["budget"] for event in run.events.read() if event["event"] == "resume" and "budget" in event]
+    return dict(resumed[-1]) if resumed else dict(run.config()["budget"])
+
+
 def _settings(args: argparse.Namespace, cases: Sequence[Case], seed: int, saved: Mapping[str, Any]) -> Settings:
     if saved:
         budget = saved["budget"]
@@ -324,7 +333,7 @@ def _config(
         "engine": ENGINE,
         "workdir": str(entry.parent),
         "project": str(entry),
-        "runner": args.runner,
+        "runner": str(Path(shutil.which(args.runner) or args.runner).resolve()) if args.runner else None,
         "cases": [{"name": case.name, "digest": _case_digest(case)} for case in cases],
         "space": space.config(),
         "objective": str(criteria.objective),

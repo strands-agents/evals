@@ -658,3 +658,87 @@ def test_a_block_draws_again_after_a_duplicate_and_stops_when_nothing_is_new(tmp
 
     assert result["stop_reason"] == "exhausted"
     assert any(e["event"] == "duplicate" and e["redraw"] > 0 for e in events(tmp_path))
+
+
+def test_a_kill_in_the_last_affordable_iteration_resumes_to_the_same_pick(tmp_path):
+    table = {
+        "base": {"train": 0.1, "validation": 0.1, "test": 0.1},
+        "a": {"train": 0.2, "validation": 0.2, "test": 0.2},
+        "b": {"train": 0.4, "validation": 0.4, "test": 0.4},
+        "c": {"train": 0.6, "validation": 0.6, "test": 0.6},
+    }
+    proposers = [patches({"prompt": "a"}, {"prompt": "b"}, {"prompt": "c"})]
+    budget = 4 + 3 * 4 + (2 + 1) * 3 + 2 * 3
+    clean = optimizer(tmp_path / "clean", proposers, scorer(table), budget=budget, per_iteration=1, finalists=2).run()
+    calls = {"count": 0}
+
+    def killed(values, case):
+        calls["count"] += 1
+        if calls["count"] == 16:
+            raise KeyboardInterrupt
+        return scorer(table)(values, case)
+
+    with pytest.raises(KeyboardInterrupt):
+        optimizer(tmp_path, proposers, killed, budget=budget, per_iteration=1, finalists=2).run()
+    resumed = optimizer(tmp_path, proposers, killed, budget=budget, per_iteration=1, finalists=2)
+    resumed.restore(events(tmp_path))
+
+    result = resumed.run()
+
+    assert clean["best"]["values"]["prompt"] == "c"
+    assert result["best"]["values"]["prompt"] == "c"
+    assert result["rollouts_spent"] == clean["rollouts_spent"] <= budget
+
+
+def test_a_judge_that_fails_twice_is_judged_again_in_the_rerun_passes(tmp_path):
+    failures = {"left": 2}
+
+    def judge(case, result):
+        if result.output == 0.9 and case.name == SPLIT.train[0] and failures["left"]:
+            failures["left"] -= 1
+            raise RuntimeError("ServiceUnavailableException")
+        return evaluate(case, result)
+
+    result = optimizer(
+        tmp_path, [patches({"prompt": "better"})], scorer(table_of(base=0.2, better=0.9)), evaluator=judge
+    ).run()
+
+    assert result["improved"] is True
+    assert result["rollouts_spent"] == 4 + 4 + 2 * 3 + 2 * 3
+
+
+def test_a_reproposed_candidate_with_judge_failures_is_scored_again(tmp_path):
+    failures = {"left": 1 + 1 + 2}
+
+    def judge(case, result):
+        if result.output == 0.9 and case.name == SPLIT.train[0] and failures["left"]:
+            failures["left"] -= 1
+            raise RuntimeError("judge down")
+        return evaluate(case, result)
+
+    result = optimizer(
+        tmp_path,
+        [patches({"prompt": "better"}, {"prompt": "better"})],
+        scorer(table_of(base=0.2, better=0.9)),
+        evaluator=judge,
+    ).run()
+
+    outcomes = [proposal["outcome"] for proposal in result["iterations"][0]["proposals"]]
+    assert outcomes == ["ineligible", "feasible"]
+    assert result["improved"] is True
+
+
+def test_a_short_reply_with_usable_patches_is_not_asked_again(tmp_path):
+    proposer = Scripted(["better"], [])
+
+    result = optimizer(tmp_path, [proposer], scorer(table_of(base=0.2, better=0.9)), per_iteration=4).run()
+
+    assert result["improved"] is True
+    assert proposer.calls == 1 + (1 + 3)
+
+
+def test_iteration_end_lists_the_exhausted_blocks_by_name(tmp_path):
+    optimizer(tmp_path, [patches({"prompt": "better"})], scorer(table_of(base=0.2, better=0.9))).run()
+
+    ends = [event for event in events(tmp_path) if event["event"] == "iteration_end"]
+    assert [end["exhausted"] for end in ends] == [[], ["file"]]

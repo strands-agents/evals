@@ -202,7 +202,7 @@ The run follows the planned loop:
 
 1. Split the cases into train, validation, and test. `--split` sets the shares (default `0.4,0.3,0.3`). `--seed` sets the shuffle.
 2. Score the baseline on train.
-3. Select the best train candidate as the parent. Each block suggests patches from that parent (the planned `Joint` schedule). A block asks again, up to 3 times, after a duplicate, an invalid patch, or an empty reply. A failed proposer call runs again up to 3 times. After that, an infrastructure error stops the search with `proposer_error`, and another error counts as an empty reply.
+3. Select the best train candidate as the parent. Each block suggests patches from that parent (the planned `Joint` schedule). A block asks again, up to 3 times, after a duplicate, an invalid patch, or an empty reply. It asks only for replacements, and a reply with fewer patches than asked for is valid. A failed proposer call runs again up to 3 times. After that, an infrastructure error stops the search with `proposer_error`, and another error counts as an empty reply.
 4. Score each new candidate on train.
 5. Stop on `budget`, `iterations` (`--max-iterations`), `exhausted`, or `proposer_error`.
 6. Measure the top `--finalists` (default 3) and the baseline on validation. The highest validation score ships. A tie keeps the baseline.
@@ -241,7 +241,7 @@ strands-evals optimize ./my-agent --cases ./captures --space ./space.json \
   --proposal-model MODEL_ID --resume ./my-agent/.strands-evals/optimization/runs/RUN_ID
 ```
 
-Give the same project, cases, space, objective, judge, and proposer flags. If one changed, resume stops and names it. The event log gets a `resume` event. Resume reads the split, the seed, the finalists, and the other settings from `run.json`, so do not give them again. A killed run can get a larger `--max-rollouts`, but not a smaller one. It can also get a new `--max-iterations`.
+Give the same project, runner, cases, space, objective, judge, and proposer flags. If one changed, resume stops and names it. The event log gets a `resume` event. Resume reads the split, the seed, the finalists, and the other settings from `run.json`, so do not give them again. A killed run can get a larger `--max-rollouts`, but not a smaller one. It can also get a new `--max-iterations`. A later resume keeps the last budget that you gave.
 
 Resume uses every saved trial again. It discards a killed iteration and runs that iteration again. A finished run does not continue: resume returns its result again, with no new rollouts. To search more, start a new run.
 

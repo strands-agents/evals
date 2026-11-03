@@ -297,7 +297,8 @@ class InterimOptimizer:
         record = IterationRecord.model_validate(event["record"])
         self._iterations.append(record)
         self._iteration = record.iteration
-        self._produced.update(event["produced"])
+        exhausted = set(event["exhausted"])
+        self._produced.update({name: name not in exhausted for name in record.blocks})
         self._search_cost = add_usage(self._search_cost, Usage.model_validate(event["usage"]))
 
     def _restore_event(self, event: Mapping[str, Any]) -> None:
@@ -371,8 +372,7 @@ class InterimOptimizer:
                 return "proposer_error"
 
     def _should_stop(self) -> StopReason | None:
-        per_candidate = len(self._settings.split.train) * self._settings.runs_per_candidate
-        if self._unaffordable or not self._can_afford(per_candidate, "train"):
+        if self._unaffordable or not self._can_afford(self._cheapest_candidate(), "train"):
             return "budget"
         cap = self._settings.budget.max_iterations
         if cap is not None and self._iteration >= cap:
@@ -380,6 +380,13 @@ class InterimOptimizer:
         if len(self._produced) == len(self._proposers) and not any(self._produced.values()):
             return "exhausted"
         return None
+
+    def _cheapest_candidate(self) -> int:
+        """The train rollouts of the cheapest next candidate: a new one, or one with trials saved before a kill."""
+        names = self._settings.split.train
+        orphans = {key[0] for key in self._trials if key[0] not in self._candidates}
+        costs = [len(self._pending(candidate_id, names)) for candidate_id in orphans]
+        return min([len(names) * self._settings.runs_per_candidate, *costs])
 
     def _select_parent(self) -> Candidate:
         parent = self._candidates[self._ranking()[0]]
@@ -391,11 +398,15 @@ class InterimOptimizer:
         return sorted(eligible, key=lambda cid: (-(self._train[cid].objective or 0.0), self._candidates[cid].number))
 
     def _turn(self, block: Proposer, parent: Candidate, outcomes: list[ProposalOutcome]) -> tuple[bool, Usage]:
-        """One block's turn: ask, then ask again after an unusable patch, up to `REDRAWS` times."""
-        usage, produced, wanted = zero_usage(), False, self._settings.proposals_per_iteration
+        """One block's turn; ask again, up to `REDRAWS` times, after a duplicate, an invalid patch, or no patches.
+
+        A redraw asks only for replacements of the unusable patches. A reply with fewer usable patches than
+        asked for is valid and ends the turn.
+        """
+        usage, produced, count = zero_usage(), False, self._settings.proposals_per_iteration
         for redraw in range(REDRAWS + 1):
             try:
-                batch = self._propose(block, parent, redraw, wanted, consumed=self._consumed(block, outcomes))
+                batch = self._propose(block, parent, redraw, count, consumed=self._consumed(block, outcomes))
             except ProposerFailed as error:
                 error.usage = add_usage(usage, error.usage)
                 raise
@@ -406,11 +417,11 @@ class InterimOptimizer:
             known = set(self._candidates)
             results = [self._handle(patch, parent, block, redraw) for patch in batch.patches]
             outcomes += results
-            fresh = [r for r in results if r.candidate_id not in known and r.outcome in SCORED]
-            produced = produced or bool(fresh)
-            wanted -= len(fresh) + sum(result.outcome == "unscored" for result in results)
-            if wanted <= 0 or self._unaffordable:
+            produced = produced or any(r.candidate_id not in known and r.outcome in SCORED for r in results)
+            unusable = len(batch.problems) + sum(r.outcome in ("duplicate", "invalid") for r in results)
+            if self._unaffordable or (batch.patches and not unusable):
                 break
+            count = min(unusable, count) if batch.patches else count
         return produced, usage
 
     def _consumed(self, block: Proposer, current: Sequence[ProposalOutcome]) -> int:
@@ -486,7 +497,10 @@ class InterimOptimizer:
         candidate_id = content_id(values)
         known = self._candidates.get(candidate_id)
         train = self._settings.split.train
-        if known is not None and (self._train[candidate_id].eligible or not self._pending(candidate_id, train)):
+        retryable = self._pending(candidate_id, train) or self._keys_with(
+            candidate_id, train, TrialStatus.VERIFIER_INVALID
+        )
+        if known is not None and (self._train[candidate_id].eligible or not retryable):
             self._log("duplicate", block=block.name, redraw=redraw, candidate_id=candidate_id)
             return _outcome(candidate_id, known.number, parent, block, patch, "duplicate", self._objective(known.id))
         changed = tuple(key for key in values if values[key] != parent.values[key])
@@ -526,9 +540,8 @@ class InterimOptimizer:
         self._log(
             "iteration_end",
             record=record.model_dump(mode="json"),
-            exhausted=not any(self._produced.values()),
+            exhausted=[name for name, made in self._produced.items() if not made],
             best_after=best,
-            produced=dict(self._produced),
             usage=usage.model_dump(mode="json"),
         )
         self._progress(
@@ -677,9 +690,7 @@ class InterimOptimizer:
         for candidate in chosen:
             for key in self._pending(candidate.id, names):
                 self._attempt(candidate, key, split)
-        for candidate in chosen:
-            for key in self._keys_with(candidate.id, names, TrialStatus.VERIFIER_INVALID):
-                self._rejudge(key, split)
+        self._rejudge_all(chosen, names, split)
         for _ in range(self._settings.rerun_passes):
             failed = TrialStatus.INFRASTRUCTURE_INVALID
             retry = [(c, key) for c in chosen for key in self._keys_with(c.id, names, failed)]
@@ -687,8 +698,14 @@ class InterimOptimizer:
                 if not self._can_afford(1, split):
                     break
                 self._attempt(candidate, key, split)
+            self._rejudge_all(chosen, names, split)
         chosen_ids = {candidate.id for candidate in chosen}
         return {c.id: self._finish_score(c, split) if c.id in chosen_ids else None for c in candidates}
+
+    def _rejudge_all(self, candidates: Sequence[Candidate], names: Sequence[str], split: SplitName) -> None:
+        for candidate in candidates:
+            for key in self._keys_with(candidate.id, names, TrialStatus.VERIFIER_INVALID):
+                self._rejudge(key, split)
 
     def _finish_score(self, candidate: Candidate, split: SplitName) -> CandidateScores:
         names = self._names(split)
