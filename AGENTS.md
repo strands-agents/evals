@@ -53,7 +53,7 @@ strands-evals/
 │
 ├── .agents/skills/                           # Agent skills (not shipped in the wheel)
 │   └── session-converter/                  # Convert local agent sessions into experiments
-│       ├── SKILL.md                          # Locate sessions, extract episodes
+│       ├── SKILL.md                          # Locate sessions, extract episodes, write an experiment
 │       └── assets/segmenter.md               # Subagent steps: split sessions into episodes
 │
 ├── src/strands_evals/                        # Main package source code
