@@ -233,6 +233,9 @@ class Space:
         raise NotImplementedError
 
 
+# ---- Private helpers: markers -> ParamInfo, and the per-value check ---------
+
+
 _NO_DEFAULT = "pass default=, or under tunable give the wrapped parameter a default"
 
 

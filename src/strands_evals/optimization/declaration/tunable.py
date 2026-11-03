@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, overload
 
 from ...types.optimization import Value, Values
-from .markers import _UNSET, OneOf, _ValueMarker
+from .markers import _fill_default, _ValueMarker
 from .space import Marker, Space
 
 logger = logging.getLogger(__name__)
@@ -72,7 +72,7 @@ class TunableFactory:
         parameters = self._signature.parameters
         self._accepted = frozenset(name for name, p in parameters.items() if p.kind in _KEYWORD_KINDS)
         self._takes_kwargs = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
-        self.space = Space(_fill_defaults(markers, self._label, parameters))
+        self.space = Space(_fill_defaults(markers, self._label, parameters, self._takes_kwargs))
         self._baseline = self.space.complete({})
         # updated=(): copying fn.__dict__ could overwrite this factory's own attributes.
         functools.update_wrapper(self, fn, updated=())
@@ -227,10 +227,9 @@ def _check_not_markers(factory: TunableFactory, given: Mapping[str, Any], kind: 
 
 
 def _fill_defaults(
-    markers: Mapping[str, Marker], fn_name: str, parameters: Mapping[str, inspect.Parameter]
+    markers: Mapping[str, Marker], fn_name: str, parameters: Mapping[str, inspect.Parameter], takes_kwargs: bool
 ) -> dict[str, Marker]:
     """Check each name against the function's parameters; a marker without `default=` takes the parameter's."""
-    takes_kwargs = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
     filled: dict[str, Marker] = {}
     for name, marker in markers.items():
         parameter = parameters.get(name)
@@ -249,15 +248,4 @@ def _with_parameter_default(name: str, marker: Marker, default: Any) -> Marker:
     """`marker` with the parameter's `default` filled in, if the marker has none; raises `TypeError`."""
     if not isinstance(marker, _ValueMarker):
         return marker  # components, choices, tools, and files take no parameter default
-    if isinstance(marker, OneOf):
-        # OneOf marks "no default" with _UNSET, because None can be one of its options.
-        if marker.default is not _UNSET:
-            return marker
-    elif marker.default is not None:
-        return marker
-    elif default is None:
-        raise TypeError(f"{name}: the parameter's default is None; pass default= to {type(marker).__name__}")
-    try:
-        return marker._with_default(default)
-    except TypeError as error:
-        raise TypeError(f"{name}: the parameter's default {default!r} doesn't fit its marker: {error}") from error
+    return _fill_default(marker, default, where=name, source="the parameter's default")

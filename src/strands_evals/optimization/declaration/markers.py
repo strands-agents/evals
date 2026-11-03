@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 import math
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, TypeVar, cast
 
 from ...types.optimization import Value
 
@@ -31,6 +31,10 @@ class _ValueMarker(_Marker):
     """
 
     default: Any
+
+    def _has_default(self) -> bool:
+        """Whether `default=` was given or filled in; None means unset."""
+        return self.default is not None
 
     def _with_default(self, default: Any) -> _ValueMarker:
         """A copy with `default` filled in, re-running the declaration checks on it; raises `TypeError`."""
@@ -122,6 +126,9 @@ class OneOf(_ValueMarker):
             raise TypeError(f"OneOf default {default!r} is not one of {list(options)!r}")
         self.options = options
         self.default = default
+
+    def _has_default(self) -> bool:
+        return self.default is not _UNSET  # None can be an option, so unset is _UNSET
 
     def _with_default(self, default: Any) -> OneOf:
         return OneOf(*self.options, default=default)
@@ -304,6 +311,9 @@ def choice(*alternatives: Component, **labeled: Component | Any) -> Choice:
     )
 
 
+# ---- Private helpers (shared with space.py, tools.py, tunable.py) ------------
+
+
 def _is_option(value: Any, options: Sequence[Any]) -> bool:
     """Whether `value` is one of `options`, comparing types too (so `True` is not the option `1`)."""
     return any(type(option) is type(value) and option == value for option in options)
@@ -359,20 +369,42 @@ def _with_constructor_default(
 
     A `OneOf` with neither takes its first option, so every returned marker has a default.
     """
-    if marker.default is not (_UNSET if isinstance(marker, OneOf) else None):
+    if marker._has_default():
         return marker
     parameter = (parameters or {}).get(key)
     if parameter is None or parameter.default is inspect.Parameter.empty:
         if isinstance(marker, OneOf):
             return marker._with_default(marker.options[0])
         raise TypeError(f"component({name}): {key}= has no default; pass default= or give the parameter one")
-    if parameter.default is None and not isinstance(marker, OneOf):
-        # As under tunable: None is never an Int / Float value, so the probe would build with a value
-        # the space rejects. A OneOf may list None as an option, so it goes through the check below.
-        raise TypeError(
-            f"component({name}): the constructor's default for {key}= is None; pass default= to {type(marker).__name__}"
-        )
+    return _fill_default(
+        marker, parameter.default, where=f"component({name})", source=f"the constructor's default for {key}="
+    )
+
+
+_ValueMarkerT = TypeVar("_ValueMarkerT", bound=_ValueMarker)
+
+
+def _fill_default(marker: _ValueMarkerT, default: Any, *, where: str, source: str) -> _ValueMarkerT:
+    """`marker` with `default` (a constructor's or a wrapped function's) filled in, if it has none.
+
+    Shared by `component()` and `tunable`. None is never an `Int` / `Float` / `TextValue` value, so it
+    raises asking for `default=` instead of building with a value the space rejects; a `OneOf` may
+    list None as an option, so it goes through the option check.
+
+    Args:
+        marker: The marker to fill.
+        default: The source's default.
+        where: Error prefix, e.g. `"component(Window)"` or the declared name.
+        source: What `default` is, e.g. `"the parameter's default"`.
+
+    Raises:
+        TypeError: `default` is None for a marker that can't take it, or doesn't fit the marker.
+    """
+    if marker._has_default():
+        return marker
+    if default is None and not isinstance(marker, OneOf):
+        raise TypeError(f"{where}: {source} is None; pass default= to {type(marker).__name__}")
     try:
-        return marker._with_default(parameter.default)
+        return cast(_ValueMarkerT, marker._with_default(default))
     except TypeError as error:
-        raise TypeError(f"component({name}): the default of {key}= doesn't fit its marker: {error}") from error
+        raise TypeError(f"{where}: {source} {default!r} doesn't fit its marker: {error}") from error
