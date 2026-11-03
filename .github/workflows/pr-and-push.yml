@@ -2,10 +2,10 @@ name: Pull Request and Push Action
 
 on:
   pull_request:  # Safer than pull_request_target for untrusted code
-    branches: [ main ]
+    branches: [ main, workstream/optimizer-workflow ]
     types: [opened, synchronize, reopened, ready_for_review]
   push:
-    branches: [ main ]  # Also run on direct pushes to main
+    branches: [ main, workstream/optimizer-workflow ]  # Also run on direct pushes to these branches
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
