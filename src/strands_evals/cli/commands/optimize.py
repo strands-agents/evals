@@ -9,8 +9,10 @@ import contextlib
 import hashlib
 import importlib.metadata
 import json
+import math
+import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +26,16 @@ from ...types.evaluation import EvaluationOutput
 from ...types.optimization import CaseSplit, Value
 from .._common import EXIT_BAD_INPUT, EXIT_OK, EXIT_RUNTIME_ERROR, emit_error
 from .._optimize.apply import apply_candidate
-from .._optimize.engine import REDRAWS, SCHEDULE, SELECTION, EvaluatorRow, InterimOptimizer, RolloutOutput, Settings
+from .._optimize.engine import (
+    REDRAWS,
+    SCHEDULE,
+    SELECTION,
+    SERVICE_ERROR_CODES,
+    EvaluatorRow,
+    InterimOptimizer,
+    RolloutOutput,
+    Settings,
+)
 from .._optimize.proposers import FileProposer, Proposer, RandomProposer, ReflectionProposer, load_proposal_file
 from .._optimize.record import RUNS_DIRECTORY, SCHEMA_VERSION, RunDirectory, canonical_json, check_name
 from .._optimize.scoring import CrashScore, Criteria, MetricRegistry, build_objective, require_optimization_extra
@@ -69,16 +80,19 @@ COMPARED_ON_RESUME = (
 )
 # An external runner reports provider and network failures only as text, so these markers mark them for a re-run.
 TRANSIENT_RUNNER_MARKERS = (
+    *SERVICE_ERROR_CODES,
     "throttl",
     "too many requests",
     "rate exceeded",
     "serviceunavailable",
     "service unavailable",
-    "internalserverexception",
     "modelnotready",
     "econnreset",
+    "econnrefused",
+    "enotfound",
     "etimedout",
     "eai_again",
+    "socket hang up",
     "connection reset",
     "connection refused",
 )
@@ -86,9 +100,8 @@ _POSITIVE = ("max_rollouts", "max_iterations", "finalists", "runs_per_candidate"
 
 
 def _run(args: argparse.Namespace) -> int:
-    # Project source and runner output must not corrupt machine-readable stdout.
     try:
-        with contextlib.redirect_stdout(sys.stderr):
+        with _stdout_to_stderr():
             result = _apply(args) if args.apply else _optimize(args)
     except (ValueError, OSError) as exc:
         emit_error(str(exc))
@@ -98,6 +111,25 @@ def _run(args: argparse.Namespace) -> int:
         return EXIT_RUNTIME_ERROR
     sys.stdout.write(json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False) + "\n")
     return EXIT_OK
+
+
+@contextlib.contextmanager
+def _stdout_to_stderr() -> Iterator[None]:
+    """Send everything written to stdout, by Python or by child processes, to stderr; stdout gets only the JSON."""
+    sys.stdout.flush()
+    try:
+        saved = os.dup(1)
+        os.dup2(2, 1)
+    except OSError:
+        saved = None
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            yield
+    finally:
+        sys.stderr.flush()
+        if saved is not None:
+            os.dup2(saved, 1)
+            os.close(saved)
 
 
 def _apply(args: argparse.Namespace) -> dict[str, Any]:
@@ -221,9 +253,12 @@ def _crash_score(args: argparse.Namespace, saved: Mapping[str, Any]) -> CrashSco
     if text in ("worst", "none"):
         return "worst" if text == "worst" else None
     try:
-        return float(text)
+        value = float(text)
     except ValueError as exc:
         raise ValueError(f"--crash-score must be worst, none, or a number, got {text!r}") from exc
+    if not math.isfinite(value):
+        raise ValueError(f"--crash-score must be a finite number, got {text!r}")
+    return value
 
 
 def _proposers(args: argparse.Namespace, space: CliSpace, seed: int, *, required: bool) -> list[Proposer]:
@@ -244,6 +279,11 @@ def _proposers(args: argparse.Namespace, space: CliSpace, seed: int, *, required
 def _settings(args: argparse.Namespace, cases: Sequence[Case], seed: int, saved: Mapping[str, Any]) -> Settings:
     if saved:
         budget = saved["budget"]
+        if args.max_rollouts is not None and args.max_rollouts < budget["max_rollouts"]:
+            raise ValueError(
+                f"--max-rollouts on resume must be at least the saved {budget['max_rollouts']}: "
+                "a resume can only move where the search stops"
+            )
         return Settings(
             split=CaseSplit.model_validate(saved["split"]["cases"]),
             budget=Budget(

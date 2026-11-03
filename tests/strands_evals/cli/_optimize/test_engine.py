@@ -11,9 +11,9 @@ from strands_evals.cli._optimize.engine import (
     SetupError,
     classify,
 )
-from strands_evals.cli._optimize.proposers import FileProposer, RandomProposer
+from strands_evals.cli._optimize.proposers import FileProposer, ProposalBatch, RandomProposer
 from strands_evals.cli._optimize.record import RunDirectory
-from strands_evals.cli._optimize.scoring import Criteria, MetricRegistry, build_objective
+from strands_evals.cli._optimize.scoring import Criteria, MetricRegistry, build_objective, zero_usage
 from strands_evals.cli._optimize.space import CliSpace
 from strands_evals.cli._optimize.splits import assign_split
 from strands_evals.optimization.declaration.space import ParamInfo
@@ -73,11 +73,12 @@ def optimizer(
     cases=CASES,
     evaluator=None,
     space_=None,
+    crash_score="worst",
 ):
     return InterimOptimizer(
         space=space_ or space(tmp_path),
         cases=cases,
-        criteria=Criteria(build_objective([], REGISTRY), REGISTRY),
+        criteria=Criteria(build_objective([], REGISTRY), REGISTRY, crash_score),
         settings=Settings(
             split=split,
             budget=Budget(max_rollouts=budget, max_iterations=iterations),
@@ -209,25 +210,166 @@ def test_records_invalid_and_duplicate_patches_without_spending(tmp_path):
     assert result["rollouts_spent"] == 4 + 3 + 3
 
 
-class Failing:
+class Scripted:
     name, kind, keys = "text", "Reflection", ("prompt",)
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.calls = 0
 
     def config(self):
         return {}
 
     def propose(self, context):
-        raise RuntimeError("model unavailable")
+        self.calls += 1
+        reply = self.replies.pop(0) if self.replies else []
+        if isinstance(reply, BaseException):
+            raise reply
+        return ProposalBatch([Patch(updates={"prompt": text}, rationale="") for text in reply], zero_usage())
 
 
-def test_a_proposer_error_stops_the_search_and_still_runs_the_end_phase(tmp_path):
-    table = {"base": dict.fromkeys(("train", "validation", "test"), 0.5)}
+@pytest.fixture
+def no_backoff(monkeypatch):
+    monkeypatch.setattr("strands_evals.cli._optimize.engine.time.sleep", lambda seconds: None)
 
-    result = optimizer(tmp_path, [Failing()], scorer(table)).run()
 
-    assert result["stop_reason"] == "proposer_error"
-    assert result["improved"] is False
+def test_an_infrastructure_error_after_the_retries_stops_with_proposer_error(tmp_path, no_backoff):
+    table = table_of(base=0.5)
+    proposer = Scripted(*[ModelThrottledException("slow down")] * 4)
+
+    result = optimizer(tmp_path, [proposer], scorer(table)).run()
+
+    assert result["stop_reason"] == "proposer_error" and result["improved"] is False
+    assert proposer.calls == 4
     names = [event["event"] for event in events(tmp_path)]
-    assert "proposer_retry" in names and "proposer_error" in names
+    assert names.count("proposer_retry") == 3 and names.count("proposer_error") == 1
+
+
+def test_another_proposer_error_counts_as_an_empty_reply(tmp_path, no_backoff):
+    proposer = Scripted(*[RuntimeError("bad model id")] * 4, ["better"])
+
+    result = optimizer(tmp_path, [proposer], scorer(table_of(base=0.2, better=0.9))).run()
+
+    assert result["improved"] is True
+    invalid = [e for e in events(tmp_path) if e["event"] == "invalid"]
+    assert invalid[0]["reason"] == "proposer error: RuntimeError: bad model id"
+
+
+def test_a_proposer_error_mid_iteration_keeps_the_scored_candidate_and_can_be_replayed(tmp_path, no_backoff):
+    table = table_of(base=0.2, better=0.9)
+    proposer = Scripted(["better", "better"], *[ModelThrottledException("slow down")] * 4)
+
+    first = optimizer(tmp_path, [proposer], scorer(table), per_iteration=2).run()
+
+    assert first["stop_reason"] == "proposer_error"
+    assert first["improved"] is True and len(first["iterations"]) == 1
+    replay = optimizer(tmp_path, [Scripted()], scorer(table), per_iteration=2)
+    replay.restore(events(tmp_path))
+    assert replay.run() == first
+
+
+def test_an_empty_reply_is_asked_again(tmp_path):
+    proposer = Scripted([], ["better"])
+
+    result = optimizer(tmp_path, [proposer], scorer(table_of(base=0.2, better=0.9))).run()
+
+    assert result["improved"] is True
+    assert result["iterations"][0]["proposals"][0]["outcome"] == "feasible"
+
+
+def test_an_option_that_always_fails_does_not_keep_the_search_alive(tmp_path):
+    mode = CliSpace(
+        params=(ParamInfo(key="mode", name="mode", kind="one_of", default="a", options=("a", "b")),), root=tmp_path
+    )
+    calls = {"count": 0}
+
+    def crashes_on_b(values, case):
+        calls["count"] += 1
+        if values["mode"] == "b":
+            raise ValueError("b always crashes")
+        return RolloutOutput(output=0.5, trajectory=None)
+
+    result = optimizer(
+        tmp_path, [RandomProposer(keys=("mode",), seed=1)], crashes_on_b, space_=mode, crash_score=None
+    ).run()
+
+    assert result["stop_reason"] == "exhausted"
+    assert len(result["iterations"]) <= 3
+    assert calls["count"] == 4 + 4 + 3 + 3
+    assert not any(event.get("rescore") for event in events(tmp_path) if event["event"] == "propose")
+
+
+def test_a_second_resume_does_not_bring_back_a_discarded_candidate(tmp_path):
+    table = table_of(base=0.1, lost=0.99, x=0.5, kept=0.6, kept2=0.55, z=0.3, z2=0.3, k3=0.4, k4=0.45)
+    replies = [["lost", "x"], ["kept", "kept2"], ["z", "z2"], ["k3", "k4"]]
+    state = {"kill": "x"}
+
+    class Varying(Scripted):
+        def propose(self, context):
+            texts = replies.pop(0) if replies else []
+            return ProposalBatch([Patch(updates={"prompt": text}, rationale="") for text in texts], zero_usage())
+
+    def killed(values, case):
+        if values["prompt"] == state["kill"] and case.name == SPLIT.train[-1]:
+            raise KeyboardInterrupt
+        return scorer(table)(values, case)
+
+    def resume():
+        engine = optimizer(tmp_path, [Varying()], killed, per_iteration=2, iterations=2)
+        engine.restore(events(tmp_path))
+        _run(tmp_path).events.append("resume", engine.iteration, spent=engine.spent)
+        return engine
+
+    with pytest.raises(KeyboardInterrupt):
+        optimizer(tmp_path, [Varying()], killed, per_iteration=2, iterations=2).run()
+    state["kill"] = "z"
+    with pytest.raises(KeyboardInterrupt):
+        resume().run()
+    state["kill"] = "never"
+
+    result = resume().run()
+
+    proposed = [p["candidate_id"] for record in result["iterations"] for p in record["proposals"]]
+    assert result["best"]["values"]["prompt"] == "kept"
+    assert result["validation"]["champion_id"] in proposed
+    assert len(proposed) == 4
+
+
+def test_a_fully_measured_baseline_needs_no_new_budget_on_resume(tmp_path):
+    table = table_of(base=0.2, better=0.9)
+    calls = {"count": 0}
+
+    def killed(values, case):
+        calls["count"] += 1
+        if calls["count"] == 5:
+            raise KeyboardInterrupt
+        return scorer(table)(values, case)
+
+    with pytest.raises(KeyboardInterrupt):
+        optimizer(tmp_path, [patches({"prompt": "better"})], killed).run()
+    resumed = optimizer(tmp_path, [patches({"prompt": "better"})], killed, budget=4)
+    resumed.restore(events(tmp_path))
+
+    result = resumed.run()
+
+    assert result["stop_reason"] == "budget"
+    assert result["test_reason"] == "the budget cannot cover the test report"
+
+
+def test_a_storage_error_is_not_reported_as_a_proposer_error(tmp_path, monkeypatch):
+    calls = {"count": 0}
+    original = RunDirectory.save_transcript
+
+    def failing(self, trajectory):
+        calls["count"] += 1
+        if calls["count"] == 6:
+            raise OSError("disk full")
+        return original(self, trajectory)
+
+    monkeypatch.setattr(RunDirectory, "save_transcript", failing)
+
+    with pytest.raises(OSError, match="disk full"):
+        optimizer(tmp_path, [patches({"prompt": "better"})], scorer(table_of(base=0.2, better=0.9))).run()
 
 
 def test_raises_a_setup_error_when_every_baseline_trial_fails(tmp_path):

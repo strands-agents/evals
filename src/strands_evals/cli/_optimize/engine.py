@@ -42,10 +42,12 @@ from .space import CliSpace, content_id
 NO_SCORE_MODEL = "no score model yet: ranked by measured means"
 OUTPUT_PREVIEW_CHARS = 2000
 REDRAWS = 3
+PROPOSER_RETRIES = 3
+PROPOSER_BACKOFF_SECONDS = 2.0
 SCHEDULE = "joint"
 SELECTION = "top_ranked"
 SCORED = ("feasible", "infeasible", "ineligible")
-_SERVICE_ERROR_CODES = frozenset(
+SERVICE_ERROR_CODES = frozenset(
     {
         "internalserverexception",
         "serviceunavailableexception",
@@ -83,6 +85,15 @@ _TRANSPORT_ERRORS = _transport_errors()
 
 class SetupError(RuntimeError):
     """The baseline cannot be measured on train, so the run stops before the search."""
+
+
+class ProposerFailed(RuntimeError):
+    """A proposer failed with an infrastructure error after its retries; the search stops with `proposer_error`."""
+
+    def __init__(self, message: str, usage: Usage | None = None):
+        """Keep what the block spent before it failed, for `search_cost`."""
+        super().__init__(message)
+        self.usage = usage or zero_usage()
 
 
 @dataclass(frozen=True)
@@ -161,7 +172,7 @@ def classify(error: BaseException) -> TrialStatus:
     response = getattr(cause, "response", None)
     error_info = response.get("Error") if isinstance(response, dict) else None
     code = error_info.get("Code") if isinstance(error_info, dict) else None
-    if isinstance(code, str) and code.lower() in _SERVICE_ERROR_CODES:
+    if isinstance(code, str) and code.lower() in SERVICE_ERROR_CODES:
         return TrialStatus.INFRASTRUCTURE_INVALID
     return TrialStatus.AGENT_FAILURE
 
@@ -237,10 +248,23 @@ class InterimOptimizer:
         Raises:
             SetupError: The run stopped at setup, so it cannot continue.
         """
-        completed = max((e["record"]["iteration"] for e in events if e["event"] == "iteration_end"), default=0)
+        open_iteration: list[Mapping[str, Any]] = []
         for event in events:
-            self._restore_event(event, completed)
-        self._iteration = completed
+            kind = event["event"]
+            if kind == "propose" and not event.get("rescore"):
+                if event["iteration"] == 0:
+                    self._restore_candidate(event)
+                else:
+                    open_iteration.append(event)
+            elif kind == "iteration_end":
+                for proposed in open_iteration:
+                    self._restore_candidate(proposed)
+                open_iteration = []
+                self._restore_iteration(event)
+            elif kind == "resume":
+                open_iteration = []
+            else:
+                self._restore_event(event)
         self._spent = sum(r.rollouts + sum(a.rollouts for a in r.previous_attempts) for r in self._trials.values())
         for candidate_id in self._candidates:
             self._train[candidate_id] = self._split_scores(candidate_id, "train")
@@ -258,25 +282,29 @@ class InterimOptimizer:
             self._progress(f"search stopped: {self._stop}")
         return self._end_phase()
 
-    def _restore_event(self, event: Mapping[str, Any], completed: int) -> None:
+    def _restore_candidate(self, event: Mapping[str, Any]) -> None:
+        self._candidates[event["candidate_id"]] = Candidate(
+            id=event["candidate_id"],
+            number=event["number"],
+            values=dict(event["values"]),
+            parent_id=event["parent_id"],
+            origin=event["origin"],
+            rationale=event["rationale"],
+            changed_keys=tuple(event["changed_keys"]),
+        )
+
+    def _restore_iteration(self, event: Mapping[str, Any]) -> None:
+        record = IterationRecord.model_validate(event["record"])
+        self._iterations.append(record)
+        self._iteration = record.iteration
+        self._produced.update(event["produced"])
+        self._search_cost = add_usage(self._search_cost, Usage.model_validate(event["usage"]))
+
+    def _restore_event(self, event: Mapping[str, Any]) -> None:
         kind = event["event"]
         if kind == "trial":
             record = self._load_trial(event["record"])
             self._trials[(record.candidate_id, record.case_name, record.run_index)] = record
-        elif kind == "propose" and event["iteration"] <= completed and not event.get("rescore"):
-            self._candidates[event["candidate_id"]] = Candidate(
-                id=event["candidate_id"],
-                number=event["number"],
-                values=dict(event["values"]),
-                parent_id=event["parent_id"],
-                origin=event["origin"],
-                rationale=event["rationale"],
-                changed_keys=tuple(event["changed_keys"]),
-            )
-        elif kind == "iteration_end" and event["record"]["iteration"] <= completed:
-            self._iterations.append(IterationRecord.model_validate(event["record"]))
-            self._produced.update(event["produced"])
-            self._search_cost = add_usage(self._search_cost, Usage.model_validate(event["usage"]))
         elif kind == "stop":
             if event["reason"] == "setup":
                 raise SetupError(f"{event['message']}; start a new run")
@@ -326,15 +354,21 @@ class InterimOptimizer:
             parent = self._select_parent()
             outcomes: list[ProposalOutcome] = []
             usage = zero_usage()
+            failed = False
             for block in self._proposers:
                 try:
                     produced, spent = self._turn(block, parent, outcomes)
-                except Exception:
-                    return "proposer_error"
+                except ProposerFailed as error:
+                    failed, spent = True, error.usage
+                    produced = False
                 self._produced[block.name] = produced
                 usage = add_usage(usage, spent)
+                if failed:
+                    break
             self._search_cost = add_usage(self._search_cost, usage)
             self._end_iteration(parent, outcomes, usage)
+            if failed:
+                return "proposer_error"
 
     def _should_stop(self) -> StopReason | None:
         per_candidate = len(self._settings.split.train) * self._settings.runs_per_candidate
@@ -360,15 +394,22 @@ class InterimOptimizer:
         """One block's turn: ask, then ask again after an unusable patch, up to `REDRAWS` times."""
         usage, produced, wanted = zero_usage(), False, self._settings.proposals_per_iteration
         for redraw in range(REDRAWS + 1):
-            batch = self._propose(block, parent, redraw, wanted, consumed=self._consumed(block, outcomes))
+            try:
+                batch = self._propose(block, parent, redraw, wanted, consumed=self._consumed(block, outcomes))
+            except ProposerFailed as error:
+                error.usage = add_usage(usage, error.usage)
+                raise
             usage = add_usage(usage, batch.usage)
             for problem in batch.problems:
                 self._log("invalid", block=block.name, redraw=redraw, updates={}, reason=problem)
+                self._progress(f"{block.name} proposer: {problem}")
+            known = set(self._candidates)
             results = [self._handle(patch, parent, block, redraw) for patch in batch.patches]
             outcomes += results
-            produced = produced or any(result.outcome in SCORED for result in results)
-            wanted -= sum(result.outcome in (*SCORED, "unscored") for result in results)
-            if wanted <= 0 or self._unaffordable or not (batch.patches or batch.problems):
+            fresh = [r for r in results if r.candidate_id not in known and r.outcome in SCORED]
+            produced = produced or bool(fresh)
+            wanted -= len(fresh) + sum(result.outcome == "unscored" for result in results)
+            if wanted <= 0 or self._unaffordable:
                 break
         return produced, usage
 
@@ -388,15 +429,27 @@ class InterimOptimizer:
             consumed=consumed,
             feedback=self._feedback(parent) if block.kind == "Reflection" else {},
         )
-        for attempt in range(2):
+        for attempt in range(PROPOSER_RETRIES + 1):
             try:
                 return block.propose(context)
             except Exception as error:
-                event = "proposer_retry" if attempt == 0 else "proposer_error"
-                self._log(event, block=block.name, redraw=redraw, error_type=type(error).__name__, error=str(error))
-                if attempt == 1:
-                    self._progress(f"proposer {block.name} failed: {type(error).__name__}: {error}")
-                    raise
+                infrastructure = classify(error) is TrialStatus.INFRASTRUCTURE_INVALID
+                fields = {
+                    "block": block.name,
+                    "redraw": redraw,
+                    "error_type": type(error).__name__,
+                    "error": str(error),
+                }
+                if attempt < PROPOSER_RETRIES:
+                    self._log("proposer_retry", **fields)
+                    if infrastructure:
+                        time.sleep(PROPOSER_BACKOFF_SECONDS * (attempt + 1))
+                    continue
+                if not infrastructure:
+                    return ProposalBatch([], zero_usage(), (f"proposer error: {type(error).__name__}: {error}",))
+                self._log("proposer_error", **fields)
+                self._progress(f"proposer {block.name} failed: {type(error).__name__}: {error}")
+                raise ProposerFailed(str(error)) from error
         raise AssertionError("unreachable")
 
     def _feedback(self, parent: Candidate) -> dict[str, Any]:
@@ -432,7 +485,8 @@ class InterimOptimizer:
             return _outcome(None, None, parent, block, patch, "invalid", None)
         candidate_id = content_id(values)
         known = self._candidates.get(candidate_id)
-        if known is not None and self._train[candidate_id].eligible:
+        train = self._settings.split.train
+        if known is not None and (self._train[candidate_id].eligible or not self._pending(candidate_id, train)):
             self._log("duplicate", block=block.name, redraw=redraw, candidate_id=candidate_id)
             return _outcome(candidate_id, known.number, parent, block, patch, "duplicate", self._objective(known.id))
         changed = tuple(key for key in values if values[key] != parent.values[key])
@@ -617,7 +671,7 @@ class InterimOptimizer:
         total = 0
         for candidate in candidates:
             pending = len(self._pending(candidate.id, names))
-            if self._can_afford(total + pending, split):
+            if pending == 0 or self._can_afford(total + pending, split):
                 chosen.append(candidate)
                 total += pending
         for candidate in chosen:

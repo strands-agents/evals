@@ -148,6 +148,7 @@ def test_resume_rejects_a_changed_objective(project, capsys):
         (["--objective", "maximize:tokens"], "not measured in project mode"),
         (["--max-rollouts", "10"], "below the 22 rollouts"),
         (["--crash-score", "bad"], "--crash-score"),
+        (["--crash-score", "nan"], "finite number"),
         (["--name", "Bad Name"], "--name"),
     ],
 )
@@ -272,6 +273,8 @@ def test_a_factory_without_defaults_skips_the_instructions_check(project, capsys
     ("runner", "message", "raised"),
     [
         ("/bin/runner", "Runner failed (1): ThrottlingException: slow down", InfrastructureError),
+        ("/bin/runner", "Runner failed (1): ModelStreamErrorException", InfrastructureError),
+        ("/bin/runner", "Runner failed (1): connect ECONNREFUSED 127.0.0.1:443", InfrastructureError),
         ("/bin/runner", "Runner failed (1): TypeError in the agent", ProjectError),
         (None, "Project does not support these runtime overrides", ProjectError),
     ],
@@ -282,3 +285,27 @@ def test_runner_text_marks_transient_failures_for_a_rerun(runner, message, raise
 
     with pytest.raises(raised):
         optimize._rollout(fake)({"instructions": "x"}, Case(name="one", input=["hi"]))
+
+
+def test_resume_rejects_a_smaller_budget(project, capsys):
+    assert main(arguments(project, "--max-rollouts", "100")) == 0
+    run_dir = json.loads(capsys.readouterr().out)["run_dir"]
+
+    assert main(arguments(project, "--resume", run_dir, "--max-rollouts", "60")) == 2
+    assert "at least the saved 100" in capsys.readouterr().err
+
+
+def test_stdout_carries_only_the_json_when_the_agent_writes_to_file_descriptor_1(project, capfd):
+    source = (project / "agent" / "agent.py").read_text()
+    noisy = source.replace(
+        "        def __call__(self, prompt):\n",
+        "        def __call__(self, prompt):\n            __import__('os').write(1, b'noise from a tool\\n')\n",
+    )
+    assert noisy != source
+    (project / "agent" / "agent.py").write_text(noisy)
+
+    assert main(arguments(project)) == 0
+
+    captured = capfd.readouterr()
+    assert json.loads(captured.out)["improved"] is True
+    assert "noise from a tool" in captured.err
