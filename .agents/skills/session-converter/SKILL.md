@@ -1,10 +1,10 @@
 ---
-name: session-transformer
+name: session-converter
 description: Use when the user wants to turn past local agent conversations (Codex, Claude Code, Kiro CLI, Strands CLI, or any other harness) into strands-evals experiments. Locates the relevant session files on the local filesystem and extracts their episodes (turns with a focused user goal). Skip for traces stored in trace providers (CloudWatch, Langfuse, OpenSearch).
 version: 0.1.0
 ---
 
-# session-transformer
+# session-converter
 
 Converts recorded local agent sessions into a strands-evals experiment.
 
