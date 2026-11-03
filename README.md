@@ -129,6 +129,11 @@ strands-evals run experiments/customer_service.json \
   --agent my_pkg.agents:build_agent \
   --display
 
+# Run a single case (by name or 0-based index) against all of the experiment's evaluators
+strands-evals run experiments/customer_service.json \
+  --agent my_pkg.agents:build_agent \
+  --case refund_request
+
 # One-off ad-hoc run with no experiment file
 strands-evals run \
   --input "What is the capital of France?" \
