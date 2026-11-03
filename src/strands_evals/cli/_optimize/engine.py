@@ -1,13 +1,16 @@
 """The interim loop: search on train, pick once on validation, report test only.
 
 It mirrors the planned `Optimizer` with measured means in place of the score model, `TopRanked` selection, and
-an `Alternate` schedule over the proposers. The event names and records follow `record/events.py` in the plan.
+the `Joint` schedule. The event names and records follow `record/events.py` in the plan.
 """
 
+import importlib
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
+
+from strands.types.exceptions import EventLoopException
 
 from ...case import Case
 from ...optimization.execution.status import InfrastructureError
@@ -38,22 +41,44 @@ from .space import CliSpace, content_id
 
 NO_SCORE_MODEL = "no score model yet: ranked by measured means"
 OUTPUT_PREVIEW_CHARS = 2000
-SCORED_OUTCOMES = ("feasible", "infeasible", "ineligible")
-# Runner failures arrive as text, so transient provider and network errors are matched by message.
-_INFRASTRUCTURE_MARKERS = (
-    "throttl",
-    "too many requests",
-    "rate exceeded",
-    "serviceunavailable",
-    "service unavailable",
-    "internalserverexception",
-    "modelnotready",
-    "econnreset",
-    "etimedout",
-    "eai_again",
-    "connection reset",
-    "connection refused",
+REDRAWS = 3
+SCHEDULE = "joint"
+SELECTION = "top_ranked"
+SCORED = ("feasible", "infeasible", "ineligible")
+_SERVICE_ERROR_CODES = frozenset(
+    {
+        "internalserverexception",
+        "serviceunavailableexception",
+        "modelstreamerrorexception",
+        "modelnotreadyexception",
+        "throttlingexception",
+    }
 )
+_TRANSPORT_ERROR_NAMES = {
+    "botocore.exceptions": (
+        "ConnectTimeoutError",
+        "EndpointConnectionError",
+        "NoCredentialsError",
+        "ReadTimeoutError",
+        "ResponseStreamingError",
+        "ConnectionClosedError",
+    ),
+    "urllib3.exceptions": ("TimeoutError", "ProtocolError", "NewConnectionError"),
+}
+
+
+def _transport_errors() -> tuple[type[BaseException], ...]:
+    found: list[type[BaseException]] = []
+    for module_name, names in _TRANSPORT_ERROR_NAMES.items():
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        found += [error for name in names if isinstance(error := getattr(module, name, None), type)]
+    return tuple(found)
+
+
+_TRANSPORT_ERRORS = _transport_errors()
 
 
 class SetupError(RuntimeError):
@@ -121,21 +146,28 @@ class EvaluatorRow:
 RolloutFn = Callable[[Mapping[str, Value], Case], RolloutOutput]
 EvaluateFn = Callable[[Case, RolloutOutput], list[EvaluatorRow]]
 ProgressFn = Callable[[str], None]
+TrialKey = tuple[str, str, int]
 
 
 def classify(error: BaseException) -> TrialStatus:
-    """`infrastructure_invalid` for transient provider or network failures, else `agent_failure`."""
-    cause = getattr(error, "original_exception", None) or error
-    if isinstance(cause, InfrastructureError) or is_throttling_error(cause):
+    """The planned rules: unwrap event loop errors, then infrastructure, throttling, transport, and service codes."""
+    cause: BaseException = error
+    while isinstance(cause, EventLoopException) and isinstance(cause.original_exception, BaseException):
+        cause = cause.original_exception
+    if isinstance(cause, InfrastructureError) or isinstance(cause, _TRANSPORT_ERRORS):
         return TrialStatus.INFRASTRUCTURE_INVALID
-    text = str(cause).lower()
-    if any(marker in text for marker in _INFRASTRUCTURE_MARKERS):
+    if not isinstance(cause, EventLoopException) and is_throttling_error(cause):
+        return TrialStatus.INFRASTRUCTURE_INVALID
+    response = getattr(cause, "response", None)
+    error_info = response.get("Error") if isinstance(response, dict) else None
+    code = error_info.get("Code") if isinstance(error_info, dict) else None
+    if isinstance(code, str) and code.lower() in _SERVICE_ERROR_CODES:
         return TrialStatus.INFRASTRUCTURE_INVALID
     return TrialStatus.AGENT_FAILURE
 
 
 class InterimOptimizer:
-    """Run, resume, or replay one optimization run inside a `RunDirectory`."""
+    """Run, resume, or return again one optimization run inside a `RunDirectory`."""
 
     def __init__(
         self,
@@ -150,7 +182,11 @@ class InterimOptimizer:
         run: RunDirectory,
         progress: ProgressFn,
     ):
-        """Wire the loop; nothing runs until `run()`."""
+        """Wire the loop; nothing runs until `run()`.
+
+        Raises:
+            ValueError: No proposer, or the cases lack unique names.
+        """
         if not proposers:
             raise ValueError("the space needs at least one key with a proposer")
         if any(not case.name for case in cases) or len({case.name for case in cases}) != len(cases):
@@ -165,7 +201,7 @@ class InterimOptimizer:
         self._run = run
         self._progress = progress
         self._candidates: dict[str, Candidate] = {}
-        self._trials: dict[tuple[str, str, int], TrialRecord] = {}
+        self._trials: dict[TrialKey, TrialRecord] = {}
         self._train: dict[str, CandidateScores] = {}
         self._iterations: list[IterationRecord] = []
         self._produced: dict[str, bool] = {}
@@ -173,9 +209,27 @@ class InterimOptimizer:
         self._spent = 0
         self._iteration = 0
         self._stop: StopReason | None = None
-        self._finished = False
         self._unaffordable = False
-        self._replay = False
+        self._finalists: list[str] | None = None
+        self._validation: ValidationReport | None = None
+        self._test: TestReport | None = None
+        self._test_reason: str | None = None
+        self._test_done = False
+
+    @property
+    def spent(self) -> int:
+        """Rollouts spent so far, re-runs included."""
+        return self._spent
+
+    @property
+    def iteration(self) -> int:
+        """The last finished iteration (0 = setup and the baseline)."""
+        return self._iteration
+
+    @property
+    def finished(self) -> bool:
+        """Whether the end phase wrote its test event."""
+        return self._test_done
 
     def restore(self, events: Sequence[Mapping[str, Any]]) -> None:
         """Rebuild the state up to the last `iteration_end`; a killed iteration is discarded and runs again.
@@ -197,11 +251,8 @@ class InterimOptimizer:
         Raises:
             SetupError: The baseline cannot be measured on train.
         """
-        if self._finished:
-            self._replay = True
-        elif self._stop is None:
-            if not self._candidates:
-                self._score_baseline()
+        if not self._test_done and self._stop is None:
+            self._ensure_baseline()
             self._stop = self._search()
             self._log("stop", reason=self._stop, message=f"search stopped: {self._stop}")
             self._progress(f"search stopped: {self._stop}")
@@ -212,7 +263,7 @@ class InterimOptimizer:
         if kind == "trial":
             record = self._load_trial(event["record"])
             self._trials[(record.candidate_id, record.case_name, record.run_index)] = record
-        elif kind == "propose" and event["iteration"] <= completed:
+        elif kind == "propose" and event["iteration"] <= completed and not event.get("rescore"):
             self._candidates[event["candidate_id"]] = Candidate(
                 id=event["candidate_id"],
                 number=event["number"],
@@ -224,20 +275,35 @@ class InterimOptimizer:
             )
         elif kind == "iteration_end" and event["record"]["iteration"] <= completed:
             self._iterations.append(IterationRecord.model_validate(event["record"]))
-            self._produced[event["block"]] = not event["exhausted"]
+            self._produced.update(event["produced"])
             self._search_cost = add_usage(self._search_cost, Usage.model_validate(event["usage"]))
-        elif kind == "stop" and event["reason"] == "setup":
-            raise SetupError(f"{event['message']}; start a new run")
         elif kind == "stop":
+            if event["reason"] == "setup":
+                raise SetupError(f"{event['message']}; start a new run")
             self._stop = event["reason"]
-        elif kind == "test":
-            self._finished = True
+        else:
+            self._restore_end_phase(event)
 
-    def _score_baseline(self) -> None:
+    def _restore_end_phase(self, event: Mapping[str, Any]) -> None:
+        kind = event["event"]
+        if kind == "finalists":
+            self._finalists = list(event["candidate_ids"])
+        elif kind == "selected":
+            self._validation = ValidationReport.model_validate(event["report"])
+        elif kind == "test":
+            self._test = None if event["report"] is None else TestReport.model_validate(event["report"])
+            self._test_reason = event["reason"]
+            self._test_done = True
+
+    def _ensure_baseline(self) -> None:
+        if self._iteration > 0:
+            return
         values = self._space.baseline()
-        baseline = Candidate(content_id(values), 0, values, None, "baseline", "", ())
-        self._add(baseline)
-        scores = self._score(baseline, "train")
+        baseline = self._candidates.get(content_id(values))
+        if baseline is None:
+            baseline = Candidate(content_id(values), 0, values, None, "baseline", "", ())
+            self._add(baseline)
+        scores = self._score_all([baseline], "train")[baseline.id]
         records = self._records(baseline.id, self._settings.split.train)
         if scores is None or not scores.eligible or all(r.status is not TrialStatus.COMPLETED for r in records):
             message = self._setup_message(records)
@@ -247,10 +313,9 @@ class InterimOptimizer:
         self._progress(f"baseline: train objective {scores.objective:.4f}")
 
     def _setup_message(self, records: Sequence[TrialRecord]) -> str:
-        statuses = self._statuses(records)
         first = next((r for r in records if r.error), None)
         error = f"; first error: {first.error_type}: {first.error}" if first else ""
-        return f"the baseline cannot be measured on train (trial statuses: {statuses}){error}"
+        return f"the baseline cannot be measured on train (trial statuses: {self._statuses(records)}){error}"
 
     def _search(self) -> StopReason:
         while True:
@@ -258,15 +323,18 @@ class InterimOptimizer:
             if reason is not None:
                 return reason
             self._iteration += 1
-            block = self._proposers[(self._iteration - 1) % len(self._proposers)]
             parent = self._select_parent()
-            try:
-                batch = self._propose(block, parent)
-            except Exception:
-                return "proposer_error"
-            outcomes = [self._handle(patch, parent, block) for patch in batch.patches]
-            self._search_cost = add_usage(self._search_cost, batch.usage)
-            self._end_iteration(parent, block, outcomes, batch)
+            outcomes: list[ProposalOutcome] = []
+            usage = zero_usage()
+            for block in self._proposers:
+                try:
+                    produced, spent = self._turn(block, parent, outcomes)
+                except Exception:
+                    return "proposer_error"
+                self._produced[block.name] = produced
+                usage = add_usage(usage, spent)
+            self._search_cost = add_usage(self._search_cost, usage)
+            self._end_iteration(parent, outcomes, usage)
 
     def _should_stop(self) -> StopReason | None:
         per_candidate = len(self._settings.split.train) * self._settings.runs_per_candidate
@@ -281,45 +349,65 @@ class InterimOptimizer:
 
     def _select_parent(self) -> Candidate:
         parent = self._candidates[self._ranking()[0]]
-        self._log("select", parent_id=parent.id, strategy="TopRanked")
+        self._log("select", parent_id=parent.id, strategy=SELECTION)
         return parent
 
     def _ranking(self) -> list[str]:
         eligible = [cid for cid, s in self._train.items() if s.eligible and s.objective is not None]
         return sorted(eligible, key=lambda cid: (-(self._train[cid].objective or 0.0), self._candidates[cid].number))
 
-    def _propose(self, block: Proposer, parent: Candidate) -> ProposalBatch:
-        context = self._context(block, parent)
+    def _turn(self, block: Proposer, parent: Candidate, outcomes: list[ProposalOutcome]) -> tuple[bool, Usage]:
+        """One block's turn: ask, then ask again after an unusable patch, up to `REDRAWS` times."""
+        usage, produced, wanted = zero_usage(), False, self._settings.proposals_per_iteration
+        for redraw in range(REDRAWS + 1):
+            batch = self._propose(block, parent, redraw, wanted, consumed=self._consumed(block, outcomes))
+            usage = add_usage(usage, batch.usage)
+            for problem in batch.problems:
+                self._log("invalid", block=block.name, redraw=redraw, updates={}, reason=problem)
+            results = [self._handle(patch, parent, block, redraw) for patch in batch.patches]
+            outcomes += results
+            produced = produced or any(result.outcome in SCORED for result in results)
+            wanted -= sum(result.outcome in (*SCORED, "unscored") for result in results)
+            if wanted <= 0 or self._unaffordable or not (batch.patches or batch.problems):
+                break
+        return produced, usage
+
+    def _consumed(self, block: Proposer, current: Sequence[ProposalOutcome]) -> int:
+        done = [outcome for record in self._iterations for outcome in record.proposals]
+        return sum(outcome.origin == block.name for outcome in [*done, *current])
+
+    def _propose(self, block: Proposer, parent: Candidate, redraw: int, count: int, *, consumed: int) -> ProposalBatch:
+        context = ProposalContext(
+            space=self._space,
+            keys=block.keys,
+            parent=parent.values,
+            parent_number=parent.number,
+            count=count,
+            iteration=self._iteration,
+            redraw=redraw,
+            consumed=consumed,
+            feedback=self._feedback(parent) if block.kind == "Reflection" else {},
+        )
         for attempt in range(2):
             try:
                 return block.propose(context)
             except Exception as error:
                 event = "proposer_retry" if attempt == 0 else "proposer_error"
-                self._log(event, block=block.name, redraw=attempt, error_type=type(error).__name__, error=str(error))
+                self._log(event, block=block.name, redraw=redraw, error_type=type(error).__name__, error=str(error))
                 if attempt == 1:
                     self._progress(f"proposer {block.name} failed: {type(error).__name__}: {error}")
                     raise
         raise AssertionError("unreachable")
 
-    def _context(self, block: Proposer, parent: Candidate) -> ProposalContext:
-        consumed = sum(1 for r in self._iterations for outcome in r.proposals if outcome.origin == block.name)
-        return ProposalContext(
-            space=self._space,
-            keys=block.keys,
-            parent=parent.values,
-            parent_number=parent.number,
-            count=self._settings.proposals_per_iteration,
-            iteration=self._iteration,
-            consumed=consumed,
-            feedback=self._feedback(parent) if block.kind == "Reflection" else {},
-        )
-
     def _feedback(self, parent: Candidate) -> dict[str, Any]:
-        cases = []
-        for name in self._settings.split.train:
-            case = self._cases[name]
-            runs = [_run_feedback(record) for record in self._records(parent.id, [name])]
-            cases.append({"case": name, "input": case.input, "expected": case.expected_output, "runs": runs})
+        cases = [
+            {
+                "case": name,
+                "input": self._cases[name].input,
+                "runs": [_run_feedback(record) for record in self._records(parent.id, [name])],
+            }
+            for name in self._settings.split.train
+        ]
         others = [
             {
                 "version": self._candidates[cid].number,
@@ -332,7 +420,7 @@ class InterimOptimizer:
         ]
         return {"cases": cases, "other_versions": others}
 
-    def _handle(self, patch: Patch, parent: Candidate, block: Proposer) -> ProposalOutcome:
+    def _handle(self, patch: Patch, parent: Candidate, block: Proposer, redraw: int) -> ProposalOutcome:
         values = {**parent.values, **patch.updates}
         outside = sorted(set(patch.updates) - set(block.keys))
         try:
@@ -340,72 +428,78 @@ class InterimOptimizer:
                 raise ValueError(f"keys outside the {block.name} block: {', '.join(outside)}")
             self._space.validate(values)
         except ValueError as error:
-            self._log("invalid", block=block.name, redraw=0, updates=patch.updates, reason=str(error))
+            self._log("invalid", block=block.name, redraw=redraw, updates=patch.updates, reason=str(error))
             return _outcome(None, None, parent, block, patch, "invalid", None)
         candidate_id = content_id(values)
-        if candidate_id in self._candidates:
-            self._log("duplicate", block=block.name, redraw=0, candidate_id=candidate_id)
-            known = self._candidates[candidate_id]
+        known = self._candidates.get(candidate_id)
+        if known is not None and self._train[candidate_id].eligible:
+            self._log("duplicate", block=block.name, redraw=redraw, candidate_id=candidate_id)
             return _outcome(candidate_id, known.number, parent, block, patch, "duplicate", self._objective(known.id))
         changed = tuple(key for key in values if values[key] != parent.values[key])
-        candidate = Candidate(
+        candidate = known or Candidate(
             candidate_id, len(self._candidates), values, parent.id, block.name, patch.rationale, changed
         )
-        pending = len(self._missing(candidate_id, self._settings.split.train))
+        pending = len(self._pending(candidate_id, self._settings.split.train))
         if not self._can_afford(pending, "train"):
             self._unaffordable = True
-            self._log("unscored", candidate_id=candidate_id, pending=pending, remaining=self._remaining())
+            validation, test = self._settings.reserves()
+            remaining = self._remaining()
+            self._log(
+                "unscored", candidate_id=candidate_id, pending=pending, remaining=remaining, reserve=validation + test
+            )
             return _outcome(candidate_id, None, parent, block, patch, "unscored", None)
-        self._add(candidate)
-        scores = self._score(candidate, "train")
+        if known is None:
+            self._add(candidate)
+        else:
+            self._log_rescore(known)
+        scores = self._score_all([candidate], "train")[candidate_id]
         assert scores is not None
         label = self._label(candidate, scores)
         return _outcome(candidate_id, candidate.number, parent, block, patch, label.outcome, scores.objective)
 
-    def _end_iteration(
-        self, parent: Candidate, block: Proposer, outcomes: list[ProposalOutcome], batch: ProposalBatch
-    ) -> None:
+    def _end_iteration(self, parent: Candidate, outcomes: list[ProposalOutcome], usage: Usage) -> None:
         record = IterationRecord(
             iteration=self._iteration,
             parent_id=parent.id,
             round=None,
             role="inner",
-            blocks=[block.name],
+            blocks=[block.name for block in self._proposers],
             proposals=outcomes,
             rollouts_spent=self._spent,
         )
         self._iterations.append(record)
-        produced = any(outcome.outcome in SCORED_OUTCOMES for outcome in outcomes)
-        self._produced[block.name] = produced
         best = self._ranking()[0]
         self._log(
             "iteration_end",
             record=record.model_dump(mode="json"),
-            block=block.name,
-            exhausted=not produced,
+            exhausted=not any(self._produced.values()),
             best_after=best,
-            usage=batch.usage.model_dump(mode="json"),
+            produced=dict(self._produced),
+            usage=usage.model_dump(mode="json"),
         )
-        objective = self._objective(best)
         self._progress(
-            f"iteration {self._iteration} ({block.name}): {len(outcomes)} proposal(s), "
-            f"best train objective {objective:.4f} (candidate {self._candidates[best].number}), "
-            f"{self._spent} rollouts spent"
+            f"iteration {self._iteration}: {len(outcomes)} proposal(s), best train objective "
+            f"{self._objective(best):.4f} (candidate {self._candidates[best].number}), {self._spent} rollouts spent"
         )
 
     def _end_phase(self) -> dict[str, Any]:
         baseline = next(c for c in self._candidates.values() if c.origin == "baseline")
-        finalists = [cid for cid in self._ranking() if cid != baseline.id][: self._settings.finalists]
-        self._log("finalists", candidate_ids=finalists)
-        contenders = [baseline.id, *finalists]
-        validation = {cid: self._score(self._candidates[cid], "validation") for cid in contenders}
-        report = self._pick(baseline.id, contenders, validation)
-        self._log("selected", report=report.model_dump(mode="json"))
-        test, test_reason = self._test_report(report.champion_id, baseline.id)
-        self._log("test", report=None if test is None else test.model_dump(mode="json"), reason=test_reason, front={})
-        champion = self._candidates[report.champion_id]
-        self._progress(report.reason)
-        return self._result(baseline, champion, report, test, test_reason)
+        if self._finalists is None:
+            self._finalists = [cid for cid in self._ranking() if cid != baseline.id][: self._settings.finalists]
+            self._log("finalists", candidate_ids=self._finalists)
+        if self._validation is None:
+            contenders = [baseline.id, *self._finalists]
+            scores = self._score_all([self._candidates[cid] for cid in contenders], "validation")
+            self._validation = self._pick(baseline.id, contenders, scores)
+            self._log("selected", report=self._validation.model_dump(mode="json"))
+        if not self._test_done:
+            self._test, self._test_reason = self._test_report(self._validation.champion_id, baseline.id)
+            report = None if self._test is None else self._test.model_dump(mode="json")
+            self._log("test", report=report, reason=self._test_reason, front={})
+            self._test_done = True
+        self._progress(self._validation.reason)
+        champion = self._candidates[self._validation.champion_id]
+        return self._result(baseline, champion, self._validation, self._test, self._test_reason)
 
     def _pick(
         self, baseline_id: str, contenders: list[str], validation: Mapping[str, CandidateScores | None]
@@ -438,17 +532,15 @@ class InterimOptimizer:
         return f"candidate {number} highest on validation: {objectives[champion]:.4f} vs baseline {base_text}"
 
     def _test_report(self, champion_id: str, baseline_id: str) -> tuple[TestReport | None, str | None]:
-        names = self._settings.split.test
-        if not names:
+        if not self._settings.split.test:
             return None, "no test cases"
         ids = list(dict.fromkeys([champion_id, baseline_id]))
-        pending = sum(len(self._missing(cid, names)) for cid in ids)
-        if not self._can_afford(pending, "test"):
-            return None, "the budget cannot cover the test report"
-        scores = {cid: self._score(self._candidates[cid], "test") for cid in ids}
+        scores = self._score_all([self._candidates[cid] for cid in ids], "test")
         champion, base = scores[champion_id], scores[baseline_id]
-        assert champion is not None and base is not None
+        if champion is None or base is None:
+            return None, "the budget cannot cover the test report"
         metrics = self._criteria.goal_metrics
+        names = self._settings.split.test
         report = TestReport(
             champion_id=champion_id,
             baseline_id=baseline_id,
@@ -458,8 +550,8 @@ class InterimOptimizer:
                 m: paired_ratio(_by_case(champion, m), _by_case(base, m), can_be_negative=self._can_be_negative(m))
                 for m in metrics
             },
-            missing={cid: sum(name not in s.objective_by_case for name in names) for cid, s in scores.items() if s},
-            means={cid: measured(s) for cid, s in scores.items() if s is not None},
+            missing={cid: sum(name not in s.objective_by_case for name in names) for cid, s in _known(scores)},
+            means={cid: measured(s) for cid, s in _known(scores)},
         )
         return report, None
 
@@ -473,6 +565,8 @@ class InterimOptimizer:
     ) -> dict[str, Any]:
         diff = self._space.diff(baseline.values, champion.values)
         changed = self._space.changed_values(baseline.values, champion.values)
+        effects: dict[str, Any] = {"rows": [], "reason": NO_SCORE_MODEL}
+        self._run.save_effects(effects)
         diff_path, values_path = self._run.write_review("best", diff, changed)
         result = {
             "run_id": self._run.run_id,
@@ -486,7 +580,7 @@ class InterimOptimizer:
             "test_reason": test_reason,
             "front": [],
             "front_test": {},
-            "effects": {"rows": [], "reason": NO_SCORE_MODEL},
+            "effects": effects,
             "iterations": [record.model_dump(mode="json") for record in self._iterations],
             "rollouts_spent": self._spent,
             **self._costs(),
@@ -513,13 +607,37 @@ class InterimOptimizer:
             "retry_cost": retry.model_dump(mode="json"),
         }
 
-    def _score(self, candidate: Candidate, split: SplitName) -> CandidateScores | None:
+    def _score_all(self, candidates: Sequence[Candidate], split: SplitName) -> dict[str, CandidateScores | None]:
+        """Score candidates on a split: every first attempt, a judge pass, then infrastructure re-run passes.
+
+        A candidate is scored only when its first attempts fit the budget; re-runs use what the reserves leave.
+        """
         names = self._names(split)
-        pending = self._missing(candidate.id, names)
-        if not self._can_afford(len(pending), split):
-            return None
-        for name, run_index in pending:
-            self._trial(candidate, name, run_index, split)
+        chosen: list[Candidate] = []
+        total = 0
+        for candidate in candidates:
+            pending = len(self._pending(candidate.id, names))
+            if self._can_afford(total + pending, split):
+                chosen.append(candidate)
+                total += pending
+        for candidate in chosen:
+            for key in self._pending(candidate.id, names):
+                self._attempt(candidate, key, split)
+        for candidate in chosen:
+            for key in self._keys_with(candidate.id, names, TrialStatus.VERIFIER_INVALID):
+                self._rejudge(key, split)
+        for _ in range(self._settings.rerun_passes):
+            failed = TrialStatus.INFRASTRUCTURE_INVALID
+            retry = [(c, key) for c in chosen for key in self._keys_with(c.id, names, failed)]
+            for candidate, key in retry:
+                if not self._can_afford(1, split):
+                    break
+                self._attempt(candidate, key, split)
+        chosen_ids = {candidate.id for candidate in chosen}
+        return {c.id: self._finish_score(c, split) if c.id in chosen_ids else None for c in candidates}
+
+    def _finish_score(self, candidate: Candidate, split: SplitName) -> CandidateScores:
+        names = self._names(split)
         scores = self._split_scores(candidate.id, split)
         if split == "train":
             self._train[candidate.id] = scores
@@ -530,36 +648,69 @@ class InterimOptimizer:
             split=split,
             case_names=list(names),
             runs=self._settings.runs_per_candidate,
-            rollouts=len(pending),
+            rollouts=sum(record.rollouts + sum(a.rollouts for a in record.previous_attempts) for record in records),
             objective_by_run=scores.objective_by_run,
             statuses=self._statuses(records),
             unavailable={case: {str(k): v for k, v in runs.items()} for case, runs in scores.unavailable.items()},
         )
         return scores
 
-    def _trial(self, candidate: Candidate, name: str, run_index: int, split: SplitName) -> TrialRecord:
-        case = self._cases[name]
-        previous: list[AttemptRecord] = []
-        while True:
-            started = time.monotonic()
-            try:
-                result, status, error = self._rollout(candidate.values, case), TrialStatus.COMPLETED, None
-            except Exception as exc:
-                result, status, error = None, classify(exc), exc
-            usage = _rollout_usage(time.monotonic() - started)
-            self._spent += 1
-            retry = status is TrialStatus.INFRASTRUCTURE_INVALID and len(previous) < self._settings.rerun_passes
-            if not retry or not self._can_afford(1, split):
-                break
-            previous.append(_attempt(status, error, usage, len(previous)))
+    def _attempt(self, candidate: Candidate, key: TrialKey, split: SplitName) -> None:
+        case = self._cases[key[1]]
+        previous = self._previous(key, judge_only=False)
+        started = time.monotonic()
+        try:
+            result, status, error = self._rollout(candidate.values, case), TrialStatus.COMPLETED, None
+        except Exception as exc:
+            result, status, error = None, classify(exc), exc
+        usage = _rollout_usage(time.monotonic() - started)
+        self._spent += 1
         rows = self._judge(case, result) if result is not None else []
+        self._save_trial(key, split, status, error, previous, result, rows, usage, rollouts=1)
+
+    def _rejudge(self, key: TrialKey, split: SplitName) -> None:
+        old = self._trials[key]
+        trajectory = old.trajectory if isinstance(old.trajectory, list) else None
+        result = RolloutOutput(output=old.output, trajectory=trajectory)
+        rows = self._judge(self._cases[key[1]], result)
+        previous = self._previous(key, judge_only=True)
+        self._save_trial(key, split, TrialStatus.COMPLETED, None, previous, result, rows, old.usage, rollouts=0)
+
+    def _previous(self, key: TrialKey, *, judge_only: bool) -> list[AttemptRecord]:
+        old = self._trials.get(key)
+        if old is None:
+            return []
+        replaced = AttemptRecord(
+            status=old.status,
+            error_type=old.error_type,
+            error=old.error,
+            usage=zero_usage() if judge_only else old.usage,
+            judge_usage=old.judge_usage,
+            pass_index=len(old.previous_attempts),
+            rollouts=old.rollouts,
+        )
+        return [*old.previous_attempts, replaced]
+
+    def _save_trial(
+        self,
+        key: TrialKey,
+        split: SplitName,
+        status: TrialStatus,
+        error: BaseException | None,
+        previous: list[AttemptRecord],
+        result: RolloutOutput | None,
+        rows: list[EvaluatorRow],
+        usage: Usage,
+        *,
+        rollouts: int,
+    ) -> None:
         evaluations = {row.name: row.output for row in rows if row.error is None}
         if status is TrialStatus.COMPLETED and rows and not evaluations:
             status = TrialStatus.VERIFIER_INVALID
         record = TrialRecord(
-            candidate_id=candidate.id,
-            case_name=name,
-            run_index=run_index,
+            candidate_id=key[0],
+            case_name=key[1],
+            run_index=key[2],
             split=split,
             status=status,
             error_type=type(error).__name__ if error else None,
@@ -575,13 +726,12 @@ class InterimOptimizer:
             evaluator_errors={row.name: row.error for row in rows if row.error is not None},
             usage=usage,
             judge_usage=zero_usage(),
-            rollouts=1,
+            rollouts=rollouts,
         )
-        self._trials[(candidate.id, name, run_index)] = record
+        self._trials[key] = record
         data = record.model_dump(mode="json")
         data["transcript"] = self._run.save_transcript(data.pop("trajectory"))
         self._log("trial", record=data)
-        return record
 
     def _judge(self, case: Case, result: RolloutOutput) -> list[EvaluatorRow]:
         try:
@@ -624,14 +774,23 @@ class InterimOptimizer:
             role="inner",
         )
 
+    def _log_rescore(self, candidate: Candidate) -> None:
+        self._log(
+            "propose",
+            candidate_id=candidate.id,
+            number=candidate.number,
+            parent_id=candidate.parent_id,
+            origin=candidate.origin,
+            rescore=True,
+            round=None,
+            role="inner",
+        )
+
     def _split_scores(self, candidate_id: str, split: SplitName) -> CandidateScores:
         names = self._names(split)
-        records = [self._trials[key] for key in self._keys(candidate_id, names) if key in self._trials]
-        return score_split(candidate_id, records, names, self._criteria)
+        return score_split(candidate_id, self._records(candidate_id, names), names, self._criteria)
 
     def _can_afford(self, rollouts: int, phase: SplitName) -> bool:
-        if self._replay:
-            return rollouts == 0
         validation, test = self._settings.reserves()
         reserve = {"train": validation + test, "validation": test, "test": 0}[phase]
         return self._spent + rollouts + reserve <= self._settings.budget.max_rollouts
@@ -642,15 +801,18 @@ class InterimOptimizer:
     def _names(self, split: SplitName) -> tuple[str, ...]:
         return getattr(self._settings.split, split)  # type: ignore[no-any-return]
 
-    def _keys(self, candidate_id: str, names: Sequence[str]) -> list[tuple[str, str, int]]:
+    def _keys(self, candidate_id: str, names: Sequence[str]) -> list[TrialKey]:
         return [(candidate_id, name, run) for name in names for run in range(self._settings.runs_per_candidate)]
 
-    def _missing(self, candidate_id: str, names: Sequence[str]) -> list[tuple[str, int]]:
-        return [
-            (name, run)
-            for _, name, run in self._keys(candidate_id, names)
-            if (candidate_id, name, run) not in self._trials
-        ]
+    def _pending(self, candidate_id: str, names: Sequence[str]) -> list[TrialKey]:
+        """Keys without a trial, or with an infrastructure failure, which runs again when scored again."""
+        failed = TrialStatus.INFRASTRUCTURE_INVALID
+        keys = self._keys(candidate_id, names)
+        return [key for key in keys if key not in self._trials or self._trials[key].status is failed]
+
+    def _keys_with(self, candidate_id: str, names: Sequence[str], status: TrialStatus) -> list[TrialKey]:
+        keys = self._keys(candidate_id, names)
+        return [key for key in keys if key in self._trials and self._trials[key].status is status]
 
     def _records(self, candidate_id: str, names: Sequence[str]) -> list[TrialRecord]:
         return [self._trials[key] for key in self._keys(candidate_id, names) if key in self._trials]
@@ -679,8 +841,7 @@ class InterimOptimizer:
         return TrialRecord.model_validate(fields)
 
     def _log(self, event: str, **fields: Any) -> None:
-        if not self._replay:
-            self._run.events.append(event, self._iteration, **fields)
+        self._run.events.append(event, self._iteration, **fields)
 
 
 def _outcome(
@@ -704,18 +865,6 @@ def _outcome(
     )
 
 
-def _attempt(status: TrialStatus, error: BaseException | None, usage: Usage, pass_index: int) -> AttemptRecord:
-    return AttemptRecord(
-        status=status,
-        error_type=type(error).__name__ if error else None,
-        error=str(error) if error else None,
-        usage=usage,
-        judge_usage=zero_usage(),
-        pass_index=pass_index,
-        rollouts=1,
-    )
-
-
 def _rollout_usage(seconds: float) -> Usage:
     # Project mode captures no chat spans yet, so only the rollout time is measured.
     return Usage(**{**zero_usage().model_dump(), "seconds": seconds})
@@ -730,6 +879,10 @@ def _run_feedback(record: TrialRecord) -> dict[str, Any]:
         "reasons": {name: result.reason for name, result in record.evaluations.items()},
         "error": record.error,
     }
+
+
+def _known(scores: Mapping[str, CandidateScores | None]) -> list[tuple[str, CandidateScores]]:
+    return [(cid, value) for cid, value in scores.items() if value is not None]
 
 
 def _by_case(scores: CandidateScores, metric: str) -> dict[str, float]:

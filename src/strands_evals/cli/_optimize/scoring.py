@@ -187,6 +187,11 @@ class Criteria:
         """The objective's metrics, in objective order."""
         return tuple(term.metric for term in self.objective.terms)
 
+    @property
+    def reported_metrics(self) -> tuple[str, ...]:
+        """Every metric that project mode measures: the goals, the other evaluators, then `seconds`."""
+        return tuple(dict.fromkeys([*self.goal_metrics, *self.registry.evaluators, *MEASURED_USAGE_METRICS]))
+
     def crash_value(self, metric: str) -> float | None:
         """What an `agent_failure` run counts as for one evaluator metric; None means missing."""
         if self.registry.is_usage(metric) or self.crash_score is None:
@@ -223,12 +228,12 @@ class Criteria:
 
 
 def run_metrics(record: TrialRecord, criteria: Criteria) -> tuple[dict[str, float], dict[str, str]] | None:
-    """One run's goal metric values and the values taken out; None when the run does not count."""
+    """One run's metric values and the values taken out; None when the run does not count."""
     if record.status not in _COUNTED:
         return None
     values: dict[str, float] = {}
     taken_out: dict[str, str] = {}
-    for metric in criteria.goal_metrics:
+    for metric in criteria.reported_metrics:
         if criteria.registry.is_usage(metric):
             values[metric] = record.usage.seconds
             continue
@@ -263,7 +268,8 @@ def score_split(
         measured_runs = [run_metrics(record, criteria) for record in runs]
         objective_by_run[name] = [None if m is None else criteria.objective_value(m[0]) for m in measured_runs]
         metrics_by_run[name] = {
-            metric: [None if m is None else m[0].get(metric) for m in measured_runs] for metric in criteria.goal_metrics
+            metric: [None if m is None else m[0].get(metric) for m in measured_runs]
+            for metric in criteria.reported_metrics
         }
         removed = {run.run_index: m[1] for run, m in zip(runs, measured_runs, strict=True) if m is not None and m[1]}
         if removed:

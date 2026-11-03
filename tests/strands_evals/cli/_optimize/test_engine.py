@@ -1,4 +1,6 @@
 import pytest
+from botocore.exceptions import ClientError, EndpointConnectionError
+from strands.types.exceptions import EventLoopException, ModelThrottledException
 
 from strands_evals.case import Case
 from strands_evals.cli._optimize.engine import (
@@ -9,7 +11,7 @@ from strands_evals.cli._optimize.engine import (
     SetupError,
     classify,
 )
-from strands_evals.cli._optimize.proposers import FileProposer
+from strands_evals.cli._optimize.proposers import FileProposer, RandomProposer
 from strands_evals.cli._optimize.record import RunDirectory
 from strands_evals.cli._optimize.scoring import Criteria, MetricRegistry, build_objective
 from strands_evals.cli._optimize.space import CliSpace
@@ -18,7 +20,7 @@ from strands_evals.optimization.declaration.space import ParamInfo
 from strands_evals.optimization.execution.status import InfrastructureError
 from strands_evals.optimization.setup.budget import Budget
 from strands_evals.types.evaluation import EvaluationOutput
-from strands_evals.types.optimization import Patch, TrialStatus
+from strands_evals.types.optimization import CaseSplit, Patch, TrialStatus
 
 CASES = [Case(name=f"case-{index:02d}", input=f"question {index}", expected_output="ok") for index in range(10)]
 SPLIT = assign_split([case.name for case in CASES], (0.4, 0.3, 0.3), 0)
@@ -58,22 +60,35 @@ def scorer(table):
     return rollout
 
 
-def optimizer(tmp_path, proposers, rollout, *, budget=500, iterations=None, per_iteration=4):
+def optimizer(
+    tmp_path,
+    proposers,
+    rollout,
+    *,
+    budget=500,
+    iterations=None,
+    per_iteration=4,
+    finalists=3,
+    split=SPLIT,
+    cases=CASES,
+    evaluator=None,
+    space_=None,
+):
     return InterimOptimizer(
-        space=space(tmp_path),
-        cases=CASES,
+        space=space_ or space(tmp_path),
+        cases=cases,
         criteria=Criteria(build_objective([], REGISTRY), REGISTRY),
         settings=Settings(
-            split=SPLIT,
+            split=split,
             budget=Budget(max_rollouts=budget, max_iterations=iterations),
-            finalists=3,
+            finalists=finalists,
             runs_per_candidate=1,
             proposals_per_iteration=per_iteration,
             rerun_passes=2,
         ),
         proposers=proposers,
         rollout=rollout,
-        evaluate=evaluate,
+        evaluate=evaluator or evaluate,
         run=_run(tmp_path),
         progress=lambda message: None,
     )
@@ -240,11 +255,11 @@ def test_reruns_an_infrastructure_failure_and_counts_every_attempt(tmp_path):
 
     result = optimizer(tmp_path, [patches()], flaky).run()
 
-    trials = [event["record"] for event in events(tmp_path) if event["event"] == "trial"]
-    assert all(trial["status"] == "completed" for trial in trials)
-    first = next(trial for trial in trials if trial["previous_attempts"])
-    assert first["attempts"] == 2 and first["previous_attempts"][0]["status"] == "infrastructure_invalid"
-    assert result["rollouts_spent"] == len(trials) + len(seen)
+    records = [event["record"] for event in events(tmp_path) if event["event"] == "trial"]
+    last = {(r["candidate_id"], r["case_name"], r["run_index"]): r for r in records}
+    assert all(record["status"] == "completed" and record["attempts"] == 2 for record in last.values())
+    assert all(record["previous_attempts"][0]["status"] == "infrastructure_invalid" for record in last.values())
+    assert result["rollouts_spent"] == len(records) == 2 * len(last)
 
 
 def test_resume_reuses_saved_trials_and_reruns_only_the_killed_iteration(tmp_path):
@@ -311,13 +326,19 @@ def test_rejects_cases_without_unique_names(tmp_path):
     ("error", "status"),
     [
         (InfrastructureError("x"), TrialStatus.INFRASTRUCTURE_INVALID),
-        (RuntimeError("Runner failed (1): ThrottlingException: slow down"), TrialStatus.INFRASTRUCTURE_INVALID),
-        (RuntimeError("connection reset by peer"), TrialStatus.INFRASTRUCTURE_INVALID),
-        (ValueError("bad answer"), TrialStatus.AGENT_FAILURE),
+        (EventLoopException(InfrastructureError("x")), TrialStatus.INFRASTRUCTURE_INVALID),
+        (ModelThrottledException("slow down"), TrialStatus.INFRASTRUCTURE_INVALID),
+        (EndpointConnectionError(endpoint_url="https://bedrock"), TrialStatus.INFRASTRUCTURE_INVALID),
+        (
+            ClientError({"Error": {"Code": "ServiceUnavailableException"}}, "ConverseStream"),
+            TrialStatus.INFRASTRUCTURE_INVALID,
+        ),
+        (EventLoopException(ValueError("bad tool input")), TrialStatus.AGENT_FAILURE),
+        (RuntimeError("inventory tool: upstream service unavailable"), TrialStatus.AGENT_FAILURE),
         (TimeoutError("deadline"), TrialStatus.AGENT_FAILURE),
     ],
 )
-def test_classify_separates_infrastructure_from_agent_failures(error, status):
+def test_classify_follows_the_planned_rules(error, status):
     assert classify(error) is status
 
 
@@ -326,3 +347,172 @@ def test_settings_reject_a_budget_below_the_baseline_and_reserves():
 
     with pytest.raises(ValueError, match="validation reserve 12, test reserve 6"):
         settings.check_budget()
+
+
+def table_of(**rows):
+    return {name: dict.fromkeys(("train", "validation", "test"), score) for name, score in rows.items()}
+
+
+def test_resume_after_a_kill_during_the_baseline_finishes_the_run(tmp_path):
+    table = table_of(base=0.2, better=0.9)
+    calls = {"count": 0}
+
+    def killed(values, case):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise KeyboardInterrupt
+        return scorer(table)(values, case)
+
+    with pytest.raises(KeyboardInterrupt):
+        optimizer(tmp_path, [patches({"prompt": "better"})], killed).run()
+    resumed = optimizer(tmp_path, [patches({"prompt": "better"})], killed)
+    resumed.restore(events(tmp_path))
+
+    result = resumed.run()
+
+    assert result["improved"] is True
+    assert result["rollouts_spent"] == 4 + 4 + 2 * 3 + 2 * 3
+
+
+def test_reruns_never_take_the_rollouts_reserved_for_later_phases(tmp_path):
+    cases = [Case(name=f"case-{index}", input="q", expected_output="ok") for index in range(9)]
+    split = CaseSplit(train=tuple(c.name for c in cases[:8]), validation=(cases[8].name,), test=())
+    attempts = {}
+
+    def throttled(values, case):
+        attempts[case.name] = attempts.get(case.name, 0) + 1
+        if case.name in ("case-0", "case-1") and attempts[case.name] <= 2:
+            raise InfrastructureError("throttled")
+        return RolloutOutput(output=0.5, trajectory=None)
+
+    engine = optimizer(tmp_path, [patches()], throttled, budget=10, finalists=1, split=split, cases=cases)
+
+    with pytest.raises(SetupError, match="infrastructure_invalid"):
+        engine.run()
+    assert engine.spent <= 10
+
+
+def test_a_test_phase_under_a_tight_budget_reports_missing_cases_instead_of_failing(tmp_path):
+    table = table_of(base=0.2, better=0.9)
+    failed = set()
+
+    def throttled(values, case):
+        if values["prompt"] == "better" and case.name in SPLIT.test and case.name not in failed:
+            failed.add(case.name)
+            raise InfrastructureError("throttled")
+        return scorer(table)(values, case)
+
+    result = optimizer(
+        tmp_path, [patches({"prompt": "better"})], throttled, budget=4 + 4 + 2 * 3 + 2 * 3, finalists=1
+    ).run()
+
+    assert result["rollouts_spent"] == 20
+    assert result["test"]["missing"][result["best"]["id"]] == 3
+
+
+def test_reproposing_an_ineligible_candidate_scores_it_again(tmp_path):
+    table = table_of(base=0.2, better=0.9)
+    attempts = {"count": 0}
+
+    def flaky(values, case):
+        if values["prompt"] == "better" and case.name == SPLIT.train[0] and attempts["count"] < 3:
+            attempts["count"] += 1
+            raise InfrastructureError("sandbox down")
+        return scorer(table)(values, case)
+
+    result = optimizer(tmp_path, [patches({"prompt": "better"}, {"prompt": "better"})], flaky).run()
+
+    outcomes = [proposal["outcome"] for proposal in result["iterations"][0]["proposals"]]
+    assert outcomes == ["ineligible", "feasible"]
+    assert result["improved"] is True
+    assert any(event.get("rescore") for event in events(tmp_path) if event["event"] == "propose")
+
+
+def test_resume_after_a_kill_in_the_end_phase_keeps_the_pick(tmp_path):
+    table = table_of(base=0.2, better=0.9)
+    state = {"kill": True}
+
+    def killed(values, case):
+        if state["kill"] and case.name in SPLIT.test:
+            raise KeyboardInterrupt
+        return scorer(table)(values, case)
+
+    with pytest.raises(KeyboardInterrupt):
+        optimizer(tmp_path, [patches({"prompt": "better"})], killed).run()
+    state["kill"] = False
+    resumed = optimizer(tmp_path, [patches({"prompt": "better"})], killed)
+    resumed.restore(events(tmp_path))
+
+    result = resumed.run()
+
+    names = [event["event"] for event in events(tmp_path)]
+    assert names.count("selected") == 1 and names.count("finalists") == 1 and names[-1] == "test"
+    assert result["improved"] is True and result["test"] is not None
+
+
+def test_a_killed_run_resumed_with_a_larger_budget_searches_further(tmp_path):
+    table = table_of(base=0.1, a=0.4, b=0.6, c=0.8)
+    proposers = [patches({"prompt": "a"}, {"prompt": "b"}, {"prompt": "c"})]
+    calls = {"count": 0}
+
+    def killed(values, case):
+        calls["count"] += 1
+        if calls["count"] == 6:
+            raise KeyboardInterrupt
+        return scorer(table)(values, case)
+
+    with pytest.raises(KeyboardInterrupt):
+        optimizer(tmp_path, proposers, killed, budget=26).run()
+    resumed = optimizer(tmp_path, proposers, killed, budget=500)
+    resumed.restore(events(tmp_path))
+
+    result = resumed.run()
+
+    outcomes = [proposal["outcome"] for proposal in result["iterations"][0]["proposals"]]
+    assert outcomes == ["feasible", "feasible", "feasible"]
+    assert result["best"]["values"]["prompt"] == "c" and result["rollouts_spent"] > 26
+
+
+def test_a_verifier_failure_is_judged_again_without_a_rollout(tmp_path):
+    failed = set()
+
+    def judge(case, result):
+        if case.name == SPLIT.train[0] and case.name not in failed:
+            failed.add(case.name)
+            raise RuntimeError("judge throttled")
+        return evaluate(case, result)
+
+    result = optimizer(tmp_path, [patches()], scorer(table_of(base=0.5)), evaluator=judge).run()
+
+    trials = [
+        e["record"] for e in events(tmp_path) if e["event"] == "trial" and e["record"]["case_name"] == SPLIT.train[0]
+    ]
+    assert [trial["status"] for trial in trials] == ["verifier_invalid", "completed"]
+    assert trials[-1]["rollouts"] == 0 and trials[-1]["previous_attempts"][0]["status"] == "verifier_invalid"
+    assert result["rollouts_spent"] == 4 + 3 + 3
+
+
+def test_the_joint_schedule_asks_every_block_each_iteration(tmp_path):
+    text = FileProposer(patches=(Patch(updates={"prompt": "better"}, rationale=""),), keys=("prompt",), source="f")
+    numbers = RandomProposer(keys=("turns",), seed=0)
+    table = table_of(base=0.2, better=0.9)
+
+    result = optimizer(tmp_path, [text, numbers], scorer(table), iterations=1, per_iteration=1).run()
+
+    record = result["iterations"][0]
+    assert record["blocks"] == ["text", "numbers"]
+    assert [proposal["origin"] for proposal in record["proposals"]] == ["text", "numbers"]
+
+
+def test_a_block_draws_again_after_a_duplicate_and_stops_when_nothing_is_new(tmp_path):
+    mode = CliSpace(
+        params=(ParamInfo(key="mode", name="mode", kind="one_of", default="a", options=("a", "b")),), root=tmp_path
+    )
+
+    def flat(values, case):
+        return RolloutOutput(output=0.5, trajectory=None)
+
+    result = optimizer(tmp_path, [RandomProposer(keys=("mode",), seed=3)], flat, space_=mode, per_iteration=2).run()
+
+    assert result["stop_reason"] == "exhausted"
+    assert any(e["event"] == "duplicate" and e["redraw"] > 0 for e in events(tmp_path))

@@ -156,7 +156,9 @@ class RunDirectory:
         path = self.root / "transcripts" / f"{digest}.json"
         if not path.exists():
             path.parent.mkdir(exist_ok=True)
-            path.write_text(text + "\n", encoding="utf-8")
+            temporary = path.with_name(f".{path.name}.tmp")
+            temporary.write_text(text + "\n", encoding="utf-8")
+            temporary.replace(path)
         return {"hash": digest, "format": "json"}
 
     def load_transcript(self, reference: dict[str, str] | None) -> Any:
@@ -165,6 +167,10 @@ class RunDirectory:
             return None
         path = self.root / "transcripts" / f"{reference['hash']}.json"
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def save_effects(self, effects: dict[str, Any]) -> None:
+        """Write `effects.json`."""
+        write_json(self.root / "effects.json", effects)
 
     def write_review(self, stem: str, diff: str, values: dict[str, Any]) -> tuple[Path, Path]:
         """Write `<stem>.diff` and `<stem>.values.json`; both files exist even when they are empty."""

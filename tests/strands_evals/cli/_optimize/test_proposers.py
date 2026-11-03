@@ -29,7 +29,7 @@ SPACE = CliSpace(
 )
 
 
-def context(keys=("prompt",), count=2, iteration=1, consumed=0, feedback=None):
+def context(keys=("prompt",), count=2, iteration=1, consumed=0, feedback=None, redraw=0):
     return ProposalContext(
         space=SPACE,
         keys=keys,
@@ -37,6 +37,7 @@ def context(keys=("prompt",), count=2, iteration=1, consumed=0, feedback=None):
         parent_number=0,
         count=count,
         iteration=iteration,
+        redraw=redraw,
         consumed=consumed,
         feedback=feedback or {},
     )
@@ -93,8 +94,10 @@ def test_random_proposer_is_seeded_per_turn_and_stays_inside_the_bounds():
     first = proposer.propose(context(keys=proposer.keys, count=20)).patches
     again = proposer.propose(context(keys=proposer.keys, count=20)).patches
     later = proposer.propose(context(keys=proposer.keys, count=20, iteration=2)).patches
+    redrawn = proposer.propose(context(keys=proposer.keys, count=20, redraw=1)).patches
 
-    assert first == again and first != later
+    assert first == again and first != later and first != redrawn
+    assert proposer.name == "numbers"
     for patch in first:
         SPACE.validate({**SPACE.baseline(), **patch.updates})
         assert isinstance(patch.updates["turns"], int) and isinstance(patch.updates["rate"], float)
@@ -105,20 +108,23 @@ def test_parse_patches_strips_code_fences_and_keeps_at_most_count():
         '```json\n{"patches": [{"updates": {"prompt": "a"}, "rationale": " r "}, {"updates": {"prompt": "b"}}]}\n```'
     )
 
-    assert parse_patches(reply, 1) == [Patch(updates={"prompt": "a"}, rationale="r")]
+    assert parse_patches(reply, 1) == ([Patch(updates={"prompt": "a"}, rationale="r")], ())
 
 
-@pytest.mark.parametrize(
-    ("reply", "message"),
-    [
-        ("nope", "not JSON"),
-        ('{"items": []}', "'patches' list"),
-        ('{"patches": [{"updates": {"prompt": 1}}]}', "text values"),
-    ],
-)
-def test_parse_patches_rejects_other_shapes(reply, message):
-    with pytest.raises(ValueError, match=message):
-        parse_patches(reply, 2)
+def test_parse_patches_drops_a_bad_item_and_keeps_the_rest():
+    reply = '{"patches": [{"updates": {"prompt": 1}}, {"updates": {"prompt": "b"}, "rationale": "ok"}]}'
+
+    patches, problems = parse_patches(reply, 2)
+
+    assert patches == [Patch(updates={"prompt": "b"}, rationale="ok")]
+    assert problems == ("proposed patch 1 needs 'updates' with text values",)
+
+
+@pytest.mark.parametrize(("reply", "message"), [("nope", "not JSON"), ('{"items": []}', "'patches' list")])
+def test_parse_patches_returns_the_problem_of_an_unusable_reply(reply, message):
+    patches, problems = parse_patches(reply, 2)
+
+    assert patches == [] and message in problems[0]
 
 
 def test_reflection_proposer_sends_the_contrast_and_reports_its_usage(monkeypatch):

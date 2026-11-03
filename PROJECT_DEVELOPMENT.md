@@ -165,11 +165,11 @@ Write a space file. Each key names one marker from the plan. The CLI supports th
 - A `FileText` path is relative to the project root. The file must be inside the project. Its text is the baseline.
 - `--instructions-file FILE` is a shortcut for one `FileText` key named `instructions`.
 - `JsonField`, `SkillLibrary`, `choice`, and `component` are planned. The CLI rejects them at this time.
-- `Random` is a stand-in for the planned `TPE` search.
+- The `text` block uses the Reflection proposer. The `numbers` block uses `Random`, a stand-in for the planned `TPE` search.
 
 The agent must accept every key at runtime, for each candidate and for the baseline:
 
-- A Python project exports `create_agent(**keys)`.
+- A Python project exports `create_agent(**keys)`. Give each parameter a default, so that the instructions check below can call it without arguments.
 - A Python project that calls `strands_harness.create_harness(...)` gets the keys as harness options.
 - An external runner gets `"overrides"` in each request. See the runner protocol above.
 
@@ -202,7 +202,7 @@ The run follows the planned loop:
 
 1. Split the cases into train, validation, and test. `--split` sets the shares (default `0.4,0.3,0.3`). `--seed` sets the shuffle.
 2. Score the baseline on train.
-3. Select the best train candidate as the parent. One proposer suggests patches. The proposers take turns.
+3. Select the best train candidate as the parent. Each block suggests patches from that parent (the planned `Joint` schedule). A block asks again, up to 3 times, after a duplicate, an invalid patch, or an empty reply.
 4. Score each new candidate on train.
 5. Stop on `budget`, `iterations` (`--max-iterations`), `exhausted`, or `proposer_error`.
 6. Measure the top `--finalists` (default 3) and the baseline on validation. The highest validation score ships. A tie keeps the baseline.
@@ -212,7 +212,7 @@ Without a score model, a candidate can win on validation by chance. Read the tes
 
 The default judge is the assertion judge of `run --project`. `--evaluator contains` and `--contains TEXT` select substring checks. `--objective maximize:METRIC` or `minimize:METRIC` selects what to optimize. Repeat the flag for a weighted sum, with `:weight=N` and `:scale=N`. The default maximizes every evaluator. `seconds` is the only usage metric in project mode, because project mode does not capture chat spans yet.
 
-An agent error counts as the worst score. `--crash-score none` counts it as missing, and a number sets the score. A throttle, network, or `InfrastructureError` failure runs again, up to `--rerun-passes` times (default 2). If every baseline trial fails, the run stops before the search and exits 3.
+An agent error counts as the worst score. `--crash-score none` counts it as missing, and a number sets the score. A throttle, network, or `InfrastructureError` failure runs again, up to `--rerun-passes` times (default 2). Re-runs use only the rollouts that the reserves leave. For an external runner, the CLI finds these failures in the error text of the runner. A failed judge runs again on the saved output, with no rollout. If the baseline cannot be measured on train, the run stops before the search and exits 3.
 
 `--proposal-file FILE` replaces the proposers for an offline run. The file is a JSON list of patches, `{"updates": {"<key>": <value>}, "rationale": "..."}`. A plain-text file, or a list of strings, gives texts for a space with one text key.
 
@@ -225,6 +225,7 @@ Each run writes `<project>/.strands-evals/optimization/runs/<run-id>/`. `--base-
 | `run.json` | The run configuration. Resume compares it. |
 | `events.jsonl` | One event per line, in the planned event names. Read it for live progress. |
 | `transcripts/` | Each trajectory one time, by content hash. |
+| `effects.json` | Empty until the score model lands. |
 | `best.diff` | A unified diff of the changed texts, for review. |
 | `best.values.json` | The changed numbers and choices, as `{"<key>": {"old": ..., "new": ...}}`. |
 | `result.json` | The result. stdout gets the same JSON. |
@@ -240,7 +241,7 @@ strands-evals optimize ./my-agent --cases ./captures --space ./space.json \
   --proposal-model MODEL_ID --resume ./my-agent/.strands-evals/optimization/runs/RUN_ID
 ```
 
-Give the same project, cases, space, objective, judge, and proposer flags. If one changed, resume stops and names it. Resume reads the split, the seed, the finalists, and the other settings from `run.json`, so do not give them again. A killed run can get a larger `--max-rollouts` or `--max-iterations`.
+Give the same project, cases, space, objective, judge, and proposer flags. If one changed, resume stops and names it. The event log gets a `resume` event. Resume reads the split, the seed, the finalists, and the other settings from `run.json`, so do not give them again. A killed run can get a larger `--max-rollouts` or `--max-iterations`.
 
 Resume uses every saved trial again. It discards a killed iteration and runs that iteration again. A finished run does not continue: resume returns its result again, with no new rollouts. To search more, start a new run.
 

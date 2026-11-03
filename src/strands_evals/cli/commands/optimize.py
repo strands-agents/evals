@@ -18,18 +18,26 @@ from ...case import Case
 from ...evaluators.deterministic import Contains
 from ...evaluators.evaluator import Evaluator
 from ...experiment import Experiment
+from ...optimization.execution.status import InfrastructureError
 from ...optimization.setup.budget import Budget
 from ...types.evaluation import EvaluationOutput
 from ...types.optimization import CaseSplit, Value
 from .._common import EXIT_BAD_INPUT, EXIT_OK, EXIT_RUNTIME_ERROR, emit_error
 from .._optimize.apply import apply_candidate
-from .._optimize.engine import EvaluatorRow, InterimOptimizer, RolloutOutput, Settings
+from .._optimize.engine import REDRAWS, SCHEDULE, SELECTION, EvaluatorRow, InterimOptimizer, RolloutOutput, Settings
 from .._optimize.proposers import FileProposer, Proposer, RandomProposer, ReflectionProposer, load_proposal_file
 from .._optimize.record import RUNS_DIRECTORY, SCHEMA_VERSION, RunDirectory, canonical_json, check_name
 from .._optimize.scoring import CrashScore, Criteria, MetricRegistry, build_objective, require_optimization_extra
 from .._optimize.space import CliSpace, instructions_space, load_space
 from .._optimize.splits import DEFAULT_SHARES, assign_split, parse_shares
-from .._project import AssertionContains, ProjectRunner, default_project_evaluator, load_project_cases, resolve_project
+from .._project import (
+    AssertionContains,
+    ProjectError,
+    ProjectRunner,
+    default_project_evaluator,
+    load_project_cases,
+    resolve_project,
+)
 
 ENGINE = "cli-interim"
 DEFAULT_FINALISTS = 3
@@ -48,7 +56,32 @@ READ_ON_RESUME = (
     "name",
     "base_dir",
 )
-COMPARED_ON_RESUME = ("cases", "space", "objective", "constraints", "evaluators", "search", "selection", "score_model")
+COMPARED_ON_RESUME = (
+    "cases",
+    "space",
+    "objective",
+    "constraints",
+    "evaluators",
+    "judge",
+    "search",
+    "selection",
+    "score_model",
+)
+# An external runner reports provider and network failures only as text, so these markers mark them for a re-run.
+TRANSIENT_RUNNER_MARKERS = (
+    "throttl",
+    "too many requests",
+    "rate exceeded",
+    "serviceunavailable",
+    "service unavailable",
+    "internalserverexception",
+    "modelnotready",
+    "econnreset",
+    "etimedout",
+    "eai_again",
+    "connection reset",
+    "connection refused",
+)
 _POSITIVE = ("max_rollouts", "max_iterations", "finalists", "runs_per_candidate", "proposals_per_iteration")
 
 
@@ -114,6 +147,10 @@ def _optimize(args: argparse.Namespace) -> dict[str, Any]:
     )
     if args.resume:
         engine.restore(run.events.read())
+        if not engine.finished:
+            code = {"strands_evals": importlib.metadata.version("strands-agents-evals")}
+            budget = {"max_rollouts": settings.budget.max_rollouts, "max_iterations": settings.budget.max_iterations}
+            run.events.append("resume", engine.iteration, spent=engine.spent, budget=budget, code=code)
     return engine.run()
 
 
@@ -161,6 +198,15 @@ def _evaluators(args: argparse.Namespace) -> list[Evaluator]:
     if args.evaluator == "contains":
         return [AssertionContains()]
     return [default_project_evaluator()]
+
+
+def _judge_config(args: argparse.Namespace) -> dict[str, Any]:
+    if args.contains is not None:
+        return {"kind": "contains", "value": args.contains}
+    if args.evaluator == "contains":
+        return {"kind": "assertion_contains"}
+    rubric = default_project_evaluator().rubric
+    return {"kind": "assertion_judge", "rubric_sha256": hashlib.sha256(rubric.encode("utf-8")).hexdigest()}
 
 
 def _score_range(evaluator: Evaluator) -> tuple[float | None, float | None]:
@@ -244,8 +290,13 @@ def _config(
         "objective": str(criteria.objective),
         "constraints": [],
         "evaluators": list(criteria.registry.evaluators),
-        "search": {"schedule": "Alternate", "blocks": [proposer.config() for proposer in proposers]},
-        "selection": {"name": "TopRanked"},
+        "judge": _judge_config(args),
+        "search": {
+            "schedule": {"name": SCHEDULE},
+            "blocks": [proposer.config() for proposer in proposers],
+            "redraws": REDRAWS,
+        },
+        "selection": {"name": SELECTION},
         "score_model": None,
         "split": {
             "shares": list(parse_shares(args.split) if args.split else DEFAULT_SHARES),
@@ -332,8 +383,17 @@ def _case_digest(case: Case) -> str:
 
 def _check_instructions(runner: ProjectRunner, space: CliSpace) -> None:
     param = next((p for p in space.params if p.key == "instructions" and p.source is not None), None)
-    if param is not None and runner.get_instructions() != param.default:
-        assert param.source is not None
+    if param is None or param.source is None:
+        return
+    try:
+        runtime = runner.get_instructions()
+    except TypeError as exc:
+        progress(
+            f"cannot compare {param.source.path.name} with the runtime instructions ({exc}); give every "
+            "create_agent parameter a default to enable this check"
+        )
+        return
+    if runtime != param.default:
         raise ValueError(
             f"{param.source.path} does not match the instructions that the project uses at runtime: "
             "declare the file that the agent reads"
@@ -342,7 +402,12 @@ def _check_instructions(runner: ProjectRunner, space: CliSpace) -> None:
 
 def _rollout(runner: ProjectRunner) -> Any:
     def rollout(values: Mapping[str, Value], case: Case) -> RolloutOutput:
-        response = runner.run(case, overrides=dict(values))
+        try:
+            response = runner.run(case, overrides=dict(values))
+        except ProjectError as exc:
+            if runner.runner and any(marker in str(exc).lower() for marker in TRANSIENT_RUNNER_MARKERS):
+                raise InfrastructureError(str(exc)) from exc
+            raise
         return RolloutOutput(output=response["output"], trajectory=response.get("trajectory"))
 
     return rollout

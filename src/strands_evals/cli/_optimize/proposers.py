@@ -30,16 +30,18 @@ class ProposalContext:
     parent_number: int
     count: int
     iteration: int
+    redraw: int
     consumed: int
     feedback: dict[str, Any]
 
 
 @dataclass(frozen=True)
 class ProposalBatch:
-    """The patches of one turn and what the proposer spent."""
+    """The patches of one turn, what the proposer spent, and why any proposed item was dropped."""
 
     patches: list[Patch]
     usage: Usage
+    problems: tuple[str, ...] = ()
 
 
 class Proposer(Protocol):
@@ -83,16 +85,13 @@ class ReflectionProposer:
         return {"block": self.name, "proposer": self.kind, "keys": list(self.keys), "model": self.model}
 
     def propose(self, context: ProposalContext) -> ProposalBatch:
-        """One model call that returns `count` patches.
-
-        Raises:
-            ValueError: The reply is not the requested JSON.
-        """
+        """One model call for `count` patches; an unusable reply gives no patches and names the problem."""
         agent = Agent(model=self.model, system_prompt=SYSTEM_PROMPT, callback_handler=None)
         started = time.monotonic()
         result = agent(json.dumps(_request(context), ensure_ascii=False))
-        patches = parse_patches(str(result), context.count)
-        return ProposalBatch(patches=patches, usage=_usage(result, self.model, time.monotonic() - started))
+        patches, problems = parse_patches(str(result), context.count)
+        usage = _usage(result, self.model, time.monotonic() - started)
+        return ProposalBatch(patches=patches, usage=usage, problems=problems)
 
 
 @dataclass(frozen=True)
@@ -128,7 +127,7 @@ class RandomProposer:
 
     keys: tuple[str, ...]
     seed: int
-    name: str = "values"
+    name: str = "numbers"
     kind: str = "Random"
 
     def config(self) -> dict[str, Any]:
@@ -137,7 +136,7 @@ class RandomProposer:
 
     def propose(self, context: ProposalContext) -> ProposalBatch:
         """`count` patches; each draws every key of the block."""
-        generator = random.Random(f"{self.seed}:{context.iteration}:{self.name}")
+        generator = random.Random(f"{self.seed}:{context.iteration}:{context.redraw}:{self.name}")
         params = [context.space.param(key) for key in self.keys]
         patches = [
             Patch(updates={param.key: _draw(param, generator) for param in params}, rationale="random draw")
@@ -169,11 +168,10 @@ def load_proposal_file(path: Path, space: CliSpace) -> tuple[Patch, ...]:
     )
 
 
-def parse_patches(reply: str, count: int) -> list[Patch]:
+def parse_patches(reply: str, count: int) -> tuple[list[Patch], tuple[str, ...]]:
     """Read `{"patches": [...]}` from a model reply, without code fences; keep at most `count`.
 
-    Raises:
-        ValueError: The reply is not that JSON shape.
+    An unusable reply or item is dropped, not raised, and its problem is returned for the event log.
     """
     body = reply.strip()
     if body.startswith("```"):
@@ -182,17 +180,19 @@ def parse_patches(reply: str, count: int) -> list[Patch]:
     try:
         data = json.loads(body)
     except ValueError as exc:
-        raise ValueError(f"proposer reply is not JSON: {exc}") from exc
+        return [], (f"proposer reply is not JSON: {exc}",)
     items = data.get("patches") if isinstance(data, dict) else None
     if not isinstance(items, list):
-        raise ValueError("proposer reply must be an object with a 'patches' list")
-    patches = []
-    for item in items[:count]:
+        return [], ("proposer reply must be an object with a 'patches' list",)
+    patches: list[Patch] = []
+    problems: list[str] = []
+    for number, item in enumerate(items[:count], start=1):
         updates = item.get("updates") if isinstance(item, dict) else None
-        if not isinstance(updates, dict) or not all(isinstance(value, str) for value in updates.values()):
-            raise ValueError("each proposed patch needs 'updates' with text values")
+        if not isinstance(updates, dict) or not updates or not all(isinstance(v, str) for v in updates.values()):
+            problems.append(f"proposed patch {number} needs 'updates' with text values")
+            continue
         patches.append(Patch(updates=updates, rationale=str(item.get("rationale", "")).strip()))
-    return patches
+    return patches, tuple(problems)
 
 
 def _request(context: ProposalContext) -> dict[str, Any]:

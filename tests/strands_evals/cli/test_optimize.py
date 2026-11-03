@@ -4,7 +4,11 @@ from unittest.mock import Mock
 
 import pytest
 
+from strands_evals.case import Case
+from strands_evals.cli._project import ProjectError
+from strands_evals.cli.commands import optimize
 from strands_evals.cli.main import main
+from strands_evals.optimization.execution.status import InfrastructureError
 
 AGENT = """\
 from pathlib import Path
@@ -195,3 +199,86 @@ def test_a_missing_optimization_extra_exits_3_with_the_install_command(project, 
 def test_apply_rejects_project_flags(project, capsys):
     assert main(["optimize", str(project / "agent"), "--apply", "RUN"]) == 2
     assert "--apply takes only" in capsys.readouterr().err
+
+
+KILLABLE_AGENT = """\
+from pathlib import Path
+
+HERE = Path(__file__).parent
+
+
+def create_agent(instructions=None, temperature=0.7):
+    if instructions is None:
+        instructions = (HERE / "instructions.md").read_text(encoding="utf-8")
+
+    class Echo:
+        def __call__(self, prompt):
+            counter = HERE / "calls.txt"
+            count = int(counter.read_text()) + 1 if counter.exists() else 1
+            counter.write_text(str(count))
+            if (HERE / "kill").exists() and count == 6:
+                raise KeyboardInterrupt
+            return "Paris" if "geography" in instructions and temperature < 0.5 else "unknown"
+
+    Echo.system_prompt = instructions
+    return Echo()
+"""
+
+
+def test_resume_of_a_killed_run_finishes_it_and_logs_the_resume(project, capsys):
+    (project / "agent" / "agent.py").write_text(KILLABLE_AGENT)
+    (project / "agent" / "kill").touch()
+    with pytest.raises(KeyboardInterrupt):
+        main(arguments(project))
+    (run_dir,) = (project / "agent" / ".strands-evals" / "optimization" / "runs").iterdir()
+    (project / "agent" / "kill").unlink()
+    capsys.readouterr()
+
+    assert main(arguments(project, "--resume", str(run_dir))) == 0
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["improved"] is True
+    events = [json.loads(line) for line in (run_dir / "events.jsonl").read_text().splitlines()]
+    assert [event["event"] for event in events].count("resume") == 1
+    assert (run_dir / "effects.json").is_file()
+
+
+def test_resume_rejects_a_changed_judge(project, capsys):
+    assert main(arguments(project)) == 0
+    run_dir = json.loads(capsys.readouterr().out)["run_dir"]
+    command = arguments(project, "--resume", run_dir)
+    command[command.index("--evaluator") : command.index("--evaluator") + 2] = ["--contains", "Paris"]
+
+    assert main(command) == 2
+    assert "judge changed" in capsys.readouterr().err
+
+
+def test_a_factory_without_defaults_skips_the_instructions_check(project, capsys):
+    source = (project / "agent" / "agent.py").read_text()
+    (project / "agent" / "agent.py").write_text(
+        source.replace(
+            "def create_agent(instructions=None, temperature=0.7):", "def create_agent(instructions, temperature):"
+        )
+    )
+
+    assert main(arguments(project)) == 0
+
+    captured = capsys.readouterr()
+    assert "cannot compare instructions.md" in captured.err
+    assert json.loads(captured.out)["improved"] is True
+
+
+@pytest.mark.parametrize(
+    ("runner", "message", "raised"),
+    [
+        ("/bin/runner", "Runner failed (1): ThrottlingException: slow down", InfrastructureError),
+        ("/bin/runner", "Runner failed (1): TypeError in the agent", ProjectError),
+        (None, "Project does not support these runtime overrides", ProjectError),
+    ],
+)
+def test_runner_text_marks_transient_failures_for_a_rerun(runner, message, raised):
+    fake = Mock(runner=runner)
+    fake.run.side_effect = ProjectError(message)
+
+    with pytest.raises(raised):
+        optimize._rollout(fake)({"instructions": "x"}, Case(name="one", input=["hi"]))
