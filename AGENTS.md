@@ -80,7 +80,7 @@ strands-evals/
 │   │   ├── tool_parameter_accuracy_evaluator.py
 │   │   ├── tool_selection_accuracy_evaluator.py
 │   │   ├── trajectory_evaluator.py
-│   │   ├── typed_rubric_evaluator.py         # TypedRubricEvaluator + Noul / Score / Choice (DecisionModel-backed)
+│   │   ├── typed_rubric_evaluator.py         # TypedRubricEvaluator (DecisionModel-backed) + scoring formulas
 │   │   ├── multimodal_*.py                   # Multimodal evaluators (MLLM-as-a-Judge)
 │   │   ├── chaos/                            # Chaos-aware evaluators
 │   │   │   ├── failure_communication_evaluator.py
@@ -209,6 +209,7 @@ strands-evals/
 │       ├── trace.py                          # Session, Trace, SpanUnion
 │       ├── detector.py                       # FailureItem, RCAItem, DiagnosisResult, ...
 │       ├── multimodal.py
+│       ├── typed_rubric.py                   # Noul / Score / Choice rubric question types (pydantic dataclasses)
 │       ├── redteam/
 │       │   ├── config.py                     # AttackGoal, RedTeamConfig, Severity
 │       │   ├── risk_category.py              # RISK_CATEGORIES, DEFAULT_SEVERITY

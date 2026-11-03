@@ -2,7 +2,6 @@ import asyncio
 import copy
 import json
 import logging
-import pickle
 from datetime import datetime
 from unittest.mock import patch
 
@@ -92,53 +91,6 @@ YES = {"true": 0.9, "false": 0.1}
 
 
 @pytest.mark.parametrize(
-    "build, message",
-    [
-        (lambda: Noul(""), "question text"),
-        (lambda: Noul("q", weight=0), "weight"),
-        (lambda: Noul("q", weight=5e-324), "weight"),
-        (lambda: Noul("q", weight=1e7), "weight"),
-        (lambda: Noul("q", weight=float("nan")), "weight"),
-        (lambda: Noul("q", weight=True), "weight"),
-        (lambda: Noul("q", expected=1), "expected"),
-        (lambda: Noul("q", required="yes"), "required"),
-        (lambda: Noul("q", pass_threshold=1.5), "pass_threshold"),
-        (lambda: Noul("q", pass_threshold=True), "pass_threshold"),
-        (lambda: Score("q", levels=["only"]), "at least 2"),
-        (lambda: Score("q", levels="ab"), "sequence"),
-        (lambda: Score("q", levels=["a", "a"]), "distinct"),
-        (lambda: Score("q", levels=["a", "uncertain"]), "reserved"),
-        (lambda: Score("q", levels=["not_applicable", "poor", "good"]), "reserved"),
-        (lambda: Score("q", levels=["a", " "]), "label"),
-        (lambda: Choice("q", options={"a": 1.0}), "at least 2"),
-        (lambda: Choice("q", options={"a": 1.5, "b": 0.0}), "credit"),
-        (lambda: Choice("q", options={"a": True, "b": 0.0}), "credit"),
-        (lambda: Choice("q", options={"a": None, "b": None}), "numeric credit"),
-        (lambda: Choice("q", options={"uncertain": 1.0, "b": 0.0}), "reserved"),
-        (lambda: Choice("q", options={"yes": 1.0, "partially": 0.5, "not_applicable": 0.0}), "reserved"),
-        (lambda: Choice("q", options=[("a", 1.0), ("b", 0.0)]), "mapping"),
-    ],
-)
-def test_question_validation(build, message):
-    with pytest.raises(ValueError, match=message):
-        build()
-
-
-def test_question_collections_are_immutable_copies():
-    levels = ["poor", "good"]
-    options = {"yes": 1.0, "no": 0.0}
-    score = Score("q", levels=levels)
-    choice = Choice("q", options=options)
-    levels.append("great")
-    options["maybe"] = 0.5
-
-    assert score.levels == ("poor", "good")
-    assert dict(choice.options) == {"yes": 1.0, "no": 0.0}
-    with pytest.raises(TypeError):
-        choice.options["maybe"] = 0.5
-
-
-@pytest.mark.parametrize(
     "question",
     [
         Noul("q", weight=2.0, expected=False, required=True, pass_threshold=0.8),
@@ -146,30 +98,31 @@ def test_question_collections_are_immutable_copies():
         Choice("q", options={"a": 1.0, "b": 0.5, "n/a": None}, required=True),
     ],
 )
-def test_question_to_dict_round_trips(question):
-    data = question.to_dict()
+def test_question_round_trips_through_its_tagged_dict(question):
+    data = TypedRubricEvaluator([question], model=None).to_dict()["questions"]["q1"]
     assert json.loads(json.dumps(data)) == data
-    rebuilt = TypedRubricEvaluator([data], model=None).questions["q1"]
-    assert rebuilt == question
-
-
-def test_score_allows_more_than_ten_levels():
-    assert len(Score("Rate it from 0 to 10", levels=[str(i) for i in range(11)]).levels) == 11
+    assert data["question_type"] == type(question).__name__
+    assert TypedRubricEvaluator([data], model=None).questions["q1"] == question
 
 
 def test_invalid_tagged_question_names_its_id():
-    with pytest.raises(ValueError, match=r"question <q2> \| question weight"):
-        TypedRubricEvaluator([Noul("ok"), {"type": "noul", "text": "q", "weight": 0}], model=None)
-    with pytest.raises(TypeError, match=r"question <q1> \| .*wieght"):
-        TypedRubricEvaluator([{"type": "noul", "text": "q", "wieght": 2}], model=None)
+    with pytest.raises(ValueError, match=r"(?s)question <q2> \| .*weight"):
+        TypedRubricEvaluator([Noul("ok"), {"question_type": "Noul", "text": "q", "weight": 0}], model=None)
+    with pytest.raises(ValueError, match=r"(?s)question <safety> \| .*wieght"):
+        TypedRubricEvaluator({"safety": {"question_type": "Noul", "text": "q", "wieght": 2}}, model=None)
 
 
 @pytest.mark.parametrize(
-    "item, error",
-    [({"type": "slider", "text": "q"}, ValueError), ({"type": "noul", "txt": "q"}, TypeError), ("q", TypeError)],
+    "item, message",
+    [
+        ({"question_type": "Slider", "text": "q"}, "does not match any of the expected tags"),
+        ({"text": "q"}, "Unable to extract tag"),
+        ({"question_type": "Noul", "txt": "q"}, "txt"),
+        ("q", "valid dictionary or object"),
+    ],
 )
-def test_unknown_question_shapes_are_rejected(item, error):
-    with pytest.raises(error):
+def test_unknown_question_shapes_are_rejected(item, message):
+    with pytest.raises(ValueError, match=message):
         TypedRubricEvaluator([item], model=None)
 
 
@@ -214,9 +167,9 @@ def test_constructor_validation(kwargs, message):
         TypedRubricEvaluator(**args)
 
 
-def test_state_fields_list_is_stored_as_tuple():
-    evaluator = TypedRubricEvaluator([Noul("q")], model=None, state_fields=["input"])
-    assert evaluator.state_fields == ("input",)
+def test_state_fields_accept_any_sequence():
+    for fields in (["input"], ("input",)):
+        assert TypedRubricEvaluator([Noul("q")], model=None, state_fields=fields).to_dict()["state_fields"] == ["input"]
 
 
 # --- state ------------------------------------------------------------------------------------
@@ -508,7 +461,7 @@ async def test_row_metadata_shape():
     assert row.metadata == {
         "evaluated_by": "TypedRubricEvaluator",
         "question_id": "q1",
-        "question_type": "noul",
+        "question_type": "Noul",
         "question": "q",
         "weight": 2.0,
         "required": True,
@@ -664,20 +617,20 @@ def test_to_dict_writes_the_rubric_but_never_the_model(caplog):
         "evaluator_type": "TypedRubricEvaluator",
         "questions": {
             "q1": {
-                "type": "noul",
                 "text": "q",
                 "weight": 2.0,
+                "expected": True,
                 "required": False,
                 "pass_threshold": None,
-                "expected": True,
+                "question_type": "Noul",
             },
             "q2": {
-                "type": "choice",
                 "text": "c",
+                "options": {"a": 1.0, "b": None},
                 "weight": 1.0,
                 "required": False,
                 "pass_threshold": None,
-                "options": {"a": 1.0, "b": None},
+                "question_type": "Choice",
             },
         },
         "model": None,
@@ -896,14 +849,6 @@ def test_invalid_question_ids_are_rejected(questions):
 
 
 # --- copying ----------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "question", [Noul("q", weight=2.0), Score("q", levels=["a", "b"]), Choice("q", options=RISK, required=True)]
-)
-def test_questions_deep_copy_and_pickle(question):
-    assert copy.deepcopy(question) == question
-    assert pickle.loads(pickle.dumps(question)) == question
 
 
 def test_evaluator_with_a_choice_deep_copies():

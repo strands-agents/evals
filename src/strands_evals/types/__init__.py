@@ -20,6 +20,7 @@ from .evaluation import (
 from .evaluation_report import ReportT
 from .multimodal import AnyMediaData, ImageData, MultimodalInput, resolve_image_bytes
 from .simulation import ActorProfile, ActorResponse
+from .typed_rubric import Choice, Noul, RubricQuestion, Score
 
 __all__ = [
     "NOT_APPLICABLE",
@@ -44,4 +45,8 @@ __all__ = [
     "RCAItem",
     "RCAOutput",
     "RCAStructuredOutput",
+    "Noul",
+    "Score",
+    "Choice",
+    "RubricQuestion",
 ]
