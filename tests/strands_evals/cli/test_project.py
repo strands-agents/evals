@@ -204,3 +204,46 @@ def test_external_runner_error_and_bad_protocol(project, monkeypatch):
     )
     with pytest.raises(ProjectError, match="string output"):
         runner.run(case)
+
+
+def test_factory_receives_every_runtime_override(tmp_path):
+    from strands_evals.case import Case
+
+    source = tmp_path / "agent.py"
+    source.write_text(
+        "def create_agent(instructions='a', temperature=0.5):\n"
+        "    return lambda turn: f'{instructions}:{temperature}'\n"
+    )
+
+    output = ProjectRunner(source).run(Case(name="one", input=["hi"]), {"instructions": "b", "temperature": 0.1})
+
+    assert output["output"] == "b:0.1"
+
+
+def test_exported_agent_accepts_only_an_instructions_override(project):
+    source, directory = project
+    case = load_project_cases(directory)[0]
+    runner = ProjectRunner(source)
+
+    assert runner.run(case, {"instructions": "replacement"})["output"] == "one|two!"
+    with pytest.raises(ProjectError, match="create_agent factory that accepts temperature"):
+        runner.run(case, {"temperature": 0.2})
+    with pytest.raises(ProjectError, match="plain JSON values"):
+        runner.run(case, {"instructions": ["not", "plain"]})
+
+
+def test_external_runner_receives_every_override(project, monkeypatch):
+    source, directory = project
+    requests = []
+
+    def run(argv, **kwargs):
+        requests.append(json.loads(kwargs["input"]))
+        return SimpleNamespace(returncode=0, stdout=json.dumps({"output": "ok"}), stderr="")
+
+    monkeypatch.setattr("strands_evals.cli._project.subprocess.run", run)
+
+    ProjectRunner(source, runner=sys.executable).run(
+        load_project_cases(directory)[0], {"instructions": "x", "turns": 4}
+    )
+
+    assert requests[-1]["overrides"] == {"instructions": "x", "turns": 4}

@@ -120,7 +120,7 @@ Installing `strands-agents-evals` also installs the `strands-evals` console scri
 | `strands-evals diagnose` | Run `detect_failures`, `analyze_root_cause`, or the full `diagnose_session` pipeline on a Session JSON file. |
 | `strands-evals generate` | Synthesize an Experiment via `ExperimentGenerator` from a free-form `--context` or an existing `--experiment` file. |
 | `strands-evals fetch` | Fetch a session from a supported telemetry provider for local inspection. |
-| `strands-evals optimize` | Run bounded, instructions-only optimization with training and holdout gates; write a patch for manual review without editing project source (POC). |
+| `strands-evals optimize` | Search for changes to declared keys on train, pick on validation, and report test. Write a diff for review. `--apply` writes the winner's files. |
 
 For source-project evaluation, capture case format, external runners, and optimization costs and limitations, see [Project development](./PROJECT_DEVELOPMENT.md).
 

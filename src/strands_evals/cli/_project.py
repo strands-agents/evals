@@ -1,9 +1,9 @@
 """Source-project execution shared by run and optimize.
 
 External runners receive one JSONL request on stdin and must write one JSON object
-on stdout: ``{output: string, trajectory?: array}``. Requests contain ``project``,
-``case_id``, ``user_turns`` and optional ``overrides``. Each case gets a fresh process.
-Project sources are trusted executable code, not sandboxed configuration.
+on stdout: `{output: string, trajectory?: array}`. Requests contain `project`,
+`case_id`, `user_turns` and optional `overrides`: declared key -> JSON value. Each case
+gets a fresh process. Project sources are trusted executable code, not sandboxed configuration.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Awaitable
 from pathlib import Path
 from typing import Any, Iterator, cast
 from urllib.parse import urlparse
@@ -111,6 +112,18 @@ class AssertionContains(Contains):
 
     def evaluate(self, evaluation_case: Any) -> Any:
         return Contains(value=evaluation_case.expected_output).evaluate(evaluation_case)
+
+
+async def _resolve(value: Awaitable[Any]) -> Any:
+    return await value
+
+
+def default_project_evaluator() -> OutputEvaluator:
+    """The default judge for project cases: does the final output satisfy the case assertion."""
+    return OutputEvaluator(
+        rubric="Judge whether the actual output satisfies the assertion in expected_output. "
+        "Use the complete user conversation as context. Do not require verbatim wording."
+    )
 
 
 def _collector_env(collector: str | None) -> dict[str, str]:
@@ -222,10 +235,17 @@ class ProjectRunner:
                 args, opts = construction
                 assert original is not None
                 agent = original(*args, **{**opts, **overrides})
-            elif agent is not None and isinstance(getattr(agent, "system_prompt", None), str):
+            elif (
+                agent is not None
+                and set(overrides) == {"instructions"}
+                and isinstance(getattr(agent, "system_prompt", None), str)
+            ):
                 agent.system_prompt = overrides["instructions"]
             else:
-                raise ProjectError("Project does not support runtime instructions overrides")
+                raise ProjectError(
+                    "Project does not support these runtime overrides: export a create_agent factory that "
+                    f"accepts {', '.join(sorted(overrides))}"
+                )
         if not callable(agent):
             raise ProjectError('Project must export callable "agent" or "create_agent"')
         return agent
@@ -265,10 +285,11 @@ class ProjectRunner:
 
     def run(self, case: Case, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
         """Replay only user turns; return the final output and newly generated trajectory."""
-        if overrides is not None and (
-            set(overrides) != {"instructions"} or not isinstance(overrides["instructions"], str)
+        if overrides is not None and any(
+            not isinstance(key, str) or (value is not None and not isinstance(value, (str, int, float, bool)))
+            for key, value in overrides.items()
         ):
-            raise ProjectError("Only a string instructions runtime override is supported")
+            raise ProjectError("Runtime overrides must map key names to plain JSON values")
         if self.runner:
             request = {"project": str(self.project), "case_id": case.name, "user_turns": case.input}
             if overrides is not None:
@@ -286,7 +307,7 @@ class ProjectRunner:
             for turn in case.input:
                 response = agent(turn)
                 if inspect.isawaitable(response):
-                    response = asyncio.run(response)
+                    response = asyncio.run(_resolve(response))
                 output = str(response)
                 trajectory.extend([{"role": "user", "content": turn}, {"role": "assistant", "content": output}])
             return {"output": output, "trajectory": trajectory}
@@ -324,14 +345,5 @@ def evaluate_project(
     if not cases:
         raise ProjectError("At least one case is required")
     outputs = {case.name: runner.run(case, overrides) for case in cases}
-    experiment = Experiment(
-        cases=cases,
-        evaluators=evaluators
-        or [
-            OutputEvaluator(
-                rubric="Judge whether the actual output satisfies the assertion in expected_output. "
-                "Use the complete user conversation as context. Do not require verbatim wording."
-            )
-        ],
-    )
+    experiment = Experiment(cases=cases, evaluators=evaluators or [default_project_evaluator()])
     return asyncio.run(experiment.run_evaluations_async(lambda case: outputs[case.name], max_workers=1))

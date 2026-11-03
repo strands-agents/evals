@@ -1,142 +1,197 @@
-"""Command integration tests with deterministic local runners and judges."""
-
-import argparse
 import json
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
-from strands_evals.cli._common import make_global_parent
-from strands_evals.cli.commands import optimize
-from strands_evals.types.evaluation_report import EvaluationReport
+from strands_evals.cli.main import main
+
+AGENT = """\
+from pathlib import Path
 
 
-def arguments(tmp_path, *extra):
-    parser = argparse.ArgumentParser()
-    optimize.add_subparser(parser.add_subparsers(dest="command"), make_global_parent())
-    (tmp_path / "agent.py").write_text("# source\n")
-    (tmp_path / "instructions.md").write_text("original\n")
-    (tmp_path / "cases").mkdir(exist_ok=True)
-    for i in range(8):
-        (tmp_path / "cases" / f"{i}.json").write_text(
-            json.dumps({"id": str(i), "userTurns": [{"content": f"question {i}"}], "assertion": "answer"})
+def create_agent(instructions=None, temperature=0.7):
+    if instructions is None:
+        instructions = Path(__file__).with_name("instructions.md").read_text(encoding="utf-8")
+
+    class Echo:
+        system_prompt = instructions
+
+        def __call__(self, prompt):
+            return "Paris" if "geography" in instructions and temperature < 0.5 else "unknown"
+
+    return Echo()
+"""
+
+
+@pytest.fixture
+def project(tmp_path):
+    root = tmp_path / "agent"
+    root.mkdir()
+    (root / "agent.py").write_text(AGENT)
+    (root / "instructions.md").write_text("You are a helpful assistant.\n")
+    cases = tmp_path / "cases"
+    cases.mkdir()
+    for index in range(10):
+        (cases / f"{index:02d}.json").write_text(
+            json.dumps({"id": f"case-{index:02d}", "assertion": "Paris", "userTurns": [{"content": "Capital?"}]})
         )
-    (tmp_path / "proposals.json").write_text(json.dumps(["candidate one\n", "candidate two\n"]))
-    return parser.parse_args(
-        [
-            "optimize",
-            str(tmp_path),
-            "--cases",
-            str(tmp_path / "cases"),
-            "--instructions-file",
-            str(tmp_path / "instructions.md"),
-            "--budget",
-            "2",
-            "--proposal-file",
-            str(tmp_path / "proposals.json"),
-            *extra,
-        ]
-    )
-
-
-def test_dry_run_never_loads_source_or_calls_models(tmp_path, monkeypatch, capsys):
-    runner = Mock(side_effect=AssertionError("must not load source"))
-    judge = Mock(side_effect=AssertionError("must not evaluate"))
-    monkeypatch.setattr("strands_evals.cli._project.ProjectRunner", runner)
-    monkeypatch.setattr("strands_evals.cli._project.evaluate_project", judge)
-    monkeypatch.setattr(optimize, "generate_proposal", Mock(side_effect=AssertionError("must not propose")))
-    assert optimize._run(arguments(tmp_path, "--dry-run")) == 0
-    report = json.loads(capsys.readouterr().out)
-    assert report["dry_run"]
-    assert report["max_rollouts"] == 19
-    assert report["proposal_budget"] == 2
-    assert report["monetary_estimate"] is None
-    assert not (tmp_path / ".strands").exists()
-    runner.assert_not_called()
-    judge.assert_not_called()
-
-
-def test_command_uses_runtime_overrides_and_resumes(tmp_path, monkeypatch, capsys):
-    runner = Mock()
-    runner.get_instructions.return_value = "original\n"
-    monkeypatch.setattr("strands_evals.cli._project.ProjectRunner", Mock(return_value=runner))
-    observed = []
-
-    def evaluate(actual_runner, cases, overrides):
-        assert actual_runner is runner
-        assert set(overrides) == {"instructions"}
-        observed.append(([case.name for case in cases], overrides["instructions"]))
-        score = 0.2 if overrides["instructions"] == "original\n" else 0.8
-        return EvaluationReport(
-            overall_score=score,
-            scores=[score] * len(cases),
-            cases=[{} for _ in cases],
-            test_passes=[True] * len(cases),
+    (tmp_path / "space.json").write_text(
+        json.dumps(
+            {
+                "instructions": {"marker": "FileText", "path": "instructions.md"},
+                "temperature": {"marker": "Float", "min_value": 0.0, "max_value": 1.0, "default": 0.7},
+            }
         )
-
-    monkeypatch.setattr("strands_evals.cli._project.evaluate_project", evaluate)
-    args = arguments(tmp_path)
-    assert optimize._run(args) == 0
-    first = json.loads(capsys.readouterr().out)
-    assert first["accepted"]
-    assert len(observed) == 19
-    assert [entry[0] for entry in observed[:3]] == [entry[0] for entry in observed[3:6]]
-    assert {entry[0][0] for entry in observed[:3]}.isdisjoint(entry[0][0] for entry in observed[9:14])
-    assert (tmp_path / "instructions.md").read_text() == "original\n"
-    args.resume = first["run_id"]
-    assert optimize._run(args) == 0
-    assert json.loads(capsys.readouterr().out)["run_id"] == first["run_id"]
-    assert len(observed) == 19
-    # A changed source must not silently reuse cached results.
-    (tmp_path / "agent.py").write_text("# changed\n")
-    assert optimize._run(args) == 2
-    assert "changed" in capsys.readouterr().err
-
-
-def test_source_extraction_mismatch_fails_before_evaluation(tmp_path, monkeypatch, capsys):
-    runner = Mock()
-    runner.get_instructions.return_value = "unrelated source prompt"
-    monkeypatch.setattr("strands_evals.cli._project.ProjectRunner", Mock(return_value=runner))
-    judge = Mock(side_effect=AssertionError("must not evaluate"))
-    monkeypatch.setattr("strands_evals.cli._project.evaluate_project", judge)
-    assert optimize._run(arguments(tmp_path)) == 2
-    assert "does not exactly match" in capsys.readouterr().err
-    judge.assert_not_called()
-
-
-def test_explicit_instructions_must_be_inside_project(tmp_path, capsys):
-    args = arguments(tmp_path)
-    args.instructions_file = str(tmp_path.parent / "outside.md")
-    assert optimize._run(args) == 2
-    assert "inside the project" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("contents", ["[]", '["one"]', "[1,2]", "{}"])
-def test_offline_proposals_validate_budget_and_shape(tmp_path, contents):
-    file = tmp_path / "proposals.json"
-    file.write_text(contents)
-    with pytest.raises(ValueError):
-        optimize._load_proposals(str(file), 2)
-
-
-def test_real_python_runner_uses_instructions_override(tmp_path, monkeypatch, capsys):
-    from strands_evals.cli._project import AssertionContains, evaluate_project
-
-    args = arguments(tmp_path)
-    (tmp_path / "agent.py").write_text(
-        "class Agent:\n"
-        "    system_prompt = 'original\\n'\n"
-        "    def __call__(self, prompt):\n"
-        "        return 'answer' if self.system_prompt.startswith('candidate') else 'wrong'\n"
-        "agent = Agent()\n"
     )
+    (tmp_path / "patches.json").write_text(
+        json.dumps(
+            [
+                {"updates": {"instructions": "You are a geography assistant.\n"}, "rationale": "domain"},
+                {
+                    "updates": {"instructions": "You are a geography assistant.\n", "temperature": 0.2},
+                    "rationale": "both",
+                },
+            ]
+        )
+    )
+    return tmp_path
+
+
+def arguments(project, *extra):
+    return [
+        "optimize",
+        str(project / "agent"),
+        "--cases",
+        str(project / "cases"),
+        "--space",
+        str(project / "space.json"),
+        "--evaluator",
+        "contains",
+        "--proposal-file",
+        str(project / "patches.json"),
+        *extra,
+    ]
+
+
+def test_dry_run_prints_the_plan_without_loading_source(project, monkeypatch, capsys):
     monkeypatch.setattr(
-        "strands_evals.cli._project.evaluate_project",
-        lambda runner, cases, overrides: evaluate_project(runner, cases, [AssertionContains()], overrides),
+        "strands_evals.cli.commands.optimize.ProjectRunner", Mock(side_effect=AssertionError("must not load"))
     )
-    assert optimize._run(args) == 0
-    report = json.loads(capsys.readouterr().out)
-    assert report["accepted"]
-    assert report["evaluations"]["baseline_training"]["overall_score"] == 0
-    assert report["evaluations"]["winner_holdout"]["overall_score"] == 1
-    assert (tmp_path / "instructions.md").read_text() == "original\n"
+
+    assert main(arguments(project, "--dry-run", "--max-rollouts", "60")) == 0
+
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["rollouts"] == {
+        "baseline": 4,
+        "per_candidate": 4,
+        "validation_reserve": 12,
+        "test_reserve": 6,
+        "search": 38,
+        "max_candidates": 9,
+    }
+    assert plan["objective"] == "Maximize(Contains)"
+    assert [param["key"] for param in plan["space"]] == ["instructions", "temperature"]
+    assert "default" not in plan["space"][0] and plan["space"][0]["chars"] == 29
+    assert not (project / "agent" / ".strands-evals").exists()
+
+
+def test_optimizes_end_to_end_then_applies_the_pick(project, capsys):
+    assert main(arguments(project, "--name", "demo")) == 0
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["improved"] is True
+    assert result["best"]["values"] == {"instructions": "You are a geography assistant.\n", "temperature": 0.2}
+    assert result["changed_values"] == {"temperature": {"old": 0.7, "new": 0.2}}
+    run_dir = Path(result["run_dir"])
+    assert run_dir.parent == project / "agent" / ".strands-evals" / "optimization" / "runs"
+    assert run_dir.name.startswith("demo-")
+    assert (run_dir / "best.diff").read_text() == result["diff"] and "+You are a geography" in result["diff"]
+
+    assert main(["optimize", "--apply", str(run_dir)]) == 0
+
+    applied = json.loads(capsys.readouterr().out)
+    assert applied["manual"] == {"temperature": {"old": 0.7, "new": 0.2}}
+    assert (project / "agent" / "instructions.md").read_text() == "You are a geography assistant.\n"
+
+
+def test_resume_of_a_finished_run_returns_the_same_result(project, capsys):
+    assert main(arguments(project)) == 0
+    first = json.loads(capsys.readouterr().out)
+
+    assert main(arguments(project, "--resume", first["run_dir"])) == 0
+
+    assert json.loads(capsys.readouterr().out) == first
+
+
+def test_resume_rejects_a_changed_objective(project, capsys):
+    assert main(arguments(project)) == 0
+    run_dir = json.loads(capsys.readouterr().out)["run_dir"]
+
+    code = main(arguments(project, "--resume", run_dir, "--objective", "minimize:seconds"))
+
+    assert code == 2
+    assert "objective changed" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (["--resume", "RUN", "--split", "0.5,0.5"], "--split: read from run.json on resume"),
+        (["--candidate", "abc"], "--candidate needs --apply"),
+        (["--finalists", "0"], "--finalists must be at least 1"),
+        (["--split", "0.5,0.6"], "sum to 1"),
+        (["--objective", "maximize:tokens"], "not measured in project mode"),
+        (["--max-rollouts", "10"], "below the 22 rollouts"),
+        (["--crash-score", "bad"], "--crash-score"),
+        (["--name", "Bad Name"], "--name"),
+    ],
+)
+def test_rejects_bad_flags_with_exit_code_2(project, capsys, extra, message):
+    assert main(arguments(project, *extra)) == 2
+    assert message in capsys.readouterr().err
+
+
+def test_needs_a_space_and_cases(project, capsys):
+    assert main(["optimize", str(project / "agent"), "--cases", str(project / "cases")]) == 2
+    assert "--space FILE or --instructions-file FILE" in capsys.readouterr().err
+
+
+def test_text_keys_need_a_proposer_for_a_real_run(project, capsys):
+    command = [
+        "optimize",
+        str(project / "agent"),
+        "--cases",
+        str(project / "cases"),
+        "--space",
+        str(project / "space.json"),
+    ]
+
+    assert main(command) == 2
+    assert "--proposal-model" in capsys.readouterr().err
+    assert main([*command, "--dry-run"]) == 0
+    assert json.loads(capsys.readouterr().out)["warnings"]
+
+
+def test_rejects_an_instructions_file_that_the_agent_does_not_use(project, capsys):
+    (project / "agent" / "other.md").write_text("Something else.\n")
+    command = arguments(project)
+    command[command.index("--space") : command.index("--space") + 2] = [
+        "--instructions-file",
+        str(project / "agent" / "other.md"),
+    ]
+
+    assert main(command) == 2
+    assert "does not match the instructions" in capsys.readouterr().err
+
+
+def test_a_missing_optimization_extra_exits_3_with_the_install_command(project, monkeypatch, capsys):
+    monkeypatch.setattr("strands_evals.cli._optimize.scoring.importlib.util.find_spec", lambda name: None)
+
+    assert main(arguments(project)) == 3
+    assert "strands-agents-evals[optimization]" in capsys.readouterr().err
+
+
+def test_apply_rejects_project_flags(project, capsys):
+    assert main(["optimize", str(project / "agent"), "--apply", "RUN"]) == 2
+    assert "--apply takes only" in capsys.readouterr().err

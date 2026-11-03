@@ -1,6 +1,6 @@
 # Project development with Strands Evals
 
-`strands-evals run --project` evaluates a source-defined agent against captured user conversations. `strands-evals optimize` is a bounded, instructions-only proof of concept: it evaluates replacement instructions and writes a patch for manual review. It never applies the patch or edits project source.
+`strands-evals run --project` evaluates a source-defined agent against captured user conversations. `strands-evals optimize` searches for changes to the keys that you declare. It follows the planned optimization API (#442). It writes a diff for review and edits source only when you run `--apply`.
 
 These commands execute **trusted project code**, not sandboxed configuration. Imports, factories, tools, and external runners can access your files, credentials, network, and other resources. Review the source and runner before using them. Agent rollouts, judges, and proposal generation can incur provider costs.
 
@@ -98,7 +98,7 @@ strands-evals run --project ./my-agent/agent.ts --cases ./captures \
   --runner /absolute/path/to/runner --contains "Paris"
 ```
 
-`--runner` names an executable, not a shell command with arguments. Use an executable wrapper script if arguments are needed. It is supported for Python too. Use an absolute executable path for optimization: the optimizer fingerprints the runner by reading that path.
+`--runner` names an executable, not a shell command with arguments. Use an executable wrapper script if arguments are needed. It is supported for Python too.
 
 Each request launches a fresh process with the entrypoint directory as its working directory and the inherited environment. The runner receives one newline-terminated JSON object on stdin. Normal execution has no `action` field:
 
@@ -114,7 +114,7 @@ The runner must execute those turns in order and return an object with a string 
 
 Return a zero process exit code on success. Write diagnostics to stderr and a single JSON response line to stdout. The implementation parses the **last stdout line**, but do not rely on extra stdout chatter. Invalid JSON, non-object responses, non-string output, non-array trajectory, nonzero exit codes, and the 300-second subprocess timeout fail execution. There is no corresponding built-in timeout for native Python calls.
 
-For optimization, the runner must additionally support instruction inspection:
+When an optimization space has an `instructions` key with a file, the runner must also support inspection:
 
 ```json
 {"project":"/absolute/path/to/agent.ts","action":"inspect"}
@@ -126,7 +126,7 @@ Respond with the actual nonempty runtime instructions:
 {"instructions":"You are a helpful geography assistant.\n"}
 ```
 
-Optimization execution requests also carry `"overrides":{"instructions":"replacement instructions"}`. The runner must apply that value at runtime, without rewriting source. No other override keys are supported. Inspection and each case run use separate processes; persistence between them must not be assumed.
+Optimization requests also carry `"overrides": {"<key>": <value>}`, with the value of every declared key. The runner must apply each value at runtime, without a change to source. A runner that ignores a key makes that key useless to the search. Inspection and each case run use separate processes. Do not keep state between them.
 
 `--collector-endpoint URL` accepts an absolute HTTP(S) URL and sets the OTLP endpoint, traces endpoint (`URL/v1/traces`), exporter (`otlp`), and protocol (`http/protobuf`) in the execution environment. It does not start a collector or guarantee that an agent has configured telemetry export.
 
@@ -138,74 +138,119 @@ Project mode requires `--cases` and cannot be combined with an experiment positi
 
 The default `--fail-on any` exits 1 if any evaluation fails. `--fail-on threshold:0.8` exits 1 when the overall score is below 0.8; `--fail-on none` or `--exit-zero` suppress score-based failure, not execution/input errors. Invalid project inputs and runner protocol errors return 2; other project execution exceptions return 1. Source execution happens before grading, so a failed rollout is not silently turned into a successful score. Judge failures may be represented as failed evaluation rows; inspect report reasons rather than only the average score.
 
-## Optimize instructions
+## Optimize an agent
 
-Keep baseline instructions in an existing UTF-8 file **inside the project root**. The root is the directory passed as the project, or the parent of an explicit entrypoint. In a real run, the file's text must exactly match the extracted runtime instructions, including whitespace and trailing newlines. Extraction uses the Python agent's string `system_prompt` or captured `strands_harness.create_harness(..., instructions=...)` construction; external runners use the inspection response. It does not guess a prompt by searching source literals.
+`strands-evals optimize` follows the planned optimization API (#442) with an interim engine. The engine uses the planned records and run folder. It has no score model yet, so it ranks candidates by measured means.
 
-Native Python replacement instructions are passed as `create_agent(instructions=...)`, used to reconstruct a captured harness with changed instructions, or assigned to an exported agent's string `system_prompt`. Ensure your factory/runner actually honors the override. Only instructions are tuned: model selection, tools, source code, and other configuration are not optimization targets.
+### Declare what can change
 
-### Plan before spending
+Write a space file. Each key names one marker from the plan. The CLI supports these markers:
 
-```bash
-strands-evals optimize --project ./my-agent --cases ./captures \
-  --instructions-file ./my-agent/instructions.txt \
-  --budget 3 --holdout-size 5 --dry-run
+| Marker | Fields | Proposer |
+| --- | --- | --- |
+| `FileText` | `path`, `size_cap`, `edit_instructions` | Reflection |
+| `TextValue` | `default`, `size_cap`, `edit_instructions` | Reflection |
+| `Int` | `min_value`, `max_value`, `default`, `log` | Random |
+| `Float` | `min_value`, `max_value`, `default`, `log` | Random |
+| `OneOf` | `options`, `default` | Random |
+
+```json
+{
+  "instructions": {"marker": "FileText", "path": "instructions.md"},
+  "temperature": {"marker": "Float", "min_value": 0.0, "max_value": 1.0, "default": 0.7},
+  "model": {"marker": "OneOf", "options": ["model-a", "model-b"]}
+}
 ```
 
-Exactly one project is required, either `--project PATH` or positional `PATH`. `--dry-run` validates the input file/dataset, split sizes, and supplied proposal file, fingerprints source, and prints a JSON plan. It does not import project source, inspect runtime instructions, invoke the runner, call models, or create a run directory. It is **not** proof that the source, runtime match, runner, credentials, or resume manifest will work in a real run.
+- A `FileText` path is relative to the project root. The file must be inside the project. Its text is the baseline.
+- `--instructions-file FILE` is a shortcut for one `FileText` key named `instructions`.
+- `JsonField`, `SkillLibrary`, `choice`, and `component` are planned. The CLI rejects them at this time.
+- `Random` is a stand-in for the planned `TPE` search.
 
-The plan includes a maximum of `budget + 3` evaluation batches and `(budget + 1) * training_cases + 2 * holdout_cases` rollouts. Proposal generation adds up to `budget` model requests; each rollout may make many agent/tool/model calls, and judges can add further calls. `monetary_estimate` is `null` because provider pricing and token usage are unknown. The budget bounds candidate count, **not tokens, time, or dollars**.
+The agent must accept every key at runtime, for each candidate and for the baseline:
 
-### Propose and evaluate
+- A Python project exports `create_agent(**keys)`.
+- A Python project that calls `strands_harness.create_harness(...)` gets the keys as harness options.
+- An external runner gets `"overrides"` in each request. See the runner protocol above.
 
-```bash
-# Explicit proposal model; agent and default assertion judge may also call models.
-strands-evals optimize ./my-agent --cases ./captures \
-  --instructions-file ./my-agent/instructions.txt \
-  --proposal-model YOUR_MODEL_ID --budget 3
+When the space has an `instructions` key with a file, the CLI compares that file with the instructions that the agent uses at runtime. If the two are different, the run stops before it spends.
 
-# No proposal model or LLM judge: provide one candidate and a fixed substring gate.
-# Agent/tool execution can still incur costs.
-strands-evals optimize ./my-agent --cases ./captures \
-  --instructions-file ./my-agent/instructions.txt \
-  --proposal-file ./candidate.txt --budget 1 --contains "Paris"
-```
-
-A real run needs `--proposal-model` or `--proposal-file`; there is no implicit proposal model. A plain-text proposal file supplies one replacement, so use `--budget 1`. A `.json` proposal file supplies an array of nonempty instruction strings, with at least `--budget` entries. If both options are given, the file supplies the proposals. Generated proposals see current best instructions and training evaluation feedback, not holdout feedback. Default grading is the same assertion judge as project `run`; `--contains TEXT` substitutes the fixed deterministic gate. Optimize does not expose `run`'s custom evaluator/rubric flags.
-
-The selection rules are deliberately strict:
-
-1. Deterministically split cases into disjoint training and holdout sets. Holdout defaults to five cases and must contain at least five, plus at least one training case (at least six total). `--allow-small-holdout` permits smaller positive holdouts **for testing only**.
-2. Evaluate baseline instructions on training cases. Evaluate each of up to `--budget` proposals (default three, minimum one) on training cases.
-3. Replace the current best only on a strictly higher training score. Ties are rejected. Reaching a good score does not end the budget early.
-4. If training produced an improvement, evaluate the original baseline and the best candidate on holdout. Accept only a strictly higher holdout score. A holdout tie rejects the candidate; no training improvement means no holdout evaluation or accepted patch.
-
-These are average-score gates, not guarantees that every case improves or that the change is statistically significant. Errors, incomplete reports, non-finite scores, or evaluator/task error reasons fail optimization rather than count as valid improvements.
-
-### Artifacts and resume limits
-
-A real run stores `.strands/runs/<run-id>/manifest.json` inside the project root and returns JSON state on stdout. It records the baseline text, options, split indices, proposals, reports, fingerprint, and status. On acceptance it also writes `winner.instructions.txt` and `winner.patch`, a unified diff targeting the instructions file. On rejection, `accepted` is false and `patch_path` is null. Successful completion returns 0 even when no proposal is accepted; bad inputs/`ValueError`/filesystem errors return 2, and other runtime failures return 3.
-
-Review the evidence and patch yourself. **No source file is automatically edited, and there is no automatic patch application.** Treat saved prompts, feedback, reports, and generated text as potentially sensitive and untrusted.
+### Plan before you spend
 
 ```bash
-# Reuse the exact original invocation/options, adding the printed run ID.
-strands-evals optimize ./my-agent --cases ./captures \
-  --instructions-file ./my-agent/instructions.txt \
-  --proposal-file ./candidate.txt --budget 1 --contains "Paris" \
-  --resume RUN_ID
+strands-evals optimize ./my-agent --cases ./captures --space ./space.json \
+  --proposal-model MODEL_ID --dry-run
 ```
 
-`--resume` accepts a run ID or a path to an existing directory directly under that project's `.strands/runs`. Resume checks manifest version and fingerprints of project source, baseline instructions, dataset, and options. Keep paths and all recorded options unchanged, including budget, holdout size, runner and proposal settings. Dataset file bytes are fingerprinted as well as normalized cases, so even JSON formatting changes can invalidate resume.
+`--dry-run` reads the space and the cases, then prints a JSON plan. It does not import source, call models, or make a run folder. The plan gives the split, the objective, and these rollout counts:
 
-Project fingerprinting includes regular nonsymlink files under the root, excluding `.strands`, `.git`, `.venv`, `venv`, `node_modules`, `__pycache__`, `.pytest_cache`, `dist`, and `build`. Dependencies, symlink targets, environment/credentials, provider behavior, and files outside the root are not comprehensively fingerprinted. Put reports and scratch outputs outside the root or in `.strands` to avoid accidentally changing its fingerprint. Source is checked again before uncached evaluations; this is a change guard, not an immutable snapshot.
+- `baseline`: the rollouts that score the baseline on train.
+- `validation_reserve`: `(finalists + 1) x validation cases x runs`.
+- `test_reserve`: `2 x test cases x runs`.
+- `search`: what the search can spend. `max_candidates` is `search / per_candidate`.
 
-Persistence is deliberately limited:
+One rollout runs one case one time. `--max-rollouts` (default 500) does not count judge calls or proposer calls. `monetary_estimate` is `null` because the token use is not known.
 
-- Manifest writes use a temporary file, flush/fsync, and atomic replacement. This is not a transactional database, multi-process lock, or guarantee against every crash scenario. Do not run concurrent writers against one run.
-- Completed proposals and evaluations are reused. The CLI checkpoints completed individual cases as well as aggregate reports, so a completed case need not be rerun after interruption. It does not checkpoint inside a case, a model call, or a tool execution.
-- An interruption after an external call but before its checkpoint can repeat that call and its cost/side effects. Filesystem/process state and provider/model state are not restored.
-- Recorded proposal failures consume a budget slot. Recorded evaluation failures and proposal failures are re-raised on resume; resume is not an automatic retry mechanism. Start a new run after correcting a recorded failure.
-- Winner text and patch are written separately from the final manifest, not atomically as a group. There is no separate durable call ledger, token/cost accounting, or general rollback. Reports preserve evaluation evidence, not a full independent trace/capture store.
+### Run
+
+```bash
+strands-evals optimize ./my-agent --cases ./captures --space ./space.json \
+  --proposal-model MODEL_ID --max-rollouts 200
+```
+
+The run follows the planned loop:
+
+1. Split the cases into train, validation, and test. `--split` sets the shares (default `0.4,0.3,0.3`). `--seed` sets the shuffle.
+2. Score the baseline on train.
+3. Select the best train candidate as the parent. One proposer suggests patches. The proposers take turns.
+4. Score each new candidate on train.
+5. Stop on `budget`, `iterations` (`--max-iterations`), `exhausted`, or `proposer_error`.
+6. Measure the top `--finalists` (default 3) and the baseline on validation. The highest validation score ships. A tie keeps the baseline.
+7. Compare the winner with the baseline on test. The test result is for the report only. It does not change what ships.
+
+Without a score model, a candidate can win on validation by chance. Read the test report before you apply a change. `--runs-per-candidate N` measures each case N times, which helps with noisy judges.
+
+The default judge is the assertion judge of `run --project`. `--evaluator contains` and `--contains TEXT` select substring checks. `--objective maximize:METRIC` or `minimize:METRIC` selects what to optimize. Repeat the flag for a weighted sum, with `:weight=N` and `:scale=N`. The default maximizes every evaluator. `seconds` is the only usage metric in project mode, because project mode does not capture chat spans yet.
+
+An agent error counts as the worst score. `--crash-score none` counts it as missing, and a number sets the score. A throttle, network, or `InfrastructureError` failure runs again, up to `--rerun-passes` times (default 2). If every baseline trial fails, the run stops before the search and exits 3.
+
+`--proposal-file FILE` replaces the proposers for an offline run. The file is a JSON list of patches, `{"updates": {"<key>": <value>}, "rationale": "..."}`. A plain-text file, or a list of strings, gives texts for a space with one text key.
+
+### Read the results
+
+Each run writes `<project>/.strands-evals/optimization/runs/<run-id>/`. `--base-dir` sets another parent folder. `--name` sets a prefix for the run ID.
+
+| File | Contents |
+| --- | --- |
+| `run.json` | The run configuration. Resume compares it. |
+| `events.jsonl` | One event per line, in the planned event names. Read it for live progress. |
+| `transcripts/` | Each trajectory one time, by content hash. |
+| `best.diff` | A unified diff of the changed texts, for review. |
+| `best.values.json` | The changed numbers and choices, as `{"<key>": {"old": ..., "new": ...}}`. |
+| `result.json` | The result. stdout gets the same JSON. |
+
+The result has the planned `OptimizationResult` fields: `improved`, `best`, `baseline`, `validation`, `test`, `stop_reason`, `iterations`, `rollouts_spent`, and the costs. It also has `diff` and `changed_values`. stderr gets the run folder first, then one line for each iteration.
+
+The exit code is 0 when the run completes, also when nothing improves. It is 2 for bad input, and 3 for a runtime failure or a setup stop.
+
+### Resume a killed run
+
+```bash
+strands-evals optimize ./my-agent --cases ./captures --space ./space.json \
+  --proposal-model MODEL_ID --resume ./my-agent/.strands-evals/optimization/runs/RUN_ID
+```
+
+Give the same project, cases, space, objective, judge, and proposer flags. If one changed, resume stops and names it. Resume reads the split, the seed, the finalists, and the other settings from `run.json`, so do not give them again. A killed run can get a larger `--max-rollouts` or `--max-iterations`.
+
+Resume uses every saved trial again. It discards a killed iteration and runs that iteration again. A finished run does not continue: resume returns its result again, with no new rollouts. To search more, start a new run.
+
+### Apply the winner
+
+```bash
+strands-evals optimize --apply ./my-agent/.strands-evals/optimization/runs/RUN_ID --dry-run
+strands-evals optimize --apply ./my-agent/.strands-evals/optimization/runs/RUN_ID
+```
+
+`--apply` writes the `FileText` values of the winner into their files. Each file must still have the text that the run started with, else the command stops. Numbers, choices, and `TextValue` texts stay unchanged: the output lists them under `manual`. `--candidate ID` applies another candidate. With `--dry-run`, the command lists the files and writes nothing.
 
 Use `strands-evals run --help` and `strands-evals optimize --help` for the current parser options. Common verbosity/format flags are accepted, but project reports and optimization results remain JSON unless a project report display is explicitly requested.
