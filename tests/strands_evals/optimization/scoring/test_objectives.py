@@ -432,6 +432,17 @@ def test_a_score_outside_its_range_is_taken_out_with_a_reason_never_clipped():
     assert not train.is_eligible
 
 
+@pytest.mark.parametrize("bad", [math.nan, math.inf])
+def test_a_score_that_is_not_finite_is_taken_out_even_with_no_range(bad):
+    registry = MetricRegistry({"Open": (None, None)})
+    criteria = Criteria(Maximize("Open"), [], registry)
+    records = [record("a", 0, scores={"Open": bad}), record("b", 0, scores={"Open": 3.0})]
+    train = score("c1", records, criteria, SPLITS).train
+    assert "not a finite number" in train.unavailable["a"][0]["Open"]
+    assert train.objective == 3.0
+    assert not train.is_eligible
+
+
 def test_an_evaluator_not_applicable_on_a_case_does_not_count_against_eligibility():
     criteria = Criteria(WeightedSum(Maximize("Helpfulness"), Maximize("Stars")), [], REGISTRY)
     records = [

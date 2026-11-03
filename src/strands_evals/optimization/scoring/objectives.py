@@ -74,20 +74,13 @@ class Minimize(_Direction):
 
 
 @dataclass(frozen=True, init=False)
-class WeightedSum:
-    """Several objectives as one number: per case, the weighted mean of each oriented value / scale.
-
-    `WeightedSum(Maximize("Helpfulness"), Minimize("tokens", scale=1000))` makes 1,000 tokens worth
-    as much as the whole 0-1 Helpfulness range. Per case, N/A evaluator terms drop and the remaining
-    evaluator weights are rescaled to the same total; usage terms are never rescaled. All evaluator
-    terms N/A, or any usage term unmeasured, leaves the case unmeasured. A `WeightedSum` of one
-    objective is that objective.
-    """
+class _Combination:
+    """Two or more objectives combined; `WeightedSum` and `Pareto` differ only in how the end phase uses them."""
 
     objectives: tuple[Maximize | Minimize, ...]
 
     def __init__(self, *objectives: Maximize | Minimize):
-        """Combine objectives.
+        """Combine objectives; each objective's `weight` sets its share.
 
         Args:
             *objectives: At least one `Maximize` or `Minimize`.
@@ -98,17 +91,28 @@ class WeightedSum:
                 repeats both checks on resolved names and ranges (an evaluator with an unbounded
                 `score_range`, `"Helpfulness"` next to `HelpfulnessEvaluator`).
         """
-        # A WeightedSum of one objective is that objective, so it needs no scale to combine with others.
-        _check_terms("WeightedSum", objectives, need_scale=len(objectives) > 1)
+        # A combination of one objective is that objective, so it needs no scale to combine with others.
+        _check_terms(type(self).__name__, objectives, need_scale=len(objectives) > 1)
         object.__setattr__(self, "objectives", tuple(objectives))
 
     def __str__(self) -> str:
-        """E.g. `"WeightedSum(Maximize(Helpfulness), Minimize(tokens, scale=1000))"`; stored in `run.json`."""
-        return f"WeightedSum({', '.join(str(o) for o in self.objectives)})"
+        """E.g. `"WeightedSum(Maximize(Helpfulness), Minimize(tokens, scale=1000))"`; stored in `run.json` and
+        compared on resume."""
+        return f"{type(self).__name__}({', '.join(str(o) for o in self.objectives)})"
 
 
-@dataclass(frozen=True, init=False)
-class Pareto:
+class WeightedSum(_Combination):
+    """Several objectives as one number: per case, the weighted mean of each oriented value / scale.
+
+    `WeightedSum(Maximize("Helpfulness"), Minimize("tokens", scale=1000))` makes 1,000 tokens worth
+    as much as the whole 0-1 Helpfulness range. Per case, N/A evaluator terms drop and the remaining
+    evaluator weights are rescaled to the same total; usage terms are never rescaled. All evaluator
+    terms N/A, or any usage term unmeasured, leaves the case unmeasured. A `WeightedSum` of one
+    objective is that objective.
+    """
+
+
+class Pareto(_Combination):
     """Several objectives optimized jointly; one champion ships, and the front is reported.
 
     `Pareto(Maximize("Helpfulness", weight=2), Minimize("tokens", scale=1000))`. The ranking (parents,
@@ -121,27 +125,6 @@ class Pareto:
     tested against the baseline. Constraints only filter candidates; they are never front dimensions. A
     `Pareto` of one objective is that objective.
     """
-
-    objectives: tuple[Maximize | Minimize, ...]
-
-    def __init__(self, *objectives: Maximize | Minimize):
-        """Combine objectives jointly; each objective's `weight` sets its share of the gain.
-
-        Args:
-            *objectives: At least one `Maximize` or `Minimize`.
-
-        Raises:
-            TypeError: No objectives, or one that isn't a `Maximize` / `Minimize`.
-            ValueError: `WeightedSum`'s checks.
-        """
-        # A Pareto of one objective is that objective, so it needs no scale to combine with others.
-        _check_terms("Pareto", objectives, need_scale=len(objectives) > 1)
-        object.__setattr__(self, "objectives", tuple(objectives))
-
-    def __str__(self) -> str:
-        """E.g. `"Pareto(Maximize(Helpfulness, weight=2), Minimize(tokens, scale=1000))"`; stored in `run.json`
-        and compared on resume."""
-        return f"Pareto({', '.join(str(o) for o in self.objectives)})"
 
 
 Objective = Maximize | Minimize | WeightedSum | Pareto
@@ -326,10 +309,6 @@ class Criteria:
         from a fit, never to a fitted scalar.
         None when the values leave it unmeasured.
         """
-        if isinstance(self.objective, (Maximize, Minimize)):
-            term = self._terms[0]
-            value = metrics.get(term.metric)
-            return None if value is None else _oriented(term, value)
         # A missing evaluator term drops, its weight spread over the measured evaluator terms; a missing usage
         # term leaves the value unmeasured, since rescaling a cost up would swamp the scores.
         if any(t.is_usage and t.metric not in metrics for t in self._terms):
@@ -389,7 +368,7 @@ class Criteria:
             if not self.registry.evaluators:
                 raise ValueError("nothing to optimize: give an objective, or evaluators to maximize")
             objective = WeightedSum(*(Maximize(name) for name in self.registry.evaluators))
-        if isinstance(objective, (WeightedSum, Pareto)) and len(objective.objectives) == 1:
+        if isinstance(objective, _Combination) and len(objective.objectives) == 1:
             objective = objective.objectives[0]
         if isinstance(objective, (Maximize, Minimize)):
             if objective.weight != 1.0 or objective.scale is not None:
@@ -398,14 +377,12 @@ class Criteria:
                     "WeightedSum or Pareto, so a single objective would ignore them; drop them"
                 )
             return type(objective)(self.registry.resolve(objective.metric))
-        if isinstance(objective, (WeightedSum, Pareto)):
+        if isinstance(objective, _Combination):
             resolved = [
                 type(o)(self.registry.resolve(o.metric), weight=o.weight, scale=o.scale) for o in objective.objectives
             ]
+            combined = type(objective)(*resolved)  # repeats the same-metric check on resolved names
             name = type(objective).__name__
-            repeated = sorted({o.metric for o in resolved if [r.metric for r in resolved].count(o.metric) > 1})
-            if repeated:
-                raise ValueError(f"{name} names {repeated} more than once")
             for o in resolved:
                 if o.scale is None and _width(self.registry.range(o.metric)) is None:
                     if defaulted:
@@ -418,9 +395,7 @@ class Criteria:
                         f"{o.metric} has no bounded range: give it a scale= (the size of a meaningful "
                         f"change) so it can be combined in the {name}"
                     )
-            if isinstance(objective, Pareto):
-                return Pareto(*resolved)
-            return WeightedSum(*resolved)
+            return combined
         raise TypeError(f"objective must be Maximize, Minimize, WeightedSum, or Pareto, got {type(objective).__name__}")
 
     def _resolve_constraint(self, constraint: Constraint) -> Constraint:
@@ -450,28 +425,32 @@ class Criteria:
 
 def _case_metrics(
     records: Sequence[TrialRecord], criteria: Criteria
-) -> tuple[dict[str, dict[str, list[float | None]]], dict[str, dict[int, dict[str, str]]]]:
-    """Each case's metric values, one per run (None when the run has none), plus the scores taken out and why.
+) -> tuple[dict[str, dict[str, list[float | None]]], dict[str, dict[int, dict[str, str]]], dict[str, set[str]]]:
+    """Each case's metric values, one per run (None when the run has none), the scores taken out and why, and
+    the evaluators each case found not applicable.
 
     Evaluator metrics: completed runs as measured, `agent_failure` runs as `criteria.agent_failure_value(metric)`
     (left out when None, and applied even to an evaluator another run of the case found N/A), N/A rows
     dropped, an evaluator that raised left out. Usage metrics: completed and `agent_failure` runs as measured
     (a crash's tokens are real cost). `infrastructure_invalid` and `evaluator_invalid` runs are left out.
     An evaluator value outside its range is taken out with the reason "give the evaluator a
-    score_range = (low, high)", never clipped; the trial's saved status is left as is.
+    score_range = (low, high)", never clipped, and a NaN or infinite one with "is not a finite number";
+    the trial's saved status is left as is.
 
     Args:
         records: One candidate's trial records on one split.
         criteria: Supplies each metric's range, kind, and agent-failure value.
 
     Returns:
-        Case -> metric -> per-run values, and what was taken out: case -> run index -> metric -> reason
-        (kept as `CandidateScores.unavailable`).
+        Case -> metric -> per-run values; what was taken out: case -> run index -> metric -> reason (kept as
+        `CandidateScores.unavailable`); and case -> the evaluators a completed run of it found N/A (these don't
+        count against eligibility).
     """
     registry = criteria.registry
     runs = 1 + max((record.run_index for record in records), default=-1)
     by_case: dict[str, dict[str, list[float | None]]] = {}
     unavailable: dict[str, dict[int, dict[str, str]]] = {}
+    not_applicable: dict[str, set[str]] = defaultdict(set)
     for record in records:
         values = by_case.setdefault(
             record.case_name, {metric: [None] * runs for metric in (*registry.evaluators, *USAGE_METRICS)}
@@ -485,17 +464,26 @@ def _case_metrics(
                 values[metric][record.run_index] = criteria.agent_failure_value(metric)
                 continue
             output = record.evaluations.get(metric)
-            if output is None or _not_applicable(record, metric):
+            if output is None:
+                continue
+            if _not_applicable(record, metric):
+                not_applicable[record.case_name].add(metric)
                 continue
             low, high = registry.range(metric)
-            if (low is not None and output.score < low) or (high is not None and output.score > high):
-                unavailable.setdefault(record.case_name, {}).setdefault(record.run_index, {})[metric] = (
+            reason = None
+            if not math.isfinite(output.score):
+                # NaN passes every range comparison and would poison the means and the ranking.
+                reason = f"{metric}={output.score!r} is not a finite number"
+            elif (low is not None and output.score < low) or (high is not None and output.score > high):
+                reason = (
                     f"{metric}={output.score!r} is outside its range [{low}, {high}]; give the evaluator a "
                     "score_range = (low, high) (None for unbounded)"
                 )
+            if reason is not None:
+                unavailable.setdefault(record.case_name, {}).setdefault(record.run_index, {})[metric] = reason
                 continue
             values[metric][record.run_index] = float(output.score)
-    return by_case, unavailable
+    return by_case, unavailable, not_applicable
 
 
 def score(candidate_id: str, records: Sequence[TrialRecord], criteria: Criteria, splits: CaseSplit) -> SplitScores:
@@ -572,12 +560,12 @@ def _split_scores(
     candidate_id: str, records: Sequence[TrialRecord], criteria: Criteria, cases: Sequence[str]
 ) -> CandidateScores:
     """One split's `CandidateScores`; `cases` are the split's cases, so an unscored one makes it ineligible."""
-    metrics_by_run, unavailable = _case_metrics(records, criteria)
-    runs = 1 + max((record.run_index for record in records), default=-1)
+    metrics_by_run, unavailable, not_applicable = _case_metrics(records, criteria)
     objective_by_run: dict[str, list[float | None]] = {}
     objective_by_case: dict[str, float] = {}
     metrics_by_case: dict[str, dict[str, float]] = {}
     for case, values in metrics_by_run.items():
+        runs = len(values[USAGE_METRICS[0]])  # every metric's list has one slot per run
         per_run = [
             criteria.objective_value({m: value for m, v in values.items() if (value := v[run]) is not None})
             for run in range(runs)
@@ -596,7 +584,6 @@ def _split_scores(
         for metric in criteria.goal_metrics
         if (case_values := [case[metric] for case in metrics_by_case.values() if metric in case])
     }
-    not_applicable = _not_applicable_by_case(records, criteria.registry)
     eligible = bool(cases) and all(
         metric in metrics_by_case.get(case, {}) or metric in not_applicable.get(case, set())
         for case in cases
@@ -615,17 +602,6 @@ def _split_scores(
     )
 
 
-def _not_applicable_by_case(records: Sequence[TrialRecord], registry: MetricRegistry) -> dict[str, set[str]]:
-    """Case -> the evaluators a completed run of it found not applicable; these don't count against eligibility."""
-    result: dict[str, set[str]] = defaultdict(set)
-    for record in records:
-        if record.status is TrialStatus.COMPLETED:
-            for metric in registry.evaluators:
-                if metric in record.evaluations and _not_applicable(record, metric):
-                    result[record.case_name].add(metric)
-    return result
-
-
 def _not_applicable(record: TrialRecord, evaluator: str) -> bool:
     """Whether the evaluator found nothing to judge in this trial, by the report's own N/A rule."""
     rows = record.details.get(evaluator) or [record.evaluations[evaluator]]
@@ -638,9 +614,9 @@ def _usage_value(usage: Usage, metric: str) -> float | None:
 
 
 def _width(range_: Range) -> float | None:
-    """A bounded range's width, the default scale; None when unbounded or empty."""
+    """A bounded range's width, the default scale; None when unbounded (`MetricRegistry` rejects empty ones)."""
     low, high = range_
-    return None if low is None or high is None or high <= low else high - low
+    return None if low is None or high is None else high - low
 
 
 def _oriented(term: _Term, value: float) -> float:
@@ -679,6 +655,12 @@ def _check_terms(kind: str, objectives: Sequence[Maximize | Minimize], *, need_s
 
 
 def _positive(name: str, value: float) -> float:
+    """`value` as a float when it is a finite number > 0 (a `weight=` or `scale=`), else raises.
+
+    Raises:
+        TypeError: `value` is not a number (a bool counts as not a number).
+        ValueError: `value` is NaN, infinite, or <= 0.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"{name} must be a number, got {value!r}")
     if not math.isfinite(value) or value <= 0:
