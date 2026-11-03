@@ -135,7 +135,7 @@ strands-evals/
 │   │   ├── declaration/                      # Markers, tunable / TunableFactory, Space (flat typed keys), files, tools
 │   │   ├── candidate.py                      # Candidate (typed values, content id, parent), diff
 │   │   ├── execution/                        # Trial statuses, default rollout, trace capture, TrialRunner
-│   │   ├── scoring/                          # Metric registry, objectives (incl. Pareto), constraints, RewardFunction
+│   │   ├── scoring/                          # Metric registry, objectives (incl. Pareto), constraints
 │   │   ├── score_model/                      # ScoreModel / Fit protocols, BayesBenchModel, effects, the ranking
 │   │   ├── bayesbench/                       # Third-party BayesBench (only score_model/bayesbench.py imports it)
 │   │   ├── search/                           # Proposer, Block / Search / schedules, TPE, Reflection, Thompson
