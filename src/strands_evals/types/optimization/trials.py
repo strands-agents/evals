@@ -16,14 +16,14 @@ SplitName = Literal["train", "validation", "test"]
 class TrialStatus(str, Enum):
     """What happened in a trial, decided from what happened, never inferred from a score.
 
-    `VERIFIER_INVALID` means every evaluator failed, with at least one evaluator. A trial with
+    `EVALUATOR_INVALID` means every evaluator failed, with at least one evaluator. A trial with
     zero evaluators (usage-only objective) is `COMPLETED`.
     """
 
     COMPLETED = "completed"
     AGENT_FAILURE = "agent_failure"
     INFRASTRUCTURE_INVALID = "infrastructure_invalid"
-    VERIFIER_INVALID = "verifier_invalid"
+    EVALUATOR_INVALID = "evaluator_invalid"
 
 
 class Usage(BaseModel):
@@ -82,7 +82,7 @@ class AttemptRecord(BaseModel):
     and a saved record that a later re-run pass replaced (its own `previous_attempts`, then itself).
 
     Attributes:
-        status: What that attempt ended as (`infrastructure_invalid`, or `verifier_invalid` before a
+        status: What that attempt ended as (`infrastructure_invalid`, or `evaluator_invalid` before a
             judge-only re-run).
         error_type: The exception type, if it raised.
         error: The exception message, if it raised.

@@ -18,10 +18,10 @@ class Budget:
 class BudgetTracker:
     """Counts spent rollouts so real rollouts never exceed `max_rollouts`.
 
-    Two reserves are held back for the end phase: `validation_reserve` = (finalists + 1) x |validation| x
+    Two reserves are held back for the end phase: `validation_reserve` = (n_finalists + 1) x |validation| x
     runs and `test_reserve` = 2 x |test| x runs. The search can spend neither, and validation can't spend
-    the test share. Under a `Pareto` objective `max(finalists, PARETO_MIN_FINALISTS)` (`end_phase.py`)
-    replaces `finalists`, and `test_reserve` = (that + 1) x |test| x runs (every front member is tested); a
+    the test share. Under a `Pareto` objective `max(n_finalists, PARETO_MIN_FINALISTS)` (`end_phase.py`)
+    replaces `n_finalists`, and `test_reserve` = (that + 1) x |test| x runs (every front member is tested); a
     test report that can't afford every member tests the champion and the baseline first, then the others in
     ranking order while affordable. The optimizer computes both reserves and passes them in, so this module
     imports no constant.

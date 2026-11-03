@@ -146,7 +146,7 @@ class AtMost(_Bound):
 
 
 class AtLeast(_Bound):
-    """The metric's mean must not fall below `bound`, e.g. `AtLeast("Harmfulness", 0.95)`."""
+    """The metric's mean must not fall below `bound`, e.g. `AtLeast("Correctness", 0.8)`."""
 
 
 Constraint = AtMost | AtLeast
@@ -159,8 +159,8 @@ class Criteria:
         objective: What to optimize, the default filled in, every metric name resolved.
         constraints: The constraints, metric names resolved.
         registry: The run's metric registry.
-        crash_score: What an `agent_failure` run's evaluator metrics count as.
-        feasibility: The P(met) threshold a constraint needs to count as met (not a fraction of cases);
+        agent_failure_score: What an `agent_failure` run's evaluator metrics count as.
+        feasibility_threshold: The P(met) threshold a constraint needs to count as met (not a fraction of cases);
             read by the ranking, the candidate label, and the final pick.
         goal_metrics: The metrics the score model fits, one model each: the objective's metrics, then the
             constraints' metrics, each once, in that order.
@@ -170,8 +170,8 @@ class Criteria:
     objective: Objective
     constraints: tuple[Constraint, ...]
     registry: MetricRegistry
-    crash_score: Literal["worst"] | float | None
-    feasibility: float
+    agent_failure_score: Literal["worst"] | float | None
+    feasibility_threshold: float
     goal_metrics: tuple[str, ...]
     is_pareto: bool
 
@@ -181,37 +181,38 @@ class Criteria:
         constraints: Sequence[Constraint],
         registry: MetricRegistry,
         *,
-        crash_score: Literal["worst"] | float | None = "worst",
-        feasibility: float = 0.9,
+        agent_failure_score: Literal["worst"] | float | None = "worst",
+        feasibility_threshold: float = 0.9,
     ):
         """`objective=None` means maximize the mean of every evaluator's score.
 
-        `crash_score` is what an `agent_failure` run's evaluator metrics count
+        `agent_failure_score` is what an `agent_failure` run's evaluator metrics count
         as: "worst" = each evaluator metric's worst end for the goals that use it (0 for a 0-1 score
-        maximized), a number = that score, None = missing data. Infrastructure and verifier failures are
+        maximized), a number = that score, None = missing data. Infrastructure and evaluator failures are
         always missing. Usage metrics have no worst end, so a crashed run's usage counts as measured.
 
         Args:
             objective: What to optimize; None means the mean of every evaluator's score.
             constraints: Bounds every shipped candidate must meet.
             registry: Resolves the metric names and gives their ranges.
-            crash_score: What an `agent_failure` run's evaluator metrics count as.
-            feasibility: The P(met) threshold a constraint needs (`Optimizer(feasibility=)`), 0 < x < 1.
+            agent_failure_score: What an `agent_failure` run's evaluator metrics count as.
+            feasibility_threshold: The P(met) threshold a constraint needs
+                (`Optimizer(feasibility_threshold=)`), 0 < x < 1.
 
         Raises:
             ValueError: A metric name is unknown or ambiguous; inside a `WeightedSum` or `Pareto`, the same
                 metric twice after resolution, or a metric with an unbounded range and no `scale=`; a lone
                 `Maximize` / `Minimize` with a non-default `weight` or `scale` (read only inside a
-                `WeightedSum` or `Pareto`, so it would be silently ignored); `feasibility` outside (0, 1).
+                `WeightedSum` or `Pareto`, so it would be silently ignored); `feasibility_threshold` outside (0, 1).
 
         A `Pareto` of one objective is unwrapped to that objective.
         """
         raise NotImplementedError
 
-    def crash_value(self, metric: str) -> float | None:
+    def agent_failure_value(self, metric: str) -> float | None:
         """What an `agent_failure` run counts as for one evaluator metric.
 
-        Under `crash_score="worst"`: the range's low end when every goal on the metric is a `Maximize` or
+        Under `agent_failure_score="worst"`: the range's low end when every goal on the metric is a `Maximize` or
         `AtLeast`, the high end when every one is a `Minimize` or `AtMost`; None when that end is unbounded,
         the goals disagree, or no goal uses the metric. A number gives that number; None gives None.
         Usage metrics always give None (a crash's usage is measured, not scored).
@@ -236,10 +237,10 @@ class Criteria:
         """
         raise NotImplementedError
 
-    def unmet(self, metrics_by_case: Mapping[str, Mapping[str, float]]) -> list[str]:
+    def unmet_constraints(self, metrics_by_case: Mapping[str, Mapping[str, float]]) -> list[str]:
         """One sentence per constraint not met on measured means; a constraint never measured counts as unmet.
 
-        Sentences, as `CandidateLabel.unmet`; the per-constraint margins are `Assessment.violations`.
+        Sentences, as `CandidateLabel.unmet_constraints`; the per-constraint margins are `Assessment.violations`.
 
         `metrics_by_case` maps case name -> metric name -> value, as `CandidateScores.metrics_by_case`.
         """
@@ -251,9 +252,9 @@ def _case_metrics(
 ) -> tuple[dict[str, dict[str, list[float | None]]], dict[str, dict[int, dict[str, str]]]]:
     """Per-run metric values per case, and the values taken out.
 
-    Evaluator metrics: completed runs as measured, `agent_failure` runs as `criteria.crash_value(metric)`
+    Evaluator metrics: completed runs as measured, `agent_failure` runs as `criteria.agent_failure_value(metric)`
     (left out when None), N/A rows dropped. Usage metrics: completed and `agent_failure` runs as measured
-    (a crash's tokens are real cost). `infrastructure_invalid` and `verifier_invalid` runs are left out.
+    (a crash's tokens are real cost). `infrastructure_invalid` and `evaluator_invalid` runs are left out.
     An evaluator value outside its range is taken out with the reason "give the evaluator a
     score_range = (low, high)", never clipped; the trial's saved status is left as is.
 
@@ -271,14 +272,14 @@ def _case_metrics(
 def score(candidate_id: str, records: Sequence[TrialRecord], criteria: Criteria, splits: CaseSplit) -> SplitScores:
     """Group records by split and average per case.
 
-    An `agent_failure` run is measured with `criteria`'s `crash_score`; infrastructure and verifier
+    An `agent_failure` run is measured with `criteria`'s `agent_failure_score`; infrastructure and evaluator
     failures are missing. Consumers take one split: the search (fit, selection, labels, observe,
     Reflection) `.train`, the end phase's pick `.validation`, the test report `.test`.
 
     Args:
         candidate_id: The candidate.
         records: Its trial records on any splits.
-        criteria: Computes each run's objective and supplies `crash_score`.
+        criteria: Computes each run's objective and supplies `agent_failure_score`.
         splits: The run's split.
 
     Returns:
@@ -287,10 +288,15 @@ def score(candidate_id: str, records: Sequence[TrialRecord], criteria: Criteria,
     raise NotImplementedError
 
 
-def measured(scores: CandidateScores) -> dict[str, Measured]:
-    """Every metric in `scores.metrics_by_case`, with a 90% t-interval over the case means.
+def measured_metrics(scores: CandidateScores, registry: MetricRegistry) -> dict[str, Measured]:
+    """Every metric in `scores.metrics_by_case`, with a 95% t-interval clipped to the metric's range.
 
-    A metric with no value on any case is left out. For reporting only (`CandidateLabel`, `ValidationReport`,
+    The unit is the case (its mean over runs), or the run when the split has a single case. A metric
+    with no value on any case is left out. For reporting only (`CandidateLabel`, `ValidationReport`,
     `TestReport`); the ranking keeps using `CandidateScores.objective` and the fit.
+
+    Args:
+        scores: One candidate's scores on one split.
+        registry: Gives each metric's range, which the interval is clipped to.
     """
     raise NotImplementedError

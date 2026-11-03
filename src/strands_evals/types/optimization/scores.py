@@ -10,6 +10,8 @@ from .estimates import Estimate
 
 Range = tuple[float | None, float | None]  # (low, high); None = unbounded on that side
 
+LabelOutcome = Literal["feasible", "infeasible", "ineligible"]  # also the first three ObservationOutcomes
+
 
 class CaseSplit(BaseModel):
     """The run's one train / validation / test split, from `Split.assign`; test may be empty."""
@@ -24,14 +26,14 @@ class CaseSplit(BaseModel):
 class CandidateScores(BaseModel):
     """One candidate's scores on one split.
 
-    A run counts when it is completed, or an `agent_failure` scored by `crash_score` (default "worst");
-    infrastructure and verifier failures are missing until a re-run succeeds.
+    A run counts when it is completed, or an `agent_failure` scored by `agent_failure_score` (default "worst");
+    infrastructure and evaluator failures are missing until a re-run succeeds.
 
     Attributes:
         objective_by_case: Case name -> mean of that case's measured per-run objectives. For Reflection's
             per-case scores and the test report, never for ranking.
         metrics_by_case: Case name -> metric name -> that case's mean, for every metric (each evaluator and
-            every usage metric), so `measured()` can report tokens and seconds next to the scores. Usage
+            every usage metric), so `measured_metrics()` can report tokens and seconds next to the scores. Usage
             means cover completed and `agent_failure` runs, so a crash's cost counts.
         unavailable: Case name -> run index -> metric -> why scoring took the value out (e.g. outside the
             evaluator's range).
@@ -41,11 +43,11 @@ class CandidateScores(BaseModel):
             built from.
         objective: The measured objective: `Criteria.objective_value` over each goal metric's mean across
             cases; what the ranking uses without a fit.
-        eligible: Every case has at least one run that counts for every goal metric; an evaluator N/A on a
+        is_eligible: Every case has at least one run that counts for every goal metric; an evaluator N/A on a
             case doesn't count against it. Only eligible candidates are fitted, ranked as parents, or chosen
             as finalists.
         failures: `agent_failure` trials on this split (each trial's last attempt); infrastructure and
-            verifier failures aren't counted.
+            evaluator failures aren't counted.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -57,7 +59,7 @@ class CandidateScores(BaseModel):
     objective_by_run: dict[str, list[float | None]]
     metrics_by_run: dict[str, dict[str, list[float | None]]]
     objective: float | None
-    eligible: bool
+    is_eligible: bool
     failures: int
 
 
@@ -65,15 +67,16 @@ class Measured(BaseModel):
     """One metric measured over a split's cases; for reporting only.
 
     Attributes:
-        mean: Mean of the per-case means (the case is the unit).
-        ci90: 90% t-interval over the per-case means; None when `n < 2`.
-        n: Cases with a value.
+        mean: Mean over the units: the case (its mean over runs), or the run when the split has a
+            single case.
+        ci95: 95% t-interval over the units, clipped to the metric's range; None when `n < 2`.
+        n: Units with a value: cases, or runs when there is a single case.
     """
 
     model_config = ConfigDict(frozen=True)
 
     mean: float
-    ci90: tuple[float, float] | None
+    ci95: tuple[float, float] | None
     n: int
 
 
@@ -108,33 +111,33 @@ class CandidateLabel(BaseModel):
 
     `infeasible` means the ranking's feasibility says no (still a possible parent, ranked lower);
     `ineligible` means some train case is unmeasured (out of the fit and the parents until a re-run
-    succeeds). `estimates`, `p_met`, `by_fit`, and `measured` are the ranking's view at this step
+    succeeds). `estimates`, `p_met`, `is_from_fit`, and `measured` are the ranking's view at this step
     as a snapshot, never read on resume.
 
     Attributes:
         outcome: `feasible`, `infeasible`, or `ineligible`.
         reason: One sentence, e.g. "tokens <= 4000: P(met) 0.62 < 0.9".
-        unmet: Each constraint not met, as the ranking assessed it, as a sentence (e.g. "tokens <= 4000:
+        unmet_constraints: Each constraint not met, as the ranking assessed it, as a sentence (e.g. "tokens <= 4000:
             P(met) 0.62 < 0.9"); unlike the per-constraint margins elsewhere named `violations`.
-        estimates: Per goal metric (`Assessment.estimates`); empty when `by_fit` is False.
-        p_met: Per constraint (`Assessment.p_met`); empty when `by_fit` is False.
-        by_fit: False when assessed by measured means.
+        estimates: Per goal metric (`Assessment.estimates`); empty when `is_from_fit` is False.
+        p_met: Per constraint (`Assessment.p_met`); empty when `is_from_fit` is False.
+        is_from_fit: False when assessed by measured means.
         measured: Every metric measured on train, usage included; a metric with no value is left out.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    outcome: Literal["feasible", "infeasible", "ineligible"]
+    outcome: LabelOutcome
     reason: str
-    unmet: list[str]
+    unmet_constraints: list[str]
     estimates: dict[str, Estimate]
     p_met: dict[str, float]
-    by_fit: bool
+    is_from_fit: bool
     measured: dict[str, Measured]
 
 
 class ValidationReport(BaseModel):
-    """How the end phase picked the champion on validation, saved in the `selected` event.
+    """How the end phase picked the champion on validation, saved in the `picked` event.
 
     Attributes:
         champion_id: What ships; the baseline's id when nothing feasible beats it.

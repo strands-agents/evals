@@ -25,7 +25,7 @@ EventName = Literal[
     "screened",
     "iteration_end",
     "finalists",
-    "selected",
+    "picked",
     "test",
 ]
 
@@ -46,8 +46,8 @@ class EventLog:
       Trials of concurrently scored candidates interleave; every other event is written in a fixed order.
     - `score`: `candidate_id`, `split`, `case_names`, `runs`, `rollouts`, `objective_by_run`, `statuses`
       (status -> trial count), `unavailable`.
-    - `fit`: `candidates` (ids fitted), `fitted`, `error` (when the score model raised), `flagged`,
-      `diagnostics`; one per step, `fitted=false` also when the step scored nothing new.
+    - `fit`: `candidates` (ids fitted), `is_fitted`, `error` (when the score model raised), `flagged`,
+      `diagnostics`; one per step, `is_fitted=false` also when the step scored nothing new.
     - `select`: `parent_id`, `strategy`.
     - `label`: `candidate_id`, `label` (`CandidateLabel`).
     - `invalid`: `block`, `redraw`, `updates`, `reason` (no candidate).
@@ -61,7 +61,7 @@ class EventLog:
     - `observe`: `block`, `candidate_id` (None for an invalid patch), `observation` (`Observation`).
     - `evidence`: `block` (the proposer told), `evidence` (`Evidence`).
     - `iteration_end`: `record` (`IterationRecord`), `exhausted`, `best_after` (a snapshot).
-    - `finalists`: `candidate_ids` (ranked). `selected`: `report` (`ValidationReport`). `test`: `report`
+    - `finalists`: `candidate_ids` (ranked). `picked`: `report` (`ValidationReport`). `test`: `report`
       (`TestReport` or None), `reason` (also naming the front members it couldn't afford), `front` (under a
       `Pareto` objective, each tested front member's `TestReport`, the champion's included; `{}` otherwise).
 
@@ -70,7 +70,7 @@ class EventLog:
     rounds from `propose` and `iteration_end`; exhausted blocks and iterations from `iteration_end`; history
     from `select`; open rounds from openers with no observe yet; `stop_reason` from the last `stop`; proposer
     feedback and `search_cost` from `observe` / `evidence`; the fit sequence from `fit`; the end phase's
-    progress from `finalists` / `selected` / `test`. Only search events up to the last `iteration_end` are
+    progress from `finalists` / `picked` / `test`. Only search events up to the last `iteration_end` are
     replayed; trial events are always read (the cache).
     """
 

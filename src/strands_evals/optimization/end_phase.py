@@ -11,11 +11,11 @@ from typing import Any
 
 from ..types.optimization import CandidateScores, PairedComparison, ValidationReport, Values
 from .score_model.protocols import Fit
-from .score_model.ranking import _MEAN, PickRule
+from .score_model.ranking import Mean, PickRule
 from .scoring.objectives import Criteria
 
 TEST_LEVEL = 0.90  # the test report's interval level (report only), matching the 90% effects
-PARETO_MIN_FINALISTS = 5  # under Pareto, max(finalists, this) front members go to validation; the reserves use it too
+PARETO_MIN_FINALISTS = 5  # under Pareto, max(n_finalists, this) front members go to validation; the reserves use it too
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -25,18 +25,18 @@ class FinalPick:
     Only a candidate meeting every constraint ships (no `unmet="closest"`). `rule` is `Mean()` or
     `LowerBound(q)` to ship cautiously; the search's ranking always uses `Mean()`. Read back from
     `run.json` on resume (`from_config`), never passed again. Under a `Pareto` objective up to
-    `max(finalists, PARETO_MIN_FINALISTS)` front members go to validation.
+    `max(n_finalists, PARETO_MIN_FINALISTS)` front members go to validation.
     """
 
-    finalists: int = 3
-    rule: PickRule = _MEAN
+    n_finalists: int = 3
+    rule: PickRule = Mean()
 
     def __post_init__(self) -> None:
-        """`finalists` >= 1, else `ValueError`."""
+        """`n_finalists` >= 1, else `ValueError`."""
         raise NotImplementedError
 
     def config(self) -> dict[str, Any]:
-        """`{"finalists": n, "rule": rule.config()}`; stored in `run.json`."""
+        """`{"n_finalists": n, "rule": rule.config()}`; stored in `run.json`."""
         raise NotImplementedError
 
     @classmethod
@@ -61,7 +61,7 @@ def choose_finalists(
     Args:
         ranking: Every eligible candidate in ranking order (feasible first, then by objective).
         baseline_id: Left out; it is always measured on validation anyway.
-        n: `FinalPick.finalists`, or `max(finalists, PARETO_MIN_FINALISTS)` under `Pareto`.
+        n: `FinalPick.n_finalists`, or `max(n_finalists, PARETO_MIN_FINALISTS)` under `Pareto`.
         front: Under `Pareto`, `pareto_front` over the search assessments, in ranking order; None otherwise.
     """
     raise NotImplementedError
@@ -76,13 +76,14 @@ def pick(
     values: Mapping[str, Values],
     trial_counts: Mapping[str, int],
     criteria: Criteria,
-    rule: PickRule = _MEAN,
+    rule: PickRule,
     problem: str | None = None,
 ) -> ValidationReport:
     """The champion: the first feasible candidate on validation, baseline included; else the baseline.
 
-    Feasible = eligible on validation and P(met) >= `criteria.feasibility` for every constraint (measured means
-    without a fit). Ranked by objective resolved to a tenth of its sd; ties -> most trials, then earlier.
+    Feasible = eligible on validation and P(met) >= `criteria.feasibility_threshold` for every
+    constraint (measured means without a fit). Ranked by objective resolved to a tenth of its sd;
+    ties -> most trials, then earlier.
     Under a `Pareto` objective the same champion (the validated front's highest-gain member) plus
     `ValidationReport.front`.
 

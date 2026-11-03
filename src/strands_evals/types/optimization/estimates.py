@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict
 class Estimate(BaseModel):
     """One metric's posterior mean and sd, in the metric's own units.
 
-    Saved in `label` events (`CandidateLabel.estimates`) and `selected` events (`ValidationReport.estimates`);
+    Saved in `label` events (`CandidateLabel.estimates`) and `picked` events (`ValidationReport.estimates`);
     `effects.json` rows hold mean and ci90 as plain fields instead.
     """
 

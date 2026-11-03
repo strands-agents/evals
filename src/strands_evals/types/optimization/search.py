@@ -8,13 +8,13 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 from .estimates import Estimate
-from .scores import Measured
+from .scores import LabelOutcome, Measured
 from .trials import Usage
 
 Value = str | int | float | bool | None
 Values = Mapping[str, Value]  # flat typed mapping, dotted keys
 
-ObservationOutcome = Literal["feasible", "infeasible", "ineligible", "invalid", "unscored", "duplicate"]
+ObservationOutcome = Literal[LabelOutcome, "invalid", "unscored", "duplicate"]
 
 
 class Patch(BaseModel):
@@ -41,14 +41,15 @@ class CandidateSummary(BaseModel):
         number: Display number, so a prompt can say "version 3".
         measured_objective: The objective from the raw train scores (`CandidateScores.objective`), no model.
         measured: Every metric measured on train, usage included, next to the fit's estimates.
-        trial_count: Train trials that count (completed, or `agent_failure` scored by `crash_score`).
+        trial_count: Train trials that count (completed, or `agent_failure` scored by `agent_failure_score`).
         ranking_objective: What the ranking used when the request was built (`Assessment.objective`): the
             fit's resolved estimate, or `measured_objective` without a usable fit.
         rank: Position in that ranking, 1 = best; None for an ineligible candidate.
         estimates: Per goal metric from the fit; empty when assessed by measured means.
         violations: Per constraint, <= 0 when met (`Assessment.violations`); None for an ineligible
             candidate, which has no assessment.
-        feasible: Meets every constraint as the ranking assessed it; None for an ineligible candidate.
+        is_feasible: Meets every constraint as the ranking assessed it; None for an ineligible candidate.
+        is_eligible: Every train case measured for every goal metric (`CandidateScores.is_eligible`).
         changed_keys: Keys changed from its parent.
     """
 
@@ -66,8 +67,8 @@ class CandidateSummary(BaseModel):
     rank: int | None
     estimates: dict[str, Estimate]
     violations: list[float] | None
-    feasible: bool | None
-    eligible: bool
+    is_feasible: bool | None
+    is_eligible: bool
     changed_keys: list[str]
 
 

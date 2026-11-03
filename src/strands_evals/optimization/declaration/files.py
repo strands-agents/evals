@@ -95,4 +95,3 @@ class SkillLibrary:
             target: The member's file inside the copy.
         """
         raise NotImplementedError
-

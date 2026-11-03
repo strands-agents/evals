@@ -66,7 +66,7 @@ class TrialRunner:
         With no evaluators, `Experiment` substitutes a placeholder `Evaluator()` that always raises. The
         placeholder (`type(e) is Evaluator`) is dropped from `evaluations`, `evaluator_errors`, and the
         every-evaluator-failed check, so a trial with zero evaluators (a usage-only objective) is
-        `completed`, not `verifier_invalid`.
+        `completed`, not `evaluator_invalid`.
 
         Each evaluator is passed to `Experiment` wrapped in a thin private proxy that forwards everything
         `Experiment` reads (`get_name`, `get_type_name`, `evaluation_level`, the label inputs) and, when
@@ -114,7 +114,7 @@ class TrialRunner:
 
         Returns one record per requested (case, run), cached ones included, so `score()` sees the whole
         candidate. Saved `infrastructure_invalid` trials are not cache hits: they run again in the first
-        pass and count as rollouts. A saved `verifier_invalid` trial is re-judged (0 rollouts) when its
+        pass and count as rollouts. A saved `evaluator_invalid` trial is re-judged (0 rollouts) when its
         candidate is scored again.
 
         `task` is not yet instrumented (`make_task(...)` or the `build_task` path's task); each run wraps

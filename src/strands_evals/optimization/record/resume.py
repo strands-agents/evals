@@ -25,12 +25,12 @@ class FitReplay:
 
     Attributes:
         ids: The candidates fitted.
-        fitted: False when the step scored nothing new or the model returned None or raised.
+        is_fitted: False when the step scored nothing new or the model returned None or raised.
         error: `"<Type>: <message>"` when the model raised; then no fit is in use from there.
     """
 
     ids: list[str]
-    fitted: bool
+    is_fitted: bool
     error: str | None
 
 
@@ -65,7 +65,7 @@ class ResumeState:
         search_cost: Summed from the `observe` events' `Patch.usage`.
         finalists: Already chosen by the end phase, reused rather than re-ranked.
         validation: The end phase already picked; only the test report is left.
-        test_done: A `test` event exists, so the end phase is finished (a None `test` is a finished
+        is_test_done: A `test` event exists, so the end phase is finished (a None `test` is a finished
             result too: skipped).
         test: The `test` event's report; None when skipped or not reached.
         test_reason: Why it was skipped (the `test` event's reason); None otherwise.
@@ -86,7 +86,7 @@ class ResumeState:
     search_cost: Usage
     finalists: list[str] | None
     validation: ValidationReport | None
-    test_done: bool
+    is_test_done: bool
     test: TestReport | None
     test_reason: str | None
     front_test: dict[str, TestReport]
@@ -100,8 +100,8 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
     objective and constraints, search (blocks, proposers and their `config()`, keys, schedule name and
     `config()`, redraws), selection (name and `config()`), score model (name and `config()`).
     Read (never passed again, rebuilt from `run.json`): split (settings, seed used, and case lists),
-    `runs_per_candidate`, `crash_score`, `feasibility`, seed, `proposals_per_iteration`, `rerun_passes`,
-    and the final pick (`FinalPick.from_config`). Budget, `max_workers`, and `on_iteration` may differ.
+    `runs_per_candidate`, `agent_failure_score`, `feasibility_threshold`, seed, `proposals_per_iteration`,
+    `rerun_passes`, and the final pick (`FinalPick.from_config`). Budget, `max_workers`, and `on_iteration` may differ.
 
     Args:
         run: The reopened run directory.

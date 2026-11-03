@@ -35,25 +35,26 @@ class Assessment:
             objective (`CandidateScores.objective`) when assessed by measured means.
         terms: `Criteria.terms` over the same values (oriented, the rule applied, resolved): what
             `pareto_front` compares and the `Pareto` tie-break reads; None when `objective` is None.
-        feasible: Every constraint has P(met) >= `criteria.feasibility` under the fit, or is met on measured means.
-        violations: Per constraint, <= 0 when met: the metric's quantile at `criteria.feasibility` against the limit,
-            or the measured mean against the limit.
-        violation: The sum of the positive violations (0 when feasible); what "least violation" ranks by.
+        is_feasible: Every constraint has P(met) >= `criteria.feasibility_threshold` under the fit, or is
+            met on measured means.
+        violations: Per constraint, <= 0 when met: the metric's quantile at
+            `criteria.feasibility_threshold` against the limit, or the measured mean against the limit.
+        total_violation: The sum of the positive violations (0 when feasible); what "least violation" ranks by.
         p_met: Per constraint; empty when assessed by measured means.
         estimates: Per goal metric, `fit.estimates(values, candidate)`; empty when assessed by measured means.
-        by_fit: False when assessed by measured means (no fit, the last refit raised, any metric flagged, or
+        is_from_fit: False when assessed by measured means (no fit, the last refit raised, any metric flagged, or
             the candidate not in the fit).
     """
 
     candidate_id: str
     objective: float | None
     terms: tuple[float, ...] | None
-    feasible: bool
+    is_feasible: bool
     violations: tuple[float, ...]
-    violation: float
+    total_violation: float
     p_met: dict[str, float]
     estimates: dict[str, Estimate]
-    by_fit: bool
+    is_from_fit: bool
 
 
 @dataclass(frozen=True)
@@ -85,8 +86,6 @@ class LowerBound:
 
 PickRule = Mean | LowerBound
 
-_MEAN = Mean()  # the default rule, built once (rules are frozen)
-
 
 def assess(
     ids: Sequence[str],
@@ -95,13 +94,13 @@ def assess(
     criteria: Criteria,
     values: Mapping[str, Values],
     measured: Mapping[str, CandidateScores],
-    rule: PickRule = _MEAN,
+    rule: PickRule,
 ) -> dict[str, Assessment]:
     """Assess each candidate from the fit, or from measured means without a usable one.
 
     `rule` turns each objective term's `Estimate` into one number before `round_to_sd()` and
-    `Criteria.objective_value`; constraints are unaffected (P(met) >= `criteria.feasibility`), and measured
-    means ignore it. The search always uses `Mean()`; only the final pick passes `FinalPick.rule`.
+    `Criteria.objective_value`; constraints are unaffected (P(met) >= `criteria.feasibility_threshold`),
+    and measured means ignore it. Required: the search passes `Mean()`, the final pick `FinalPick.rule`.
 
     Args:
         ids: The candidates to assess.
@@ -151,8 +150,8 @@ def pareto_front(assessments: Mapping[str, Assessment], ids: Sequence[str]) -> l
 def p_met(constraint: Constraint, value: Estimate) -> float:
     """P(constraint holds), 0 to 1, under the metric's estimate.
 
-    Read by the ranking (feasible = P(met) >= `criteria.feasibility` for every constraint) and by the final pick
-    under the validation fit.
+    Read by the ranking (feasible = P(met) >= `criteria.feasibility_threshold` for every constraint)
+    and by the final pick under the validation fit.
     """
     raise NotImplementedError
 
@@ -167,7 +166,7 @@ def label_candidate(
 
     A label recorded in the event log, never a filter; train data only.
 
-    Feasibility is the ranking's own: P(met) >= `criteria.feasibility` under the fit,
+    Feasibility is the ranking's own: P(met) >= `criteria.feasibility_threshold` under the fit,
     measured means without a fit or while any metric is flagged, so the label always matches how the loop
     treated the candidate. A snapshot: later refits can change how the ranking sees it. An infeasible
     candidate stays a possible parent, ranked after the feasible ones; an ineligible one is out of the fit

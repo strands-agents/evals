@@ -25,7 +25,7 @@ class TrialLogEntry:
 
     Attributes:
         status: The last attempt's status from `classify`, or `completed` when the rollout returned
-            (`verifier_invalid` is set later, by `TrialRunner`).
+            (`evaluator_invalid` is set later, by `TrialRunner`).
         error_type: The last attempt's exception type name; None when it returned.
         error: The last attempt's exception message; None when it returned.
         attempts: Every attempt, the last one included.

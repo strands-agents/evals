@@ -37,7 +37,7 @@ class ProposalRequest:
         seed: The run seed.
         redraw: The redraw number within this iteration and block (0 = first ask; `Search.redraws` caps it).
         criteria: Combines per-metric estimates or sampled values into the objective and checks constraints
-            (`criteria.feasibility` is the P(met) threshold the ranking uses).
+            (`criteria.feasibility_threshold` is the P(met) threshold the ranking uses).
         log: `log(event, **fields)` writes an event; a proposer may write only `screened` and
             `proposer_retry` (any other name raises `ValueError`).
     """

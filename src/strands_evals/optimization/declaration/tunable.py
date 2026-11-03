@@ -37,7 +37,7 @@ class _FactoryArgumentError(TypeError):
     """A bad argument to a bound factory; a setup error, never a trial status.
 
     Raised for a resource or kwarg named like a declared marker, or a call kwarg the user's function
-    doesn't accept. Never an `agent_failure`: under `crash_score="worst"` that would score every
+    doesn't accept. Never an `agent_failure`: under `agent_failure_score="worst"` that would score every
     trial at its worst end and the run would go on measuring nothing.
     """
 

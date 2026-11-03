@@ -57,8 +57,8 @@ class Optimizer:
         split: Split | None = None,
         budget: Budget | None = None,
         runs_per_candidate: int = 1,
-        crash_score: Literal["worst"] | float | None = "worst",
-        feasibility: float = 0.9,
+        agent_failure_score: Literal["worst"] | float | None = "worst",
+        feasibility_threshold: float = 0.9,
         environment: EnvironmentFn | None = None,
         proposals_per_iteration: int = 4,
         max_workers: int = 4,
@@ -83,13 +83,13 @@ class Optimizer:
             selection: How the parent is chosen; None means `TopRanked()`.
             score_model: The statistical model of scores (not an LLM); None means `BayesBenchModel()`.
             final_pick: How many finalists go to validation and how the pick values them; None means
-                `FinalPick(finalists=3)`.
+                `FinalPick(n_finalists=3)`.
             split: Train / validation / test; None means `Split(train=0.4, validation=0.3, test=0.3)`.
             budget: Rollout and iteration caps; None means `Budget()`.
             runs_per_candidate: Times every candidate is scored on each case.
-            crash_score: What an `agent_failure` run's evaluator metrics count as: "worst" (each metric's
+            agent_failure_score: What an `agent_failure` run's evaluator metrics count as: "worst" (each metric's
                 worst end), a number, or None (missing data).
-            feasibility: The P(met) threshold a constraint needs to count as met (not a fraction of cases);
+            feasibility_threshold: The P(met) threshold a constraint needs to count as met (not a fraction of cases);
                 held by `Criteria`.
             environment: Per-attempt resources passed to the factory by name.
             proposals_per_iteration: Patches each proposing block returns per iteration.
@@ -160,7 +160,7 @@ class Optimizer:
         model are compared with `run.json` (`ValueError` naming the field); the agent code, `rollout_fn`,
         `environment`, and the evaluators can't be compared and are the caller's to keep. Everything else
         is read from `run.json`, never passed again: the split (with the seed it used), the final pick
-        (`FinalPick.from_config`), `runs_per_candidate`, `crash_score`, `feasibility`, seed,
+        (`FinalPick.from_config`), `runs_per_candidate`, `agent_failure_score`, `feasibility_threshold`, seed,
         `proposals_per_iteration`, and `rerun_passes`. Only `budget`, `max_workers`, and `on_iteration` may differ
         (`None` keeps the saved value).
 
