@@ -10,14 +10,31 @@ Converts recorded local agent sessions into a strands-evals experiment.
 
 ## Steps
 
-### 1. Locate sessions
+### 1. Ask clarifying questions
+
+Ask each question below that the prompt doesn't answer, in one batch, with your harness's question tool if it has one, otherwise as plain-text questions with numbered options, and wait for the answers. If you can't wait for a reply (ex. a non-interactive run), state that you're assuming each question's first option and continue.
+
+**Harnesses.** Ask when the prompt doesn't say which harnesses to search (ex. "my sessions from last week").
+
+Question: Which agent harnesses' sessions should I include?
+1. All (Recommended): every harness with sessions on this machine (ex. Claude Code, Codex, Kiro CLI, Strands CLI).
+2. Only <current harness>: only sessions from the harness running this skill.
+
+**Context-dependent inputs.** A context-dependent input is an episode's opening user message that points at a specific project, file, build, or earlier turn without naming it, so another agent can't tell what it's about (ex. "now do the same for the parser", "why is this test failing?", "what errors does the graph primitive throw?").
+
+Question: How should I handle user messages that depend on outside context (ex. "this file", "that test")?
+1. Fill (Recommended): rewrite the input to include the context it relies on, so it stands alone.
+2. Drop: filter out episodes whose input depends on outside context.
+3. Keep: keep the input as written.
+
+### 2. Locate sessions
 
 Find every session file on the local filesystem that matches the user's criteria. Don't open whole files to do it: session files can be large, so read metadata, use `ls -t`, `find -newermt`, `grep`, `jq`, or targeted reads. Read the criteria from the prompt:
 
-- **Harness**: default to all harnesses.
+- **Harness**: the harnesses named in the prompt or chosen in step 1.
 - **Date range**: resolve relative dates in the user's local time zone; session timestamps are UTC. A session matches if any of its activity falls in the range; mtime alone isn't enough.
 - **Workspace**: "here" means the current working directory; default to all workspaces.
-- **Content**: defer filtering on conversation content to step 2.
+- **Content**: defer filtering on conversation content to step 3.
 
 The following session file paths are best-effort and can change between releases. If a path is missing or looks different, check the linked doc.
 
@@ -49,17 +66,17 @@ The following session file paths are best-effort and can change between releases
 
 List the matching session file paths, grouped by harness. Include their conversation id, harness type, and session timestamp. If nothing matches, say which locations you searched and what criteria you applied and any near misses, then ask the user whether to widen the search.
 
-### 2. Process sessions
+### 3. Process sessions
 
-Delegate the session files from step 1 to subagents that follow [assets/segmenter.md](assets/segmenter.md). Give each subagent up to 10 session file paths (mutually exclusive between subagents), the segmenter document's absolute path, each session file's timestamp, and any content criteria from the prompt. If that would take more than 5 subagents, spawn 5 and split the files evenly among them. The user's prompt can override either cap. Wait for every subagent to complete before continuing to the next step.
+Delegate the session files from step 2 to subagents that follow [assets/segmenter.md](assets/segmenter.md). Give each subagent up to 10 session file paths (mutually exclusive between subagents), the segmenter document's absolute path, each session file's timestamp, any content criteria from the prompt, and the context-dependent input handling from step 1 as fill, drop, or keep (map any other answer to the closest of the three). If that would take more than 5 subagents, spawn 5 and split the files evenly among them. The user's prompt can override either cap. Wait for every subagent to complete, then read the episode files whose paths they return before continuing to the next step.
 
 If you cannot spawn subagents, follow the segmenter document's steps yourself for every session file.
 
 If no episodes were returned, report the dropped reasons and ask the user whether to widen the search.
 
-### 3. Suggest evaluators
+### 4. Suggest evaluators
 
-Group the `failure`s from every episode's error analysis in step 2 into the failure modes below, assigning each failure to exactly one mode (the most specific that fits), and count the episodes that show each mode. Every evaluator runs on every case, so suggest an evaluator only when its failure mode shows up in at least 10% of all episodes. Map each failure mode to its evaluator:
+Group the `failure`s from every episode's error analysis in step 3 into the failure modes below, assigning each failure to exactly one mode (the most specific that fits), and count the episodes that show each mode. Every evaluator runs on every case, so suggest an evaluator only when its failure mode shows up in at least 10% of all episodes. Map each failure mode to its evaluator:
 
 - **GoalSuccessRateEvaluator**: the episode's `summary` outcome is abandoned, unresolved, or cut off mid-work, or the user needed several retries to reach the goal (ex. "still failing, third time I'm asking").
 - **CorrectnessEvaluator**: the agent gave a wrong fact, fix, or computed result (ex. "that's not the default, it's 30 seconds").
@@ -78,7 +95,7 @@ Group the `failure`s from every episode's error analysis in step 2 into the fail
 
 Only suggest evaluators listed above. If no failure mode reaches 10% of episodes, suggest GoalSuccessRateEvaluator alone.
 
-### 4. Output the experiment file
+### 5. Output the experiment file
 
 Write the experiment JSON file to the directory the user gives, defaulting to `./experiments`. Create the directory if it doesn't exist. Name the file `<timestamp>_<uuid>.json`, where `<timestamp>` is the current UTC time as `YYYYMMDDTHHMMSSZ` and `<uuid>` is a random UUID4.
 
@@ -103,7 +120,7 @@ Write the experiment JSON file to the directory the user gives, defaulting to `.
 }
 ```
 
-Write one case per kept episode from step 2, and one evaluator entry per evaluator from step 3.
+Write one case per kept episode from step 3, and one evaluator entry per evaluator from step 4.
 
 - `name`: a short kebab-case phrase generated from the episode's `summary`, unique within the file.
 - `input`: the episode's user input.
@@ -115,4 +132,4 @@ Write one case per kept episode from step 2, and one evaluator entry per evaluat
 
 ## Output
 
-Report the experiment file path, the number of cases, and the total number of sessions. List each suggested evaluator with its failure mode's episode count and one `evidence` quote, and name any modes that appeared but fell below 10%. Tell the user to run it with `strands-evals run <file> --agent <module>:<factory>`.
+Report the experiment file path, the number of cases, and the total number of sessions. List each suggested evaluator with its failure mode's episode count and one `evidence` quote, and name any modes that appeared but fell below 10%. Tell the user to run it with `strands-evals run <file> --agent <module>:<factory>`. Then delete the episode files.
