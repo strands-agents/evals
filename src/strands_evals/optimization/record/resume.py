@@ -51,7 +51,7 @@ class ResumeState:
     Attributes:
         parents: Candidate id -> parent id (None for the baseline).
         spent: Rebuilt from the saved trial records, not from `score` events: over the last record per
-            key, `rollouts + sum(a.rollouts for a in earlier)` (re-runs included).
+            key, `rollouts + sum(a.rollouts for a in previous_attempts)` (re-runs included).
         iteration: The last iteration with an `iteration_end` event (0 = only setup and the baseline).
         candidates: Every saved candidate; their scores and the fit are rebuilt from their saved trials.
         exhausted: Blocks that produced zero candidates on their latest turn.

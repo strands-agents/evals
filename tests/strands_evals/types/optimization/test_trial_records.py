@@ -80,7 +80,7 @@ def _record(trajectory):
         error_type=None,
         error=None,
         attempts=1,
-        earlier=[],
+        previous_attempts=[],
         output="4",
         trajectory=trajectory,
         interactions=None,

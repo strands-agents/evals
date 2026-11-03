@@ -29,9 +29,10 @@ class TrialLogEntry:
         error_type: The last attempt's exception type name; None when it returned.
         error: The last attempt's exception message; None when it returned.
         attempts: Every attempt, the last one included.
-        trace_id: The trial's trace (its `execute_case` span), which groups its agent and judge spans.
-        attempt_span_id: The last attempt's span.
-        earlier: `(span id, status, error_type, error)` for each attempt `Experiment` retried
+        trace_id: The trial's trace (its `execute_case` span), which groups its agent and judge spans;
+            hex, as in a `Session` (`format(trace_id, "032x")`).
+        attempt_span_id: The last attempt's span, hex (`format(span_id, "016x")`).
+        previous_attempts: `(span id, status, error_type, error)` for each attempt `Experiment` retried
             (throttling), oldest first.
     """
 
@@ -39,9 +40,9 @@ class TrialLogEntry:
     error_type: str | None
     error: str | None
     attempts: int
-    trace_id: int
-    attempt_span_id: int
-    earlier: list[tuple[int, TrialStatus, str | None, str | None]]
+    trace_id: str
+    attempt_span_id: str
+    previous_attempts: list[tuple[str, TrialStatus, str | None, str | None]]
 
 
 @dataclass
@@ -116,7 +117,7 @@ def instrument(task: TaskFn, log: TrialLog, traces: TraceCapture) -> TaskFn:
     stored as `log.setup_error`, not classified. A rollout-returned `trajectory` that is not None wins;
     a returned dict without one gets a copy with the `Session` added, never the dict itself changed;
     a non-dict return becomes `{"output": value, "trajectory": session}`. No agent spans -> trajectory None.
-    Attempts `Experiment` retried on throttling go into `TrialLogEntry.earlier`.
+    Attempts `Experiment` retried on throttling go into `TrialLogEntry.previous_attempts`.
 
     Args:
         task: The task from `make_task` or `build_task`.

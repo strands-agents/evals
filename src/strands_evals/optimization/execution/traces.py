@@ -24,17 +24,21 @@ class EvaluatorView:
 
 
 class TraceCapture:
-    """One per run; keeps only spans of registered trial traces."""
+    """One per run; keeps only spans of registered trial traces.
+
+    Trace and span ids are hex strings, as in a `Session` (`format(trace_id, "032x")`,
+    `format(span_id, "016x")`).
+    """
 
     def __init__(self) -> None:
         """Install or attach the in-memory exporter; must run before any `Experiment` is built."""
         raise NotImplementedError
 
-    def register(self, trace_id: int) -> None:
+    def register(self, trace_id: str) -> None:
         """Keep this trace's spans; spans of unregistered traces are dropped at export."""
         raise NotImplementedError
 
-    def agent_view(self, trace_id: int, attempt_span_id: int) -> tuple[Session | None, Usage]:
+    def agent_view(self, trace_id: str, attempt_span_id: str) -> tuple[Session | None, Usage]:
         """The `Session` and usage of the given attempt's subtree, judge spans excluded.
 
         Args:
@@ -46,8 +50,10 @@ class TraceCapture:
         """
         raise NotImplementedError
 
-    def attempt_usage(self, trace_id: int, attempt_span_id: int) -> Usage:
-        """One earlier attempt's usage (`TrialLogEntry.earlier`), by `agent_view`'s rules; for `AttemptRecord`.
+    def attempt_usage(self, trace_id: str, attempt_span_id: str) -> Usage:
+        """One previous attempt's usage (`TrialLogEntry.previous_attempts`), by `agent_view`'s rules.
+
+        For `AttemptRecord`.
 
         Args:
             trace_id: The trial's trace.
@@ -55,10 +61,10 @@ class TraceCapture:
         """
         raise NotImplementedError
 
-    def evaluator_view(self, trace_id: int) -> EvaluatorView:
+    def evaluator_view(self, trace_id: str) -> EvaluatorView:
         """One walk over the trial's `evaluator {name}` spans: judge usage, errors, and labels."""
         raise NotImplementedError
 
-    def release(self, trace_ids: Iterable[int]) -> None:
+    def release(self, trace_ids: Iterable[str]) -> None:
         """Drop only these trials' spans."""
         raise NotImplementedError

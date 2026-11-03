@@ -79,7 +79,7 @@ class AttemptRecord(BaseModel):
     """One earlier attempt of a trial, kept for reporting; no `Session`.
 
     Two sources, both oldest first: attempts `Experiment` retried on throttling inside one task span,
-    and a saved record that a later re-run pass replaced (its own `earlier` list, then itself).
+    and a saved record that a later re-run pass replaced (its own `previous_attempts`, then itself).
 
     Attributes:
         status: What that attempt ended as (`infrastructure_invalid`, or `verifier_invalid` before a
@@ -110,15 +110,16 @@ class TrialRecord(BaseModel):
     Each evaluator name is in exactly one of `evaluations` and `evaluator_errors`; `details` has the same
     keys as `evaluations`: each evaluator's own outputs (one per tool call or turn for tool- and
     turn-level evaluators), so reports rebuilt from the records match what `Experiment` returned and
-    Reflection sees per-row reasons. Status, metrics, and usage read the last attempt; `earlier` is for
-    reporting and the budget only, and `attempts == len(earlier) + 1`. `output` is saved as returned when
-    JSON-serializable, else as `str(output)`.
+    Reflection sees per-row reasons. Status, metrics, and usage read the last attempt;
+    `previous_attempts` is for reporting and the budget only, and
+    `attempts == len(previous_attempts) + 1`. `output` is saved as returned when JSON-serializable,
+    else as `str(output)`.
 
     `rollouts` is what the last attempt cost the budget: 1 when the agent ran (a first pass or a re-run
     pass), 0 for a judge-only re-run on the saved output and for an attempt `Experiment` retried on
-    throttling. The trial's total is `rollouts + sum(a.rollouts for a in earlier)`; resume rebuilds `spent`
-    from the last record per key this way, with nothing counted twice, because a replacing record's
-    `earlier` holds the replaced record and its own `earlier`.
+    throttling. The trial's total is `rollouts + sum(a.rollouts for a in previous_attempts)`; resume rebuilds
+    `spent` from the last record per key this way, with nothing counted twice, because a replacing
+    record's `previous_attempts` holds the replaced record and its own `previous_attempts`.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -131,7 +132,7 @@ class TrialRecord(BaseModel):
     error_type: str | None
     error: str | None
     attempts: int
-    earlier: list[AttemptRecord]
+    previous_attempts: list[AttemptRecord]
     output: Any
     trajectory: list[Any] | Session | None
     interactions: list[Interaction] | None

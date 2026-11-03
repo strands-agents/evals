@@ -98,7 +98,7 @@ class OptimizationResult:
             validation and test = the end phase.
         search_cost: Total proposer usage.
         judge_cost: Judge usage per trial's last attempt, as `agent_cost` counts the agent's.
-        retry_cost: Agent and judge usage in earlier attempts (`TrialRecord.earlier`).
+        retry_cost: Agent and judge usage in earlier attempts (`TrialRecord.previous_attempts`).
     """
 
     run_id: str

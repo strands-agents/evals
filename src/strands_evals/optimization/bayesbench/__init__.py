@@ -1,4 +1,4 @@
-"""BayesBench, brought in from `nonatofabio/bayesbench@fb2d638` with the author's permission.
+"""BayesBench, the statistics behind the default score model; imported only by `score_model/bayesbench.py`.
 
-Third-party code: imported only by `score_model/bayesbench.py`.
+TODO: bring in the BayesBench code.
 """

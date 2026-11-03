@@ -65,8 +65,8 @@ class EventLog:
       (`TestReport` or None), `reason` (also naming the front members it couldn't afford), `front` (under a
       `Pareto` objective, each tested front member's `TestReport`, the champion's included; `{}` otherwise).
 
-    Resume reads: `spent` from the trial events (the last per key: its `rollouts` plus its earlier
-    attempts'); candidates, numbers, parents, and
+    Resume reads: `spent` from the trial events (the last per key: its `rollouts` plus its
+    `previous_attempts`'); candidates, numbers, parents, and
     rounds from `propose` and `iteration_end`; exhausted blocks and iterations from `iteration_end`; history
     from `select`; open rounds from openers with no observe yet; `stop_reason` from the last `stop`; proposer
     feedback and `search_cost` from `observe` / `evidence`; the fit sequence from `fit`; the end phase's

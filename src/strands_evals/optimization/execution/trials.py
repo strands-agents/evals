@@ -43,7 +43,7 @@ class TrialRunner:
 
     `rerun_passes` caps the infrastructure re-run passes per call; this runner never retries inside a
     trial. `Experiment` keeps its own throttling retries inside one trial's task span; each retry is an
-    attempt (`TrialRecord.earlier`).
+    attempt (`TrialRecord.previous_attempts`).
     """
 
     def __init__(
@@ -122,7 +122,7 @@ class TrialRunner:
         re-run passes each retry the trials still `infrastructure_invalid`. `allowance` is
         `BudgetTracker.allowance(phase=...)` and caps only the re-run passes; trials left when it runs out
         stay `infrastructure_invalid`. A judge-only infrastructure failure re-runs just the judges on the
-        saved output, for 0 rollouts. A record a re-run replaces moves into the new record's `earlier`.
+        saved output, for 0 rollouts. A record a re-run replaces moves into the new record's `previous_attempts`.
         Each record's and attempt's `rollouts` is set to what it cost (1 when the agent ran, else 0).
         Each trial is saved as soon as it finishes.
 

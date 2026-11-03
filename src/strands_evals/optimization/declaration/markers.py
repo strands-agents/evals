@@ -12,45 +12,45 @@ _UNSET: Any = object()
 
 
 class Int:
-    """An integer argument with inclusive bounds; the default must lie in `[ge, le]`.
+    """An integer argument with inclusive bounds; the default must lie in `[min_value, max_value]`.
 
     Without `default=`, the wrapped function's parameter default is used. With neither (always the
     case under `build_task`'s `space=`, which has no function), `tunable` or `Space` raises `TypeError`.
     """
 
-    def __init__(self, ge: int, le: int, *, default: int | None = None, log: bool = False):
+    def __init__(self, min_value: int, max_value: int, *, default: int | None = None, log: bool = False):
         """Declare a tunable integer.
 
         Args:
-            ge: Smallest allowed value.
-            le: Largest allowed value.
+            min_value: Smallest allowed value.
+            max_value: Largest allowed value.
             default: The baseline value; omit to use the wrapped parameter's default.
             log: Search on a log scale.
 
         Raises:
-            TypeError: A default outside `[ge, le]`.
+            TypeError: A default outside `[min_value, max_value]`.
         """
         raise NotImplementedError
 
 
 class Float:
-    """A float argument with inclusive bounds; the default must lie in `[ge, le]`.
+    """A float argument with inclusive bounds; the default must lie in `[min_value, max_value]`.
 
     Without `default=`, the wrapped function's parameter default is used; with neither, `tunable` or
     `Space` raises `TypeError`.
     """
 
-    def __init__(self, ge: float, le: float, *, default: float | None = None, log: bool = False):
+    def __init__(self, min_value: float, max_value: float, *, default: float | None = None, log: bool = False):
         """Declare a tunable float.
 
         Args:
-            ge: Smallest allowed value.
-            le: Largest allowed value.
+            min_value: Smallest allowed value.
+            max_value: Largest allowed value.
             default: The baseline value; omit to use the wrapped parameter's default.
             log: Search on a log scale.
 
         Raises:
-            TypeError: A default outside `[ge, le]`.
+            TypeError: A default outside `[min_value, max_value]`.
         """
         raise NotImplementedError
 

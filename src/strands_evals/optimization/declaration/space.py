@@ -32,18 +32,28 @@ class FileSource:
 
 @dataclass(frozen=True)
 class ParamInfo:
-    """One flat key of the space; `active_when` is `(key, value)` of the choice that enables it.
+    """One flat key of the space.
 
-    `ge` / `le` are the inclusive bounds of an `Int` / `Float`, named as on the markers. Fields after
-    `default` default to None (`log` to False), so each kind sets only its own.
+    `active_when` is `(choice key, label)` when the key exists only under one alternative of a
+    `choice()`, else None. E.g. `cm=choice(window=component(SlidingWindowConversationManager,
+    window_size=Int(4, 40)), summary=component(...))` gives `cm` (always active) and
+    `cm.window.window_size` with `active_when=("cm", "window")`. When a proposal switches `cm` to
+    `summary`, `Space.complete` drops `cm.window.window_size` (kept, it would change the candidate
+    id without changing the agent) and fills the keys `summary` brings in. Validation, TPE, the score
+    model's design, and `Nested` read it too. A choice inside an alternative carries its own
+    `active_when`, so conditions chain upward. Text keys can't sit under a `choice()`, so theirs is
+    always None.
+
+    `min_value` / `max_value` are the inclusive bounds of an `Int` / `Float`. Fields after `default`
+    default to None (`log` to False), so each kind sets only its own.
     """
 
     key: str
     name: str
     kind: ParamKind
     default: Value
-    ge: float | None = None
-    le: float | None = None
+    min_value: float | None = None
+    max_value: float | None = None
     log: bool = False
     options: tuple[Value, ...] | None = None
     size_cap: int | None = None
@@ -121,5 +131,22 @@ class Space:
             name: A declared name, not a flat key.
             values: The candidate's values.
             workspace: The candidate's copy, or None when no value reaches the agent as a path.
+        """
+        raise NotImplementedError
+
+    def create_candidate_copy(self, values: Values, directory: Path) -> Path:
+        """Copy each file-backed value's folder into `directory`, then write every active file-backed key.
+
+        Each source folder goes to `directory/<folder name>-<short hash of its original path>/`; a folder
+        inside another is copied once, as part of the outer one. Each active key is written by its
+        marker's `write()`. Built in a temp folder and renamed into place, so an existing `directory`
+        is always complete and a second call returns at once. Originals are never written.
+
+        Args:
+            values: The candidate's values.
+            directory: The candidate's copy, `<run>/candidates/<id>/optimization_files/`.
+
+        Returns:
+            `directory`.
         """
         raise NotImplementedError

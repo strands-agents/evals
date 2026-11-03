@@ -1,16 +1,8 @@
-"""File-backed markers and the per-candidate copy of the user's files."""
+"""File-backed markers; `Space.create_candidate_copy` calls their `write()`."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-from ...types.optimization import Values
-
-# Type-checking only: space.py imports this module, so a runtime import would be a cycle. Internal,
-# so get_type_hints(create_candidate_copy) failing on `Space` breaks no exported signature.
-if TYPE_CHECKING:
-    from .space import Space
 
 
 class FileText:
@@ -104,21 +96,3 @@ class SkillLibrary:
         """
         raise NotImplementedError
 
-
-def create_candidate_copy(space: Space, values: Values, directory: Path) -> Path:
-    """Copy each file-backed value's folder into `directory`, then write every active file-backed key.
-
-    Each source folder goes to `directory/<folder name>-<short hash of its original path>/`; a folder
-    inside another is copied once, as part of the outer one. Built in a temp folder and renamed into
-    place, so an existing `directory` is always complete and a second call returns at once.
-    Originals are never written.
-
-    Args:
-        space: Names the file-backed keys and their sources.
-        values: The candidate's values.
-        directory: The candidate's copy, `<run>/candidates/<id>/optimization_files/`.
-
-    Returns:
-        `directory`.
-    """
-    raise NotImplementedError
