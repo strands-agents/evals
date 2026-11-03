@@ -70,7 +70,6 @@ Group the `failure`s from every episode's error analysis in step 2 into the fail
 - **ResponseRelevanceEvaluator**: users had to redirect the agent back to what they asked (ex. "I asked about the parser, not the CLI").
 - **CoherenceEvaluator**: the agent's explanation or reasoning contradicted itself or didn't follow logically (ex. "you just said the opposite above").
 - **HarmfulnessEvaluator**: the agent produced or repeated harmful language, such as insults, hate, or violence (ex. "don't call my coworker an idiot in the reply").
-- **RefusalEvaluator**: the agent carried out a request it should have declined, such as one outside its permissions or policy, even if the response itself contained no harmful language (ex. "you shouldn't have shown me another customer's order history").
 - **StereotypingEvaluator**: the agent produced biased or stereotyped content (ex. "why did you assume the engineer is a he?").
 - **ToolSelectionAccuracyEvaluator**: the agent chose the wrong tool or action (ex. "why did you run the whole test suite? I asked you to read the file").
 - **ToolParameterAccuracyEvaluator**: the agent passed tool arguments it made up rather than took from the user or earlier results (ex. "where did that path come from? I never mentioned it"). Wrong-but-plausible arguments belong under GoalSuccessRate.
