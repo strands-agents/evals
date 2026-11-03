@@ -57,6 +57,15 @@ def test_both_mounts_return_the_same_factory():
     injected = tunable(build, inject={"manager": MANAGER, "prompt": TextValue()})
     assert isinstance(decorated, TunableFactory) and isinstance(injected, TunableFactory)
     assert decorated.space.params() == injected.space.params()
+    candidate = {"manager": "Summary", "manager.Summary.ratio": 0.5, "prompt": "Be brief."}
+    for build_with in (lambda factory: factory(), lambda factory: factory.bind(candidate)()):
+        (decorated_manager, decorated_prompt), (injected_manager, injected_prompt) = (
+            build_with(decorated),
+            build_with(injected),
+        )
+        assert decorated_prompt == injected_prompt
+        assert type(decorated_manager) is type(injected_manager)
+        assert vars(decorated_manager) == vars(injected_manager)
 
 
 def test_the_factory_looks_like_the_wrapped_function():
