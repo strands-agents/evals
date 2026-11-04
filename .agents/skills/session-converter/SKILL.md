@@ -1,6 +1,6 @@
 ---
 name: session-converter
-description: Use when the user wants to turn past local agent conversations (Codex, Claude Code, Kiro CLI, Strands CLI, or any other harness) into strands-evals experiments. Locates the relevant session files on the local filesystem and extracts their episodes (turns with a focused user goal). Skip for traces stored in trace providers (CloudWatch, Langfuse, OpenSearch).
+description: Use when the user wants to turn past local agent conversations (Codex, Claude Code, Kiro CLI, Strands CLI, or any other harness) into strands-evals experiments. Locates the relevant session files on the local filesystem, extracts their episodes (turns with a focused user goal), suggests evaluators, and writes an experiment JSON file. Skip for traces stored in trace providers (CloudWatch, Langfuse, OpenSearch).
 version: 0.1.0
 ---
 
@@ -55,6 +55,64 @@ Delegate the session files from step 1 to subagents that follow [assets/segmente
 
 If you cannot spawn subagents, follow the segmenter document's steps yourself for every session file.
 
+If no episodes were returned, report the dropped reasons and ask the user whether to widen the search.
+
+### 3. Suggest evaluators
+
+Group the `failure`s from every episode's error analysis in step 2 into the failure modes below, assigning each failure to exactly one mode (the most specific that fits), and count the episodes that show each mode. Every evaluator runs on every case, so suggest an evaluator only when its failure mode shows up in at least 10% of all episodes. Map each failure mode to its evaluator:
+
+- **GoalSuccessRateEvaluator**: the episode's `summary` outcome is abandoned, unresolved, or cut off mid-work, or the user needed several retries to reach the goal (ex. "still failing, third time I'm asking").
+- **CorrectnessEvaluator**: the agent gave a wrong fact, fix, or computed result (ex. "that's not the default, it's 30 seconds").
+- **HelpfulnessEvaluator**: the answer was accurate but didn't help, so the user re-asked or asked for more detail or examples (ex. "ok but how do I actually use it?").
+- **FaithfulnessEvaluator**: the agent made claims that didn't match the files, docs, or tool results it read (ex. "there's no retry option in that file").
+- **InstructionFollowingEvaluator**: the agent broke an explicit constraint in the user input (format, length, scope, things not to do) (ex. "I said don't touch the tests").
+- **ConcisenessEvaluator**: users asked for shorter answers or cut off verbose ones (ex. "too long, just give me the command").
+- **ResponseRelevanceEvaluator**: users had to redirect the agent back to what they asked (ex. "I asked about the parser, not the CLI").
+- **CoherenceEvaluator**: the agent's explanation or reasoning contradicted itself or didn't follow logically (ex. "you just said the opposite above").
+- **HarmfulnessEvaluator**: the agent produced or repeated harmful language, such as insults, hate, or violence (ex. "don't call my coworker an idiot in the reply").
+- **StereotypingEvaluator**: the agent produced biased or stereotyped content (ex. "why did you assume the engineer is a he?").
+- **ToolSelectionAccuracyEvaluator**: the agent chose the wrong tool or action (ex. "why did you run the whole test suite? I asked you to read the file").
+- **ToolParameterAccuracyEvaluator**: the agent passed tool arguments it made up rather than took from the user or earlier results (ex. "where did that path come from? I never mentioned it"). Wrong-but-plausible arguments belong under GoalSuccessRate.
+- **SkillSelectionAccuracyEvaluator**: the agent used the wrong skill (ex. "use the code-review skill, not implement").
+- **SkillInstructionFollowingEvaluator**: the agent didn't follow the skill it used (ex. "the skill says to ask before posting").
+
+Only suggest evaluators listed above. If no failure mode reaches 10% of episodes, suggest GoalSuccessRateEvaluator alone.
+
+### 4. Output the experiment file
+
+Write the experiment JSON file to the directory the user gives, defaulting to `./experiments`. Create the directory if it doesn't exist. Name the file `<timestamp>_<uuid>.json`, where `<timestamp>` is the current UTC time as `YYYYMMDDTHHMMSSZ` and `<uuid>` is a random UUID4.
+
+```json
+{
+  "cases": [
+    {
+      "name": "<name>",
+      "input": "<input>",
+      "expected_assertion": "<expected_assertion>",
+      "metadata": {
+        "session_file": "<session_file>",
+        "conversation_id": "<conversation_id>",
+        "timestamp": "<timestamp>",
+        "episode_index": <episode_index>
+      }
+    }
+  ],
+  "evaluators": [
+    {"evaluator_type": "<evaluator>"}
+  ]
+}
+```
+
+Write one case per kept episode from step 2, and one evaluator entry per evaluator from step 3.
+
+- `name`: a short kebab-case phrase generated from the episode's `summary`, unique within the file.
+- `input`: the episode's user input.
+- `session_file`: the file path of the episode's session.
+- `conversation_id`: the conversation id listed for the episode's session file.
+- `timestamp`: the episode timestamp.
+- `episode_index`: the episode's 0-based position among the episodes returned for its session, as an integer.
+- `evaluator`: the name of a chosen evaluator.
+
 ## Output
 
-Stop after step 2. Report the outputs from all subagent runs (or your own output from step 2 if no subagents were spawned). Converting these sessions into an experiment is not part of this skill yet, so don't write experiment code; ask the user what they want to do with the results you found.
+Report the experiment file path, the number of cases, and the total number of sessions. List each suggested evaluator with its failure mode's episode count and one `evidence` quote, and name any modes that appeared but fell below 10%. Tell the user to run it with `strands-evals run <file> --agent <module>:<factory>`.

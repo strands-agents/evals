@@ -47,6 +47,8 @@ Input:
 <input>
 ---
 Expected assertion: <expected_assertion>
+Error analysis:
+- <failure>: "<evidence>"
 
 Episode 1
 ...
@@ -58,3 +60,7 @@ Episode 1
 - `timestamp`: ISO 8601 timestamp for the first user input in the episode, or session timestamp if unavailable.
 - `input`: the opening user input, verbatim. If the user resent or rephrased it before the assistant replied, use the last version.
 - `expected_assertion`: generate it from the episode's later user inputs and assistant messages, in session file order. State what a successful response to the opening input must do, as checkable statements: user corrections, rejections, and requests to explain the assistant's wording reveal unmet expectations, and user acceptance confirms what was right. Ground every statement in the episode, and don't copy the assistant's answer.
+- `failure`: one line per distinct way the assistant fell short of the user's goal in the episode, in your own words (ex. "claimed a function existed that wasn't in the file", "ignored the request to keep it short"). Describe what went wrong.
+- `evidence`: the user input, quoted verbatim and trimmed to one sentence, that shows the failure.
+
+If the user accepted the work without corrections, write `Error analysis: none` on a single line with no bullets.
