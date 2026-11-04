@@ -34,8 +34,8 @@ class MetricRegistry:
             evaluators: `get_name()` -> its range.
 
         Raises:
-            ValueError: An evaluator is named like a usage metric, its range has a NaN end, or its range is
-                empty (low >= high).
+            ValueError: An evaluator has the same name as a usage metric (e.g. `name="tokens"`), so a goal
+                naming it would be ambiguous; or a range has a NaN end or is empty (low >= high).
         """
         clashes = sorted(name for name in evaluators if name in USAGE_METRICS)
         if clashes:
