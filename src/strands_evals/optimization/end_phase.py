@@ -186,6 +186,7 @@ def paired_ratio(
 
 def _t_quantile(level: float, df: int) -> float:
     """The two-sided `level` quantile of Student's t with `df` degrees of freedom."""
+    # optional extra: optimization
     from scipy.stats import t
 
     return float(t.ppf(0.5 + level / 2, df))
