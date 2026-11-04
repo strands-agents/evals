@@ -14,6 +14,13 @@ class Budget:
     max_rollouts: int = 500
     max_iterations: int | None = None
 
+    def __post_init__(self) -> None:
+        """`max_rollouts` >= 1 and `max_iterations` None or >= 1, else `ValueError`."""
+        if self.max_rollouts < 1:
+            raise ValueError(f"Budget: max_rollouts must be at least 1, got {self.max_rollouts}")
+        if self.max_iterations is not None and self.max_iterations < 1:
+            raise ValueError(f"Budget: max_iterations must be None or at least 1, got {self.max_iterations}")
+
 
 class BudgetTracker:
     """Counts spent rollouts so real rollouts never exceed `max_rollouts`.
@@ -35,8 +42,19 @@ class BudgetTracker:
             spent: Rollouts already spent; on resume, rebuilt from the saved trial records.
             validation_reserve: Held back for scoring the finalists and the baseline on validation.
             test_reserve: Held back for the test report.
+
+        Raises:
+            ValueError: A negative `spent` or reserve.
         """
-        raise NotImplementedError
+        if min(spent, validation_reserve, test_reserve) < 0:
+            raise ValueError(
+                f"BudgetTracker: spent and reserves must be >= 0, got spent={spent}, "
+                f"validation_reserve={validation_reserve}, test_reserve={test_reserve}"
+            )
+        self.budget = budget
+        self.spent = spent
+        self.validation_reserve = validation_reserve
+        self.test_reserve = test_reserve
 
     def can_afford(self, rollouts: int, *, phase: SplitName = "train") -> bool:
         """Whether `rollouts` fit, keeping the later phases' reserves.
@@ -44,17 +62,24 @@ class BudgetTracker:
         `train` (the search): spent + rollouts + both reserves <= max; `validation`: + the test reserve;
         `test`: spent + rollouts <= max. Callers pass `TrialRunner.pending(...)`, never `cases x runs`.
         """
-        raise NotImplementedError
+        return rollouts <= self.allowance(phase=phase)
 
     def allowance(self, *, phase: SplitName = "train") -> int:
         """What `TrialRunner.run` may spend on re-run passes: remaining minus the later phases' reserves, >= 0."""
-        raise NotImplementedError
+        held = {"train": self.validation_reserve + self.test_reserve, "validation": self.test_reserve, "test": 0}
+        return max(0, self.remaining - held[phase])
 
     def spend(self, rollouts: int) -> None:
-        """Count `rollouts` as spent (what `TrialRunner.run` returned)."""
-        raise NotImplementedError
+        """Count `rollouts` as spent (what `TrialRunner.run` returned).
+
+        Raises:
+            ValueError: A negative `rollouts`.
+        """
+        if rollouts < 0:
+            raise ValueError(f"BudgetTracker: can't spend a negative number of rollouts, got {rollouts}")
+        self.spent += rollouts
 
     @property
     def remaining(self) -> int:
         """`max_rollouts - spent`, reserves not subtracted."""
-        raise NotImplementedError
+        return self.budget.max_rollouts - self.spent
