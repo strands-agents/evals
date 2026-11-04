@@ -2,17 +2,32 @@
 
 from __future__ import annotations
 
+import difflib
+import hashlib
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
+from typing import Any
 
 from ..types.optimization import Value, Values
 from .declaration.space import Space
 
+# A key a candidate doesn't have; None is a valid value, so absence needs its own marker.
+_ABSENT: Any = object()
+
 
 def content_id(values: Values) -> str:
-    """First 12 hex characters of the sha256 of the canonical JSON (sorted keys) of `values`."""
-    raise NotImplementedError
+    """First 12 hex characters of the sha256 of the canonical JSON (sorted keys) of `values`.
+
+    Types count: `1` and `1.0` give different ids, as `Space.validate` keeps them apart.
+
+    Raises:
+        ValueError: A value is NaN or infinite (not JSON).
+    """
+    canonical = json.dumps(dict(values), sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
 
 
 @dataclass(frozen=True, eq=False)
@@ -39,18 +54,24 @@ class Candidate:
     id: str = field(init=False)
 
     def __post_init__(self) -> None:
-        raise NotImplementedError
+        # Frozen: set through object.__setattr__, once, so the id always matches the values.
+        object.__setattr__(self, "values", MappingProxyType(dict(self.values)))
+        object.__setattr__(self, "inherited", MappingProxyType(dict(self.inherited)))
+        object.__setattr__(self, "defaulted", tuple(self.defaulted))
+        object.__setattr__(self, "id", content_id(self.values))
 
     def __eq__(self, other: object) -> bool:
-        raise NotImplementedError
+        if not isinstance(other, Candidate):
+            return NotImplemented
+        return self.id == other.id
 
     def __hash__(self) -> int:
-        raise NotImplementedError
+        return hash(self.id)
 
     @classmethod
     def baseline(cls, space: Space) -> Candidate:
         """Every value at its default (`space.complete({})`)."""
-        raise NotImplementedError
+        return cls(values=space.complete({}), parent_id=None, origin="baseline", rationale="")
 
     def child(
         self,
@@ -76,9 +97,32 @@ class Candidate:
             fill: Where a key the parent lacks comes from; None means its default.
 
         Raises:
-            ValueError: The completed values fail `space.validate`.
+            ValueError: The completed values fail `space.validate`, including an update to a key
+                inactive under the resulting choices (it would be dropped, so the patch would
+                change nothing there).
         """
-        raise NotImplementedError
+        inherited: dict[str, str] = {}
+        defaulted: list[str] = []
+
+        def record(key: str) -> tuple[Value, str] | None:
+            found = fill(key) if fill is not None else None
+            if found is None:
+                defaulted.append(key)
+            else:
+                inherited[key] = found[1]
+            return found
+
+        completed = space.complete({**self.values, **updates}, fill=record)
+        # Updates go back on top so validate reports an inactive one instead of complete() dropping it.
+        space.validate({**completed, **updates})
+        return Candidate(
+            values=completed,
+            parent_id=self.id,
+            origin=origin,
+            rationale=rationale,
+            inherited=inherited,
+            defaulted=tuple(defaulted),
+        )
 
 
 def diff(space: Space, base: Candidate, other: Candidate, *, root: Path) -> str:
@@ -95,12 +139,34 @@ def diff(space: Space, base: Candidate, other: Candidate, *, root: Path) -> str:
         base: The candidate diffed against, usually the baseline.
         other: The candidate shown.
         root: The run's working directory (`run.json` `workdir`); paths are shown relative to it.
+
+    Returns:
+        The diff, or "" when no text changed.
     """
-    raise NotImplementedError
+    before_files, after_files = space._render_files(base.values), space._render_files(other.values)
+    root = root.resolve()
+    hunks: list[str] = []
+    for path in dict.fromkeys([*before_files, *after_files]):
+        before, after = before_files.get(path, ""), after_files.get(path, "")
+        if path.is_relative_to(root):
+            relative = path.relative_to(root).as_posix()
+            hunks.extend(_unified(before, after, f"a/{relative}", f"b/{relative}"))
+        else:
+            hunks.extend(_unified(before, after, path.as_posix(), path.as_posix()))
+    for info in space.params():
+        if info.kind != "text" or info.source is not None:
+            continue
+        before_text, after_text = str(base.values.get(info.key, "")), str(other.values.get(info.key, ""))
+        hunks.extend(_unified(before_text, after_text, info.key, info.key))
+    return "".join(hunks)
 
 
-def changed_values(space: Space, base: Candidate, other: Candidate) -> dict[str, tuple[Value, Value]]:
-    """Changed numbers and choices as `key -> (before, after)`.
+def changed_values(space: Space, base: Candidate, other: Candidate) -> dict[str, dict[str, Value]]:
+    """Changed numbers and choices, in `best.values.json`'s format.
+
+    Each changed key maps to `{"old": base value, "new": other value}`; a key active on one side only
+    (a sub-key of a switched `choice()`) has only that side's entry, since None is a valid value.
+    Text never appears (see `diff`). Keys in declaration order.
 
     Args:
         space: Tells numbers and choices apart from text.
@@ -108,9 +174,22 @@ def changed_values(space: Space, base: Candidate, other: Candidate) -> dict[str,
         other: The candidate shown.
 
     Returns:
-        Key -> (base value, other value) for every changed number or choice.
+        Key -> `{"old": ..., "new": ...}` for every changed number or choice; {} when none changed.
     """
-    raise NotImplementedError
+    changed: dict[str, dict[str, Value]] = {}
+    for info in space.params():
+        if info.kind == "text":
+            continue
+        before, after = base.values.get(info.key, _ABSENT), other.values.get(info.key, _ABSENT)
+        if _same(before, after):
+            continue
+        entry: dict[str, Value] = {}
+        if before is not _ABSENT:
+            entry["old"] = before
+        if after is not _ABSENT:
+            entry["new"] = after
+        changed[info.key] = entry
+    return changed
 
 
 def changed_keys(base: Candidate, other: Candidate) -> list[str]:
@@ -120,4 +199,26 @@ def changed_keys(base: Candidate, other: Candidate) -> list[str]:
         base: The candidate compared against, e.g. the parent.
         other: The candidate shown.
     """
-    raise NotImplementedError
+    keys = sorted(set(base.values) | set(other.values))
+    return [key for key in keys if not _same(base.values.get(key, _ABSENT), other.values.get(key, _ABSENT))]
+
+
+def _same(a: Any, b: Any) -> bool:
+    """Equal and of the same type, so `1`, `1.0`, and `True` differ, as their content ids do."""
+    return type(a) is type(b) and a == b
+
+
+def _unified(before: str, after: str, from_label: str, to_label: str) -> list[str]:
+    """One file's unified diff lines, each ending in a newline; a last line without one is marked as git does."""
+    if before == after:
+        return []
+    lines = difflib.unified_diff(
+        before.splitlines(keepends=True),
+        after.splitlines(keepends=True),
+        fromfile=from_label,
+        tofile=to_label,
+    )
+    out = []
+    for line in lines:
+        out.append(line if line.endswith("\n") else f"{line}\n\\ No newline at end of file\n")
+    return out

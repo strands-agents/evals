@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import shutil
+import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,7 +13,15 @@ from typing import Any, Literal, cast
 from typing_extensions import TypeAlias
 
 from ...types.optimization import Value, Values
-from .files import FileText, JsonField, SkillLibrary
+from .files import (
+    FileText,
+    JsonField,
+    SkillLibrary,
+    _copy_folder_name,
+    _ignore_containing,
+    _location_in_copy,
+    _outer_folders,
+)
 from .markers import _UNSET, Choice, Component, Float, Int, OneOf, TextValue, _default_size_cap, _is_option, choice
 from .tools import ToolDescriptions
 
@@ -77,13 +88,15 @@ class Space:
 
         Raises:
             TypeError: No markers, a name that is empty or contains `.` or `/`, an unknown marker
-                type, a marker with no default, or a default that fails `validate` (e.g. a text
-                default over its size cap).
+                type, a marker with no default, a default that fails `validate` (e.g. a text
+                default over its size cap), or two file markers on the same text (a `FileText`'s
+                file declared again, or two `JsonField`s on one field or one inside the other).
         """
         if not markers:
             raise TypeError("nothing to optimize: declare at least one marker")
         self._markers: dict[str, Marker] = {}
         self._params: dict[str, ParamInfo] = {}
+        self._files: dict[str, FileText | JsonField] = {}  # file-backed key -> its marker
         for name, marker in markers.items():
             if not isinstance(name, str) or not name or "." in name or "/" in name:
                 raise TypeError(f"declared name {name!r} must be a non-empty string without '.' or '/'")
@@ -93,10 +106,16 @@ class Space:
                 raise TypeError(f"{name}: {type(marker).__name__} is not a marker")
             self._markers[name] = marker
             for info in _flatten(name, marker):
-                problem = _check_value(info, info.default)
+                if isinstance(marker, (FileText, JsonField)):
+                    _check_no_overlap(info.key, marker, self._files)
+                    self._files[info.key] = marker
+                problem = self._problem(info, info.default)
                 if problem is not None:
                     raise TypeError(f"invalid default: {problem}")
                 self._params[info.key] = info
+        # Folders a candidate's copy holds; fixed by the declaration, so every copy has one layout.
+        self._copy_folders = _outer_folders(marker.path.parent for marker in self._files.values())
+        self._copies_files = any(isinstance(m, FileText) and m.as_path for m in self._files.values())
 
     def params(self) -> list[ParamInfo]:
         """Every flat key, in declaration order, a choice before its sub-keys.
@@ -139,7 +158,8 @@ class Space:
 
         Keys are taken in declaration order, so a filled choice decides which of its sub-keys are
         active. Unknown keys are kept, so `validate` reports them instead of a typo vanishing. A
-        `Float` value of -0.0 becomes 0.0, so one agent gets one candidate id.
+        `Float` value of -0.0 becomes 0.0, and a non-string `JsonField` value is rewritten as its JSON
+        text is written to the file ("0.50" becomes "0.5"), so one agent gets one candidate id.
 
         Args:
             values: The candidate's values.
@@ -153,6 +173,8 @@ class Space:
                 continue
             if key in values:
                 value = values[key]
+                if key in self._files:
+                    value = self._files[key]._canonical(value)
             else:
                 filled = fill(key) if fill is not None else None
                 value = info.default if filled is None else filled[0]
@@ -182,7 +204,7 @@ class Space:
         if missing:
             problems.append(f"missing: {missing}")
         for key in known:
-            problem = _check_value(self._params[key], values[key])
+            problem = self._problem(self._params[key], values[key])
             if problem is not None:
                 problems.append(problem)
         if problems:
@@ -194,6 +216,8 @@ class Space:
         - A choice: a new instance of the chosen component, e.g. `Summary(ratio=0.5)`, or the chosen
           fixed value as is.
         - `tool_descriptions`: new copies of the tools with the candidate's descriptions.
+        - `FileText(as_path=True)`: the path of the file inside `workspace`, or the original path
+          when `workspace` is None (the plain call).
         - Any other marker: the value itself, e.g. `0.2` or the prompt text.
 
         `values` must already pass `validate`; nothing is checked here. A component's fixed kwargs
@@ -215,6 +239,8 @@ class Space:
             return alternative.build({arg: values[f"{name}.{label}.{arg}"] for arg in alternative.tunable})
         if isinstance(marker, ToolDescriptions):
             return marker.build({tool: cast(str, values[f"{name}.{tool}"]) for tool in marker.tools})
+        if isinstance(marker, FileText) and marker.as_path:
+            return marker.path if workspace is None else workspace / _location_in_copy(self._copy_folders, marker.path)
         return values[name]
 
     def create_candidate_copy(self, values: Values, directory: Path) -> Path:
@@ -222,17 +248,81 @@ class Space:
 
         Each source folder goes to `directory/<folder name>-<short hash of its original path>/`; a folder
         inside another is copied once, as part of the outer one. Each active key is written by its
-        marker's `write()`. Built in a temp folder and renamed into place, so an existing `directory`
-        is always complete and a second call returns at once. Originals are never written.
+        marker's `write()`, so the copy holds the candidate's values even if a source file changed
+        since declaration; a file that already holds its value keeps the original bytes. Built in a
+        temp folder and renamed into place, so a `directory` holding every copied folder is complete
+        and a second call returns at once; an empty `directory` is replaced. Originals are never
+        written: files are replaced rather than written through, and a folder containing `directory`
+        (e.g. the run directory under the project) is left out of the copy.
 
         Args:
-            values: The candidate's values.
+            values: The candidate's values; must already pass `validate`.
             directory: The candidate's copy, `<run>/candidates/<id>/optimization_files/`.
 
         Returns:
             `directory`.
+
+        Raises:
+            FileExistsError: `directory` exists, isn't empty, and isn't a complete copy.
         """
-        raise NotImplementedError
+        if directory.exists():
+            if self._is_complete_copy(directory):
+                return directory
+            if not directory.is_dir() or any(directory.iterdir()):
+                raise FileExistsError(f"{directory} exists and is not a candidate copy; pass an empty or new folder")
+            directory.rmdir()
+        directory.parent.mkdir(parents=True, exist_ok=True)
+        building = Path(tempfile.mkdtemp(prefix=f".{directory.name}-", dir=directory.parent))
+        try:
+            destinations = (building.resolve(), directory.resolve())
+            for folder in self._copy_folders:
+                shutil.copytree(
+                    folder, building / _copy_folder_name(folder), symlinks=True, ignore=_ignore_containing(destinations)
+                )
+            for info in self._params.values():
+                if info.source is None or not self.is_active(info.key, values):
+                    continue
+                target = building / _location_in_copy(self._copy_folders, info.source.path)
+                self._files[info.key].write(str(values[info.key]), target)
+        except BaseException:
+            shutil.rmtree(building, ignore_errors=True)
+            raise
+        try:
+            os.rename(building, directory)
+        except OSError:
+            shutil.rmtree(building, ignore_errors=True)
+            if not self._is_complete_copy(directory):
+                raise
+            # Another call finished the same copy first; its directory is complete.
+        return directory
+
+    def _is_complete_copy(self, directory: Path) -> bool:
+        """Whether `directory` holds every copied folder, as only a finished copy does."""
+        return directory.is_dir() and all((directory / _copy_folder_name(f)).is_dir() for f in self._copy_folders)
+
+    def _render_files(self, values: Values) -> dict[Path, str]:
+        """Each file-backed file's whole text under `values`, in memory, in declaration order.
+
+        Every key on a file is rendered, changed or not, so two candidates' texts of one JSON file are
+        formatted alike and differ only where their values do.
+        """
+        texts: dict[Path, str] = {}
+        for info in self._params.values():
+            if info.source is None or not self.is_active(info.key, values):
+                continue
+            marker = self._files[info.key]
+            text = texts.get(info.source.path, marker._original())
+            texts[info.source.path] = marker._render(str(values[info.key]), text)
+        return texts
+
+    def _problem(self, info: ParamInfo, value: Any) -> str | None:
+        """A one-line problem with one value, including a file marker's format check, or None."""
+        problem = _check_value(info, value)
+        if problem is None and info.key in self._files:
+            format_problem = self._files[info.key]._problem(value)
+            if format_problem is not None:
+                problem = f"{info.key}: {format_problem}"
+        return problem
 
 
 # ---- Private helpers: markers -> ParamInfo, and the per-value check ---------
@@ -270,6 +360,12 @@ def _flatten(name: str, marker: Marker) -> list[ParamInfo]:
             cap = max(800, 3 * len(description)) if marker.size_cap is None else marker.size_cap
             infos.append(_text(f"{name}.{tool_name}", name, description, cap, marker.edit_instructions))
         return infos
+    if isinstance(marker, FileText):
+        source = FileSource(marker.path, None, marker.as_path)
+        return [_text(name, name, marker.default, marker.size_cap, marker.edit_instructions, source)]
+    if isinstance(marker, JsonField):
+        source = FileSource(marker.path, marker.pointer, False)
+        return [_text(name, name, marker.default, marker.size_cap, marker.edit_instructions, source)]
     raise TypeError(f"{name}: {type(marker).__name__} can't be declared yet")
 
 
@@ -294,9 +390,32 @@ def _one_of(key: str, name: str, marker: OneOf, active_when: tuple[str, str] | N
     return ParamInfo(key, name, "one_of", default, options=tuple(marker.options), active_when=active_when)
 
 
-def _text(key: str, name: str, default: str, size_cap: int | None, edit_instructions: str | None) -> ParamInfo:
+def _text(
+    key: str,
+    name: str,
+    default: str,
+    size_cap: int | None,
+    edit_instructions: str | None,
+    source: FileSource | None = None,
+) -> ParamInfo:
     cap = _default_size_cap(default) if size_cap is None else size_cap
-    return ParamInfo(key, name, "text", default, size_cap=cap, edit_instructions=edit_instructions)
+    return ParamInfo(key, name, "text", default, size_cap=cap, edit_instructions=edit_instructions, source=source)
+
+
+def _check_no_overlap(key: str, marker: FileText | JsonField, declared: Mapping[str, FileText | JsonField]) -> None:
+    """Raise `TypeError` if `marker` edits text another declared file marker edits too."""
+    for other_key, other in declared.items():
+        if other.path != marker.path:
+            continue
+        if isinstance(marker, JsonField) and isinstance(other, JsonField):
+            shorter, longer = sorted((marker._tokens, other._tokens), key=len)
+            if longer[: len(shorter)] != shorter:
+                continue
+            raise TypeError(
+                f"{key}: {marker.pointer!r} and {other_key}'s {other.pointer!r} are the same field of {marker.path} "
+                "or one is inside the other"
+            )
+        raise TypeError(f"{key}: {marker.path} is already declared by {other_key}; a FileText's file can't be shared")
 
 
 def _check_value(info: ParamInfo, value: Any) -> str | None:
