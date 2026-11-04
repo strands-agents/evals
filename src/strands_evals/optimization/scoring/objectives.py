@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import statistics
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -270,6 +270,11 @@ class Criteria:
         self.constraints = tuple(self._resolve_constraint(c) for c in constraints)
         self.is_pareto = isinstance(self.objective, Pareto)
         self._terms = self._build_terms(self.objective)
+        # Fixed by the objective; computed once, since objective_value runs for every run, case, and fit estimate.
+        self._evaluator_terms = tuple(t for t in self._terms if not t.is_usage)
+        self._usage_terms = tuple(t for t in self._terms if t.is_usage)
+        self._total_weight = sum(t.weight for t in self._terms)
+        self._evaluator_weight = sum(t.weight for t in self._evaluator_terms)
         self.goal_metrics = tuple(dict.fromkeys([t.metric for t in self._terms] + [c.metric for c in self.constraints]))
         if isinstance(agent_failure_score, (int, float)):
             for name in self.goal_metrics:
@@ -329,20 +334,20 @@ class Criteria:
         """
         # A missing evaluator term drops, its weight spread over the measured evaluator terms; a missing usage
         # term leaves the value unmeasured, since rescaling a cost up would swamp the scores.
-        if any(t.is_usage and t.metric not in metrics for t in self._terms):
+        if any(t.metric not in metrics for t in self._usage_terms):
             return None
-        evaluator_terms = [t for t in self._terms if not t.is_usage]
-        measured = [t for t in evaluator_terms if t.metric in metrics]
-        if evaluator_terms and not measured:
+        # Weights are > 0, so 0 means no evaluator term is measured.
+        measured_weight = sum(t.weight for t in self._evaluator_terms if t.metric in metrics)
+        if self._evaluator_terms and measured_weight == 0:
             return None
-        rescale = sum(t.weight for t in evaluator_terms) / sum(t.weight for t in measured) if measured else 1.0
+        rescale = self._evaluator_weight / measured_weight if measured_weight else 1.0
         total = 0.0
         for term in self._terms:
             if term.metric not in metrics:
                 continue
             weight = term.weight if term.is_usage else term.weight * rescale
             total += weight * (_oriented(term, metrics[term.metric]) - term.offset) / term.scale
-        return total / sum(t.weight for t in self._terms)
+        return total / self._total_weight
 
     def terms(self, metrics: Mapping[str, float]) -> tuple[float, ...] | None:
         """Each objective term's value, oriented higher-is-better, in objective order; None when one is unmeasured.
@@ -595,13 +600,22 @@ def _split_scores(
     """One split's `CandidateScores`; `cases` are the split's cases, so an unscored one makes it ineligible.
 
     Raises:
-        ValueError: A record's case isn't one of `cases` (its `split` disagrees with the run's `CaseSplit`).
+        ValueError: A record's case isn't one of `cases` (its `split` disagrees with the run's `CaseSplit`), or
+            two records share a (case, run): `_case_metrics` would blend them field by field, e.g. one
+            attempt's score with another's tokens. The record layer keeps the last per key (the replaced one
+            in `previous_attempts`), so a duplicate here is a caller's bug.
     """
     strays = sorted({record.case_name for record in records} - set(cases))
     if strays:
         raise ValueError(
             f"{candidate_id}: records for cases {strays} say split {records[0].split!r}, "
             "but the split doesn't hold them"
+        )
+    counts = Counter((record.case_name, record.run_index) for record in records)
+    duplicates = sorted(key for key, count in counts.items() if count > 1)
+    if duplicates:
+        raise ValueError(
+            f"{candidate_id}: more than one record for (case, run) {duplicates}; pass only the last record per key"
         )
     metrics_by_run, unavailable, not_applicable = _case_metrics(records, criteria)
     objective_by_run: dict[str, list[float | None]] = {}

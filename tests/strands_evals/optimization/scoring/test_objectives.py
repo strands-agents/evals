@@ -390,6 +390,17 @@ def test_a_record_whose_case_is_not_in_its_split_fails():
         score("c1", records, CRITERIA, SPLITS)
 
 
+def test_two_records_for_one_case_and_run_fail():
+    # Scored together they would blend: the first attempt's Helpfulness with the second's tokens.
+    records = [
+        record("a", 0, scores={"HelpfulnessEvaluator": 0.9}, tokens=1000),
+        record("a", 0, scores={}, tokens=3000),
+        record("b", 0, scores={"HelpfulnessEvaluator": 0.5}),
+    ]
+    with pytest.raises(ValueError, match=r"more than one record for \(case, run\) \[\('a', 0\)\]"):
+        score("c1", records, CRITERIA, SPLITS)
+
+
 def test_scores_average_per_case_over_runs():
     records = [
         record("a", 0, scores={"HelpfulnessEvaluator": 0.6}, tokens=100),
