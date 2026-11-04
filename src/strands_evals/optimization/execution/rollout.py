@@ -92,11 +92,11 @@ def make_task(
 
     `rollout_fn` receives `agent_factory._with_resources(resources)`: `default_rollout` calls it with no
     arguments; a custom rollout may pass the factory function's non-tunable kwargs. A resource or kwarg
-    named like a declared marker, or a call kwarg the function doesn't accept, raises
-    `_FactoryArgumentError`: a setup error, never a trial status. An error creating or entering the
-    environment is raised as `InfrastructureError(...) from error`, so `classify` makes it
-    `infrastructure_invalid` whatever its type, and the trial's `error_type` / `error` record the
-    original `__cause__`. An error exiting it after the rollout returned only warns, and the trial
+    named like a declared marker, a call kwarg the function doesn't accept, or a required parameter
+    left unsupplied raises `_FactoryArgumentError`: a setup error, never a trial status. An error
+    creating or entering the environment is raised as `InfrastructureError(...) from error`, so
+    `classify` makes it `infrastructure_invalid` whatever its type, and the trial's `error_type` /
+    `error` record the original `__cause__`. An error exiting it after the rollout returned only warns, and the trial
     keeps its result.
 
     Args:
