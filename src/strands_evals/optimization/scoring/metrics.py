@@ -58,7 +58,12 @@ class MetricRegistry:
         return name in USAGE_METRICS
 
     def range(self, name: str) -> Range:
-        """The resolved metric's range."""
+        """The resolved metric's range.
+
+        Raises:
+            KeyError: `name` isn't a resolved name. Names the user wrote go through `resolve` first, which
+                raises `ValueError`; a `KeyError` here is a caller's bug, not a user's typo.
+        """
         if name in USAGE_METRICS:
             return _USAGE_RANGE
         if name not in self._ranges:

@@ -102,8 +102,11 @@ class _Combination:
 
 
 class WeightedSum(_Combination):
-    """Several objectives as one number: per case, the weighted mean of each oriented value / scale.
+    """Several objectives as one number: per case, the weighted mean of each term's distance from its worst end.
 
+    Each term is (oriented value - worst end) / scale: a bounded term goes from 0 at its worst end to 1 at
+    its best with the default scale, whatever its range or direction; a term with no worst end (e.g.
+    `Minimize("tokens")`) is its oriented value / scale.
     `WeightedSum(Maximize("Helpfulness"), Minimize("tokens", scale=1000))` makes 1,000 tokens worth
     as much as the whole 0-1 Helpfulness range. Per case, N/A evaluator terms drop and the remaining
     evaluator weights are rescaled to the same total; usage terms are never rescaled. All evaluator
@@ -115,15 +118,12 @@ class WeightedSum(_Combination):
 class Pareto(_Combination):
     """Several objectives optimized jointly; one champion ships, and the front is reported.
 
-    `Pareto(Maximize("Helpfulness", weight=2), Minimize("tokens", scale=1000))`. The ranking (parents,
-    inheritance, `Nested`'s round best, the pick) uses the weighted gain, computed as `WeightedSum`'s value
-    with each objective's own `weight` and `scale`: the highest-gain candidate of a pool is never dominated,
-    so this matches taking the front's highest-gain member again and again. `TPE` is told each objective's
-    value (a multi-objective study); `Thompson` weighs the objectives with fresh random weights per draw. In
-    the end phase the finalists are the feasible train front, the champion is the validated front's
-    highest-gain member (the baseline when nothing feasible beats it), and every validated front member is
-    tested against the baseline. Constraints only filter candidates; they are never front dimensions. A
-    `Pareto` of one objective is that objective.
+    `Pareto(Maximize("Helpfulness", weight=2), Minimize("tokens", scale=1000))`. The front is the candidates
+    no other one beats on every objective. Candidates are ranked by the weighted gain, `WeightedSum`'s value
+    with each objective's own `weight` and `scale`, and the champion is the validated front's highest-gain
+    member (the baseline when nothing feasible beats it); every front member is tested against the
+    baseline. Constraints only filter candidates; they are never front dimensions. A `Pareto` of one
+    objective is that objective.
     """
 
 
@@ -137,12 +137,12 @@ class _Bound:
     metric: str
     bound: float
 
-    def __init__(self, target: MetricTarget, bound: float, /):
+    def __init__(self, target: MetricTarget, /, bound: float):
         """Name the metric as in `Maximize`.
 
         Args:
             target: A metric name, an evaluator class, or an evaluator instance.
-            bound: The limit on the mean.
+            bound: The limit on the mean; by position or keyword (`AtMost("tokens", bound=4000)`).
 
         Raises:
             TypeError: `bound` is not a finite number.
@@ -171,10 +171,15 @@ Constraint = AtMost | AtLeast
 
 @dataclass(frozen=True)
 class _Term:
-    """One objective term, resolved: its metric, direction, weight in the combination, and scale.
+    """One objective term, resolved: its metric, direction, weight in the combination, scale, and offset.
 
     `is_usage` marks a usage metric (tokens, seconds, ...): when another term is missing on a case, its
     weight is never rescaled, and when it is missing itself, the case is left unmeasured.
+
+    `offset` is the term's oriented worst end (the range's low end under `Maximize`, minus its high end
+    under `Minimize`), subtracted before dividing by `scale`, so every bounded term of a combination
+    spans 0 at worst to 1 at best (with the default scale). 0 for a lone objective and for a term whose
+    worst end is unbounded (usage metrics under `Minimize`).
     """
 
     metric: str
@@ -182,6 +187,7 @@ class _Term:
     weight: float
     scale: float
     is_usage: bool
+    offset: float = 0.0
 
 
 class Criteria:
@@ -312,10 +318,13 @@ class Criteria:
     def objective_value(self, metrics: Mapping[str, float]) -> float | None:
         """The objective from per-metric values, always higher-is-better (`Minimize` negates).
 
-        A lone `Maximize` / `Minimize` gives the metric's value; `WeightedSum` and `Pareto` the weighted mean
-        (each objective's `weight`), with no baseline subtraction. Applied to measured values (per
-        case or per run, measured means, the test report) and, by the ranking, to each goal metric's estimate
-        from a fit, never to a fitted scalar.
+        A lone `Maximize` / `Minimize` gives the metric's value. `WeightedSum` and `Pareto` give the weighted
+        mean (each objective's `weight`) of each term's oriented value minus its worst end, over its scale:
+        0 to 1 for a bounded term with the default scale, whatever its range or direction, so an N/A term
+        dropped on a case counts as scoring like the measured ones instead of moving the level. The worst end
+        is fixed by the range, not the baseline, so every case, run, and split is on one scale. Applied to
+        measured values (per case or per run, measured means, the test report) and, by the ranking, to each
+        goal metric's estimate from a fit, never to a fitted scalar.
         None when the values leave it unmeasured.
         """
         # A missing evaluator term drops, its weight spread over the measured evaluator terms; a missing usage
@@ -332,7 +341,7 @@ class Criteria:
             if term.metric not in metrics:
                 continue
             weight = term.weight if term.is_usage else term.weight * rescale
-            total += weight * _oriented(term, metrics[term.metric]) / term.scale
+            total += weight * (_oriented(term, metrics[term.metric]) - term.offset) / term.scale
         return total / sum(t.weight for t in self._terms)
 
     def terms(self, metrics: Mapping[str, float]) -> tuple[float, ...] | None:
@@ -360,7 +369,7 @@ class Criteria:
             mean = statistics.fmean(values)
             excess = mean - constraint.bound if isinstance(constraint, AtMost) else constraint.bound - mean
             # A mean equal to the bound up to float noise (0.1 + 0.2 against 0.3) is met.
-            if excess > 0 and not math.isclose(mean, constraint.bound, rel_tol=1e-9, abs_tol=1e-12):
+            if excess > 0 and not _near(mean, constraint.bound):
                 sentences.append(f"{constraint}: mean {mean:.4g} violates by {excess:.4g}")
         return sentences
 
@@ -426,9 +435,14 @@ class Criteria:
             )
         terms = []
         for o in objective.objectives:
-            scale = o.scale if o.scale is not None else _width(self.registry.range(o.metric))
+            low, high = self.registry.range(o.metric)
+            scale = o.scale if o.scale is not None else _width((low, high))
             assert scale is not None  # an unbounded metric without scale= was rejected when resolved
-            terms.append(_Term(o.metric, isinstance(o, Maximize), o.weight, scale, self.registry.is_usage(o.metric)))
+            maximize = isinstance(o, Maximize)
+            # Anchored at the worst end, so dropping an N/A term and rescaling the others keeps the level.
+            worst = low if maximize else (None if high is None else -high)
+            offset = 0.0 if worst is None else worst
+            terms.append(_Term(o.metric, maximize, o.weight, scale, self.registry.is_usage(o.metric), offset))
         return tuple(terms)
 
 
@@ -442,9 +456,9 @@ def _case_metrics(
     (left out when None, and applied even to an evaluator another run of the case found N/A), N/A rows
     dropped, an evaluator that raised left out. Usage metrics: completed and `agent_failure` runs as measured
     (a crash's tokens are real cost). `infrastructure_invalid` and `evaluator_invalid` runs are left out.
-    An evaluator value outside its range is taken out with the reason "give the evaluator a
-    score_range = (low, high)", never clipped, and a NaN or infinite one with "is not a finite number";
-    the trial's saved status is left as is.
+    An evaluator value outside its range (beyond float noise at an end) is taken out with the reason "give
+    the evaluator a score_range = (low, high)", never clipped, and a NaN or infinite evaluator or usage value
+    with "is not a finite number"; the trial's saved status is left as is.
 
     Args:
         records: One candidate's trial records on one split.
@@ -467,7 +481,12 @@ def _case_metrics(
         if record.status not in (TrialStatus.COMPLETED, TrialStatus.AGENT_FAILURE):
             continue
         for metric in USAGE_METRICS:
-            values[metric][record.run_index] = _usage_value(record.usage, metric)
+            usage = _usage_value(record.usage, metric)
+            if usage is not None and not math.isfinite(usage):
+                not_finite = f"{metric}={usage!r} is not a finite number"
+                unavailable.setdefault(record.case_name, {}).setdefault(record.run_index, {})[metric] = not_finite
+                continue
+            values[metric][record.run_index] = usage
         for metric in registry.evaluators:
             if record.status is TrialStatus.AGENT_FAILURE:
                 values[metric][record.run_index] = criteria.agent_failure_value(metric)
@@ -531,10 +550,11 @@ def score(candidate_id: str, records: Sequence[TrialRecord], criteria: Criteria,
 def measured_metrics(scores: CandidateScores, registry: MetricRegistry) -> dict[str, Measured]:
     """Every metric scored, with its mean and a 95% t-interval clipped to the metric's range.
 
-    The unit is the case (its mean over runs, `scores.metrics_by_case`); when the split has a single case,
-    the unit is the run, so one case with several runs still gets an interval. A metric with no value is
-    left out. For reporting only (`CandidateLabel`, `ValidationReport`, `TestReport`, `CandidateSummary`);
-    the ranking keeps using `CandidateScores.objective` and the fit.
+    The unit is the case (its mean over runs, `scores.metrics_by_case`); for a metric only one case has a
+    value for (a single-case split, or the other cases unmeasured), the unit is that case's runs, so it still
+    gets an interval. Chosen per metric. A metric with no value is left out. For reporting only
+    (`CandidateLabel`, `ValidationReport`, `TestReport`, `CandidateSummary`); the ranking keeps using
+    `CandidateScores.objective` and the fit.
 
     Args:
         scores: One candidate's scores on one split.
@@ -542,15 +562,16 @@ def measured_metrics(scores: CandidateScores, registry: MetricRegistry) -> dict[
     """
     from scipy import stats  # optional extra: optimization
 
-    by_metric: dict[str, list[float]] = defaultdict(list)
-    if len(scores.metrics_by_run) >= 2:
-        for case in scores.metrics_by_case.values():
-            for metric, value in case.items():
-                by_metric[metric].append(value)
-    else:
-        for runs in scores.metrics_by_run.values():
-            for metric, run_values in runs.items():
-                by_metric[metric].extend(v for v in run_values if v is not None)
+    metrics = dict.fromkeys(metric for runs in scores.metrics_by_run.values() for metric in runs)
+    by_metric: dict[str, list[float]] = {}
+    for metric in metrics:
+        case_means = [case[metric] for case in scores.metrics_by_case.values() if metric in case]
+        if len(case_means) >= 2:
+            by_metric[metric] = case_means
+        else:  # at most one case has a value: its runs (the other cases' slots are all None)
+            by_metric[metric] = [
+                v for runs in scores.metrics_by_run.values() for v in runs.get(metric, []) if v is not None
+            ]
     result = {}
     for metric, values in by_metric.items():
         if not values:
@@ -606,10 +627,18 @@ def _split_scores(
         for metric in criteria.goal_metrics
         if (case_values := [case[metric] for case in metrics_by_case.values() if metric in case])
     }
-    eligible = bool(cases) and all(
-        metric in metrics_by_case.get(case, {}) or metric in not_applicable.get(case, set())
-        for case in cases
-        for metric in criteria.goal_metrics
+    objective = criteria.objective_value(goal_means)
+    # Eligible candidates are fitted and ranked by `objective` (and under Pareto by every term), so it must be
+    # measured: a goal evaluator N/A on every case passes the per-case check below but can leave it unmeasured.
+    eligible = (
+        objective is not None
+        and (not criteria.is_pareto or criteria.terms(goal_means) is not None)
+        and bool(cases)
+        and all(
+            metric in metrics_by_case.get(case, {}) or metric in not_applicable.get(case, set())
+            for case in cases
+            for metric in criteria.goal_metrics
+        )
     )
     return CandidateScores(
         candidate_id=candidate_id,
@@ -618,7 +647,7 @@ def _split_scores(
         unavailable=unavailable,
         objective_by_run=objective_by_run,
         metrics_by_run=metrics_by_run,
-        objective=criteria.objective_value(goal_means),
+        objective=objective,
         is_eligible=eligible,
         failures=sum(1 for record in records if record.status is TrialStatus.AGENT_FAILURE),
     )
@@ -636,9 +665,17 @@ def _usage_value(usage: Usage, metric: str) -> float | None:
 
 
 def _in_range(value: float, range_: Range) -> bool:
-    """Whether `value` lies in the inclusive range; a None end is unbounded."""
+    """Whether `value` lies in the inclusive range, up to float noise at an end; a None end is unbounded.
+
+    `1 - 0.3 - 0.2 - 0.5` (-5.55e-17) is in (0, 1), as `unmet_constraints` treats a mean at its bound.
+    """
     low, high = range_
-    return (low is None or value >= low) and (high is None or value <= high)
+    return (low is None or value >= low or _near(value, low)) and (high is None or value <= high or _near(value, high))
+
+
+def _near(value: float, end: float) -> bool:
+    """Equal up to float noise, the tolerance `unmet_constraints` uses too."""
+    return math.isclose(value, end, rel_tol=1e-9, abs_tol=1e-12)
 
 
 def _width(range_: Range) -> float | None:

@@ -285,7 +285,7 @@ def test_a_crash_score_outside_the_range_of_an_evaluator_no_goal_uses_leaves_it_
 def test_a_mean_equal_to_the_bound_up_to_float_noise_is_met():
     criteria = Criteria(None, [AtMost("tokens", 0.3)], REGISTRY)
     assert criteria.unmet_constraints({"a": {"tokens": 0.1 + 0.2}}) == []
-    assert criteria.unmet_constraints({"a": {"tokens": 0.31}}) != []
+    assert criteria.unmet_constraints({"a": {"tokens": 0.31}}) == ["tokens <= 0.3: mean 0.31 violates by 0.01"]
 
 
 def test_a_lone_objective_is_the_metric_oriented_higher_is_better():
@@ -294,12 +294,13 @@ def test_a_lone_objective_is_the_metric_oriented_higher_is_better():
     assert Criteria(Maximize("Stars"), [], REGISTRY).objective_value({}) is None
 
 
-def test_a_weighted_sum_is_the_weighted_mean_of_oriented_value_over_scale():
+def test_a_weighted_sum_is_the_weighted_mean_of_each_term_from_its_worst_end_over_scale():
     criteria = Criteria(
         WeightedSum(Maximize("Helpfulness", weight=3), Maximize("Stars"), Minimize("tokens", scale=1000)), [], REGISTRY
     )
     value = criteria.objective_value({"HelpfulnessEvaluator": 0.8, "Stars": 3.0, "tokens": 500.0})
-    assert value == pytest.approx((3 * 0.8 + 1 * 3.0 / 4.0 - 1 * 500 / 1000) / 5)
+    # Stars from its worst end 1 over its width 4; tokens has no worst end, so it is -tokens / scale.
+    assert value == pytest.approx((3 * 0.8 + 1 * (3.0 - 1) / 4.0 - 1 * 500 / 1000) / 5)
 
 
 def test_a_missing_evaluator_term_drops_and_its_weight_goes_to_the_other_evaluators():
@@ -307,13 +308,42 @@ def test_a_missing_evaluator_term_drops_and_its_weight_goes_to_the_other_evaluat
         WeightedSum(Maximize("Helpfulness", weight=3), Maximize("Stars"), Minimize("tokens", scale=1000)), [], REGISTRY
     )
     value = criteria.objective_value({"Stars": 3.0, "tokens": 500.0})
-    assert value == pytest.approx((4 * 3.0 / 4.0 - 500 / 1000) / 5)
+    assert value == pytest.approx((4 * (3.0 - 1) / 4.0 - 500 / 1000) / 5)
 
 
 def test_the_default_objective_is_the_mean_of_the_applicable_scores():
-    criteria = Criteria(WeightedSum(Maximize("Helpfulness"), Maximize("Stars", scale=1.0)), [], REGISTRY)
+    criteria = Criteria(None, [], MetricRegistry({"HelpfulnessEvaluator": (0.0, 1.0), "Correctness": (0.0, 1.0)}))
     assert criteria.objective_value({"HelpfulnessEvaluator": 0.4}) == pytest.approx(0.4)
-    assert criteria.objective_value({"HelpfulnessEvaluator": 0.4, "Stars": 0.8}) == pytest.approx(0.6)
+    assert criteria.objective_value({"HelpfulnessEvaluator": 0.4, "Correctness": 0.8}) == pytest.approx(0.6)
+
+
+def test_every_bounded_term_spans_0_to_1_whatever_its_range():
+    criteria = Criteria(None, [], REGISTRY)  # Helpfulness on (0, 1), Stars on (1, 5)
+    assert criteria.objective_value({"HelpfulnessEvaluator": 1.0, "Stars": 5.0}) == pytest.approx(1.0)
+    assert criteria.objective_value({"HelpfulnessEvaluator": 0.0, "Stars": 1.0}) == pytest.approx(0.0)
+    # Stars N/A: counted as scoring like Helpfulness, so a perfect answer stays perfect.
+    assert criteria.objective_value({"HelpfulnessEvaluator": 1.0}) == pytest.approx(1.0)
+
+
+def test_an_evaluator_not_applicable_never_outranks_a_perfect_score():
+    registry = MetricRegistry({"HelpfulnessEvaluator": (0.0, 1.0), "Toxicity": (0.0, 1.0)})
+    criteria = Criteria(WeightedSum(Maximize("Helpfulness"), Minimize("Toxicity")), [], registry)
+    perfect = criteria.objective_value({"HelpfulnessEvaluator": 1.0, "Toxicity": 0.0})
+    toxicity_na = criteria.objective_value({"HelpfulnessEvaluator": 0.6})
+    assert perfect == pytest.approx(1.0)
+    assert toxicity_na == pytest.approx(0.6)  # as if Toxicity scored like Helpfulness
+    assert criteria.objective_value({"HelpfulnessEvaluator": 0.6, "Toxicity": 0.2}) == pytest.approx(0.7)
+    assert criteria.objective_value({"HelpfulnessEvaluator": 0.0, "Toxicity": 1.0}) == pytest.approx(0.0)
+
+
+def test_the_anchor_shifts_every_fully_measured_value_alike():
+    # So rankings among cases with every term measured are the same as without it.
+    registry = MetricRegistry({"HelpfulnessEvaluator": (0.0, 1.0), "Toxicity": (0.0, 1.0)})
+    criteria = Criteria(WeightedSum(Maximize("Helpfulness"), Minimize("Toxicity")), [], registry)
+    values = [(1.0, 0.0), (0.6, 0.2), (0.3, 0.9)]
+    anchored = [criteria.objective_value({"HelpfulnessEvaluator": h, "Toxicity": t}) for h, t in values]
+    raw = [(h - t) / 2 for h, t in values]
+    assert [a - r for a, r in zip(anchored, raw, strict=True)] == pytest.approx([0.5, 0.5, 0.5])
 
 
 def test_a_missing_usage_term_or_every_evaluator_term_leaves_it_unmeasured():
@@ -477,7 +507,7 @@ def test_an_evaluator_not_applicable_on_a_case_does_not_count_against_eligibilit
     ]
     train = score("c1", records, criteria, SPLITS).train
     assert "HelpfulnessEvaluator" not in train.metrics_by_case["a"]
-    assert train.objective_by_case["a"] == pytest.approx(1.0)  # Stars only (4 on 1-5, scaled by 4), its weight rescaled
+    assert train.objective_by_case["a"] == pytest.approx(0.75)  # Stars only: (4 - 1) / 4, its weight rescaled
     assert train.is_eligible
     assert train.unavailable == {}
 
@@ -555,3 +585,63 @@ def test_measured_uses_the_runs_when_there_is_a_single_case():
 def test_measured_has_no_interval_for_one_case_and_one_run():
     one = [record("a", 0, scores={"HelpfulnessEvaluator": 0.4})]
     assert measured_metrics(score("c1", one, CRITERIA, SPLITS).train, REGISTRY)["HelpfulnessEvaluator"].ci95 is None
+
+
+def test_measured_picks_the_unit_per_metric():
+    # Case b only failed on infrastructure, so Helpfulness has one case: its 3 runs are the units.
+    records = [
+        record("a", 0, scores={"HelpfulnessEvaluator": 0.6}),
+        record("a", 1, scores={"HelpfulnessEvaluator": 0.7}),
+        record("a", 2, scores={"HelpfulnessEvaluator": 0.8}),
+        record("b", 0, status=TrialStatus.INFRASTRUCTURE_INVALID),
+    ]
+    helpfulness = measured_metrics(score("c1", records, CRITERIA, SPLITS).train, REGISTRY)["HelpfulnessEvaluator"]
+    assert helpfulness.n == 3
+    assert helpfulness.ci95 is not None
+
+
+# --- review fixes (PR #502) ---
+
+
+def test_bound_can_be_given_by_keyword():
+    assert AtMost("tokens", bound=4000) == AtMost("tokens", 4000)
+    assert AtLeast("Stars", bound=3).bound == 3.0
+
+
+def test_a_goal_evaluator_not_applicable_on_every_case_is_not_eligible():
+    criteria = Criteria(Maximize("Stars"), [], REGISTRY)
+    records = [record("a", scores={"Stars": NA}), record("b", scores={"Stars": NA})]
+    train = score("c1", records, criteria, SPLITS).train
+    assert train.objective is None
+    assert not train.is_eligible
+
+
+def test_a_pareto_term_not_applicable_on_every_case_is_not_eligible():
+    # The weighted gain still rescales over Helpfulness, but the front needs every term.
+    criteria = Criteria(Pareto(Maximize("Helpfulness"), Maximize("Stars")), [], REGISTRY)
+    records = [
+        record("a", scores={"HelpfulnessEvaluator": 0.5, "Stars": NA}),
+        record("b", scores={"HelpfulnessEvaluator": 0.7, "Stars": NA}),
+    ]
+    train = score("c1", records, criteria, SPLITS).train
+    assert train.objective is not None
+    assert not train.is_eligible
+
+
+def test_float_noise_at_a_range_end_is_kept():
+    noise = 1 - 0.3 - 0.2 - 0.5  # -5.55e-17
+    records = [record("a", scores={"HelpfulnessEvaluator": noise}), record("b", scores={"HelpfulnessEvaluator": 1.4})]
+    train = score("c1", records, Criteria(Maximize("Helpfulness"), [], REGISTRY), SPLITS).train
+    assert train.metrics_by_case["a"]["HelpfulnessEvaluator"] == pytest.approx(0.0)
+    assert "a" not in train.unavailable
+    assert "outside its range" in train.unavailable["b"][0]["HelpfulnessEvaluator"]  # a real mismatch still is not
+
+
+def test_a_usage_value_that_is_not_finite_is_taken_out():
+    criteria = Criteria(Minimize("seconds"), [], REGISTRY)
+    records = [record("a", seconds=math.nan), record("b", seconds=3.0)]
+    train = score("c1", records, criteria, SPLITS).train
+    assert train.unavailable["a"][0]["seconds"] == "seconds=nan is not a finite number"
+    assert "seconds" not in train.metrics_by_case["a"]
+    assert train.objective == pytest.approx(-3.0)
+    assert not train.is_eligible  # case a has no seconds
