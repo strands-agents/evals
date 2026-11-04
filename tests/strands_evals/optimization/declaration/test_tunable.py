@@ -84,6 +84,21 @@ def test_markers_without_default_take_the_parameters_default():
     assert space.param("effort").default == "high"
 
 
+def test_filling_the_parameters_default_keeps_log_and_edit_instructions():
+    @tunable(
+        steps=Int(1, 100, log=True),
+        rate=Float(0.001, 1.0, log=True),
+        prompt=TextValue(edit_instructions="be brief"),
+    )
+    def build(steps=10, rate=0.01, prompt="You help."):
+        return steps, rate, prompt
+
+    space = build.space
+    assert (space.param("steps").default, space.param("steps").log) == (10, True)
+    assert (space.param("rate").default, space.param("rate").log) == (0.01, True)
+    assert (space.param("prompt").default, space.param("prompt").edit_instructions) == ("You help.", "be brief")
+
+
 def test_the_plain_call_builds_the_baseline_without_an_optimizer():
     built = make_agent()
     assert isinstance(built["manager"], Window) and built["manager"].size == 40
@@ -145,22 +160,31 @@ def test_a_positional_only_parameter_fails():
 
 
 @pytest.mark.parametrize(
-    "make",
+    ("make", "match"),
     [
-        lambda: tunable(lambda prompt: prompt, inject={"prompt": TextValue()}),  # no default anywhere
-        lambda: tunable(lambda prompt=None: prompt, inject={"prompt": TextValue()}),  # parameter default None
-        lambda: tunable(lambda size=500: size, inject={"size": Int(1, 100)}),  # parameter default out of range
-        lambda: tunable(lambda effort="mid": effort, inject={"effort": OneOf("low", "high")}),
-        lambda: tunable(lambda prompt="x": prompt, inject={"prompt": "not a marker"}),
-        lambda: tunable(lambda prompt="x": prompt),  # no inject=
-        lambda: tunable(lambda prompt="x": prompt, inject={"prompt": TextValue()}, other=1),
-        lambda: tunable(inject={"prompt": TextValue(default="x")}),  # inject without the function
-        lambda: tunable()(lambda: None),  # nothing declared
+        # no default anywhere
+        (lambda: tunable(lambda prompt: prompt, inject={"prompt": TextValue()}), "has no default"),
+        (lambda: tunable(lambda prompt=None: prompt, inject={"prompt": TextValue()}), "default is None"),
+        (lambda: tunable(lambda size=500: size, inject={"size": Int(1, 100)}), "doesn't fit its marker"),
+        (lambda: tunable(lambda effort="mid": effort, inject={"effort": OneOf("low", "high")}), "doesn't fit"),
+        (lambda: tunable(lambda prompt="x": prompt, inject={"prompt": "not a marker"}), "is not a marker"),
+        (lambda: tunable(lambda prompt="x": prompt), "@tunable needs markers"),  # a bare @tunable
+        (lambda: tunable(lambda prompt="x": prompt, inject={"prompt": TextValue()}, other=1), "takes only inject="),
+        (lambda: tunable(inject={"prompt": TextValue(default="x")}), "needs the function"),
+        (lambda: tunable()(lambda: None), "nothing to optimize"),
     ],
 )
-def test_bad_declarations_fail_at_declaration(make):
-    with pytest.raises(TypeError):
+def test_bad_declarations_fail_at_declaration(make, match):
+    with pytest.raises(TypeError, match=match):
         make()
+
+
+def test_a_bare_decorator_says_markers_are_needed():
+    with pytest.raises(TypeError, match="@tunable needs markers"):
+
+        @tunable
+        def build(prompt="x"):
+            return prompt
 
 
 # --- bind and validation ---
@@ -169,6 +193,10 @@ def test_bad_declarations_fail_at_declaration(make):
 def test_bind_fills_missing_keys_with_defaults():
     built = make_agent.bind({"temperature": 0.1})()
     assert built["temperature"] == 0.1 and built["prompt"] == "You help."
+
+
+def test_bind_canonicalizes_values_like_complete():
+    assert str(make_agent.bind({"temperature": -0.0})()["temperature"]) == "0.0"
 
 
 def test_bind_builds_fresh_components_on_every_call():
@@ -239,6 +267,29 @@ def test_kwargs_do_not_count_as_declaring_a_resource():
 def test_a_resource_named_like_a_marker_is_a_setup_error():
     with pytest.raises(_FactoryArgumentError, match="prompt"):
         make_agent.bind({})._with_resources({"prompt": "clash"})
+
+
+def test_a_required_parameter_no_one_supplies_is_a_setup_error():
+    @tunable(prompt=TextValue())
+    def build(sandbox, prompt="You help."):
+        return sandbox
+
+    bound = build.bind({})
+    with pytest.raises(_FactoryArgumentError, match="sandbox"):
+        bound._with_resources({"sandbx": "box"})()  # a misspelled environment() key
+    with pytest.raises(_FactoryArgumentError, match="sandbox"):
+        bound()
+    assert bound._with_resources({"sandbox": "box"})() == "box"
+
+
+def test_a_type_error_inside_the_function_is_not_a_setup_error():
+    @tunable(prompt=TextValue())
+    def build(prompt="You help."):
+        raise TypeError("the agent's own bug")
+
+    with pytest.raises(TypeError, match="the agent's own bug") as raised:
+        build.bind({})()
+    assert not isinstance(raised.value, _FactoryArgumentError)
 
 
 def test_a_call_kwarg_wins_over_a_resource_of_the_same_name():

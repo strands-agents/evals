@@ -75,6 +75,22 @@ def test_param_infos_carry_type_bounds_and_activation():
     assert space.param("prompt").source is None
 
 
+def test_param_infos_carry_log_and_edit_instructions():
+    space = Space(
+        {
+            "steps": Int(1, 100, default=10, log=True),
+            "rate": Float(0.001, 1.0, default=0.01, log=True),
+            "manager": component(Window, size=Int(1, 100, log=True)),
+            "prompt": TextValue(default="You help.", edit_instructions="be brief"),
+            "tools": tool_descriptions(lookup, edit_instructions="keep it short"),
+        }
+    )
+    assert space.param("steps").log and space.param("rate").log and space.param("manager.Window.size").log
+    assert not make_space().param("temperature").log
+    assert space.param("prompt").edit_instructions == "be brief"
+    assert space.param("tools.lookup").edit_instructions == "keep it short"
+
+
 def test_text_without_size_cap_gets_the_derived_cap():
     space = Space({"prompt": TextValue(default="x" * 1000)})
     assert space.param("prompt").size_cap == 3000
@@ -101,18 +117,18 @@ def test_param_names_the_known_keys_on_a_typo():
 
 
 @pytest.mark.parametrize(
-    "markers",
+    ("markers", "match"),
     [
-        {},
-        {"a.b": Int(1, 2, default=1)},
-        {"a/b": Int(1, 2, default=1)},
-        {"": Int(1, 2, default=1)},
-        {"x": 3},
-        {"x": Window()},
+        ({}, "nothing to optimize"),
+        ({"a.b": Int(1, 2, default=1)}, "without '.' or '/'"),
+        ({"a/b": Int(1, 2, default=1)}, "without '.' or '/'"),
+        ({"": Int(1, 2, default=1)}, "without '.' or '/'"),
+        ({"x": 3}, "int is not a marker"),
+        ({"x": Window()}, "Window is not a marker"),
     ],
 )
-def test_bad_declarations_fail_at_construction(markers):
-    with pytest.raises(TypeError):
+def test_bad_declarations_fail_at_construction(markers, match):
+    with pytest.raises(TypeError, match=match):
         Space(markers)
 
 
@@ -181,6 +197,14 @@ def test_a_filled_choice_decides_which_sub_keys_are_active():
     assert completed["manager"] == "Summary"
     assert "manager.Window.size" not in completed
     assert completed["manager.Summary.ratio"] == 0.3
+
+
+def test_complete_turns_a_negative_zero_float_into_zero():
+    space = Space({"temperature": Float(-1.0, 1.0, default=0.5)})
+    completed = space.complete({"temperature": -0.0})["temperature"]
+    assert str(completed) == "0.0"  # -0.0 == 0.0, so compare the text a candidate id hashes
+    baseline = Space({"temperature": Float(-1.0, 1.0, default=-0.0)}).complete({})["temperature"]
+    assert str(baseline) == "0.0"
 
 
 def test_complete_keeps_unknown_keys_so_validate_reports_them():

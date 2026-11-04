@@ -23,8 +23,8 @@ _KEYWORD_KINDS = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEY
 class BuildContext:
     """What `Optimizer(build_task=...)` receives, once per candidate.
 
-    A dataclass, not a record: it holds a callable and is never saved. New fields may be added
-    later without breaking existing `build_task` functions.
+    A dataclass, not a record: it holds a callable and is never saved. Adding a field doesn't
+    break existing `build_task` functions.
 
     Attributes:
         values: The candidate's typed flat values.
@@ -44,9 +44,11 @@ class BuildContext:
 class _FactoryArgumentError(TypeError):
     """A bad argument to a bound factory; a setup error, never a trial status.
 
-    Raised for a resource or kwarg named like a declared marker, or a call kwarg the user's function
-    doesn't accept. Never an `agent_failure`: under `agent_failure_score="worst"` that would score every
-    trial at its worst end and the run would go on measuring nothing.
+    Raised for a resource or kwarg named like a declared marker, a call kwarg the user's function
+    doesn't accept, or a required parameter of the function that neither a call kwarg nor a resource
+    supplies (e.g. a misspelled `environment()` key). Never an `agent_failure`: under
+    `agent_failure_score="worst"` that would score every trial at its worst end and the run would go
+    on measuring nothing.
     """
 
 
@@ -107,7 +109,8 @@ class TunableFactory:
         resources from `environment()` (handed over through its private `_with_resources(resources)`)
         are passed only if the function declares that parameter by name; kwargs passed in the call go
         through as in a normal call, and one the function doesn't accept raises `_FactoryArgumentError`.
-        Either kind named like a declared marker raises `_FactoryArgumentError`.
+        Either kind named like a declared marker, or a required parameter left unsupplied, raises
+        `_FactoryArgumentError`.
 
         Args:
             values: The candidate's values.
@@ -119,7 +122,8 @@ class TunableFactory:
         Raises:
             ValueError: The values fail validation.
         """
-        bound_values = {**self.space.complete(values), **values}
+        # complete() last, for its canonical values; an inactive key it drops stays for validate to report.
+        bound_values = {**values, **self.space.complete(values)}
         self.space.validate(bound_values)
         return _BoundFactory(self, bound_values, workspace, {})
 
@@ -148,6 +152,7 @@ class _BoundFactory:
             )
         _check_not_markers(factory, kwargs, "arguments")
         if not factory._takes_kwargs:
+            # The signature check below would catch these too; this one names every bad kwarg at once.
             unknown = sorted(name for name in kwargs if name not in factory._accepted)
             if unknown:
                 raise _FactoryArgumentError(f"{factory._label} takes no arguments named {unknown}")
@@ -157,6 +162,11 @@ class _BoundFactory:
             if name in factory._accepted and name not in kwargs  # a call kwarg wins, as passed explicitly
         }
         resolved = {name: factory.space.resolve(name, self._values, self._workspace) for name in factory._names}
+        try:
+            # Checked before the call, so a TypeError raised inside the function stays the agent's.
+            factory._signature.bind(**resolved, **resources, **kwargs)
+        except TypeError as error:
+            raise _FactoryArgumentError(f"{factory._label}: {error}") from error
         return factory._fn(**resolved, **resources, **kwargs)
 
     def _with_resources(self, resources: Mapping[str, Any]) -> _BoundFactory:
@@ -190,7 +200,12 @@ def tunable(
 
     A marker naming no parameter of `fn` (unless `fn` takes `**kwargs`) raises `TypeError`. A marker
     without `default=` takes the parameter's own default, so `fn()` and the baseline build the same
-    agent; a marker with neither raises `TypeError` (see `_ValueMarker`).
+    agent; a marker with neither raises `TypeError` (see `_ValueMarker`). A `choice()` is the
+    exception: its first alternative replaces the parameter's default, so list what production
+    builds first (see `choice()`).
+
+    The decorator form doesn't work on a method (the factory isn't bound to the instance, so
+    `self` goes missing); mount a bound method instead: `tunable(obj.method, inject={...})`.
 
     Args:
         fn: The factory; omit when used as a decorator.
@@ -200,10 +215,13 @@ def tunable(
         A `TunableFactory`, or a decorator returning one.
 
     Raises:
-        TypeError: A marker names no parameter, has no default anywhere, or is of an unknown type;
-            or `fn` is already a `TunableFactory` (declare every marker in one `tunable(...)`).
+        TypeError: No markers (a bare `@tunable`), a marker names no parameter, has no default
+            anywhere, or is of an unknown type; or `fn` is already a `TunableFactory` (declare every
+            marker in one `tunable(...)`).
     """
     if fn is not None:
+        if not kwargs:
+            raise TypeError("@tunable needs markers: @tunable(name=marker, ...) or tunable(fn, inject={name: marker})")
         if set(kwargs) != {"inject"} or not isinstance(kwargs["inject"], Mapping):
             raise TypeError("tunable(fn, ...) takes only inject={name: marker}")
         return TunableFactory(fn, kwargs["inject"])

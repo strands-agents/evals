@@ -38,10 +38,10 @@ class ParamInfo:
     `choice()`, else None. E.g. `cm=choice(window=component(SlidingWindowConversationManager,
     window_size=Int(4, 40)), summary=component(...))` gives `cm` (always active) and
     `cm.window.window_size` with `active_when=("cm", "window")`. When a proposal switches `cm` to
-    `summary`, `Space.complete` drops `cm.window.window_size` (kept, it would change the candidate
-    id without changing the agent) and fills the keys `summary` brings in. Validation, TPE, the score
-    model's design, and `Nested` read it too. A choice inside an alternative carries its own
-    `active_when`, so conditions chain upward. Text keys can't sit under a `choice()`, so theirs is
+    `summary`, `Space.complete` drops `cm.window.window_size` (if it were kept, it would change the
+    candidate id without changing the agent) and fills the keys `summary` brings in. Validation,
+    TPE, the score model's design, and `Nested` read it too. Conditions are one level deep, since
+    `component()` takes no nested markers. Text keys can't sit under a `choice()`, so theirs is
     always None.
 
     `min_value` / `max_value` are the inclusive bounds of an `Int` / `Float`. Fields after `default`
@@ -114,8 +114,7 @@ class Space:
     def is_active(self, key: str, values: Values) -> bool:
         """Whether a key is active.
 
-        Conditions chain: a key under an alternative is active only if every enclosing choice
-        selects it.
+        A key under an alternative is active only if its choice selects that alternative.
 
         Args:
             key: A flat key.
@@ -139,7 +138,8 @@ class Space:
         """Drop keys inactive under the chosen alternatives and fill missing active keys.
 
         Keys are taken in declaration order, so a filled choice decides which of its sub-keys are
-        active. Unknown keys are kept, so `validate` reports them instead of a typo vanishing.
+        active. Unknown keys are kept, so `validate` reports them instead of a typo vanishing. A
+        `Float` value of -0.0 becomes 0.0, so one agent gets one candidate id.
 
         Args:
             values: The candidate's values.
@@ -152,7 +152,9 @@ class Space:
             if not self.is_active(key, completed):
                 continue
             if key in values:
-                completed[key] = values[key]
+                value = values[key]
+                # `+ 0.0` turns a Float's -0.0 into 0.0, so both get the same candidate id.
+                completed[key] = value + 0.0 if info.kind == "float" and type(value) is float else value
                 continue
             filled = fill(key) if fill is not None else None
             completed[key] = info.default if filled is None else filled[0]
@@ -302,9 +304,7 @@ def _check_value(info: ParamInfo, value: Any) -> str | None:
         expected = int if info.kind == "int" else float
         if type(value) is not expected:
             return f"{key}: expected {expected.__name__}, got {value!r}"
-        if not (
-            info.min_value is not None and info.max_value is not None and info.min_value <= value <= info.max_value
-        ):
+        if not cast(float, info.min_value) <= value <= cast(float, info.max_value):  # numbers always have bounds
             return f"{key}: {value!r} is outside [{info.min_value!r}, {info.max_value!r}]"
         return None
     if info.kind in ("one_of", "choice"):

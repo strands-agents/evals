@@ -1,5 +1,8 @@
+import functools
+
 import pytest
 from strands import tool
+from strands.agent.conversation_manager import SlidingWindowConversationManager
 
 from strands_evals.optimization import Float, Int, OneOf, TextValue, choice, component, tool_descriptions
 from strands_evals.optimization.declaration.markers import _default_size_cap, _ValueMarker
@@ -36,19 +39,19 @@ def test_int_default_is_optional():
 
 
 @pytest.mark.parametrize(
-    "make",
+    ("make", "match"),
     [
-        lambda: Int(1, 10, default=11),
-        lambda: Int(1, 10, default=0),
-        lambda: Int(10, 1),
-        lambda: Int(0, 10, log=True),
-        lambda: Int(1.5, 10),  # type: ignore[arg-type]
-        lambda: Int(1, 10, default=True),
-        lambda: Int(1, 10, default=2.0),  # type: ignore[arg-type]
+        (lambda: Int(1, 10, default=11), "default must lie in"),
+        (lambda: Int(1, 10, default=0), "default must lie in"),
+        (lambda: Int(10, 1), "bounds are empty"),
+        (lambda: Int(0, 10, log=True), "needs min_value > 0"),
+        (lambda: Int(1.5, 10), "bounds must be integers"),  # type: ignore[arg-type]
+        (lambda: Int(1, 10, default=True), "default must lie in"),
+        (lambda: Int(1, 10, default=2.0), "default must lie in"),  # type: ignore[arg-type]
     ],
 )
-def test_int_rejects_bad_declarations(make):
-    with pytest.raises(TypeError):
+def test_int_rejects_bad_declarations(make, match):
+    with pytest.raises(TypeError, match=match):
         make()
 
 
@@ -59,20 +62,21 @@ def test_float_stores_floats_so_an_integer_default_hashes_like_a_proposed_float(
 
 
 @pytest.mark.parametrize(
-    "make",
+    ("make", "match"),
     [
-        lambda: Float(0.0, 1.0, default=1.5),
-        lambda: Float(1.0, 0.0),
-        lambda: Float(-1.0, 1.0, log=True),
-        lambda: Float(0.0, 1.0, default=False),
-        lambda: Float("0", 1.0),  # type: ignore[arg-type]
-        lambda: Float(float("nan"), 1.0),  # NaN compares False, so min_value > max_value alone wouldn't catch it
-        lambda: Float(0.0, float("inf")),
-        lambda: Float(0.0, 1.0, default=float("nan")),
+        (lambda: Float(0.0, 1.0, default=1.5), "default must lie in"),
+        (lambda: Float(1.0, 0.0), "bounds are empty"),
+        (lambda: Float(-1.0, 1.0, log=True), "needs min_value > 0"),
+        (lambda: Float(0.0, 1.0, default=False), "default must lie in"),
+        (lambda: Float("0", 1.0), "bounds must be finite numbers"),  # type: ignore[arg-type]
+        # NaN compares False, so min_value > max_value alone wouldn't catch it.
+        (lambda: Float(float("nan"), 1.0), "bounds must be finite numbers"),
+        (lambda: Float(0.0, float("inf")), "bounds must be finite numbers"),
+        (lambda: Float(0.0, 1.0, default=float("nan")), "default must lie in"),
     ],
 )
-def test_float_rejects_bad_declarations(make):
-    with pytest.raises(TypeError):
+def test_float_rejects_bad_declarations(make, match):
+    with pytest.raises(TypeError, match=match):
         make()
 
 
@@ -90,20 +94,24 @@ def test_one_of_accepts_none_as_an_option_and_default():
 
 
 @pytest.mark.parametrize(
-    "make",
+    ("make", "match"),
     [
-        lambda: OneOf(),
-        lambda: OneOf("a", "a"),
-        lambda: OneOf("a", ["b"]),  # type: ignore[arg-type]
-        lambda: OneOf("a", "b", default="c"),
-        lambda: OneOf(1, 2, default=True),  # True == 1, but it is not the option 1
-        lambda: OneOf(0.5, float("nan")),  # NaN never equals itself, so it could never be chosen
-        lambda: OneOf(0.5, float("inf")),
+        (lambda: OneOf(), "at least one option"),
+        (lambda: OneOf("a", "a"), "must be distinct"),
+        (lambda: OneOf("a", ["b"]), "must be str, int"),  # type: ignore[arg-type]
+        (lambda: OneOf("a", "b", default="c"), "is not one of"),
+        (lambda: OneOf(1, 2, default=True), "is not one of"),  # True == 1, but it is not the option 1
+        (lambda: OneOf(0.5, float("nan")), "must be finite"),  # NaN never equals itself, so it could never be chosen
+        (lambda: OneOf(0.5, float("inf")), "must be finite"),
     ],
 )
-def test_one_of_rejects_bad_declarations(make):
-    with pytest.raises(TypeError):
+def test_one_of_rejects_bad_declarations(make, match):
+    with pytest.raises(TypeError, match=match):
         make()
+
+
+def test_one_of_without_a_default_reads_as_unset():
+    assert repr(OneOf("a", "b").default) == "<unset>"
 
 
 def test_one_of_tells_true_from_one():
@@ -120,15 +128,16 @@ def test_text_value_keeps_its_settings():
 
 
 @pytest.mark.parametrize(
-    "make",
+    ("make", "match"),
     [
-        lambda: TextValue(default=3),  # type: ignore[arg-type]
-        lambda: TextValue(default="x", size_cap=0),
-        lambda: TextValue(default="x", size_cap=True),
+        (lambda: TextValue(default=3), "default must be a str"),  # type: ignore[arg-type]
+        (lambda: TextValue(default="x", size_cap=0), "size_cap must be a positive integer"),
+        (lambda: TextValue(default="x", size_cap=True), "size_cap must be a positive integer"),
+        (lambda: TextValue(default="x", edit_instructions=123), "edit_instructions must be a str"),  # type: ignore[arg-type]
     ],
 )
-def test_text_value_rejects_bad_declarations(make):
-    with pytest.raises(TypeError):
+def test_text_value_rejects_bad_declarations(make, match):
+    with pytest.raises(TypeError, match=match):
         make()
 
 
@@ -172,14 +181,28 @@ def test_component_whose_constructor_rejects_its_defaults_fails_at_declaration()
     assert isinstance(raised.value.__cause__, ValueError)
 
 
-def test_component_with_an_unknown_kwarg_fails_at_declaration():
-    with pytest.raises(TypeError, match="rejects its own defaults"):
+def test_component_with_an_unknown_kwarg_fails_at_declaration_naming_it():
+    with pytest.raises(TypeError, match=r"no keyword arguments named \['no_such_arg'\]"):
         component(Manager, no_such_arg=1)
+    with pytest.raises(TypeError, match=r"no keyword arguments named \['missing'\]"):
+        component(Manager, missing=Int(1, 5))
+
+
+def test_component_rejects_a_kwarg_named_like_a_star_args_parameter():
+    class Takes:
+        def __init__(self, *args, size=1):
+            self.size = size
+
+    with pytest.raises(TypeError, match=r"no keyword arguments named \['args'\]"):
+        component(Takes, args=1)
 
 
 def test_component_without_a_default_anywhere_fails():
+    def build(**kwargs):
+        return kwargs
+
     with pytest.raises(TypeError, match="has no default"):
-        component(Manager, missing=Int(1, 5))
+        component(build, missing=Int(1, 5))
 
 
 def test_component_constructor_default_outside_the_bounds_fails():
@@ -238,8 +261,6 @@ def test_component_one_of_may_take_a_none_constructor_default_as_an_option():
 
 def test_component_one_of_on_a_real_conversation_manager():
     # strands' SlidingWindowConversationManager declares pin_first: int | None = None.
-    from strands.agent.conversation_manager import SlidingWindowConversationManager
-
     declared = component(SlidingWindowConversationManager, window_size=Int(4, 40), pin_first=OneOf(None, 1))
     assert declared.tunable["window_size"].default == 40
     assert declared.tunable["pin_first"].default is None
@@ -267,8 +288,15 @@ def test_component_rejects_markers_other_than_int_float_and_one_of(marker):
 
 
 def test_component_rejects_a_non_callable():
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="needs a class or callable"):
         component("Manager")  # type: ignore[arg-type]
+
+
+def test_component_accepts_any_kwarg_when_the_constructor_takes_kwargs():
+    def build(**kwargs):
+        return kwargs
+
+    assert component(build, anything=1).fixed == {"anything": 1}
 
 
 # --- choice ---
@@ -309,15 +337,24 @@ def test_choice_rejects_mixed_positional_and_keyword_alternatives():
 
 @pytest.mark.parametrize("label", ["b.c", "b/c", ""])
 def test_choice_rejects_bad_labels(label):
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="labels must be non-empty"):
         choice(**{"a": component(Manager), label: component(OtherManager)})
 
 
 def test_choice_rejects_non_components():
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="at least one alternative"):
         choice()
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="positional component"):
         choice(Manager)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "factory", [lambda size=1: size, functools.partial(Manager, ratio=0.2)], ids=["lambda", "partial"]
+)
+def test_choice_needs_a_keyword_label_for_a_lambda_or_partial(factory):
+    with pytest.raises(TypeError, match="label it by keyword"):
+        choice(component(factory))
+    assert list(choice(small=component(factory)).alternatives) == ["small"]
 
 
 def test_choice_takes_fixed_values_by_keyword_as_is():
@@ -332,6 +369,11 @@ def test_choice_takes_fixed_values_by_keyword_as_is():
 def test_choice_rejects_a_positional_fixed_value():
     with pytest.raises(TypeError, match="by keyword"):
         choice(component(Manager), None)  # type: ignore[arg-type]
+
+
+def test_choice_rejects_a_class_as_a_fixed_value():
+    with pytest.raises(TypeError, match=r"wrap it: component\(Manager, ...\)"):
+        choice(on=Manager, off=None)
 
 
 @pytest.mark.parametrize("marker", [Int(1, 5, default=2), OneOf("a", "b"), choice(component(OtherManager))])

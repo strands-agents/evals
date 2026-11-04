@@ -8,7 +8,7 @@ from typing import Any
 
 from strands.types.tools import AgentTool
 
-from .markers import _check_size_cap, _Marker
+from .markers import _check_positive_int, _check_str, _Marker
 
 
 class ToolDescriptions(_Marker):
@@ -50,12 +50,14 @@ def tool_descriptions(*tools: AgentTool, size_cap: int = 800, edit_instructions:
         edit_instructions: Shown to the proposer next to every description.
 
     Raises:
-        TypeError: No tools, a tool has no `tool_spec` setter or no text description, its name
-            contains `.` or `/` (it becomes a key segment), or two tools share a name.
+        TypeError: No tools, a tool has no `tool_spec` setter, no text description, or a spec its
+            setter rejects; its name contains `.` or `/` (it becomes a key segment); two tools share
+            a name; or `edit_instructions` isn't a str.
     """
     if not tools:
         raise TypeError("tool_descriptions() needs at least one tool")
-    _check_size_cap(size_cap)
+    _check_positive_int("size_cap", size_cap)
+    _check_str("edit_instructions", edit_instructions)
     by_name: dict[str, AgentTool] = {}
     for tool in tools:
         if not isinstance(tool, AgentTool):
@@ -73,5 +75,12 @@ def tool_descriptions(*tools: AgentTool, size_cap: int = 800, edit_instructions:
             raise TypeError(f"tool_descriptions() got two tools named {name!r}")
         if not isinstance(tool.tool_spec.get("description"), str):
             raise TypeError(f"tool {name!r} has no text description in its tool_spec")
+        try:
+            # Probed once on a copy, so a spec the setter rejects (a name other than the tool's, no
+            # inputSchema) fails here instead of on every build.
+            probe: Any = copy.copy(tool)
+            probe.tool_spec = dict(tool.tool_spec)
+        except Exception as error:
+            raise TypeError(f"tool {name!r}: its tool_spec setter rejects its own spec: {error}") from error
         by_name[name] = tool
     return ToolDescriptions(by_name, size_cap, edit_instructions)

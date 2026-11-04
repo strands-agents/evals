@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import inspect
 import math
 from collections.abc import Callable, Sequence
@@ -9,8 +10,16 @@ from typing import Any, TypeVar, cast
 
 from ...types.optimization import Value
 
+
+class _Unset:
+    """The type of `_UNSET`; named in reprs, so `OneOf("a", "b").default` reads as unset."""
+
+    def __repr__(self) -> str:
+        return "<unset>"
+
+
 # `OneOf(default=)` not given: `None` can be an option, so `OneOf` needs its own sentinel.
-_UNSET: Any = object()
+_UNSET: Any = _Unset()
 
 
 class _Marker:
@@ -84,10 +93,11 @@ class Float(_ValueMarker):
                 default that isn't a finite number in `[min_value, max_value]`.
         """
         _check_number("Float", min_value, max_value, default, log, valid=_is_finite_number, expected="finite numbers")
-        # Stored as floats, so an integer default (`temperature=1`) hashes like the 1.0 a search proposes.
+        # Stored as floats, so an integer default (`temperature=1`) hashes like the 1.0 a search proposes;
+        # `+ 0.0` turns -0.0 into 0.0, so both get the same candidate id.
         self.min_value = float(min_value)
         self.max_value = float(max_value)
-        self.default = None if default is None else float(default)
+        self.default = None if default is None else float(default) + 0.0
         self.log = log
 
     def _with_default(self, default: Any) -> Float:
@@ -97,7 +107,7 @@ class Float(_ValueMarker):
 class OneOf(_ValueMarker):
     """A choice among plain values; without `default=`, the parameter's, else the first option."""
 
-    def __init__(self, *options: str | int | float | bool | None, default: Value = _UNSET):
+    def __init__(self, *options: Value, default: Value = _UNSET):
         """Declare a choice among plain values.
 
         Args:
@@ -148,11 +158,12 @@ class TextValue(_ValueMarker):
             edit_instructions: Shown to the proposer next to this value.
 
         Raises:
-            TypeError: A default that isn't a str, or a `size_cap` that isn't a positive integer.
+            TypeError: A default or `edit_instructions` that isn't a str, or a `size_cap` that isn't a
+                positive integer.
         """
-        if default is not None and not isinstance(default, str):
-            raise TypeError(f"TextValue default must be a str, got {type(default).__name__}")
-        _check_size_cap(size_cap)
+        _check_str("TextValue default", default)
+        _check_positive_int("size_cap", size_cap)
+        _check_str("edit_instructions", edit_instructions)
         self.default = default
         self.size_cap = size_cap
         self.edit_instructions = edit_instructions
@@ -221,8 +232,8 @@ def component(factory: Callable[..., Any], /, **kwargs: Any) -> Component:
 
     The constructor is probed once, here, with its defaults, so its side effects (a client it
     creates) run at declaration and the probed instance is discarded. A positional label comes from
-    the factory's `__name__` (`"partial"` for a `functools.partial`, `"<lambda>"` for a lambda), so
-    label such alternatives by keyword in `choice()`.
+    the factory's `__name__`, so a lambda or a `functools.partial` must be labeled by keyword in
+    `choice()`.
 
     Other kwargs pass through as is, so every build gets the same objects: build stateful ones (an
     `Agent`, a client) inside the factory, or they are shared across trials.
@@ -232,16 +243,26 @@ def component(factory: Callable[..., Any], /, **kwargs: Any) -> Component:
         **kwargs: Constructor arguments; `Int` / `Float` / `OneOf` markers among them are tunable.
 
     Raises:
-        TypeError: The constructor rejects its own defaults (the exception is chained), an `Int` /
-            `Float` kwarg has no default anywhere (a constructor default of None counts as none), a
-            default that doesn't fit its marker, or another
-            marker (`TextValue`, a nested component or choice) is passed as a kwarg.
+        TypeError: A kwarg the constructor doesn't take (when its signature can be read), the
+            constructor rejects its own defaults (the exception is chained), an `Int` / `Float` kwarg
+            has no default anywhere (a constructor default of None counts as none), a default that
+            doesn't fit its marker, or another marker (`TextValue`, a nested component or choice) is
+            passed as a kwarg.
     """
     if not callable(factory):
         raise TypeError(f"component() needs a class or callable, got {factory!r}")
     result = Component(factory, {}, {})
     name = result.label
     parameters = _parameters(factory)
+    if parameters is not None and not any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        unknown = sorted(
+            key
+            for key in kwargs
+            if key not in parameters
+            or parameters[key].kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.VAR_POSITIONAL)
+        )
+        if unknown:
+            raise TypeError(f"component({name}): no keyword arguments named {unknown}")
     for key, value in kwargs.items():
         if isinstance(value, (Int, Float, OneOf)):
             result.tunable[key] = _with_constructor_default(name, key, value, parameters)
@@ -269,14 +290,20 @@ def choice(*alternatives: Component, **labeled: Component | Any) -> Choice:
     segments, so they contain no `.` or `/`. Each component in the result is a copy carrying its
     label, so one component can sit in several choices.
 
+    Under `tunable`, the first alternative replaces the wrapped parameter's default, so the plain
+    call `fn()` builds it too (unlike `Int` / `Float` / `OneOf` / `TextValue`, which take the
+    parameter's default). To keep what production builds as the baseline, list it first, e.g.
+    `choice(off=None, window=component(...))` for a parameter that defaults to None.
+
     Args:
         *alternatives: From `component()`, labeled by class name.
         **labeled: From `component()` or a fixed value, labeled by keyword.
 
     Raises:
         TypeError: No alternatives, positional and keyword alternatives mixed, a positional fixed
-            value, a marker other than a component, the same class twice positionally, or a label
-            with `.` or `/`.
+            value, a positional lambda or `functools.partial` (label it by keyword), a class as a
+            fixed value (wrap it in `component()`), a marker other than a component, the same class
+            twice positionally, or a label with `.` or `/`.
     """
     if alternatives and labeled:
         raise TypeError("choice() takes alternatives either positionally or by keyword, not both")
@@ -288,7 +315,20 @@ def choice(*alternatives: Component, **labeled: Component | Any) -> Choice:
                 f"choice() takes positional component(...) alternatives, got {type(alternative).__name__}; "
                 "pass a fixed value by keyword, e.g. choice(on=component(...), off=None)"
             )
+        label = alternative.label
+        if not label.isidentifier() or (label == "partial" and isinstance(alternative.factory, functools.partial)):
+            # "<lambda>" or "partial" would become a key segment, e.g. "manager.<lambda>.size".
+            raise TypeError(
+                f"choice(): a component of {alternative.factory!r} has no usable class name to label it; "
+                "label it by keyword, e.g. choice(window=component(...))"
+            )
     for label, alternative in labeled.items():
+        if inspect.isclass(alternative):
+            # Almost always a forgotten component(...); it would fail later, on every trial.
+            raise TypeError(
+                f"choice({label}=...) is the class {alternative.__name__}; wrap it: "
+                f"component({alternative.__name__}, ...)"
+            )
         if isinstance(alternative, _Marker) and not isinstance(alternative, Component):
             raise TypeError(
                 f"choice({label}=...) is a {type(alternative).__name__}; an alternative is a component(...) "
@@ -348,10 +388,16 @@ def _check_number(
         raise TypeError(f"{kind} default must lie in [{min_value!r}, {max_value!r}] ({expected} only), got {default!r}")
 
 
-def _check_size_cap(size_cap: int | None) -> None:
-    """Raise `TypeError` unless `size_cap` is None or a positive integer; shared with `tools.py`."""
-    if size_cap is not None and (not _is_int(size_cap) or size_cap < 1):
-        raise TypeError(f"size_cap must be a positive integer, got {size_cap!r}")
+def _check_positive_int(name: str, value: int | None) -> None:
+    """Raise `TypeError` unless `value` is None or a positive integer; `name` is for the message."""
+    if value is not None and (not _is_int(value) or value < 1):
+        raise TypeError(f"{name} must be a positive integer, got {value!r}")
+
+
+def _check_str(name: str, value: str | None) -> None:
+    """Raise `TypeError` unless `value` is None or a str; `name` is for the message."""
+    if value is not None and not isinstance(value, str):
+        raise TypeError(f"{name} must be a str, got {type(value).__name__}")
 
 
 def _parameters(factory: Callable[..., Any]) -> dict[str, inspect.Parameter] | None:

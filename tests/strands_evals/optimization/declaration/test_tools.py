@@ -68,17 +68,30 @@ def test_a_tool_without_a_tool_spec_setter_fails_at_declaration():
 
 
 @pytest.mark.parametrize(
-    "make",
+    ("make", "match"),
     [
-        lambda: tool_descriptions(),
-        lambda: tool_descriptions(lookup, lookup),
-        lambda: tool_descriptions("lookup"),  # type: ignore[arg-type]
-        lambda: tool_descriptions(lookup, size_cap=0),
+        (lambda: tool_descriptions(), "at least one tool"),
+        (lambda: tool_descriptions(lookup, lookup), "two tools named"),
+        (lambda: tool_descriptions("lookup"), "takes tools"),  # type: ignore[arg-type]
+        (lambda: tool_descriptions(lookup, size_cap=0), "size_cap must be a positive integer"),
+        (lambda: tool_descriptions(lookup, edit_instructions=1), "edit_instructions must be a str"),  # type: ignore[arg-type]
     ],
 )
-def test_bad_declarations_fail(make):
-    with pytest.raises(TypeError):
+def test_bad_declarations_fail(make, match):
+    with pytest.raises(TypeError, match=match):
         make()
+
+
+def test_a_tool_without_a_text_description_fails_at_declaration():
+    spec = {"name": "lookup", "description": None, "inputSchema": {"json": {}}}
+    with pytest.raises(TypeError, match="no text description"):
+        tool_descriptions(PythonAgentTool("lookup", spec, lambda tool_use, **kwargs: None))  # type: ignore[arg-type]
+
+
+def test_a_spec_the_setter_rejects_fails_at_declaration_not_on_every_build():
+    spec = {"name": "other", "description": "Look up.", "inputSchema": {"json": {}}}
+    with pytest.raises(TypeError, match="setter rejects its own spec"):
+        tool_descriptions(PythonAgentTool("lookup", spec, lambda tool_use, **kwargs: None))  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("name", ["db.lookup", "db/lookup"])
