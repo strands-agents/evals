@@ -112,8 +112,7 @@ def paired_interval(
 ) -> PairedComparison | None:
     """A t-interval at `level` of the mean per-case difference, over the cases both measured.
 
-    The case is the unit. Deterministic, no seed (scipy, from the `optimization` extra). P1 may replace
-    this with the core compare feature.
+    The case is the unit. Deterministic, no seed (scipy, from the `optimization` extra).
 
     Args:
         candidate: Case name -> the candidate's per-case mean.
@@ -187,7 +186,6 @@ def paired_ratio(
 
 def _t_quantile(level: float, df: int) -> float:
     """The two-sided `level` quantile of Student's t with `df` degrees of freedom."""
-    # optional extra: optimization
     from scipy.stats import t
 
     return float(t.ppf(0.5 + level / 2, df))

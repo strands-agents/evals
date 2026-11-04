@@ -72,6 +72,11 @@ def test_bad_shares_raise(kwargs):
         Split(**kwargs)
 
 
+def test_counts_are_rejected_pointing_to_case_lists():
+    with pytest.raises(ValueError, match="fractions of the cases.*pass case lists"):
+        Split(train=20, validation=10, test=10)
+
+
 def test_shares_and_lists_cant_mix():
     with pytest.raises(ValueError, match="not a mix"):
         Split(train=make_cases(2), validation=0.5, test=None)

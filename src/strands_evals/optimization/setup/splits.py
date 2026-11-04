@@ -27,7 +27,8 @@ class _DefaultTest:
 _DEFAULT_TEST: Any = _DefaultTest()
 
 
-def _is_share(value: object) -> bool:
+def _is_number(value: object) -> bool:
+    """Whether `value` is an int or a float (a share, not a list of cases); a bool is not a number here."""
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
@@ -55,15 +56,18 @@ class Split:
                 shares not summing to 1, or a case listed more than once.
         """
         if self.test is _DEFAULT_TEST:
-            object.__setattr__(self, "test", 0.3 if _is_share(self.train) else None)
+            object.__setattr__(self, "test", 0.3 if _is_number(self.train) else None)
         given = [v for v in (self.train, self.validation, self.test) if v is not None]
-        shares = [_is_share(v) for v in given]
+        shares = [_is_number(v) for v in given]
         if any(shares) and not all(shares):
             raise ValueError("Split: give every role a share or every role a list of cases, not a mix")
         if all(shares):
             train, validation, test = float(self.train), float(self.validation), float(self.test or 0.0)  # type: ignore[arg-type]
             if any(not 0 <= p <= 1 for p in (train, validation, test)):
-                raise ValueError(f"Split: shares must lie in 0 to 1, got {self._describe()}")
+                raise ValueError(
+                    f"Split: shares are fractions of the cases and must lie in 0 to 1, got {self._describe()}; "
+                    "for exact counts, pass case lists"
+                )
             if train == 0 or validation == 0:
                 raise ValueError(f"Split: train and validation need a share above 0, got {self._describe()}")
             total = train + validation + test
@@ -105,7 +109,7 @@ class Split:
         names = [case.name for case in cases if case.name is not None]
         if len(names) != len(cases) or len(set(names)) != len(names):
             raise ValueError("Split: the cases need unique, non-None names")
-        if _is_share(self.train):
+        if _is_number(self.train):
             split = self._by_share(names, self.seed if self.seed is not None else run_seed)
         else:
             split = self._by_list(names)
@@ -129,6 +133,19 @@ class Split:
         return split
 
     def _by_share(self, names: list[str], seed: int) -> CaseSplit:
+        """Deal the cases by share: sorted by name, shuffled with `seed`, counted by largest remainder.
+
+        Sorting first makes the split independent of the order the cases came in. Each role gets the floor of
+        share x n, and the cases left over go to the roles with the largest fractional parts, so the counts
+        sum to n and each is within 1 of share x n.
+
+        Args:
+            names: Every case name, unique.
+            seed: `Split.seed`, or the run seed when it is None.
+
+        Returns:
+            The cases by role, each in shuffled order; test may be empty.
+        """
         order = sorted(names)
         random.Random(seed).shuffle(order)
         n = len(order)
@@ -146,6 +163,19 @@ class Split:
         )
 
     def _by_list(self, names: list[str]) -> CaseSplit:
+        """Take the roles from the case lists, each in the order given.
+
+        `__post_init__` already checked that no case is listed twice.
+
+        Args:
+            names: Every case name in the experiment.
+
+        Returns:
+            The cases by role; test is empty when `test` is None.
+
+        Raises:
+            ValueError: A listed case not in the experiment, or an experiment case in no list.
+        """
         roles = {role: tuple(case.name for case in getattr(self, role) or ()) for role in _ROLES}
         listed = {name for role_names in roles.values() for name in role_names}
         outside = sorted(listed - set(names))
@@ -159,8 +189,10 @@ class Split:
         return CaseSplit(**roles)
 
     def _describe(self) -> str:
+        """The roles for error messages: `train=0.4` for a share, `train=<5 cases>` for a list."""
+
         def role(value: object) -> str:
-            return f"{value:g}" if _is_share(value) else f"<{len(value)} cases>"  # type: ignore[arg-type]
+            return f"{value:g}" if _is_number(value) else f"<{len(value)} cases>"  # type: ignore[arg-type]
 
         parts = [f"train={role(self.train)}", f"validation={role(self.validation)}"]
         parts.append("test=None" if self.test is None else f"test={role(self.test)}")
