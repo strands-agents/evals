@@ -1,8 +1,10 @@
 """Pluggable algorithms for experimental evaluator calibration."""
 
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
+from statistics import fmean
 from typing import Any, Literal
 
 VarianceSource = Literal["judge", "agent", "case"]
@@ -44,27 +46,22 @@ class CalibrationData:
     @property
     def samples(self) -> tuple[CalibrationSample, ...]:
         """Return replay-aggregated samples grouped by case and agent run."""
-        grouped_scores: dict[tuple[str, int], dict[str, list[float]]] = {}
-        for observation in self.observations:
-            sample_scores = grouped_scores.setdefault((observation.case_name, observation.agent_run), {})
-            sample_scores.setdefault(observation.evaluator_name, []).append(observation.score)
-
-        samples = []
-        ordered_groups = sorted(
-            grouped_scores.items(),
-            key=lambda item: (item[0][1], item[0][0]),
+        grouped_scores: defaultdict[tuple[int, str], defaultdict[str, list[float]]] = defaultdict(
+            lambda: defaultdict(list)
         )
-        for (case_name, agent_run), evaluator_scores in ordered_groups:
-            samples.append(
-                CalibrationSample(
-                    case_name=case_name,
-                    agent_run=agent_run,
-                    evaluator_scores={
-                        evaluator_name: sum(scores) / len(scores) for evaluator_name, scores in evaluator_scores.items()
-                    },
-                )
+        for observation in self.observations:
+            grouped_scores[observation.agent_run, observation.case_name][observation.evaluator_name].append(
+                observation.score
             )
-        return tuple(samples)
+
+        return tuple(
+            CalibrationSample(
+                case_name=case_name,
+                agent_run=agent_run,
+                evaluator_scores={name: fmean(scores) for name, scores in scores_by_evaluator.items()},
+            )
+            for (agent_run, case_name), scores_by_evaluator in sorted(grouped_scores.items())
+        )
 
 
 class CalibrationModel(ABC):
