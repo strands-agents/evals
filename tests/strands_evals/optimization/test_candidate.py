@@ -200,8 +200,10 @@ def test_changed_values_keeps_a_none_value():
 @pytest.fixture
 def project(tmp_path):
     (tmp_path / "prompts").mkdir()
-    (tmp_path / "prompts" / "system.md").write_text("You help.\nBe kind.\n")
-    (tmp_path / "agent.json").write_text(json.dumps({"agent": {"prompt": "Be brief.", "turns": 4}}, indent=2) + "\n")
+    (tmp_path / "prompts" / "system.md").write_text("You help.\nBe kind.\n", newline="")
+    (tmp_path / "agent.json").write_text(
+        json.dumps({"agent": {"prompt": "Be brief.", "turns": 4}}, indent=2) + "\n", newline=""
+    )
     return tmp_path
 
 
@@ -272,12 +274,12 @@ def test_diff_never_reads_the_files_again(project):
     space = file_space(project)
     baseline = Candidate.baseline(space)
     child = baseline.child(space, {"system": "Hi.\n"}, origin="text", rationale="")
-    (project / "prompts" / "system.md").write_text("edited after declaration\n")
+    (project / "prompts" / "system.md").write_text("edited after declaration\n", newline="")
     assert "-Be kind.\n" in diff(space, baseline, child, root=project)
 
 
 def test_a_reformatted_json_value_is_the_same_candidate(tmp_path):
-    (tmp_path / "agent.json").write_text('{"temperature": 0.5}\n')
+    (tmp_path / "agent.json").write_text('{"temperature": 0.5}\n', newline="")
     space = Space({"temperature": JsonField(tmp_path / "agent.json", "/temperature")})
     baseline = Candidate.baseline(space)
     same = baseline.child(space, {"temperature": "0.50"}, origin="text", rationale="")

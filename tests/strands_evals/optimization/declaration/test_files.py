@@ -1,5 +1,6 @@
 import gc
 import json
+import os
 
 import pytest
 
@@ -11,13 +12,14 @@ from strands_evals.optimization.declaration.tunable import _KEPT_UNTIL_EXIT
 def project(tmp_path):
     prompts = tmp_path / "prompts"
     prompts.mkdir()
-    (prompts / "system.md").write_text("You help.\n")
-    (prompts / "examples.md").write_text("Example A\n")
+    (prompts / "system.md").write_text("You help.\n", newline="")
+    (prompts / "examples.md").write_text("Example A\n", newline="")
     config = tmp_path / "config"
     config.mkdir()
     (config / "agent.json").write_text(
         json.dumps({"agent": {"system_prompt": "Be brief.", "limits": {"turns": 4}, "tags": ["a", "b"]}}, indent=2)
-        + "\n"
+        + "\n",
+        newline="",
     )
     return tmp_path
 
@@ -98,7 +100,7 @@ def test_json_field_array_index(project):
 
 
 def test_json_field_pointer_escapes(project):
-    (project / "config" / "odd.json").write_text(json.dumps({"a/b": {"c~d": "x"}}))
+    (project / "config" / "odd.json").write_text(json.dumps({"a/b": {"c~d": "x"}}), newline="")
     assert JsonField(project / "config" / "odd.json", "/a~1b/c~0d").default == "x"
 
 
@@ -109,7 +111,7 @@ def test_json_field_bad_pointer_fails_at_declaration(project, pointer):
 
 
 def test_json_field_invalid_json_file_fails_at_declaration(project):
-    (project / "config" / "broken.json").write_text("{not json")
+    (project / "config" / "broken.json").write_text("{not json", newline="")
     with pytest.raises(TypeError, match="not valid JSON"):
         JsonField(project / "config" / "broken.json", "/a")
 
@@ -240,7 +242,9 @@ def test_copy_writes_changed_values_and_never_the_originals(project, tmp_path_fa
 
 
 def test_copy_keeps_unchanged_files_byte_for_byte(project, tmp_path_factory):
-    (project / "config" / "agent.json").write_text('{"agent": {"system_prompt": "Be brief.", "limits": {"turns": 4}}}')
+    (project / "config" / "agent.json").write_text(
+        '{"agent": {"system_prompt": "Be brief.", "limits": {"turns": 4}}}', newline=""
+    )
     space = make_space(project)
     workspace = tmp_path_factory.mktemp("run") / "optimization_files"
     space.create_candidate_copy(space.complete({}), workspace)
@@ -270,7 +274,7 @@ def test_copy_leaves_no_partial_directory_on_error(project, tmp_path_factory):
 def test_folders_with_the_same_name_do_not_collide(tmp_path):
     for side in ("a", "b"):
         (tmp_path / side / "prompts").mkdir(parents=True)
-        (tmp_path / side / "prompts" / "p.md").write_text(side)
+        (tmp_path / side / "prompts" / "p.md").write_text(side, newline="")
     space = Space(
         {"a": FileText(tmp_path / "a" / "prompts" / "p.md"), "b": FileText(tmp_path / "b" / "prompts" / "p.md")}
     )
@@ -283,7 +287,7 @@ def test_folders_with_the_same_name_do_not_collide(tmp_path):
 
 def test_a_folder_inside_another_is_copied_once(project, tmp_path_factory):
     (project / "prompts" / "nested").mkdir()
-    (project / "prompts" / "nested" / "inner.md").write_text("inner")
+    (project / "prompts" / "nested" / "inner.md").write_text("inner", newline="")
     space = Space(
         {
             "system": FileText(project / "prompts" / "system.md"),
@@ -298,7 +302,7 @@ def test_a_folder_inside_another_is_copied_once(project, tmp_path_factory):
 
 
 def test_a_run_directory_inside_the_source_folder_is_not_copied(tmp_path):
-    (tmp_path / "prompt.md").write_text("You help.")
+    (tmp_path / "prompt.md").write_text("You help.", newline="")
     space = Space({"system": FileText(tmp_path / "prompt.md")})
     workspace = tmp_path / ".strands-evals" / "runs" / "r1" / "candidates" / "abc" / "optimization_files"
     space.create_candidate_copy({"system": "New."}, workspace)
@@ -309,11 +313,14 @@ def test_a_run_directory_inside_the_source_folder_is_not_copied(tmp_path):
 def test_a_symlinked_file_is_replaced_not_written_through(tmp_path):
     real = tmp_path / "real"
     real.mkdir()
-    (real / "target.md").write_text("original")
+    (real / "target.md").write_text("original", newline="")
     prompts = tmp_path / "prompts"
     prompts.mkdir()
-    (prompts / "system.md").write_text("You help.")
-    (prompts / "link.md").symlink_to(real / "target.md")
+    (prompts / "system.md").write_text("You help.", newline="")
+    try:
+        (prompts / "link.md").symlink_to(real / "target.md")
+    except OSError:  # Windows without the symlink privilege
+        pytest.skip("symlinks unavailable")
     space = Space({"system": FileText(prompts / "system.md")})
     workspace = tmp_path / "run" / "optimization_files"
     space.create_candidate_copy({"system": "New."}, workspace)
@@ -335,7 +342,7 @@ def test_an_existing_directory_that_is_not_a_copy_fails(project, tmp_path_factor
     space = make_space(project)
     workspace = tmp_path_factory.mktemp("run") / "optimization_files"
     workspace.mkdir()
-    (workspace / "notes.txt").write_text("mine")
+    (workspace / "notes.txt").write_text("mine", newline="")
     with pytest.raises(FileExistsError, match="not a candidate copy"):
         space.create_candidate_copy(space.complete({}), workspace)
     assert [p.name for p in workspace.iterdir()] == ["notes.txt"]
@@ -344,9 +351,9 @@ def test_an_existing_directory_that_is_not_a_copy_fails(project, tmp_path_factor
 def test_the_copy_holds_the_values_even_after_the_source_files_changed(project, tmp_path_factory):
     space = make_space(project)
     baseline = space.complete({})
-    (project / "prompts" / "system.md").write_text("Edited after declaration.\n")
+    (project / "prompts" / "system.md").write_text("Edited after declaration.\n", newline="")
     (project / "config" / "agent.json").write_text(
-        json.dumps({"agent": {"system_prompt": "Edited.", "limits": {"turns": 99}}})
+        json.dumps({"agent": {"system_prompt": "Edited.", "limits": {"turns": 99}}}), newline=""
     )
     workspace = tmp_path_factory.mktemp("run") / "optimization_files"
     space.create_candidate_copy(baseline, workspace)
@@ -355,10 +362,11 @@ def test_the_copy_holds_the_values_even_after_the_source_files_changed(project, 
     assert document["agent"] == {"system_prompt": "Be brief.", "limits": {"turns": 4}}
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX permission bits")
 def test_a_written_file_keeps_its_permissions(tmp_path):
     script = tmp_path / "scripts" / "run.sh"
     script.parent.mkdir()
-    script.write_text("echo hi\n")
+    script.write_text("echo hi\n", newline="")
     script.chmod(0o755)
     space = Space({"script": FileText(script, as_path=True)})
     workspace = tmp_path / "run" / "optimization_files"
