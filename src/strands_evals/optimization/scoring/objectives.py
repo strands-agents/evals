@@ -237,7 +237,7 @@ class Criteria:
                 `Maximize` / `Minimize` with a non-default `weight` or `scale` (read only inside a
                 `WeightedSum` or `Pareto`, so it would be silently ignored); `feasibility_threshold` outside (0, 1);
                 no objective and no evaluators to default to; `agent_failure_score` that isn't "worst", a finite
-                number, or None, or a number outside an evaluator's range.
+                number, or None, or a number outside the range of an evaluator a goal uses.
             TypeError: `objective` or a constraint of an unknown type.
 
         A `WeightedSum` or `Pareto` of one objective is unwrapped to that objective, so it follows the lone
@@ -257,14 +257,6 @@ class Criteria:
             raise ValueError(
                 f'agent_failure_score must be "worst", a finite number, or None, got {agent_failure_score!r}'
             )
-        if isinstance(agent_failure_score, (int, float)):
-            for name in registry.evaluators:
-                low, high = registry.range(name)
-                if (low is not None and agent_failure_score < low) or (high is not None and agent_failure_score > high):
-                    raise ValueError(
-                        f"agent_failure_score={agent_failure_score!r} is outside {name}'s range [{low}, {high}]; "
-                        'use agent_failure_score="worst" to score each evaluator at its own worst end'
-                    )
         self.registry = registry
         self.agent_failure_score = agent_failure_score
         self.feasibility_threshold = feasibility_threshold
@@ -273,25 +265,42 @@ class Criteria:
         self.is_pareto = isinstance(self.objective, Pareto)
         self._terms = self._build_terms(self.objective)
         self.goal_metrics = tuple(dict.fromkeys([t.metric for t in self._terms] + [c.metric for c in self.constraints]))
+        if isinstance(agent_failure_score, (int, float)):
+            for name in self.goal_metrics:
+                if not registry.is_usage(name) and not _in_range(agent_failure_score, registry.range(name)):
+                    low, high = registry.range(name)
+                    raise ValueError(
+                        f"agent_failure_score={agent_failure_score!r} is outside {name}'s range [{low}, {high}]; "
+                        'use agent_failure_score="worst" to score each evaluator at its own worst end'
+                    )
+        # Computed once: read for every evaluator of every crashed run.
+        self._agent_failure_values = {name: self._compute_agent_failure_value(name) for name in registry.evaluators}
 
     def agent_failure_value(self, metric: str) -> float | None:
         """What an `agent_failure` run counts as for one evaluator metric.
 
         Under `agent_failure_score="worst"`: the range's low end when every goal on the metric is a `Maximize` or
         `AtLeast`, the high end when every one is a `Minimize` or `AtMost`; None when that end is unbounded,
-        the goals disagree, or no goal uses the metric. A number gives that number; None gives None.
-        Usage metrics always give None (a crash's usage is measured, not scored). A crashed run can't tell
-        which evaluators would have found nothing to judge, so it scores an evaluator that another run of
-        the case found N/A too.
+        the goals disagree, or no goal uses the metric. A number gives that number, or None for a metric no
+        goal uses whose range doesn't contain it (outside a goal metric's range, `Criteria` raises); None
+        gives None. Usage metrics always give None (a crash's usage is measured, not scored). A crashed run
+        can't tell which evaluators would have found nothing to judge, so it scores an evaluator that
+        another run of the case found N/A too.
 
         Raises:
             KeyError: `metric` is not a resolved metric.
         """
+        self.registry.range(metric)  # raises KeyError for an unknown metric
+        return self._agent_failure_values.get(metric)  # usage metrics aren't in it: None
+
+    def _compute_agent_failure_value(self, metric: str) -> float | None:
+        """`agent_failure_value` for one evaluator metric, computed once in `__init__`."""
         low, high = self.registry.range(metric)
-        if self.registry.is_usage(metric) or self.agent_failure_score is None:
+        if self.agent_failure_score is None:
             return None
         if self.agent_failure_score != "worst":
-            return float(self.agent_failure_score)
+            score = float(self.agent_failure_score)
+            return score if _in_range(score, (low, high)) else None
         wants = {"max" if t.maximize else "min" for t in self._terms if t.metric == metric}
         wants |= {"max" if isinstance(c, AtLeast) else "min" for c in self.constraints if c.metric == metric}
         if wants == {"max"}:
@@ -474,7 +483,7 @@ def _case_metrics(
             if not math.isfinite(output.score):
                 # NaN passes every range comparison and would poison the means and the ranking.
                 reason = f"{metric}={output.score!r} is not a finite number"
-            elif (low is not None and output.score < low) or (high is not None and output.score > high):
+            elif not _in_range(output.score, (low, high)):
                 reason = (
                     f"{metric}={output.score!r} is outside its range [{low}, {high}]; give the evaluator a "
                     "score_range = (low, high) (None for unbounded)"
@@ -501,6 +510,9 @@ def score(candidate_id: str, records: Sequence[TrialRecord], criteria: Criteria,
 
     Returns:
         One `CandidateScores` per split scored; validation and test are None when it wasn't scored on them.
+
+    Raises:
+        ValueError: A record's case isn't in `splits` under its own `split`.
     """
     by_split: dict[SplitName, list[TrialRecord]] = defaultdict(list)
     for record in records:
@@ -559,7 +571,17 @@ def measured_metrics(scores: CandidateScores, registry: MetricRegistry) -> dict[
 def _split_scores(
     candidate_id: str, records: Sequence[TrialRecord], criteria: Criteria, cases: Sequence[str]
 ) -> CandidateScores:
-    """One split's `CandidateScores`; `cases` are the split's cases, so an unscored one makes it ineligible."""
+    """One split's `CandidateScores`; `cases` are the split's cases, so an unscored one makes it ineligible.
+
+    Raises:
+        ValueError: A record's case isn't one of `cases` (its `split` disagrees with the run's `CaseSplit`).
+    """
+    strays = sorted({record.case_name for record in records} - set(cases))
+    if strays:
+        raise ValueError(
+            f"{candidate_id}: records for cases {strays} say split {records[0].split!r}, "
+            "but the split doesn't hold them"
+        )
     metrics_by_run, unavailable, not_applicable = _case_metrics(records, criteria)
     objective_by_run: dict[str, list[float | None]] = {}
     objective_by_case: dict[str, float] = {}
@@ -611,6 +633,12 @@ def _not_applicable(record: TrialRecord, evaluator: str) -> bool:
 def _usage_value(usage: Usage, metric: str) -> float | None:
     value = getattr(usage, metric)
     return None if value is None else float(value)
+
+
+def _in_range(value: float, range_: Range) -> bool:
+    """Whether `value` lies in the inclusive range; a None end is unbounded."""
+    low, high = range_
+    return (low is None or value >= low) and (high is None or value <= high)
 
 
 def _width(range_: Range) -> float | None:

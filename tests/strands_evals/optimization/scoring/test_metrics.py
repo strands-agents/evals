@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from strands_evals.optimization import MetricRegistry
@@ -52,7 +54,21 @@ def test_range_of_an_unresolved_name_raises_key_error():
         make_registry().range("Unknown")
 
 
-@pytest.mark.parametrize("range_", [(1.0, 1.0), (5.0, 1.0)])
+@pytest.mark.parametrize("range_", [(1.0, 1.0), (5.0, 1.0), (math.inf, None), (None, -math.inf)])
 def test_an_empty_range_fails(range_):
     with pytest.raises(ValueError, match="is empty"):
         MetricRegistry({"Stars": range_})
+
+
+@pytest.mark.parametrize(
+    ("range_", "stored"),
+    [((0.0, math.inf), (0.0, None)), ((-math.inf, 1.0), (None, 1.0)), ((-math.inf, math.inf), (None, None))],
+)
+def test_an_infinite_end_is_unbounded(range_, stored):
+    assert MetricRegistry({"Score": range_}).range("Score") == stored
+
+
+@pytest.mark.parametrize("range_", [(math.nan, 1.0), (0.0, math.nan)])
+def test_a_nan_end_fails(range_):
+    with pytest.raises(ValueError, match="NaN"):
+        MetricRegistry({"Score": range_})

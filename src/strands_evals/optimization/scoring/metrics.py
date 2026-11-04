@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 
 from ...types.optimization import Range
@@ -26,24 +27,26 @@ class MetricRegistry:
         """Register the run's evaluators.
 
         An evaluator's range is its optional `score_range` attribute, else `(0.0, 1.0)`; usage metrics are
-        `(0, None)`.
+        `(0, None)`. An infinite end means unbounded, the same as None, so a combined metric still needs
+        `scale=` (an infinite width would make its term always 0).
 
         Args:
             evaluators: `get_name()` -> its range.
 
         Raises:
-            ValueError: An evaluator is named like a usage metric, or its range is empty (low >= high).
+            ValueError: An evaluator is named like a usage metric, its range has a NaN end, or its range is
+                empty (low >= high).
         """
         clashes = sorted(name for name in evaluators if name in USAGE_METRICS)
         if clashes:
             raise ValueError(f"evaluators {clashes} are named like usage metrics; give them another name=")
+        self._ranges: dict[str, Range] = {}
         for name, (low, high) in evaluators.items():
-            if low is not None and high is not None and low >= high:
+            if (low is not None and math.isnan(low)) or (high is not None and math.isnan(high)):
+                raise ValueError(f"{name}'s score_range ({low}, {high}) has a NaN end; use None for unbounded")
+            if (low is not None and high is not None and low >= high) or low == math.inf or high == -math.inf:
                 raise ValueError(f"{name}'s score_range ({low}, {high}) is empty: low must be below high")
-        self._ranges: dict[str, Range] = {
-            name: (None if low is None else float(low), None if high is None else float(high))
-            for name, (low, high) in evaluators.items()
-        }
+            self._ranges[name] = (_finite_or_none(low), _finite_or_none(high))
 
     @property
     def evaluators(self) -> tuple[str, ...]:
@@ -77,3 +80,8 @@ class MetricRegistry:
 
     def _known(self) -> list[str]:
         return [*self._ranges, *USAGE_METRICS]
+
+
+def _finite_or_none(end: float | None) -> float | None:
+    """A range end as a float; None (unbounded) when it is None or infinite."""
+    return None if end is None or math.isinf(end) else float(end)

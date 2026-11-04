@@ -195,6 +195,13 @@ def test_an_unbounded_evaluator_in_a_combination_needs_a_scale():
     Criteria(WeightedSum(Maximize("Stars"), Maximize("Open", scale=10)), [], UNBOUNDED)
 
 
+def test_an_evaluator_with_an_infinite_range_in_a_combination_needs_a_scale():
+    # An infinite width would make the term always 0, so it is treated as unbounded instead.
+    registry = MetricRegistry({"Stars": (1, 5), "Open": (0.0, math.inf)})
+    with pytest.raises(ValueError, match="Open has no bounded range"):
+        Criteria(WeightedSum(Maximize("Stars"), Maximize("Open")), [], registry)
+
+
 @pytest.mark.parametrize("feasibility_threshold", [0, 1, 1.5])
 def test_feasibility_must_lie_strictly_between_0_and_1(feasibility_threshold):
     with pytest.raises(ValueError):
@@ -261,6 +268,18 @@ def test_crash_value_of_an_unknown_metric_raises(agent_failure_score):
 def test_a_crash_score_outside_an_evaluators_range_fails():
     with pytest.raises(ValueError, match=r"agent_failure_score=0.25 is outside Stars's range \[1.0, 5.0\]"):
         Criteria(None, [], REGISTRY, agent_failure_score=0.25)
+
+
+def test_a_crash_score_outside_a_constraint_metrics_range_fails():
+    with pytest.raises(ValueError, match="outside Stars's range"):
+        Criteria(Maximize("Helpfulness"), [AtLeast("Stars", 3)], REGISTRY, agent_failure_score=0.25)
+
+
+def test_a_crash_score_outside_the_range_of_an_evaluator_no_goal_uses_leaves_it_missing():
+    criteria = Criteria(Maximize("Helpfulness"), [], REGISTRY, agent_failure_score=0.25)
+    assert criteria.agent_failure_value("HelpfulnessEvaluator") == 0.25
+    assert criteria.agent_failure_value("Stars") is None  # 0.25 isn't a Stars score; no goal reads it
+    assert Criteria(Maximize("Helpfulness"), [], REGISTRY, agent_failure_score=1.0).agent_failure_value("Stars") == 1.0
 
 
 def test_a_mean_equal_to_the_bound_up_to_float_noise_is_met():
@@ -332,6 +351,13 @@ def test_unmet_names_each_constraint_not_met_on_measured_means():
 
 
 CRITERIA = Criteria(WeightedSum(Maximize("Helpfulness"), Minimize("tokens", scale=1000)), [], REGISTRY)
+
+
+def test_a_record_whose_case_is_not_in_its_split_fails():
+    # "v" is a validation case; a record saying train for it is a wiring bug, not data to average.
+    records = [record("a", scores={"HelpfulnessEvaluator": 0.6}), record("v", scores={"HelpfulnessEvaluator": 0.9})]
+    with pytest.raises(ValueError, match=r"cases \['v'\] say split 'train'"):
+        score("c1", records, CRITERIA, SPLITS)
 
 
 def test_scores_average_per_case_over_runs():
@@ -496,7 +522,8 @@ def test_splits_are_scored_apart_and_unscored_ones_are_none():
 
 def test_measured_gives_a_95_percent_t_interval_over_case_means():
     records = [record(case, 0, tokens=tokens) for case, tokens in [("a", 1000), ("b", 1100), ("c", 1200)]]
-    tokens = measured_metrics(score("c1", records, CRITERIA, SPLITS).train, REGISTRY)["tokens"]
+    splits = CaseSplit(train=("a", "b", "c"), validation=("v",), test=())
+    tokens = measured_metrics(score("c1", records, CRITERIA, splits).train, REGISTRY)["tokens"]
     assert tokens.mean == pytest.approx(1100.0) and tokens.n == 3
     # t(0.975, df=2) = 4.3027; sd = 100; se = 57.735
     assert tokens.ci95 == pytest.approx((1100 - 4.3027 * 57.735, 1100 + 4.3027 * 57.735), abs=0.1)
