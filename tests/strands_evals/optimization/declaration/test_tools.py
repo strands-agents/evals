@@ -54,6 +54,13 @@ def test_build_returns_copies_and_never_modifies_the_users_tool():
     assert lookup.tool_spec["description"] == "Look up a record by query."
 
 
+def test_build_shares_no_part_of_the_spec_between_builds():
+    declared = tool_descriptions(lookup)
+    first, second = (declared.build({"lookup": "Find."})[0] for _ in range(2))
+    assert first.tool_spec["inputSchema"] is not second.tool_spec["inputSchema"]
+    assert first.tool_spec["inputSchema"] is not lookup.tool_spec["inputSchema"]
+
+
 def test_python_agent_tools_are_supported():
     spec = {"name": "add", "description": "Add two numbers.", "inputSchema": {"json": {}}}
     adder = PythonAgentTool("add", spec, lambda tool_use, **kwargs: None)

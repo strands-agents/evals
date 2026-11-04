@@ -153,11 +153,11 @@ class Space:
                 continue
             if key in values:
                 value = values[key]
-                # `+ 0.0` turns a Float's -0.0 into 0.0, so both get the same candidate id.
-                completed[key] = value + 0.0 if info.kind == "float" and type(value) is float else value
-                continue
-            filled = fill(key) if fill is not None else None
-            completed[key] = info.default if filled is None else filled[0]
+            else:
+                filled = fill(key) if fill is not None else None
+                value = info.default if filled is None else filled[0]
+            # `+ 0.0` turns a Float's -0.0 into 0.0, whatever its source, so both get the same candidate id.
+            completed[key] = value + 0.0 if info.kind == "float" and type(value) is float else value
         completed.update({key: value for key, value in values.items() if key not in self._params})
         return completed
 
@@ -264,10 +264,12 @@ def _flatten(name: str, marker: Marker) -> list[ParamInfo]:
                         infos.append(_number(key, name, tunable, condition))
         return infos
     if isinstance(marker, ToolDescriptions):
-        return [
-            _text(f"{name}.{tool_name}", name, tool.tool_spec["description"], marker.size_cap, marker.edit_instructions)
-            for tool_name, tool in marker.tools.items()
-        ]
+        infos = []
+        for tool_name, tool in marker.tools.items():
+            description = tool.tool_spec["description"]
+            cap = max(800, 3 * len(description)) if marker.size_cap is None else marker.size_cap
+            infos.append(_text(f"{name}.{tool_name}", name, description, cap, marker.edit_instructions))
+        return infos
     raise TypeError(f"{name}: {type(marker).__name__} can't be declared yet")
 
 

@@ -1,5 +1,6 @@
 import pytest
 from strands import tool
+from strands.tools.tools import PythonAgentTool
 
 from strands_evals.optimization import Float, Int, OneOf, Space, TextValue, choice, component, tool_descriptions
 
@@ -108,6 +109,14 @@ def test_tool_descriptions_flatten_to_one_text_key_per_tool():
     assert (info.kind, info.name, info.default, info.size_cap) == ("text", "tools", "Look up a record.", 800)
 
 
+def test_a_long_tool_description_gets_a_cap_above_its_baseline():
+    spec = {"name": "lookup", "description": "x" * 1200, "inputSchema": {"json": {}}}
+    long_tool = PythonAgentTool("lookup", spec, lambda tool_use, **kwargs: None)
+    assert Space({"tools": tool_descriptions(long_tool)}).param("tools.lookup").size_cap == 3600
+    with pytest.raises(TypeError, match="over the size_cap of 1000"):
+        Space({"tools": tool_descriptions(long_tool, size_cap=1000)})  # an explicit cap still wins
+
+
 def test_param_names_the_known_keys_on_a_typo():
     with pytest.raises(KeyError, match="temperature"):
         make_space().param("temprature")
@@ -205,6 +214,8 @@ def test_complete_turns_a_negative_zero_float_into_zero():
     assert str(completed) == "0.0"  # -0.0 == 0.0, so compare the text a candidate id hashes
     baseline = Space({"temperature": Float(-1.0, 1.0, default=-0.0)}).complete({})["temperature"]
     assert str(baseline) == "0.0"
+    filled = space.complete({}, fill=lambda key: (-0.0, "abc123"))["temperature"]
+    assert str(filled) == "0.0"
 
 
 def test_complete_keeps_unknown_keys_so_validate_reports_them():
