@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .markers import _Marker
 
-class FileText:
+
+class FileText(_Marker):
     """Text whose source of truth is a file; the baseline is the file's content.
 
     With `as_path=True` the factory receives the path of the candidate's copy instead of the text.
@@ -39,7 +41,7 @@ class FileText:
         raise NotImplementedError
 
 
-class JsonField:
+class JsonField(_Marker):
     """One field of a JSON file, addressed by JSON pointer; the diff lands on `path#pointer`."""
 
     def __init__(
@@ -70,7 +72,7 @@ class JsonField:
         raise NotImplementedError
 
 
-class SkillLibrary:
+class SkillLibrary(_Marker):
     """A directory of skill files; each member's text is editable.
 
     Member keys are `<declared name>/<path relative to the library>`, e.g. `skills/triage/SKILL.md`.
