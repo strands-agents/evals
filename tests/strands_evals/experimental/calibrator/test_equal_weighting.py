@@ -1,7 +1,6 @@
 import pytest
 
 from strands_evals.experimental.calibrator import (
-    AlgorithmIdentity,
     CalibrationAlgorithm,
     CalibrationData,
     CalibrationModel,
@@ -35,7 +34,7 @@ def test_equal_weighting_algorithm_fits_common_model_interface() -> None:
 
     assert isinstance(algorithm, CalibrationAlgorithm)
     assert isinstance(model, CalibrationModel)
-    assert algorithm.identity == AlgorithmIdentity(name="equal_weighting", version=1)
+    assert algorithm.identity == "equal_weighting:v1"
     assert model.weights == {"first": 0.5, "second": 0.5}
     assert model.predict({"first": 0.2, "second": 0.8}) == pytest.approx(0.5)
 

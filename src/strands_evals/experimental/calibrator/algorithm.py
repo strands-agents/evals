@@ -3,24 +3,9 @@
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal
+from typing import Any, Literal
 
 VarianceSource = Literal["judge", "agent", "case"]
-
-
-@dataclass(frozen=True)
-class AlgorithmIdentity:
-    """Stable identity of one calibration algorithm implementation."""
-
-    name: str
-    version: int
-
-    def __post_init__(self) -> None:
-        """Validate the persisted algorithm identity."""
-        if not isinstance(self.name, str) or not self.name.strip():
-            raise ValueError("algorithm identity name must be a non-empty string")
-        if not isinstance(self.version, int) or isinstance(self.version, bool) or self.version < 1:
-            raise ValueError("algorithm identity version must be an integer greater than or equal to 1")
 
 
 @dataclass(frozen=True)
@@ -106,7 +91,11 @@ class CalibrationModel(ABC):
 class CalibrationAlgorithm(ABC):
     """Stateless fitting strategy used by the calibration facade."""
 
-    identity: ClassVar[AlgorithmIdentity]
+    @property
+    @abstractmethod
+    def identity(self) -> str:
+        """Return the stable algorithm identity."""
+        ...
 
     @abstractmethod
     def fit(self, data: CalibrationData) -> CalibrationModel:

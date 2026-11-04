@@ -1,23 +1,9 @@
 import pytest
 
 from strands_evals.experimental.calibrator import (
-    AlgorithmIdentity,
     CalibrationData,
     CalibrationObservation,
 )
-
-
-@pytest.mark.parametrize(
-    ("name", "version", "message"),
-    [
-        ("", 1, "name must be a non-empty string"),
-        ("equal_weighting", 0, "version must be an integer"),
-        ("equal_weighting", True, "version must be an integer"),
-    ],
-)
-def test_algorithm_identity_rejects_invalid_values(name: str, version: int, message: str) -> None:
-    with pytest.raises(ValueError, match=message):
-        AlgorithmIdentity(name=name, version=version)
 
 
 def _data() -> CalibrationData:
