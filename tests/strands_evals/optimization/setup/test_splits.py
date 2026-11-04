@@ -141,6 +141,14 @@ def test_a_case_twice_in_one_list_raises():
         Split(train=[cases[0], cases[0], cases[1]], validation=cases[2:], test=None)
 
 
+def test_an_unnamed_listed_case_raises():
+    cases = make_cases(3)
+    with pytest.raises(ValueError, match=r"needs a name \(Case\(name=\.\.\.\)\)"):
+        Split(train=[*cases[:2], Case(input="unnamed")], validation=cases[2:])
+    with pytest.raises(ValueError, match="needs a name"):
+        Split(train=[Case(input="a"), cases[0]], validation=[Case(input="b"), cases[0]])
+
+
 def test_lists_without_test_have_no_test_cases():
     cases = make_cases(3)
     split = Split(train=cases[:2], validation=cases[2:])

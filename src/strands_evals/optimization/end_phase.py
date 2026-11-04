@@ -126,13 +126,10 @@ def paired_interval(
     Raises:
         ValueError: A shared case's mean is NaN or infinite.
     """
-    cases = sorted(set(candidate) & set(reference))
+    cases = _shared_cases(candidate, reference, caller="paired_interval")
     n = len(cases)
     if n == 0:
         return None
-    not_finite = [c for c in cases if not (math.isfinite(candidate[c]) and math.isfinite(reference[c]))]
-    if not_finite:
-        raise ValueError(f"paired_interval: per-case means must be finite; not for {not_finite}")
     differences = [candidate[c] - reference[c] for c in cases]
     mean = statistics.fmean(differences)
     if n == 1:
@@ -164,13 +161,10 @@ def paired_ratio(
     Raises:
         ValueError: A shared case's mean is NaN or infinite.
     """
-    cases = sorted(set(candidate) & set(reference))
+    cases = _shared_cases(candidate, reference, caller="paired_ratio")
     n = len(cases)
     if n == 0:
         return None
-    not_finite = [c for c in cases if not (math.isfinite(candidate[c]) and math.isfinite(reference[c]))]
-    if not_finite:
-        raise ValueError(f"paired_ratio: per-case means must be finite; not for {not_finite}")
     a = [candidate[c] for c in cases]
     b = [reference[c] for c in cases]
     mean_b = statistics.fmean(b)
@@ -182,6 +176,15 @@ def paired_ratio(
     spread = statistics.variance(a) + ratio * ratio * statistics.variance(b) - 2 * ratio * statistics.covariance(a, b)
     half = _t_quantile(level, n - 1) * math.sqrt(max(spread, 0.0) / (mean_b * mean_b * n))
     return PairedComparison(mean_diff=ratio, ci_low=ratio - half, ci_high=ratio + half, n_cases=n)
+
+
+def _shared_cases(candidate: Mapping[str, float], reference: Mapping[str, float], *, caller: str) -> list[str]:
+    """The cases both measured, sorted by name; `ValueError` naming `caller` when a shared mean isn't finite."""
+    cases = sorted(set(candidate) & set(reference))
+    not_finite = [c for c in cases if not (math.isfinite(candidate[c]) and math.isfinite(reference[c]))]
+    if not_finite:
+        raise ValueError(f"{caller}: per-case means must be finite; not for {not_finite}")
+    return cases
 
 
 def _t_quantile(level: float, df: int) -> float:

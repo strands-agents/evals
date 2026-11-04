@@ -57,10 +57,10 @@ class BudgetTracker:
         self.test_reserve = test_reserve
 
     def can_afford(self, rollouts: int, *, phase: SplitName = "train") -> bool:
-        """Whether `rollouts` fit, keeping the later phases' reserves.
+        """Whether `rollouts <= allowance(phase)`: remaining minus the later phases' reserves.
 
-        `train` (the search): spent + rollouts + both reserves <= max; `validation`: + the test reserve;
-        `test`: spent + rollouts <= max. Callers pass `TrialRunner.pending(...)`, never `cases x runs`.
+        `train` (the search) holds back both reserves, `validation` the test reserve, and `test` nothing (so
+        there it is `rollouts <= remaining`). Callers pass `TrialRunner.pending(...)`, never `cases x runs`.
         """
         return rollouts <= self.allowance(phase=phase)
 

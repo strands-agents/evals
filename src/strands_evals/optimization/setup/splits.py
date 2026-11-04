@@ -53,7 +53,7 @@ class Split:
 
         Raises:
             ValueError: Shares mixed with lists, a share outside 0 to 1, a train or validation share of 0,
-                shares not summing to 1, or a case listed more than once.
+                shares not summing to 1, a listed case without a name, or a case listed more than once.
         """
         if self.test is _DEFAULT_TEST:
             object.__setattr__(self, "test", 0.3 if _is_number(self.train) else None)
@@ -77,13 +77,15 @@ class Split:
                     "(test=None means no test cases)"
                 )
             return
+        listed = [case for role in _ROLES for case in getattr(self, role) or ()]
+        if any(case.name is None for case in listed):
+            raise ValueError("Split: every listed case needs a name (Case(name=...)); names pair a case's runs")
         seen: set[str] = set()
         twice: set[str] = set()
-        for role in _ROLES:
-            for case in getattr(self, role) or ():
-                if case.name in seen:
-                    twice.add(case.name)
-                seen.add(case.name)
+        for case in listed:
+            if case.name in seen:
+                twice.add(case.name)
+            seen.add(case.name)
         if twice:
             raise ValueError(f"Split: cases listed more than once: {sorted(twice)}")
 
