@@ -126,8 +126,27 @@ def test_lists_with_test_none_have_no_test_cases():
 
 def test_a_case_in_two_lists_raises():
     cases = make_cases(3)
-    with pytest.raises(ValueError, match="more than one role"):
+    with pytest.raises(ValueError, match=r"listed more than once: \['case-01'\]"):
         Split(train=cases[:2], validation=cases[1:], test=None)
+
+
+def test_a_case_twice_in_one_list_raises():
+    cases = make_cases(3)
+    with pytest.raises(ValueError, match=r"listed more than once: \['case-00'\]"):
+        Split(train=[cases[0], cases[0], cases[1]], validation=cases[2:], test=None)
+
+
+def test_lists_without_test_have_no_test_cases():
+    cases = make_cases(3)
+    split = Split(train=cases[:2], validation=cases[2:])
+    assert split.test is None
+    assert split.assign(cases, run_seed=0).test == ()
+
+
+def test_shares_without_test_default_to_0_3():
+    assert Split(train=0.4, validation=0.3) == Split(train=0.4, validation=0.3, test=0.3)
+    with pytest.raises(ValueError, match="sums to 0.7"):
+        Split(train=0.4, validation=0.3, test=None)
 
 
 def test_a_case_with_no_role_raises():

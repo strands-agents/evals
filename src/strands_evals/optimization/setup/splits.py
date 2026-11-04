@@ -7,12 +7,24 @@ import random
 import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from ...case import Case
 from ...types.optimization import CaseSplit
 
 _TOLERANCE = 1e-9
 _ROLES = ("train", "validation", "test")
+
+
+class _DefaultTest:
+    """The type of `_DEFAULT_TEST`; named in reprs, so the signature reads as what it resolves to."""
+
+    def __repr__(self) -> str:
+        return "<0.3 with shares, None with case lists>"
+
+
+# `Split(test=)` not given: 0.3 with shares, no test cases with lists (None is an explicit choice).
+_DEFAULT_TEST: Any = _DefaultTest()
 
 
 def _is_share(value: object) -> bool:
@@ -24,22 +36,26 @@ class Split:
     """Shares or explicit case lists, not a mix; train searches, validation picks, test reports.
 
     Shares must sum to 1 (`test=None` counts as 0), else `ValueError` naming the sum. Case lists must be
-    disjoint and give every case a role. `seed=None` uses the run seed (`Optimizer(seed=)`), as `TPE` and
-    `Thompson` do, so two runs with different seeds get different splits; `run.json` stores the seed used.
+    disjoint and give every case a role. An omitted `test` is 0.3 with shares and no test cases with lists, so
+    `Split(train=train_cases, validation=validation_cases)` works. `seed=None` uses the run seed
+    (`Optimizer(seed=)`), as `TPE` and `Thompson` do, so two runs with different seeds get different splits;
+    `run.json` stores the seed used.
     """
 
     train: float | Sequence[Case] = 0.4
     validation: float | Sequence[Case] = 0.3
-    test: float | Sequence[Case] | None = 0.3
+    test: float | Sequence[Case] | None = _DEFAULT_TEST
     seed: int | None = None
 
     def __post_init__(self) -> None:
-        """Check the shares sum to 1 and lists aren't mixed with shares.
+        """Resolve an omitted `test`, then check the shares sum to 1 and lists aren't mixed with shares.
 
         Raises:
             ValueError: Shares mixed with lists, a share outside 0 to 1, a train or validation share of 0,
-                shares not summing to 1, or a case in two lists.
+                shares not summing to 1, or a case listed more than once.
         """
+        if self.test is _DEFAULT_TEST:
+            object.__setattr__(self, "test", 0.3 if _is_share(self.train) else None)
         given = [v for v in (self.train, self.validation, self.test) if v is not None]
         shares = [_is_share(v) for v in given]
         if any(shares) and not all(shares):
@@ -65,7 +81,7 @@ class Split:
                     twice.add(case.name)
                 seen.add(case.name)
         if twice:
-            raise ValueError(f"Split: cases in more than one role: {sorted(twice)}")
+            raise ValueError(f"Split: cases listed more than once: {sorted(twice)}")
 
     def assign(self, cases: Sequence[Case], *, run_seed: int) -> CaseSplit:
         """Assign every case a role.

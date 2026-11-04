@@ -123,11 +123,17 @@ def paired_interval(
     Returns:
         The mean difference (candidate - reference), its interval, and the number of shared cases; no
         interval with one shared case; None with none.
+
+    Raises:
+        ValueError: A shared case's mean is NaN or infinite.
     """
     cases = sorted(set(candidate) & set(reference))
     n = len(cases)
     if n == 0:
         return None
+    not_finite = [c for c in cases if not (math.isfinite(candidate[c]) and math.isfinite(reference[c]))]
+    if not_finite:
+        raise ValueError(f"paired_interval: per-case means must be finite; not for {not_finite}")
     differences = [candidate[c] - reference[c] for c in cases]
     mean = statistics.fmean(differences)
     if n == 1:
@@ -155,11 +161,17 @@ def paired_ratio(
     Returns:
         The ratio and its interval (none with one shared case); None with no shared case or when the
         reference mean is 0.
+
+    Raises:
+        ValueError: A shared case's mean is NaN or infinite.
     """
     cases = sorted(set(candidate) & set(reference))
     n = len(cases)
     if n == 0:
         return None
+    not_finite = [c for c in cases if not (math.isfinite(candidate[c]) and math.isfinite(reference[c]))]
+    if not_finite:
+        raise ValueError(f"paired_ratio: per-case means must be finite; not for {not_finite}")
     a = [candidate[c] for c in cases]
     b = [reference[c] for c in cases]
     mean_b = statistics.fmean(b)

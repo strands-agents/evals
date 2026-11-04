@@ -182,7 +182,8 @@ class TestReport(BaseModel):
         objective: `Criteria.objective_value` per case, champion - baseline; None when no test case was
             measured by both.
         difference: Per goal metric; a metric with no test case measured by both is left out.
-        ratio: Per goal metric; None when the baseline mean is 0 or the metric can be < 0.
+        ratio: Per goal metric; None when the baseline mean is 0 or the metric can be < 0; a metric with no
+            test case measured by both is left out, as in `difference`.
         missing: Candidate id -> number of test cases with no counted run (left out).
         means: Champion and baseline -> every metric measured on test.
     """

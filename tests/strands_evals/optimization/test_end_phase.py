@@ -1,8 +1,6 @@
 import math
-import statistics
 
 import pytest
-from scipy.stats import t
 
 from strands_evals.optimization.end_phase import TEST_LEVEL, paired_interval, paired_ratio
 
@@ -11,13 +9,12 @@ REFERENCE = {"a": 0.5, "b": 0.6, "c": 0.4, "d": 0.6, "only-reference": 1.0}
 
 
 def test_the_interval_is_a_t_interval_over_the_shared_cases():
+    # expected from scipy.stats.ttest_rel(a, b).confidence_interval(0.9) on cases a-d
     result = paired_interval(CANDIDATE, REFERENCE, level=TEST_LEVEL)
-    differences = [0.4, 0.1, 0.4, 0.0]
-    half = t.ppf(0.95, 3) * statistics.stdev(differences) / math.sqrt(4)
     assert result.n_cases == 4
     assert result.mean_diff == pytest.approx(0.225)
-    assert result.ci_low == pytest.approx(0.225 - half)
-    assert result.ci_high == pytest.approx(0.225 + half)
+    assert result.ci_low == pytest.approx(-0.017579150428857)
+    assert result.ci_high == pytest.approx(0.467579150428857)
 
 
 def test_a_wider_level_gives_a_wider_interval():
@@ -46,16 +43,25 @@ def test_the_baseline_against_itself_is_exactly_0_and_1():
 
 
 def test_the_ratio_uses_the_delta_method():
-    a = [CANDIDATE[c] for c in "abcd"]
-    b = [REFERENCE[c] for c in "abcd"]
-    ratio = statistics.fmean(a) / statistics.fmean(b)
-    variance = statistics.variance(a) + ratio**2 * statistics.variance(b) - 2 * ratio * statistics.covariance(a, b)
-    half = t.ppf(0.95, 3) * math.sqrt(variance / (statistics.fmean(b) ** 2 * 4))
+    # expected from numpy: r = mean(a) / mean(b), var = (var_a + r^2 var_b - 2 r cov_ab) / (mean(b)^2 n),
+    # np.cov with ddof=1, half-width t(0.95, 3) * sqrt(var), on cases a-d
     result = paired_ratio(CANDIDATE, REFERENCE, level=TEST_LEVEL)
     assert result.n_cases == 4
-    assert result.mean_diff == pytest.approx(ratio)
-    assert result.ci_low == pytest.approx(ratio - half)
-    assert result.ci_high == pytest.approx(ratio + half)
+    assert result.mean_diff == pytest.approx(1.428571428571429)
+    assert result.ci_low == pytest.approx(0.883315167473689)
+    assert result.ci_high == pytest.approx(1.973827689669169)
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf])
+def test_a_non_finite_case_mean_raises_in_both(bad):
+    with pytest.raises(ValueError, match=r"finite; not for \['a'\]"):
+        paired_interval({**CANDIDATE, "a": bad}, REFERENCE, level=TEST_LEVEL)
+    with pytest.raises(ValueError, match=r"finite; not for \['a'\]"):
+        paired_ratio(CANDIDATE, {**REFERENCE, "a": bad}, level=TEST_LEVEL)
+
+
+def test_a_non_finite_unshared_case_is_ignored():
+    assert paired_interval({**CANDIDATE, "only-candidate": math.nan}, REFERENCE, level=TEST_LEVEL).n_cases == 4
 
 
 def test_a_reference_mean_of_0_gives_no_ratio():
