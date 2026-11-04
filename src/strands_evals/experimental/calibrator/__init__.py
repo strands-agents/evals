@@ -1,4 +1,5 @@
 from .algorithm import (
+    AlgorithmIdentity,
     CalibrationAlgorithm,
     CalibrationData,
     CalibrationModel,
@@ -9,6 +10,7 @@ from .algorithm import (
 from .equal_weighting import EqualWeightingAlgorithm
 
 __all__ = [
+    "AlgorithmIdentity",
     "CalibrationAlgorithm",
     "CalibrationData",
     "CalibrationModel",

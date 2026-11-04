@@ -2,9 +2,9 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
-from .algorithm import CalibrationAlgorithm, CalibrationData, CalibrationModel
+from .algorithm import AlgorithmIdentity, CalibrationAlgorithm, CalibrationData, CalibrationModel
 
 
 @dataclass(frozen=True)
@@ -12,16 +12,6 @@ class EqualWeightingModel(CalibrationModel):
     """Fitted equal-weight average."""
 
     evaluator_weights: dict[str, float]
-
-    @property
-    def algorithm_id(self) -> str:
-        """Return the stable equal-weighting identifier."""
-        return "equal_weighting"
-
-    @property
-    def algorithm_version(self) -> int:
-        """Return the equal-weighting implementation version."""
-        return 1
 
     @property
     def weights(self) -> Mapping[str, float]:
@@ -47,15 +37,10 @@ class EqualWeightingModel(CalibrationModel):
 class EqualWeightingAlgorithm(CalibrationAlgorithm):
     """Transparent equal-weight baseline used when no target is available."""
 
-    @property
-    def algorithm_id(self) -> str:
-        """Return the stable equal-weighting identifier."""
-        return "equal_weighting"
-
-    @property
-    def algorithm_version(self) -> int:
-        """Return the equal-weighting implementation version."""
-        return 1
+    identity: ClassVar[AlgorithmIdentity] = AlgorithmIdentity(
+        name="equal_weighting",
+        version=1,
+    )
 
     def fit(self, data: CalibrationData) -> EqualWeightingModel:
         """Fit an equal-weight model over the configured evaluators."""
