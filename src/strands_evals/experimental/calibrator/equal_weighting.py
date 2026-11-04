@@ -16,7 +16,7 @@ class EqualWeightingModel(CalibrationModel):
     @property
     def weights(self) -> Mapping[str, float]:
         """Return the normalized evaluator weights."""
-        return self.evaluator_weights
+        return dict(self.evaluator_weights)
 
     @property
     def parameters(self) -> Mapping[str, Any]:

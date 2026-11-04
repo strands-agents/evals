@@ -44,3 +44,13 @@ def test_equal_weighting_model_rejects_changed_evaluator_set() -> None:
 
     with pytest.raises(ValueError, match="evaluator scores do not match"):
         model.predict({"first": 0.2})
+
+
+def test_equal_weighting_model_weights_are_a_copy() -> None:
+    model = EqualWeightingAlgorithm().fit(_data())
+
+    weights = model.weights
+    assert isinstance(weights, dict)
+    weights["first"] = 1.0
+
+    assert model.weights == {"first": 0.5, "second": 0.5}
