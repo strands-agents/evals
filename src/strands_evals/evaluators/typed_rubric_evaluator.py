@@ -62,11 +62,6 @@ def _require_threshold(value: Any, what: str) -> None:
         raise ValueError(f"{what} must be a number in [0, 1]")
 
 
-def _most_likely(labels: Sequence[str], distribution: Mapping[str, float]) -> str:
-    """Return the most likely label, breaking ties by declaration order."""
-    return max(labels, key=lambda label: distribution[label])
-
-
 def _labels(question: RubricQuestion) -> tuple[str, ...]:
     """The answer labels a question's probability distribution is keyed by."""
     match question:
@@ -95,7 +90,8 @@ def _score_noul(question: Noul, distribution: Mapping[str, float]) -> _Verdict:
 def _score_scale(question: Score, distribution: Mapping[str, float]) -> _Verdict:
     top = len(question.levels) - 1
     expected_level = sum(index * distribution[level] for index, level in enumerate(question.levels))
-    selected = _most_likely(question.levels, distribution)
+    # `max` keeps the first of tied labels, so ties go to declaration order.
+    selected = max(question.levels, key=distribution.__getitem__)
     reason = f"expected level {expected_level:.2f} of {top}; most likely {selected} (p={distribution[selected]:.2f})"
     # The probabilities may sum to slightly over 1 (within tolerance), which can push the expected
     # level just past the top; clamp that overshoot.
@@ -110,7 +106,7 @@ def _score_choice(question: Choice, distribution: Mapping[str, float]) -> _Verdi
     credited = {label: credit for label, credit in question.options.items() if credit is not None}
     credited_mass = sum(distribution[label] for label in credited)
     expected_credit = sum(distribution[label] * credit for label, credit in credited.items()) / credited_mass
-    selected = _most_likely(list(credited), distribution)
+    selected = max(credited, key=distribution.__getitem__)
     reason = f"expected credit {expected_credit:.2f}; most likely {selected} (p={distribution[selected]:.2f})"
     if not_applicable_mass > 0:
         reason += f"; not applicable mass {not_applicable_mass:.2f}"
