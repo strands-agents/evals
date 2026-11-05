@@ -2,11 +2,27 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import threading
+import weakref
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
+import opentelemetry.trace as trace_api
+from opentelemetry.context import Context
+from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
+from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
+from opentelemetry.trace import StatusCode
+
+from ...mappers.strands_in_memory_session_mapper import StrandsInMemorySessionMapper
+from ...telemetry.config import StrandsEvalsTelemetry
 from ...types.optimization import Usage
 from ...types.trace import Session
+
+# Set on the spans `rollout.py` opens, so they are found by kind, never by a name an agent could share.
+SPAN_KIND = "strands_evals.optimization.span"
+ATTEMPT_SPAN = "attempt"
+ROLLOUT_SPAN = "rollout"
 
 
 @dataclass(frozen=True)
@@ -23,6 +39,51 @@ class EvaluatorView:
     labels: dict[str, str]
 
 
+class _TrialSpanFilter(SpanProcessor):
+    """Keeps the finished spans of registered traces, keyed by hex trace id; every other span is dropped."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._spans: dict[str, list[ReadableSpan]] = {}
+
+    def register(self, trace_id: str) -> None:
+        with self._lock:
+            self._spans.setdefault(trace_id, [])
+
+    def spans(self, trace_id: str) -> list[ReadableSpan]:
+        with self._lock:
+            return list(self._spans.get(trace_id, ()))
+
+    def release(self, trace_ids: Iterable[str]) -> None:
+        with self._lock:
+            for trace_id in trace_ids:
+                self._spans.pop(trace_id, None)
+
+    def on_start(self, span: Span, parent_context: Context | None = None) -> None:
+        return None
+
+    def on_end(self, span: ReadableSpan) -> None:
+        if span.context is None:
+            return
+        trace_id = format(span.context.trace_id, "032x")
+        with self._lock:
+            kept = self._spans.get(trace_id)
+            if kept is not None:
+                kept.append(span)
+
+    def shutdown(self) -> None:
+        return None
+
+    def force_flush(self, timeout_millis: int = 30_000) -> bool:
+        return True
+
+
+# One filter per tracer provider, shared by every `TraceCapture` on it: a provider can't drop a processor,
+# so a filter per run would pile up for the life of the process.
+_FILTERS: weakref.WeakKeyDictionary[SDKTracerProvider, _TrialSpanFilter] = weakref.WeakKeyDictionary()
+_FILTERS_LOCK = threading.Lock()
+
+
 class TraceCapture:
     """One per run; keeps only spans of registered trial traces.
 
@@ -31,15 +92,42 @@ class TraceCapture:
     """
 
     def __init__(self) -> None:
-        """Install or attach the in-memory exporter; must run before any `Experiment` is built."""
-        raise NotImplementedError
+        """Install or attach the in-memory exporter; must run before any `Experiment` is built.
+
+        With no OpenTelemetry SDK tracer provider installed, installs one (`StrandsEvalsTelemetry`) as the
+        global provider; then attaches a span processor keeping only registered traces, so nothing else
+        piles up in memory.
+
+        Raises:
+            RuntimeError: A global tracer provider that isn't the SDK's is already installed, so spans
+                can't be read.
+        """
+        provider = trace_api.get_tracer_provider()
+        if not isinstance(provider, SDKTracerProvider):
+            StrandsEvalsTelemetry()
+            provider = trace_api.get_tracer_provider()
+        if not isinstance(provider, SDKTracerProvider):
+            raise RuntimeError(
+                f"the global tracer provider is a {type(provider).__name__}, not opentelemetry-sdk's "
+                "TracerProvider, so the optimizer can't read trial traces; install an SDK TracerProvider instead"
+            )
+        with _FILTERS_LOCK:
+            span_filter = _FILTERS.get(provider)
+            if span_filter is None:
+                span_filter = _TrialSpanFilter()
+                provider.add_span_processor(span_filter)
+                _FILTERS[provider] = span_filter
+        self._filter = span_filter
 
     def register(self, trace_id: str) -> None:
         """Keep this trace's spans; spans of unregistered traces are dropped at export."""
-        raise NotImplementedError
+        self._filter.register(trace_id)
 
     def agent_view(self, trace_id: str, attempt_span_id: str) -> tuple[Session | None, Usage]:
         """The `Session` and usage of the given attempt's subtree, judge spans excluded.
+
+        Usage sums the subtree's `chat` spans; `seconds` is its `rollout` span's duration, or the attempt
+        span's when there is none (a `build_task` task).
 
         Args:
             trace_id: The trial's trace.
@@ -48,7 +136,9 @@ class TraceCapture:
         Returns:
             The agent's `Session` (None without agent spans) and its usage, judge spans excluded.
         """
-        raise NotImplementedError
+        spans = self._filter.spans(trace_id)
+        subtree = _subtree(spans, attempt_span_id)
+        return _session(trace_id, subtree), _usage(subtree, _attempt_seconds(spans, subtree, attempt_span_id))
 
     def attempt_usage(self, trace_id: str, attempt_span_id: str) -> Usage:
         """One previous attempt's usage (`TrialLogEntry.previous_attempts`), by `agent_view`'s rules.
@@ -59,12 +149,133 @@ class TraceCapture:
             trace_id: The trial's trace.
             attempt_span_id: That attempt's span; only its subtree is read.
         """
-        raise NotImplementedError
+        spans = self._filter.spans(trace_id)
+        subtree = _subtree(spans, attempt_span_id)
+        return _usage(subtree, _attempt_seconds(spans, subtree, attempt_span_id))
 
     def evaluator_view(self, trace_id: str) -> EvaluatorView:
-        """One walk over the trial's `evaluator {name}` spans: judge usage, errors, and labels."""
-        raise NotImplementedError
+        """One walk over the trial's `evaluator {name}` spans: judge usage, errors, and labels.
+
+        Judge usage sums the `chat` spans under every evaluator span; its `seconds` is the evaluator
+        spans' total duration.
+        """
+        spans = self._filter.spans(trace_id)
+        judge_spans: list[ReadableSpan] = []
+        seconds = 0.0
+        errors: dict[str, str] = {}
+        labels: dict[str, str] = {}
+        for span in spans:
+            attributes = span.attributes or {}
+            name = attributes.get("gen_ai.evaluation.name")
+            if name is None or not span.name.startswith("evaluator "):
+                continue
+            judge_spans += _subtree(spans, _span_id(span))
+            seconds += _duration(span)
+            if span.status.status_code is StatusCode.ERROR:
+                errors[str(name)] = _exception_type(span)
+            elif "gen_ai.evaluation.score.label" in attributes:
+                labels[str(name)] = str(attributes["gen_ai.evaluation.score.label"])
+        return EvaluatorView(judge_usage=_usage(judge_spans, seconds), errors=errors, labels=labels)
 
     def release(self, trace_ids: Iterable[str]) -> None:
         """Drop only these trials' spans."""
-        raise NotImplementedError
+        self._filter.release(trace_ids)
+
+
+def _span_id(span: ReadableSpan) -> str:
+    return format(span.context.span_id, "016x") if span.context is not None else ""
+
+
+def _duration(span: ReadableSpan) -> float:
+    if span.start_time is None or span.end_time is None:
+        return 0.0
+    return (span.end_time - span.start_time) / 1e9
+
+
+def _subtree(spans: Sequence[ReadableSpan], root_span_id: str) -> list[ReadableSpan]:
+    """The descendants of `root_span_id` (not the root itself), in the order the spans finished."""
+    children: dict[str, list[str]] = {}
+    for span in spans:
+        if span.parent is not None:
+            children.setdefault(format(span.parent.span_id, "016x"), []).append(_span_id(span))
+    inside: set[str] = set()
+    pending = [root_span_id]
+    while pending:
+        for child in children.get(pending.pop(), ()):
+            if child not in inside:
+                inside.add(child)
+                pending.append(child)
+    return [span for span in spans if _span_id(span) in inside]
+
+
+def _attempt_seconds(spans: Sequence[ReadableSpan], subtree: Sequence[ReadableSpan], attempt_span_id: str) -> float:
+    """The `rollout` span's duration, else the attempt span's own."""
+    for span in subtree:
+        if (span.attributes or {}).get(SPAN_KIND) == ROLLOUT_SPAN:
+            return _duration(span)
+    for span in spans:
+        if _span_id(span) == attempt_span_id:
+            return _duration(span)
+    return 0.0
+
+
+def _int_attribute(attributes: Any, *names: str) -> int | None:
+    """The first of `names` present, as an int; None when none is."""
+    for name in names:
+        value = attributes.get(name)
+        if value is not None:
+            return int(value)
+    return None
+
+
+def _usage(spans: Sequence[ReadableSpan], seconds: float) -> Usage:
+    """Usage summed over the `chat` spans: never `invoke_agent` spans, which carry running totals."""
+    usage = Usage.zero().model_copy(update={"seconds": seconds})
+    for span in spans:
+        attributes = span.attributes or {}
+        if attributes.get("gen_ai.operation.name") != "chat":
+            continue
+        output_tokens = _int_attribute(attributes, "gen_ai.usage.output_tokens") or 0
+        tokens = _int_attribute(attributes, "gen_ai.usage.total_tokens")
+        if tokens is None:
+            tokens = (_int_attribute(attributes, "gen_ai.usage.input_tokens") or 0) + output_tokens
+        model = attributes.get("gen_ai.request.model")
+        usage += Usage(
+            tokens=tokens,
+            # The span's own input_tokens excludes cache tokens on some SDK versions and includes them on others.
+            input_tokens=tokens - output_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=_int_attribute(
+                attributes, "gen_ai.usage.cache_read.input_tokens", "gen_ai.usage.cache_read_input_tokens"
+            ),
+            cache_write_tokens=_int_attribute(
+                attributes, "gen_ai.usage.cache_creation.input_tokens", "gen_ai.usage.cache_write_input_tokens"
+            ),
+            model_calls=1,
+            seconds=0.0,
+            models=[str(model)] if model else [],
+        )
+    return usage
+
+
+def _session(trace_id: str, spans: Sequence[ReadableSpan]) -> Session | None:
+    """The spans as a `Session`; None when none of them is an agent span."""
+    # The mapper keeps only spans whose session id matches when any span carries one; spans of one trial
+    # share a trace, so its first session id (else the trace id) names the session.
+    session_id = trace_id
+    for span in spans:
+        attributes = span.attributes or {}
+        found = attributes.get("gen_ai.conversation.id", attributes.get("session.id"))
+        if found is not None:
+            session_id = str(found)
+            break
+    session = StrandsInMemorySessionMapper().map_to_session(list(spans), session_id)
+    return session if session.traces else None
+
+
+def _exception_type(span: ReadableSpan) -> str:
+    """The type name of the exception an ERROR span recorded."""
+    for event in span.events:
+        if event.name == "exception" and event.attributes and "exception.type" in event.attributes:
+            return str(event.attributes["exception.type"])
+    return "Exception"

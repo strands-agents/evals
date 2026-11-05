@@ -65,14 +65,41 @@ class Usage(BaseModel):
     @classmethod
     def zero(cls) -> Usage:
         """No usage: every count 0, cache tokens None (unmeasured), no models; the start of every sum."""
-        raise NotImplementedError
+        return cls(
+            tokens=0,
+            input_tokens=0,
+            output_tokens=0,
+            cache_read_tokens=None,
+            cache_write_tokens=None,
+            model_calls=0,
+            seconds=0.0,
+            models=[],
+        )
 
     def __add__(self, other: Usage) -> Usage:
         """Field by field; cache tokens None + None = None, None + x = x; `models` joined in first-use order.
 
         Totals are `sum(usages, Usage.zero())`.
         """
-        raise NotImplementedError
+        if not isinstance(other, Usage):
+            return NotImplemented
+        return Usage(
+            tokens=self.tokens + other.tokens,
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            cache_read_tokens=_add_measured(self.cache_read_tokens, other.cache_read_tokens),
+            cache_write_tokens=_add_measured(self.cache_write_tokens, other.cache_write_tokens),
+            model_calls=self.model_calls + other.model_calls,
+            seconds=self.seconds + other.seconds,
+            models=self.models + [model for model in other.models if model not in self.models],
+        )
+
+
+def _add_measured(left: int | None, right: int | None) -> int | None:
+    """Sum two counts that may be unmeasured: None only when both are."""
+    if left is None and right is None:
+        return None
+    return (left or 0) + (right or 0)
 
 
 class AttemptRecord(BaseModel):
