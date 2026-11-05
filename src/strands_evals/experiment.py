@@ -56,7 +56,7 @@ from .evaluators.typed_rubric_evaluator import TypedRubricEvaluator
 from .telemetry import get_tracer, serialize
 from .telemetry._cloudwatch_logger import _send_to_cloudwatch
 from .types.detector import DiagnosisConfig
-from .types.evaluation import NOT_APPLICABLE, EvaluationData, EvaluationOutput, InputT, OutputT
+from .types.evaluation import EvaluationData, InputT, OutputT
 from .types.evaluation_report import EvaluationReport, ReportT
 from .types.trace import Session
 from .utils import is_throttling_error
@@ -68,46 +68,6 @@ logger.setLevel(logging.INFO)
 _MAX_RETRY_ATTEMPTS = 6
 _INITIAL_RETRY_DELAY = 4
 _MAX_RETRY_DELAY = 240  # 4 minutes
-
-
-def _get_label_from_score(
-    evaluator: Evaluator,
-    score: float,
-    outputs: list[EvaluationOutput] | None = None,
-    passed: bool | None = None,
-) -> str:
-    """
-    Get the label from score using evaluator's _score_mapping if available.
-    If no mapping exists, returns "YES" for scores >= 0.5, "NO" otherwise.
-
-    Args:
-        evaluator: The evaluator instance
-        score: The numeric score
-        outputs: The rows the score was aggregated from, when available. A case whose every row
-            was not-applicable has no verdict to report, and its 0.0 is a placeholder rather than
-            a score, so reverse-mapping it would emit the mapping's worst label for a case that
-            was never judged.
-        passed: The case's aggregate verdict, when available. Used instead of the score for
-            evaluators that set `_label_from_test_pass`, whose pass rule is not `score >= 0.5`.
-
-    Returns:
-        The label corresponding to the score
-    """
-    if outputs is not None and not EvaluationReport.is_applicable(outputs):
-        return NOT_APPLICABLE
-
-    if passed is not None and evaluator._label_from_test_pass:
-        return "YES" if passed else "NO"
-
-    if hasattr(evaluator, "_score_mapping") and evaluator._score_mapping:
-        # Create reverse mapping from score to label
-        reverse_mapping = {v: k for k, v in evaluator._score_mapping.items()}
-        # Find the score in the mapping
-        if score in reverse_mapping:
-            return str(reverse_mapping[score])
-
-    # Otherwise, return YES/NO based on score
-    return "YES" if score >= 0.5 else "NO"
 
 
 class Experiment(Generic[InputT, OutputT, ReportT]):
@@ -413,7 +373,7 @@ class Experiment(Generic[InputT, OutputT, ReportT]):
                 ) = await _evaluate_with_retry()
 
                 try:
-                    label = _get_label_from_score(evaluator, aggregate_score, evaluation_outputs, aggregate_pass)
+                    label = evaluator._get_label(aggregate_score, aggregate_pass, evaluation_outputs)
                 except Exception:
                     label = "UNKNOWN"
 

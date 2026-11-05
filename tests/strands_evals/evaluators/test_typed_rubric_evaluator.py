@@ -14,9 +14,8 @@ from strands.types.exceptions import ModelThrottledException, StructuredOutputEx
 
 from strands_evals import Case, Experiment
 from strands_evals.evaluators import Choice, Equals, Noul, Score, TypedRubricEvaluator
-from strands_evals.experiment import _get_label_from_score
 from strands_evals.types import EvaluationData
-from strands_evals.types.evaluation import NOT_APPLICABLE
+from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
 from strands_evals.types.evaluation_report import EvaluationReport
 from strands_evals.types.trace import AgentInvocationSpan, Session, SpanInfo, Trace
 
@@ -764,13 +763,14 @@ def test_throttled_backend_is_retried():
 
 def test_failed_required_question_is_labelled_no_in_telemetry():
     labels = []
+    real_get_label = TypedRubricEvaluator._get_label
 
-    def recording(*args, **kwargs):
-        labels.append(_get_label_from_score(*args, **kwargs))
+    def recording(self, *args, **kwargs):
+        labels.append(real_get_label(self, *args, **kwargs))
         return labels[-1]
 
     evaluator = TypedRubricEvaluator([Noul("Is it helpful?", weight=3.0), SAFETY], model=_risk_model(SAFETY_BY_INPUT))
-    with patch("strands_evals.experiment._get_label_from_score", side_effect=recording):
+    with patch.object(TypedRubricEvaluator, "_get_label", recording):
         report = _experiment([evaluator], inputs=["unsafe"]).run_evaluations(_echo)
 
     # The composite clears 0.5, so a score-based label would say YES for a failing case.
@@ -1058,3 +1058,12 @@ async def test_distribution_errors_name_the_question():
     evaluator = TypedRubricEvaluator({"q1": Noul("q"), "safety": Noul("s")}, model=model)
     with pytest.raises(ValueError, match=r"question <safety> \| probabilities must sum to 1"):
         await evaluator.evaluate_async(_case())
+
+
+def test_label_follows_the_verdict_not_the_score():
+    evaluator = TypedRubricEvaluator([Noul("q")], model=None)
+    judged = [EvaluationOutput(score=0.8, test_pass=False, reason="gate failed")]
+    not_applicable = [EvaluationOutput(score=0.0, test_pass=True, reason="nothing to judge", label=NOT_APPLICABLE)]
+    assert evaluator._get_label(0.8, False, judged) == "NO"
+    assert evaluator._get_label(0.2, True, judged) == "YES"
+    assert evaluator._get_label(0.0, True, not_applicable) == NOT_APPLICABLE

@@ -26,7 +26,7 @@ from strands_evals.evaluators import (
     TrajectoryEvaluator,
 )
 from strands_evals.evaluators.skill_selection_accuracy_evaluator import SkillSelectionScore
-from strands_evals.experiment import _get_label_from_score, is_throttling_error
+from strands_evals.experiment import is_throttling_error
 from strands_evals.providers.trace_provider import TraceProvider
 from strands_evals.types import EvaluationData, EvaluationOutput
 from strands_evals.types.evaluation import NOT_APPLICABLE
@@ -1879,30 +1879,20 @@ def test_all_not_applicable_case_is_not_labeled_with_a_verdict():
     not_applicable = [EvaluationOutput(score=0.0, test_pass=True, reason="nothing to judge", label=NOT_APPLICABLE)]
     judged_no = [EvaluationOutput(score=0.0, test_pass=False, reason="wrong pick", label="No")]
 
-    assert _get_label_from_score(evaluator, 0.0, not_applicable) == NOT_APPLICABLE
+    assert evaluator._get_label(0.0, True, not_applicable) == NOT_APPLICABLE
     # A real zero-scored verdict still maps to the mapping's label, and so does every existing
     # caller that passes no rows at all.
-    assert _get_label_from_score(evaluator, 0.0, judged_no) == str(SkillSelectionScore.NO)
-    assert _get_label_from_score(evaluator, 0.0) == str(SkillSelectionScore.NO)
+    assert evaluator._get_label(0.0, False, judged_no) == str(SkillSelectionScore.NO)
+    assert evaluator._get_label(0.0, False) == str(SkillSelectionScore.NO)
 
 
-def test_label_follows_test_pass_only_for_evaluators_that_opt_in():
-    """An evaluator whose pass rule is not `score >= 0.5` (for example a hard-gated rubric) can ask
-    for the label to follow its aggregate verdict. Every other evaluator keeps the score-based label.
+def test_default_label_ignores_the_verdict():
+    """The base label comes from the score, so evaluators that do not override `_get_label` keep
+    their existing telemetry labels even when `test_pass` disagrees with `score >= 0.5`.
     """
-
-    class GatedEvaluator(MockEvaluator):
-        _label_from_test_pass = True
-
     judged = [EvaluationOutput(score=0.8, test_pass=False, reason="gate failed")]
-    not_applicable = [EvaluationOutput(score=0.0, test_pass=True, reason="nothing to judge", label=NOT_APPLICABLE)]
-
-    assert _get_label_from_score(GatedEvaluator(), 0.8, judged, passed=False) == "NO"
-    assert _get_label_from_score(GatedEvaluator(), 0.2, judged, passed=True) == "YES"
-    assert _get_label_from_score(GatedEvaluator(), 0.8, judged) == "YES"
-    assert _get_label_from_score(GatedEvaluator(), 0.0, not_applicable, passed=True) == NOT_APPLICABLE
-    assert _get_label_from_score(MockEvaluator(), 0.8, judged, passed=False) == "YES"
-    assert Evaluator._label_from_test_pass is False
+    assert MockEvaluator()._get_label(0.8, False, judged) == "YES"
+    assert MockEvaluator()._get_label(0.2, True, judged) == "NO"
 
 
 def test_deterministic_evaluator_error_isolation():

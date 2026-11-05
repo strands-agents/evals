@@ -3,10 +3,11 @@ import inspect
 import logging
 
 from strands.models.model import Model
-from typing_extensions import Any, ClassVar, Generic, TypeGuard
+from typing_extensions import Any, Generic, TypeGuard
 
 from ..extractors import TraceExtractor
-from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
+from ..types.evaluation import NOT_APPLICABLE, EvaluationData, EvaluationOutput, InputT, OutputT
+from ..types.evaluation_report import EvaluationReport
 from ..types.trace import (
     AssistantMessage,
     Context,
@@ -35,9 +36,6 @@ class Evaluator(Generic[InputT, OutputT]):
     # Optional: subclasses can set this to enable trace parsing
     evaluation_level: EvaluationLevel | None = None
     _trace_extractor: TraceExtractor | None = None
-    # Set True when the pass rule is not `score >= 0.5` (for example a hard-gated rubric), so
-    # experiment telemetry labels the case from its aggregate `test_pass` instead of its score.
-    _label_from_test_pass: ClassVar[bool] = False
 
     def __init__(self, trace_extractor: TraceExtractor | None = None, name: str | None = None):
         """Initialize evaluator with optional custom trace extractor.
@@ -79,6 +77,34 @@ class Evaluator(Generic[InputT, OutputT]):
             return DEFAULT_BEDROCK_MODEL_ID
         else:
             return ""
+
+    def _get_label(self, score: float, passed: bool, outputs: list[EvaluationOutput] | None = None) -> str:
+        """Label a case's aggregate result for experiment telemetry.
+
+        Uses the evaluator's `_score_mapping` when it has one, otherwise "YES" for scores >= 0.5
+        and "NO" below. Override when the evaluator's pass rule is not `score >= 0.5`.
+
+        Args:
+            score: The aggregate score.
+            passed: The aggregate verdict. Unused here; available to overrides.
+            outputs: The rows the score was aggregated from, when available. A case whose every
+                row was not-applicable has no verdict to report, and its 0.0 is a placeholder
+                rather than a score, so reverse-mapping it would emit the mapping's worst label for
+                a case that was never judged.
+
+        Returns:
+            The label for the case.
+        """
+        if outputs is not None and not EvaluationReport.is_applicable(outputs):
+            return NOT_APPLICABLE
+
+        score_mapping = getattr(self, "_score_mapping", None)
+        if score_mapping:
+            reverse_mapping = {v: k for k, v in score_mapping.items()}
+            if score in reverse_mapping:
+                return str(reverse_mapping[score])
+
+        return "YES" if score >= 0.5 else "NO"
 
     @staticmethod
     def _default_aggregator(outputs: list[EvaluationOutput]) -> tuple[float, bool, str]:
