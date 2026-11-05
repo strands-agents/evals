@@ -63,6 +63,20 @@ def _rollout(tracer):
     return tracer.start_as_current_span("rollout case", attributes={SPAN_KIND: ROLLOUT_SPAN})
 
 
+@contextmanager
+def _timed(tracer, name, start, end, **attributes):
+    """A current span with explicit start and end times, in seconds.
+
+    Durations of real spans can be 0: before Python 3.13, Windows' clock ticks every ~15.6 ms.
+    """
+    span = tracer.start_span(name, attributes=attributes, start_time=int(start * 1e9))
+    try:
+        with trace_api.use_span(span, end_on_exit=False):  # records an exception and sets ERROR, as usual
+            yield span
+    finally:
+        span.end(end_time=int(end * 1e9))
+
+
 def test_spans_of_unregistered_traces_are_dropped(traces, tracer):
     with _trial(tracer, traces, register=False) as trace_id:
         with _attempt(tracer) as attempt:
@@ -160,24 +174,23 @@ def test_spans_without_a_model_id_add_no_model(traces, tracer):
 
 def test_seconds_come_from_the_rollout_span(traces, tracer):
     with _trial(tracer, traces) as trace_id:
-        with _attempt(tracer) as attempt:
-            with _rollout(tracer) as rollout:
+        with _timed(tracer, "attempt case", 100.0, 110.0, **{SPAN_KIND: ATTEMPT_SPAN}) as attempt:
+            with _timed(tracer, "rollout case", 102.0, 105.5, **{SPAN_KIND: ROLLOUT_SPAN}):
                 _chat(tracer)
 
     _, usage = traces.agent_view(trace_id, _ids(attempt)[1])
 
-    assert usage.seconds == pytest.approx((rollout.end_time - rollout.start_time) / 1e9)
-    assert usage.seconds < (attempt.end_time - attempt.start_time) / 1e9
+    assert usage.seconds == pytest.approx(3.5)
 
 
 def test_seconds_fall_back_to_the_attempt_span(traces, tracer):
     with _trial(tracer, traces) as trace_id:
-        with _attempt(tracer) as attempt:
+        with _timed(tracer, "attempt case", 100.0, 104.0, **{SPAN_KIND: ATTEMPT_SPAN}) as attempt:
             _chat(tracer)
 
     _, usage = traces.agent_view(trace_id, _ids(attempt)[1])
 
-    assert usage.seconds == pytest.approx((attempt.end_time - attempt.start_time) / 1e9)
+    assert usage.seconds == pytest.approx(4.0)
 
 
 def test_attempt_usage_matches_agent_view(traces, tracer):
@@ -219,13 +232,16 @@ def test_evaluator_view_reads_judge_usage_errors_and_labels(traces, tracer):
     with _trial(tracer, traces) as trace_id:
         with _attempt(tracer):
             _chat(tracer, total=500, output=50, model="agent-model")
-        with tracer.start_as_current_span(
+        with _timed(
+            tracer,
             "evaluator Helpfulness",
-            attributes={"gen_ai.evaluation.name": "Helpfulness", "gen_ai.evaluation.score.label": "Very helpful"},
+            200.0,
+            201.0,
+            **{"gen_ai.evaluation.name": "Helpfulness", "gen_ai.evaluation.score.label": "Very helpful"},
         ):
             _chat(tracer, total=30, output=3, model="judge-model")
         with pytest.raises(ConnectionError):
-            with tracer.start_as_current_span("evaluator Broken", attributes={"gen_ai.evaluation.name": "Broken"}):
+            with _timed(tracer, "evaluator Broken", 201.0, 202.5, **{"gen_ai.evaluation.name": "Broken"}):
                 _chat(tracer, total=12, output=2, model="judge-model")
                 raise ConnectionError("judge unreachable")
 
@@ -236,7 +252,7 @@ def test_evaluator_view_reads_judge_usage_errors_and_labels(traces, tracer):
     assert view.judge_usage.tokens == 42
     assert view.judge_usage.model_calls == 2
     assert view.judge_usage.models == ["judge-model"]
-    assert view.judge_usage.seconds > 0
+    assert view.judge_usage.seconds == pytest.approx(2.5)
 
 
 def test_evaluator_view_with_no_evaluators_is_empty(traces, tracer):
