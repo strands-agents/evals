@@ -78,7 +78,7 @@ class FileText(_Marker):
         """The value as is: a file's text has no other form."""
         return value
 
-    def _problem(self, value: str) -> str | None:
+    def _format_problem(self, value: str) -> str | None:
         """A one-line format problem with `value`, or None."""
         return None
 
@@ -125,6 +125,7 @@ class JsonField(_Marker):
             raise TypeError(f"JsonField: {self.path} is not valid JSON: {error}") from error
         field = _get(document, self._tokens, pointer, self.path)
         self._is_text = isinstance(field, str)
+        self._kind = _json_kind(field)
         self.default: str = field if isinstance(field, str) else _dumps(field)
         self.size_cap = size_cap
         self.edit_instructions = edit_instructions
@@ -168,7 +169,7 @@ class JsonField(_Marker):
         """A non-string field's value as `_dumps` writes it, so equal JSON gives one candidate id.
 
         E.g. "0.50", " 0.5" and "5e-1" all become "0.5". Object key order is kept, as written to the
-        file. A string field's text, and a value that isn't valid JSON (left for `_problem`), are
+        file. A string field's text, and a value that isn't valid JSON (left for `_format_problem`), are
         returned as is.
         """
         if self._is_text or not isinstance(value, str):
@@ -178,14 +179,22 @@ class JsonField(_Marker):
         except ValueError:
             return value
 
-    def _problem(self, value: str) -> str | None:
-        """A one-line format problem with `value`, or None."""
+    def _format_problem(self, value: str) -> str | None:
+        """A one-line format problem with `value`, or None.
+
+        A non-string field must get JSON of its baseline's kind (a number for a number, int or
+        float); a `null` baseline takes any kind.
+        """
         if self._is_text:
             return None
         try:
-            _loads(value)
+            parsed = _loads(value)
+            _dumps(parsed)  # e.g. 1e400 parses as infinity, which no JSON file can hold
         except ValueError as error:
             return f"not valid JSON ({error})"
+        kind = _json_kind(parsed)
+        if self._kind != "null" and kind != self._kind:
+            return f"expected a JSON {self._kind} like the file's {self.default}, got {value} (a {kind})"
         return None
 
 
@@ -262,7 +271,8 @@ def _existing_file(path: str | Path, marker: str) -> Path:
         raise TypeError(f"{marker} path must be a str or Path, got {path!r}")
     resolved = Path(path).expanduser().resolve()
     if not resolved.is_file():
-        raise FileNotFoundError(f"{marker}: {path} is not a file")
+        where = "" if Path(path).is_absolute() else f" (looked for {resolved}, from the working directory {Path.cwd()})"
+        raise FileNotFoundError(f"{marker}: {path} is not a file{where}")
     return resolved
 
 
@@ -332,6 +342,19 @@ def _set(document: Any, tokens: tuple[str, ...], value: Any) -> None:
         node[int(last)] = value
     else:
         node[last] = value
+
+
+def _json_kind(value: Any) -> str:
+    """The JSON type of a parsed value: string, number, boolean, null, array, or object."""
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if value is None:
+        return "null"
+    if isinstance(value, str):
+        return "string"
+    return "array" if isinstance(value, list) else "object"
 
 
 def _is_index(token: str) -> bool:

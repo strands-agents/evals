@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -250,6 +251,16 @@ def test_diff_heads_non_file_text_with_its_key_and_never_shows_numbers(project):
     child = baseline.child(space, {"tone": "warm", "temperature": 0.1}, origin="text", rationale="")
     assert diff(space, baseline, child, root=project) == (
         "--- tone\n+++ tone\n@@ -1 +1 @@\n-calm\n\\ No newline at end of file\n+warm\n\\ No newline at end of file\n"
+    )
+
+
+@pytest.mark.parametrize("separator", ["\f", "\v", "\r", "\x85", "\u2028"])
+def test_diff_splits_lines_only_at_newlines(separator):
+    space = Space({"notes": TextValue(default=f"one{separator}still one\nend\n")})
+    baseline = Candidate.baseline(space)
+    child = baseline.child(space, {"notes": f"one{separator}still one\nlast\n"}, origin="text", rationale="")
+    assert diff(space, baseline, child, root=Path.cwd()) == (
+        f"--- notes\n+++ notes\n@@ -1,2 +1,2 @@\n one{separator}still one\n-end\n+last\n"
     )
 
 

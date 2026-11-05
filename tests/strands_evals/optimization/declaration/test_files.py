@@ -43,6 +43,18 @@ def test_file_text_missing_file_fails_at_declaration(project):
         FileText(project / "prompts" / "missing.md")
 
 
+def test_a_missing_relative_file_names_where_it_looked(project, monkeypatch):
+    monkeypatch.chdir(project)
+    with pytest.raises(FileNotFoundError, match="looked for .*nope.md, from the working directory"):
+        FileText("prompts/nope.md")
+
+
+def test_a_lone_surrogate_fails_validation(project):
+    space = Space({"system": FileText(project / "prompts" / "system.md")})
+    with pytest.raises(ValueError, match="lone surrogate"):
+        space.validate({"system": "bad \ud800 text"})
+
+
 def test_file_text_directory_fails_at_declaration(project):
     with pytest.raises(FileNotFoundError):
         FileText(project / "prompts")
@@ -123,6 +135,32 @@ def test_json_field_non_string_value_must_be_json(project):
         space.validate({"limits": "{turns: 8}"})
     with pytest.raises(ValueError, match="not valid JSON"):
         space.validate({"limits": "NaN"})
+
+
+@pytest.mark.parametrize("value", ['"7"', "[7]", '{"turns": "7"}', "true", "null"])
+def test_a_non_string_json_field_takes_only_its_baselines_kind(project, value):
+    space = Space({"turns": JsonField(project / "config" / "agent.json", "/agent/limits/turns")})
+    with pytest.raises(ValueError, match="expected a JSON number like the file's 4"):
+        space.validate({"turns": value})
+
+
+def test_a_numeric_json_field_takes_an_int_or_a_float(project):
+    space = Space({"turns": JsonField(project / "config" / "agent.json", "/agent/limits/turns")})
+    space.validate({"turns": "4.5"})
+    space.validate({"turns": "5"})
+
+
+def test_a_null_json_field_takes_any_kind(tmp_path):
+    (tmp_path / "agent.json").write_text('{"stop": null}', newline="")
+    space = Space({"stop": JsonField(tmp_path / "agent.json", "/stop")})
+    for value in ('["END"]', '"END"', "3", "null"):
+        space.validate({"stop": value})
+
+
+def test_an_out_of_range_json_number_fails_validation(project):
+    space = Space({"turns": JsonField(project / "config" / "agent.json", "/agent/limits/turns")})
+    with pytest.raises(ValueError, match="turns: not valid JSON"):
+        space.validate({"turns": "1e400"})
 
 
 def test_equal_json_values_give_one_candidate(project):
@@ -220,6 +258,11 @@ def make_space(project):
     )
 
 
+def folders(workspace):
+    """The copied folders, without the marker file a finished copy holds."""
+    return [p for p in workspace.iterdir() if p.is_dir()]
+
+
 def copied(space, workspace, path):
     folders = space._copy_folders
     from strands_evals.optimization.declaration.files import _location_in_copy
@@ -257,9 +300,51 @@ def test_copy_is_built_once(project, tmp_path_factory):
     workspace = tmp_path_factory.mktemp("run") / "optimization_files"
     values = {**space.complete({}), "system": "First.\n"}
     assert space.create_candidate_copy(values, workspace) == workspace
-    space.create_candidate_copy({**values, "system": "Second.\n"}, workspace)
-    assert copied(space, workspace, project / "prompts" / "system.md").read_text() == "First.\n"
+    target = copied(space, workspace, project / "prompts" / "system.md")
+    target.write_text("touched\n", newline="")  # a rebuild would overwrite this
+    space.create_candidate_copy(values, workspace)
+    assert target.read_text() == "touched\n"
     assert [p.name for p in workspace.parent.iterdir()] == ["optimization_files"]  # no temp folder left behind
+
+
+def test_a_workspace_holding_another_candidates_copy_is_refused(project, tmp_path_factory):
+    space = make_space(project)
+    workspace = tmp_path_factory.mktemp("run") / "optimization_files"
+    values = {**space.complete({}), "system": "First.\n"}
+    space.create_candidate_copy(values, workspace)
+    with pytest.raises(FileExistsError, match="another candidate's copy"):
+        space.create_candidate_copy({**values, "system": "Second.\n"}, workspace)
+    assert copied(space, workspace, project / "prompts" / "system.md").read_text() == "First.\n"
+
+
+def test_concurrent_copies_into_one_empty_folder_all_succeed(project, tmp_path_factory):
+    from concurrent.futures import ThreadPoolExecutor
+
+    space = make_space(project)
+    values = {**space.complete({}), "system": "Same.\n"}
+    for trial in range(10):
+        workspace = tmp_path_factory.mktemp(f"run{trial}") / "optimization_files"
+        workspace.mkdir()
+        with ThreadPoolExecutor(8) as pool:
+            results = list(pool.map(space.create_candidate_copy, [values] * 8, [workspace] * 8))
+        assert results == [workspace] * 8
+        assert copied(space, workspace, project / "prompts" / "system.md").read_text() == "Same.\n"
+        assert [p.name for p in workspace.parent.iterdir()] == ["optimization_files"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX permission bits")
+def test_a_read_only_source_folder_can_still_be_copied_and_written(tmp_path):
+    prompts = tmp_path / "prompts"
+    prompts.mkdir()
+    (prompts / "system.md").write_text("You help.\n", newline="")
+    space = Space({"system": FileText(prompts / "system.md", as_path=True)})
+    prompts.chmod(0o555)
+    try:
+        workspace = tmp_path / "run" / "optimization_files"
+        space.create_candidate_copy({"system": "New.\n"}, workspace)
+        assert copied(space, workspace, prompts / "system.md").read_text() == "New.\n"
+    finally:
+        prompts.chmod(0o755)
 
 
 def test_copy_leaves_no_partial_directory_on_error(project, tmp_path_factory):
@@ -282,7 +367,7 @@ def test_folders_with_the_same_name_do_not_collide(tmp_path):
     space.create_candidate_copy({"a": "A2", "b": "B2"}, workspace)
     assert copied(space, workspace, tmp_path / "a" / "prompts" / "p.md").read_text() == "A2"
     assert copied(space, workspace, tmp_path / "b" / "prompts" / "p.md").read_text() == "B2"
-    assert len(list(workspace.iterdir())) == 2
+    assert len(folders(workspace)) == 2
 
 
 def test_a_folder_inside_another_is_copied_once(project, tmp_path_factory):
@@ -296,7 +381,7 @@ def test_a_folder_inside_another_is_copied_once(project, tmp_path_factory):
     )
     workspace = tmp_path_factory.mktemp("run") / "optimization_files"
     space.create_candidate_copy({"system": "S", "inner": "I"}, workspace)
-    (top,) = workspace.iterdir()
+    (top,) = folders(workspace)
     assert top.name.startswith("prompts-")
     assert (top / "nested" / "inner.md").read_text() == "I"
 
@@ -306,7 +391,7 @@ def test_a_run_directory_inside_the_source_folder_is_not_copied(tmp_path):
     space = Space({"system": FileText(tmp_path / "prompt.md")})
     workspace = tmp_path / ".strands-evals" / "runs" / "r1" / "candidates" / "abc" / "optimization_files"
     space.create_candidate_copy({"system": "New."}, workspace)
-    (top,) = workspace.iterdir()
+    (top,) = folders(workspace)
     assert sorted(p.name for p in top.iterdir()) == ["prompt.md"]
 
 
@@ -325,7 +410,7 @@ def test_a_symlinked_file_is_replaced_not_written_through(tmp_path):
     workspace = tmp_path / "run" / "optimization_files"
     space.create_candidate_copy({"system": "New."}, workspace)
     # The marker's own file is written in the copy; a symlink sibling stays a symlink.
-    (top,) = workspace.iterdir()
+    (top,) = folders(workspace)
     assert (top / "link.md").is_symlink()
     assert (real / "target.md").read_text() == "original"
 
@@ -436,6 +521,25 @@ def test_a_built_object_without_weak_references_keeps_the_temp_copy_until_exit(p
     gc.collect()
     assert built["path"].read_text() == "Bound.\n"
     assert built["path"].is_relative_to(_KEPT_UNTIL_EXIT[-1].root)
+
+
+def test_an_async_factorys_agent_keeps_the_temp_copy(project):
+    import asyncio
+
+    class Agent:
+        def __init__(self, path):
+            self.path = path
+
+    @tunable(system=FileText(project / "prompts" / "system.md", as_path=True))
+    async def make(system=None):
+        return Agent(system)
+
+    async def build():
+        return await make.bind({"system": "New.\n"})()
+
+    agent = asyncio.run(build())
+    gc.collect()
+    assert agent.path.read_text() == "New.\n"
 
 
 def test_bind_with_a_workspace_writes_it_once(project, tmp_path_factory):

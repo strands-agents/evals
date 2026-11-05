@@ -108,7 +108,10 @@ class TunableFactory:
         (`as_path=True`, `SkillLibrary`): into `workspace` (cached), or with `workspace=None` into one
         temp folder per `bind()` call, kept while the bound factory or anything it built is alive (an
         object that can't be weakly referenced, e.g. a dict, keeps it until the process exits) and
-        deleted after that, or at exit.
+        deleted after that, or at exit. Only the returned object holds it (for an async function, the
+        object its coroutine returns): keep that object, not something taken out of it, such as a
+        wrapper's `.agent`, while the agent still reads the files. A `workspace` holds one candidate's
+        copy; binding other file values to it raises `FileExistsError`.
 
         The bound factory takes values for the function's non-tunable parameters, by two rules:
         resources from `environment()` (handed over through its private `_with_resources(resources)`)
@@ -126,6 +129,7 @@ class TunableFactory:
 
         Raises:
             ValueError: The values fail validation.
+            FileExistsError: `workspace` holds another candidate's copy, or files that aren't a copy.
         """
         # complete() last, for its canonical values; an inactive key it drops stays for validate to report.
         bound_values = {**values, **self.space.complete(values)}
@@ -166,6 +170,13 @@ class _TempCopy:
 
 def _keep(_: _TempCopy) -> None:
     """Nothing to do: the finalizer only holds the temp copy while the built object lives."""
+
+
+async def _kept_alive(coroutine: Any, temp: _TempCopy) -> Any:
+    """Await an async factory's coroutine, then keep `temp` alive for what it returned."""
+    built = await coroutine
+    temp.keep_alive_for(built)
+    return built
 
 
 # Temp copies used by built objects that can't be weakly referenced; their finalizers run at exit.
@@ -214,8 +225,11 @@ class _BoundFactory:
         except TypeError as error:
             raise _FactoryArgumentError(f"{factory._label}: {error}") from error
         built = factory._fn(**resolved, **resources, **kwargs)
-        if self._temp is not None:
-            self._temp.keep_alive_for(built)
+        if self._temp is None:
+            return built
+        if inspect.iscoroutine(built):
+            return _kept_alive(built, self._temp)  # the agent the coroutine returns holds the copy, not the coroutine
+        self._temp.keep_alive_for(built)
         return built
 
     def _with_resources(self, resources: Mapping[str, Any]) -> _BoundFactory:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import io
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -212,9 +213,10 @@ def _unified(before: str, after: str, from_label: str, to_label: str) -> list[st
     """One file's unified diff lines, each ending in a newline; a last line without one is marked as git does."""
     if before == after:
         return []
+    # Split at "\n" only, as git does; `str.splitlines` also splits at "\f", a lone "\r", U+2028, ...
     lines = difflib.unified_diff(
-        before.splitlines(keepends=True),
-        after.splitlines(keepends=True),
+        io.StringIO(before, newline="\n").readlines(),
+        io.StringIO(after, newline="\n").readlines(),
         fromfile=from_label,
         tofile=to_label,
     )

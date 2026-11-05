@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shutil
+import stat
 import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -250,10 +253,11 @@ class Space:
         inside another is copied once, as part of the outer one. Each active key is written by its
         marker's `write()`, so the copy holds the candidate's values even if a source file changed
         since declaration; a file that already holds its value keeps the original bytes. Built in a
-        temp folder and renamed into place, so a `directory` holding every copied folder is complete
-        and a second call returns at once; an empty `directory` is replaced. Originals are never
-        written: files are replaced rather than written through, and a folder containing `directory`
-        (e.g. the run directory under the project) is left out of the copy.
+        temp folder and renamed into place, with a marker file naming the file-backed values it holds,
+        so a second call with the same values returns at once and one with other values raises. An
+        empty `directory` is replaced; concurrent calls for the same values all succeed. Originals are
+        never written: files are replaced rather than written through, and a folder containing
+        `directory` (e.g. the run directory under the project) is left out of the copy.
 
         Args:
             values: The candidate's values; must already pass `validate`.
@@ -263,14 +267,11 @@ class Space:
             `directory`.
 
         Raises:
-            FileExistsError: `directory` exists, isn't empty, and isn't a complete copy.
+            FileExistsError: `directory` holds another candidate's copy, or files that aren't a copy.
         """
-        if directory.exists():
-            if self._is_complete_copy(directory):
-                return directory
-            if not directory.is_dir() or any(directory.iterdir()):
-                raise FileExistsError(f"{directory} exists and is not a candidate copy; pass an empty or new folder")
-            directory.rmdir()
+        key = self._copy_key(values)
+        if self._has_copy(directory, key):
+            return directory
         directory.parent.mkdir(parents=True, exist_ok=True)
         building = Path(tempfile.mkdtemp(prefix=f".{directory.name}-", dir=directory.parent))
         try:
@@ -279,11 +280,13 @@ class Space:
                 shutil.copytree(
                     folder, building / _copy_folder_name(folder), symlinks=True, ignore=_ignore_containing(destinations)
                 )
+            _make_folders_writable(building)  # a read-only source folder would block the writes below
             for info in self._params.values():
                 if info.source is None or not self.is_active(info.key, values):
                     continue
                 target = building / _location_in_copy(self._copy_folders, info.source.path)
                 self._files[info.key].write(str(values[info.key]), target)
+            (building / _COPY_MARKER).write_bytes(key.encode("ascii"))  # last: only a finished copy has it
         except BaseException:
             shutil.rmtree(building, ignore_errors=True)
             raise
@@ -291,14 +294,42 @@ class Space:
             os.rename(building, directory)
         except OSError:
             shutil.rmtree(building, ignore_errors=True)
-            if not self._is_complete_copy(directory):
+            # Another call finished first: fine if it holds these values, else this raises.
+            if not self._has_copy(directory, key):
                 raise
-            # Another call finished the same copy first; its directory is complete.
         return directory
 
-    def _is_complete_copy(self, directory: Path) -> bool:
-        """Whether `directory` holds every copied folder, as only a finished copy does."""
-        return directory.is_dir() and all((directory / _copy_folder_name(f)).is_dir() for f in self._copy_folders)
+    def _copy_key(self, values: Values) -> str:
+        """sha256 of the canonical JSON of the active file-backed values: what a copy holds."""
+        held = {k: values[k] for k in self._files if k in values and self.is_active(k, values)}
+        canonical = json.dumps(held, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _has_copy(self, directory: Path, key: str) -> bool:
+        """True when `directory` already holds the copy for `key`; False when the caller should build it.
+
+        Removes an empty `directory`. A copy only arrives by rename with its marker inside, so a folder
+        that isn't empty either holds a copy or holds files that aren't one. Raises `FileExistsError`
+        when it holds another candidate's copy or files that aren't a copy.
+        """
+        held = _read_marker(directory)
+        if held is None:
+            try:
+                directory.rmdir()
+                return False
+            except FileNotFoundError:
+                return False  # missing, or another call removed the empty folder
+            except OSError:
+                if not directory.is_dir():
+                    raise FileExistsError(f"{directory} exists and is not a folder") from None
+                held = _read_marker(directory)  # not empty: another call's copy may have just landed
+                if held is None:
+                    raise FileExistsError(
+                        f"{directory} exists and is not a candidate copy; pass an empty or new folder"
+                    ) from None
+        if held != key:
+            raise FileExistsError(f"{directory} holds another candidate's copy; use one folder per candidate")
+        return True
 
     def _render_files(self, values: Values) -> dict[Path, str]:
         """Each file-backed file's whole text under `values`, in memory, in declaration order.
@@ -319,7 +350,7 @@ class Space:
         """A one-line problem with one value, including a file marker's format check, or None."""
         problem = _check_value(info, value)
         if problem is None and info.key in self._files:
-            format_problem = self._files[info.key]._problem(value)
+            format_problem = self._files[info.key]._format_problem(value)
             if format_problem is not None:
                 problem = f"{info.key}: {format_problem}"
         return problem
@@ -436,4 +467,30 @@ def _check_value(info: ParamInfo, value: Any) -> str | None:
         return f"{key}: expected str, got {type(value).__name__}"
     if info.size_cap is not None and len(value) > info.size_cap:
         return f"{key}: {len(value)} characters, over the size_cap of {info.size_cap}"
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:  # a lone surrogate: no candidate id or file could hold it
+        return f"{key}: not valid Unicode text (contains a lone surrogate)"
     return None
+
+
+# ---- Private helpers: the candidate copy -------------------------------------
+
+# Written last into a finished copy: the sha256 of the file-backed values it holds.
+_COPY_MARKER = ".candidate-copy"
+
+
+def _read_marker(directory: Path) -> str | None:
+    """The values key a finished copy at `directory` holds, or None when there is no finished copy."""
+    try:
+        return (directory / _COPY_MARKER).read_bytes().decode("ascii")
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
+def _make_folders_writable(root: Path) -> None:
+    """Give the owner write access to every folder under `root`, which `copytree` copied with its mode."""
+    for folder, _, _ in os.walk(root):
+        mode = os.stat(folder).st_mode
+        if not mode & stat.S_IWUSR:
+            os.chmod(folder, mode | stat.S_IWUSR)
