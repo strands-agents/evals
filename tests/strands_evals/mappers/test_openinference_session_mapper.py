@@ -22,6 +22,7 @@ _CLAUDE_SPANS_FILE = _FIXTURES_DIR / "claude_live_spans.json"
 _CLAUDE_ADOT_FILE = _FIXTURES_DIR / "claude_adot_spans.json"
 _OPENAI_AGENTS_LIVE_FILE = _FIXTURES_DIR / "openai_agents_openinference_live_spans.json"
 _OPENAI_AGENTS_ADOT_FILE = _FIXTURES_DIR / "openai_agents_openinference_adot_spans.json"
+_STRANDS_PROCESSOR_SPANS_FILE = _FIXTURES_DIR / "strands_openinference_processor_spans.json"
 
 SCOPE_NAME = "openinference.instrumentation.langchain"
 SMOLAGENTS_SCOPE_NAME = "openinference.instrumentation.smolagents"
@@ -805,6 +806,58 @@ class TestAgentKindSpanRejection:
             attributes={"openinference.span.kind": "AGENT"},
         )
         assert self.mapper._is_inference_span(span) is False
+
+
+# =========================================================================
+# Span-Kind Based Detection Tests (non-OpenInference scopes)
+# =========================================================================
+
+STRANDS_SCOPE_NAME = "strands.telemetry.tracer"
+
+
+class TestSpanKindDetection:
+    """Spans are recognised by `openinference.span.kind`, not only by scope name.
+
+    `StrandsAgentsToOpenInferenceProcessor` rewrites attributes in `on_end()` but cannot
+    change the scope, so converted Strands spans keep `strands.telemetry.tracer`.
+    """
+
+    def setup_method(self):
+        self.mapper = OpenInferenceSessionMapper()
+
+    def test_real_strands_processor_spans_are_mapped(self):
+        """Spans captured from a real Strands agent run through the OpenInference processor."""
+        with open(_STRANDS_PROCESSOR_SPANS_FILE, encoding="utf-8") as f:
+            spans = json.load(f)
+        assert {s["scope"]["name"] for s in spans} == {STRANDS_SCOPE_NAME}
+
+        session = self.mapper.map_to_session(spans, "sess-1")
+
+        assert len(session.traces) == 1
+        trace_spans = session.traces[0].spans
+        agents = [s for s in trace_spans if isinstance(s, AgentInvocationSpan)]
+        assert len(agents) == 1
+        assert agents[0].user_prompt == "What is 1 plus 2?"
+        assert agents[0].agent_response.strip() == "1 plus 2 equals 3."
+
+        tools = [s for s in trace_spans if isinstance(s, ToolExecutionSpan)]
+        assert len(tools) == 1
+        assert tools[0].tool_call.name == "add"
+        assert tools[0].tool_call.arguments == {"a": 1, "b": 2}
+        assert tools[0].tool_result.content == "3"
+
+        assert len([s for s in trace_spans if isinstance(s, InferenceSpan)]) == 2
+
+    def test_arbitrary_scope_with_span_kind_is_mapped(self):
+        span = make_llm_span(scope_name="some.other.instrumentor")
+        session = self.mapper.map_to_session([span], "sess-1")
+        assert len(session.traces) == 1
+        assert isinstance(session.traces[0].spans[0], InferenceSpan)
+
+    def test_span_without_span_kind_or_known_scope_is_ignored(self):
+        span = make_span(attributes={"gen_ai.operation.name": "chat"}, scope_name=STRANDS_SCOPE_NAME)
+        session = self.mapper.map_to_session([span], "sess-1")
+        assert session.traces == []
 
 
 # =========================================================================
