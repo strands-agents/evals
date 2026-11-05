@@ -206,11 +206,17 @@ class LangfuseProvider(TraceProvider):
         Routing:
             obs.type == "GENERATION"                        → InferenceSpan
             obs.type == "TOOL"                              → ToolExecutionSpan
+            obs.type == "AGENT"                             → AgentInvocationSpan (Langfuse v4+)
             obs.type == "CHAIN" and no parent               → AgentInvocationSpan
-            obs.type == "AGENT" and no parent               → AgentInvocationSpan (Langfuse v4+)
             obs.type == "SPAN", name starts "execute_tool"  → ToolExecutionSpan
             obs.type == "SPAN", name starts "invoke_agent"  → AgentInvocationSpan
             Otherwise                                       → None (skipped)
+
+        Note: AGENT observations are converted regardless of parent. Strands SDK
+        traces nest the AGENT observation under a framework SPAN, so requiring a
+        null parent (as CHAIN does) would drop every Strands agent invocation.
+        CHAIN keeps the null-parent check because LangChain emits a CHAIN per
+        sub-chain and only the root chain is the agent invocation.
         """
         obs_type = obs.type
 
@@ -220,7 +226,10 @@ class LangfuseProvider(TraceProvider):
         if obs_type == "TOOL":
             return self._convert_tool_execution(obs, session_id)
 
-        if obs_type in ("CHAIN", "AGENT") and obs.parent_observation_id is None:
+        if obs_type == "AGENT":
+            return self._convert_agent_invocation(obs, session_id)
+
+        if obs_type == "CHAIN" and obs.parent_observation_id is None:
             return self._convert_agent_invocation(obs, session_id)
 
         # Strands-specific fallback for SPAN type
