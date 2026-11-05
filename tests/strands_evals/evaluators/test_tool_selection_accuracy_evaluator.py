@@ -1,5 +1,5 @@
 from datetime import datetime
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -66,14 +66,14 @@ def test_init_with_custom_values():
     assert evaluator.system_prompt == "Custom"
 
 
-@patch("strands_evals.evaluators.tool_selection_accuracy_evaluator.Agent")
+@patch("strands_evals.evaluators.evaluator.Agent")
 def test_evaluate(mock_agent_class, evaluation_data):
     mock_agent = Mock()
     mock_result = Mock()
     mock_result.structured_output = ToolSelectionRating(
         reasoning="Tool call is appropriate", score=ToolSelectionScore.YES
     )
-    mock_agent.return_value = mock_result
+    mock_agent.structured_output = Mock(return_value=mock_result.structured_output)
     mock_agent_class.return_value = mock_agent
     evaluator = ToolSelectionAccuracyEvaluator()
 
@@ -93,12 +93,12 @@ def test_evaluate(mock_agent_class, evaluation_data):
         (ToolSelectionScore.NO, 0.0, False),
     ],
 )
-@patch("strands_evals.evaluators.tool_selection_accuracy_evaluator.Agent")
+@patch("strands_evals.evaluators.evaluator.Agent")
 def test_score_mapping(mock_agent_class, evaluation_data, score, expected_value, expected_pass):
     mock_agent = Mock()
     mock_result = Mock()
     mock_result.structured_output = ToolSelectionRating(reasoning="Test", score=score)
-    mock_agent.return_value = mock_result
+    mock_agent.structured_output = Mock(return_value=mock_result.structured_output)
     mock_agent_class.return_value = mock_agent
     evaluator = ToolSelectionAccuracyEvaluator()
 
@@ -111,7 +111,7 @@ def test_score_mapping(mock_agent_class, evaluation_data, score, expected_value,
 
 
 @pytest.mark.asyncio
-@patch("strands_evals.evaluators.tool_selection_accuracy_evaluator.Agent")
+@patch("strands_evals.evaluators.evaluator.Agent")
 async def test_evaluate_async(mock_agent_class, evaluation_data):
     mock_agent = Mock()
 
@@ -122,7 +122,7 @@ async def test_evaluate_async(mock_agent_class, evaluation_data):
         )
         return mock_result
 
-    mock_agent.invoke_async = mock_invoke_async
+    mock_agent.structured_output_async = AsyncMock(return_value=(await mock_invoke_async()).structured_output)
     mock_agent_class.return_value = mock_agent
     evaluator = ToolSelectionAccuracyEvaluator()
 

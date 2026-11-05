@@ -2,11 +2,12 @@ from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic import BaseModel
 from strands.models.model import Model
 
 from strands_evals import Case, Experiment
 from strands_evals.evaluators import Evaluator, OutputEvaluator
-from strands_evals.evaluators.evaluator import DEFAULT_BEDROCK_MODEL_ID
+from strands_evals.evaluators.evaluator import DEFAULT_BEDROCK_MODEL_ID, structured_judge, structured_judge_async
 from strands_evals.types import EvaluationData, EvaluationOutput
 from strands_evals.types.trace import (
     AssistantMessage,
@@ -21,6 +22,36 @@ from strands_evals.types.trace import (
     TraceLevelInput,
     UserMessage,
 )
+
+
+class JudgeResult(BaseModel):
+    score: int
+
+
+def test_structured_judge_uses_direct_model_path(monkeypatch):
+    agent = MagicMock()
+    agent.structured_output.return_value = JudgeResult(score=1)
+    constructor = MagicMock(return_value=agent)
+    monkeypatch.setattr("strands_evals.evaluators.evaluator.Agent", constructor)
+
+    assert structured_judge(None, "judge", "prompt", JudgeResult).score == 1
+    agent.structured_output.assert_called_once()
+    agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_structured_judge_async_uses_direct_model_path(monkeypatch):
+    agent = MagicMock()
+
+    async def direct(*args):
+        return JudgeResult(score=1)
+
+    agent.structured_output_async.side_effect = direct
+    constructor = MagicMock(return_value=agent)
+    monkeypatch.setattr("strands_evals.evaluators.evaluator.Agent", constructor)
+
+    assert (await structured_judge_async(None, "judge", "prompt", JudgeResult)).score == 1
+    agent.invoke_async.assert_not_called()
 
 
 class SimpleEvaluator(Evaluator[str, str]):

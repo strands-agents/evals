@@ -2,8 +2,10 @@ import asyncio
 import inspect
 import logging
 
+from pydantic import BaseModel
+from strands import Agent
 from strands.models.model import Model
-from typing_extensions import Any, Generic, TypeGuard
+from typing_extensions import Any, Generic, TypeGuard, TypeVar
 
 from ..extractors import TraceExtractor
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
@@ -22,6 +24,25 @@ from ..types.trace import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_BEDROCK_MODEL_ID = "global.anthropic.claude-sonnet-4-6"
+JudgeOutputT = TypeVar("JudgeOutputT", bound=BaseModel)
+
+
+def structured_judge(
+    model: Model | str | None, system_prompt: str, prompt: str | list, output_model: type[JudgeOutputT]
+) -> JudgeOutputT:
+    """Run a judge's structured response without exposing a general tool loop."""
+    agent = Agent(model=model, system_prompt=system_prompt, callback_handler=None)
+    result = agent.structured_output(output_model, prompt)
+    return result if isinstance(result, BaseModel) else result.structured_output
+
+
+async def structured_judge_async(
+    model: Model | str | None, system_prompt: str, prompt: str | list, output_model: type[JudgeOutputT]
+) -> JudgeOutputT:
+    """Async counterpart of :func:`structured_judge`."""
+    agent = Agent(model=model, system_prompt=system_prompt, callback_handler=None)
+    result = await agent.structured_output_async(output_model, prompt)
+    return result if isinstance(result, BaseModel) else result.structured_output
 
 
 class Evaluator(Generic[InputT, OutputT]):

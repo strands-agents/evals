@@ -2,13 +2,11 @@ from enum import Enum
 from typing import cast
 
 from pydantic import BaseModel, Field
-from strands import Agent
-from strands.agent.agent_result import AgentResult
 from strands.models.model import Model
 
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
 from ..types.trace import EvaluationLevel
-from .evaluator import Evaluator
+from .evaluator import Evaluator, structured_judge, structured_judge_async
 from .prompt_templates.response_relevance import get_template
 
 
@@ -59,19 +57,17 @@ class ResponseRelevanceEvaluator(Evaluator[InputT, OutputT]):
     def evaluate(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         parsed_input = self._get_last_turn(evaluation_case)
         prompt = self._format_trace_level_prompt(parsed_input)
-        evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
-        result = evaluator_agent(prompt, structured_output_model=ResponseRelevanceRating)
+        result = structured_judge(self.model, self.system_prompt, prompt, ResponseRelevanceRating)
         return self._create_evaluation_output(result)
 
     async def evaluate_async(self, evaluation_case: EvaluationData[InputT, OutputT]) -> list[EvaluationOutput]:
         parsed_input = self._get_last_turn(evaluation_case)
         prompt = self._format_trace_level_prompt(parsed_input)
-        evaluator_agent = Agent(model=self.model, system_prompt=self.system_prompt, callback_handler=None)
-        result = await evaluator_agent.invoke_async(prompt, structured_output_model=ResponseRelevanceRating)
+        result = await structured_judge_async(self.model, self.system_prompt, prompt, ResponseRelevanceRating)
         return self._create_evaluation_output(result)
 
-    def _create_evaluation_output(self, result: AgentResult) -> list[EvaluationOutput]:
-        rating = cast(ResponseRelevanceRating, result.structured_output)
+    def _create_evaluation_output(self, result: ResponseRelevanceRating) -> list[EvaluationOutput]:
+        rating = cast(ResponseRelevanceRating, result)
         normalized_score = self._score_mapping[rating.score]
         return [
             EvaluationOutput(

@@ -85,7 +85,7 @@ def test_init_with_custom_values():
     assert evaluator.system_prompt == "Custom"
 
 
-@patch("strands_evals.evaluators.instruction_following_evaluator.Agent")
+@patch("strands_evals.evaluators.evaluator.Agent")
 def test_evaluate_instructions_followed(mock_agent_class, evaluation_data):
     mock_agent = Mock()
     mock_result = Mock()
@@ -93,7 +93,7 @@ def test_evaluate_instructions_followed(mock_agent_class, evaluation_data):
         reasoning="The response summarizes the text in one sentence as requested",
         score=InstructionFollowingScore.YES,
     )
-    mock_agent.return_value = mock_result
+    mock_agent.structured_output = Mock(return_value=mock_result.structured_output)
     mock_agent_class.return_value = mock_agent
     evaluator = InstructionFollowingEvaluator()
 
@@ -106,7 +106,7 @@ def test_evaluate_instructions_followed(mock_agent_class, evaluation_data):
     assert result[0].label == InstructionFollowingScore.YES
 
 
-@patch("strands_evals.evaluators.instruction_following_evaluator.Agent")
+@patch("strands_evals.evaluators.evaluator.Agent")
 def test_evaluate_instructions_not_followed(mock_agent_class, evaluation_data):
     mock_agent = Mock()
     mock_result = Mock()
@@ -114,7 +114,7 @@ def test_evaluate_instructions_not_followed(mock_agent_class, evaluation_data):
         reasoning="The response does not follow the one-sentence constraint",
         score=InstructionFollowingScore.NO,
     )
-    mock_agent.return_value = mock_result
+    mock_agent.structured_output = Mock(return_value=mock_result.structured_output)
     mock_agent_class.return_value = mock_agent
     evaluator = InstructionFollowingEvaluator()
 
@@ -133,12 +133,12 @@ def test_evaluate_instructions_not_followed(mock_agent_class, evaluation_data):
         (InstructionFollowingScore.NO, 0.0, False),
     ],
 )
-@patch("strands_evals.evaluators.instruction_following_evaluator.Agent")
+@patch("strands_evals.evaluators.evaluator.Agent")
 def test_score_mapping(mock_agent_class, evaluation_data, score, expected_value, expected_pass):
     mock_agent = Mock()
     mock_result = Mock()
     mock_result.structured_output = InstructionFollowingRating(reasoning="Test", score=score)
-    mock_agent.return_value = mock_result
+    mock_agent.structured_output = Mock(return_value=mock_result.structured_output)
     mock_agent_class.return_value = mock_agent
     evaluator = InstructionFollowingEvaluator()
 
@@ -151,7 +151,7 @@ def test_score_mapping(mock_agent_class, evaluation_data, score, expected_value,
 
 
 @pytest.mark.asyncio
-@patch("strands_evals.evaluators.instruction_following_evaluator.Agent")
+@patch("strands_evals.evaluators.evaluator.Agent")
 async def test_evaluate_async(mock_agent_class, evaluation_data):
     mock_agent = Mock()
     mock_result = Mock()
@@ -159,7 +159,7 @@ async def test_evaluate_async(mock_agent_class, evaluation_data):
         reasoning="The response summarizes the text in one sentence as requested",
         score=InstructionFollowingScore.YES,
     )
-    mock_agent.return_value = mock_result
+    mock_agent.structured_output = Mock(return_value=mock_result.structured_output)
     mock_agent_class.return_value = mock_agent
     evaluator = InstructionFollowingEvaluator()
 
