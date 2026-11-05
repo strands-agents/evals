@@ -52,7 +52,7 @@ class CandidateView:
         """
         raise NotImplementedError
 
-    def changed_values(self) -> dict[str, tuple[Value, Value]]:
+    def changed_values(self) -> dict[str, dict[str, Value]]:
         """Changed numbers and choices against the baseline."""
         raise NotImplementedError
 
