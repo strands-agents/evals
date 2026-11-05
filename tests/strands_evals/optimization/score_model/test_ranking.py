@@ -92,8 +92,12 @@ def test_round_to_sd_leaves_value_without_spread_or_finite_value(value, sd):
 
 
 def test_round_to_sd_rounds_to_the_tenth_of_the_leading_digit():
-    assert round_to_sd(1.23456, 0.3) == pytest.approx(1.23)
-    assert round_to_sd(1234.5, 300.0) == pytest.approx(1230.0)
+    assert round_to_sd(1.23456, 0.3) == 1.23
+    assert round_to_sd(1234.5, 300.0) == 1230.0
+
+
+def test_the_same_decimal_is_the_same_float_whatever_the_sd():
+    assert round_to_sd(2.5795, 0.0047) == round_to_sd(2.5795, 0.00016) == 2.5795
 
 
 # ---- p_met ------------------------------------------------------------------------------------------------------

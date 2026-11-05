@@ -31,8 +31,7 @@ def round_to_sd(value: float, sd: float) -> float:
     """
     if not sd > 0 or not math.isfinite(value):
         return value
-    step = 10.0 ** math.floor(math.log10(sd / 10))
-    return round(value / step) * step
+    return round(value, -math.floor(math.log10(sd / 10)))
 
 
 @dataclass(frozen=True)
