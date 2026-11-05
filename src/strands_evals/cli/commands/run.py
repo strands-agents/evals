@@ -136,6 +136,34 @@ def _build_ad_hoc_experiment(
     return Experiment(cases=[case], evaluators=evaluators, diagnosis_config=diagnosis_config)
 
 
+def _select_case(cases: list[Case], selector: str) -> Case:
+    """Pick one case by exact name, falling back to a 0-based index.
+
+    Name wins so a case literally named `"1"` stays addressable by name.
+
+    Raises:
+        ValueError: If the selector matches no case or a duplicated name.
+    """
+    if not cases:
+        raise ValueError(f"--case '{selector}' cannot be selected: the experiment has no cases.")
+    matches = [i for i, case in enumerate(cases) if case.name == selector]
+    if len(matches) == 1:
+        return cases[matches[0]]
+    if len(matches) > 1:
+        indices = ", ".join(map(str, matches))
+        raise ValueError(
+            f"--case '{selector}' matches {len(matches)} cases with that name; select one by index: {indices}"
+        )
+    if selector.isascii() and selector.isdigit() and int(selector) < len(cases):
+        return cases[int(selector)]
+    available = ", ".join(
+        f"{i}: {case.name!r}" if case.name is not None else f"{i}: (unnamed)" for i, case in enumerate(cases)
+    )
+    raise ValueError(
+        f"--case '{selector}' matches no case name or index 0-{len(cases) - 1}; available cases: {available}"
+    )
+
+
 _TRACE_DEPENDENT_LEVELS = {
     EvaluationLevel.SESSION_LEVEL,
     EvaluationLevel.TRACE_LEVEL,
@@ -175,13 +203,15 @@ def _check_ad_hoc_evaluator_compat(args: argparse.Namespace, evaluators: list[Ev
 def _validate_args(args: argparse.Namespace) -> str | None:
     """Return an error string if argument combinations are invalid, else None.
 
-    Three rules:
+    Rules:
       1. EXPERIMENT_FILE and any ad-hoc flag are mutually exclusive — pick a
          mode.
       2. Without EXPERIMENT_FILE the user must supply `--input` or
          `--input-file`; otherwise there is nothing to evaluate.
       3. In ad-hoc mode at least one evaluator must be derivable: an explicit
          `--evaluator` or an `--expected-output` (which defaults to `Contains`).
+      4. `--case` requires EXPERIMENT_FILE, since there are no cases to select
+         from otherwise.
     """
     ad_hoc = _ad_hoc_flags_set(args)
     if args.experiment_file is not None and ad_hoc:
@@ -191,6 +221,8 @@ def _validate_args(args: argparse.Namespace) -> str | None:
             f"either pass an experiment file or use --input + --evaluator/--expected-output."
         )
     if args.experiment_file is None:
+        if args.case is not None:
+            return "--case requires EXPERIMENT_FILE."
         if args.input is None and args.input_file is None:
             return "EXPERIMENT_FILE or --input/--input-file is required."
         if not args.evaluator and args.expected_output is None and args.rubric is None:
@@ -313,11 +345,18 @@ def _run(args: argparse.Namespace) -> int:
     if args.experiment_file is not None:
         custom_evaluators = resolve_custom_evaluators(args.custom_evaluator or [])
         loaded = Experiment.from_file(args.experiment_file, custom_evaluators=custom_evaluators)
+        cases = loaded.cases
+        if args.case is not None:
+            try:
+                cases = [_select_case(cases, args.case)]
+            except ValueError as e:
+                emit_error(str(e))
+                return EXIT_BAD_INPUT
         # Experiment.from_file does not accept diagnosis_config; rebuild via the
         # public constructor so we don't poke private attrs. Cases are deep-copied
         # by the property accessor, which is fine for a one-shot CLI run.
         experiment = Experiment(
-            cases=loaded.cases,
+            cases=cases,
             evaluators=loaded.evaluators,
             diagnosis_config=diagnosis_config,
         )
@@ -416,6 +455,13 @@ def add_subparser(
             "path to a serialized Experiment JSON file. Omit to run in ad-hoc "
             "single-case mode using --input + --evaluator/--expected-output."
         ),
+    )
+
+    parser.add_argument(
+        "--case",
+        metavar="NAME_OR_INDEX",
+        default=None,
+        help="run only the case with this name, or its 0-based index if no case has that name",
     )
 
     ad_hoc = parser.add_argument_group("ad-hoc case (no experiment file)")
