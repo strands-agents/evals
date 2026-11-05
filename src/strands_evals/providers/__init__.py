@@ -11,6 +11,7 @@ from .trace_provider import (
 
 __all__ = [
     "CloudWatchProvider",
+    "HoneyHiveProvider",
     "LangfuseProvider",
     "OpenSearchProvider",
     "ProviderError",
@@ -26,6 +27,10 @@ def __getattr__(name: str) -> Any:
         from .cloudwatch_provider import CloudWatchProvider
 
         return CloudWatchProvider
+    if name == "HoneyHiveProvider":
+        from .honeyhive_provider import HoneyHiveProvider
+
+        return HoneyHiveProvider
     if name == "LangfuseProvider":
         from .langfuse_provider import LangfuseProvider
 
