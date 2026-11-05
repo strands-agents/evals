@@ -1,12 +1,11 @@
 """Per-evaluator statistics for paired evaluation scores."""
 
-import math
-import random
 from collections import defaultdict
 from statistics import fmean
 from typing import Sequence
 
 from pydantic import BaseModel
+from scipy.stats import bootstrap
 
 from .pairing import PairedScore
 
@@ -76,7 +75,6 @@ def summarize_pairs(
         seen.add(key)
         grouped[pair.evaluator].append(pair)
 
-    random_generator = random.Random(seed)
     summaries: list[EvaluatorSummary] = []
     for evaluator in sorted(grouped):
         evaluator_pairs = sorted(grouped[evaluator], key=lambda pair: pair.case_id)
@@ -86,7 +84,7 @@ def summarize_pairs(
                 deltas,
                 confidence_level=confidence_level,
                 bootstrap_samples=bootstrap_samples,
-                random_generator=random_generator,
+                seed=seed,
             )
             if len(deltas) >= 2
             else (None, None)
@@ -110,24 +108,15 @@ def _bootstrap_mean_interval(
     *,
     confidence_level: float,
     bootstrap_samples: int,
-    random_generator: random.Random,
+    seed: int,
 ) -> tuple[float, float]:
-    sample_size = len(values)
-    bootstrap_means = sorted(fmean(random_generator.choices(values, k=sample_size)) for _ in range(bootstrap_samples))
-    tail_probability = (1.0 - confidence_level) / 2.0
-    return (
-        _percentile(bootstrap_means, tail_probability),
-        _percentile(bootstrap_means, 1.0 - tail_probability),
+    result = bootstrap(
+        (values,),
+        fmean,
+        confidence_level=confidence_level,
+        n_resamples=bootstrap_samples,
+        method="percentile",
+        vectorized=False,
+        rng=seed,
     )
-
-
-def _percentile(sorted_values: list[float], probability: float) -> float:
-    position = (len(sorted_values) - 1) * probability
-    lower_index = math.floor(position)
-    upper_index = math.ceil(position)
-    if lower_index == upper_index:
-        return sorted_values[lower_index]
-
-    lower_value = sorted_values[lower_index]
-    upper_value = sorted_values[upper_index]
-    return lower_value + (upper_value - lower_value) * (position - lower_index)
+    return float(result.confidence_interval.low), float(result.confidence_interval.high)
