@@ -235,7 +235,7 @@ def test_extract_user_prompt_with_session_history():
     [
         (None, None),
         ("gpt-4", "gpt-4"),
-        ("us.anthropic.claude-sonnet-4-20250514-v1:0", "us.anthropic.claude-sonnet-4-20250514-v1:0"),
+        ("global.anthropic.claude-sonnet-4-6", "global.anthropic.claude-sonnet-4-6"),
     ],
 )
 def test_init_with_different_models(model_input, expected_model):

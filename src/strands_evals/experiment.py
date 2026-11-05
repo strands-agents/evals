@@ -22,7 +22,15 @@ from .evaluation_data_store import EvaluationDataStore
 from .evaluators.coherence_evaluator import CoherenceEvaluator
 from .evaluators.conciseness_evaluator import ConcisenessEvaluator
 from .evaluators.correctness_evaluator import CorrectnessEvaluator
-from .evaluators.deterministic import Contains, Equals, SkillInvoked, StartsWith, StateEquals, ToolCalled
+from .evaluators.deterministic import (
+    Contains,
+    Equals,
+    SkillInvoked,
+    StartsWith,
+    StateEquals,
+    StructuredOutputSimilarity,
+    ToolCalled,
+)
 from .evaluators.evaluator import Evaluator
 from .evaluators.faithfulness_evaluator import FaithfulnessEvaluator
 from .evaluators.goal_success_rate_evaluator import GoalSuccessRateEvaluator
@@ -48,7 +56,7 @@ from .telemetry import get_tracer, serialize
 from .telemetry._cloudwatch_logger import _send_to_cloudwatch
 from .types.detector import DiagnosisConfig
 from .types.evaluation import NOT_APPLICABLE, EvaluationData, EvaluationOutput, InputT, OutputT
-from .types.evaluation_report import EvaluationReport
+from .types.evaluation_report import EvaluationReport, ReportT
 from .types.trace import Session
 from .utils import is_throttling_error
 
@@ -95,7 +103,7 @@ def _get_label_from_score(
     return "YES" if score >= 0.5 else "NO"
 
 
-class Experiment(Generic[InputT, OutputT]):
+class Experiment(Generic[InputT, OutputT, ReportT]):
     """
     An evaluation experiment containing test cases and evaluators.
 
@@ -105,6 +113,13 @@ class Experiment(Generic[InputT, OutputT]):
     Attributes:
         cases: A list of test cases in the experiment.
         evaluators: The list of evaluators to be used on the test cases.
+        report_cls: The class `run_evaluations` builds its report with. Defaults to
+            `EvaluationReport`. Pass it as a keyword argument to get a richer report type
+            back without casting, e.g. one that adds evaluator-specific aggregation
+            methods over `detailed_results`; `ReportT` is inferred from it. A subclass
+            can set the class attribute as its default instead, but must also bind
+            `ReportT` (`class Mine(Experiment[str, str, MyReport])`) for the two to
+            agree: nothing checks the type parameter against the attribute.
 
     Example:
         experiment = Experiment[str, str](
@@ -130,15 +145,28 @@ class Experiment(Generic[InputT, OutputT]):
         )
     """
 
+    # The declared type is `type[ReportT]` so subclasses that bind `ReportT` can override
+    # without `# type: ignore[override]`; mypy cannot see that the default matches the
+    # TypeVar's own default, hence the assignment ignore here.
+    report_cls: type[ReportT] = EvaluationReport  # type: ignore[assignment]
+
     def __init__(
         self,
         cases: list[Case[InputT, OutputT]] | None = None,
         evaluators: list[Evaluator[InputT, OutputT]] | None = None,
         diagnosis_config: DiagnosisConfig | None = None,
+        *,
+        report_cls: type[ReportT] | None = None,
     ):
         self._cases = cases or []
         self._evaluators = evaluators or [Evaluator()]
         self._tracer = get_tracer()
+        if report_cls is not None:
+            # The kwarg binds `ReportT` and the runtime class in one declaration, so
+            # `Experiment(..., report_cls=MyReport)` needs no subclass. Note it is not
+            # carried by `to_dict`/`from_dict`, which serialize cases and evaluators
+            # only; a subclass setting the class attribute survives reload via `cls`.
+            self.report_cls = report_cls
 
         self._config_id = os.environ.get("EVALUATION_RESULTS_LOG_GROUP", "default-strands-evals")
         self._diagnosis_config = diagnosis_config
@@ -543,13 +571,14 @@ class Experiment(Generic[InputT, OutputT]):
                                 await asyncio.to_thread(evaluation_data_store.save, case.name, evaluation_context)
                         trace_id = format_trace_id(case_span.get_span_context().trace_id)
 
-                        # Evaluate with each evaluator
-                        evaluator_results = []
-                        for evaluator in self._evaluators:
-                            result = await self._run_evaluator(
-                                evaluator, evaluation_context, case_name, trace_id, case.session_id
+                        # Evaluate with each evaluator concurrently; _run_evaluator isolates errors
+                        # and gather keeps results in evaluator order
+                        evaluator_results = await asyncio.gather(
+                            *(
+                                self._run_evaluator(evaluator, evaluation_context, case_name, trace_id, case.session_id)
+                                for evaluator in self._evaluators
                             )
-                            evaluator_results.append(result)
+                        )
 
                         # Run diagnosis on failing cases if enabled
                         diagnosis = None
@@ -596,7 +625,7 @@ class Experiment(Generic[InputT, OutputT]):
         self,
         task: Callable[[Case[InputT, OutputT]], OutputT | dict[str, Any]],
         evaluation_data_store: EvaluationDataStore | None = None,
-    ) -> EvaluationReport:
+    ) -> ReportT:
         """
         Run the evaluations for all of the test cases with all evaluators.
 
@@ -622,7 +651,7 @@ class Experiment(Generic[InputT, OutputT]):
         task: Callable,
         max_workers: int = 10,
         evaluation_data_store: EvaluationDataStore | None = None,
-    ) -> EvaluationReport:
+    ) -> ReportT:
         """
         Run evaluations asynchronously using a queue for parallel processing.
 
@@ -691,13 +720,13 @@ class Experiment(Generic[InputT, OutputT]):
                 evaluator_data[eval_name]["diagnoses"].append(diagnosis)
                 evaluator_data[eval_name]["recommendations"].append(recommendation)
 
-        reports = []
+        reports: list[ReportT] = []
         for evaluator in self._evaluators:
             eval_name = evaluator.get_name()
             data = evaluator_data[eval_name]
             scores = data["scores"]
-            report = EvaluationReport(
-                overall_score=EvaluationReport.calculate_overall_score(
+            report = self.report_cls(
+                overall_score=self.report_cls.calculate_overall_score(
                     scores,
                     data["detailed_results"],
                 ),
@@ -715,7 +744,7 @@ class Experiment(Generic[InputT, OutputT]):
         # single-evaluator runs return as-is and multi-evaluator runs simply concatenate.
         if len(reports) == 1:
             return reports[0]
-        return EvaluationReport.flatten(reports)
+        return self.report_cls.flatten(reports)
 
     def to_dict(self) -> dict:
         """
@@ -820,6 +849,7 @@ class Experiment(Generic[InputT, OutputT]):
             "Contains": Contains,
             "StartsWith": StartsWith,
             "StateEquals": StateEquals,
+            "StructuredOutputSimilarity": StructuredOutputSimilarity,
             "ToolCalled": ToolCalled,
             "SkillInvoked": SkillInvoked,
         }

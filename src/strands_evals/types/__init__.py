@@ -17,6 +17,7 @@ from .evaluation import (
     OutputT,
     TaskOutput,
 )
+from .evaluation_report import ReportT
 from .multimodal import AnyMediaData, ImageData, MultimodalInput, resolve_image_bytes
 from .simulation import ActorProfile, ActorResponse
 
@@ -31,6 +32,7 @@ __all__ = [
     "ActorResponse",
     "InputT",
     "OutputT",
+    "ReportT",
     "AnyMediaData",
     "ImageData",
     "MultimodalInput",

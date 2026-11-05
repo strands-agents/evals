@@ -74,7 +74,7 @@ def test_resolve_model_none():
 def test_resolve_model_string():
     from strands.models.bedrock import BedrockModel
 
-    model = _resolve_model("us.anthropic.claude-sonnet-4-20250514-v1:0")
+    model = _resolve_model("global.anthropic.claude-sonnet-4-6")
     assert isinstance(model, BedrockModel)
 
 
@@ -101,6 +101,50 @@ def test_extract_json_markdown_fenced_no_lang():
 def test_extract_json_with_surrounding_text():
     text = 'I found these failures:\n```json\n{"errors": [{"location": "s1"}]}\n```\nDone.'
     assert '"errors"' in _extract_json(text)
+
+
+def test_extract_json_bare_object_after_prose():
+    """A bare JSON object following a prose preamble (no fence) is extracted."""
+    text = 'Looking at the session, here are the failures:\n{"errors": []}'
+    assert _extract_json(text) == '{"errors": []}'
+
+
+def test_extract_json_prefers_schema_over_decoy():
+    """A decoy JSON object in the prose must not shadow the real payload.
+
+    The detector schema is well-known, so the span that validates against
+    it wins over an earlier span that merely parses as JSON. Otherwise the
+    decoy fails schema validation downstream and reintroduces the
+    silent-empty diagnosis this logic exists to prevent.
+    """
+    real_payload = '{"errors": [{"location": "s1", "category": ["err"], "confidence": ["high"], "evidence": ["ev"]}]}'
+    text = f'Example format {{"category": "tool_error"}}. Now the real one: {real_payload}'
+    extracted = _extract_json(text)
+    assert extracted == real_payload
+    # And it survives the full parse rather than collapsing to [].
+    result = _parse_text_result(text)
+    assert len(result) == 1
+    assert result[0].span_id == "s1"
+
+
+def test_extract_json_skips_regex_in_prose():
+    """Bracketed prose that isn't JSON (e.g. a regex) is skipped, not returned."""
+    text = 'The ids match [a-z0-9-]. Here is the result: {"errors": []}'
+    assert _extract_json(text) == '{"errors": []}'
+
+
+def test_extract_json_falls_back_to_first_parseable():
+    """When nothing validates against the schema, the first parseable span is returned."""
+    text = 'Here is some data: {"foo": 1} and more.'
+    assert _extract_json(text) == '{"foo": 1}'
+
+
+def test_extract_json_echoed_example_does_not_shadow_real_payload():
+    """A restated prompt example (which itself validates) must not be reported as the result."""
+    example = '{"errors": [{"location": "example-span", "category": ["c"], "evidence": ["e"], "confidence": ["high"]}]}'
+    real = '{"errors": [{"location": "real-span", "category": ["c"], "evidence": ["e"], "confidence": ["low"]}]}'
+    result = _parse_text_result(f"Following the example format:\n{example}\nMy annotation:\n{real}")
+    assert [f.span_id for f in result] == ["real-span"]
 
 
 def test_parse_text_result_basic():
@@ -336,10 +380,10 @@ def test_detect_failures_passes_model(mock_call_model, mock_resolve_model):
     mock_call_model.return_value = _make_json_response([])
 
     session = _make_session()
-    detect_failures(session, model="us.anthropic.claude-sonnet-4-20250514-v1:0")
+    detect_failures(session, model="global.anthropic.claude-sonnet-4-6")
 
     # Verify _resolve_model was called with the custom model string
-    mock_resolve_model.assert_called_once_with("us.anthropic.claude-sonnet-4-20250514-v1:0")
+    mock_resolve_model.assert_called_once_with("global.anthropic.claude-sonnet-4-6")
     # Verify _call_model was called with the resolved model
     mock_call_model.assert_called_once()
     assert mock_call_model.call_args.args[0] is mock_model

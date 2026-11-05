@@ -20,7 +20,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExport
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import TracerProvider
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
-from opentelemetry.util.types import AttributeValue
+from strands.types.traces import AttributeValue
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,10 @@ class _BaggageSpanProcessor(SpanProcessor):
         ctx = parent_context if parent_context is not None else context_api.get_current()
         for key, value in baggage.get_all(ctx).items():
             # Baggage values are typed as `object`, but anything we put in
-            # via the CLI wrapper is a string; spans need an AttributeValue.
+            # via the CLI wrapper is a string; spans need an AttributeValue. The
+            # alias comes from strands rather than `opentelemetry.util.types`:
+            # since opentelemetry 1.45.0 the latter is a chained assignment that
+            # mypy rejects as a type.
             span.set_attribute(key, cast(AttributeValue, value))
 
     def on_end(self, span: ReadableSpan) -> None:  # pragma: no cover - no-op

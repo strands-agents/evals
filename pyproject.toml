@@ -23,9 +23,8 @@ classifiers = [
 
 dependencies = [
     "pydantic>=2.4.0,<3.0.0",
-    "rich>=14.0.0,<15.0.0",
+    "rich>=15.0.0,<16.0.0",
     "strands-agents>=1.45.0",
-    "strands-agents-tools>=0.1.0,<1.0.0",
     "typing-extensions>=4.13.2,<5.0.0",
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
@@ -53,7 +52,7 @@ dev = [
     "hatch>=1.0.0,<2.0.0",
     "mypy>=1.15.0,<3.0.0",
     "pre-commit>=3.2.0,<4.7.0",
-    "ruff>=0.13.0,<0.17.0",
+    "ruff>=0.13.0,<0.18.0",
 ]
 
 langfuse = ["langfuse>=2.0.0,<4"]
@@ -67,6 +66,9 @@ langchain = [
     "opentelemetry-instrumentation-langchain>=0.40.0,<0.63.0",
 ]
 adk = ["google-adk>=2.0.0,<3.0.0"]
+# StructuredOutputSimilarity: field-level structured-output scoring via stickler.
+# pydantic>=2.12 for `model_validate(extra=...)`, which reads cached values back.
+stickler = ["stickler-eval>=1.0.0,<2.0.0", "pydantic>=2.12.0,<3.0.0"]
 claude = [
     "claude-agent-sdk>=0.2.0,<0.3.0",
     "openinference-instrumentation-claude-agent-sdk>=0.1.8,<0.2.0",
@@ -79,7 +81,7 @@ include = ["src/**/*.py", "tests/**/*.py", "tests_integ/**/*.py"]
 [tool.hatch.envs.hatch-test]
 installer = "uv"
 extra-args = ["-n", "auto", "-vv"]
-features = ["otel", "langfuse", "langchain", "opensearch", "adk", "claude"]
+features = ["otel", "langfuse", "langchain", "opensearch", "adk", "claude", "stickler"]
 dependencies = [
     "pytest>=8.0.0,<10.0.0",
     "pytest-cov>=7.0.0,<8.0.0",
@@ -120,10 +122,12 @@ prepare = [
 
 [tool.hatch.envs.hatch-static-analysis]
 installer = "uv"
-features = ["otel", "langfuse", "langchain", "opensearch"]
+features = ["otel", "langfuse", "langchain", "opensearch", "stickler"]
 dependencies = [
   "mypy>=1.15.0,<3.0.0",
-  "ruff>=0.13.0,<0.17.0",
+  # PIL is an optional import in types/multimodal.py
+  "pillow>=12.1.1,<13.0.0",
+  "ruff>=0.13.0,<0.18.0",
   # Include required pacakge dependencies for mypy
   "strands-agents-evals @ {root:uri}",
 ]
@@ -156,9 +160,10 @@ select = [
 [tool.ruff.lint.per-file-ignores]
 "src/strands_evals/evaluators/prompt_templates/*" = ["E501"] # line-length
 "src/strands_evals/evaluators/chaos/prompt_templates/*" = ["E501"] # line-length
+"src/strands_evals/evaluators/redteam/prompt_templates/*" = ["E501"] # line-length
 "src/strands_evals/detectors/prompt_templates/*" = ["E501"] # line-length
 "src/strands_evals/generators/prompt_template/*" = ["E501"] # line-length
-"src/strands_evals/experimental/redteam/**/prompt_templates/**" = ["E501"] # line-length
+"src/strands_evals/redteam/**/prompt_templates/**" = ["E501"] # line-length
 
 [tool.mypy]
 # Disable strict checks that cause false positives with Generic classes
@@ -193,7 +198,7 @@ extra-dependencies = [
     "hatch>=1.0.0,<2.0.0",
     "mypy>=1.15.0,<3.0.0",
     "pre-commit>=3.2.0,<4.7.0",
-    "ruff>=0.13.0,<0.17.0",
+    "ruff>=0.13.0,<0.18.0",
 ]
 
 [tool.coverage.run]

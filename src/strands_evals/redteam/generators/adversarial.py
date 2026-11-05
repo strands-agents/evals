@@ -1,0 +1,218 @@
+"""Adversarial case generator."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from typing import Any, TypedDict, cast
+
+from pydantic import BaseModel, Field
+from strands import Agent
+from strands.models.model import Model
+
+from ...types.redteam import DEFAULT_SEVERITY, RISK_CATEGORIES, AttackGoal, RedTeamConfig
+from ...types.redteam.risk_category import resolve_risk_category
+from ..case import RedTeamCase
+from .prompt_templates import get_template as _get_prompt_template
+
+logger = logging.getLogger(__name__)
+
+
+class TargetSpec(TypedDict):
+    """Description of a target agent for case generation."""
+
+    system_prompt: str
+    tools: list[dict]
+
+
+class AttackCase(BaseModel):
+    actor_goal: str = Field(description="Specific attack objective for this case")
+    target_context: str = Field(description="1-2 sentence target summary relevant to the attack")
+    traits: dict = Field(default_factory=dict, description="Attacker persona attributes")
+    opening_message: str = Field(description="First message the attacker sends")
+    success_criteria: str = Field(description="Concrete observable condition that marks the attack as successful")
+
+
+class AttackCases(BaseModel):
+    cases: list[AttackCase]
+
+
+class RiskCategorySelection(BaseModel):
+    categories: list[str] = Field(description="Selected risk category keys relevant to the target")
+
+
+_REQUIRED_TARGET_KEYS = ("system_prompt", "tools")
+
+
+def _extract_tool_info(agent: Agent) -> dict:
+    """Extract tool definitions and system prompt as `target_info`."""
+    tools: list[dict[str, Any]] = []
+    try:
+        all_configs: Any = agent.tool_registry.get_all_tools_config()
+        for tool_config in all_configs.values():
+            input_schema = tool_config.get("inputSchema", {}).get("json", {})
+            tools.append(
+                {
+                    "name": tool_config["name"],
+                    "description": tool_config.get("description", ""),
+                    "parameters": input_schema.get("properties", {}),
+                }
+            )
+    except (AttributeError, KeyError, TypeError) as e:
+        logger.warning("error=<%s> | failed to extract tools from agent", e)
+
+    return {
+        "system_prompt": agent.system_prompt or "",
+        "tools": tools,
+        "description": f"Agent with {len(tools)} tools: {[t['name'] for t in tools]}",
+    }
+
+
+def _coerce_target(target: Agent | TargetSpec) -> dict:
+    if isinstance(target, dict):
+        missing = [k for k in _REQUIRED_TARGET_KEYS if k not in target]
+        if missing:
+            raise ValueError(f"TargetSpec is missing required keys: {missing}")
+        return dict(target)
+    return _extract_tool_info(target)
+
+
+class AdversarialCaseGenerator:
+    """Generate red team cases tailored to a target.
+
+    Example:
+        ```python
+        cases = AdversarialCaseGenerator(model=model).generate_cases(
+            agent=agent,
+            risk_categories=["prompt_injection", "data_exfiltration"],
+            num_cases=3,
+        )
+        ```
+    """
+
+    def __init__(
+        self,
+        model: Model | str | None = None,
+        prompt_version: str = "v0",
+    ):
+        self.model = model
+        self.prompt_version = prompt_version
+
+    def generate_cases(
+        self,
+        *,
+        agent: Agent | TargetSpec,
+        risk_categories: list[str] | None = None,
+        num_cases: int = 5,
+    ) -> list[RedTeamCase]:
+        """Generate strategy-agnostic cases for an agent. Use with TargetSpec or for case reuse."""
+        return asyncio.run(
+            self.generate_cases_async(
+                agent=agent,
+                risk_categories=risk_categories,
+                num_cases=num_cases,
+            )
+        )
+
+    async def generate_cases_async(
+        self,
+        *,
+        agent: Agent | TargetSpec,
+        risk_categories: list[str] | None = None,
+        num_cases: int = 5,
+    ) -> list[RedTeamCase]:
+        """Async variant of `generate_cases`."""
+        target_info = _coerce_target(agent)
+        resolved_categories = risk_categories or await self._infer_risk_categories(target_info)
+        return await self._generate_cases(
+            target_info=target_info,
+            risk_categories=resolved_categories,
+            num_cases=num_cases,
+        )
+
+    async def _generate_cases(
+        self,
+        *,
+        target_info: dict,
+        risk_categories: list[str],
+        num_cases: int = 5,
+    ) -> list[RedTeamCase]:
+        # Dedupe after aliasing so e.g. ["guideline_bypass", "prompt_injection"] generates one set.
+        risk_categories = list(dict.fromkeys(resolve_risk_category(c) for c in risk_categories))
+        for risk_category in risk_categories:
+            if risk_category not in RISK_CATEGORIES:
+                raise ValueError(
+                    f"Unknown risk category: '{risk_category}'. Available categories: {list(RISK_CATEGORIES)}"
+                )
+
+        cases: list[RedTeamCase] = []
+        for risk_category in risk_categories:
+            generated = await self._generate_cases_for_category(
+                risk_category=risk_category,
+                target_info=target_info,
+                num_cases=num_cases,
+            )
+
+            severity = DEFAULT_SEVERITY.get(risk_category, "medium")
+            for i, attack in enumerate(generated):
+                config = RedTeamConfig(
+                    attack_goal=AttackGoal(
+                        risk_category=risk_category,
+                        actor_goal=attack.actor_goal,
+                        context=attack.target_context,
+                        severity=severity,
+                        success_criteria=attack.success_criteria,
+                    ),
+                    traits=attack.traits,
+                )
+                cases.append(
+                    RedTeamCase(
+                        name=f"{risk_category}_{i}",
+                        input=attack.opening_message,
+                        config=config,
+                    )
+                )
+
+        return cases
+
+    async def _infer_risk_categories(self, target_info: dict) -> list[str]:
+        """Use LLM to infer relevant risk categories from target info."""
+        template = _get_prompt_template(self.prompt_version)
+        categories_desc = "\n".join(f"- {key}: {desc}" for key, desc in RISK_CATEGORIES.items())
+        prompt = template.CATEGORY_INFERENCE_PROMPT.format(
+            target_info=json.dumps(target_info, indent=2),
+            categories=categories_desc,
+        )
+        agent = Agent(model=self.model, callback_handler=None)
+        response = await agent.invoke_async(prompt, structured_output_model=RiskCategorySelection)
+        result = cast(RiskCategorySelection, response.structured_output)
+        if result is None:
+            logger.warning("reason=<no_structured_output> | risk-category inference empty | using all")
+            return list(RISK_CATEGORIES.keys())
+        valid = [c for c in result.categories if c in RISK_CATEGORIES]
+        if not valid:
+            logger.warning("got=<%s> | no recognized risk categories inferred | using all", result.categories)
+            return list(RISK_CATEGORIES.keys())
+        return valid
+
+    async def _generate_cases_for_category(
+        self,
+        *,
+        risk_category: str,
+        target_info: dict,
+        num_cases: int,
+    ) -> list[AttackCase]:
+        template = _get_prompt_template(self.prompt_version)
+        prompt = template.CASE_GENERATION_PROMPT.format(
+            target_info=json.dumps(target_info, indent=2),
+            risk_category=risk_category,
+            risk_description=RISK_CATEGORIES[risk_category],
+            num_cases=num_cases,
+        )
+        agent = Agent(model=self.model, callback_handler=None)
+        response = await agent.invoke_async(prompt, structured_output_model=AttackCases)
+        result = cast(AttackCases, response.structured_output)
+        if result is None or not result.cases:
+            raise RuntimeError(f"Case generator produced no cases for risk_category={risk_category!r}.")
+        return result.cases[:num_cases]

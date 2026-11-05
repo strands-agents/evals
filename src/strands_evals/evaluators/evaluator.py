@@ -156,7 +156,12 @@ class Evaluator(Generic[InputT, OutputT]):
         return parsed_inputs[-1]
 
     def _extract_user_prompt(self, parsed_input: TraceLevelInput) -> str:
-        """Extract user prompt from last message in session history.
+        """Extract the most recent user prompt from session history.
+
+        Searches backward through session history for the nearest user message,
+        skipping trailing tool-execution lists and assistant messages. This keeps
+        the user query reachable when a tool call precedes the final answer, which
+        leaves the tool-execution list (not the user message) at the end of history.
 
         Args:
             parsed_input: Trace-level input containing session history
@@ -167,11 +172,14 @@ class Evaluator(Generic[InputT, OutputT]):
         if not parsed_input.session_history:
             return ""
 
-        last_msg = parsed_input.session_history[-1]
-        if not isinstance(last_msg, list) and self._has_text_content(last_msg):
-            first_content = last_msg.content[0]
-            if isinstance(first_content, TextContent):
-                return first_content.text
+        # Walk back past trailing tool-execution lists (and any assistant messages)
+        # to the most recent user message. A tool call before the final answer leaves
+        # the tool-execution list as session_history[-1], not the UserMessage.
+        # Use _extract_text_content so text is found even when it isn't the first
+        # content block (e.g. an image or tool-result precedes it).
+        for msg in reversed(parsed_input.session_history):
+            if isinstance(msg, UserMessage) and self._has_text_content(msg):
+                return self._extract_text_content(msg)
 
         return ""
 

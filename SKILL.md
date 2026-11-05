@@ -373,52 +373,52 @@ Note: this leaves spans in the exporter across cases (no `clear()`); memory grow
 
 ## Red Team (adversarial evaluation)
 
-Lives under `strands_evals.experimental.redteam`. Runs the case × strategy cross-product against a target agent and produces a `RedTeamReport`.
+Lives under `strands_evals.redteam`. Runs the case × strategy cross-product against a target agent and produces a `RedTeamReport`.
 
 ```python
 from strands import Agent
-from strands_evals.experimental.redteam import (
+from strands_evals.redteam import (
     RedTeamExperiment, AdversarialCaseGenerator, AttackSuccessEvaluator,
     CrescendoStrategy, GoatStrategy, PairStrategy,
     BadLikertJudgeStrategy, SequentialBreakStrategy, PromptStrategy,
     AttackGoal, RedTeamConfig, RISK_CATEGORIES,
 )
 
-target = Agent(model=..., system_prompt=..., tools=[...])
+def agent_factory() -> Agent:
+    return Agent(model=..., system_prompt=..., tools=[...])
 
 # 1. Generate cases tailored to the target (or hand-author RedTeamCase)
 cases = AdversarialCaseGenerator(model=judge_model).generate_cases(
-    agent=target,
-    risk_categories=["guideline_bypass", "data_exfiltration"],
+    agent=agent_factory(),
+    risk_categories=["prompt_injection", "data_exfiltration"],
     num_cases=5,
 )
 
 # 2. Run case × strategy cross-product
 experiment = RedTeamExperiment(
     cases=cases,
-    agent=target,
     attack_strategies=[CrescendoStrategy(max_turns=10), PairStrategy(max_turns=8)],
     evaluators=[AttackSuccessEvaluator(model=judge_model, pass_threshold=0.3)],
     model=judge_model,
 )
-report = experiment.run_evaluations()
+report = experiment.run_evaluations(agent_factory=agent_factory)
 report.display()
 ```
 
-Targets accepted: a `strands.Agent`, a `strands.multiagent.Graph`/`Swarm` (any `MultiAgentBase`), or a custom `TargetSession` Protocol implementer. For parallel runs (`max_workers > 1`) pass `agent_factory=` instead of `agent=` — Strands clients carry non-deepcopyable state.
+Targets accepted: a `strands.Agent`, a `strands.multiagent.Graph`/`Swarm` (any `MultiAgentBase`), or a custom `TargetSession` Protocol implementer. Pass `agent_factory=` to `run_evaluations()` / `run_evaluations_async()`; it must build a new target per call (Strands clients carry non-deepcopyable state, so the experiment never copies one, and a reused instance only has its messages cleared between cases). The constructor's `agent=` / `agent_factory=` are deprecated.
 
 Built-in strategies:
 
 | Strategy | Use |
 | --- | --- |
 | `PromptStrategy(label, system_prompt_template)` | Single-prompt attacker; one is registered as `BUILTIN_STRATEGIES["gradual_escalation"]` |
-| `CrescendoStrategy(max_turns=...)` | Multi-turn ramp from benign to harmful |
+| `CrescendoStrategy(max_turns=...)` | Multi-turn ramp from benign to harmful; `stop_on_tool_call=False` for read-only-tool targets |
 | `GoatStrategy(...)` | Generative Offensive Agent Tester loop |
 | `PairStrategy(max_turns=...)` | Prompt Automatic Iterative Refinement |
 | `BadLikertJudgeStrategy(...)` | Likert-scale judge-prompt attack |
 | `SequentialBreakStrategy(...)` | Narrative-scaffold attack (PR #254) |
 
-Targets and sessions in `redteam.strategies`: `StrandsAgentSession`, `StrandsMultiAgentSession`, `TargetCheckpoint`, `TargetSession` (Protocol).
+Targets and sessions in `redteam.strategies`: `StrandsAgentSession`, `StrandsMultiAgentSession`, `TargetCheckpoint`, `TargetSession` (Protocol), and `as_target_session(target)`, which wraps an `Agent` / `MultiAgentBase` in the right session for a custom task.
 
 Cases are typed `RedTeamCase` carrying a `RedTeamConfig(attack_goal=AttackGoal(risk_category=..., actor_goal=..., severity=..., success_criteria=...), traits={...})`. `RISK_CATEGORIES` is the canonical category list for case generation.
 
@@ -426,9 +426,9 @@ Cases are typed `RedTeamCase` carrying a `RedTeamConfig(attack_goal=AttackGoal(r
 
 `RedTeamReport` adds case-centric grouping: one `AttackResult` per case, plus `GroupedSummary` aggregations exposed via `report.by_risk_category()` and `report.by_strategy()`. Severity is recorded on each `AttackResult` (no `by_severity()` aggregator). `trajectory` holds raw tool I/O — sanitize before sharing if tools return sensitive data.
 
-**Hard turn cap:** `task.py` enforces `MAX_ALLOWED_TURNS = 50` regardless of a strategy's own `max_turns`. A `CrescendoStrategy(max_turns=100)` will still stop at 50 inside `RedTeamExperiment`. Lower turn budgets honor the strategy setting.
+**Hard turn cap:** the built-in task passes `MAX_ALLOWED_TURNS = 50` (`strategies/base.py`) regardless of a strategy's own `max_turns`, and `run_attack`'s `max_turns` defaults to it. A `CrescendoStrategy(max_turns=100)` will still stop at 50 inside `RedTeamExperiment`. Lower turn budgets honor the strategy setting.
 
-Stability: `experimental.redteam` APIs may change in a minor release. Breaking changes (renames, removed args, changed defaults) go through a deprecation cycle with a `DeprecationWarning` for at least one minor version.
+Stability: breaking changes to `strands_evals.redteam` (renames, removed args, changed defaults) go through a deprecation cycle with a `DeprecationWarning` for at least one minor version.
 
 ## ExperimentGenerator (auto test-case generation)
 
@@ -488,7 +488,7 @@ report = await experiment.run_evaluations_async(task, max_workers=10)
 - `task` may be sync or async — async tasks require `run_evaluations_async`; passing one to `run_evaluations` raises `ValueError`.
 - `max_workers` defaults to 10; the runner caps it at `len(cases)`.
 - `TracedHandler` shares a single in-memory exporter, so it is **not** safe under `max_workers > 1`. Either run sequentially or build a per-call `TracedHandler` inside the task.
-- Red-team parallel runs must use `agent_factory=` (see Red Team section).
+- Red-team runs pass `agent_factory=` to the run method, not the constructor (see Red Team section).
 
 ## Result Caching
 

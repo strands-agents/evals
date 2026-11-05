@@ -22,7 +22,7 @@ When helping someone contribute, you are a guide — not a gatekeeper, not a sub
 - Multi-turn conversation simulators (ActorSimulator / UserSimulator / ToolSimulator)
 - Failure detection and root-cause analysis (`detectors` module)
 - Chaos testing — deterministic tool failure / response corruption (`chaos` module)
-- Red-team / adversarial evaluation with strategy library (`experimental.redteam`)
+- Red-team / adversarial evaluation with strategy library (`redteam`)
 - Automated experiment / test-case generation
 - Async parallel execution and per-case result caching (`EvaluationDataStore` / `LocalFileTaskResultStore`)
 - Experiment management with JSON serialization
@@ -50,6 +50,11 @@ strands-evals depends on **`strands-agents`** (the Python SDK) for all LLM inter
 
 ```
 strands-evals/
+│
+├── .agents/skills/                           # Agent skills (not shipped in the wheel)
+│   └── session-converter/                  # Convert local agent sessions into experiments
+│       ├── SKILL.md                          # Locate sessions, extract episodes, write an experiment
+│       └── assets/segmenter.md               # Subagent steps: split sessions into episodes
 │
 ├── src/strands_evals/                        # Main package source code
 │   ├── __init__.py                           # Public API exports
@@ -84,10 +89,14 @@ strands-evals/
 │   │   │   ├── failure_communication_evaluator.py
 │   │   │   ├── partial_completion_evaluator.py
 │   │   │   └── recovery_strategy_evaluator.py
+│   │   ├── redteam/                          # Red team evaluators
+│   │   │   ├── attack_success_evaluator.py   # AttackSuccessEvaluator
+│   │   │   └── prompt_templates/attack_success/
 │   │   ├── deterministic/                    # Non-LLM evaluators
 │   │   │   ├── output.py
 │   │   │   ├── trajectory.py
-│   │   │   └── environment_state.py
+│   │   │   ├── environment_state.py
+│   │   │   └── structured_output.py          # StructuredOutputSimilarity + StructuredOutputReport (stickler extra)
 │   │   └── prompt_templates/                 # Per-evaluator prompt modules
 │   │       └── {evaluator_name}/{name}_v0.py # Exports SYSTEM_PROMPT constant
 │   │
@@ -100,28 +109,29 @@ strands-evals/
 │   │   ├── plugin.py                         # ChaosPlugin (tool + model hooks via ContextVar)
 │   │   └── _context.py                       # ContextVar holding the active ChaosCase
 │   │
-│   ├── experimental/                         # Stable public API, evolving surface
-│   │   └── redteam/                          # Adversarial / red-team evaluation
-│   │       ├── README.md                     # Module quick-start + walkthrough
-│   │       ├── case.py                       # RedTeamCase + RedTeamConfig
-│   │       ├── experiment.py                 # RedTeamExperiment (case × strategy cross-product)
-│   │       ├── task.py                       # _build_attacker_task; MAX_ALLOWED_TURNS = 50 (hard cap)
-│   │       ├── utils.py                      # _put_model_field (used by to_dict)
-│   │       ├── report.py                     # RedTeamReport / AttackResult / GroupedSummary
-│   │       ├── evaluators/                   # AttackSuccessEvaluator
-│   │       ├── generators/                   # AdversarialCaseGenerator + TargetSpec
-│   │       ├── strategies/                   # AttackStrategy base + per-strategy subpackages
-│   │       │   ├── base.py                   # AttackStrategy ABC + AttackRunResult
-│   │       │   ├── _common.py                # Shared helpers
-│   │       │   ├── target_session.py         # TargetSession Protocol + StrandsAgentSession,
-│   │       │   │                             # StrandsMultiAgentSession, TargetCheckpoint, ToolUseEntry
-│   │       │   ├── bad_likert_judge/         # BadLikertJudgeStrategy
-│   │       │   ├── crescendo/                # CrescendoStrategy + crescendo_v0 prompt
-│   │       │   ├── goat/                     # GoatStrategy + goat_v0 prompt
-│   │       │   ├── pair/                     # PairStrategy + prompt template
-│   │       │   ├── prompt_strategy/          # PromptStrategy + gradual_escalation template
-│   │       │   └── sequentialbreak/          # SequentialBreakStrategy
-│   │       └── types/                        # AttackGoal, RedTeamConfig, RISK_CATEGORIES, Severity
+│   ├── redteam/                              # Adversarial / red-team evaluation
+│   │   ├── README.md                         # Module quick-start + walkthrough
+│   │   ├── case.py                           # RedTeamCase + RedTeamConfig
+│   │   ├── experiment.py                     # RedTeamExperiment (case × strategy cross-product)
+│   │   ├── task.py                           # _build_attacker_task
+│   │   ├── utils.py                          # _put_model_field (used by to_dict)
+│   │   ├── report.py                         # RedTeamReport / AttackResult / GroupedSummary
+│   │   ├── generators/                       # AdversarialCaseGenerator + TargetSpec
+│   │   ├── strategies/                       # AttackStrategy base + per-strategy subpackages
+│   │   │   ├── base.py                       # AttackStrategy ABC + AttackRunResult; MAX_ALLOWED_TURNS = 50 (hard cap)
+│   │   │   ├── _common.py                    # Shared helpers
+│   │   │   ├── target_session.py             # TargetSession Protocol + StrandsAgentSession,
+│   │   │   │                                 # StrandsMultiAgentSession, TargetCheckpoint, ToolUseEntry,
+│   │   │   │                                 # as_target_session
+│   │   │   ├── bad_likert_judge/             # BadLikertJudgeStrategy
+│   │   │   ├── crescendo/                    # CrescendoStrategy + crescendo_v0 prompt
+│   │   │   ├── goat/                         # GoatStrategy + goat_v0 prompt
+│   │   │   ├── pair/                         # PairStrategy + prompt template
+│   │   │   ├── prompt_strategy/              # PromptStrategy + gradual_escalation template
+│   │   │   └── sequentialbreak/              # SequentialBreakStrategy
+│   │   └── (evaluator in evaluators/redteam/, types in types/redteam/)
+│   │
+│   ├── experimental/                         # Experimental features (no stability guarantees)
 │   │
 │   ├── detectors/                            # Failure detection + RCA
 │   │   ├── failure_detector.py               # detect_failures (model.stream text mode)
@@ -202,6 +212,10 @@ strands-evals/
 │       ├── trace.py                          # Session, Trace, SpanUnion
 │       ├── detector.py                       # FailureItem, RCAItem, DiagnosisResult, ...
 │       ├── multimodal.py
+│       ├── redteam/
+│       │   ├── config.py                     # AttackGoal, RedTeamConfig, Severity
+│       │   ├── risk_category.py              # RISK_CATEGORIES, DEFAULT_SEVERITY
+│       │   └── run_results.py                # RUN_RESULTS / ATTACKER_REFUSED / REFUSAL_JUDGE_FAILURES run-stats keys
 │       └── simulation/
 │           ├── actor.py
 │           └── tool.py
@@ -209,11 +223,12 @@ strands-evals/
 ├── tests/strands_evals/                      # Unit tests (mirrors src/strands_evals/)
 │   ├── evaluators/
 │   │   ├── chaos/
+│   │   ├── redteam/
 │   │   └── deterministic/
 │   ├── chaos/
 │   ├── detectors/
 │   ├── experimental/
-│   │   └── redteam/                          # Mirrors src/strands_evals/experimental/redteam/
+│   ├── redteam/                          # Mirrors src/strands_evals/redteam/
 │   ├── simulation/
 │   ├── extractors/
 │   ├── generators/
@@ -224,6 +239,7 @@ strands-evals/
 │   ├── cli/
 │   │   └── fixtures/                         # local agent / task / evaluator fixtures
 │   └── types/
+│       └── redteam/
 │
 ├── tests_integ/                              # Integration tests (real providers)
 │
@@ -236,6 +252,7 @@ strands-evals/
 
 ### Directory Purposes
 
+- **`.agents/skills/`**: Agent skills, one directory per skill containing a `SKILL.md`; the folder name must match the skill's `name` frontmatter
 - **`src/strands_evals/`**: All production code
 - **`src/strands_evals/cli/`**: `strands-evals` console script — six subcommands (`run`, `validate`, `report`, `diagnose`, `generate`, `fetch`) plus the `module:attr` resolver and synthesized task wrapper used by `--agent`. `fetch` has per-provider sub-subcommands (`cloudwatch`, `langfuse`, `opensearch`); langfuse / opensearch are imported lazily so they only fail when invoked without their extra installed.
 - **`tests/strands_evals/`**: Unit tests mirroring src/ structure
@@ -258,7 +275,7 @@ All evaluators subclass `strands_evals.evaluators.Evaluator[InputT, OutputT]`:
   Agent(model=self.model, system_prompt=..., callback_handler=None)
   ```
 - `model` parameter type: `Union[Model, str, None]`, supports all 13+ Strands model providers
-- Structured output pattern: `agent(prompt, structured_output_model=PydanticModel)` (sync). Async counterpart: `await agent.invoke_async(prompt, structured_output_model=PydanticModel)` — used in `experimental/redteam/generators/adversarial.py` and other async code paths.
+- Structured output pattern: `agent(prompt, structured_output_model=PydanticModel)` (sync). Async counterpart: `await agent.invoke_async(prompt, structured_output_model=PydanticModel)` — used in `redteam/generators/adversarial.py` and other async code paths.
 
 ### Default Judge Model
 
@@ -462,7 +479,7 @@ If you are an agent opening a PR on behalf of a contributor, the human is the au
 - Version prompt templates as Python string constants in `{name}_v0.py`.
 - When editing `detectors/`, keep the three-tier RCA fallback and the `model.stream()` text-mode path for failure detection intact unless the PR explicitly targets those behaviors.
 - When editing `chaos/`, keep the `ContextVar`-based plugin dispatch and the discriminated-union effect serialization intact; `ChaosPlugin` should remain a thin reader of the active `ChaosCase`.
-- When editing `experimental/redteam/`, keep `AttackStrategy` instances stateless across cases (clear in `reset()`) and prefer extending the strategy library over modifying `RedTeamExperiment`'s cross-product loop.
+- When editing `redteam/`, keep `AttackStrategy` instances stateless across cases (clear in `reset()`) and prefer extending the strategy library over modifying `RedTeamExperiment`'s cross-product loop.
 
 ## Things NOT to Do
 
@@ -486,7 +503,7 @@ When reviewing a PR in this repo, scan for all of the following:
 4. **Session/trace schema**: if the PR changes fields on `Session`, `Trace`, or `SpanUnion`, every mapper in `mappers/` must still produce valid instances. Check each.
 5. **SDK usage**: if the PR calls into `strands.*`, verify the symbol exists in the current SDK public API and is not under an `_` module or an experimental surface. When the SDK source is available as a sibling checkout (`../sdk-python/` or similar), read the relevant SDK file and confirm the signature matches.
 6. **Chaos changes**: new `ChaosEffect` subclasses must declare a `hook` (`"pre"` or `"post"`) and a unique `effect_type` literal so the discriminated union round-trips through Pydantic. The `ChaosPlugin` reads the active case from `_current_chaos_case` (ContextVar); don't rewire it to read from instance state. `ChaosCase.expand` is the public entry point for case × effect-map cross-products.
-7. **Red-team changes**: new strategies subclass `AttackStrategy` and clear runtime state in `reset()` (instances are shared across cases). `AttackSuccessEvaluator` must return a continuous 0.0-1.0 score and the four-anchor severity (`refused | partial | substantial | full`). For parallel runs, `RedTeamExperiment` requires `agent_factory=`, not `agent=`. Stability: `experimental.redteam` APIs may change in a minor release. Breaking changes (renames, removed args, changed defaults) go through a deprecation cycle with a `DeprecationWarning` for at least one minor version.
+7. **Red-team changes**: new strategies subclass `AttackStrategy` and clear runtime state in `reset()` (instances are shared across cases). `AttackSuccessEvaluator` must return a continuous 0.0-1.0 score and the four-anchor severity (`refused | partial | substantial | full`). `RedTeamExperiment` takes `agent_factory=` in `run_evaluations()` / `run_evaluations_async()`, not the constructor; the constructor's `agent=` / `agent_factory=` and plain `Case` inputs are deprecated. It binds `report_cls = RedTeamReport` but still rebuilds the report with `RedTeamReport.from_evaluation_report` so `overall_score` excludes errored rows. Stability: breaking changes to `strands_evals.redteam` (renames, removed args, changed defaults) go through a deprecation cycle with a `DeprecationWarning` for at least one minor version.
 8. **Dependencies**: no new litellm, no new Jinja2, no new `_internal/` directories.
 9. **Style & logging**: structured logging with `%s` interpolation, lowercase messages, no f-strings in logger calls.
 10. **Tests**: new code needs a mirrored test file in `tests/strands_evals/...`. Async code uses `pytest-asyncio` auto mode.
@@ -497,5 +514,4 @@ When reviewing a PR in this repo, scan for all of the following:
 - [STYLE_GUIDE.md](./STYLE_GUIDE.md) — Logging and style conventions
 - [Strands Agents Documentation](https://strandsagents.com/)
 - [Strands Agents Python SDK](https://github.com/strands-agents/sdk-python)
-- [Strands Agents Tools](https://github.com/strands-agents/tools)
 - [Strands Agents Samples](https://github.com/strands-agents/samples)

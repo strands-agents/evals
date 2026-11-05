@@ -14,14 +14,20 @@ def is_throttling_error(exception: BaseException) -> bool:
     """
     Check if an exception is a throttling/rate limiting error.
 
+    An `EventLoopException` wraps any failure in the agent event loop, so it is judged by its
+    `original_exception`; otherwise non-throttling failures would be retried as if throttled.
+
     Args:
         exception: The exception to check
 
     Returns:
         True if the exception indicates throttling, False otherwise
     """
+    if isinstance(exception, EventLoopException):
+        return is_throttling_error(exception.original_exception)
+
     # Check for Strands-specific throttling exceptions
-    if isinstance(exception, (ModelThrottledException, EventLoopException)):
+    if isinstance(exception, ModelThrottledException):
         return True
 
     # Check for botocore.errorfactory.ThrottlingException (dynamically generated)

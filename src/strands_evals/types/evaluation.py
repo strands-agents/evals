@@ -130,12 +130,17 @@ class EvaluationOutput(BaseModel):
         reason: The reason for the score for each test case.
         label: The categorical label corresponding to the score, or `NOT_APPLICABLE` when there
             was nothing to judge.
+        metadata: Evaluator-specific detail that does not fit the four scalars above, for
+            evaluators whose result is richer than one number. It stays with the report, so it
+            survives `EvaluationReport.flatten` and `model_dump_json()`. Left as None by
+            evaluators that have nothing extra to report. Not exported to telemetry.
     """
 
     score: float
     test_pass: bool
     reason: str | None = None
     label: str | None = None
+    metadata: dict[str, Any] | None = None
 
     @property
     def not_applicable(self) -> bool:

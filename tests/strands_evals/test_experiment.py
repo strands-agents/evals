@@ -10,7 +10,7 @@ from strands import tool as strands_tool
 from strands.models.model import Model
 from strands.types.exceptions import EventLoopException, ModelThrottledException
 
-from strands_evals import Case, DiagnosisConfig, Experiment
+from strands_evals import Case, DiagnosisConfig, EvaluationReport, Experiment
 from strands_evals import evaluators as builtin_evaluators
 from strands_evals.evaluators import (
     Contains,
@@ -926,6 +926,38 @@ async def test_experiment_run_evaluations_async_preserves_input_order():
 
 
 @pytest.mark.asyncio
+async def test_experiment_run_evaluations_async_runs_case_evaluators_concurrently():
+    """Test that a case's evaluators run concurrently and keep their declared order in the report"""
+    running = 0
+    peak = 0
+
+    class SleepingEvaluator(Evaluator[str, str]):
+        def __init__(self, name: str, delay: float):
+            super().__init__(name=name)
+            self.delay = delay
+
+        def evaluate(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
+            raise NotImplementedError
+
+        async def evaluate_async(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
+            nonlocal running, peak
+            running += 1
+            peak = max(peak, running)
+            await asyncio.sleep(self.delay)
+            running -= 1
+            return [EvaluationOutput(score=1.0, test_pass=True, reason=self.get_name())]
+
+    experiment = Experiment(
+        cases=[Case(name="case", input="hello")],
+        evaluators=[SleepingEvaluator("slow", 0.05), SleepingEvaluator("fast", 0.01)],
+    )
+    report = await experiment.run_evaluations_async(lambda c: c.input, max_workers=1)
+
+    assert peak == 2
+    assert [case_data["evaluator"] for case_data in report.cases] == ["slow", "fast"]
+
+
+@pytest.mark.asyncio
 async def test_experiment_run_evaluations_async_with_errors():
     """Test run_evaluations_async handles errors gracefully"""
 
@@ -1237,10 +1269,38 @@ def testis_throttling_error_detects_model_throttled_exception():
     assert is_throttling_error(exc) is True
 
 
-def testis_throttling_error_detects_event_loop_exception():
-    """Test that EventLoopException is detected as throttling error"""
-    exc = EventLoopException(Exception("Throttling"), {})
+def testis_throttling_error_detects_event_loop_exception_wrapping_model_throttled():
+    """Test that EventLoopException wrapping ModelThrottledException is detected as throttling error"""
+    exc = EventLoopException(ModelThrottledException("Too many tokens"), {})
     assert is_throttling_error(exc) is True
+
+
+def testis_throttling_error_detects_event_loop_exception_wrapping_botocore_throttling():
+    """Test that EventLoopException wrapping a botocore throttling error is detected"""
+
+    class ThrottlingException(Exception):
+        pass
+
+    exc = EventLoopException(ThrottlingException("Rate limit exceeded"), {})
+    assert is_throttling_error(exc) is True
+
+    client_error = ClientError({"Error": {"Code": "ThrottlingException", "Message": "Test"}}, "TestOperation")
+    assert is_throttling_error(EventLoopException(client_error, {})) is True
+
+
+def testis_throttling_error_ignores_event_loop_exception_wrapping_non_throttling():
+    """Test that EventLoopException wrapping a non-throttling error is not detected"""
+    exc = EventLoopException(ValueError("not throttling"), {})
+    assert is_throttling_error(exc) is False
+
+
+def testis_throttling_error_judges_nested_event_loop_exception_by_innermost_cause():
+    """Test that nested EventLoopExceptions are judged by the innermost cause"""
+    throttled = EventLoopException(EventLoopException(ModelThrottledException("Too many tokens"), {}), {})
+    assert is_throttling_error(throttled) is True
+
+    not_throttled = EventLoopException(EventLoopException(ValueError("not throttling"), {}), {})
+    assert is_throttling_error(not_throttled) is False
 
 
 def testis_throttling_error_detects_botocore_throttling():
@@ -1354,6 +1414,28 @@ def test_experiment_run_evaluations_no_retry_on_non_throttling():
     assert call_count == 1
     assert report.scores[0] == 0
     assert "Invalid input" in report.reasons[0]
+
+
+def test_experiment_run_evaluations_no_retry_on_event_loop_exception_non_throttling():
+    """Test that run_evaluations doesn't retry an EventLoopException wrapping a non-throttling error"""
+    call_count = 0
+
+    def event_loop_error_task(c):
+        nonlocal call_count
+        call_count += 1
+        raise EventLoopException(ValueError("not throttling"), {})
+
+    case = Case(name="test", input="hello", expected_output="hello")
+    experiment = Experiment(cases=[case], evaluators=[MockEvaluator()])
+
+    with patch("strands_evals.experiment._INITIAL_RETRY_DELAY", 0.01):
+        with patch("strands_evals.experiment._MAX_RETRY_DELAY", 0.02):
+            report = experiment.run_evaluations(event_loop_error_task)
+
+    assert call_count == 1
+    assert report.scores[0] == 0
+    assert report.test_passes[0] is False
+    assert "not throttling" in report.reasons[0]
 
 
 def test_experiment_run_evaluations_exponential_backoff():
@@ -2236,3 +2318,110 @@ def test_evaluator_name_default_omitted_from_to_dict():
 
     payload = experiment.to_dict()
     assert "name" not in payload["evaluators"][0]
+
+
+class RichReport(EvaluationReport):
+    """Report subclass exercising the `report_cls` extension point."""
+
+    def pass_rate(self) -> float:
+        return sum(self.test_passes) / len(self.test_passes) if self.test_passes else 0.0
+
+
+class RichReportExperiment(Experiment[str, str, RichReport]):
+    report_cls = RichReport
+
+
+def test_experiment_report_cls_defaults_to_base(mock_evaluator, simple_task):
+    """An unparameterized Experiment still returns the plain EvaluationReport."""
+    cases = [Case(name="match", input="hello", expected_output="hello")]
+
+    report = Experiment(cases=cases, evaluators=[mock_evaluator]).run_evaluations(simple_task)
+
+    assert type(report) is EvaluationReport
+
+
+def test_experiment_report_cls_returns_subclass(mock_evaluator, simple_task):
+    """A subclass binding ReportT gets its report type back from run_evaluations."""
+    cases = [
+        Case(name="match", input="hello", expected_output="hello"),
+        Case(name="no_match", input="foo", expected_output="bar"),
+    ]
+
+    report = RichReportExperiment(cases=cases, evaluators=[mock_evaluator]).run_evaluations(simple_task)
+
+    assert type(report) is RichReport
+    assert report.pass_rate() == 0.5
+    assert report.overall_score == 0.5
+
+
+def test_experiment_report_cls_flattens_as_subclass(mock_evaluator, simple_task):
+    """The multi-evaluator path flattens with report_cls, not the base class."""
+    cases = [Case(name="match", input="hello", expected_output="hello")]
+    experiment = RichReportExperiment(cases=cases, evaluators=[mock_evaluator, MockEvaluator2()])
+
+    report = experiment.run_evaluations(simple_task)
+
+    assert type(report) is RichReport
+    assert len(report.scores) == 2
+    assert report.pass_rate() == 1.0
+
+
+def test_experiment_report_cls_report_round_trips_as_base(mock_evaluator, simple_task, tmp_path):
+    """A subclass-written report file reloads cleanly as the base EvaluationReport."""
+    cases = [Case(name="match", input="hello", expected_output="hello")]
+    report = RichReportExperiment(cases=cases, evaluators=[mock_evaluator]).run_evaluations(simple_task)
+
+    path = str(tmp_path / "report.json")
+    report.to_file(path)
+    reloaded = EvaluationReport.from_file(path)
+
+    assert type(reloaded) is EvaluationReport
+    assert reloaded.model_dump() == EvaluationReport(**report.model_dump()).model_dump()
+
+    rich_reloaded = RichReport.from_file(path)
+    assert rich_reloaded.pass_rate() == report.pass_rate()
+
+
+def test_experiment_report_cls_kwarg(mock_evaluator, simple_task):
+    """Passing report_cls at construction returns the subclass without subclassing Experiment."""
+    cases = [Case(name="match", input="hello", expected_output="hello")]
+
+    report = Experiment(cases=cases, evaluators=[mock_evaluator], report_cls=RichReport).run_evaluations(simple_task)
+
+    assert type(report) is RichReport
+    assert report.pass_rate() == 1.0
+
+
+def test_experiment_report_cls_kwarg_overrides_class_attribute(mock_evaluator, simple_task):
+    """The constructor kwarg wins over a subclass's report_cls attribute."""
+    cases = [Case(name="match", input="hello", expected_output="hello")]
+
+    report = RichReportExperiment(
+        cases=cases, evaluators=[mock_evaluator], report_cls=EvaluationReport
+    ).run_evaluations(simple_task)
+
+    assert type(report) is EvaluationReport
+
+
+class MinScoreReport(EvaluationReport):
+    """Report overriding the scoring hook, to prove report_cls drives overall_score."""
+
+    @classmethod
+    def calculate_overall_score(cls, scores, detailed_results):
+        return min(scores) if scores else 0.0
+
+
+def test_experiment_report_cls_scoring_override_applies_to_single_evaluator(mock_evaluator, simple_task):
+    """The single-evaluator path scores with report_cls, same as the flatten path."""
+    cases = [
+        Case(name="match", input="hello", expected_output="hello"),
+        Case(name="no_match", input="foo", expected_output="bar"),
+    ]
+
+    experiment = Experiment(cases=cases, evaluators=[mock_evaluator], report_cls=MinScoreReport)
+    report = experiment.run_evaluations(simple_task)
+
+    assert report.overall_score == 0.0  # min(1.0, 0.0), not the default average of 0.5
+
+    multi = Experiment(cases=cases, evaluators=[mock_evaluator, MockEvaluator2()], report_cls=MinScoreReport)
+    assert multi.run_evaluations(simple_task).overall_score == 0.0

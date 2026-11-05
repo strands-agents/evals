@@ -1,0 +1,44 @@
+from .bad_likert_judge import BadLikertJudgeStrategy
+from .base import MAX_ALLOWED_TURNS, RUN_RESULTS, AttackRunResult, AttackStrategy
+from .crescendo import CrescendoStrategy
+from .goat import GoatStrategy
+from .pair import PairStrategy
+from .prompt_strategy import PromptStrategy
+from .prompt_strategy.gradual_escalation import get_template as _gradual_escalation_template
+from .sequentialbreak import SequentialBreakStrategy
+from .target_session import (
+    StrandsAgentSession,
+    StrandsMultiAgentSession,
+    TargetCheckpoint,
+    TargetSession,
+    ToolUseEntry,
+    as_target_session,
+)
+
+# Ready-made strategy instances users can pass to RedTeamExperiment(attack_strategies=[...]).
+# Strategy instances are shared across cases, so each must keep `__init__` for static
+# config and clear any runtime state in `reset()`.
+BUILTIN_STRATEGIES: dict[str, AttackStrategy] = {
+    "gradual_escalation": PromptStrategy("gradual_escalation", _gradual_escalation_template().SYSTEM_PROMPT_TEMPLATE),
+}
+
+
+__all__ = [
+    "BUILTIN_STRATEGIES",
+    "MAX_ALLOWED_TURNS",
+    "RUN_RESULTS",
+    "AttackRunResult",
+    "AttackStrategy",
+    "BadLikertJudgeStrategy",
+    "CrescendoStrategy",
+    "GoatStrategy",
+    "PairStrategy",
+    "PromptStrategy",
+    "SequentialBreakStrategy",
+    "StrandsAgentSession",
+    "StrandsMultiAgentSession",
+    "TargetCheckpoint",
+    "TargetSession",
+    "ToolUseEntry",
+    "as_target_session",
+]

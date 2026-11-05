@@ -19,13 +19,14 @@ from openinference.instrumentation.langchain import LangChainInstrumentor
 
 from strands_evals import Case, Experiment
 from strands_evals.evaluators import Evaluator
+from strands_evals.evaluators.evaluator import DEFAULT_BEDROCK_MODEL_ID
 from strands_evals.mappers import detect_otel_mapper, readable_spans_to_dicts
 from strands_evals.telemetry import StrandsEvalsTelemetry
 from strands_evals.types import EvaluationData, EvaluationOutput
 from strands_evals.types.trace import ToolExecutionSpan
 
 # Use the same model that works in CI (same as evaluators use)
-DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-20250514-v1:0"
+DEFAULT_MODEL_ID = DEFAULT_BEDROCK_MODEL_ID
 
 
 class ToolUsageEvaluator(Evaluator[str, str]):
