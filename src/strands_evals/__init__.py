@@ -7,6 +7,7 @@ from .experiment import Experiment
 from .local_file_task_result_store import LocalFileTaskResultStore
 from .simulation import ActorSimulator, UserSimulator
 from .telemetry import StrandsEvalsTelemetry, get_tracer
+from .trend import ExperimentTrendAnalyzer, ExperimentTrendReport, MetricTrend, RunPoint
 from .types.detector import DiagnosisConfig
 from .types.evaluation_report import EvaluationReport
 
@@ -17,6 +18,10 @@ __all__ = [
     "LocalFileTaskResultStore",
     "EvaluationDataStore",
     "EvaluationReport",
+    "ExperimentTrendAnalyzer",
+    "ExperimentTrendReport",
+    "MetricTrend",
+    "RunPoint",
     "StructuredOutputReport",
     "EvalTaskHandler",
     "TracedHandler",
