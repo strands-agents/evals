@@ -7,6 +7,17 @@ from rich.tree import Tree
 console = Console()
 
 
+def _case_is_applicable(case: dict) -> bool:
+    """Whether a displayed case's rows carry a verdict, so it belongs in the pass rate.
+
+    Mirrors EvaluationReport.is_applicable: a case is dropped only when it has rows and every row
+    both declined to judge (not_applicable) and passed. A case with no detailed rows, or any row
+    that either judged or failed, stays in the rate.
+    """
+    outputs = case.get("detailed_results") or []
+    return not outputs or any(not output.not_applicable or not output.test_pass for output in outputs)
+
+
 class CollapsibleTableReportDisplay:
     """
     Interactive console display for evaluation reports with expandable/collapsible test case details.
@@ -55,8 +66,12 @@ class CollapsibleTableReportDisplay:
         Expanded rows show full details, while collapsed rows show minimal information.
         """
         overall_score_string = f"[bold blue]Overall Score: {self.overall_score:.2f}[/bold blue]"
-        pass_count = sum([1 if case["details"]["test_pass"] else 0 for case in self.items.values()])
-        pass_rate = pass_count / len(self.items)
+        # Exclude not-applicable cases (e.g. a judge that couldn't evaluate because its prompt
+        # overflowed the context window) from the pass rate, mirroring EvaluationReport.is_applicable
+        # so an unscored case can't deflate the rate the same way it's kept out of the overall score.
+        applicable = [case for case in self.items.values() if _case_is_applicable(case)]
+        pass_count = sum(1 for case in applicable if case["details"]["test_pass"])
+        pass_rate = pass_count / len(applicable) if applicable else 0.0
         overall_pass_rate = f"[bold blue]Pass Rate: {pass_rate}[/bold blue]"
         spacing = "           "
         console.print(Panel(f"{overall_score_string}{spacing}{overall_pass_rate}", title="📊 Evaluation Report"))
