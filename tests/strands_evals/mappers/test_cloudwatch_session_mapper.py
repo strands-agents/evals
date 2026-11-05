@@ -1,6 +1,7 @@
 """Tests for CloudWatchSessionMapper — body-format CW log record → Session conversion."""
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -306,3 +307,45 @@ class TestMultiBlockToolResult:
         tool_spans = [s for s in session.traces[0].spans if isinstance(s, ToolExecutionSpan)]
         assert len(tool_spans) == 1
         assert tool_spans[0].tool_result.content == 'val:\n{"x": 1}'
+
+
+# --- Regression tests: string-encoded timeUnixNano (OTLP/JSON encodes uint64 as strings) ---
+
+
+class TestStringEncodedTimestamps:
+    EPOCH_NS = 1717000000000000000  # 2024-05-29T16:26:40Z
+
+    def _inference_span(self, session):
+        return next(s for s in session.traces[0].spans if isinstance(s, InferenceSpan))
+
+    def test_string_time_unix_nano_matches_int(self, mapper):
+        def start_time(time_nano):
+            record = make_log_record(
+                input_messages=[make_user_message("Hi")],
+                output_messages=[make_assistant_text_message("Hello!")],
+                time_nano=time_nano,
+            )
+            return self._inference_span(mapper.map_to_session([record], "sess-1")).span_info.start_time
+
+        expected = datetime(2024, 5, 29, 16, 26, 40, tzinfo=timezone.utc)
+        assert start_time(self.EPOCH_NS) == expected
+        assert start_time(str(self.EPOCH_NS)) == expected
+
+    def test_mixed_string_and_int_timestamps_sorted_chronologically(self, mapper):
+        records = [
+            make_log_record(
+                span_id="later",
+                input_messages=[make_user_message("Second")],
+                output_messages=[make_assistant_text_message("B")],
+                time_nano=str(self.EPOCH_NS + 1_000_000_000),
+            ),
+            make_log_record(
+                span_id="earlier",
+                input_messages=[make_user_message("First")],
+                output_messages=[make_assistant_text_message("A")],
+                time_nano=self.EPOCH_NS,
+            ),
+        ]
+        session = mapper.map_to_session(records, "sess-1")
+        inference = [s for s in session.traces[0].spans if isinstance(s, InferenceSpan)]
+        assert [s.span_info.span_id for s in inference] == ["earlier", "later"]
