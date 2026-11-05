@@ -142,6 +142,14 @@ def test_child_rejects_invalid_values():
         Candidate.baseline(space).child(space, {"temprature": 0.3}, origin="numbers", rationale="")
 
 
+def test_child_validates_the_values_it_stores(tmp_path):
+    (tmp_path / "agent.json").write_text('{"tags": [1, 2]}\n', newline="")
+    space = Space({"tags": JsonField(tmp_path / "agent.json", "/tags", size_cap=12)})
+    # 9 characters as proposed, 22 once written as the file holds it
+    with pytest.raises(ValueError, match="over the size_cap of 12"):
+        Candidate.baseline(space).child(space, {"tags": "[1,2,3,4]"}, origin="text", rationale="")
+
+
 def test_child_rejects_an_update_to_an_inactive_key():
     space = make_space()
     with pytest.raises(ValueError, match="inactive"):

@@ -114,8 +114,8 @@ class Candidate:
             return found
 
         completed = space.complete({**self.values, **updates}, fill=record)
-        # Updates go back on top so validate reports an inactive one instead of complete() dropping it.
-        space.validate({**completed, **updates})
+        # Validate what is stored; an update complete() dropped as inactive is added back, so it's reported.
+        space.validate({**updates, **completed})
         return Candidate(
             values=completed,
             parent_id=self.id,

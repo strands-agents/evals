@@ -1,10 +1,13 @@
+import asyncio
 import gc
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from strands_evals.optimization import FileText, JsonField, Space, TextValue, tunable
+from strands_evals.optimization.declaration.files import _location_in_copy
 from strands_evals.optimization.declaration.tunable import _KEPT_UNTIL_EXIT
 
 
@@ -163,6 +166,14 @@ def test_an_out_of_range_json_number_fails_validation(project):
         space.validate({"turns": "1e400"})
 
 
+def test_size_cap_is_checked_on_the_json_text_as_stored(project, tmp_path):
+    (tmp_path / "agent.json").write_text('{"tags": [1, 2]}\n', newline="")
+    space = Space({"tags": JsonField(tmp_path / "agent.json", "/tags", size_cap=12)})
+    # 9 characters as proposed, 22 once written with the 2-space indent
+    with pytest.raises(ValueError, match="22 characters, over the size_cap of 12"):
+        space.validate({"tags": "[1,2,3,4]"})
+
+
 def test_equal_json_values_give_one_candidate(project):
     space = Space({"limits": JsonField(project / "config" / "agent.json", "/agent/limits")})
     baseline = space.complete({})
@@ -176,6 +187,26 @@ def test_canonical_json_keeps_key_order_and_leaves_bad_json_to_validate(project)
     assert space.complete({"limits": "not json"})["limits"] == "not json"
     with pytest.raises(ValueError, match="not valid JSON"):
         space.validate(space.complete({"limits": "not json"}))
+
+
+@pytest.mark.parametrize("edited", [{"agent": "flat"}, {"other": 1}])
+def test_writing_a_json_field_the_file_lost_since_declaration_names_it(project, edited):
+    path = project / "config" / "agent.json"
+    field = JsonField(path, "/agent/limits/turns")
+    path.write_text(json.dumps(edited), newline="")
+    with pytest.raises(TypeError, match="has no field at '/agent/limits/turns'"):
+        field.write("5", path)
+
+
+def test_a_json_file_deleted_or_broken_since_declaration_is_named_in_the_copy_error(project, tmp_path_factory):
+    path = project / "config" / "agent.json"
+    space = Space({"turns": JsonField(path, "/agent/limits/turns")})
+    path.write_text("{oops", newline="")
+    with pytest.raises(TypeError, match="agent.json is no longer valid JSON"):
+        space.create_candidate_copy({"turns": "5"}, tmp_path_factory.mktemp("run") / "broken")
+    path.unlink()
+    with pytest.raises(TypeError, match="agent.json no longer exists"):
+        space.create_candidate_copy({"turns": "5"}, tmp_path_factory.mktemp("run") / "deleted")
 
 
 def test_a_string_json_field_is_never_rewritten(project):
@@ -264,10 +295,7 @@ def folders(workspace):
 
 
 def copied(space, workspace, path):
-    folders = space._copy_folders
-    from strands_evals.optimization.declaration.files import _location_in_copy
-
-    return workspace / _location_in_copy(folders, path.resolve())
+    return workspace / _location_in_copy(space._copy_folders, path.resolve())
 
 
 def test_copy_writes_changed_values_and_never_the_originals(project, tmp_path_factory):
@@ -318,8 +346,6 @@ def test_a_workspace_holding_another_candidates_copy_is_refused(project, tmp_pat
 
 
 def test_concurrent_copies_into_one_empty_folder_all_succeed(project, tmp_path_factory):
-    from concurrent.futures import ThreadPoolExecutor
-
     space = make_space(project)
     values = {**space.complete({}), "system": "Same.\n"}
     for trial in range(10):
@@ -524,8 +550,6 @@ def test_a_built_object_without_weak_references_keeps_the_temp_copy_until_exit(p
 
 
 def test_an_async_factorys_agent_keeps_the_temp_copy(project):
-    import asyncio
-
     class Agent:
         def __init__(self, path):
             self.path = path

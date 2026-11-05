@@ -347,7 +347,13 @@ class Space:
         return texts
 
     def _problem(self, info: ParamInfo, value: Any) -> str | None:
-        """A one-line problem with one value, including a file marker's format check, or None."""
+        """A one-line problem with one value, including a file marker's format check, or None.
+
+        A file-backed value is checked as `complete` stores it, so a value that passes here also
+        passes once completed (e.g. compact JSON that the stored 2-space indent puts over `size_cap`).
+        """
+        if info.key in self._files:
+            value = self._files[info.key]._canonical(value)
         problem = _check_value(info, value)
         if problem is None and info.key in self._files:
             format_problem = self._files[info.key]._format_problem(value)

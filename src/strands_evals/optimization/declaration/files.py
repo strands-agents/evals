@@ -139,8 +139,20 @@ class JsonField(_Marker):
         Args:
             value: The field's new value as text.
             target: The JSON file inside the copy.
+
+        Raises:
+            TypeError: The file changed since declaration: it is gone, is no longer valid JSON, or no
+                longer has a field at the pointer. The message names the original file, not the copy.
         """
-        text = target.read_bytes().decode("utf-8")
+        if not target.is_file():
+            raise TypeError(f"JsonField: {self.path} no longer exists (changed since declaration)")
+        try:
+            text = target.read_bytes().decode("utf-8")
+            _loads(text)
+        except ValueError as error:  # UnicodeDecodeError included
+            raise TypeError(
+                f"JsonField: {self.path} is no longer valid JSON (changed since declaration): {error}"
+            ) from error
         if self._holds(value, text):
             return
         _replace_file(target, self._render(value, text))
@@ -162,6 +174,8 @@ class JsonField(_Marker):
     def _render(self, value: str, text: str) -> str:
         """The whole file's text with the field at the pointer set to `value`."""
         document = _loads(text)
+        # Only to raise when the file lost the field since declaration.
+        _get(document, self._tokens, self.pointer, self.path)
         _set(document, self._tokens, value if self._is_text else _loads(value))
         return _dumps(document) + "\n"
 
@@ -194,7 +208,7 @@ class JsonField(_Marker):
             return f"not valid JSON ({error})"
         kind = _json_kind(parsed)
         if self._kind != "null" and kind != self._kind:
-            return f"expected a JSON {self._kind} like the file's {self.default}, got {value} (a {kind})"
+            return f"expected a JSON {self._kind} like the file's {self.default}, got {value} ({kind})"
         return None
 
 
