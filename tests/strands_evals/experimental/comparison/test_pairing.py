@@ -62,14 +62,12 @@ def test_pairs_rows_by_case_and_evaluator_regardless_of_order():
 
     paired = pair_reports(baseline, candidate)
 
-    assert [(pair.evaluator, pair.case_id) for pair in paired.pairs] == [
+    assert [(pair.evaluator, pair.case_id) for pair in paired] == [
         ("correctness", "case-a"),
         ("correctness", "case-b"),
         ("helpfulness", "case-a"),
     ]
-    assert [pair.delta for pair in paired.pairs] == pytest.approx([0.3, -0.2, 0.2])
-    assert paired.pairs[0].baseline_index == 2
-    assert paired.pairs[0].candidate_index == 0
+    assert [pair.delta for pair in paired] == pytest.approx([0.3, -0.2, 0.2])
 
 
 def test_unnamed_cases_are_paired_by_input():
@@ -78,9 +76,9 @@ def test_unnamed_cases_are_paired_by_input():
 
     paired = pair_reports(baseline, candidate)
 
-    assert len(paired.pairs) == 1
-    assert paired.pairs[0].case_id.startswith("input:")
-    assert paired.pairs[0].delta == 0.5
+    assert len(paired) == 1
+    assert paired[0].case_id.startswith("input:")
+    assert paired[0].delta == 0.5
 
 
 def test_omits_rows_that_are_not_applicable_in_both_reports():
@@ -88,7 +86,7 @@ def test_omits_rows_that_are_not_applicable_in_both_reports():
     baseline = _report([_row(name="unused", score=0.0, details=not_applicable)])
     candidate = _report([_row(name="unused", score=0.0, details=not_applicable)])
 
-    assert pair_reports(baseline, candidate).pairs == []
+    assert pair_reports(baseline, candidate) == []
 
 
 def test_rejects_applicability_mismatch():

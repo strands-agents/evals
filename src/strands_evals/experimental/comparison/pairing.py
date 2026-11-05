@@ -2,14 +2,11 @@
 
 import hashlib
 import json
-from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel
 
 from ...types.evaluation_report import EvaluationReport
-
-_JSON_VALUE_ADAPTER = TypeAdapter(Any)
 
 
 class PairedScore(BaseModel):
@@ -18,8 +15,6 @@ class PairedScore(BaseModel):
     Attributes:
         case_id: Stable identifier derived from the case name or input.
         evaluator: Name of the evaluator that produced both scores.
-        baseline_index: Position of the row in the baseline report.
-        candidate_index: Position of the row in the candidate report.
         baseline_score: Score produced by the baseline.
         candidate_score: Score produced by the candidate.
         delta: Candidate score minus baseline score.
@@ -27,34 +22,12 @@ class PairedScore(BaseModel):
 
     case_id: str
     evaluator: str
-    baseline_index: int
-    candidate_index: int
     baseline_score: float
     candidate_score: float
     delta: float
 
 
-class PairedReport(BaseModel):
-    """Matched evaluator scores from a baseline and candidate report.
-
-    Attributes:
-        pairs: Comparable rows ordered by evaluator and case identity.
-    """
-
-    pairs: list[PairedScore]
-
-
-@dataclass(frozen=True)
-class _IndexedRow:
-    index: int
-    case_id: str
-    evaluator: str
-    input_signature: str
-    score: float
-    applicable: bool
-
-
-def pair_reports(baseline: EvaluationReport, candidate: EvaluationReport) -> PairedReport:
+def pair_reports(baseline: EvaluationReport, candidate: EvaluationReport) -> list[PairedScore]:
     """Match comparable evaluator scores from two reports.
 
     Cases are paired by exact case name when one is present. An unnamed case is
@@ -84,52 +57,59 @@ def pair_reports(baseline: EvaluationReport, candidate: EvaluationReport) -> Pai
     baseline_keys = set(baseline_rows)
     candidate_keys = set(candidate_rows)
     if baseline_keys != candidate_keys:
-        baseline_only = sorted(_display_key(key) for key in baseline_keys - candidate_keys)
-        candidate_only = sorted(_display_key(key) for key in candidate_keys - baseline_keys)
         raise ValueError(
             "reports do not contain the same case/evaluator rows: "
-            f"baseline_only={baseline_only}, candidate_only={candidate_only}"
+            f"baseline_only={sorted(baseline_keys - candidate_keys)}, "
+            f"candidate_only={sorted(candidate_keys - baseline_keys)}"
         )
 
-    pairs = []
+    pairs: list[PairedScore] = []
     for key in sorted(baseline_keys):
-        baseline_row = baseline_rows[key]
-        candidate_row = candidate_rows[key]
+        baseline_index = baseline_rows[key]
+        candidate_index = candidate_rows[key]
+        baseline_case = baseline.cases[baseline_index]
+        candidate_case = candidate.cases[candidate_index]
+        evaluator, case_id = key
 
-        if baseline_row.input_signature != candidate_row.input_signature:
+        if _canonical_json(baseline_case["input"]) != _canonical_json(candidate_case["input"]):
+            raise ValueError(f"case inputs differ between reports: case_id={case_id!r}, evaluator={evaluator!r}")
+
+        baseline_details = (
+            baseline.detailed_results[baseline_index] if baseline_index < len(baseline.detailed_results) else []
+        )
+        candidate_details = (
+            candidate.detailed_results[candidate_index] if candidate_index < len(candidate.detailed_results) else []
+        )
+        baseline_applicable = EvaluationReport.is_applicable(baseline_details)
+        candidate_applicable = EvaluationReport.is_applicable(candidate_details)
+        if baseline_applicable != candidate_applicable:
             raise ValueError(
-                "case inputs differ between reports: "
-                f"case_id={baseline_row.case_id!r}, evaluator={baseline_row.evaluator!r}"
+                f"case applicability differs between reports: case_id={case_id!r}, evaluator={evaluator!r}"
             )
-        if baseline_row.applicable != candidate_row.applicable:
-            raise ValueError(
-                "case applicability differs between reports: "
-                f"case_id={baseline_row.case_id!r}, evaluator={baseline_row.evaluator!r}"
-            )
-        if not baseline_row.applicable:
+        if not baseline_applicable:
             continue
 
+        baseline_score = baseline.scores[baseline_index]
+        candidate_score = candidate.scores[candidate_index]
         pairs.append(
             PairedScore(
-                case_id=baseline_row.case_id,
-                evaluator=baseline_row.evaluator,
-                baseline_index=baseline_row.index,
-                candidate_index=candidate_row.index,
-                baseline_score=baseline_row.score,
-                candidate_score=candidate_row.score,
-                delta=candidate_row.score - baseline_row.score,
+                case_id=case_id,
+                evaluator=evaluator,
+                baseline_score=baseline_score,
+                candidate_score=candidate_score,
+                delta=candidate_score - baseline_score,
             )
         )
 
-    return PairedReport(pairs=pairs)
+    return pairs
 
 
-def _index_report(report: EvaluationReport, report_name: str) -> dict[tuple[str, str, str], _IndexedRow]:
+def _index_report(report: EvaluationReport, report_name: str) -> dict[tuple[str, str], int]:
     if len(report.cases) != len(report.scores):
         raise ValueError(f"{report_name} report has {len(report.cases)} cases but {len(report.scores)} scores")
 
-    rows = {}
-    for index, (case, score) in enumerate(zip(report.cases, report.scores, strict=True)):
+    rows: dict[tuple[str, str], int] = {}
+    for index, case in enumerate(report.cases):
         evaluator = case.get("evaluator")
         if not isinstance(evaluator, str) or not evaluator.strip():
             raise ValueError(f"{report_name} report row {index} is missing a non-empty evaluator name")
@@ -137,55 +117,33 @@ def _index_report(report: EvaluationReport, report_name: str) -> dict[tuple[str,
         if "input" not in case:
             raise ValueError(f"{report_name} report row {index} is missing its case input")
 
-        input_signature = _canonical_json(case["input"], f"{report_name} report row {index} input")
-        identity_kind, identity_value, case_id = _case_identity(case, input_signature, report_name, index)
-        key = (evaluator, identity_kind, identity_value)
+        case_id = _case_id(case, report_name, index)
+        key = (evaluator, case_id)
         if key in rows:
             raise ValueError(
                 f"{report_name} report contains duplicate case/evaluator row: "
                 f"case_id={case_id!r}, evaluator={evaluator!r}"
             )
 
-        detailed_results = report.detailed_results[index] if index < len(report.detailed_results) else []
-        rows[key] = _IndexedRow(
-            index=index,
-            case_id=case_id,
-            evaluator=evaluator,
-            input_signature=input_signature,
-            score=score,
-            applicable=EvaluationReport.is_applicable(detailed_results),
-        )
+        rows[key] = index
 
     return rows
 
 
-def _case_identity(
-    case: dict,
-    input_signature: str,
-    report_name: str,
-    index: int,
-) -> tuple[str, str, str]:
+def _case_id(case: dict, report_name: str, index: int) -> str:
     name = case.get("name")
     if name is not None and not isinstance(name, str):
         raise ValueError(f"{report_name} report row {index} has a non-string case name")
     if isinstance(name, str) and name.strip():
-        normalized_name = name.strip()
-        return "name", normalized_name, normalized_name
+        return name.strip()
 
+    input_signature = _canonical_json(case["input"])
     digest = hashlib.sha256(input_signature.encode("utf-8")).hexdigest()
-    return "input", digest, f"input:{digest[:12]}"
+    return f"input:{digest}"
 
 
-def _canonical_json(value: Any, context: str) -> str:
+def _canonical_json(value: Any) -> str:
     try:
-        jsonable_value = _JSON_VALUE_ADAPTER.dump_python(value, mode="json")
-        return json.dumps(jsonable_value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     except (TypeError, ValueError) as error:
-        raise ValueError(f"{context} must be JSON-serializable") from error
-
-
-def _display_key(key: tuple[str, str, str]) -> str:
-    evaluator, identity_kind, identity_value = key
-    if identity_kind == "input":
-        identity_value = f"{identity_value[:12]}..."
-    return f"{evaluator}:{identity_kind}:{identity_value}"
+        raise ValueError("case input must be JSON-serializable") from error
