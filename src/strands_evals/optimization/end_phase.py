@@ -5,6 +5,8 @@ Imports only `scoring` and `score_model`, never `search` or `selection`: the sea
 
 from __future__ import annotations
 
+import math
+import statistics
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -107,11 +109,10 @@ def paired_interval(
     reference: Mapping[str, float],
     *,
     level: float,
-) -> PairedComparison:
+) -> PairedComparison | None:
     """A t-interval at `level` of the mean per-case difference, over the cases both measured.
 
-    The case is the unit. Deterministic, no seed (scipy, from the `optimization` extra). P1 may replace
-    this with the core compare feature.
+    The case is the unit. Deterministic, no seed (scipy, from the `optimization` extra).
 
     Args:
         candidate: Case name -> the candidate's per-case mean.
@@ -119,9 +120,22 @@ def paired_interval(
         level: Two-sided interval level, `TEST_LEVEL`.
 
     Returns:
-        The mean difference (candidate - reference), its interval, and the number of shared cases.
+        The mean difference (candidate - reference), its interval, and the number of shared cases; no
+        interval with one shared case; None with none.
+
+    Raises:
+        ValueError: A shared case's mean is NaN or infinite.
     """
-    raise NotImplementedError
+    cases = _shared_cases(candidate, reference, caller="paired_interval")
+    n = len(cases)
+    if n == 0:
+        return None
+    differences = [candidate[c] - reference[c] for c in cases]
+    mean = statistics.fmean(differences)
+    if n == 1:
+        return PairedComparison(mean_diff=mean, ci_low=None, ci_high=None, n_cases=n)
+    half = _t_quantile(level, n - 1) * statistics.stdev(differences) / math.sqrt(n)
+    return PairedComparison(mean_diff=mean, ci_low=mean - half, ci_high=mean + half, n_cases=n)
 
 
 def paired_ratio(
@@ -132,12 +146,50 @@ def paired_ratio(
 ) -> PairedComparison | None:
     """The ratio of means with a delta-method interval, over the cases both measured.
 
+    `mean_diff` holds the ratio (candidate mean / reference mean). The caller leaves out metrics that can be
+    < 0, whose ratio means nothing.
+
     Args:
         candidate: Case name -> the candidate's per-case mean.
         reference: Case name -> the reference's per-case mean.
         level: Two-sided interval level.
 
     Returns:
-        The ratio and its interval; None when the reference mean is 0 or the metric can be < 0.
+        The ratio and its interval (none with one shared case); None with no shared case or when the
+        reference mean is 0.
+
+    Raises:
+        ValueError: A shared case's mean is NaN or infinite.
     """
-    raise NotImplementedError
+    cases = _shared_cases(candidate, reference, caller="paired_ratio")
+    n = len(cases)
+    if n == 0:
+        return None
+    a = [candidate[c] for c in cases]
+    b = [reference[c] for c in cases]
+    mean_b = statistics.fmean(b)
+    if mean_b == 0:
+        return None
+    ratio = statistics.fmean(a) / mean_b
+    if n == 1:
+        return PairedComparison(mean_diff=ratio, ci_low=None, ci_high=None, n_cases=n)
+    spread = statistics.variance(a) + ratio * ratio * statistics.variance(b) - 2 * ratio * statistics.covariance(a, b)
+    half = _t_quantile(level, n - 1) * math.sqrt(max(spread, 0.0) / (mean_b * mean_b * n))
+    return PairedComparison(mean_diff=ratio, ci_low=ratio - half, ci_high=ratio + half, n_cases=n)
+
+
+def _shared_cases(candidate: Mapping[str, float], reference: Mapping[str, float], *, caller: str) -> list[str]:
+    """The cases both measured, sorted by name; `ValueError` naming `caller` when a shared mean isn't finite."""
+    cases = sorted(set(candidate) & set(reference))
+    not_finite = [c for c in cases if not (math.isfinite(candidate[c]) and math.isfinite(reference[c]))]
+    if not_finite:
+        raise ValueError(f"{caller}: per-case means must be finite; not for {not_finite}")
+    return cases
+
+
+def _t_quantile(level: float, df: int) -> float:
+    """The two-sided `level` quantile of Student's t with `df` degrees of freedom."""
+    # optional extra: optimization
+    from scipy.stats import t
+
+    return float(t.ppf(0.5 + level / 2, df))

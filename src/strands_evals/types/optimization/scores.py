@@ -96,13 +96,17 @@ class SplitScores(BaseModel):
 
 
 class PairedComparison(BaseModel):
-    """A paired t-interval on the cases both candidates measured (candidate - reference)."""
+    """A paired t-interval on the cases both candidates measured (candidate - reference).
+
+    For a ratio, `mean_diff` holds the ratio of means. `ci_low` / `ci_high` are None with one shared case
+    (no interval from one difference).
+    """
 
     model_config = ConfigDict(frozen=True)
 
     mean_diff: float
-    ci_low: float
-    ci_high: float
+    ci_low: float | None
+    ci_high: float | None
     n_cases: int
 
 
@@ -175,9 +179,11 @@ class TestReport(BaseModel):
     each tested front member gets its own report against the baseline (`champion_id` = that member).
 
     Attributes:
-        objective: `Criteria.objective_value` per case, champion - baseline.
-        difference: Per goal metric.
-        ratio: Per goal metric; None when the baseline mean is 0 or the metric can be < 0.
+        objective: `Criteria.objective_value` per case, champion - baseline; None when no test case was
+            measured by both.
+        difference: Per goal metric; a metric with no test case measured by both is left out.
+        ratio: Per goal metric; None when the baseline mean is 0 or the metric can be < 0; a metric with no
+            test case measured by both is left out, as in `difference`.
         missing: Candidate id -> number of test cases with no counted run (left out).
         means: Champion and baseline -> every metric measured on test.
     """
@@ -188,7 +194,7 @@ class TestReport(BaseModel):
 
     champion_id: str
     baseline_id: str
-    objective: PairedComparison
+    objective: PairedComparison | None
     difference: dict[str, PairedComparison]
     ratio: dict[str, PairedComparison | None]
     missing: dict[str, int]
