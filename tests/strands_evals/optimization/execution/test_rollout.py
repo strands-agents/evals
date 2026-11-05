@@ -4,6 +4,8 @@ from contextlib import asynccontextmanager, contextmanager
 import opentelemetry.trace as trace_api
 import pytest
 from opentelemetry.context import Context
+from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
+from opentelemetry.sdk.trace.sampling import ALWAYS_OFF
 from strands import Agent
 from strands.types.exceptions import EventLoopException, ModelThrottledException
 
@@ -20,7 +22,7 @@ from strands_evals.optimization.execution.rollout import (
 from strands_evals.optimization.execution.traces import TraceCapture
 from strands_evals.types import EvaluationOutput
 from strands_evals.types.optimization import TrialStatus
-from strands_evals.types.trace import Session
+from strands_evals.types.trace import AgentInvocationSpan, Session
 from tests.strands_evals.optimization.scripted_model import ScriptedModel
 
 
@@ -141,30 +143,18 @@ async def test_a_resource_named_like_a_marker_is_a_setup_error():
         await task(_case())
 
 
-async def test_a_sync_context_manager_is_exited_after_the_rollout():
+@pytest.mark.parametrize("kind", ["sync", "async"])
+async def test_a_context_manager_is_exited_after_the_rollout(kind):
     events = []
 
     @contextmanager
-    def environment(case):
+    def sync_environment(case):
         events.append("enter")
         yield {"sandbox": "box"}
         events.append("exit")
-
-    async def rollout(agent_factory, case):
-        events.append("rollout")
-        return {"output": agent_factory()["sandbox"]}
-
-    out = await make_task(_build.bind({}), rollout, environment)(_case())
-
-    assert out == {"output": "box"}
-    assert events == ["enter", "rollout", "exit"]
-
-
-async def test_an_async_context_manager_is_exited_after_the_rollout():
-    events = []
 
     @asynccontextmanager
-    async def environment(case):
+    async def async_environment(case):
         events.append("enter")
         yield {"sandbox": "box"}
         events.append("exit")
@@ -173,10 +163,37 @@ async def test_an_async_context_manager_is_exited_after_the_rollout():
         events.append("rollout")
         return {"output": agent_factory()["sandbox"]}
 
+    environment = sync_environment if kind == "sync" else async_environment
     out = await make_task(_build.bind({}), rollout, environment)(_case())
 
     assert out == {"output": "box"}
     assert events == ["enter", "rollout", "exit"]
+
+
+@pytest.mark.parametrize("kind", ["bare yield", "async def"])
+async def test_an_environment_that_gives_no_mapping_is_a_setup_error(kind, traces):
+    exited = []
+
+    @contextmanager
+    def bare_yield(case):
+        try:
+            yield
+        finally:
+            exited.append(case.name)
+
+    async def async_def(case):
+        return {"sandbox": "box"}
+
+    log = TrialLog()
+    environment = bare_yield if kind == "bare yield" else async_def
+    task = instrument(make_task(_build.bind({}), _built, environment), log, traces)
+
+    with pytest.raises(_FactoryArgumentError, match="not a mapping of resources"):
+        await _run(task, _case(), traces)
+
+    assert isinstance(log.setup_error, _FactoryArgumentError)
+    assert log.records() == {}
+    assert exited == (["case-1"] if kind == "bare yield" else [])
 
 
 @pytest.mark.parametrize("where", ["call", "enter"])
@@ -377,6 +394,18 @@ async def test_a_setup_error_is_stored_not_classified(traces):
     assert log.records() == {}
 
 
+async def test_an_unrecorded_attempt_span_is_a_setup_error(traces, monkeypatch):
+    unsampled = SDKTracerProvider(sampler=ALWAYS_OFF).get_tracer("optimization-tests")
+    monkeypatch.setattr("strands_evals.optimization.execution.rollout.get_tracer", lambda: unsampled)
+    log = TrialLog()
+
+    with pytest.raises(RuntimeError, match="aren't recorded"):
+        await _run(instrument(make_task(_agent_factory(), default_rollout), log, traces), _case(), traces)
+
+    assert isinstance(log.setup_error, RuntimeError)
+    assert log.records() == {}
+
+
 async def test_a_retried_attempt_moves_into_previous_attempts(traces):
     log = TrialLog()
     calls = []
@@ -443,7 +472,10 @@ async def test_experiment_evaluators_see_the_session(traces):
     }
     assert entries["a"].trace_id != entries["b"].trace_id
     for entry in entries.values():
-        session, usage = traces.agent_view(entry.trace_id, entry.attempt_span_id)
+        session, usage = (
+            traces.session(entry.trace_id, entry.attempt_span_id),
+            traces.usage(entry.trace_id, entry.attempt_span_id),
+        )
         assert isinstance(session, Session)
         assert usage.model_calls == 1
 
@@ -468,8 +500,8 @@ async def test_experiment_throttling_retry_keeps_the_earlier_attempt(traces, no_
     ((span_id, status, error_type, _),) = entry.previous_attempts
     assert status is TrialStatus.INFRASTRUCTURE_INVALID
     assert error_type == "ModelThrottledException"
-    assert traces.agent_view(entry.trace_id, entry.attempt_span_id)[1].model_calls == 1
-    assert traces.attempt_usage(entry.trace_id, span_id).tokens == 0
+    assert traces.usage(entry.trace_id, entry.attempt_span_id).model_calls == 1
+    assert traces.usage(entry.trace_id, span_id).tokens == 0
 
 
 async def test_experiment_agent_failure_is_logged(traces):
@@ -496,6 +528,7 @@ async def test_usage_covers_every_agent_in_a_multi_agent_rollout(traces):
                 usage={"inputTokens": 100, "outputTokens": 20, "totalTokens": 120, "cacheReadInputTokens": 40},
             ),
             callback_handler=None,
+            trace_attributes={"session.id": "writer-session"},  # a different id must not drop either agent
         )
         await writer.invoke_async(str(plan))
         return {"output": str(await writer.invoke_async("polish"))}
@@ -505,7 +538,11 @@ async def test_usage_covers_every_agent_in_a_multi_agent_rollout(traces):
     await _run(task, _case(), traces)
 
     entry = log.records()["case-1"]
-    _, usage = traces.agent_view(entry.trace_id, entry.attempt_span_id)
+    session, usage = (
+        traces.session(entry.trace_id, entry.attempt_span_id),
+        traces.usage(entry.trace_id, entry.attempt_span_id),
+    )
+    assert sum(isinstance(span, AgentInvocationSpan) for trace in session.traces for span in trace.spans) == 3
     assert usage.model_calls == 3
     assert usage.tokens == 15 + 120 + 120
     assert usage.output_tokens == 5 + 20 + 20

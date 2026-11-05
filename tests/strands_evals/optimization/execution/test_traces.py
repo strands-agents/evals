@@ -82,13 +82,13 @@ def test_spans_of_unregistered_traces_are_dropped(traces, tracer):
         with _attempt(tracer) as attempt:
             _chat(tracer)
 
-    session, usage = traces.agent_view(trace_id, _ids(attempt)[1])
+    session, usage = traces.session(trace_id, _ids(attempt)[1]), traces.usage(trace_id, _ids(attempt)[1])
 
     assert session is None
     assert usage.model_calls == 0
 
 
-def test_agent_view_reads_only_the_attempts_subtree(traces, tracer):
+def test_usage_reads_only_the_attempts_subtree(traces, tracer):
     with _trial(tracer, traces) as trace_id:
         with _attempt(tracer):
             _chat(tracer, total=100, output=10, model="first-attempt")
@@ -100,7 +100,7 @@ def test_agent_view_reads_only_the_attempts_subtree(traces, tracer):
         with tracer.start_as_current_span("evaluator Judge", attributes={"gen_ai.evaluation.name": "Judge"}):
             _chat(tracer, total=1000, output=100, model="judge")
 
-    _, usage = traces.agent_view(trace_id, _ids(last)[1])
+    usage = traces.usage(trace_id, _ids(last)[1])
 
     assert usage.model_calls == 3
     assert usage.tokens == 65
@@ -117,7 +117,7 @@ def test_usage_ignores_invoke_agent_running_totals(traces, tracer):
             ):
                 _chat(tracer, total=15, output=5)
 
-    _, usage = traces.agent_view(trace_id, _ids(attempt)[1])
+    usage = traces.usage(trace_id, _ids(attempt)[1])
 
     assert usage.tokens == 15
 
@@ -133,7 +133,7 @@ def test_input_tokens_include_cache_tokens(traces, tracer):
                 **{"gen_ai.usage.input_tokens": 40, "gen_ai.usage.cache_read.input_tokens": 100},
             )
 
-    _, usage = traces.agent_view(trace_id, _ids(attempt)[1])
+    usage = traces.usage(trace_id, _ids(attempt)[1])
 
     assert usage.input_tokens == 140
     assert usage.cache_read_tokens == 100
@@ -144,7 +144,7 @@ def test_cache_tokens_unmeasured_when_no_span_reports_them(traces, tracer):
         with _attempt(tracer) as attempt:
             _chat(tracer)
 
-    _, usage = traces.agent_view(trace_id, _ids(attempt)[1])
+    usage = traces.usage(trace_id, _ids(attempt)[1])
 
     assert usage.cache_read_tokens is None
     assert usage.cache_write_tokens is None
@@ -156,7 +156,7 @@ def test_cache_tokens_read_from_either_attribute_name(traces, tracer):
             _chat(tracer, **{"gen_ai.usage.cache_read_input_tokens": 3, "gen_ai.usage.cache_write_input_tokens": 4})
             _chat(tracer, **{"gen_ai.usage.cache_creation.input_tokens": 0})
 
-    _, usage = traces.agent_view(trace_id, _ids(attempt)[1])
+    usage = traces.usage(trace_id, _ids(attempt)[1])
 
     assert usage.cache_read_tokens == 3
     assert usage.cache_write_tokens == 4
@@ -167,7 +167,7 @@ def test_spans_without_a_model_id_add_no_model(traces, tracer):
         with _attempt(tracer) as attempt:
             _chat(tracer, model=None)
 
-    _, usage = traces.agent_view(trace_id, _ids(attempt)[1])
+    usage = traces.usage(trace_id, _ids(attempt)[1])
 
     assert usage.models == []
 
@@ -178,7 +178,7 @@ def test_seconds_come_from_the_rollout_span(traces, tracer):
             with _timed(tracer, "rollout case", 102.0, 105.5, **{SPAN_KIND: ROLLOUT_SPAN}):
                 _chat(tracer)
 
-    _, usage = traces.agent_view(trace_id, _ids(attempt)[1])
+    usage = traces.usage(trace_id, _ids(attempt)[1])
 
     assert usage.seconds == pytest.approx(3.5)
 
@@ -188,28 +188,18 @@ def test_seconds_fall_back_to_the_attempt_span(traces, tracer):
         with _timed(tracer, "attempt case", 100.0, 104.0, **{SPAN_KIND: ATTEMPT_SPAN}) as attempt:
             _chat(tracer)
 
-    _, usage = traces.agent_view(trace_id, _ids(attempt)[1])
+    usage = traces.usage(trace_id, _ids(attempt)[1])
 
     assert usage.seconds == pytest.approx(4.0)
 
 
-def test_attempt_usage_matches_agent_view(traces, tracer):
-    with _trial(tracer, traces) as trace_id:
-        with _attempt(tracer) as attempt:
-            _chat(tracer, total=40, output=4)
-
-    span_id = _ids(attempt)[1]
-
-    assert traces.attempt_usage(trace_id, span_id) == traces.agent_view(trace_id, span_id)[1]
-
-
-async def test_agent_view_maps_agent_spans_to_a_session(traces, tracer):
+async def test_session_maps_agent_spans(traces, tracer):
     with _trial(tracer, traces) as trace_id:
         with _attempt(tracer) as attempt:
             agent = Agent(model=ScriptedModel(["hello there"]), callback_handler=None)
             await agent.invoke_async("hi")
 
-    session, usage = traces.agent_view(trace_id, _ids(attempt)[1])
+    session, usage = traces.session(trace_id, _ids(attempt)[1]), traces.usage(trace_id, _ids(attempt)[1])
 
     assert isinstance(session, Session)
     assert [trace.trace_id for trace in session.traces] == [trace_id]
@@ -218,12 +208,12 @@ async def test_agent_view_maps_agent_spans_to_a_session(traces, tracer):
     assert usage.models == ["scripted-model"]
 
 
-def test_agent_view_without_agent_spans_has_no_session(traces, tracer):
+def test_no_agent_spans_means_no_session(traces, tracer):
     with _trial(tracer, traces) as trace_id:
         with _attempt(tracer) as attempt:
             pass
 
-    session, _ = traces.agent_view(trace_id, _ids(attempt)[1])
+    session = traces.session(trace_id, _ids(attempt)[1])
 
     assert session is None
 
@@ -276,8 +266,8 @@ def test_release_drops_only_those_trials(traces, tracer):
 
     traces.release([first])
 
-    assert traces.agent_view(first, _ids(first_attempt)[1])[1].model_calls == 0
-    assert traces.agent_view(second, _ids(second_attempt)[1])[1].model_calls == 1
+    assert traces.usage(first, _ids(first_attempt)[1]).model_calls == 0
+    assert traces.usage(second, _ids(second_attempt)[1]).model_calls == 1
 
 
 def test_a_released_trace_keeps_nothing_that_finishes_later(traces, tracer):
@@ -286,7 +276,7 @@ def test_a_released_trace_keeps_nothing_that_finishes_later(traces, tracer):
         with _attempt(tracer) as attempt:
             _chat(tracer)
 
-    assert traces.agent_view(trace_id, _ids(attempt)[1])[1].model_calls == 0
+    assert traces.usage(trace_id, _ids(attempt)[1]).model_calls == 0
 
 
 def test_captures_on_one_provider_share_one_span_processor(traces):

@@ -60,11 +60,12 @@ class TrialLog:
     Lives here, not in `trials.py`, so the two modules don't import each other.
 
     Attributes:
-        setup_error: A `_FactoryArgumentError` the bound factory raised, else None; `TrialRunner.run`
-            raises it once the `Experiment` call returns.
+        setup_error: The first setup error, else None: a `_FactoryArgumentError` (from the bound factory,
+            or an environment that gave no mapping) or a `RuntimeError` (trial spans not recorded).
+            `TrialRunner.run` raises it once the `Experiment` call returns.
     """
 
-    setup_error: TypeError | None = None
+    setup_error: Exception | None = None
     _entries: dict[str, TrialLogEntry] = field(default_factory=dict, repr=False)
 
     def record(self, case_name: str, entry: TrialLogEntry) -> None:
@@ -99,15 +100,15 @@ def make_task(
 ) -> TaskFn:
     """Wrap a rollout as a task: per-attempt environment, then `rollout_fn` inside a `rollout` span.
 
-    `rollout_fn` receives `agent_factory._with_resources(resources)`: `default_rollout` calls it with no
-    arguments; a custom rollout may pass the factory function's non-tunable kwargs. A resource or kwarg
-    named like a declared marker, a call kwarg the function doesn't accept, or a required parameter
-    left unsupplied raises `_FactoryArgumentError`: a setup error, never a trial status. An error
-    creating or entering the environment is raised as `InfrastructureError(...) from error`, so
-    `classify` makes it `infrastructure_invalid` whatever its type, and the trial's `error_type` /
-    `error` record the original `__cause__`. An error exiting it after the rollout returned only warns, and the trial
-    keeps its result. A sync `rollout_fn` runs in a worker thread, as `Experiment` runs a sync task.
-    Without `environment`, `rollout_fn` receives `agent_factory` itself.
+    `rollout_fn` receives `agent_factory._with_resources(resources)` (without `environment`,
+    `agent_factory` itself): `default_rollout` calls it with no arguments; a custom rollout may pass the
+    factory function's non-tunable kwargs. A setup error, never a trial status, raises
+    `_FactoryArgumentError`: an environment that gives no mapping, a resource or kwarg named like a
+    declared marker, a call kwarg the function doesn't accept, or a required parameter left unsupplied.
+    An error creating or entering the environment is raised as `InfrastructureError(...) from error`, so
+    `classify` makes it `infrastructure_invalid` whatever its type. An error exiting it after the rollout
+    returned only warns, and the trial keeps its result. A sync `rollout_fn` runs in a worker thread, as
+    `Experiment` runs a sync task.
 
     Args:
         agent_factory: The candidate's bound factory.
@@ -132,6 +133,12 @@ def make_task(
         except Exception as error:
             raise InfrastructureError(f"environment setup failed for case {case.name!r}: {error}") from error
         try:
+            if not isinstance(resources, Mapping):
+                if inspect.iscoroutine(resources):
+                    resources.close()  # an `async def` environment, never awaited
+                raise _FactoryArgumentError(
+                    f"environment for case {case.name!r} gave {type(resources).__name__}, not a mapping of resources"
+                )
             result = await _rollout(rollout_fn, agent_factory._with_resources(resources), case)
         except BaseException as error:
             await _exit_environment(provided, case, error)
@@ -173,8 +180,10 @@ async def _call(fn: Callable[..., Any], *args: Any) -> Any:
 def instrument(task: TaskFn, log: TrialLog, traces: TraceCapture) -> TaskFn:
     """Open one span per attempt, classify and re-raise errors, and attach the `Session` as trajectory.
 
-    Called by `TrialRunner.run`, once per run with a fresh `TrialLog`. A `_FactoryArgumentError` is
-    stored as `log.setup_error`, not classified. A rollout-returned `trajectory` that is not None wins;
+    Called by `TrialRunner.run`, once per run with a fresh `TrialLog`. A setup error is stored as
+    `log.setup_error`, not classified: a `_FactoryArgumentError`, or a `RuntimeError` when the attempt
+    span isn't recorded (an SDK disabled or sampling out), since every such trial would read as
+    `completed` with no usage and no trajectory. A rollout-returned `trajectory` that is not None wins;
     a returned dict without one gets a copy with the `Session` added, never the dict itself changed;
     a non-dict return becomes `{"output": value, "trajectory": session}`. No agent spans -> trajectory None.
     Attempts `Experiment` retried on throttling go into `TrialLogEntry.previous_attempts`. An
@@ -191,10 +200,23 @@ def instrument(task: TaskFn, log: TrialLog, traces: TraceCapture) -> TaskFn:
 
     async def instrumented(case: Case) -> Any:
         case_name = str(case.name)
-        previous = log._entries.get(case_name)
+        previous = log.records().get(case_name)
+        earlier = []
+        if previous is not None:
+            earlier = [
+                *previous.previous_attempts,
+                (previous.attempt_span_id, previous.status, previous.error_type, previous.error),
+            ]
         with get_tracer().start_as_current_span(
             f"attempt {case_name}", attributes={SPAN_KIND: ATTEMPT_SPAN}
         ) as attempt_span:
+            if not attempt_span.is_recording():
+                error = RuntimeError(
+                    "trial spans aren't recorded (OTEL_SDK_DISABLED or a sampler such as OTEL_TRACES_SAMPLER="
+                    "always_off / traceidratio), so the optimizer can't read usage or the trajectory; record every span"
+                )
+                log.setup_error = log.setup_error or error
+                raise error
             context = attempt_span.get_span_context()
             trace_id = format(context.trace_id, "032x")
             attempt_span_id = format(context.span_id, "016x")
@@ -203,12 +225,6 @@ def instrument(task: TaskFn, log: TrialLog, traces: TraceCapture) -> TaskFn:
             def record(status: TrialStatus, error: BaseException | None) -> None:
                 if isinstance(error, InfrastructureError) and error.__cause__ is not None:
                     error = error.__cause__
-                earlier = []
-                if previous is not None:
-                    earlier = [
-                        *previous.previous_attempts,
-                        (previous.attempt_span_id, previous.status, previous.error_type, previous.error),
-                    ]
                 log.record(
                     case_name,
                     TrialLogEntry(
@@ -231,8 +247,7 @@ def instrument(task: TaskFn, log: TrialLog, traces: TraceCapture) -> TaskFn:
                 record(classify(error), error)
                 raise
             record(TrialStatus.COMPLETED, None)
-        # Read after the attempt span ends, so a task without a `rollout` span still has its duration.
-        session, _ = traces.agent_view(trace_id, attempt_span_id)
+        session = traces.session(trace_id, attempt_span_id)
         if isinstance(output, dict):
             if output.get("trajectory") is not None or session is None:
                 return output

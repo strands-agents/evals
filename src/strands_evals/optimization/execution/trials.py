@@ -137,7 +137,8 @@ class TrialRunner:
             One record per requested (case, run), cached ones included, and the rollouts spent.
 
         Raises:
-            TypeError: The bound factory raised `_FactoryArgumentError` (a resource or kwarg named like a
-                declared marker, or a kwarg the factory doesn't accept).
+            TypeError: `_FactoryArgumentError` (a resource or kwarg named like a declared marker, a kwarg
+                the factory doesn't accept, or an environment that gave no mapping).
+            RuntimeError: Trial spans aren't recorded (an OTel SDK disabled or sampling out).
         """
         raise NotImplementedError

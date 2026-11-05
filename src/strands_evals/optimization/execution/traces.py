@@ -9,8 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import opentelemetry.trace as trace_api
-from opentelemetry.context import Context
-from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
+from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor
 from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
 from opentelemetry.trace import StatusCode
 
@@ -59,9 +58,6 @@ class _TrialSpanFilter(SpanProcessor):
             for trace_id in trace_ids:
                 self._spans.pop(trace_id, None)
 
-    def on_start(self, span: Span, parent_context: Context | None = None) -> None:
-        return None
-
     def on_end(self, span: ReadableSpan) -> None:
         if span.context is None:
             return
@@ -70,12 +66,6 @@ class _TrialSpanFilter(SpanProcessor):
             kept = self._spans.get(trace_id)
             if kept is not None:
                 kept.append(span)
-
-    def shutdown(self) -> None:
-        return None
-
-    def force_flush(self, timeout_millis: int = 30_000) -> bool:
-        return True
 
 
 # One filter per tracer provider, shared by every `TraceCapture` on it: a provider can't drop a processor,
@@ -123,31 +113,24 @@ class TraceCapture:
         """Keep this trace's spans; spans of unregistered traces are dropped at export."""
         self._filter.register(trace_id)
 
-    def agent_view(self, trace_id: str, attempt_span_id: str) -> tuple[Session | None, Usage]:
-        """The `Session` and usage of the given attempt's subtree, judge spans excluded.
-
-        Usage sums the subtree's `chat` spans; `seconds` is its `rollout` span's duration, or the attempt
-        span's when there is none (a `build_task` task).
+    def session(self, trace_id: str, attempt_span_id: str) -> Session | None:
+        """The attempt's agents as a `Session`, judge spans excluded; None without agent spans.
 
         Args:
             trace_id: The trial's trace.
-            attempt_span_id: The last attempt's span; only its subtree is read.
-
-        Returns:
-            The agent's `Session` (None without agent spans) and its usage, judge spans excluded.
+            attempt_span_id: The attempt's span; only its subtree is read.
         """
-        spans = self._filter.spans(trace_id)
-        subtree = _subtree(spans, attempt_span_id)
-        return _session(trace_id, subtree), _usage(subtree, _attempt_seconds(spans, subtree, attempt_span_id))
+        return _session(trace_id, _subtree(self._filter.spans(trace_id), attempt_span_id))
 
-    def attempt_usage(self, trace_id: str, attempt_span_id: str) -> Usage:
-        """One previous attempt's usage (`TrialLogEntry.previous_attempts`), by `agent_view`'s rules.
+    def usage(self, trace_id: str, attempt_span_id: str) -> Usage:
+        """The attempt's usage, judge spans excluded: the last attempt's, or one in `previous_attempts`.
 
-        For `AttemptRecord`.
+        Sums the subtree's `chat` spans; `seconds` is its `rollout` span's duration, or the attempt span's
+        when there is none (a `build_task` task).
 
         Args:
             trace_id: The trial's trace.
-            attempt_span_id: That attempt's span; only its subtree is read.
+            attempt_span_id: The attempt's span; only its subtree is read.
         """
         spans = self._filter.spans(trace_id)
         subtree = _subtree(spans, attempt_span_id)
@@ -259,9 +242,14 @@ def _usage(spans: Sequence[ReadableSpan], seconds: float) -> Usage:
 
 
 def _session(trace_id: str, spans: Sequence[ReadableSpan]) -> Session | None:
-    """The spans as a `Session`; None when none of them is an agent span."""
-    # The mapper keeps only spans whose session id matches when any span carries one; spans of one trial
-    # share a trace, so its first session id (else the trace id) names the session.
+    """The spans as a one-trace `Session`; None when none of them is an agent span.
+
+    The spans are already exactly one attempt's subtree, so every agent in it is kept, whatever session
+    id each one set; `map_to_session` would keep only spans carrying the id it is given. The first id
+    found (else the trace id) names the session.
+    """
+    if not spans:
+        return None
     session_id = trace_id
     for span in spans:
         attributes = span.attributes or {}
@@ -269,8 +257,10 @@ def _session(trace_id: str, spans: Sequence[ReadableSpan]) -> Session | None:
         if found is not None:
             session_id = str(found)
             break
-    session = StrandsInMemorySessionMapper().map_to_session(list(spans), session_id)
-    return session if session.traces else None
+    mapper = StrandsInMemorySessionMapper()
+    mapper._convention_version = mapper._detect_convention_version(spans[0])
+    trace = mapper._convert_trace(trace_id, list(spans), session_id)
+    return Session(traces=[trace], session_id=session_id) if trace.spans else None
 
 
 def _exception_type(span: ReadableSpan) -> str:
