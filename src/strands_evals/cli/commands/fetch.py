@@ -189,7 +189,7 @@ def _add_langfuse_parser(
         "--session-id",
         required=True,
         metavar="ID",
-        help="session id to fetch (Langfuse trace.list session_id filter)",
+        help="session id to fetch (Langfuse observations session_id filter)",
     )
     lf.add_argument(
         "--host",

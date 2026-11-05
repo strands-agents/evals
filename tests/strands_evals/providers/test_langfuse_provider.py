@@ -1,5 +1,6 @@
 """Tests for LangfuseProvider — mocked Langfuse SDK."""
 
+import json
 import os
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
@@ -14,24 +15,17 @@ from strands_evals.types.trace import (
     AgentInvocationSpan,
     InferenceSpan,
     Session,
+    ToolCallContent,
     ToolExecutionSpan,
 )
 
 # --- Helpers ---
 
 
-def _meta(page=1, total_pages=1, total_items=10, limit=100):
-    m = MagicMock(spec=["page", "limit", "total_items", "total_pages"])
-    m.page, m.limit, m.total_items, m.total_pages = page, limit, total_items, total_pages
+def _meta(cursor=None):
+    m = MagicMock(spec=["cursor"])
+    m.cursor = cursor
     return m
-
-
-def _trace(trace_id, session_id, output=None):
-    t = MagicMock()
-    t.id, t.session_id, t.output = trace_id, session_id, output
-    t.name, t.input, t.metadata = None, None, None
-    t.timestamp = datetime(2025, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
-    return t
 
 
 def _obs(
@@ -58,9 +52,9 @@ def _obs(
     return o
 
 
-def _paginated(data, page=1, total_pages=1):
+def _paginated(data, cursor=None):
     r = MagicMock()
-    r.data, r.meta = data, _meta(page=page, total_pages=total_pages, total_items=len(data))
+    r.data, r.meta = data, _meta(cursor=cursor)
     return r
 
 
@@ -163,7 +157,6 @@ class TestConstructor:
 
 class TestGetEvaluationData:
     def test_happy_path(self, provider, mock_client):
-        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
         mock_client.api.observations.get_many.return_value = _paginated(
             [
                 _obs("o1", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a"),
@@ -174,13 +167,78 @@ class TestGetEvaluationData:
         assert result["trajectory"].session_id == "s1"
         assert len(result["trajectory"].traces) == 1
 
+    def test_queries_v2_observations_by_session(self, provider, mock_client):
+        mock_client.api.observations.get_many.return_value = _paginated(
+            [_obs("o1", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a")]
+        )
+        provider.get_evaluation_data("s1")
+
+        mock_client.api.trace.list.assert_not_called()
+        kwargs = mock_client.api.observations.get_many.call_args[1]
+        assert kwargs["session_id"] == "s1"
+        # Langfuse v4 rejects parseIoAsJson=true on the v2 observations endpoint
+        assert "parse_io_as_json" not in kwargs
+        assert set(kwargs["fields"].split(",")) >= {"core", "basic", "io", "metadata"}
+        assert kwargs["expand_metadata"] == "tools"
+        assert kwargs["cursor"] is None
+
+    def test_decodes_json_string_io(self, provider, mock_client):
+        """The v2 observations API returns input and output as raw JSON strings."""
+        mock_client.api.observations.get_many.return_value = _paginated(
+            [
+                _obs(
+                    "o-agent",
+                    "t1",
+                    "AGENT",
+                    name="agent_abc",
+                    obs_input=json.dumps({"messages": [{"type": "human", "content": "Compare A and B"}]}),
+                    obs_output=json.dumps({"messages": [{"type": "ai", "content": "Which KPI?"}]}),
+                ),
+                _obs(
+                    "o-gen",
+                    "t1",
+                    "GENERATION",
+                    name="ChatAnthropic",
+                    obs_input=json.dumps([{"role": "user", "content": "Compare A and B"}]),
+                    obs_output=json.dumps(
+                        {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [{"name": "skill", "args": {"skillName": "kpi"}, "id": "c1"}],
+                        }
+                    ),
+                    parent_observation_id="o-agent",
+                    start_time=datetime(2025, 1, 15, 10, 0, 1, tzinfo=timezone.utc),
+                ),
+                _obs(
+                    "o-tool",
+                    "t1",
+                    "TOOL",
+                    name="skill",
+                    obs_input=json.dumps({"skillName": "kpi"}),
+                    obs_output="plain text result",
+                    parent_observation_id="o-agent",
+                    start_time=datetime(2025, 1, 15, 10, 0, 2, tzinfo=timezone.utc),
+                ),
+            ]
+        )
+        result = provider.get_evaluation_data("s1")
+        agent, inference, tool = result["trajectory"].traces[0].spans
+
+        assert agent.user_prompt == "Compare A and B"
+        assert result["output"] == "Which KPI?"
+        tool_calls = [c for c in inference.messages[-1].content if isinstance(c, ToolCallContent)]
+        assert tool_calls[0].name == "skill"
+        assert tool_calls[0].arguments == {"skillName": "kpi"}
+        assert tool.tool_call.arguments == {"skillName": "kpi"}
+        assert tool.tool_result.content == "plain text result"
+
     def test_empty_session_raises(self, provider, mock_client):
-        mock_client.api.trace.list.return_value = _paginated([])
+        mock_client.api.observations.get_many.return_value = _paginated([])
         with pytest.raises(SessionNotFoundError, match="s-missing"):
             provider.get_evaluation_data("s-missing")
 
     def test_output_from_last_agent_invocation(self, provider, mock_client):
-        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
         mock_client.api.observations.get_many.return_value = _paginated(
             [
                 _obs(
@@ -205,24 +263,38 @@ class TestGetEvaluationData:
         )
         assert provider.get_evaluation_data("s1")["output"] == "second"
 
-    def test_paginates_traces(self, provider, mock_client):
-        mock_client.api.trace.list.side_effect = [
-            _paginated([_trace("t1", "s1")], page=1, total_pages=2),
-            _paginated([_trace("t2", "s1")], page=2, total_pages=2),
-        ]
-        mock_client.api.observations.get_many.side_effect = [
-            _paginated([_obs("o1", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a")]),
-            _paginated([_obs("o2", "t2", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="b")]),
-        ]
-        assert len(provider.get_evaluation_data("s1")["trajectory"].traces) == 2
+    def test_groups_observations_by_trace_in_start_order(self, provider, mock_client):
+        mock_client.api.observations.get_many.return_value = _paginated(
+            [
+                _obs(
+                    "o2",
+                    "t2",
+                    "SPAN",
+                    name="invoke_agent a",
+                    obs_input=[{"text": "q2"}],
+                    obs_output="b",
+                    start_time=datetime(2025, 1, 15, 10, 5, 0, tzinfo=timezone.utc),
+                ),
+                _obs(
+                    "o1",
+                    "t1",
+                    "SPAN",
+                    name="invoke_agent a",
+                    obs_input=[{"text": "q1"}],
+                    obs_output="a",
+                    start_time=datetime(2025, 1, 15, 10, 0, 0, tzinfo=timezone.utc),
+                ),
+            ]
+        )
+        result = provider.get_evaluation_data("s1")
+        assert [t.trace_id for t in result["trajectory"].traces] == ["t1", "t2"]
+        assert result["output"] == "b"
 
     def test_paginates_observations(self, provider, mock_client):
-        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
         mock_client.api.observations.get_many.side_effect = [
             _paginated(
                 [_obs("o1", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a")],
-                page=1,
-                total_pages=2,
+                cursor="next-page",
             ),
             _paginated(
                 [
@@ -233,21 +305,21 @@ class TestGetEvaluationData:
                         name="chat",
                         obs_input=[{"role": "user", "content": [{"text": "q"}]}],
                         obs_output={"role": "assistant", "content": [{"text": "a"}]},
+                        start_time=datetime(2025, 1, 15, 10, 0, 1, tzinfo=timezone.utc),
                     )
                 ],
-                page=2,
-                total_pages=2,
             ),
         ]
         assert len(provider.get_evaluation_data("s1")["trajectory"].traces[0].spans) == 2
+        cursors = [c[1]["cursor"] for c in mock_client.api.observations.get_many.call_args_list]
+        assert cursors == [None, "next-page"]
 
     def test_wraps_api_error(self, provider, mock_client):
-        mock_client.api.trace.list.side_effect = Exception("Connection refused")
+        mock_client.api.observations.get_many.side_effect = Exception("Connection refused")
         with pytest.raises(ProviderError, match="Connection refused"):
             provider.get_evaluation_data("s1")
 
     def test_unconvertible_observations_excluded(self, provider, mock_client):
-        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
         mock_client.api.observations.get_many.return_value = _paginated(
             [
                 _obs("o1", "t1", "EVENT", name="some_event"),
@@ -256,13 +328,23 @@ class TestGetEvaluationData:
         with pytest.raises(SessionNotFoundError):
             provider.get_evaluation_data("s1")
 
+    def test_observations_without_trace_id_skipped(self, provider, mock_client):
+        mock_client.api.observations.get_many.return_value = _paginated(
+            [
+                _obs("o1", None, "SPAN", name="invoke_agent a", obs_input=[{"text": "q0"}], obs_output="orphan"),
+                _obs("o2", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q1"}], obs_output="a"),
+            ]
+        )
+        result = provider.get_evaluation_data("s1")
+        assert [t.trace_id for t in result["trajectory"].traces] == ["t1"]
+        assert result["output"] == "a"
+
 
 # --- Observation conversion ---
 
 
 class TestConversion:
     def _get_spans(self, provider, mock_client, observations):
-        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
         mock_client.api.observations.get_many.return_value = _paginated(observations)
         return provider.get_evaluation_data("s1")["trajectory"].traces[0].spans
 
@@ -421,17 +503,12 @@ class TestConversion:
 class TestTimeoutAndRetry:
     def test_default_timeout_passed_to_api_calls(self, provider, mock_client):
         """API calls should pass request_options with default timeout."""
-        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
         mock_client.api.observations.get_many.return_value = _paginated(
             [
                 _obs("o-agent", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a"),
             ]
         )
         provider.get_evaluation_data("s1")
-
-        # Both trace.list and observations.get_many should receive request_options
-        trace_call_kwargs = mock_client.api.trace.list.call_args[1]
-        assert trace_call_kwargs["request_options"] == {"timeout_in_seconds": 120}
 
         obs_call_kwargs = mock_client.api.observations.get_many.call_args[1]
         assert obs_call_kwargs["request_options"] == {"timeout_in_seconds": 120}
@@ -443,7 +520,6 @@ class TestTimeoutAndRetry:
 
             p = LangfuseProvider(public_key="pk", secret_key="sk", timeout=300)
 
-        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
         mock_client.api.observations.get_many.return_value = _paginated(
             [
                 _obs("o-agent", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a"),
@@ -451,31 +527,30 @@ class TestTimeoutAndRetry:
         )
         p.get_evaluation_data("s1")
 
-        trace_call_kwargs = mock_client.api.trace.list.call_args[1]
-        assert trace_call_kwargs["request_options"] == {"timeout_in_seconds": 300}
+        obs_call_kwargs = mock_client.api.observations.get_many.call_args[1]
+        assert obs_call_kwargs["request_options"] == {"timeout_in_seconds": 300}
 
     def test_retries_on_timeout(self, provider, mock_client):
-        """_fetch_all_pages should retry on timeout errors."""
+        """_fetch_session_observations should retry on timeout errors."""
         from httpx import ReadTimeout
 
-        mock_client.api.trace.list.side_effect = [
+        mock_client.api.observations.get_many.side_effect = [
             ReadTimeout("timed out"),
-            _paginated([_trace("t1", "s1")]),
+            _paginated(
+                [
+                    _obs("o-agent", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a"),
+                ]
+            ),
         ]
-        mock_client.api.observations.get_many.return_value = _paginated(
-            [
-                _obs("o-agent", "t1", "SPAN", name="invoke_agent a", obs_input=[{"text": "q"}], obs_output="a"),
-            ]
-        )
         result = provider.get_evaluation_data("s1")
         assert result["trajectory"].session_id == "s1"
-        assert mock_client.api.trace.list.call_count == 2
+        assert mock_client.api.observations.get_many.call_count == 2
 
     def test_retries_exhaust_raises(self, provider, mock_client):
         """After max retries, the original error should propagate."""
         from httpx import ReadTimeout
 
-        mock_client.api.trace.list.side_effect = ReadTimeout("timed out")
+        mock_client.api.observations.get_many.side_effect = ReadTimeout("timed out")
         with pytest.raises(ProviderError, match="timed out"):
             provider.get_evaluation_data("s1")
 
@@ -485,7 +560,6 @@ class TestTimeoutAndRetry:
 
 class TestExtractAgentResponse:
     def _get_spans(self, provider, mock_client, observations):
-        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
         mock_client.api.observations.get_many.return_value = _paginated(observations)
         return provider.get_evaluation_data("s1")
 
@@ -529,7 +603,6 @@ class TestExtractAgentResponse:
 
 class TestExtractOutputToolUse:
     def _get_result(self, provider, mock_client, observations):
-        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
         mock_client.api.observations.get_many.return_value = _paginated(observations)
         return provider.get_evaluation_data("s1")
 
@@ -593,7 +666,6 @@ class TestLangChainToolType:
     """TOOL-type observations from LangChain via Langfuse."""
 
     def _get_spans(self, provider, mock_client, observations):
-        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
         mock_client.api.observations.get_many.return_value = _paginated(observations)
         return provider.get_evaluation_data("s1")["trajectory"].traces[0].spans
 
@@ -784,7 +856,6 @@ class TestLangChainChainType:
     """CHAIN-type observations from LangChain via Langfuse."""
 
     def _get_spans(self, provider, mock_client, observations):
-        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
         mock_client.api.observations.get_many.return_value = _paginated(observations)
         return provider.get_evaluation_data("s1")["trajectory"].traces[0].spans
 
@@ -812,7 +883,6 @@ class TestLangChainChainType:
 
     def test_child_chain_is_skipped(self, provider, mock_client):
         """Non-root CHAIN (has parent) is skipped."""
-        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
         mock_client.api.observations.get_many.return_value = _paginated(
             [
                 _obs(
@@ -876,7 +946,6 @@ class TestLangChainEndToEnd:
     """Full LangChain agent trace: CHAIN + GENERATION + TOOL."""
 
     def test_full_langchain_trace(self, provider, mock_client):
-        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
         mock_client.api.observations.get_many.return_value = _paginated(
             [
                 _obs(
@@ -930,7 +999,6 @@ class TestStrandsOtelViaLangfuse:
     """Strands message-list format arriving via OTEL→Langfuse OTLP endpoint."""
 
     def _get_spans(self, provider, mock_client, observations):
-        mock_client.api.trace.list.return_value = _paginated([_trace("t1", "s1")])
         mock_client.api.observations.get_many.return_value = _paginated(observations)
         return provider.get_evaluation_data("s1")["trajectory"].traces[0].spans
 
