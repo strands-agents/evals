@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from strands import Agent
+from strands.types.exceptions import StructuredOutputException
 
 from strands_evals.redteam.case import RedTeamCase
 from strands_evals.redteam.strategies import BUILTIN_STRATEGIES, SequentialBreakStrategy
@@ -243,6 +244,10 @@ class TestSuccessScore:
     def test_parse_failure_returns_zero(self):
         make_judge, _ = _judge_factory(structured_output=None)
         assert success_score(make_judge, _case().config.attack_goal, "resp") == 0.0
+
+    def test_structured_output_exception_returns_zero(self):
+        judge = MagicMock(side_effect=StructuredOutputException("no structured output"))
+        assert success_score(lambda: judge, _case().config.attack_goal, "resp") == 0.0
 
     def test_clamps_above_one(self):
         make_judge, _ = _judge_factory(score=1.7)

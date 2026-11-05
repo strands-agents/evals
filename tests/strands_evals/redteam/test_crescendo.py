@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+from strands.types.exceptions import StructuredOutputException
+
 from strands_evals.redteam.case import RedTeamCase
 from strands_evals.redteam.strategies import BUILTIN_STRATEGIES, CrescendoStrategy
 from strands_evals.redteam.strategies.base import AttackRunResult
@@ -109,6 +111,10 @@ class TestIsRefusal:
         judge.return_value.structured_output = None
         assert is_refusal("I apologize, but here is the answer:", lambda: judge) is False
 
+    def test_judge_structured_output_exception_keeps_turn(self):
+        judge = MagicMock(side_effect=StructuredOutputException("no structured output"))
+        assert is_refusal("I apologize, but here is the answer:", lambda: judge) is False
+
     def test_invokes_the_factorys_judge_once_per_confirmed_marker(self):
         """Contract: a confirmed marker hit calls make_judge() once and uses the returned judge
         (proves factory wiring, NOT production freshness -- that is proven by the Agent-ctor-count
@@ -142,6 +148,10 @@ class TestSuccessScore:
         judge.return_value.structured_output = None
         assert success_score(lambda: judge, "resp", "criteria") == 0.0
 
+    def test_structured_output_exception_defaults_to_zero(self):
+        judge = MagicMock(side_effect=StructuredOutputException("no structured output"))
+        assert success_score(lambda: judge, "resp", "criteria") == 0.0
+
     def test_invokes_the_factorys_judge_once_per_score(self):
         """Contract: success_score calls make_judge() once per invocation and uses the returned judge
         (proves factory wiring, NOT production freshness -- that is proven by the Agent-ctor-count
@@ -164,6 +174,11 @@ class TestGenEscalatingQuestion:
     def test_parse_failure_returns_none(self):
         attacker = MagicMock()
         attacker.return_value.structured_output = None
+        goal = AttackGoal(risk_category="x", actor_goal="g")
+        assert gen_escalating_question(attacker, goal, [{"role": "attacker", "content": "q"}], "r") is None
+
+    def test_structured_output_exception_returns_none(self):
+        attacker = MagicMock(side_effect=StructuredOutputException("no structured output"))
         goal = AttackGoal(risk_category="x", actor_goal="g")
         assert gen_escalating_question(attacker, goal, [{"role": "attacker", "content": "q"}], "r") is None
 
@@ -306,6 +321,23 @@ def test_question_parse_failure_safe_terminates():
     assert result.strategy_succeeded is False
     # A filtered attacker reply leaves no message: inconclusive, never an empty transcript read as defended.
     assert result.metadata["attacker_refused"] is True
+
+
+def test_attacker_structured_output_exception_keeps_transcript():
+    """Strands raises (not returns None) when the attacker answers in prose; the turns collected so far
+    must survive and the failure must count as a parse failure."""
+    strat = _strategy(max_turns=5)
+    strat._build_attacker.return_value.side_effect = [
+        MagicMock(structured_output=MagicMock(message="q1")),
+        StructuredOutputException("no structured output"),
+    ]
+    strat._build_judge.return_value.return_value.structured_output = MagicMock(score=0.1)
+
+    result = strat.run_attack(_case(), _session(lambda _m: "reply"), max_turns=5)
+
+    assert result.metadata["parse_failures"] == 1
+    assert result.conversation == [{"role": "attacker", "content": "q1"}, {"role": "target", "content": "reply"}]
+    assert result.strategy_succeeded is False
 
 
 def test_attacker_refusal_ends_case_without_sending_it():

@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+from strands.types.exceptions import StructuredOutputException
 
 from strands_evals.redteam import BadLikertJudgeStrategy as ExportedFromRedteam
 from strands_evals.redteam.case import RedTeamCase
@@ -99,6 +100,10 @@ class TestSuccessScore:
     def test_parse_failure_defaults_to_zero(self):
         make_judge, _ = _judge_factory(structured_output=None)
         assert _success_score(make_judge, "resp", "criteria") == 0.0
+
+    def test_structured_output_exception_defaults_to_zero(self):
+        judge = MagicMock(side_effect=StructuredOutputException("no structured output"))
+        assert _success_score(lambda: judge, "resp", "criteria") == 0.0
 
     def test_invokes_the_factorys_judge_once_per_score(self):
         """Contract: _success_score calls make_judge() exactly once per invocation and uses the
