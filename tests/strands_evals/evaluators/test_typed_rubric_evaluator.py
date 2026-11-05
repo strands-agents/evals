@@ -5,10 +5,12 @@ import logging
 from datetime import datetime
 from unittest.mock import patch
 
+import httpx
 import pytest
 from pydantic import BaseModel
 from strands.decisions import DecisionMetadata, DecisionModel, DecisionResult, Uncertain
-from strands.types.exceptions import ModelThrottledException
+from strands.decisions.typesafe_decision_model import TypeSafeDecisionModel
+from strands.types.exceptions import ModelThrottledException, StructuredOutputException
 
 from strands_evals import Case, Experiment
 from strands_evals.evaluators import Choice, Equals, Noul, Score, TypedRubricEvaluator
@@ -854,3 +856,205 @@ def test_invalid_question_ids_are_rejected(questions):
 def test_evaluator_with_a_choice_deep_copies():
     evaluator = TypedRubricEvaluator({"safety": SAFETY}, model=None)
     assert copy.deepcopy(evaluator).to_dict() == evaluator.to_dict()
+
+
+# --- wire contract: the real TypeSafeDecisionModel over a mocked HTTP transport ----------------
+#
+# Fixtures follow the TypeSafe `SystemOneResponse` schema (typesafe-sdk `_schemas/models.py`) and
+# run through the SDK's own request building and response parsing. No network call is made.
+
+ELEVEN_LEVELS = [str(level) for level in range(11)]
+
+
+def _typesafe(answers):
+    """A TypeSafeDecisionModel whose HTTP calls return `answers` and record each request body."""
+    requests = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        body = answers(requests[-1]) if callable(answers) else answers
+        return httpx.Response(200, json=body)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    return TypeSafeDecisionModel(api_key="test-key", http_client=client), requests
+
+
+def _response(answers):
+    return {"model": "jev-2026-10", "answers": answers, "usage": {"input_tokens": 120, "output_tokens": 12}}
+
+
+def _contract_rubric(model):
+    return TypedRubricEvaluator(
+        {
+            "answers": Noul("Does `actual_output` answer `input`?"),
+            "rating": Score("Rate `actual_output` from 0 to 10.", levels=ELEVEN_LEVELS),
+            "safety": Choice(
+                "How does `actual_output` handle risk?",
+                options={"refuses": 1.0, "hedges": 0.5, "complies": 0.0, "nothing_risky": None},
+            ),
+        },
+        model=model,
+    )
+
+
+SPEC_ANSWERS = {
+    "answers": {"type": "noul", "noul": 0.55},
+    "rating": {
+        "type": "choice",
+        "choice": "8",
+        "confidence": 0.6,
+        "probabilities": {**{str(level): 0.0 for level in range(11)}, "7": 0.25, "8": 0.75},
+    },
+    "safety": {
+        "type": "choice",
+        "choice": "refuses",
+        "confidence": 0.7,
+        "probabilities": {"refuses": 0.6, "hedges": 0.2, "complies": 0.0, "nothing_risky": 0.2},
+    },
+}
+
+
+async def test_request_body_matches_the_wire_schema():
+    model, requests = _typesafe(_response(SPEC_ANSWERS))
+    await _contract_rubric(model).evaluate_async(_case())
+
+    (body,) = requests
+    assert body["model"] == "jev-latest"
+    assert json.loads(body["state"]) == {"input": "What is 2+2?", "actual_output": "4"}
+    assert body["questions"] == {
+        "answers": {"type": "noul", "instructions": "Does `actual_output` answer `input`?"},
+        # Score goes out as an unordered choice; the SDK has no native score question.
+        "rating": {
+            "type": "choice",
+            "instructions": "Rate `actual_output` from 0 to 10.",
+            "criteria": dict.fromkeys(ELEVEN_LEVELS),
+        },
+        "safety": {
+            "type": "choice",
+            "instructions": "How does `actual_output` handle risk?",
+            "criteria": {"refuses": None, "hedges": None, "complies": None, "nothing_risky": None},
+        },
+    }
+    # `uncertainty` is applied client-side by the SDK and is not part of the request schema.
+    assert all("uncertainty" not in question for question in body["questions"].values())
+
+
+async def test_spec_response_scores_through_the_real_adapter():
+    model, _ = _typesafe(_response(SPEC_ANSWERS))
+    rows = await _contract_rubric(model).evaluate_async(_case())
+    by_id = {row.metadata["question_id"]: row for row in rows}
+
+    assert by_id["answers"].score == pytest.approx(0.55)
+    assert by_id["rating"].score == pytest.approx((7 * 0.25 + 8 * 0.75) / 10)
+    assert by_id["rating"].label == "8"
+    assert by_id["safety"].score == pytest.approx((0.6 * 1.0 + 0.2 * 0.5) / 0.8)
+    assert by_id["safety"].metadata["probabilities"]["nothing_risky"] == 0.2
+    assert {row.metadata["provider_name"] for row in rows} == {"typesafe"}
+    assert {row.metadata["model_id"] for row in rows} == {"jev-2026-10"}
+    assert by_id["answers"].metadata["confidence"] == pytest.approx(0.1)
+
+
+async def test_low_confidence_answers_still_score_because_uncertainty_is_disabled():
+    # TypeSafe's default min_confidence is 0.5 and a noul at 0.55 has confidence 0.1, so with the
+    # SDK default the adapter would return Uncertain and the evaluator would reject the case.
+    model, _ = _typesafe(_response({**SPEC_ANSWERS, "answers": {"type": "noul", "noul": 0.55}}))
+    rows = await _contract_rubric(model).evaluate_async(_case())
+    assert rows[0].metadata["answer"] is True
+
+
+@pytest.mark.parametrize(
+    "answers, message",
+    [
+        ({k: v for k, v in SPEC_ANSWERS.items() if k != "safety"}, "omitted answer"),
+        ({**SPEC_ANSWERS, "safety": {**SPEC_ANSWERS["safety"], "probabilities": {"refuses": 1.0}}}, "exactly"),
+        (
+            {
+                **SPEC_ANSWERS,
+                "safety": {
+                    **SPEC_ANSWERS["safety"],
+                    "probabilities": {"refuses": 0.7, "hedges": 0.2, "complies": 0.0, "nothing_risky": 0.2},
+                },
+            },
+            "sum to 1",
+        ),
+        ({**SPEC_ANSWERS, "answers": {"type": "noul", "noul": 1.2}}, r"\[0.0, 1.0\]"),
+    ],
+)
+async def test_malformed_spec_responses_are_rejected_by_the_sdk(answers, message):
+    model, _ = _typesafe(_response(answers))
+    with pytest.raises(StructuredOutputException, match=message):
+        await _contract_rubric(model).evaluate_async(_case())
+
+
+# --- gaps found by mutation testing -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("threshold", [0.0, 1.0])
+def test_threshold_bounds_are_inclusive(threshold):
+    assert (
+        TypedRubricEvaluator([Noul("q")], model=None, pass_threshold=threshold).to_dict()["pass_threshold"] == threshold
+    )
+
+
+@pytest.mark.parametrize("confidence", [0.0, 1.0])
+async def test_confidence_bounds_are_inclusive(confidence):
+    # A noul of exactly 0.5 has confidence |2p - 1| = 0, so 0.0 is a value real backends return.
+    model = StubDecisionModel({"q1": {"true": 0.5, "false": 0.5}}, confidence={"q1": confidence})
+    rows = await TypedRubricEvaluator([Noul("q")], model=model).evaluate_async(_case())
+    assert rows[0].metadata["confidence"] == confidence
+
+
+def test_composite_exactly_at_the_threshold_passes():
+    evaluator = TypedRubricEvaluator([Noul("a"), Noul("b")], model=None, pass_threshold=0.5)
+    rows = _rows(evaluator, {"q1": {"true": 1.0, "false": 0.0}, "q2": {"true": 0.0, "false": 1.0}})
+    score, passed, _ = evaluator.aggregator(rows)
+    assert score == 0.5
+    assert passed is True
+
+
+async def test_reasons_have_a_fixed_format():
+    evaluator = _evaluator(
+        {
+            "yes": Noul("q"),
+            "level": Score("s", levels=["poor", "ok", "good"]),
+            "pick": Choice("c", options={"a": 1.0, "b": 0.0}),
+        },
+        {"yes": YES, "level": {"poor": 0.1, "ok": 0.3, "good": 0.6}, "pick": {"a": 0.7, "b": 0.3}},
+    )
+    rows = await evaluator.evaluate_async(_case())
+    assert [row.reason for row in rows] == [
+        "true (p=0.90); P(true)=0.90",
+        "expected level 1.50 of 2; most likely good (p=0.60)",
+        # No "not applicable mass" suffix: the question has no None-credit options.
+        "expected credit 0.70; most likely a (p=0.70)",
+    ]
+    assert evaluator.aggregator(rows)[2] == (
+        "yes: true (p=0.90); P(true)=0.90"
+        " | level: expected level 1.50 of 2; most likely good (p=0.60)"
+        " | pick: expected credit 0.70; most likely a (p=0.70)"
+    )
+
+
+@pytest.mark.parametrize("kwargs", [{"questions": 5}, {"questions": None}, {"state_fields": 5}, {"state_fields": None}])
+def test_non_collection_arguments_are_rejected(kwargs):
+    args = {"questions": [Noul("q")], "model": None, **kwargs}
+    with pytest.raises(ValueError, match="questions|state_fields"):
+        TypedRubricEvaluator(**args)
+
+
+class Stamped(BaseModel):
+    at: datetime
+
+
+async def test_nested_pydantic_values_are_dumped_in_json_mode():
+    model = StubDecisionModel({"q1": YES})
+    evaluator = TypedRubricEvaluator([Noul("q")], model=model, state_fields=["metadata"])
+    await evaluator.evaluate_async(_case(metadata={"event": Stamped(at=datetime(2026, 11, 3, 12, 0, 0))}))
+    assert json.loads(model.calls[0][0]) == {"metadata": {"event": {"at": "2026-11-03T12:00:00"}}}
+
+
+async def test_distribution_errors_name_the_question():
+    model = StubDecisionModel({"q1": YES, "safety": {"true": 0.6, "false": 0.6}})
+    evaluator = TypedRubricEvaluator({"q1": Noul("q"), "safety": Noul("s")}, model=model)
+    with pytest.raises(ValueError, match=r"question <safety> \| probabilities must sum to 1"):
+        await evaluator.evaluate_async(_case())

@@ -344,7 +344,7 @@ class TypedRubricEvaluator(Evaluator[InputT, OutputT]):
             for question_id, question in self._questions.items()
         ]
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Serialize the rubric configuration. The decision model is never written.
 
         `"model": None` lets `Experiment.from_dict` call the constructor; re-attach the model with
