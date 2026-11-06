@@ -124,7 +124,10 @@ class TrialRunner:
         stay `infrastructure_invalid`. A judge-only infrastructure failure re-runs just the judges on the
         saved output, for 0 rollouts. A record a re-run replaces moves into the new record's `previous_attempts`.
         Each record's and attempt's `rollouts` is set to what it cost (1 when the agent ran, else 0).
-        Each trial is saved as soon as it finishes.
+        Each trial is saved as soon as it finishes. Every trace in each `TrialLog.trace_ids` is released
+        in a `finally` once the records are built (`traces.release`), so a setup error, a cancelled
+        attempt, or an exception here leaks no spans; never earlier, since usage and judge spans are read
+        after `Experiment` returns.
 
         Args:
             candidate_id: The candidate.
@@ -137,7 +140,8 @@ class TrialRunner:
             One record per requested (case, run), cached ones included, and the rollouts spent.
 
         Raises:
-            TypeError: The bound factory raised `_FactoryArgumentError` (a resource or kwarg named like a
-                declared marker, or a kwarg the factory doesn't accept).
+            TypeError: `_FactoryArgumentError` (a resource or kwarg named like a declared marker, a kwarg
+                the factory doesn't accept, or an environment that gave no mapping).
+            RuntimeError: Trial spans aren't recorded (an OTel SDK disabled or sampling out).
         """
         raise NotImplementedError

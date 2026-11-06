@@ -181,3 +181,37 @@ def test_measured_zero_cache_tokens_stay_zero():
     restored = Usage.model_validate_json(_usage(cache_read_tokens=0).model_dump_json())
 
     assert restored.cache_read_tokens == 0
+
+
+def test_usage_zero_is_unmeasured_cache_and_no_models():
+    zero = Usage.zero()
+
+    assert (zero.tokens, zero.input_tokens, zero.output_tokens, zero.model_calls, zero.seconds) == (0, 0, 0, 0, 0.0)
+    assert zero.cache_read_tokens is None
+    assert zero.cache_write_tokens is None
+    assert zero.models == []
+
+
+def test_usage_add_sums_field_by_field():
+    total = _usage(cache_read_tokens=7) + _usage(cache_read_tokens=3)
+
+    assert (total.tokens, total.input_tokens, total.output_tokens, total.model_calls) == (240, 200, 40, 2)
+    assert total.seconds == 3.0
+    assert total.cache_read_tokens == 10
+
+
+def test_usage_add_keeps_cache_unmeasured_only_when_both_are():
+    assert (_usage() + _usage()).cache_read_tokens is None
+    assert (_usage() + _usage(cache_read_tokens=4)).cache_read_tokens == 4
+    assert (_usage(cache_read_tokens=4) + _usage()).cache_read_tokens == 4
+
+
+def test_usage_add_joins_models_in_first_use_order():
+    first = _usage().model_copy(update={"models": ["b", "a"]})
+    second = _usage().model_copy(update={"models": ["c", "a", "d"]})
+
+    assert (first + second).models == ["b", "a", "c", "d"]
+
+
+def test_usage_sum_starts_from_zero():
+    assert sum([_usage(), _usage()], Usage.zero()) == _usage() + _usage()
