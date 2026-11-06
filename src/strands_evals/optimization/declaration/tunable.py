@@ -5,6 +5,9 @@ from __future__ import annotations
 import functools
 import inspect
 import logging
+import shutil
+import tempfile
+import weakref
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -103,7 +106,12 @@ class TunableFactory:
         Fills missing keys with defaults but drops nothing (an inactive key raises `ValueError`), and
         validates before any build. Copies files only if an active value reaches the agent as a path
         (`as_path=True`, `SkillLibrary`): into `workspace` (cached), or with `workspace=None` into one
-        temp folder per `bind()` call, deleted when the bound factory is garbage-collected.
+        temp folder per `bind()` call, kept while the bound factory or anything it built is alive (an
+        object that can't be weakly referenced, e.g. a dict, keeps it until the process exits) and
+        deleted after that, or at exit. Only the returned object holds it (for an async function, the
+        object its coroutine returns): keep that object, not something taken out of it, such as a
+        wrapper's `.agent`, while the agent still reads the files. A `workspace` holds one candidate's
+        copy; binding other file values to it raises `FileExistsError`.
 
         The bound factory takes values for the function's non-tunable parameters, by two rules:
         resources from `environment()` (handed over through its private `_with_resources(resources)`)
@@ -121,11 +129,58 @@ class TunableFactory:
 
         Raises:
             ValueError: The values fail validation.
+            FileExistsError: `workspace` holds another candidate's copy, or files that aren't a copy.
         """
         # complete() last, for its canonical values; an inactive key it drops stays for validate to report.
         bound_values = {**values, **self.space.complete(values)}
         self.space.validate(bound_values)
-        return _BoundFactory(self, bound_values, workspace, {})
+        temp: _TempCopy | None = None
+        if self.space._copies_files:
+            if workspace is None:
+                temp = _TempCopy()
+                workspace = temp.directory
+            self.space.create_candidate_copy(bound_values, workspace)
+        return _BoundFactory(self, bound_values, workspace, {}, temp)
+
+
+class _TempCopy:
+    """A temp folder for one `bind()` outside a run.
+
+    Deleted once nothing refers to it: each bound factory from that `bind()` holds it, and so does
+    everything they built (`keep_alive_for`), since an agent may read its files long after the
+    factory is gone, e.g. `agent = factory.bind(values)()`. Deleted at exit in any case.
+    """
+
+    def __init__(self) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix="strands-evals-candidate-"))
+        self.directory = self.root / "optimization_files"
+        self._until_exit = False
+        weakref.finalize(self, shutil.rmtree, self.root, ignore_errors=True)
+
+    def keep_alive_for(self, built: Any) -> None:
+        """Keep this folder until `built` is collected, or until exit if it can't be weakly referenced."""
+        try:
+            # A finalizer holds its arguments until its object dies, so `built` holds this folder.
+            weakref.finalize(built, _keep, self)
+        except TypeError:  # a dict, a str, a tuple, ...
+            if not self._until_exit:
+                self._until_exit = True
+                _KEPT_UNTIL_EXIT.append(self)
+
+
+def _keep(_: _TempCopy) -> None:
+    """Nothing to do: the finalizer only holds the temp copy while the built object lives."""
+
+
+async def _kept_alive(coroutine: Any, temp: _TempCopy) -> Any:
+    """Await an async factory's coroutine, then keep `temp` alive for what it returned."""
+    built = await coroutine
+    temp.keep_alive_for(built)
+    return built
+
+
+# Temp copies used by built objects that can't be weakly referenced; their finalizers run at exit.
+_KEPT_UNTIL_EXIT: list[_TempCopy] = []
 
 
 class _BoundFactory:
@@ -137,11 +192,13 @@ class _BoundFactory:
         values: dict[str, Value],
         workspace: Path | None,
         resources: Mapping[str, Any],
+        temp: _TempCopy | None = None,
     ):
         self._factory = factory
         self._values = values
         self._workspace = workspace
         self._resources = resources
+        self._temp = temp  # held so the temp copy lives as long as any factory built from this bind()
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Build with the bound values; `kwargs` go to the function's non-tunable parameters."""
@@ -167,7 +224,13 @@ class _BoundFactory:
             factory._signature.bind(**resolved, **resources, **kwargs)
         except TypeError as error:
             raise _FactoryArgumentError(f"{factory._label}: {error}") from error
-        return factory._fn(**resolved, **resources, **kwargs)
+        built = factory._fn(**resolved, **resources, **kwargs)
+        if self._temp is None:
+            return built
+        if inspect.iscoroutine(built):
+            return _kept_alive(built, self._temp)  # the agent the coroutine returns holds the copy, not the coroutine
+        self._temp.keep_alive_for(built)
+        return built
 
     def _with_resources(self, resources: Mapping[str, Any]) -> _BoundFactory:
         """The same bound factory, also passing each resource the function declares by name.
@@ -182,7 +245,7 @@ class _BoundFactory:
         dropped = sorted(name for name in resources if name not in self._factory._accepted)
         if dropped:
             logger.debug("factory=<%s>, resources=<%s> | factory does not declare them", self._factory._label, dropped)
-        return _BoundFactory(self._factory, self._values, self._workspace, {**self._resources, **resources})
+        return _BoundFactory(self._factory, self._values, self._workspace, {**self._resources, **resources}, self._temp)
 
 
 @overload
