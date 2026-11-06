@@ -137,7 +137,8 @@ strands-evals/
 │   │   ├── execution/                        # Trial statuses, default rollout, trace capture, TrialRunner
 │   │   ├── scoring/                          # Metric registry, objectives (incl. Pareto), constraints
 │   │   ├── score_model/                      # ScoreModel / Fit protocols, BayesBenchModel, effects, the ranking
-│   │   ├── bayesbench/                       # Third-party BayesBench (only score_model/bayesbench.py imports it)
+│   │   ├── bayesbench/                       # Factor encoder, conjugate posterior, prior-scale averaging, contrasts, held-out
+│   │   │                                     # diagnostics; numpy/scipy only, imported only by score_model/bayesbench.py
 │   │   ├── search/                           # Proposer, Block / Search / schedules, TPE, Reflection, Thompson
 │   │   ├── selection/                        # Selection, TopRanked (picks the parent)
 │   │   ├── setup/                            # Split, Budget
