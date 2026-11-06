@@ -715,7 +715,7 @@ def test_a_symlinked_skill_directory_fails_at_declaration(library, tmp_path):
 )
 def test_a_skill_md_without_well_formed_frontmatter_fails_at_declaration(library, text, problem):
     (library / "triage" / "SKILL.md").write_text(text, newline="")
-    with pytest.raises(TypeError, match=f"triage/SKILL.md: .*{problem}"):
+    with pytest.raises(TypeError, match=rf"triage[/\\]SKILL.md: .*{problem}"):
         SkillLibrary(library)
 
 
