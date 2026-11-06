@@ -24,6 +24,7 @@ from .files import (
     _ignore_containing,
     _location_in_copy,
     _outer_folders,
+    _SkillFile,
 )
 from .markers import _UNSET, Choice, Component, Float, Int, OneOf, TextValue, _default_size_cap, _is_option, choice
 from .tools import ToolDescriptions
@@ -93,13 +94,14 @@ class Space:
             TypeError: No markers, a name that is empty or contains `.` or `/`, an unknown marker
                 type, a marker with no default, a default that fails `validate` (e.g. a text
                 default over its size cap), or two file markers on the same text (a `FileText`'s
-                file declared again, or two `JsonField`s on one field or one inside the other).
+                or a skill's file declared again, or two `JsonField`s on one field or one inside
+                the other).
         """
         if not markers:
             raise TypeError("nothing to optimize: declare at least one marker")
         self._markers: dict[str, Marker] = {}
         self._params: dict[str, ParamInfo] = {}
-        self._files: dict[str, FileText | JsonField] = {}  # file-backed key -> its marker
+        self._files: dict[str, FileText | JsonField | _SkillFile] = {}  # file-backed key -> its marker
         for name, marker in markers.items():
             if not isinstance(name, str) or not name or "." in name or "/" in name:
                 raise TypeError(f"declared name {name!r} must be a non-empty string without '.' or '/'")
@@ -108,17 +110,27 @@ class Space:
             if not isinstance(marker, Marker):
                 raise TypeError(f"{name}: {type(marker).__name__} is not a marker")
             self._markers[name] = marker
+            files: dict[str, FileText | JsonField | _SkillFile]
+            if isinstance(marker, SkillLibrary):
+                files = {f"{name}/{relative}": member for relative, member in marker._members.items()}
+            else:
+                files = {name: marker} if isinstance(marker, (FileText, JsonField)) else {}
             for info in _flatten(name, marker):
-                if isinstance(marker, (FileText, JsonField)):
-                    _check_no_overlap(info.key, marker, self._files)
-                    self._files[info.key] = marker
+                if info.key in files:
+                    _check_no_overlap(info.key, files[info.key], self._files)
+                    self._files[info.key] = files[info.key]
                 problem = self._problem(info, info.default)
                 if problem is not None:
                     raise TypeError(f"invalid default: {problem}")
                 self._params[info.key] = info
-        # Folders a candidate's copy holds; fixed by the declaration, so every copy has one layout.
-        self._copy_folders = _outer_folders(marker.path.parent for marker in self._files.values())
-        self._copies_files = any(isinstance(m, FileText) and m.as_path for m in self._files.values())
+        # Folders a candidate's copy holds (a SkillLibrary's whole directory); fixed by the declaration,
+        # so every copy has one layout.
+        self._copy_folders = _outer_folders(
+            m.copied if isinstance(m, _SkillFile) else m.path.parent for m in self._files.values()
+        )
+        self._copies_files = any(
+            isinstance(m, _SkillFile) or (isinstance(m, FileText) and m.as_path) for m in self._files.values()
+        )
 
     def params(self) -> list[ParamInfo]:
         """Every flat key, in declaration order, a choice before its sub-keys.
@@ -221,6 +233,8 @@ class Space:
         - `tool_descriptions`: new copies of the tools with the candidate's descriptions.
         - `FileText(as_path=True)`: the path of the file inside `workspace`, or the original path
           when `workspace` is None (the plain call).
+        - `SkillLibrary`: the path of the directory inside `workspace`, or the original directory
+          when `workspace` is None.
         - Any other marker: the value itself, e.g. `0.2` or the prompt text.
 
         `values` must already pass `validate`; nothing is checked here. A component's fixed kwargs
@@ -242,7 +256,7 @@ class Space:
             return alternative.build({arg: values[f"{name}.{label}.{arg}"] for arg in alternative.tunable})
         if isinstance(marker, ToolDescriptions):
             return marker.build({tool: cast(str, values[f"{name}.{tool}"]) for tool in marker.tools})
-        if isinstance(marker, FileText) and marker.as_path:
+        if isinstance(marker, SkillLibrary) or (isinstance(marker, FileText) and marker.as_path):
             return marker.path if workspace is None else workspace / _location_in_copy(self._copy_folders, marker.path)
         return values[name]
 
@@ -403,6 +417,18 @@ def _flatten(name: str, marker: Marker) -> list[ParamInfo]:
     if isinstance(marker, JsonField):
         source = FileSource(marker.path, marker.pointer, False)
         return [_text(name, name, marker.default, marker.size_cap, marker.edit_instructions, source)]
+    if isinstance(marker, SkillLibrary):
+        return [
+            _text(
+                f"{name}/{relative}",
+                name,
+                member.default,
+                member.size_cap,
+                member.edit_instructions,
+                FileSource(member.path, None, True),
+            )
+            for relative, member in marker._members.items()
+        ]
     raise TypeError(f"{name}: {type(marker).__name__} can't be declared yet")
 
 
@@ -439,7 +465,11 @@ def _text(
     return ParamInfo(key, name, "text", default, size_cap=cap, edit_instructions=edit_instructions, source=source)
 
 
-def _check_no_overlap(key: str, marker: FileText | JsonField, declared: Mapping[str, FileText | JsonField]) -> None:
+def _check_no_overlap(
+    key: str,
+    marker: FileText | JsonField | _SkillFile,
+    declared: Mapping[str, FileText | JsonField | _SkillFile],
+) -> None:
     """Raise `TypeError` if `marker` edits text another declared file marker edits too."""
     for other_key, other in declared.items():
         if other.path != marker.path:
@@ -452,7 +482,7 @@ def _check_no_overlap(key: str, marker: FileText | JsonField, declared: Mapping[
                 f"{key}: {marker.pointer!r} and {other_key}'s {other.pointer!r} are the same field of {marker.path} "
                 "or one is inside the other"
             )
-        raise TypeError(f"{key}: {marker.path} is already declared by {other_key}; a FileText's file can't be shared")
+        raise TypeError(f"{key}: {marker.path} is already declared by {other_key}; a whole file's text can't be shared")
 
 
 def _check_value(info: ParamInfo, value: Any) -> str | None:
