@@ -71,7 +71,7 @@ class CloudWatchLogsParser:
         # If we have spans, associate events with them
         if spans_by_id:
             for span_id, span in spans_by_id.items():
-                span["span_events"] = events_by_span_id.get(span_id, [])
+                span["span_events"] = (span.get("span_events") or []) + events_by_span_id.get(span_id, [])
             return list(spans_by_id.values())
 
         # No spans - create synthetic spans from events
