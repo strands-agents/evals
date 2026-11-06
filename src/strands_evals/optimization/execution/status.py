@@ -4,9 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-import botocore.exceptions
-import urllib3.exceptions
+from botocore.exceptions import (
+    ConnectionClosedError,
+    ConnectTimeoutError,
+    EndpointConnectionError,
+    NoCredentialsError,
+    ReadTimeoutError,
+    ResponseStreamingError,
+)
 from strands.types.exceptions import EventLoopException
+from urllib3.exceptions import NewConnectionError, ProtocolError
+from urllib3.exceptions import TimeoutError as Urllib3TimeoutError
 
 from ...types.optimization import TrialStatus
 from ...utils import is_throttling_error
@@ -22,15 +30,15 @@ class InfrastructureError(Exception):
 # No connection, no credentials, or a response that stopped or broke while read. urllib3's own timeouts
 # reach the agent unwrapped when a streamed response stalls.
 _TRANSPORT_ERRORS = (
-    botocore.exceptions.ConnectTimeoutError,
-    botocore.exceptions.EndpointConnectionError,
-    botocore.exceptions.NoCredentialsError,
-    botocore.exceptions.ReadTimeoutError,
-    botocore.exceptions.ResponseStreamingError,
-    botocore.exceptions.ConnectionClosedError,
-    urllib3.exceptions.TimeoutError,
-    urllib3.exceptions.ProtocolError,
-    urllib3.exceptions.NewConnectionError,
+    ConnectTimeoutError,
+    EndpointConnectionError,
+    NoCredentialsError,
+    ReadTimeoutError,
+    ResponseStreamingError,
+    ConnectionClosedError,
+    Urllib3TimeoutError,
+    ProtocolError,
+    NewConnectionError,
 )
 
 # The model service's own failure codes, lowercased; botocore reports them in `response["Error"]["Code"]`,

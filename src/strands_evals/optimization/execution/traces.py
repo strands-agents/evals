@@ -120,7 +120,7 @@ class TraceCapture:
             trace_id: The trial's trace.
             attempt_span_id: The attempt's span; only its subtree is read.
         """
-        return _session(trace_id, _subtree(self._filter.spans(trace_id), attempt_span_id))
+        return _session(trace_id, _subtree(self._filter.spans(trace_id), [attempt_span_id]))
 
     def usage(self, trace_id: str, attempt_span_id: str) -> Usage:
         """The attempt's usage, judge spans excluded: the last attempt's, or one in `previous_attempts`.
@@ -133,7 +133,7 @@ class TraceCapture:
             attempt_span_id: The attempt's span; only its subtree is read.
         """
         spans = self._filter.spans(trace_id)
-        subtree = _subtree(spans, attempt_span_id)
+        subtree = _subtree(spans, [attempt_span_id])
         return _usage(subtree, _attempt_seconds(spans, subtree, attempt_span_id))
 
     def evaluator_view(self, trace_id: str) -> EvaluatorView:
@@ -143,7 +143,7 @@ class TraceCapture:
         spans' total duration.
         """
         spans = self._filter.spans(trace_id)
-        judge_spans: list[ReadableSpan] = []
+        evaluator_span_ids: list[str] = []
         seconds = 0.0
         errors: dict[str, str] = {}
         labels: dict[str, str] = {}
@@ -152,12 +152,13 @@ class TraceCapture:
             name = attributes.get("gen_ai.evaluation.name")
             if name is None or not span.name.startswith("evaluator "):
                 continue
-            judge_spans += _subtree(spans, _span_id(span))
+            evaluator_span_ids.append(_span_id(span))
             seconds += _duration(span)
             if span.status.status_code is StatusCode.ERROR:
                 errors[str(name)] = _exception_type(span)
             elif "gen_ai.evaluation.score.label" in attributes:
                 labels[str(name)] = str(attributes["gen_ai.evaluation.score.label"])
+        judge_spans = _subtree(spans, evaluator_span_ids)
         return EvaluatorView(judge_usage=_usage(judge_spans, seconds), errors=errors, labels=labels)
 
     def release(self, trace_ids: Iterable[str]) -> None:
@@ -175,14 +176,14 @@ def _duration(span: ReadableSpan) -> float:
     return (span.end_time - span.start_time) / 1e9
 
 
-def _subtree(spans: Sequence[ReadableSpan], root_span_id: str) -> list[ReadableSpan]:
-    """The descendants of `root_span_id` (not the root itself), in the order the spans finished."""
+def _subtree(spans: Sequence[ReadableSpan], root_span_ids: Iterable[str]) -> list[ReadableSpan]:
+    """The descendants of the roots (not the roots themselves), in the order the spans finished."""
     children: dict[str, list[str]] = {}
     for span in spans:
         if span.parent is not None:
             children.setdefault(format(span.parent.span_id, "016x"), []).append(_span_id(span))
     inside: set[str] = set()
-    pending = [root_span_id]
+    pending = list(root_span_ids)
     while pending:
         for child in children.get(pending.pop(), ()):
             if child not in inside:
@@ -246,7 +247,8 @@ def _session(trace_id: str, spans: Sequence[ReadableSpan]) -> Session | None:
 
     The spans are already exactly one attempt's subtree, so every agent in it is kept, whatever session
     id each one set; `map_to_session` would keep only spans carrying the id it is given. The first id
-    found (else the trace id) names the session.
+    found (else the trace id) names the session. The convention is read from the first Strands span (one
+    with `gen_ai.operation.name`), since a span the rollout opened itself may finish first.
     """
     if not spans:
         return None
@@ -258,7 +260,8 @@ def _session(trace_id: str, spans: Sequence[ReadableSpan]) -> Session | None:
             session_id = str(found)
             break
     mapper = StrandsInMemorySessionMapper()
-    mapper._convention_version = mapper._detect_convention_version(spans[0])
+    strands_span = next((span for span in spans if "gen_ai.operation.name" in (span.attributes or {})), spans[0])
+    mapper._convention_version = mapper._detect_convention_version(strands_span)
     trace = mapper._convert_trace(trace_id, list(spans), session_id)
     return Session(traces=[trace], session_id=session_id) if trace.spans else None
 
