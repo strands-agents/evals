@@ -239,10 +239,13 @@ def test_evaluator_view_reads_judge_usage_errors_and_labels(traces, tracer):
 
     assert view.labels == {"Helpfulness": "Very helpful"}
     assert view.errors == {"Broken": "ConnectionError"}
-    assert view.judge_usage.tokens == 42
-    assert view.judge_usage.model_calls == 2
-    assert view.judge_usage.models == ["judge-model"]
-    assert view.judge_usage.seconds == pytest.approx(2.5)
+    assert set(view.judge_usage) == {"Helpfulness", "Broken"}
+    assert view.judge_usage["Helpfulness"].tokens == 30
+    assert view.judge_usage["Broken"].tokens == 12
+    assert view.judge_usage["Helpfulness"].model_calls == 1
+    assert view.judge_usage["Helpfulness"].models == ["judge-model"]
+    assert view.judge_usage["Helpfulness"].seconds == pytest.approx(1.0)
+    assert view.judge_usage["Broken"].seconds == pytest.approx(1.5)
 
 
 def test_evaluator_view_with_no_evaluators_is_empty(traces, tracer):
@@ -253,7 +256,7 @@ def test_evaluator_view_with_no_evaluators_is_empty(traces, tracer):
 
     assert view.errors == {}
     assert view.labels == {}
-    assert view.judge_usage.model_calls == 0
+    assert view.judge_usage == {}
 
 
 def test_release_drops_only_those_trials(traces, tracer):

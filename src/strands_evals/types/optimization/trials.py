@@ -109,12 +109,14 @@ class AttemptRecord(BaseModel):
     and a saved record that a later re-run pass replaced (its own `previous_attempts`, then itself).
 
     Attributes:
-        status: What that attempt ended as (`infrastructure_invalid`, or `evaluator_invalid` before a
-            judge-only re-run).
+        status: What that attempt ended as (`infrastructure_invalid`, or `completed` /
+            `evaluator_invalid` with failed evaluators before a judge-only re-run).
         error_type: The exception type, if it raised.
         error: The exception message, if it raised.
-        usage: What the agent spent in it; zero for a judge-only re-run, which reuses the task output.
-        judge_usage: What its judges spent; zero for a throttled attempt `Experiment` retried.
+        usage: What the agent spent in it; zero when a judge-only re-run reused its output, since that
+            usage stays on the new record, so it is counted once.
+        judge_usage: What its failed judges spent; judges whose scores the new record kept count there
+            instead, so this is only wasted work. Zero for a throttled attempt `Experiment` retried.
         pass_index: The `TrialRunner` pass it ran in (0 = first; retried throttling keeps its pass).
         rollouts: What it cost the budget, as `TrialRecord.rollouts`.
     """
@@ -147,6 +149,12 @@ class TrialRecord(BaseModel):
     throttling. The trial's total is `rollouts + sum(a.rollouts for a in previous_attempts)`; resume rebuilds
     `spent` from the last record per key this way, with nothing counted twice, because a replacing
     record's `previous_attempts` holds the replaced record and its own `previous_attempts`.
+
+    A failed evaluator never changes the status: the trial stays `completed` with it in
+    `evaluator_errors` (every evaluator failed is `evaluator_invalid`); `infrastructure_invalid` is the
+    agent side only. `judge_usage` is keyed by evaluator name, like `evaluations`: each judge's spend
+    for the score in `evaluations` (a failed evaluator's spend is under its name too), including scores
+    kept from a record a judge-only re-run replaced; the trial's judge spend is the sum.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -168,5 +176,5 @@ class TrialRecord(BaseModel):
     details: dict[str, list[EvaluationOutput]]
     evaluator_errors: dict[str, str]
     usage: Usage
-    judge_usage: Usage
+    judge_usage: dict[str, Usage]
     rollouts: int
