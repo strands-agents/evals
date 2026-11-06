@@ -141,10 +141,12 @@ class TraceCapture:
         """One walk over the trial's `evaluator {name}` spans: judge usage, errors, and labels.
 
         Each evaluator's judge usage sums the `chat` spans under its evaluator span; its `seconds` is
-        that span's duration.
+        that span's duration. One pass over the spans for every evaluator: each judge span goes to its
+        nearest evaluator ancestor.
         """
         spans = self._filter.spans(trace_id)
-        judge_usage: dict[str, Usage] = {}
+        evaluator_of: dict[str, str] = {}  # evaluator span id -> evaluator name
+        seconds: dict[str, float] = {}
         errors: dict[str, str] = {}
         labels: dict[str, str] = {}
         for span in spans:
@@ -153,13 +155,22 @@ class TraceCapture:
             if name is None or not span.name.startswith("evaluator "):
                 continue
             name = str(name)
-            judge_usage[name] = judge_usage.get(name, Usage.zero()) + _usage(
-                _subtree(spans, [_span_id(span)]), _duration(span)
-            )
+            evaluator_of[_span_id(span)] = name
+            seconds[name] = seconds.get(name, 0.0) + _duration(span)
             if span.status.status_code is StatusCode.ERROR:
                 errors[name] = _exception_type(span)
             elif "gen_ai.evaluation.score.label" in attributes:
                 labels[name] = str(attributes["gen_ai.evaluation.score.label"])
+        parent_of = {_span_id(span): format(span.parent.span_id, "016x") for span in spans if span.parent is not None}
+        judge_spans = _subtree(spans, evaluator_of.keys())  # every span under an evaluator span, in one call
+        spans_by_evaluator: dict[str, list[ReadableSpan]] = {name: [] for name in seconds}
+        for span in judge_spans:
+            ancestor = parent_of.get(_span_id(span))
+            while ancestor is not None and ancestor not in evaluator_of:
+                ancestor = parent_of.get(ancestor)
+            if ancestor is not None:
+                spans_by_evaluator[evaluator_of[ancestor]].append(span)
+        judge_usage = {name: _usage(spans_by_evaluator[name], seconds[name]) for name in seconds}
         return EvaluatorView(judge_usage=judge_usage, errors=errors, labels=labels)
 
     def release(self, trace_ids: Iterable[str]) -> None:
