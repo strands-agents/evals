@@ -1,6 +1,7 @@
 import math
 
 import pytest
+from pydantic import ValidationError
 
 from strands_evals.types.optimization import Estimate
 
@@ -26,6 +27,15 @@ def test_quantile_with_no_spread_is_the_mean():
 def test_quantile_outside_0_1_raises(q):
     with pytest.raises(ValueError, match="strictly between 0 and 1"):
         Estimate(mean=0.0, sd=1.0).quantile(q)
+
+
+@pytest.mark.parametrize(
+    ("mean", "sd"),
+    [(math.nan, 0.1), (math.inf, 0.1), (-math.inf, 0.1), (0.5, math.nan), (0.5, math.inf), (0.5, -0.1)],
+)
+def test_a_non_finite_mean_or_sd_or_a_negative_sd_is_rejected(mean, sd):
+    with pytest.raises(ValidationError):
+        Estimate(mean=mean, sd=sd)
 
 
 def test_round_trips_through_json():

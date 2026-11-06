@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from statistics import NormalDist
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Estimate(BaseModel):
     """One metric's posterior mean and sd, in the metric's own units.
+
+    Both are finite and `sd` is >= 0 (0 when there is no spread, e.g. a measured mean), else a
+    `ValidationError` at construction, so a score model that returns NaN or infinity fails where it does.
 
     Saved in `label` events (`CandidateLabel.estimates`) and `picked` events (`ValidationReport.estimates`);
     `effects.json` rows hold mean and ci90 as plain fields instead.
@@ -16,8 +19,8 @@ class Estimate(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    mean: float
-    sd: float
+    mean: float = Field(allow_inf_nan=False)
+    sd: float = Field(ge=0, allow_inf_nan=False)
 
     @property
     def ci90(self) -> tuple[float, float]:

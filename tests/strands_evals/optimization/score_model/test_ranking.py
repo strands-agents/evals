@@ -1,6 +1,6 @@
 import math
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import pytest
 
@@ -84,6 +84,11 @@ def assessment(candidate_id, objective, *, feasible=True, violation=0.0, terms=N
 def test_values_closer_than_a_tenth_of_the_sd_tie():
     assert round_to_sd(0.4999960020499944, 0.000707) == round_to_sd(0.49999999999941763, 0.000707) == 0.5
     assert round_to_sd(0.52, 0.000707) != round_to_sd(0.5, 0.000707)
+
+
+@pytest.mark.parametrize("sd", [5e-324, 1e-323])
+def test_round_to_sd_handles_an_sd_near_the_smallest_float(sd):
+    assert round_to_sd(0.5, sd) == 0.5
 
 
 @pytest.mark.parametrize("value,sd", [(3.25, 0.0), (math.inf, 0.1), (-0.5, -1.0)])
@@ -271,6 +276,22 @@ def test_feasible_first_by_objective_then_infeasible_by_least_violation():
     assert rank(assessments, order) == ["best", "base", "close_better", "close", "far"]
 
 
+def test_under_pareto_a_candidate_without_terms_loses_an_equal_objective_whatever_the_terms_sign():
+    # `no_terms` is scored first; `with_terms`' first term is negative, which an unequal key shape compared
+    # against `no_terms`' position.
+    no_terms = replace(assessment("no_terms", 0.5), terms=None)
+    with_terms = assessment("with_terms", 0.5, terms=(-2.0, 0.8))
+    assessments = {"no_terms": no_terms, "with_terms": with_terms}
+    assert rank(assessments, ["no_terms", "with_terms"], is_pareto=True) == ["with_terms", "no_terms"]
+    # Outside the search's Pareto tie-break, missing terms change nothing: the earlier candidate, or most trials.
+    assert rank(assessments, ["no_terms", "with_terms"]) == ["no_terms", "with_terms"]
+    counts = {"no_terms": 3, "with_terms": 1}
+    assert rank(assessments, ["no_terms", "with_terms"], is_pareto=True, trial_counts=counts) == [
+        "no_terms",
+        "with_terms",
+    ]
+
+
 def test_rank_skips_ids_without_an_assessment():
     assert rank({"a": assessment("a", 0.5)}, ["b", "a"]) == ["a"]
 
@@ -382,6 +403,11 @@ def test_the_front_holds_exactly_the_feasible_non_dominated_candidates():
     }
     order = ["b", "a", "dominated", "same_as_b", "cheap_but_infeasible"]
     assert pareto_front(assessments, order) == ["b", "a", "same_as_b"]
+
+
+def test_the_front_skips_ids_without_an_assessment():
+    assessments = {"a": assessment("a", 0.0, terms=(0.9, -5.0)), "b": assessment("b", 0.0, terms=(0.5, -1.0))}
+    assert pareto_front(assessments, ["a", "unassessed", "b"]) == ["a", "b"]
 
 
 def test_constraints_filter_the_front_and_never_add_a_dimension():

@@ -31,7 +31,8 @@ def round_to_sd(value: float, sd: float) -> float:
     """
     if not sd > 0 or not math.isfinite(value):
         return value
-    return round(value, -math.floor(math.log10(sd / 10)))
+    # log10(sd) - 1, not log10(sd / 10): `sd / 10` underflows to 0 for an sd near the smallest float.
+    return round(value, -math.floor(math.log10(sd) - 1))
 
 
 @dataclass(frozen=True)
@@ -42,7 +43,9 @@ class Assessment:
         objective: `Criteria.objective_value` over each goal metric's resolved estimate, or the measured
             objective (`CandidateScores.objective`) when assessed by measured means.
         terms: `Criteria.terms` over the same values (oriented, the rule applied, resolved): what
-            `pareto_front` compares and the `Pareto` tie-break reads; None when `objective` is None.
+            `pareto_front` compares and the `Pareto` tie-break reads; None when `objective` is None or any
+            objective's metric is unmeasured (`objective` can still be set then: `objective_value` drops a
+            missing evaluator term).
         is_feasible: Every constraint has P(met) >= `criteria.feasibility_threshold` under the fit, or is
             met on measured means.
         violations: Per constraint, <= 0 when met: the metric's quantile at
@@ -194,7 +197,8 @@ def rank(
 
     Ties (equal after resolving): with `trial_counts` (the final pick), most trials, then earlier in
     `order`, so the baseline wins when nothing beats it, under `Pareto` too; without (the search), under
-    `Pareto` first the larger `terms` (compared in objective order), then earlier in `order`. Equal
+    `Pareto` first the larger `terms` (compared in objective order; a candidate without `terms` after
+    those with them), then earlier in `order`. Equal
     violations among infeasible candidates go by the higher objective, then the same tie rules.
 
     Args:
@@ -209,9 +213,11 @@ def rank(
         a = assessments[candidate_id]
         objective = a.objective if a.objective is not None else -math.inf
         if trial_counts is not None:
-            tie: tuple[float, ...] = (-trial_counts.get(candidate_id, 0),)
-        elif is_pareto and a.terms is not None:
-            tie = tuple(-t for t in a.terms)
+            tie: tuple[Any, ...] = (-trial_counts.get(candidate_id, 0),)
+        elif is_pareto:
+            # One shape for every key: a candidate without terms (an objective evaluator N/A on every case)
+            # loses the tie, so its position is never compared against another candidate's term.
+            tie = (a.terms is None, tuple(-t for t in a.terms or ()))
         else:
             tie = ()
         violation = 0.0 if a.is_feasible else a.total_violation
@@ -229,9 +235,13 @@ def pareto_front(assessments: Mapping[str, Assessment], ids: Sequence[str]) -> l
 
     Args:
         assessments: Candidate id -> its assessment.
-        ids: The candidates to consider, in ranking order.
+        ids: The candidates to consider, in ranking order; only those in `assessments` are considered, as `rank`.
     """
-    pool = {c: terms for c in ids if assessments[c].is_feasible and (terms := assessments[c].terms) is not None}
+    pool = {
+        c: terms
+        for c in ids
+        if c in assessments and assessments[c].is_feasible and (terms := assessments[c].terms) is not None
+    }
 
     def dominates(a: tuple[float, ...], b: tuple[float, ...]) -> bool:
         return all(x >= y for x, y in zip(a, b, strict=True)) and a != b
