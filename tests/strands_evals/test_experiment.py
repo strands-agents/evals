@@ -2425,3 +2425,25 @@ def test_experiment_report_cls_scoring_override_applies_to_single_evaluator(mock
 
     multi = Experiment(cases=cases, evaluators=[mock_evaluator, MockEvaluator2()], report_cls=MinScoreReport)
     assert multi.run_evaluations(simple_task).overall_score == 0.0
+
+
+@pytest.mark.asyncio
+async def test_run_evaluations_async_cancelled_stops_its_workers(mock_evaluator):
+    """A cancelled call cancels its workers too, so no case finishes on its own afterwards."""
+    started, finished = asyncio.Event(), []
+
+    async def task(case):
+        started.set()
+        await asyncio.sleep(0.2)
+        finished.append(case.name)
+        return case.input
+
+    experiment = Experiment(cases=[Case(name="slow", input="hi")], evaluators=[mock_evaluator])
+    call = asyncio.create_task(experiment.run_evaluations_async(task))
+    await started.wait()
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    await asyncio.sleep(0.3)
+
+    assert finished == []
