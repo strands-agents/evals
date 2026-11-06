@@ -32,6 +32,7 @@ class _TrialState:
     trace_id: str | None = None
     trace_ids: set[str] = field(default_factory=set)
     errors: dict[str, str] = field(default_factory=dict)  # evaluator name -> exception type
+    released: bool = False  # the trial's traces were released: a judge still running must not register again
 
 
 class _EvaluatorProxy:
@@ -55,7 +56,7 @@ class _EvaluatorProxy:
 
     async def evaluate_async(self, evaluation_case: EvaluationData) -> list[EvaluationOutput]:
         context = trace_api.get_current_span().get_span_context()
-        if context.is_valid:
+        if context.is_valid and not self._state.released:
             self._state.trace_id = format(context.trace_id, "032x")
             self._state.trace_ids.add(self._state.trace_id)
             self._traces.register(self._state.trace_id)
@@ -225,8 +226,11 @@ class TrialRunner:
         `task` is not yet instrumented (`make_task(...)` or the `build_task` path's task); each run wraps
         it with `instrument(task, TrialLog(), traces)`. After every run's first pass, up to `rerun_passes`
         re-run passes each retry the trials still `infrastructure_invalid` or with a failed evaluator.
-        `allowance` is `BudgetTracker.allowance(phase=...)` and caps only the re-run passes; trials left
-        when it runs out stay `infrastructure_invalid`. A judge-only re-run costs 0 rollouts. A record a
+        `allowance` caps the rollouts of the whole call, first pass included: the caller checks
+        `can_afford(pending(...))` first, so the first pass always fits, and the re-runs get what is left of
+        it (`BudgetTracker.allowance(phase=...)` read before the call, so `max_rollouts` and the later
+        phases' reserves hold). Trials left when it runs out stay `infrastructure_invalid`. A judge-only
+        re-run costs 0 rollouts. A record a
         re-run replaces moves into the new record's `previous_attempts`. Each record's and attempt's
         `rollouts` is set to what it cost (1 when the agent ran, else 0).
 
@@ -248,7 +252,7 @@ class TrialRunner:
             task: The candidate's task, not yet instrumented.
             case_names: The case names to score.
             runs: Runs per case (`runs_per_candidate`).
-            allowance: Rollouts the re-run passes may spend.
+            allowance: Rollouts the whole call may spend, first pass included.
             rejudge: Re-judge saved trials' failed evaluators; set only when an ineligible candidate is
                 scored again.
 
@@ -279,9 +283,8 @@ class TrialRunner:
                 jobs.append((key, True))
         touched = {key for key, _ in jobs}  # the re-run passes never touch a trial this call didn't run
         spent = await self._pass(call, jobs, pass_index=0)
-        rerun_spent = 0
         for pass_index in range(1, self._rerun_passes + 1):
-            agent_runs = max(allowance - rerun_spent, 0)
+            agent_runs = max(allowance - spent, 0)  # the allowance covers the whole call, first pass included
             jobs = []
             for key in keys:
                 if key not in touched:
@@ -294,9 +297,7 @@ class TrialRunner:
                     jobs.append((key, True))
             if not jobs:
                 break
-            ran = await self._pass(call, jobs, pass_index=pass_index)
-            spent += ran
-            rerun_spent += ran
+            spent += await self._pass(call, jobs, pass_index=pass_index)
         return [call.records[key] for key in keys], spent
 
     async def _pass(self, call: _Call, jobs: list[tuple[_Key, bool]], *, pass_index: int) -> int:
@@ -372,6 +373,7 @@ class TrialRunner:
         finally:
             # every trace this trial registered, read or not: a setup error, a cancelled attempt, or an
             # exception above would otherwise leave its spans in memory for the rest of the run
+            state.released = True
             self._traces.release(log.trace_ids | state.trace_ids)
         if store.data is not None and record.status is not TrialStatus.INFRASTRUCTURE_INVALID:
             call.live[key] = store.data

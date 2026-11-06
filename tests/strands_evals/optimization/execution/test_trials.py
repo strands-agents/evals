@@ -9,10 +9,11 @@ from strands.types.exceptions import ModelThrottledException
 
 from strands_evals import Case
 from strands_evals.evaluators import Evaluator
-from strands_evals.optimization import InfrastructureError
+from strands_evals.optimization import Budget, InfrastructureError
 from strands_evals.optimization.declaration.tunable import _FactoryArgumentError
 from strands_evals.optimization.execution.traces import TraceCapture
 from strands_evals.optimization.execution.trials import TrialRunner, _EvaluatorProxy, _TrialState
+from strands_evals.optimization.setup.budget import BudgetTracker
 from strands_evals.types import EvaluationOutput
 from strands_evals.types.optimization import TrialRecord, TrialStatus
 from strands_evals.types.trace import Session
@@ -369,7 +370,11 @@ async def test_an_infrastructure_failure_is_re_run_within_the_allowance(traces):
         return "ok"
 
     records, spent = await _runner(traces, MemoryCache(), _cases("a"), [Fixed()]).run(
-        "cand", task, ["a"], runs=1, allowance=1
+        "cand",
+        task,
+        ["a"],
+        runs=1,
+        allowance=2,  # the first pass's rollout, plus one re-run
     )
 
     record = records[0]
@@ -387,11 +392,27 @@ async def test_an_exhausted_allowance_leaves_the_trial_infrastructure_invalid(tr
         raise InfrastructureError("sandbox down")
 
     records, spent = await _runner(traces, MemoryCache(), _cases("a", "b"), [Fixed()]).run(
-        "cand", task, ["a", "b"], runs=1, allowance=1
+        "cand", task, ["a", "b"], runs=1, allowance=3
     )
 
-    assert spent == 3  # two first passes, one re-run
+    assert spent == 3  # the allowance covers the whole call: two first passes, one re-run
     assert [r.status for r in records] == [TrialStatus.INFRASTRUCTURE_INVALID] * 2
+
+
+async def test_a_call_never_spends_more_than_the_budget_allows(traces):
+    budget = BudgetTracker(Budget(max_rollouts=2))
+
+    async def task(case):
+        raise InfrastructureError("sandbox down")
+
+    runner = _runner(traces, MemoryCache(), _cases("a", "b"), [Fixed()])
+    assert budget.can_afford(runner.pending("cand", ["a", "b"], runs=1))
+
+    _, spent = await runner.run("cand", task, ["a", "b"], runs=1, allowance=budget.allowance())
+    budget.spend(spent)
+
+    assert spent == 2  # the first pass used the whole allowance: no re-run
+    assert budget.remaining == 0
 
 
 async def test_a_re_run_after_resume_keeps_the_earlier_attempt(traces):
@@ -508,23 +529,29 @@ async def test_a_setup_error_releases_its_trace(traces):
     assert _kept(traces) == before
 
 
-async def test_a_cancelled_trial_releases_its_trace(traces):
+async def test_a_cancelled_trial_saves_nothing_and_keeps_no_spans(traces):
     before = _kept(traces)
     started = asyncio.Event()
+    cache = MemoryCache()
 
     async def task(case):
         started.set()
-        await asyncio.Event().wait()  # never returns
+        await asyncio.sleep(0.2)
+        return "ok"
 
     call = asyncio.create_task(
-        _runner(traces, MemoryCache(), _cases("a"), [Fixed()]).run("cand", task, ["a"], runs=1, allowance=0)
+        _runner(traces, cache, _cases("a"), [Fixed()]).run("cand", task, ["a"], runs=1, allowance=0)
     )
     await started.wait()
     assert _kept(traces) != before  # the attempt registered its trace
     call.cancel()
     with pytest.raises(asyncio.CancelledError):
         await call
+    # Long enough for a trial left running to finish and be judged: until Experiment cancels its own
+    # workers, it does, and its judge must not register the released trace again.
+    await asyncio.sleep(0.3)
 
+    assert cache.saved == []
     assert _kept(traces) == before
 
 

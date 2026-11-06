@@ -65,7 +65,10 @@ class BudgetTracker:
         return rollouts <= self.allowance(phase=phase)
 
     def allowance(self, *, phase: SplitName = "train") -> int:
-        """What `TrialRunner.run` may spend on re-run passes: remaining minus the later phases' reserves, >= 0."""
+        """What one `TrialRunner.run` call may spend, first pass and re-runs included.
+
+        Remaining minus the later phases' reserves, >= 0.
+        """
         held = {"train": self.validation_reserve + self.test_reserve, "validation": self.test_reserve, "test": 0}
         return max(0, self.remaining - held[phase])
 
