@@ -479,6 +479,70 @@ async def test_rejudge_re_judges_a_cached_trials_failed_evaluators(traces):
     assert records[0].evaluations["Broken"].reason == "saw answer to a"  # judged on the saved output
 
 
+# releasing spans
+
+
+def _kept(traces):
+    """Trace ids whose spans the capture still holds."""
+    return set(traces._filter._spans)
+
+
+async def test_every_trace_is_released_after_scoring_and_re_judging(traces):
+    before = _kept(traces)
+    runner = _runner(traces, MemoryCache(), _cases("a", "b"), [Fixed("A"), Judge("Flaky", failures=1)])
+
+    await runner.run("cand", _agent_task(), ["a", "b"], runs=2, allowance=0)
+
+    assert _kept(traces) == before
+
+
+async def test_a_setup_error_releases_its_trace(traces):
+    before = _kept(traces)
+
+    async def task(case):
+        raise _FactoryArgumentError("resource 'prompt' is named like a declared marker")
+
+    with pytest.raises(TypeError):
+        await _runner(traces, MemoryCache(), _cases("a"), [Fixed()]).run("cand", task, ["a"], runs=1, allowance=0)
+
+    assert _kept(traces) == before
+
+
+async def test_a_cancelled_trial_releases_its_trace(traces):
+    before = _kept(traces)
+    started = asyncio.Event()
+
+    async def task(case):
+        started.set()
+        await asyncio.Event().wait()  # never returns
+
+    call = asyncio.create_task(
+        _runner(traces, MemoryCache(), _cases("a"), [Fixed()]).run("cand", task, ["a"], runs=1, allowance=0)
+    )
+    await started.wait()
+    assert _kept(traces) != before  # the attempt registered its trace
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+
+    assert _kept(traces) == before
+
+
+async def test_a_trial_that_fails_while_its_record_is_built_releases_its_trace(traces, monkeypatch):
+    before = _kept(traces)
+    runner = _runner(traces, MemoryCache(), _cases("a"), [Fixed()])
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("record building failed")
+
+    monkeypatch.setattr(runner, "_ran", broken)
+
+    with pytest.raises(RuntimeError, match="record building failed"):
+        await runner.run("cand", _plain, ["a"], runs=1, allowance=0)
+
+    assert _kept(traces) == before
+
+
 # the evaluator proxy
 
 

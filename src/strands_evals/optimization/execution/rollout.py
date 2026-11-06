@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import inspect
 import logging
 from collections.abc import Callable, Mapping
@@ -63,9 +64,12 @@ class TrialLog:
         setup_error: The first setup error, else None: a `_FactoryArgumentError` (from the bound factory,
             or an environment that gave no mapping) or a `RuntimeError` (trial spans not recorded).
             `TrialRunner.run` raises it once the `Experiment` call returns.
+        trace_ids: Every trace `instrument` registered, with or without an entry (a setup error or a
+            cancelled attempt records none), so `TrialRunner.run` can release them all in a `finally`.
     """
 
     setup_error: Exception | None = None
+    trace_ids: set[str] = field(default_factory=set)
     _entries: dict[str, TrialLogEntry] = field(default_factory=dict, repr=False)
 
     def record(self, case_name: str, entry: TrialLogEntry) -> None:
@@ -107,8 +111,11 @@ def make_task(
     declared marker, a call kwarg the function doesn't accept, or a required parameter left unsupplied.
     An error creating or entering the environment is raised as `InfrastructureError(...) from error`, so
     `classify` makes it `infrastructure_invalid` whatever its type. An error exiting it after the rollout
-    returned only warns, and the trial keeps its result. A sync `rollout_fn` runs in a worker thread, as
-    `Experiment` runs a sync task.
+    returned only warns, and the trial keeps its result. A sync `rollout_fn`, a sync `environment`, and a
+    sync context manager's `__enter__` / `__exit__` run in a worker thread, as `Experiment` runs a sync
+    task, so a slow setup doesn't stall concurrent trials. Setup and teardown may run on different
+    threads, so a thread-bound resource (e.g. a sqlite connection) must allow that, or come from an
+    async context manager, which runs on the event loop.
 
     Args:
         agent_factory: The candidate's bound factory.
@@ -122,12 +129,13 @@ def make_task(
     async def task(case: Case) -> Any:
         if environment is None:
             return await _rollout(rollout_fn, agent_factory, case)
+        env_context = contextvars.copy_context()
         try:
-            provided = environment(case)
+            provided = await asyncio.to_thread(env_context.run, environment, case)
             if isinstance(provided, AbstractAsyncContextManager):
                 resources = await provided.__aenter__()
             elif isinstance(provided, AbstractContextManager):
-                resources = provided.__enter__()
+                resources = await asyncio.to_thread(env_context.run, provided.__enter__)
             else:
                 resources = provided
         except Exception as error:
@@ -141,9 +149,9 @@ def make_task(
                 )
             result = await _rollout(rollout_fn, agent_factory._with_resources(resources), case)
         except BaseException as error:
-            await _exit_environment(provided, case, error)
+            await _exit_environment(provided, env_context, case, error)
             raise
-        await _exit_environment(provided, case, None)
+        await _exit_environment(provided, env_context, case, None)
         return result
 
     return task
@@ -155,14 +163,17 @@ async def _rollout(rollout_fn: RolloutFn, agent_factory: Callable[..., Any], cas
         return await _call(rollout_fn, agent_factory, case)
 
 
-async def _exit_environment(provided: Any, case: Case, error: BaseException | None) -> None:
-    """Exit an environment context manager; an error exiting it only warns, and never hides `error`."""
+async def _exit_environment(
+    provided: Any, env_context: contextvars.Context, case: Case, error: BaseException | None
+) -> None:
+    """Exit an environment context manager in the context it was entered in; an error exiting it only
+    warns, and never hides `error`."""
     exc_info = (type(error), error, error.__traceback__) if error is not None else (None, None, None)
     try:
         if isinstance(provided, AbstractAsyncContextManager):
             await provided.__aexit__(*exc_info)
         elif isinstance(provided, AbstractContextManager):
-            provided.__exit__(*exc_info)
+            await asyncio.to_thread(env_context.run, provided.__exit__, *exc_info)
     except Exception as exit_error:
         logger.warning("case=<%s>, error=<%s> | environment failed to exit", case.name, exit_error)
 
@@ -221,6 +232,7 @@ def instrument(task: TaskFn, log: TrialLog, traces: TraceCapture) -> TaskFn:
             trace_id = format(context.trace_id, "032x")
             attempt_span_id = format(context.span_id, "016x")
             traces.register(trace_id)
+            log.trace_ids.add(trace_id)
 
             def record(status: TrialStatus, error: BaseException | None) -> None:
                 if isinstance(error, InfrastructureError) and error.__cause__ is not None:

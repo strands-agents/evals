@@ -1,4 +1,6 @@
+import contextvars
 import logging
+import threading
 from contextlib import asynccontextmanager, contextmanager
 
 import opentelemetry.trace as trace_api
@@ -141,6 +143,59 @@ async def test_a_resource_named_like_a_marker_is_a_setup_error():
 
     with pytest.raises(_FactoryArgumentError):
         await task(_case())
+
+
+@pytest.mark.parametrize("kind", ["plain", "context_manager"])
+async def test_a_sync_environment_runs_off_the_event_loop(kind):
+    loop_thread = threading.get_ident()
+    threads = []
+
+    @contextmanager
+    def managed():
+        threads.append(threading.get_ident())
+        yield {"sandbox": "box"}
+        threads.append(threading.get_ident())
+
+    def environment(case):
+        threads.append(threading.get_ident())
+        return {"sandbox": "box"} if kind == "plain" else managed()
+
+    out = await make_task(_build.bind({}), _built, environment=environment)(_case())
+
+    assert out["output"]["sandbox"] == "box"
+    assert len(threads) == (1 if kind == "plain" else 3)
+    assert loop_thread not in threads
+
+
+async def test_a_sync_environment_resets_in_exit_what_it_set_in_enter():
+    sandbox = contextvars.ContextVar("sandbox", default=None)
+    seen = []
+
+    @contextmanager
+    def environment(case):
+        token = sandbox.set("box")
+        try:
+            yield {"sandbox": "box"}
+        finally:
+            seen.append(sandbox.get())
+            sandbox.reset(token)  # raises ValueError if exit runs in another context
+            seen.append("reset")
+
+    await make_task(_build.bind({}), _built, environment=environment)(_case())
+
+    assert seen == ["box", "reset"]
+
+
+async def test_a_span_around_a_sync_environment_detaches_cleanly(caplog):
+    @contextmanager
+    def environment(case):
+        with trace_api.get_tracer("optimization-tests").start_as_current_span("sandbox"):
+            yield {"sandbox": "box"}
+
+    with caplog.at_level(logging.ERROR):
+        await make_task(_build.bind({}), _built, environment=environment)(_case())
+
+    assert "Failed to detach context" not in caplog.text
 
 
 @pytest.mark.parametrize("kind", ["sync", "async"])
@@ -294,6 +349,7 @@ async def test_a_completed_trial_is_logged(traces):
     assert entry.previous_attempts == []
     assert len(entry.trace_id) == 32
     assert len(entry.attempt_span_id) == 16
+    assert log.trace_ids == {entry.trace_id}
 
 
 async def test_the_default_rollout_gets_the_session_as_trajectory(traces):
@@ -392,6 +448,7 @@ async def test_a_setup_error_is_stored_not_classified(traces):
 
     assert isinstance(log.setup_error, _FactoryArgumentError)
     assert log.records() == {}
+    assert len(log.trace_ids) == 1  # registered with no entry, so TrialRunner can still release it
 
 
 async def test_an_unrecorded_attempt_span_is_a_setup_error(traces, monkeypatch):

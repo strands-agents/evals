@@ -27,10 +27,11 @@ _Key = tuple[str, int]  # (case name, run index)
 
 @dataclass
 class _TrialState:
-    """What one trial's evaluator proxies saw: its trace, and which evaluators raised (name -> type)."""
+    """What one trial's evaluator proxies saw: its trace, every trace they registered, which evaluators raised."""
 
     trace_id: str | None = None
-    errors: dict[str, str] = field(default_factory=dict)
+    trace_ids: set[str] = field(default_factory=set)
+    errors: dict[str, str] = field(default_factory=dict)  # evaluator name -> exception type
 
 
 class _EvaluatorProxy:
@@ -56,6 +57,7 @@ class _EvaluatorProxy:
         context = trace_api.get_current_span().get_span_context()
         if context.is_valid:
             self._state.trace_id = format(context.trace_id, "032x")
+            self._state.trace_ids.add(self._state.trace_id)
             self._traces.register(self._state.trace_id)
         name = self._evaluator.get_name()
         try:
@@ -237,6 +239,10 @@ class TrialRunner:
         some) has just those re-judged on its saved output, for 0 rollouts. Without it, cached trials are
         final, so a resumed run calls no judge the uninterrupted run didn't.
 
+        Every trace a trial registered (`TrialLog.trace_ids`, and the evaluator proxies') is released in a
+        `finally` once its record is built, so a setup error, a cancelled attempt, or an exception here
+        leaks no spans; never earlier, since usage and judge spans are read after `Experiment` returns.
+
         Args:
             candidate_id: The candidate.
             task: The candidate's task, not yet instrumented.
@@ -340,21 +346,23 @@ class TrialRunner:
             cases=[case],
             evaluators=cast(list[Evaluator], [_EvaluatorProxy(e, self._traces, state) for e in evaluators]),
         )
-        token = otel_context.attach(otel_context.Context())  # an outer span can't merge trials into one trace
         try:
-            report = await experiment.run_evaluations_async(
-                instrument(call.task, log, self._traces), max_workers=1, evaluation_data_store=store
-            )
-        finally:
-            otel_context.detach(token)
-        if log.setup_error is not None:
-            raise log.setup_error
-        entry = log.records().get(case_name)
-        trace_id = entry.trace_id if entry is not None else state.trace_id
-        if trace_id is None:
-            raise RuntimeError(f"case {case_name!r} run {run_index}: Experiment ran neither the task nor an evaluator")
-        view = self._traces.evaluator_view(trace_id)
-        try:
+            token = otel_context.attach(otel_context.Context())  # an outer span can't merge trials into one trace
+            try:
+                report = await experiment.run_evaluations_async(
+                    instrument(call.task, log, self._traces), max_workers=1, evaluation_data_store=store
+                )
+            finally:
+                otel_context.detach(token)
+            if log.setup_error is not None:
+                raise log.setup_error
+            entry = log.records().get(case_name)
+            trace_id = entry.trace_id if entry is not None else state.trace_id
+            if trace_id is None:
+                raise RuntimeError(
+                    f"case {case_name!r} run {run_index}: Experiment ran neither the task nor an evaluator"
+                )
+            view = self._traces.evaluator_view(trace_id)
             if judge_only:
                 assert previous is not None
                 record = self._rejudged(previous, report, evaluators, state, view, pass_index=call.passes.get(key, 0))
@@ -362,7 +370,9 @@ class TrialRunner:
                 assert entry is not None
                 record = self._ran(call, key, entry, store.data, report, state, view, pass_index=pass_index)
         finally:
-            self._traces.release([trace_id])
+            # every trace this trial registered, read or not: a setup error, a cancelled attempt, or an
+            # exception above would otherwise leave its spans in memory for the rest of the run
+            self._traces.release(log.trace_ids | state.trace_ids)
         if store.data is not None and record.status is not TrialStatus.INFRASTRUCTURE_INVALID:
             call.live[key] = store.data
         return record

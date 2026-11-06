@@ -4,6 +4,7 @@ import opentelemetry.trace as trace_api
 import pytest
 from opentelemetry.context import Context
 from strands import Agent
+from strands.telemetry.tracer import get_tracer as strands_tracer
 
 from strands_evals.optimization.execution.traces import (
     _FILTERS,
@@ -12,7 +13,7 @@ from strands_evals.optimization.execution.traces import (
     SPAN_KIND,
     TraceCapture,
 )
-from strands_evals.types.trace import Session
+from strands_evals.types.trace import AgentInvocationSpan, InferenceSpan, Session
 from tests.strands_evals.optimization.scripted_model import ScriptedModel
 
 
@@ -206,6 +207,22 @@ async def test_session_maps_agent_spans(traces, tracer):
     assert usage.model_calls == 1
     assert usage.tokens == 15
     assert usage.models == ["scripted-model"]
+
+
+async def test_session_reads_the_convention_from_a_strands_span(traces, tracer, monkeypatch):
+    monkeypatch.setattr(strands_tracer(), "use_latest_genai_conventions", True)
+    with _trial(tracer, traces) as trace_id:
+        with _attempt(tracer) as attempt:
+            with tracer.start_as_current_span("rollout's own setup"):  # finishes first, no gen_ai attributes
+                pass
+            await Agent(model=ScriptedModel(["hello there"]), callback_handler=None).invoke_async("hi")
+
+    session = traces.session(trace_id, _ids(attempt)[1])
+
+    assert session is not None
+    invocations = [span for span in session.traces[0].spans if isinstance(span, AgentInvocationSpan)]
+    assert [(span.user_prompt, span.agent_response.strip()) for span in invocations] == [("hi", "hello there")]
+    assert any(isinstance(span, InferenceSpan) for span in session.traces[0].spans)
 
 
 def test_no_agent_spans_means_no_session(traces, tracer):
