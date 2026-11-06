@@ -5,11 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import uuid
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+
+import yaml
 
 from .markers import _check_positive_int, _check_str, _Marker
 
@@ -213,30 +216,156 @@ class JsonField(_Marker):
 
 
 class SkillLibrary(_Marker):
-    """A directory of skill files; each member's text is editable.
+    """A directory of skills; each skill's `SKILL.md` text is editable.
 
-    Member keys are `<declared name>/<path relative to the library>`, e.g. `skills/triage/SKILL.md`.
-    Resolves to the candidate's copy of the directory.
+    The skills are found as the Strands skills runtime finds them: the directory itself when it holds
+    a `SKILL.md` (or `skill.md`), else each subdirectory that does. Each `SKILL.md` is one text value,
+    keyed `<declared name>/<path relative to the library>`, e.g. `skills/triage/SKILL.md`. Other files
+    (references, scripts) are copied with the library but not edited; a `FileText` or `JsonField` may
+    declare one of them.
+
+    To tune only some skills of a library, declare each skill's own directory, e.g.
+    `SkillLibrary("skills/triage")`: its key is `triage/SKILL.md`, and the directory around it is
+    copied too (as `FileText` copies the directory around its file), so the copied skill keeps its
+    directory name and sits next to the other skills, which are copied as they are and never edited.
+    The factory then loads every skill from `path.parent`.
+
+    A `SKILL.md` must open with a YAML frontmatter block (between `---` lines) holding a non-empty
+    `name` and `description`, and a proposed text must keep the baseline's `name`, so the skill
+    keeps its identity. The factory receives the path of this directory in the candidate's copy (the
+    original directory in the plain call).
     """
 
     def __init__(self, path: str | Path, *, size_cap: int | None = None, edit_instructions: str | None = None):
-        """Declare every member's text as tunable.
+        """Declare every skill's `SKILL.md` text as tunable.
 
         Args:
-            path: The directory of skill files.
-            size_cap: Max characters per member; None means `max(2000, 3 * len(baseline))`.
-            edit_instructions: Shown to the proposer next to every member.
+            path: The directory of skills; a relative path is taken from the current working directory.
+            size_cap: Max characters per `SKILL.md`; None means `max(2000, 3 * len(baseline))` for each.
+            edit_instructions: Shown to the proposer next to every `SKILL.md`.
+
+        Raises:
+            FileNotFoundError: `path` is not a directory.
+            TypeError: `size_cap` isn't a positive integer, `edit_instructions` isn't a str, the
+                directory holds no skill, a skill directory is a symlink (its copy would write
+                through to the original), or a `SKILL.md` isn't UTF-8 or lacks the frontmatter above.
         """
-        raise NotImplementedError
+        _check_positive_int("size_cap", size_cap)
+        _check_str("edit_instructions", edit_instructions)
+        if not isinstance(path, (str, Path)):
+            raise TypeError(f"SkillLibrary path must be a str or Path, got {path!r}")
+        self.path = Path(path).expanduser().resolve()
+        if not self.path.is_dir():
+            where = (
+                ""
+                if Path(path).is_absolute()
+                else f" (looked for {self.path}, from the working directory {Path.cwd()})"
+            )
+            raise FileNotFoundError(f"SkillLibrary: {path} is not a directory{where}")
+        self.size_cap = size_cap
+        self.edit_instructions = edit_instructions
+        root_file = _skill_file_in(self.path)
+        if root_file is not None:
+            skill_files = [root_file]
+        else:
+            skill_files = []
+            for child in sorted(self.path.iterdir()):
+                found = _skill_file_in(child) if child.is_dir() else None
+                if found is None:
+                    continue
+                if child.is_symlink():
+                    raise TypeError(
+                        f"SkillLibrary: {child} is a symlink; its copy would write through to the original, "
+                        "so replace it with a directory"
+                    )
+                skill_files.append(found)
+        if not skill_files:
+            raise TypeError(f"SkillLibrary: {self.path} holds no skill (no SKILL.md in it or in a subdirectory)")
+        # A single skill brings the directory around it, so its copy keeps the directory name the
+        # runtime checks against the skill's name, and the skills next to it come along.
+        copied = self.path.parent if root_file is not None else self.path
+        # Path relative to the library (posix) -> the member, in the runtime's order.
+        self._members = {
+            file.relative_to(self.path).as_posix(): _SkillFile(file, copied, size_cap, edit_instructions)
+            for file in skill_files
+        }
+
+
+class _SkillFile(_Marker):
+    """One `SKILL.md` of a `SkillLibrary`: its text, written into the candidate's copy."""
+
+    def __init__(self, path: Path, copied: Path, size_cap: int | None, edit_instructions: str | None):
+        self.path = path
+        self.copied = copied  # the directory the candidate's copy holds for this file
+        self.default = _read_text(path, "SkillLibrary")
+        self.size_cap = size_cap
+        self.edit_instructions = edit_instructions
+        try:
+            self._name = _skill_name(self.default)
+        except ValueError as error:
+            raise TypeError(f"SkillLibrary: {path}: {error}") from error
 
     def write(self, value: str, target: Path) -> None:
-        """Replace one member's text, keeping its frontmatter well-formed.
+        """Replace the text of `target`; one that already holds `value` keeps the original's bytes."""
+        if target.is_file() and target.read_bytes() == value.encode("utf-8"):
+            return
+        _replace_file(target, value)
 
-        Args:
-            value: The member's new text.
-            target: The member's file inside the copy.
-        """
-        raise NotImplementedError
+    def _original(self) -> str:
+        """The whole file's text at declaration."""
+        return self.default
+
+    def _render(self, value: str, text: str) -> str:
+        """The whole file's text with `value` applied to `text`."""
+        return value
+
+    def _canonical(self, value: Any) -> Any:
+        """The value as is: a file's text has no other form."""
+        return value
+
+    def _format_problem(self, value: str) -> str | None:
+        """A one-line problem with the frontmatter of `value`, or None; the `name` must stay the baseline's."""
+        try:
+            name = _skill_name(value)
+        except ValueError as error:
+            return str(error)
+        if name != self._name:
+            return f"the frontmatter name must stay {self._name!r}, got {name!r}"
+        return None
+
+
+def _skill_file_in(folder: Path) -> Path | None:
+    """`folder/SKILL.md`, else `folder/skill.md`, as named on disk; None when it has neither."""
+    names = {entry.name for entry in folder.iterdir()}
+    for name in ("SKILL.md", "skill.md"):
+        if name in names and (folder / name).is_file():
+            return folder / name
+    return None
+
+
+def _skill_name(text: str) -> str:
+    """The `name` in a `SKILL.md`'s frontmatter; raises `ValueError` saying what is wrong.
+
+    The frontmatter is found as the Strands skills runtime finds it: the text, stripped, opens with
+    `---`, and the block ends at the next line holding only `---`. It must parse as a YAML mapping
+    with a non-empty string `name` and `description`.
+    """
+    stripped = text.strip()
+    if not stripped.startswith("---"):
+        raise ValueError("must open with a '---' YAML frontmatter block holding name and description")
+    end = re.search(r"\n^---\s*$", stripped, re.MULTILINE)
+    if end is None:
+        raise ValueError("the frontmatter has no closing '---' line")
+    try:
+        fields = yaml.safe_load(stripped[3 : end.start()])
+    except yaml.YAMLError as error:
+        raise ValueError(f"the frontmatter is not valid YAML ({' '.join(str(error).split())})") from error
+    if not isinstance(fields, dict):
+        raise ValueError("the frontmatter is not a YAML mapping")
+    for field in ("name", "description"):
+        if not isinstance(fields.get(field), str) or not fields[field].strip():
+            raise ValueError(f"the frontmatter has no {field}")
+    return cast(str, fields["name"])
 
 
 def _outer_folders(folders: Iterable[Path]) -> tuple[Path, ...]:

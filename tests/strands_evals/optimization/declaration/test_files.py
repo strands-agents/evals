@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from strands_evals.optimization import FileText, JsonField, Space, TextValue, tunable
+from strands_evals.optimization import FileText, JsonField, SkillLibrary, Space, TextValue, tunable
 from strands_evals.optimization.declaration.files import _location_in_copy
 from strands_evals.optimization.declaration.tunable import _KEPT_UNTIL_EXIT
 
@@ -593,3 +593,231 @@ def test_the_plain_call_passes_the_original_path(project):
         return system
 
     assert make() == (project / "prompts" / "system.md").resolve()
+
+
+# SkillLibrary
+
+
+def skill_text(name, description, body="Do the thing.\n"):
+    return f"---\nname: {name}\ndescription: {description}\n---\n\n{body}"
+
+
+@pytest.fixture
+def library(tmp_path):
+    skills = tmp_path / "skills"
+    (skills / "triage" / "references").mkdir(parents=True)
+    (skills / "triage" / "SKILL.md").write_text(skill_text("triage", "Sort incoming tickets."), newline="")
+    (skills / "triage" / "references" / "levels.md").write_text("P0 to P3\n", newline="")
+    (skills / "billing").mkdir()
+    (skills / "billing" / "skill.md").write_text(skill_text("billing", "Answer billing questions."), newline="")
+    (skills / "notes").mkdir()  # no SKILL.md: not a skill
+    (skills / "README.md").write_text("Our skills.\n", newline="")
+    return skills
+
+
+def test_skill_library_members_are_each_skills_skill_md(library):
+    space = Space({"skills": SkillLibrary(library)})
+    infos = space.params()
+    assert [info.key for info in infos] == ["skills/billing/skill.md", "skills/triage/SKILL.md"]
+    triage = space.param("skills/triage/SKILL.md")
+    assert triage.kind == "text"
+    assert triage.name == "skills"
+    assert triage.default == skill_text("triage", "Sort incoming tickets.")
+    assert triage.source.path == library.resolve() / "triage" / "SKILL.md"
+    assert triage.source.as_path is True
+    assert triage.size_cap == 2000
+
+
+def test_a_library_that_is_itself_a_skill_has_one_member(library):
+    space = Space({"triage": SkillLibrary(library / "triage")})
+    assert [info.key for info in space.params()] == ["triage/SKILL.md"]
+
+
+def test_one_skill_is_copied_with_its_directory_name_and_the_skills_next_to_it(library):
+    @tunable(triage=SkillLibrary(library / "triage"))
+    def make(triage):
+        return _Agent(triage)
+
+    originals = {p: p.read_bytes() for p in library.rglob("*") if p.is_file()}
+    edited = skill_text("triage", "Sort incoming tickets.", "Check the level first.\n")
+    bound = make.bind({"triage/SKILL.md": edited})
+    copy = bound().path
+    assert copy.name == "triage"  # the runtime checks the directory name against the skill's name
+    assert copy.parent != library.resolve()
+    assert (copy / "SKILL.md").read_text() == edited
+    assert (copy.parent / "billing" / "skill.md").read_bytes() == originals[library / "billing" / "skill.md"]
+    assert {p: p.read_bytes() for p in originals} == originals
+    assert make().path == library.resolve() / "triage"  # the plain call: the original directory
+
+
+def test_a_skills_runtime_loads_one_tuned_skill_and_the_rest_unchanged_in_strict_mode(library):
+    skills_module = pytest.importorskip("strands.vended_plugins.skills")
+
+    @tunable(triage=SkillLibrary(library / "triage"))
+    def make(triage):
+        return _Agent(triage)
+
+    edited = skill_text("triage", "Sort tickets by customer impact.", "Ask for the account id first.\n")
+    agent = make.bind({"triage/SKILL.md": edited})()
+    loaded = {skill.name: skill for skill in skills_module.Skill.from_directory(agent.path.parent, strict=True)}
+    assert set(loaded) == {"billing", "triage"}
+    assert loaded["triage"].instructions == "Ask for the account id first."
+    assert loaded["billing"].description == "Answer billing questions."
+
+
+def test_two_single_skills_of_one_library_share_one_copy(library, tmp_path_factory):
+    space = Space({"triage": SkillLibrary(library / "triage"), "billing": SkillLibrary(library / "billing")})
+    assert space._copy_folders == (library.resolve(),)
+    workspace = tmp_path_factory.mktemp("run") / "optimization_files"
+    values = space.complete({})
+    space.create_candidate_copy(values, workspace)
+    triage, billing = space.resolve("triage", values, workspace), space.resolve("billing", values, workspace)
+    assert triage.parent == billing.parent
+    assert (triage.name, billing.name) == ("triage", "billing")
+
+
+def test_skill_library_size_cap_and_instructions_apply_to_every_member(library):
+    space = Space({"skills": SkillLibrary(library, size_cap=500, edit_instructions="Keep it short.")})
+    assert {(info.size_cap, info.edit_instructions) for info in space.params()} == {(500, "Keep it short.")}
+
+
+@pytest.mark.parametrize("where", ["missing", "README.md"])
+def test_skill_library_path_must_be_a_directory(library, where):
+    with pytest.raises(FileNotFoundError, match="is not a directory"):
+        SkillLibrary(library / where)
+
+
+def test_a_library_with_no_skill_fails_at_declaration(library):
+    with pytest.raises(TypeError, match="holds no skill"):
+        SkillLibrary(library / "notes")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need extra rights on Windows")
+def test_a_symlinked_skill_directory_fails_at_declaration(library, tmp_path):
+    outside = tmp_path / "shared"
+    outside.mkdir()
+    (outside / "SKILL.md").write_text(skill_text("shared", "Shared."), newline="")
+    (library / "shared").symlink_to(outside)
+    with pytest.raises(TypeError, match="is a symlink"):
+        SkillLibrary(library)
+
+
+@pytest.mark.parametrize(
+    ("text", "problem"),
+    [
+        ("Just instructions.\n", "must open with a '---'"),
+        ("---\nname: triage\ndescription: x\n", "no closing '---'"),
+        ("---\nname: triage\n---\nBody\n", "has no description"),
+        ("---\nname: ''\ndescription: x\n---\nBody\n", "has no name"),
+        ("---\nname: [triage\ndescription: x\n---\nBody\n", "not valid YAML"),
+        ("---\n- triage\n---\nBody\n", "not a YAML mapping"),
+    ],
+)
+def test_a_skill_md_without_well_formed_frontmatter_fails_at_declaration(library, text, problem):
+    (library / "triage" / "SKILL.md").write_text(text, newline="")
+    with pytest.raises(TypeError, match=f"triage/SKILL.md: .*{problem}"):
+        SkillLibrary(library)
+
+
+def test_a_skill_md_that_is_not_utf8_fails_at_declaration(library):
+    (library / "triage" / "SKILL.md").write_bytes(b"\xff\xfe")
+    with pytest.raises(TypeError, match="not UTF-8"):
+        SkillLibrary(library)
+
+
+def test_a_proposed_skill_md_may_change_anything_but_its_name(library):
+    space = Space({"skills": SkillLibrary(library)})
+    values = space.complete({"skills/triage/SKILL.md": skill_text("triage", "Sort and route tickets.", "New steps.\n")})
+    space.validate(values)
+    with pytest.raises(ValueError, match="frontmatter name must stay 'triage', got 'router'"):
+        space.validate({**values, "skills/triage/SKILL.md": skill_text("router", "Route tickets.")})
+    with pytest.raises(ValueError, match="skills/triage/SKILL.md: must open with a '---'"):
+        space.validate({**values, "skills/triage/SKILL.md": "No frontmatter.\n"})
+
+
+def test_a_skill_md_over_its_size_cap_fails_validation(library):
+    space = Space({"skills": SkillLibrary(library, size_cap=200)})
+    long = skill_text("triage", "Sort.", "x" * 200)
+    with pytest.raises(ValueError, match="over the size_cap of 200"):
+        space.validate(space.complete({"skills/triage/SKILL.md": long}))
+
+
+def test_a_skill_library_resolves_to_the_original_directory_without_a_workspace(library):
+    space = Space({"skills": SkillLibrary(library)})
+    assert space.resolve("skills", space.complete({}), None) == library.resolve()
+
+
+def test_bind_passes_the_copy_of_the_library_with_the_candidates_text(library):
+    @tunable(skills=SkillLibrary(library))
+    def make(skills):
+        return _Agent(skills)
+
+    originals = {p: p.read_bytes() for p in library.rglob("*") if p.is_file()}
+    edited = skill_text("triage", "Sort incoming tickets.", "Check the level first.\n")
+    bound = make.bind({"skills/triage/SKILL.md": edited})
+    copy = bound().path
+    assert copy != library.resolve()
+    assert (copy / "triage" / "SKILL.md").read_text() == edited
+    assert (copy / "billing" / "skill.md").read_bytes() == originals[library / "billing" / "skill.md"]
+    assert (copy / "triage" / "references" / "levels.md").read_text() == "P0 to P3\n"
+    assert (copy / "README.md").read_text() == "Our skills.\n"
+    assert {p: p.read_bytes() for p in originals} == originals
+
+
+def test_the_plain_call_passes_the_original_library(library):
+    @tunable(skills=SkillLibrary(library))
+    def make(skills):
+        return skills
+
+    assert make() == library.resolve()
+
+
+def test_a_skills_runtime_sees_the_candidates_edits(library):
+    skills_module = pytest.importorskip("strands.vended_plugins.skills")
+
+    @tunable(skills=SkillLibrary(library))
+    def make(skills):
+        return _Agent(skills)
+
+    edited = skill_text("triage", "Sort tickets by customer impact.", "Ask for the account id first.\n")
+    agent = make.bind({"skills/triage/SKILL.md": edited})()
+    loaded = {skill.name: skill for skill in skills_module.Skill.from_directory(agent.path)}
+    assert set(loaded) == {"billing", "triage"}
+    assert loaded["triage"].description == "Sort tickets by customer impact."
+    assert loaded["triage"].instructions == "Ask for the account id first."
+    assert loaded["billing"].description == "Answer billing questions."
+
+
+def test_a_file_text_on_a_reference_inside_the_library_shares_its_copy(library, tmp_path_factory):
+    space = Space(
+        {
+            "skills": SkillLibrary(library),
+            "levels": FileText(library / "triage" / "references" / "levels.md", as_path=True),
+        }
+    )
+    assert space._copy_folders == (library.resolve(),)
+    workspace = tmp_path_factory.mktemp("run") / "optimization_files"
+    values = space.complete({"levels": "P0 to P4\n"})
+    space.create_candidate_copy(values, workspace)
+    skills_copy = space.resolve("skills", values, workspace)
+    assert space.resolve("levels", values, workspace) == skills_copy / "triage" / "references" / "levels.md"
+    assert (skills_copy / "triage" / "references" / "levels.md").read_text() == "P0 to P4\n"
+
+
+def test_a_skill_md_declared_again_fails_at_declaration(library):
+    with pytest.raises(TypeError, match="already declared"):
+        Space({"skills": SkillLibrary(library), "triage": FileText(library / "triage" / "SKILL.md")})
+    with pytest.raises(TypeError, match="already declared"):
+        Space({"skills": SkillLibrary(library), "triage": SkillLibrary(library / "triage")})
+
+
+def test_a_skill_edit_diffs_on_its_real_file(library):
+    from strands_evals.optimization.candidate import Candidate, diff
+
+    space = Space({"skills": SkillLibrary(library)})
+    base = Candidate.baseline(space)
+    edited = skill_text("triage", "Sort incoming tickets.", "Check the level first.\n")
+    other = base.child(space, {"skills/triage/SKILL.md": edited}, origin="text", rationale="")
+    text = diff(space, base, other, root=library.parent)
+    assert text.startswith("--- a/skills/triage/SKILL.md\n+++ b/skills/triage/SKILL.md\n")
+    assert "-Do the thing.\n+Check the level first.\n" in text
