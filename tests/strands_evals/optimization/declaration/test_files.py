@@ -408,8 +408,8 @@ def test_a_folder_inside_another_is_copied_once(project, tmp_path_factory):
     workspace = tmp_path_factory.mktemp("run") / "optimization_files"
     space.create_candidate_copy({"system": "S", "inner": "I"}, workspace)
     (top,) = folders(workspace)
-    assert top.name.startswith("prompts-")
-    assert (top / "nested" / "inner.md").read_text() == "I"
+    assert [p.name for p in top.iterdir()] == ["prompts"]  # the copy keeps the folder's name
+    assert (top / "prompts" / "nested" / "inner.md").read_text() == "I"
 
 
 def test_a_run_directory_inside_the_source_folder_is_not_copied(tmp_path):
@@ -417,8 +417,8 @@ def test_a_run_directory_inside_the_source_folder_is_not_copied(tmp_path):
     space = Space({"system": FileText(tmp_path / "prompt.md")})
     workspace = tmp_path / ".strands-evals" / "runs" / "r1" / "candidates" / "abc" / "optimization_files"
     space.create_candidate_copy({"system": "New."}, workspace)
-    (top,) = folders(workspace)
-    assert sorted(p.name for p in top.iterdir()) == ["prompt.md"]
+    folder = copied(space, workspace, tmp_path / "prompt.md").parent
+    assert sorted(p.name for p in folder.iterdir()) == ["prompt.md"]
 
 
 def test_a_symlinked_file_is_replaced_not_written_through(tmp_path):
@@ -436,8 +436,7 @@ def test_a_symlinked_file_is_replaced_not_written_through(tmp_path):
     workspace = tmp_path / "run" / "optimization_files"
     space.create_candidate_copy({"system": "New."}, workspace)
     # The marker's own file is written in the copy; a symlink sibling stays a symlink.
-    (top,) = folders(workspace)
-    assert (top / "link.md").is_symlink()
+    assert (workspace / _location_in_copy(space._copy_folders, prompts.resolve() / "link.md")).is_symlink()
     assert (real / "target.md").read_text() == "original"
 
 
@@ -532,7 +531,7 @@ def test_an_agent_keeps_the_temp_copy_after_its_factory_is_gone(project):
     agent = make.bind({"system": "Bound.\n"})()  # the bound factory is dropped at once
     gc.collect()
     assert agent.path.read_text() == "Bound.\n"
-    root = agent.path.parents[2]
+    root = agent.path.parents[3]  # <temp>/optimization_files/<hash>/prompts/system.md
     del agent
     gc.collect()
     assert not root.exists()
@@ -633,47 +632,81 @@ def test_a_library_that_is_itself_a_skill_has_one_member(library):
     assert [info.key for info in space.params()] == ["triage/SKILL.md"]
 
 
-def test_one_skill_is_copied_with_its_directory_name_and_the_skills_next_to_it(library):
-    @tunable(triage=SkillLibrary(library / "triage"))
-    def make(triage):
-        return _Agent(triage)
-
-    originals = {p: p.read_bytes() for p in library.rglob("*") if p.is_file()}
-    edited = skill_text("triage", "Sort incoming tickets.", "Check the level first.\n")
-    bound = make.bind({"triage/SKILL.md": edited})
-    copy = bound().path
-    assert copy.name == "triage"  # the runtime checks the directory name against the skill's name
-    assert copy.parent != library.resolve()
-    assert (copy / "SKILL.md").read_text() == edited
-    assert (copy.parent / "billing" / "skill.md").read_bytes() == originals[library / "billing" / "skill.md"]
-    assert {p: p.read_bytes() for p in originals} == originals
-    assert make().path == library.resolve() / "triage"  # the plain call: the original directory
+def test_only_tunes_the_named_skills_with_the_same_keys(library):
+    space = Space({"skills": SkillLibrary(library, only=["triage"])})
+    assert [info.key for info in space.params()] == ["skills/triage/SKILL.md"]
 
 
-def test_a_skills_runtime_loads_one_tuned_skill_and_the_rest_unchanged_in_strict_mode(library):
+def test_only_copies_every_skill_and_a_strict_runtime_loads_them(library):
     skills_module = pytest.importorskip("strands.vended_plugins.skills")
 
+    @tunable(skills=SkillLibrary(library, only=("triage",)))
+    def make(skills):
+        return _Agent(skills)
+
+    originals = {p: p.read_bytes() for p in library.rglob("*") if p.is_file()}
+    edited = skill_text("triage", "Sort tickets by customer impact.", "Ask for the account id first.\n")
+    agent = make.bind({"skills/triage/SKILL.md": edited})()
+    assert agent.path.name == "skills"
+    loaded = {skill.name: skill for skill in skills_module.Skill.from_directory(agent.path, strict=True)}
+    assert set(loaded) == {"billing", "triage"}
+    assert loaded["triage"].instructions == "Ask for the account id first."
+    assert (agent.path / "billing" / "skill.md").read_bytes() == originals[library / "billing" / "skill.md"]
+    assert {p: p.read_bytes() for p in originals} == originals
+    assert make().path == library.resolve()  # the plain call: the original library
+
+
+def test_only_never_reads_the_skills_it_does_not_tune(library):
+    (library / "billing" / "skill.md").write_text("No frontmatter.\n", newline="")
+    space = Space({"skills": SkillLibrary(library, only=("triage",))})
+    assert [info.key for info in space.params()] == ["skills/triage/SKILL.md"]
+
+
+@pytest.mark.parametrize(
+    ("only", "problem"),
+    [
+        ("triage", "must be a collection of skill names"),
+        ([1], "must be a collection of skill names"),
+        ((), "names no skill"),
+        (("triage", "faq"), "no skill named 'faq' in .* \\(it has billing, triage\\)"),
+        (("notes",), "no skill named 'notes'"),
+    ],
+)
+def test_only_must_name_skills_of_the_library(library, only, problem):
+    with pytest.raises(TypeError, match=problem):
+        SkillLibrary(library, only=only)
+
+
+def test_only_on_a_single_skill_fails(library):
+    with pytest.raises(TypeError, match="is a single skill"):
+        SkillLibrary(library / "triage", only=("triage",))
+
+
+def test_a_single_skill_is_copied_alone_with_its_directory_name(library):
     @tunable(triage=SkillLibrary(library / "triage"))
     def make(triage):
         return _Agent(triage)
 
-    edited = skill_text("triage", "Sort tickets by customer impact.", "Ask for the account id first.\n")
-    agent = make.bind({"triage/SKILL.md": edited})()
-    loaded = {skill.name: skill for skill in skills_module.Skill.from_directory(agent.path.parent, strict=True)}
-    assert set(loaded) == {"billing", "triage"}
-    assert loaded["triage"].instructions == "Ask for the account id first."
-    assert loaded["billing"].description == "Answer billing questions."
+    edited = skill_text("triage", "Sort incoming tickets.", "Check the level first.\n")
+    agent = make.bind({"triage/SKILL.md": edited})()  # the temp copy lives as long as the agent
+    copy = agent.path
+    assert copy.name == "triage"  # the runtime checks the directory name against the skill's name
+    assert [p.name for p in copy.parent.iterdir()] == ["triage"]  # nothing around it is copied
+    assert (copy / "SKILL.md").read_text() == edited
+    assert (copy / "references" / "levels.md").read_text() == "P0 to P3\n"
+    assert make().path == library.resolve() / "triage"
 
 
-def test_two_single_skills_of_one_library_share_one_copy(library, tmp_path_factory):
-    space = Space({"triage": SkillLibrary(library / "triage"), "billing": SkillLibrary(library / "billing")})
-    assert space._copy_folders == (library.resolve(),)
-    workspace = tmp_path_factory.mktemp("run") / "optimization_files"
-    values = space.complete({})
+def test_a_run_directory_inside_a_single_skill_is_left_out_of_its_copy(library):
+    skill = library / "triage"
+    space = Space({"triage": SkillLibrary(skill)})
+    workspace = skill / ".strands-evals" / "runs" / "r1" / "candidates" / "abc" / "optimization_files"
+    values = {"triage/SKILL.md": skill_text("triage", "Sort.", "New.\n")}
     space.create_candidate_copy(values, workspace)
-    triage, billing = space.resolve("triage", values, workspace), space.resolve("billing", values, workspace)
-    assert triage.parent == billing.parent
-    assert (triage.name, billing.name) == ("triage", "billing")
+    copy = space.resolve("triage", values, workspace)
+    assert copy.name == "triage"
+    assert sorted(p.name for p in copy.iterdir()) == ["SKILL.md", "references"]
+    assert (copy / "SKILL.md").read_text() == values["triage/SKILL.md"]
 
 
 def test_skill_library_size_cap_and_instructions_apply_to_every_member(library):
@@ -705,18 +738,25 @@ def test_a_symlinked_skill_directory_fails_at_declaration(library, tmp_path):
 @pytest.mark.parametrize(
     ("text", "problem"),
     [
-        ("Just instructions.\n", "must open with a '---'"),
-        ("---\nname: triage\ndescription: x\n", "no closing '---'"),
-        ("---\nname: triage\n---\nBody\n", "has no description"),
-        ("---\nname: ''\ndescription: x\n---\nBody\n", "has no name"),
-        ("---\nname: [triage\ndescription: x\n---\nBody\n", "not valid YAML"),
-        ("---\n- triage\n---\nBody\n", "not a YAML mapping"),
+        ("Just instructions.\n", "must start with --- frontmatter"),
+        ("---\nname: triage\ndescription: x\n", "missing closing --- delimiter"),
+        ("---\nname: triage\n---\nBody\n", "must have a 'description' field"),
+        ("---\nname: ''\ndescription: x\n---\nBody\n", "must have a 'name' field"),
+        ("---\nname: [triage\ndescription: x\n---\nBody\n", "malformed YAML frontmatter"),
+        ("---\n- triage\n---\nBody\n", "must have a 'name' field"),
     ],
 )
 def test_a_skill_md_without_well_formed_frontmatter_fails_at_declaration(library, text, problem):
     (library / "triage" / "SKILL.md").write_text(text, newline="")
     with pytest.raises(TypeError, match=rf"triage[/\\]SKILL.md: .*{problem}"):
         SkillLibrary(library)
+
+
+def test_a_skill_md_with_an_unquoted_colon_loads_as_the_runtime_loads_it(library):
+    text = skill_text("triage", "Use this skill when: a ticket arrives")
+    (library / "triage" / "SKILL.md").write_text(text, newline="")
+    space = Space({"skills": SkillLibrary(library)})
+    space.validate(space.complete({"skills/triage/SKILL.md": skill_text("triage", "Use when: tickets", "New.\n")}))
 
 
 def test_a_skill_md_that_is_not_utf8_fails_at_declaration(library):
@@ -731,7 +771,7 @@ def test_a_proposed_skill_md_may_change_anything_but_its_name(library):
     space.validate(values)
     with pytest.raises(ValueError, match="frontmatter name must stay 'triage', got 'router'"):
         space.validate({**values, "skills/triage/SKILL.md": skill_text("router", "Route tickets.")})
-    with pytest.raises(ValueError, match="skills/triage/SKILL.md: must open with a '---'"):
+    with pytest.raises(ValueError, match="skills/triage/SKILL.md: SKILL.md must start with --- frontmatter"):
         space.validate({**values, "skills/triage/SKILL.md": "No frontmatter.\n"})
 
 
@@ -809,6 +849,14 @@ def test_a_skill_md_declared_again_fails_at_declaration(library):
         Space({"skills": SkillLibrary(library), "triage": FileText(library / "triage" / "SKILL.md")})
     with pytest.raises(TypeError, match="already declared"):
         Space({"skills": SkillLibrary(library), "triage": SkillLibrary(library / "triage")})
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need extra rights on Windows")
+def test_a_skill_md_linked_to_another_skills_fails_at_declaration(library):
+    (library / "router").mkdir()
+    (library / "router" / "SKILL.md").symlink_to(library / "triage" / "SKILL.md")
+    with pytest.raises(TypeError, match="already declared"):
+        Space({"skills": SkillLibrary(library)})
 
 
 def test_a_skill_edit_diffs_on_its_real_file(library):

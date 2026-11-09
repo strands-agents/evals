@@ -20,7 +20,7 @@ from .files import (
     FileText,
     JsonField,
     SkillLibrary,
-    _copy_folder_name,
+    _folder_in_copy,
     _ignore_containing,
     _location_in_copy,
     _outer_folders,
@@ -263,9 +263,9 @@ class Space:
     def create_candidate_copy(self, values: Values, directory: Path) -> Path:
         """Copy each file-backed value's folder into `directory`, then write every active file-backed key.
 
-        Each source folder goes to `directory/<folder name>-<short hash of its original path>/`; a folder
-        inside another is copied once, as part of the outer one. Each active key is written by its
-        marker's `write()`, so the copy holds the candidate's values even if a source file changed
+        Each source folder goes to `directory/<short hash of its original path>/<folder name>/`, so it
+        keeps its name; a folder inside another is copied once, as part of the outer one. Each active
+        key is written by its marker's `write()`, so the copy holds the candidate's values even if a source file changed
         since declaration; a file that already holds its value keeps the original bytes. Built in a
         temp folder and renamed into place, with a marker file naming the file-backed values it holds,
         so a second call with the same values returns at once and one with other values raises. An
@@ -292,7 +292,7 @@ class Space:
             destinations = (building.resolve(), directory.resolve())
             for folder in self._copy_folders:
                 shutil.copytree(
-                    folder, building / _copy_folder_name(folder), symlinks=True, ignore=_ignore_containing(destinations)
+                    folder, building / _folder_in_copy(folder), symlinks=True, ignore=_ignore_containing(destinations)
                 )
             _make_folders_writable(building)  # a read-only source folder would block the writes below
             for info in self._params.values():
@@ -472,7 +472,7 @@ def _check_no_overlap(
 ) -> None:
     """Raise `TypeError` if `marker` edits text another declared file marker edits too."""
     for other_key, other in declared.items():
-        if other.path != marker.path:
+        if other.path.resolve() != marker.path.resolve():  # a symlinked file is the file it links to
             continue
         if isinstance(marker, JsonField) and isinstance(other, JsonField):
             shorter, longer = sorted((marker._tokens, other._tokens), key=len)
