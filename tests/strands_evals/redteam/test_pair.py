@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from strands import Agent
+from strands.types.exceptions import StructuredOutputException
 
 from strands_evals.redteam.case import RedTeamCase
 from strands_evals.redteam.strategies import BUILTIN_STRATEGIES, PairStrategy
@@ -214,6 +215,12 @@ class TestSuccessScore:
             None,
         )
 
+    def test_structured_output_exception_defaults_to_zero(self):
+        judge = MagicMock(side_effect=StructuredOutputException("no structured output"))
+        assert success_score(
+            lambda: judge, AttackGoal(risk_category="x", actor_goal="g", success_criteria="c"), "r"
+        ) == (0.0, None)
+
     def test_invokes_the_factorys_judge_once_per_score(self):
         """Contract: success_score calls make_judge() once per invocation and uses the returned judge
         (proves factory wiring, NOT production freshness -- that is proven by the Agent-ctor-count
@@ -268,6 +275,11 @@ class TestGenRefinedPrompt:
     def test_parse_failure_returns_none(self):
         attacker = MagicMock()
         attacker.return_value.structured_output = None
+        goal = AttackGoal(risk_category="x", actor_goal="g")
+        assert gen_refined_prompt(attacker, goal, "resp", 3) is None
+
+    def test_structured_output_exception_returns_none(self):
+        attacker = MagicMock(side_effect=StructuredOutputException("no structured output"))
         goal = AttackGoal(risk_category="x", actor_goal="g")
         assert gen_refined_prompt(attacker, goal, "resp", 3) is None
 

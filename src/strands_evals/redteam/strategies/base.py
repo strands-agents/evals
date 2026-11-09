@@ -5,11 +5,12 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import BaseModel, Field
 from strands import Agent
 from strands.models.model import Model
+from strands.types.exceptions import StructuredOutputException
 
 from ...types import EnvironmentState
 from ...types.redteam.run_results import ATTACKER_REFUSED, REFUSAL_JUDGE_FAILURES, RUN_RESULTS
@@ -30,6 +31,23 @@ class AttackerRefusalRating(BaseModel):
     """Structured judge output: did the attacker decline its task?"""
 
     is_refusal: bool = Field(description="True if the attacker declined its task instead of writing the message")
+
+
+T = TypeVar("T", bound=BaseModel)
+
+
+def _structured_output_or_none(agent: Agent, prompt: str, output_model: type[T]) -> T | None:
+    """Invoke `agent` for `output_model`, returning `None` when no structured output was produced.
+
+    Strands returns `None` for a non `end_turn` stop (e.g. a guardrail intervention) but raises
+    `StructuredOutputException` when the model answers in prose instead of calling the structured
+    output tool. Both mean the same thing to a strategy, so callers handle a single `None` path.
+    """
+    try:
+        return agent(prompt, structured_output_model=output_model).structured_output  # type: ignore[return-value]
+    except StructuredOutputException as e:
+        logger.debug("model=<%s>, error=<%s> | structured output failed", output_model.__name__, e)
+        return None
 
 
 @dataclass

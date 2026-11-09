@@ -17,7 +17,13 @@ from strands import Agent
 from strands.models.model import Model
 
 from ...utils import _put_model_field
-from ..base import ATTACKER_REFUSED, MAX_ALLOWED_TURNS, AttackRunResult, AttackStrategy
+from ..base import (
+    ATTACKER_REFUSED,
+    MAX_ALLOWED_TURNS,
+    AttackRunResult,
+    AttackStrategy,
+    _structured_output_or_none,
+)
 from . import crescendo_v0
 
 if TYPE_CHECKING:
@@ -81,8 +87,7 @@ def is_refusal(response: str, make_judge: Callable[[], Agent] | None = None) -> 
     if make_judge is None:
         return False
     judge = make_judge()
-    result = judge(f"# Target Response\n{response}", structured_output_model=RefusalRating)
-    rating = result.structured_output
+    rating = _structured_output_or_none(judge, f"# Target Response\n{response}", RefusalRating)
     if rating is None:
         logger.warning("reason=<parse_failure> | refusal judge produced no structured output | keeping turn")
         return False
@@ -98,8 +103,7 @@ def success_score(make_judge: Callable[[], Agent], response: str, success_criter
         return 0.0
     judge = make_judge()
     prompt = f"# Success Criteria\n{success_criteria}\n\n# Target Response\n{response}"
-    result = judge(prompt, structured_output_model=SuccessRating)
-    rating = result.structured_output
+    rating = _structured_output_or_none(judge, prompt, SuccessRating)
     if rating is None:
         logger.warning("reason=<parse_failure> | success judge produced no structured output | defaulting to 0")
         return 0.0
@@ -123,8 +127,7 @@ def gen_escalating_question(
             f"The assistant's last response was:\n{last_response}\n\n"
             "Build on it: reference what it said, then take one small step toward the end state."
         )
-    result = attacker(prompt, structured_output_model=EscalationQuestion)
-    question = result.structured_output
+    question = _structured_output_or_none(attacker, prompt, EscalationQuestion)
     if question is None:
         return None
     return str(question.message)

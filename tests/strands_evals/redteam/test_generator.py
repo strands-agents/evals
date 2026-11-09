@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from strands import Agent as RealAgent
+from strands.types.exceptions import StructuredOutputException
 
 from strands_evals.redteam.case import RedTeamCase
 from strands_evals.redteam.generators.adversarial import (
@@ -11,6 +12,7 @@ from strands_evals.redteam.generators.adversarial import (
     AttackCase,
     AttackCases,
 )
+from strands_evals.types.redteam import RISK_CATEGORIES
 
 
 def _mock_attack_cases(n: int = 2) -> AttackCases:
@@ -136,6 +138,12 @@ def test_generate_risk_categories_optional(patched_agent):
         cases = gen.generate_cases(agent=_make_agent_mock(), num_cases=1)
         mock_infer.assert_called_once()
         assert len(cases) == 1
+
+
+async def test_infer_risk_categories_structured_output_exception_uses_all(patched_agent):
+    patched_agent.return_value.invoke_async = AsyncMock(side_effect=StructuredOutputException("no structured output"))
+    gen = AdversarialCaseGenerator()
+    assert await gen._infer_risk_categories({"system_prompt": "x", "tools": []}) == list(RISK_CATEGORIES.keys())
 
 
 def test_target_spec_missing_keys_raises():
