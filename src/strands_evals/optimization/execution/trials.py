@@ -164,7 +164,7 @@ class TrialRunner:
 
         Raises:
             ValueError: A case without a name, two cases with one name, a case missing from `split_of`,
-                `max_workers` < 1, or `rerun_passes` < 0.
+                two evaluators with one `get_name()`, `max_workers` < 1, or `rerun_passes` < 0.
         """
         if max_workers < 1:
             raise ValueError(f"max_workers must be at least 1, got {max_workers}")
@@ -179,6 +179,14 @@ class TrialRunner:
             if case.name not in split_of:
                 raise ValueError(f"case {case.name!r} has no split in split_of")
             self._cases[case.name] = case
+        # results, errors, and judge spend are keyed by get_name(), so two evaluators sharing one would collide
+        evaluator_names = Counter(e.get_name() for e in evaluators)
+        duplicates = sorted(name for name, count in evaluator_names.items() if count > 1)
+        if duplicates:
+            raise ValueError(
+                f"evaluator names must be unique, got {duplicates} more than once; "
+                "pass name=... to tell instances of one evaluator class apart"
+            )
         self._evaluators = list(evaluators)
         self._traces = traces
         self._cache = cache

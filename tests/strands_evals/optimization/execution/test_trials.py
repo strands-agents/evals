@@ -762,6 +762,12 @@ def test_cases_need_unique_names_and_a_split(traces):
         _runner(traces, MemoryCache(), _cases("a"), [], max_workers=0)
 
 
+def test_evaluators_need_unique_names(traces):
+    with pytest.raises(ValueError, match=r"evaluator names must be unique, got \['Fixed'\]"):
+        _runner(traces, MemoryCache(), _cases("a"), [Fixed(), Fixed(score=0.2)])
+    _runner(traces, MemoryCache(), _cases("a"), [Fixed(), Fixed(name="Other")])  # name= tells them apart
+
+
 async def test_an_unknown_case_name_is_an_error(traces):
     with pytest.raises(ValueError, match="unknown case names"):
         await _runner(traces, MemoryCache(), _cases("a"), []).run("cand", _plain, ["z"], runs=1, allowance=0)
