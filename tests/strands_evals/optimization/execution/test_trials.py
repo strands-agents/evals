@@ -11,8 +11,9 @@ from strands.types.exceptions import ModelThrottledException
 
 from strands_evals import Case
 from strands_evals.evaluators import Evaluator
-from strands_evals.optimization import Budget, InfrastructureError
+from strands_evals.optimization import Budget, InfrastructureError, TextValue, tunable
 from strands_evals.optimization.declaration.tunable import _FactoryArgumentError
+from strands_evals.optimization.execution.rollout import make_task
 from strands_evals.optimization.execution.traces import TraceCapture
 from strands_evals.optimization.execution.trials import TrialRunner, _EvaluatorProxy, _TrialState
 from strands_evals.optimization.setup.budget import BudgetTracker
@@ -298,6 +299,63 @@ async def test_a_setup_error_raises_after_the_running_trials_are_saved(traces):
     assert [r.case_name for r in cache.saved] == ["a"]
 
 
+async def test_a_failed_save_raises_without_starting_more_trials(traces):
+    class FullDisk(MemoryCache):
+        def save_trial(self, record):
+            raise OSError("disk full")
+
+    calls = []
+
+    async def task(case):
+        calls.append(case.name)
+        return "ok"
+
+    runner = _runner(traces, FullDisk(), _cases("a", "b", "c"), [Fixed()], max_workers=1)
+
+    with pytest.raises(OSError, match="disk full"):
+        await runner.run("cand", task, ["a", "b", "c"], runs=1, allowance=0)
+    await asyncio.sleep(0.05)  # a trial left running after `run` raised would start by now
+
+    assert calls == ["a"]
+
+
+async def test_a_cancelled_call_still_exits_a_sync_environment(traces):
+    events, release = [], threading.Event()
+
+    class Sandbox:
+        def __enter__(self):
+            events.append("enter")
+            return {}
+
+        def __exit__(self, *exc_info):
+            events.append("exit")
+
+    def rollout(agent_factory, case):
+        release.wait(5)
+        return {"output": "ok"}
+
+    @tunable(prompt=TextValue(default="p"))
+    def build(prompt):
+        return prompt
+
+    task = make_task(build.bind({}), rollout, environment=lambda case: Sandbox())
+    call = asyncio.create_task(
+        _runner(traces, MemoryCache(), _cases("a"), [Fixed()]).run("cand", task, ["a"], runs=1, allowance=0)
+    )
+    while events != ["enter"]:
+        await asyncio.sleep(0.001)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    release.set()  # the rollout's thread can't be stopped; once it returns, the environment must still exit
+    for _ in range(500):
+        if "exit" in events:
+            break
+        await asyncio.sleep(0.01)
+
+    assert events == ["enter", "exit"]
+
+
 # statuses
 
 
@@ -330,6 +388,11 @@ async def test_a_judge_throttled_on_every_try_leaves_the_trial_completed(traces)
     assert records[0].status is TrialStatus.COMPLETED
     assert records[0].evaluator_errors == {"Throttled": "ModelThrottledException"}
     assert spent == 1  # the re-run pass re-judged it, for no rollout
+    once = Fixed("Throttled", failures=99, error=ModelThrottledException("slow down"))
+    await _runner(traces, MemoryCache(), _cases("a"), [Fixed("A"), once], rerun_passes=0).run(
+        "cand", _plain, ["a"], runs=1, allowance=5
+    )
+    assert throttled.calls == 2 * once.calls  # judged in the first pass, then again in the re-run pass
 
 
 async def test_no_evaluators_means_completed(traces):

@@ -111,7 +111,7 @@ class TrialCache(Protocol):
 
 
 class TrialRunner:
-    """Runs a candidate's uncached trials through a fresh `Experiment` per call.
+    """Runs a candidate's uncached trials, each through its own one-case `Experiment`.
 
     `rerun_passes` caps the infrastructure re-run passes per call; this runner never retries inside a
     trial. `Experiment` keeps its own throttling retries inside one trial's task span; each retry is an
@@ -131,7 +131,7 @@ class TrialRunner:
     ):
         """Build the runner once per run.
 
-        Each call builds a fresh `Experiment(uncached cases, evaluators)` with `diagnosis_config` off, after
+        Each trial builds a fresh `Experiment([case], evaluators)` with `diagnosis_config` off, after
         `TraceCapture` is installed, and runs it in an empty OTel context so an outer span can't merge
         trials into one trace. The user's `Experiment` instance is never run (its tracer is a no-op).
 
@@ -305,14 +305,14 @@ class TrialRunner:
                 spent += await self._pass(call, jobs, pass_index=pass_index)
         finally:
             _THREAD_POOL.reset(token)
-            pool.shutdown(wait=False)  # a cancelled call doesn't wait for a sync agent still running
+        pool.shutdown()  # not on error: a trial left running may still need the pool to exit its environment
         return [call.records[key] for key in keys], spent
 
     async def _pass(self, call: _Call, jobs: list[tuple[_Key, bool]], *, pass_index: int) -> int:
         """Run one pass's trials at once under the call's cap; returns the rollouts it spent.
 
-        On a setup error, trials not yet started are skipped, the running ones finish and are saved,
-        then the first setup error is raised.
+        On a setup error or a failed save, trials not yet started are skipped, the running ones finish
+        and are saved, then the first error is raised.
         """
         failures: list[BaseException] = []
         ran = 0
@@ -324,12 +324,12 @@ class TrialRunner:
                     return
                 try:
                     record = await self._trial(call, key, judge_only=judge_only, pass_index=pass_index)
+                    self._cache.save_trial(record)
                 except Exception as error:
                     failures.append(error)
                     return
                 call.records[key] = record
                 call.passes[key] = pass_index
-                self._cache.save_trial(record)
                 ran += 0 if judge_only else 1
 
         await asyncio.gather(*(one(key, judge_only) for key, judge_only in jobs))

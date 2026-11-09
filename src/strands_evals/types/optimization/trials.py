@@ -116,8 +116,10 @@ class AttemptRecord(BaseModel):
         error: The exception message, if it raised.
         usage: What the agent spent in it; zero when a judge-only re-run reused its output, since that
             usage stays on the new record, so it is counted once.
-        judge_usage: What its failed judges spent; judges whose scores the new record kept count there
-            instead, so this is only wasted work. Zero for a throttled attempt `Experiment` retried.
+        judge_usage: What its failed judges spent, as one total (an attempt holds no scores, so unlike
+            `TrialRecord.judge_usage` nothing needs it per evaluator); judges whose scores the new
+            record kept count there instead, so this is only wasted work. Zero for a throttled attempt
+            `Experiment` retried.
         pass_index: The `TrialRunner` pass it ran in (0 = first; retried throttling keeps its pass).
         rollouts: What it cost the budget, as `TrialRecord.rollouts`.
     """
