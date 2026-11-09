@@ -89,7 +89,7 @@ def _record(trajectory):
         details={"HelpfulnessEvaluator": [EvaluationOutput(score=1.0, test_pass=True, reason="Correct.")]},
         evaluator_errors={},
         usage=_usage(),
-        judge_usage=_usage(),
+        judge_usage={"HelpfulnessEvaluator": _usage()},
         rollouts=1,
     )
 
