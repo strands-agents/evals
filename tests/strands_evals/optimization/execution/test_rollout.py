@@ -1,3 +1,4 @@
+import asyncio
 import contextvars
 import logging
 import threading
@@ -300,6 +301,33 @@ async def test_a_rollout_error_still_exits_the_environment_and_is_raised():
         await make_task(_build.bind({}), rollout, environment)(_case())
 
     assert len(seen) == 1
+
+
+async def test_a_trial_cancelled_while_a_sync_environment_enters_still_exits_it():
+    entering, release = threading.Event(), threading.Event()
+    events = []
+
+    class Sandbox:  # not a generator, which would also exit when garbage-collected
+        def __enter__(self):
+            entering.set()
+            release.wait(5)
+            events.append("enter")
+            return {"sandbox": "box"}
+
+        def __exit__(self, *exc_info):
+            events.append("exit")
+
+    task = asyncio.create_task(make_task(_build.bind({}), _built, lambda case: Sandbox())(_case()))
+    await asyncio.to_thread(entering.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.05)  # without the fix, the worker thread is still finishing `__enter__`
+
+    assert events == ["enter", "exit"]
 
 
 async def test_a_context_manager_cant_swallow_a_rollout_error():

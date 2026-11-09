@@ -9,7 +9,7 @@ import inspect
 import logging
 from collections.abc import Callable, Mapping
 from concurrent.futures import Executor
-from contextlib import AbstractAsyncContextManager, AbstractContextManager
+from contextlib import AbstractAsyncContextManager, AbstractContextManager, suppress
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -122,7 +122,9 @@ def make_task(
     sync context manager's `__enter__` / `__exit__` run in a worker thread (in a `TrialRunner` call, its
     pool of `max_workers` threads), so a slow setup doesn't stall concurrent trials. Setup and teardown
     may run on different threads, so a thread-bound resource (e.g. a sqlite connection) must allow that,
-    or come from an async context manager, which runs on the event loop.
+    or come from an async context manager, which runs on the event loop. A trial cancelled while a sync
+    `__enter__` runs waits for it to finish, exits the environment, then re-raises the cancellation (a
+    second cancellation during that wait leaves the environment entered).
 
     Args:
         agent_factory: The candidate's bound factory.
@@ -142,7 +144,15 @@ def make_task(
             if isinstance(provided, AbstractAsyncContextManager):
                 resources = await provided.__aenter__()
             elif isinstance(provided, AbstractContextManager):
-                resources = await _in_thread(env_context.run, provided.__enter__)
+                entering = asyncio.ensure_future(_in_thread(env_context.run, provided.__enter__))
+                try:
+                    resources = await asyncio.shield(entering)
+                except asyncio.CancelledError as cancelled:
+                    # The worker thread can't be stopped: let it finish entering, exit, then cancel.
+                    with suppress(Exception):
+                        await asyncio.shield(entering)
+                        await _exit_environment(provided, env_context, case, cancelled)
+                    raise
             else:
                 resources = provided
         except Exception as error:
