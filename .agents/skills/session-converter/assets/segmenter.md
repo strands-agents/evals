@@ -29,11 +29,11 @@ Split each session's turns from step 1 into episodes: turns that serve one user 
 
 - **Starts a new episode**: a new task, an unrelated question, or a switch to a different artifact or topic.
 - **Continues the episode**: a follow-up on the assistant's answer, clarification, correction, retry, approval, answer to the assistant's question, or a change in scope of the same deliverable. This includes inputs that can't stand alone (ex. "do it", "accurate?"), errors pasted from running the assistant's suggestion, requests to undo the assistant's change, and returning to the goal after a brief side question.
-- **No goal**: drop episodes with nothing to evaluate: no request (ex. greetings, thanks), a request that only changes local setup (ex. "install the session-converter skill"), a request that depends on a specific skill, MCP, or tool another agent may not have, or a request to modify resources (ex. "add type hints to parser.py", "rebase onto main", "post the review"). Episodes requiring common tools, like file, shell, and web tools, may be kept.
+- **No goal**: drop episodes with nothing to evaluate: no request (ex. greetings, thanks), a request that only changes local setup (ex. "install the session-converter skill"), a request that depends on a specific skill, MCP, or tool another agent may not have, or a request to modify resources (ex. "add type hints to parser.py", "rebase onto main", "post the review"). Episodes requiring common tools, like file, shell, and web tools, may be kept unless they fall into the categories above.
 
 ### 3. Handle context-dependent inputs
 
-A context-dependent input points at a specific project, file, build, or artifact without naming it (ex. "this repository", "the graph primitive", "what caused this?" on a pasted CI log). Test: could an agent with only the input, a shell, and web access find what the request is about?
+A context-dependent input points at a specific project, file, build, IDE selection, or artifact without naming it (ex. "this repository", "the graph primitive", "what caused this?" on a pasted CI log, "#[[terminal]] why did this fail?"). Test: could an agent with only the input, a shell, and web access find what the request is about?
 
 If context-dependent inputs should be dropped, drop episodes whose opening input is context-dependent and skip the rest of this step.
 
@@ -54,14 +54,14 @@ If context-dependent inputs should be filled, for each episode whose opening inp
   - **Claude Code**: IDE selections are `attachment.type == "selected_lines_in_ide"` records whose `parentUuid` is the `uuid` of the input's record (`displayPath`, `lineStart`, `lineEnd`, `content`).
   - **Kiro CLI**: IDE context is `payload.contextItems[]` on the user record (`name`, `uri`, `content`), marked inline in `payload.content` by a leading token like `#[[currentlyOpenFiles:active]]` or `#[[terminal]]`.
 
-Rewrite the input so it stands alone: replace references like "this file" with the absolute path, and add the earlier turn, file excerpt, or command output it relies on, trimmed to what the user had seen or pointed at when they wrote the input, not to what later turns showed mattered. Keep the user's request and wording otherwise. If the session didn't record the context, keep the input as written.
+Rewrite the input so it stands alone: replace references like "this file" with the absolute path, and add the earlier turn, file excerpt, or command output it relies on, trimmed to what the user had seen or pointed at when they wrote the input, not to what later turns showed mattered. Strip Kiro `#[[...]]` tokens. Keep the user's request and wording otherwise. If the session didn't record the context, keep the input as written.
 
 ## Output
 
-Write each remaining episode in this format to a new temp file (`mktemp`), and return only the file's path to the main agent.
+Write a new temp file (`mktemp`) with the following format. Return the file path to the main agent.
 
 ```
-Session: <session_file_path>
+Session: <session_file_path_0>
 <dropped_reason>
 
 Episode 0
@@ -77,13 +77,17 @@ Error analysis:
 
 Episode 1
 ...
+
+Session: <session_file_path_1>
+<dropped_reason>
+...
 ```
 
-- `session_file_path`: processed session file's absolute path
+- `session_file_path_N`: processed session file's absolute path
 - `dropped_reason`: if the session was dropped (ex. no episodes found, does not fit content criteria), explain why. Otherwise, omit it.
 - `summary`: one line with the goal, what happened, and the outcome (resolved, abandoned, unresolved, or cut off mid-work).
 - `timestamp`: ISO 8601 timestamp for the first user input in the episode, or session timestamp if unavailable.
-- `input`: the opening user input, verbatim, or as rewritten in step 3, without Kiro `#[[...]]` tokens. If the user resent or rephrased it before the assistant replied, use the last version.
+- `input`: the opening user input, verbatim. If the input was rewritten in step 3, use that instead. If the user resent or rephrased it before the assistant replied, use the last version.
 - `expected_assertion`: generate it from the episode's later user inputs and assistant messages, in session file order. State what a successful response to the opening input must do, as checkable statements: user corrections, rejections, and requests to explain the assistant's wording reveal unmet expectations, and user acceptance confirms what was right. Include only what the opening input asked for; later inputs that add new questions or scope don't add statements. Ground every statement in the episode, and don't copy the assistant's answer.
 - `failure`: one line per distinct way the assistant fell short of the user's goal in the episode, in your own words (ex. "claimed a function existed that wasn't in the file", "ignored the request to keep it short"). Describe what went wrong.
 - `evidence`: the user input, quoted verbatim and trimmed to one sentence, that shows the failure.
