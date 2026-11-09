@@ -374,7 +374,7 @@ class Criteria:
             mean = statistics.fmean(values)
             excess = mean - constraint.bound if isinstance(constraint, AtMost) else constraint.bound - mean
             # A mean equal to the bound up to float noise (0.1 + 0.2 against 0.3) is met.
-            if excess > 0 and not _near(mean, constraint.bound):
+            if excess > 0 and not near(mean, constraint.bound):
                 sentences.append(f"{constraint}: mean {mean:.4g} violates by {excess:.4g}")
         return sentences
 
@@ -684,11 +684,11 @@ def _in_range(value: float, range_: Range) -> bool:
     `1 - 0.3 - 0.2 - 0.5` (-5.55e-17) is in (0, 1), as `unmet_constraints` treats a mean at its bound.
     """
     low, high = range_
-    return (low is None or value >= low or _near(value, low)) and (high is None or value <= high or _near(value, high))
+    return (low is None or value >= low or near(value, low)) and (high is None or value <= high or near(value, high))
 
 
-def _near(value: float, end: float) -> bool:
-    """Equal up to float noise, the tolerance `unmet_constraints` uses too."""
+def near(value: float, end: float) -> bool:
+    """Equal up to float noise: the tolerance range checks, `unmet_constraints`, and the ranking use."""
     return math.isclose(value, end, rel_tol=1e-9, abs_tol=1e-12)
 
 

@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar, Protocol
 
-from ...types.optimization import Estimate, Values
+from ...types.optimization import Estimate, Range, Values
 from ..declaration.space import Space
 
 
@@ -32,6 +32,7 @@ class FitData:
         observations: Goal metric -> candidate id -> case -> per-run values, from each candidate's
             `CandidateScores.metrics_by_run` with Nones dropped. Eligible candidates only, constraint
             violators included.
+        ranges: Goal metric -> its range (`MetricRegistry.range`), so a model can scale each metric by it.
     """
 
     space: Space
@@ -39,6 +40,7 @@ class FitData:
     candidates: Mapping[str, Values]
     cases: Sequence[str]
     observations: Mapping[str, Mapping[str, Mapping[str, Sequence[float]]]]
+    ranges: Mapping[str, Range]
 
 
 class MetricModel(Protocol):
