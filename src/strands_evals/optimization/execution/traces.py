@@ -26,14 +26,15 @@ ROLLOUT_SPAN = "rollout"
 
 @dataclass(frozen=True)
 class EvaluatorView:
-    """What the `evaluator {name}` spans of one trial say.
+    """What the `evaluator {name}` spans of one trial say, keyed by evaluator name.
 
-    `labels` come from each evaluator span's `gen_ai.evaluation.score.label`, which `Experiment`
-    computes but doesn't return. `errors` holds exception type names for the record only; whether a
-    judge failure was infrastructure comes from `TrialRunner`'s evaluator proxy, never from these names.
+    `judge_usage` is each evaluator's own spend (the spans under its evaluator span), so a judge-only
+    re-run can keep each score's judge spend with that score. `labels` come from each evaluator span's
+    `gen_ai.evaluation.score.label`, which `Experiment` computes but doesn't return. `errors` holds the
+    exception type names of evaluators whose span ended in ERROR.
     """
 
-    judge_usage: Usage
+    judge_usage: dict[str, Usage]
     errors: dict[str, str]
     labels: dict[str, str]
 
@@ -139,12 +140,13 @@ class TraceCapture:
     def evaluator_view(self, trace_id: str) -> EvaluatorView:
         """One walk over the trial's `evaluator {name}` spans: judge usage, errors, and labels.
 
-        Judge usage sums the `chat` spans under every evaluator span; its `seconds` is the evaluator
-        spans' total duration.
+        Each evaluator's judge usage sums the `chat` spans under its evaluator span; its `seconds` is
+        that span's duration. One pass over the spans for every evaluator: each judge span goes to its
+        nearest evaluator ancestor.
         """
         spans = self._filter.spans(trace_id)
-        evaluator_span_ids: list[str] = []
-        seconds = 0.0
+        evaluator_of: dict[str, str] = {}  # evaluator span id -> evaluator name
+        seconds: dict[str, float] = {}
         errors: dict[str, str] = {}
         labels: dict[str, str] = {}
         for span in spans:
@@ -152,14 +154,24 @@ class TraceCapture:
             name = attributes.get("gen_ai.evaluation.name")
             if name is None or not span.name.startswith("evaluator "):
                 continue
-            evaluator_span_ids.append(_span_id(span))
-            seconds += _duration(span)
+            name = str(name)
+            evaluator_of[_span_id(span)] = name
+            seconds[name] = seconds.get(name, 0.0) + _duration(span)
             if span.status.status_code is StatusCode.ERROR:
-                errors[str(name)] = _exception_type(span)
+                errors[name] = _exception_type(span)
             elif "gen_ai.evaluation.score.label" in attributes:
-                labels[str(name)] = str(attributes["gen_ai.evaluation.score.label"])
-        judge_spans = _subtree(spans, evaluator_span_ids)
-        return EvaluatorView(judge_usage=_usage(judge_spans, seconds), errors=errors, labels=labels)
+                labels[name] = str(attributes["gen_ai.evaluation.score.label"])
+        parent_of = {_span_id(span): format(span.parent.span_id, "016x") for span in spans if span.parent is not None}
+        judge_spans = _subtree(spans, evaluator_of.keys())  # every span under an evaluator span, in one call
+        spans_by_evaluator: dict[str, list[ReadableSpan]] = {name: [] for name in seconds}
+        for span in judge_spans:
+            ancestor = parent_of.get(_span_id(span))
+            while ancestor is not None and ancestor not in evaluator_of:
+                ancestor = parent_of.get(ancestor)
+            if ancestor is not None:
+                spans_by_evaluator[evaluator_of[ancestor]].append(span)
+        judge_usage = {name: _usage(spans_by_evaluator[name], seconds[name]) for name in seconds}
+        return EvaluatorView(judge_usage=judge_usage, errors=errors, labels=labels)
 
     def release(self, trace_ids: Iterable[str]) -> None:
         """Drop only these trials' spans."""

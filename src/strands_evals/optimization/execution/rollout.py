@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import functools
 import inspect
 import logging
 from collections.abc import Callable, Mapping
-from contextlib import AbstractAsyncContextManager, AbstractContextManager
+from concurrent.futures import Executor
+from contextlib import AbstractAsyncContextManager, AbstractContextManager, suppress
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -26,6 +28,11 @@ EnvironmentFn = Callable[
     [Case],
     Mapping[str, Any] | AbstractContextManager[Mapping[str, Any]] | AbstractAsyncContextManager[Mapping[str, Any]],
 ]
+
+# The pool sync functions run in, set by `TrialRunner.run` for its call and sized to its `max_workers`:
+# asyncio's shared pool holds at most min(32, cpus + 4) threads, which would cap the sync trials running
+# at once. None (outside a `TrialRunner` call) -> that shared pool.
+_THREAD_POOL: contextvars.ContextVar[Executor | None] = contextvars.ContextVar("trial_thread_pool", default=None)
 
 
 @dataclass
@@ -112,10 +119,12 @@ def make_task(
     An error creating or entering the environment is raised as `InfrastructureError(...) from error`, so
     `classify` makes it `infrastructure_invalid` whatever its type. An error exiting it after the rollout
     returned only warns, and the trial keeps its result. A sync `rollout_fn`, a sync `environment`, and a
-    sync context manager's `__enter__` / `__exit__` run in a worker thread, as `Experiment` runs a sync
-    task, so a slow setup doesn't stall concurrent trials. Setup and teardown may run on different
-    threads, so a thread-bound resource (e.g. a sqlite connection) must allow that, or come from an
-    async context manager, which runs on the event loop.
+    sync context manager's `__enter__` / `__exit__` run in a worker thread (in a `TrialRunner` call, its
+    pool of `max_workers` threads), so a slow setup doesn't stall concurrent trials. Setup and teardown
+    may run on different threads, so a thread-bound resource (e.g. a sqlite connection) must allow that,
+    or come from an async context manager, which runs on the event loop. A trial cancelled while a sync
+    `__enter__` runs waits for it to finish, exits the environment, then re-raises the cancellation (a
+    second cancellation during that wait leaves the environment entered).
 
     Args:
         agent_factory: The candidate's bound factory.
@@ -131,11 +140,19 @@ def make_task(
             return await _rollout(rollout_fn, agent_factory, case)
         env_context = contextvars.copy_context()
         try:
-            provided = await asyncio.to_thread(env_context.run, environment, case)
+            provided = await _in_thread(env_context.run, environment, case)
             if isinstance(provided, AbstractAsyncContextManager):
                 resources = await provided.__aenter__()
             elif isinstance(provided, AbstractContextManager):
-                resources = await asyncio.to_thread(env_context.run, provided.__enter__)
+                entering = asyncio.ensure_future(_in_thread(env_context.run, provided.__enter__))
+                try:
+                    resources = await asyncio.shield(entering)
+                except asyncio.CancelledError as cancelled:
+                    # The worker thread can't be stopped: let it finish entering, exit, then cancel.
+                    with suppress(Exception):
+                        await asyncio.shield(entering)
+                        await _exit_environment(provided, env_context, case, cancelled)
+                    raise
             else:
                 resources = provided
         except Exception as error:
@@ -173,7 +190,7 @@ async def _exit_environment(
         if isinstance(provided, AbstractAsyncContextManager):
             await provided.__aexit__(*exc_info)
         elif isinstance(provided, AbstractContextManager):
-            await asyncio.to_thread(env_context.run, provided.__exit__, *exc_info)
+            await _in_thread(env_context.run, provided.__exit__, *exc_info)
     except Exception as exit_error:
         logger.warning("case=<%s>, error=<%s> | environment failed to exit", case.name, exit_error)
 
@@ -182,10 +199,20 @@ async def _call(fn: Callable[..., Any], *args: Any) -> Any:
     """Await an async function; run a sync one in a worker thread (which keeps the current span)."""
     if inspect.iscoroutinefunction(fn):
         return await fn(*args)
-    result = await asyncio.to_thread(fn, *args)
+    result = await _in_thread(fn, *args)
     if inspect.isawaitable(result):
         result = await result
     return result
+
+
+async def _in_thread(fn: Callable[..., Any], *args: Any) -> Any:
+    """Run a sync function in `_THREAD_POOL` (else asyncio's shared pool), in a copy of the current
+    context, as `asyncio.to_thread` does, so it keeps the current span."""
+    pool = _THREAD_POOL.get()
+    if pool is None:
+        return await asyncio.to_thread(fn, *args)
+    call = functools.partial(contextvars.copy_context().run, fn, *args)
+    return await asyncio.get_running_loop().run_in_executor(pool, call)
 
 
 def instrument(task: TaskFn, log: TrialLog, traces: TraceCapture) -> TaskFn:

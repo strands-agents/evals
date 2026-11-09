@@ -63,7 +63,7 @@ def record(case="a", run=0, split="train", status=TrialStatus.COMPLETED, scores=
         details=details or {},
         evaluator_errors={},
         usage=usage(**usage_fields),
-        judge_usage=Usage.model_construct(),
+        judge_usage={},
         rollouts=1,
     )
 
