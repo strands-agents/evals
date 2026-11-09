@@ -18,6 +18,7 @@ from ...evaluators.evaluator import Evaluator
 from ...experiment import Experiment
 from ...types.evaluation import EvaluationData, EvaluationOutput
 from ...types.optimization import AttemptRecord, SplitName, TrialRecord, TrialStatus, Usage
+from ...types.trace import Session
 from .rollout import _THREAD_POOL, TaskFn, TrialLog, TrialLogEntry, instrument
 from .traces import EvaluatorView, TraceCapture
 
@@ -432,6 +433,15 @@ class TrialRunner:
         status = entry.status
         if completed and self._evaluators and not evaluations:
             status = TrialStatus.EVALUATOR_INVALID
+        kept = data if completed else None  # an attempt that raised keeps no output
+        environment_state = (
+            [
+                s.model_copy(update={"state": _storable(s.state, call, "environment_state")})
+                for s in kept.actual_environment_state
+            ]
+            if kept is not None and kept.actual_environment_state is not None
+            else None
+        )
         return TrialRecord(
             candidate_id=call.candidate_id,
             case_name=case_name,
@@ -442,10 +452,10 @@ class TrialRunner:
             error=entry.error,
             attempts=len(earlier) + 1,
             previous_attempts=earlier,
-            output=_storable(data.actual_output, call) if completed and data is not None else None,
-            trajectory=data.actual_trajectory if completed and data is not None else None,
-            interactions=data.actual_interactions if completed and data is not None else None,
-            environment_state=data.actual_environment_state if completed and data is not None else None,
+            output=_storable(kept.actual_output, call, "output") if kept is not None else None,
+            trajectory=_storable(kept.actual_trajectory, call, "trajectory") if kept is not None else None,
+            interactions=_storable(kept.actual_interactions, call, "interactions") if kept is not None else None,
+            environment_state=environment_state,
             evaluations=evaluations,
             details=details,
             evaluator_errors=errors,
@@ -546,7 +556,7 @@ class _Call:
     records: dict[_Key, TrialRecord] = field(default_factory=dict)
     live: dict[_Key, EvaluationData] = field(default_factory=dict)  # each trial's output as the task returned it
     passes: dict[_Key, int] = field(default_factory=dict)  # the pass each record of this call ran in
-    warned: bool = False
+    warned: set[str] = field(default_factory=set)  # the fields `_storable` has warned about
 
 
 def _needs_agent(record: TrialRecord | None) -> bool:
@@ -593,17 +603,25 @@ def _evaluation_data(case: Case, record: TrialRecord) -> EvaluationData:
     )
 
 
-def _storable(output: Any, call: _Call) -> Any:
-    """`output` if it is JSON-serializable, else `str(output)`, warning once per call."""
+def _storable(value: Any, call: _Call, field_name: str) -> Any:
+    """`value` if it can be saved as JSON, else a copy that can, warning once per call and field.
+
+    So a value the rollout returned can't make the save fail. `output` becomes `str(output)`; any other
+    field keeps its shape, with only the parts that aren't JSON turned into `str()`. A `Session` always
+    saves.
+    """
+    if isinstance(value, Session):
+        return value
     try:
-        json.dumps(output)
+        json.dumps(value)
     except (TypeError, ValueError):
-        if not call.warned:
-            call.warned = True
+        if field_name not in call.warned:
+            call.warned.add(field_name)
             logger.warning(
-                "candidate_id=<%s>, output_type=<%s> | trial output isn't JSON-serializable, saved as str()",
+                "candidate_id=<%s>, field=<%s>, type=<%s> | trial value isn't JSON-serializable, saved as str()",
                 call.candidate_id,
-                type(output).__name__,
+                field_name,
+                type(value).__name__,
             )
-        return str(output)
-    return output
+        return str(value) if field_name == "output" else json.loads(json.dumps(value, default=str))
+    return value

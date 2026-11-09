@@ -19,6 +19,7 @@ from strands_evals.optimization.execution.traces import TraceCapture
 from strands_evals.optimization.execution.trials import TrialRunner, _EvaluatorProxy, _TrialState
 from strands_evals.optimization.setup.budget import BudgetTracker
 from strands_evals.types import EvaluationOutput
+from strands_evals.types.evaluation import EnvironmentState
 from strands_evals.types.optimization import TrialRecord, TrialStatus
 from strands_evals.types.trace import Session
 from tests.strands_evals.optimization.scripted_model import ScriptedModel
@@ -183,6 +184,33 @@ async def test_output_that_isnt_json_is_saved_as_text(traces, caplog):
 
     assert [r.output for r in records] == ["a thing", "a thing"]
     assert sum("isn't JSON-serializable" in message for message in caplog.messages) == 1
+
+
+async def test_trajectory_interactions_and_state_that_arent_json_keep_their_shape(traces, caplog):
+    class Thing:
+        def __str__(self):
+            return "a thing"
+
+    async def task(case):
+        return {
+            "output": "ok",
+            "trajectory": [{"tool": "lookup", "result": Thing()}],
+            "interactions": [{"node_name": "agent", "messages": [Thing()]}],
+            "environment_state": [EnvironmentState(name="db", state={"rows": Thing()})],
+        }
+
+    with caplog.at_level(logging.WARNING):
+        records, _ = await _runner(traces, MemoryCache(), _cases("a", "b"), [Fixed()]).run(
+            "cand", task, ["a", "b"], runs=1, allowance=0
+        )
+
+    record = records[0]
+    assert record.status is TrialStatus.COMPLETED
+    assert record.trajectory == [{"tool": "lookup", "result": "a thing"}]
+    assert record.interactions == [{"node_name": "agent", "messages": ["a thing"]}]
+    assert record.environment_state == [EnvironmentState(name="db", state={"rows": "a thing"})]
+    assert TrialRecord.model_validate_json(record.model_dump_json()) == record  # the save can't fail
+    assert sum("isn't JSON-serializable" in message for message in caplog.messages) == 3  # once per field
 
 
 # cache
