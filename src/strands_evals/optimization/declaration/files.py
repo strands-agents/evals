@@ -269,8 +269,9 @@ class SkillLibrary(_Marker):
                 isn't a non-empty list or tuple of names of skills in the directory (or `path` is a
                 single skill), the directory or a folder in it can't be read (every candidate's copy
                 would fail on it), the directory holds no skill, a tuned skill's directory or `SKILL.md`
-                is a symlink (its copy would write through to, or keep following, the original), or a
-                tuned `SKILL.md` isn't UTF-8 or lacks the frontmatter above.
+                is a symlink (its copy would write through to, or keep following, the original), a
+                tuned `SKILL.md` isn't UTF-8 or lacks the frontmatter above, or two tuned skills have
+                the same `name` (the runtime keeps only one).
         """
         _check_positive_int("size_cap", size_cap)
         _check_str("edit_instructions", edit_instructions)
@@ -325,6 +326,14 @@ class SkillLibrary(_Marker):
             file.relative_to(self.path).as_posix(): _SkillFile(file, self.path, size_cap, edit_instructions)
             for file in skill_files
         }
+        folders: dict[str, Path] = {}
+        for member in self._members.values():
+            other = folders.setdefault(member._name, member.path.parent)
+            if other != member.path.parent:  # the runtime would load only one of them
+                raise TypeError(
+                    f"SkillLibrary: {other} and {member.path.parent} both name their skill {member._name!r}; "
+                    "the runtime keeps only one, so give each a unique name"
+                )
 
 
 class _SkillFile(_Marker):

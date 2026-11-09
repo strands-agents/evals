@@ -440,6 +440,25 @@ def test_a_symlinked_file_is_replaced_not_written_through(tmp_path):
     assert (real / "target.md").read_text() == "original"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need extra rights on Windows")
+def test_a_relative_symlink_out_of_a_copied_folder_still_leads_to_its_target(tmp_path):
+    (tmp_path / "shared").mkdir()
+    (tmp_path / "shared" / "common.md").write_text("Common.", newline="")
+    prompts = tmp_path / "prompts"
+    prompts.mkdir()
+    (prompts / "system.md").write_text("You help.", newline="")
+    (prompts / "common.md").symlink_to(os.path.join("..", "shared", "common.md"))
+    space = Space({"system": FileText(prompts / "system.md")})
+    workspace = tmp_path / "run" / "optimization_files"
+    prompts.chmod(0o555)  # the copied folder is read-only too, so relinking must come after it is made writable
+    try:
+        space.create_candidate_copy({"system": "New."}, workspace)
+    finally:
+        prompts.chmod(0o755)
+    link = workspace / _location_in_copy(space._copy_folders, prompts.resolve() / "common.md")
+    assert link.read_text() == "Common."
+
+
 def test_an_existing_empty_directory_gets_the_copy(project, tmp_path_factory):
     space = make_space(project)
     workspace = tmp_path_factory.mktemp("run") / "optimization_files"
@@ -735,6 +754,41 @@ def test_a_symlinked_skill_directory_fails_at_declaration(library, tmp_path):
     (library / "shared").symlink_to(outside)
     with pytest.raises(TypeError, match="is a symlink"):
         SkillLibrary(library)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need extra rights on Windows")
+def test_an_untuned_skill_linked_from_outside_the_library_loads_from_the_copy(library, tmp_path):
+    skills_module = pytest.importorskip("strands.vended_plugins.skills")
+    (tmp_path / "shared" / "faq").mkdir(parents=True)
+    (tmp_path / "shared" / "faq" / "SKILL.md").write_text(skill_text("faq", "Answer FAQs."), newline="")
+    (library / "faq").symlink_to(os.path.join("..", "shared", "faq"))  # relative, out of the library
+
+    @tunable(skills=SkillLibrary(library, only=["triage"]))
+    def make(skills):
+        return _Agent(skills)
+
+    agent = make.bind({"skills/triage/SKILL.md": skill_text("triage", "Sort.", "New.\n")})()
+    loaded = {skill.name for skill in skills_module.Skill.from_directory(agent.path, strict=True)}
+    assert loaded == {"billing", "faq", "triage"}  # the same skills as the baseline
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need extra rights on Windows")
+def test_a_symlink_to_a_tuned_file_leads_to_the_candidates_copy_of_it(library):
+    (library / "notes" / "triage.md").symlink_to(library / "triage" / "SKILL.md")  # absolute
+    space = Space({"skills": SkillLibrary(library)})
+    workspace = library.parent / "run" / "optimization_files"
+    edited = skill_text("triage", "Sort.", "New.\n")
+    space.create_candidate_copy({**space.complete({}), "skills/triage/SKILL.md": edited}, workspace)
+    copy = space.resolve("skills", space.complete({}), workspace)
+    assert (copy / "notes" / "triage.md").read_text() == edited
+    assert (library / "triage" / "SKILL.md").read_text() != edited
+
+
+def test_two_tuned_skills_with_one_name_fail_at_declaration(library):
+    (library / "billing" / "skill.md").write_text(skill_text("triage", "Also triage."), newline="")
+    with pytest.raises(TypeError, match="both name their skill 'triage'"):
+        SkillLibrary(library)
+    assert SkillLibrary(library, only=["triage"])  # an untuned skill is never read
 
 
 @pytest.mark.parametrize(

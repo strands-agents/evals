@@ -271,7 +271,8 @@ class Space:
         so a second call with the same values returns at once and one with other values raises. An
         empty `directory` is replaced; concurrent calls for the same values all succeed. Originals are
         never written: files are replaced rather than written through, and a folder containing
-        `directory` (e.g. the run directory under the project) is left out of the copy.
+        `directory` (e.g. the run directory under the project) is left out of the copy. A symlink
+        leads where the original's leads, into the copy when that is copied too.
 
         Args:
             values: The candidate's values; must already pass `validate`.
@@ -295,6 +296,8 @@ class Space:
                     folder, building / _folder_in_copy(folder), symlinks=True, ignore=_ignore_containing(destinations)
                 )
             _make_folders_writable(building)  # a read-only source folder would block the writes below
+            for folder in self._copy_folders:
+                _relink(building, folder, self._copy_folders)
             for info in self._params.values():
                 if info.source is None or not self.is_active(info.key, values):
                     continue
@@ -524,6 +527,30 @@ def _read_marker(directory: Path) -> str | None:
         return (directory / _COPY_MARKER).read_bytes().decode("ascii")
     except (FileNotFoundError, NotADirectoryError):
         return None
+
+
+def _relink(building: Path, folder: Path, folders: tuple[Path, ...]) -> None:
+    """Point each symlink in `folder`'s copy where the original link leads.
+
+    `copytree(symlinks=True)` copies a link's text, so a relative link out of the folder would lead
+    nowhere in the copy, and the candidate would lose a skill or file the baseline reads through it.
+    A link leading into a copied folder points at the copy (relative, so the copy can be renamed into
+    place), else at the original's real path.
+    """
+    copy = building / _folder_in_copy(folder)
+    for here, dirs, files in os.walk(copy):  # never descends into a symlinked folder
+        for name in dirs + files:
+            link = Path(here, name)
+            if not link.is_symlink():
+                continue
+            real = Path(os.path.realpath(folder / link.relative_to(copy)))
+            try:
+                target = os.path.relpath(building / _location_in_copy(folders, real), link.parent)
+            except KeyError:  # outside every copied folder
+                target = str(real)
+            if os.readlink(link) != target:
+                link.unlink()
+                os.symlink(target, link, target_is_directory=real.is_dir())
 
 
 def _make_folders_writable(root: Path) -> None:
