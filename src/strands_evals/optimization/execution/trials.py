@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
@@ -17,7 +18,7 @@ from ...evaluators.evaluator import Evaluator
 from ...experiment import Experiment
 from ...types.evaluation import EvaluationData, EvaluationOutput
 from ...types.optimization import AttemptRecord, SplitName, TrialRecord, TrialStatus, Usage
-from .rollout import TaskFn, TrialLog, TrialLogEntry, instrument
+from .rollout import _THREAD_POOL, TaskFn, TrialLog, TrialLogEntry, instrument
 from .traces import EvaluatorView, TraceCapture
 
 logger = logging.getLogger(__name__)
@@ -219,7 +220,8 @@ class TrialRunner:
 
         Each trial is its own `Experiment` call over one case, so it is saved as soon as that call
         returns. Every trial of the call, all runs included, runs at once under one `max_workers` cap,
-        case-major (each case's runs, then the next case's). Each call gets a private in-memory
+        case-major (each case's runs, then the next case's); sync tasks run in the call's own pool of
+        `max_workers` threads, so the cap holds for them too. Each call gets a private in-memory
         `EvaluationDataStore`: it captures the task's live output (`Session` included) and replays it on
         a judge-only re-run, which runs only the evaluators that failed.
 
@@ -282,22 +284,28 @@ class TrialRunner:
             elif rejudge and _has_failed_evaluators(saved):
                 jobs.append((key, True))
         touched = {key for key, _ in jobs}  # the re-run passes never touch a trial this call didn't run
-        spent = await self._pass(call, jobs, pass_index=0)
-        for pass_index in range(1, self._rerun_passes + 1):
-            agent_runs = max(allowance - spent, 0)  # the allowance covers the whole call, first pass included
-            jobs = []
-            for key in keys:
-                if key not in touched:
-                    continue
-                record = call.records.get(key)
-                if _needs_agent(record) and agent_runs > 0:
-                    jobs.append((key, False))
-                    agent_runs -= 1
-                elif _has_failed_evaluators(record):
-                    jobs.append((key, True))
-            if not jobs:
-                break
-            spent += await self._pass(call, jobs, pass_index=pass_index)
+        pool = ThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="trial")
+        token = _THREAD_POOL.set(pool)
+        try:
+            spent = await self._pass(call, jobs, pass_index=0)
+            for pass_index in range(1, self._rerun_passes + 1):
+                agent_runs = max(allowance - spent, 0)  # the allowance covers the whole call, first pass included
+                jobs = []
+                for key in keys:
+                    if key not in touched:
+                        continue
+                    record = call.records.get(key)
+                    if _needs_agent(record) and agent_runs > 0:
+                        jobs.append((key, False))
+                        agent_runs -= 1
+                    elif _has_failed_evaluators(record):
+                        jobs.append((key, True))
+                if not jobs:
+                    break
+                spent += await self._pass(call, jobs, pass_index=pass_index)
+        finally:
+            _THREAD_POOL.reset(token)
+            pool.shutdown(wait=False)  # a cancelled call doesn't wait for a sync agent still running
         return [call.records[key] for key in keys], spent
 
     async def _pass(self, call: _Call, jobs: list[tuple[_Key, bool]], *, pass_index: int) -> int:

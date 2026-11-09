@@ -109,8 +109,9 @@ class AttemptRecord(BaseModel):
     and a saved record that a later re-run pass replaced (its own `previous_attempts`, then itself).
 
     Attributes:
-        status: What that attempt ended as (`infrastructure_invalid`, or `completed` /
-            `evaluator_invalid` with failed evaluators before a judge-only re-run).
+        status: What that attempt ended as. Only a retried status occurs: `infrastructure_invalid`,
+            or `completed` / `evaluator_invalid` with failed evaluators before a judge-only re-run;
+            `agent_failure` is final and never retried.
         error_type: The exception type, if it raised.
         error: The exception message, if it raised.
         usage: What the agent spent in it; zero when a judge-only re-run reused its output, since that

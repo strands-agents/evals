@@ -1,6 +1,8 @@
 import asyncio
 import copy
 import logging
+import os
+import threading
 
 import opentelemetry.trace as trace_api
 import pytest
@@ -236,6 +238,27 @@ async def test_every_run_shares_one_max_workers_cap(traces):
     assert peak[0] == 2
     assert started[:2] == ["a", "a"]  # case-major: both of a's runs go first, at once
     assert {r.run_index for r in records} == {0, 1}
+
+
+async def test_sync_tasks_run_max_workers_at_once_past_asyncios_shared_pool(traces):
+    # asyncio's shared pool holds min(32, cpus + 4) threads; one more trial than that must still run at once
+    n = min(32, (os.cpu_count() or 1) + 4) + 1
+    barrier = threading.Barrier(n, timeout=10)
+    seen = []
+
+    def task(case):
+        seen.append((threading.current_thread().name, trace_api.get_current_span().name))
+        barrier.wait()  # breaks, failing the trial, unless all n trials are running at once
+        return "ok"
+
+    names = [f"c{i}" for i in range(n)]
+    records, _ = await _runner(traces, MemoryCache(), _cases(*names), [Fixed()], max_workers=n).run(
+        "cand", task, names, runs=1, allowance=0
+    )
+
+    assert [r.status for r in records] == [TrialStatus.COMPLETED] * n
+    assert all(thread.startswith("trial") for thread, _ in seen)
+    assert sorted(span for _, span in seen) == sorted(f"attempt {name}" for name in names)  # keeps the span
 
 
 async def test_a_kill_mid_call_keeps_every_finished_trial(traces):
