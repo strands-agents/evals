@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import gc
 import logging
 import os
 import threading
@@ -317,6 +318,29 @@ async def test_a_failed_save_raises_without_starting_more_trials(traces):
     await asyncio.sleep(0.05)  # a trial left running after `run` raised would start by now
 
     assert calls == ["a"]
+
+
+async def test_a_failed_call_shuts_its_thread_pool_down(traces):
+    class FullDisk(MemoryCache):
+        def save_trial(self, record):
+            raise OSError("disk full")
+
+    def task(case):  # sync, so it runs on the call's pool
+        return "ok"
+
+    before = {t for t in threading.enumerate() if t.name.startswith("trial")}
+    gc.disable()  # the raised error's traceback holds the pool; only an explicit shutdown frees its threads
+    try:
+        with pytest.raises(OSError, match="disk full"):
+            await _runner(traces, FullDisk(), _cases("a", "b"), [Fixed()], max_workers=2).run(
+                "cand", task, ["a", "b"], runs=1, allowance=0
+            )
+        await asyncio.sleep(0.05)  # shutdown(wait=False): give the idle threads time to exit
+        left = {t for t in threading.enumerate() if t.name.startswith("trial")} - before
+    finally:
+        gc.enable()
+
+    assert left == set()
 
 
 async def test_a_cancelled_call_still_exits_a_sync_environment(traces):
@@ -698,3 +722,10 @@ def test_cases_need_unique_names_and_a_split(traces):
 async def test_an_unknown_case_name_is_an_error(traces):
     with pytest.raises(ValueError, match="unknown case names"):
         await _runner(traces, MemoryCache(), _cases("a"), []).run("cand", _plain, ["z"], runs=1, allowance=0)
+
+
+async def test_a_case_name_listed_twice_is_an_error(traces):
+    cache = MemoryCache()
+    with pytest.raises(ValueError, match=r"listed more than once: \['a'\]"):
+        await _runner(traces, cache, _cases("a", "b"), []).run("cand", _plain, ["a", "b", "a"], runs=1, allowance=0)
+    assert cache.saved == []

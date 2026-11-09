@@ -265,13 +265,16 @@ class TrialRunner:
             TypeError: `_FactoryArgumentError` (a resource or kwarg named like a declared marker, a kwarg
                 the factory doesn't accept, or an environment that gave no mapping).
             RuntimeError: Trial spans aren't recorded (an OTel SDK disabled or sampling out).
-            ValueError: A case name the runner wasn't built with, or `runs` < 1.
+            ValueError: A case name the runner wasn't built with, a case name listed twice, or `runs` < 1.
         """
         if runs < 1:
             raise ValueError(f"runs must be at least 1, got {runs}")
         unknown = [name for name in case_names if name not in self._cases]
         if unknown:
             raise ValueError(f"unknown case names: {unknown}")
+        duplicates = sorted({name for name in case_names if case_names.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"case names listed more than once: {duplicates}")
         keys = [(name, run_index) for name in case_names for run_index in range(runs)]  # case-major
         call = _Call(candidate_id=candidate_id, task=task, semaphore=asyncio.Semaphore(self._max_workers))
         jobs: list[tuple[_Key, bool]] = []  # (key, judge only), case-major
@@ -303,9 +306,14 @@ class TrialRunner:
                 if not jobs:
                     break
                 spent += await self._pass(call, jobs, pass_index=pass_index)
+        except Exception:
+            pool.shutdown(wait=False)  # `_pass` raises only after every trial it started has returned
+            raise
+        else:
+            pool.shutdown()
         finally:
+            # not shut down on a cancel: a trial left running may still need the pool to exit its environment
             _THREAD_POOL.reset(token)
-        pool.shutdown()  # not on error: a trial left running may still need the pool to exit its environment
         return [call.records[key] for key in keys], spent
 
     async def _pass(self, call: _Call, jobs: list[tuple[_Key, bool]], *, pass_index: int) -> int:
