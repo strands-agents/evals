@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -12,6 +13,7 @@ from typing import Any, Protocol, cast
 
 import opentelemetry.context as otel_context
 import opentelemetry.trace as trace_api
+from pydantic_core import to_jsonable_python
 
 from ...case import Case
 from ...evaluators.evaluator import Evaluator
@@ -273,7 +275,7 @@ class TrialRunner:
         unknown = [name for name in case_names if name not in self._cases]
         if unknown:
             raise ValueError(f"unknown case names: {unknown}")
-        duplicates = sorted({name for name in case_names if case_names.count(name) > 1})
+        duplicates = sorted(name for name, count in Counter(case_names).items() if count > 1)
         if duplicates:
             raise ValueError(f"case names listed more than once: {duplicates}")
         keys = [(name, run_index) for name in case_names for run_index in range(runs)]  # case-major
@@ -606,9 +608,10 @@ def _evaluation_data(case: Case, record: TrialRecord) -> EvaluationData:
 def _storable(value: Any, call: _Call, field_name: str) -> Any:
     """`value` if it can be saved as JSON, else a copy that can, warning once per call and field.
 
-    So a value the rollout returned can't make the save fail. `output` becomes `str(output)`; any other
-    field keeps its shape, with only the parts that aren't JSON turned into `str()`. A `Session` always
-    saves.
+    So a non-JSON value the rollout returned doesn't make the save fail (a container that holds itself
+    still does). `output` becomes `str(output)`. Any other field keeps its shape and is converted as
+    pydantic saves it: models, datetimes, and non-string keys become JSON, bytes base64, and only
+    what pydantic can't encode becomes `str()`. A `Session` is returned as is.
     """
     if isinstance(value, Session):
         return value
@@ -618,10 +621,10 @@ def _storable(value: Any, call: _Call, field_name: str) -> Any:
         if field_name not in call.warned:
             call.warned.add(field_name)
             logger.warning(
-                "candidate_id=<%s>, field=<%s>, type=<%s> | trial value isn't JSON-serializable, saved as str()",
+                "candidate_id=<%s>, field=<%s>, type=<%s> | trial value isn't JSON-serializable, converted to JSON",
                 call.candidate_id,
                 field_name,
                 type(value).__name__,
             )
-        return str(value) if field_name == "output" else json.loads(json.dumps(value, default=str))
+        return str(value) if field_name == "output" else to_jsonable_python(value, fallback=str, bytes_mode="base64")
     return value

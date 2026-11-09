@@ -145,7 +145,9 @@ class TrialRecord(BaseModel):
     Reflection sees per-row reasons. Status, metrics, and usage read the last attempt;
     `previous_attempts` is for reporting and the budget only, and
     `attempts == len(previous_attempts) + 1`. `output` is saved as returned when JSON-serializable,
-    else as `str(output)`.
+    else as `str(output)`. A list `trajectory`, `interactions`, and each `environment_state` entry's
+    `state` keep their shape; any part that isn't JSON is converted as pydantic saves it, and only what
+    pydantic can't encode becomes `str()`.
 
     `rollouts` is what the last attempt cost the budget: 1 when the agent ran (a first pass or a re-run
     pass), 0 for a judge-only re-run on the saved output and for an attempt `Experiment` retried on

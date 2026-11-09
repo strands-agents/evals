@@ -1,5 +1,7 @@
 import asyncio
 import copy
+import datetime
+import enum
 import gc
 import logging
 import os
@@ -7,6 +9,7 @@ import threading
 
 import opentelemetry.trace as trace_api
 import pytest
+from pydantic import BaseModel
 from strands import Agent
 from strands.types.exceptions import ModelThrottledException
 
@@ -191,12 +194,20 @@ async def test_trajectory_interactions_and_state_that_arent_json_keep_their_shap
         def __str__(self):
             return "a thing"
 
+    class Color(enum.Enum):
+        RED = "red"
+
+    class ToolCall(BaseModel):
+        at: datetime.datetime
+
+    at = datetime.datetime(2026, 1, 2, 3, 4, 5)
+
     async def task(case):
         return {
             "output": "ok",
-            "trajectory": [{"tool": "lookup", "result": Thing()}],
+            "trajectory": [{"tool": "lookup", "result": Thing(), "call": ToolCall(at=at)}, {Color.RED: 1}],
             "interactions": [{"node_name": "agent", "messages": [Thing()]}],
-            "environment_state": [EnvironmentState(name="db", state={"rows": Thing()})],
+            "environment_state": [EnvironmentState(name="grid", state={(0, 1): Thing()})],
         }
 
     with caplog.at_level(logging.WARNING):
@@ -206,9 +217,12 @@ async def test_trajectory_interactions_and_state_that_arent_json_keep_their_shap
 
     record = records[0]
     assert record.status is TrialStatus.COMPLETED
-    assert record.trajectory == [{"tool": "lookup", "result": "a thing"}]
+    assert record.trajectory == [
+        {"tool": "lookup", "result": "a thing", "call": {"at": "2026-01-02T03:04:05"}},  # as pydantic saves it
+        {"red": 1},  # a key that isn't a str is kept, as pydantic encodes it
+    ]
     assert record.interactions == [{"node_name": "agent", "messages": ["a thing"]}]
-    assert record.environment_state == [EnvironmentState(name="db", state={"rows": "a thing"})]
+    assert record.environment_state == [EnvironmentState(name="grid", state={"0,1": "a thing"})]
     assert TrialRecord.model_validate_json(record.model_dump_json()) == record  # the save can't fail
     assert sum("isn't JSON-serializable" in message for message in caplog.messages) == 3  # once per field
 
@@ -363,12 +377,13 @@ async def test_a_failed_call_shuts_its_thread_pool_down(traces):
             await _runner(traces, FullDisk(), _cases("a", "b"), [Fixed()], max_workers=2).run(
                 "cand", task, ["a", "b"], runs=1, allowance=0
             )
-        await asyncio.sleep(0.05)  # shutdown(wait=False): give the idle threads time to exit
-        left = {t for t in threading.enumerate() if t.name.startswith("trial")} - before
+        new = {t for t in threading.enumerate() if t.name.startswith("trial")} - before
+        for thread in new:
+            thread.join(timeout=5)  # shutdown(wait=False): the idle threads exit on their own
     finally:
         gc.enable()
 
-    assert left == set()
+    assert [t for t in new if t.is_alive()] == []
 
 
 async def test_a_cancelled_call_still_exits_a_sync_environment(traces):
