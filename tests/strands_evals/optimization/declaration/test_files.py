@@ -665,8 +665,10 @@ def test_only_never_reads_the_skills_it_does_not_tune(library):
 @pytest.mark.parametrize(
     ("only", "problem"),
     [
-        ("triage", "must be a collection of skill names"),
-        ([1], "must be a collection of skill names"),
+        ("triage", "must be a list or tuple of skill names, got 'triage'"),
+        ([1], "must be a list or tuple of skill names, got \\[1\\]"),
+        ({"triage"}, "must be a list or tuple of skill names"),
+        ((name for name in ["triage"]), "must be a list or tuple of skill names"),
         ((), "names no skill"),
         (("triage", "faq"), "no skill named 'faq' in .* \\(it has billing, triage\\)"),
         (("notes",), "no skill named 'notes'"),
@@ -775,6 +777,17 @@ def test_a_proposed_skill_md_may_change_anything_but_its_name(library):
         space.validate({**values, "skills/triage/SKILL.md": "No frontmatter.\n"})
 
 
+def test_the_baseline_skill_md_is_parsed_once(library, monkeypatch):
+    from strands_evals.optimization.declaration import files
+
+    parsed = []
+    parse = files._skill_name
+    monkeypatch.setattr(files, "_skill_name", lambda text: parsed.append(text) or parse(text))
+    space = Space({"skills": SkillLibrary(library, only=("triage",))})
+    space.validate(space.complete({}))
+    assert len(parsed) == 1
+
+
 def test_a_skill_md_over_its_size_cap_fails_validation(library):
     space = Space({"skills": SkillLibrary(library, size_cap=200)})
     long = skill_text("triage", "Sort.", "x" * 200)
@@ -852,11 +865,35 @@ def test_a_skill_md_declared_again_fails_at_declaration(library):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="symlinks need extra rights on Windows")
-def test_a_skill_md_linked_to_another_skills_fails_at_declaration(library):
+@pytest.mark.parametrize("linked_to", ["another skill's", "an undeclared file"])
+def test_a_skill_md_that_is_a_symlink_fails_at_declaration(library, tmp_path, linked_to):
+    if linked_to == "an undeclared file":
+        target = tmp_path / "shared.md"
+        target.write_text(skill_text("router", "Route tickets."), newline="")
+    else:
+        target = library / "triage" / "SKILL.md"
     (library / "router").mkdir()
-    (library / "router" / "SKILL.md").symlink_to(library / "triage" / "SKILL.md")
-    with pytest.raises(TypeError, match="already declared"):
-        Space({"skills": SkillLibrary(library)})
+    (library / "router" / "SKILL.md").symlink_to(target)
+    with pytest.raises(TypeError, match=r"router[/\\]SKILL.md is a symlink"):
+        SkillLibrary(library)
+    with pytest.raises(TypeError, match="is a symlink"):
+        SkillLibrary(library / "router")
+    assert [info.key for info in Space({"s": SkillLibrary(library, only=("triage",))}).params()] == [
+        "s/triage/SKILL.md"
+    ]  # an untuned skill is never read
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="needs POSIX permissions, not as root")
+def test_an_unreadable_folder_is_skipped_as_the_runtime_skips_it(library):
+    locked = library / "locked"
+    locked.mkdir()
+    (locked / "SKILL.md").write_text(skill_text("locked", "Locked."), newline="")
+    locked.chmod(0o000)
+    try:
+        space = Space({"skills": SkillLibrary(library)})
+    finally:
+        locked.chmod(0o755)
+    assert [info.key for info in space.params()] == ["skills/billing/skill.md", "skills/triage/SKILL.md"]
 
 
 def test_a_skill_edit_diffs_on_its_real_file(library):

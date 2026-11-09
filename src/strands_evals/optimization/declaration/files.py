@@ -249,7 +249,7 @@ class SkillLibrary(_Marker):
         self,
         path: str | Path,
         *,
-        only: Iterable[str] | None = None,
+        only: list[str] | tuple[str, ...] | None = None,
         size_cap: int | None = None,
         edit_instructions: str | None = None,
     ):
@@ -258,31 +258,28 @@ class SkillLibrary(_Marker):
         Args:
             path: The directory of skills, or one skill's directory; a relative path is taken from the
                 current working directory.
-            only: The skills to tune, by directory name, e.g. `("triage", "billing")`; None tunes
-                every skill. The others are copied but not edited.
+            only: The skills to tune, a list or tuple of directory names, e.g. `("triage", "billing")`;
+                None tunes every skill. The others are copied but not edited.
             size_cap: Max characters per `SKILL.md`; None means `max(2000, 3 * len(baseline))` for each.
             edit_instructions: Shown to the proposer next to every `SKILL.md`.
 
         Raises:
             FileNotFoundError: `path` is not a directory.
             TypeError: `size_cap` isn't a positive integer, `edit_instructions` isn't a str, `only`
-                isn't a non-empty collection of names of skills in the directory (or `path` is a
-                single skill), the directory holds no skill, a tuned skill's directory is a symlink
-                (its copy would write through to the original), or a tuned `SKILL.md` isn't UTF-8 or
-                lacks the frontmatter above.
+                isn't a non-empty list or tuple of names of skills in the directory (or `path` is a
+                single skill), the directory holds no skill, a tuned skill's directory or `SKILL.md`
+                is a symlink (its copy would write through to, or keep following, the original), or a
+                tuned `SKILL.md` isn't UTF-8 or lacks the frontmatter above.
         """
         _check_positive_int("size_cap", size_cap)
         _check_str("edit_instructions", edit_instructions)
         if not isinstance(path, (str, Path)):
             raise TypeError(f"SkillLibrary path must be a str or Path, got {path!r}")
-        if isinstance(only, str):  # set("triage") would be its letters
-            raise TypeError(f"SkillLibrary only must be a collection of skill names, got {only!r}")
+        if only is not None and not (isinstance(only, (list, tuple)) and all(isinstance(name, str) for name in only)):
+            raise TypeError(f"SkillLibrary only must be a list or tuple of skill names, got {only!r}")
+        if only is not None and not only:
+            raise TypeError("SkillLibrary only names no skill; pass None to tune every skill")
         selected = None if only is None else set(only)
-        if selected is not None:
-            if not all(isinstance(name, str) for name in selected):
-                raise TypeError(f"SkillLibrary only must be a collection of skill names, got {only!r}")
-            if not selected:
-                raise TypeError("SkillLibrary only names no skill; pass None to tune every skill")
         self.path = Path(path).expanduser().resolve()
         if not self.path.is_dir():
             where = (
@@ -333,6 +330,8 @@ class _SkillFile(_Marker):
     """One `SKILL.md` of a `SkillLibrary`: its text, written into the candidate's copy."""
 
     def __init__(self, path: Path, copied: Path, size_cap: int | None, edit_instructions: str | None):
+        if path.is_symlink():  # the copy would keep the link, so the baseline would follow the original
+            raise TypeError(f"SkillLibrary: {path} is a symlink; replace it with the file it links to")
         self.path = path
         self.copied = copied  # the library's directory, which the candidate's copy holds
         self.default = _read_text(path, "SkillLibrary")
@@ -363,6 +362,8 @@ class _SkillFile(_Marker):
 
     def _format_problem(self, value: str) -> str | None:
         """A one-line problem with the frontmatter of `value`, or None; the `name` must stay the baseline's."""
+        if value == self.default:  # parsed in __init__
+            return None
         try:
             name = _skill_name(value)
         except ValueError as error:
@@ -373,8 +374,15 @@ class _SkillFile(_Marker):
 
 
 def _skill_file_in(folder: Path) -> Path | None:
-    """`folder/SKILL.md`, else `folder/skill.md`, as named on disk; None when it has neither."""
-    names = {entry.name for entry in folder.iterdir()}
+    """`folder/SKILL.md`, else `folder/skill.md`, as named on disk; None when it has neither.
+
+    Names are read from the folder, not tested with `is_file()`, which on a case-insensitive file
+    system finds `skill.md` as `SKILL.md`. A folder that can't be read is None, as the runtime skips it.
+    """
+    try:
+        names = {entry.name for entry in folder.iterdir()}
+    except OSError:
+        return None
     for name in ("SKILL.md", "skill.md"):
         if name in names and (folder / name).is_file():
             return folder / name

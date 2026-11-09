@@ -471,8 +471,10 @@ def _check_no_overlap(
     declared: Mapping[str, FileText | JsonField | _SkillFile],
 ) -> None:
     """Raise `TypeError` if `marker` edits text another declared file marker edits too."""
+    # Every marker's path is already resolved: FileText and JsonField resolve theirs, and a skill's
+    # file and folder are never symlinks, so equal files have equal paths.
     for other_key, other in declared.items():
-        if other.path.resolve() != marker.path.resolve():  # a symlinked file is the file it links to
+        if other.path != marker.path:
             continue
         if isinstance(marker, JsonField) and isinstance(other, JsonField):
             shorter, longer = sorted((marker._tokens, other._tokens), key=len)
