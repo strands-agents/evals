@@ -81,6 +81,9 @@ Episode 1
 Session: <session_file_path_1>
 <dropped_reason>
 ...
+
+Episode 0
+...
 ```
 
 - `session_file_path_N`: processed session file's absolute path
@@ -92,4 +95,4 @@ Session: <session_file_path_1>
 - `failure`: one line per distinct way the assistant fell short of the user's goal in the episode, in your own words (ex. "claimed a function existed that wasn't in the file", "ignored the request to keep it short"). Describe what went wrong.
 - `evidence`: the user input, quoted verbatim and trimmed to one sentence, that shows the failure.
 
-If the user accepted the work without corrections, write `Error analysis: none` on a single line with no bullets.
+If the user accepted the work without corrections, write `Error analysis: none` on a single line with no bullets. Episode numbering restarts at 0 for each session.
