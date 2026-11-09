@@ -884,16 +884,16 @@ def test_a_skill_md_that_is_a_symlink_fails_at_declaration(library, tmp_path, li
 
 
 @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="needs POSIX permissions, not as root")
-def test_an_unreadable_folder_is_skipped_as_the_runtime_skips_it(library):
+def test_an_unreadable_folder_fails_at_declaration(library):
     locked = library / "locked"
     locked.mkdir()
     (locked / "SKILL.md").write_text(skill_text("locked", "Locked."), newline="")
     locked.chmod(0o000)
     try:
-        space = Space({"skills": SkillLibrary(library)})
+        with pytest.raises(TypeError, match=r"can't read .*locked .*every candidate's copy needs"):
+            SkillLibrary(library, only=("triage",))  # untuned too: the copy holds every folder
     finally:
         locked.chmod(0o755)
-    assert [info.key for info in space.params()] == ["skills/billing/skill.md", "skills/triage/SKILL.md"]
 
 
 def test_a_skill_edit_diffs_on_its_real_file(library):

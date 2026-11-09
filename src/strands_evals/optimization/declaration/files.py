@@ -267,7 +267,8 @@ class SkillLibrary(_Marker):
             FileNotFoundError: `path` is not a directory.
             TypeError: `size_cap` isn't a positive integer, `edit_instructions` isn't a str, `only`
                 isn't a non-empty list or tuple of names of skills in the directory (or `path` is a
-                single skill), the directory holds no skill, a tuned skill's directory or `SKILL.md`
+                single skill), the directory or a folder in it can't be read (every candidate's copy
+                would fail on it), the directory holds no skill, a tuned skill's directory or `SKILL.md`
                 is a symlink (its copy would write through to, or keep following, the original), or a
                 tuned `SKILL.md` isn't UTF-8 or lacks the frontmatter above.
         """
@@ -377,12 +378,14 @@ def _skill_file_in(folder: Path) -> Path | None:
     """`folder/SKILL.md`, else `folder/skill.md`, as named on disk; None when it has neither.
 
     Names are read from the folder, not tested with `is_file()`, which on a case-insensitive file
-    system finds `skill.md` as `SKILL.md`. A folder that can't be read is None, as the runtime skips it.
+    system finds `skill.md` as `SKILL.md`.
     """
     try:
         names = {entry.name for entry in folder.iterdir()}
-    except OSError:
-        return None
+    except OSError as error:  # every candidate's copy would fail on it
+        raise TypeError(
+            f"SkillLibrary: can't read {folder} ({error.strerror}), which every candidate's copy needs"
+        ) from error
     for name in ("SKILL.md", "skill.md"):
         if name in names and (folder / name).is_file():
             return folder / name
