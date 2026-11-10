@@ -82,23 +82,27 @@ class BayesBenchModel(ScoreModel):
         return {}
 
     def fit(self, data: FitData, *, previous: Fit | None = None) -> BayesBenchFit | None:
-        """Fit every goal metric to the candidates `data.observations` holds; None when fewer than 2.
+        """Fit every goal metric (the keys of `data.ranges`) to the eligible candidates; None when fewer than 2.
+
+        Eligible = `CandidateScores.is_eligible`; the others are left out of the fit, design columns included.
 
         Args:
-            data: The eligible candidates' observations on one split; the baseline is the first of
-                `data.candidates`.
+            data: The candidates' scores on one split; the baseline is the first of `data.candidates`.
             previous: The last successful fit, whose held-out checks are carried forward; another model's fit
                 counts as none.
 
         Raises:
-            ValueError: A goal metric with no observations.
+            ValueError: A goal metric no eligible candidate has a value of (e.g. an evaluator N/A on every case).
         """
         import numpy as np  # optional extra: optimization
 
         from ..bayesbench import HeldOutDiagnostics, Mixture, Posterior, prior_scale_weights
 
-        observed = {cid for by_candidate in data.observations.values() for cid in by_candidate}
-        pool = {cid: values for cid, values in data.candidates.items() if cid in observed}
+        pool = {
+            cid: values
+            for cid, values in data.candidates.items()
+            if cid in data.scores and data.scores[cid].is_eligible
+        }
         if len(pool) < 2:
             return None
         baseline = next(iter(data.candidates))
@@ -107,8 +111,17 @@ class BayesBenchModel(ScoreModel):
         checks: dict[str, Any] = copy.deepcopy(dict(before_fit.checks)) if before_fit else {}
         models: dict[str, BayesBenchMetric] = {}
         diagnostics: dict[str, dict[str, Any]] = {}
-        for metric, by_candidate in data.observations.items():
-            offset, unit = _scale(data.ranges[metric], by_candidate.get(baseline))
+        for metric, range_ in data.ranges.items():
+            # candidate id -> case -> the runs with a value; the baseline's too (it sets an unbounded metric's unit)
+            by_candidate = {
+                cid: {
+                    case: [v for v in by_metric.get(metric, []) if v is not None]
+                    for case, by_metric in data.scores[cid].metrics_by_run.items()
+                }
+                for cid in (*pool, baseline)
+                if cid in data.scores
+            }
+            offset, unit = _scale(range_, by_candidate.get(baseline))
             rows, ys, spreads = [], [], []
             means: dict[str, float] = {}
             n_cases: dict[str, int] = {}
@@ -127,7 +140,7 @@ class BayesBenchModel(ScoreModel):
                     means[cid] = statistics.fmean(statistics.fmean(s) for s in per_case.values())
                     n_cases[cid] = len(per_case)
             if not rows:
-                raise ValueError(f"BayesBenchModel: no observations of {metric}")
+                raise ValueError(f"BayesBenchModel: no eligible candidate has a value of {metric}")
             phi, y = np.vstack(rows), np.asarray(ys)
             intercept = float(np.mean(y))
             grid = {g: GRID[g] for g in layout.groups}

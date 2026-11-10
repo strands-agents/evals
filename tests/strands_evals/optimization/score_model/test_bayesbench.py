@@ -21,6 +21,7 @@ from strands_evals.optimization.score_model.bayesbench import BayesBenchMetric, 
 from strands_evals.optimization.score_model.design import design
 from strands_evals.optimization.score_model.effects import effects, effects_json
 from strands_evals.optimization.score_model.protocols import FitData
+from strands_evals.types.optimization import CandidateScores
 
 # ---- a world with known effects -------------------------------------------------------------------------------------
 SPACE = Space(
@@ -59,13 +60,36 @@ def _world(seed, *, n=40, cases=20, runs=3, noise=0.15, text_spread=0.0, options
     return candidates, observations, truths, list(case_effects)
 
 
-def _data(candidates, observations, cases, *, space=SPACE, text_blocks=None, ranges=None):
+def _scores(by_metric, *, ineligible=()):
+    """`CandidateScores` per candidate from goal metric -> candidate id -> case -> runs; eligible unless named."""
+    ids = dict.fromkeys(cid for by_candidate in by_metric.values() for cid in by_candidate)
+    out = {}
+    for cid in ids:
+        runs: dict = {}
+        for metric, by_candidate in by_metric.items():
+            for case, values in by_candidate.get(cid, {}).items():
+                runs.setdefault(case, {})[metric] = list(values)
+        out[cid] = CandidateScores(
+            candidate_id=cid,
+            objective_by_case={},
+            metrics_by_case={},
+            unavailable={},
+            objective_by_run={},
+            metrics_by_run=runs,
+            objective=None,
+            is_eligible=cid not in ineligible,
+            failures=0,
+        )
+    return out
+
+
+def _data(candidates, observations, cases, *, space=SPACE, text_blocks=None, ranges=None, ineligible=()):
     return FitData(
         space=space,
         text_blocks={"text": ["text"]} if text_blocks is None else text_blocks,
         candidates=candidates,
         cases=cases,
-        observations={"score": observations},
+        scores=_scores({"score": observations}, ineligible=ineligible),
         ranges=ranges or {"score": (None, None)},
     )
 
@@ -147,11 +171,47 @@ def test_fewer_than_two_eligible_candidates_give_no_fit():
     assert _fit(candidates, {"c0": observations["c0"]}, cases) is None
 
 
-def test_only_the_candidates_in_the_observations_are_fitted():
+def test_only_eligible_candidates_are_fitted():
     candidates, observations, _, cases = _world(1, n=6)
-    del observations["c3"]
-    fit = _fit(candidates, observations, cases)
-    assert fit.candidates == frozenset(candidates) - {"c3"}
+    del observations["c3"]  # no scores at all
+    fit = BayesBenchModel().fit(_data(candidates, observations, cases, ineligible={"c4"}))
+    assert fit.candidates == frozenset(candidates) - {"c3", "c4"}
+    assert fit.metrics["score"].posterior.n == 4 * len(cases)  # c4's observations are left out too
+
+
+def test_each_goal_metric_is_fitted_from_the_runs_with_a_value():
+    candidates, observations, _, cases = _world(1, n=5)
+    tokens = {cid: {case: [100.0 + i, None] for case in cases} for i, cid in enumerate(candidates)}
+    data = FitData(
+        space=SPACE,
+        text_blocks={"text": ["text"]},
+        candidates=candidates,
+        cases=cases,
+        scores=_scores({"score": observations, "tokens": tokens}),
+        ranges={"score": (None, None), "tokens": (0.0, None)},
+    )
+    fit = BayesBenchModel().fit(data)
+    assert set(fit.metrics) == {"score", "tokens"}
+    assert fit.metrics["tokens"].unit == pytest.approx(200.0)  # twice the baseline's 100, the None run dropped
+
+
+def test_a_goal_metric_no_eligible_candidate_has_raises():
+    candidates, observations, _, cases = _world(1, n=4)
+    data = FitData(
+        space=SPACE,
+        text_blocks={"text": ["text"]},
+        candidates=candidates,
+        cases=cases,
+        scores=_scores({"score": observations}),
+        ranges={"score": (None, None), "tokens": (0.0, None)},
+    )
+    with pytest.raises(ValueError, match="no eligible candidate has a value of tokens"):
+        BayesBenchModel().fit(data)
+
+
+def test_fewer_than_two_eligible_candidates_give_no_fit_whatever_their_scores():
+    candidates, observations, _, cases = _world(1, n=4)
+    assert BayesBenchModel().fit(_data(candidates, observations, cases, ineligible={"c1", "c2", "c3"})) is None
 
 
 def test_the_fit_is_deterministic():

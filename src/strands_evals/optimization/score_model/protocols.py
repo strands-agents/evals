@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar, Protocol
 
-from ...types.optimization import Estimate, Range, Values
+from ...types.optimization import CandidateScores, Estimate, Range, Values
 from ..declaration.space import Space
 
 
@@ -29,17 +29,18 @@ class FitData:
         text_blocks: Block name -> its text keys (each block's "rewritten?" factor).
         candidates: Candidate id -> values, in scoring order (baseline first).
         cases: The split's case names (train for the search fit, validation in the end phase).
-        observations: Goal metric -> candidate id -> case -> per-run values, from each candidate's
-            `CandidateScores.metrics_by_run` with Nones dropped. Eligible candidates only, constraint
-            violators included.
-        ranges: Goal metric -> its range (`MetricRegistry.range`), so a model can scale each metric by it.
+        scores: Candidate id -> its `CandidateScores` on the split. A model fits the candidates whose
+            `is_eligible` is true (constraint violators included), from each one's `metrics_by_run`
+            (case -> metric -> per-run values, None where a run has no value).
+        ranges: Goal metric -> its range (`MetricRegistry.range`), one per goal metric in
+            `Criteria.goal_metrics` order: the metrics a model fits, and the range it scales each by.
     """
 
     space: Space
     text_blocks: Mapping[str, Sequence[str]]
     candidates: Mapping[str, Values]
     cases: Sequence[str]
-    observations: Mapping[str, Mapping[str, Mapping[str, Sequence[float]]]]
+    scores: Mapping[str, CandidateScores]
     ranges: Mapping[str, Range]
 
 
