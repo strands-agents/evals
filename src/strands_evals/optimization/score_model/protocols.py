@@ -31,7 +31,8 @@ class FitData:
         cases: The split's case names (train for the search fit, validation in the end phase).
         scores: Candidate id -> its `CandidateScores` on the split. A model fits the candidates whose
             `is_eligible` is true (constraint violators included), from each one's `metrics_by_run`
-            (case -> metric -> per-run values, None where a run has no value).
+            (case -> metric -> per-run values, None where a run has no value). A candidate of `candidates`
+            with no entry here counts as ineligible.
         ranges: Goal metric -> its range (`MetricRegistry.range`), one per goal metric in
             `Criteria.goal_metrics` order: the metrics a model fits, and the range it scales each by.
     """
@@ -153,7 +154,8 @@ class ScoreModel(ABC):
         records it in the `fit` event, and uses measured means until a later refit succeeds.
 
         Args:
-            data: The eligible candidates' observations on one split.
+            data: Every scored candidate's `CandidateScores` on one split; fit those whose `is_eligible` is
+                true (see `FitData.scores`).
             previous: The last successful fit, or None.
         """
 

@@ -195,6 +195,24 @@ def test_each_goal_metric_is_fitted_from_the_runs_with_a_value():
     assert fit.metrics["tokens"].unit == pytest.approx(200.0)  # twice the baseline's 100, the None run dropped
 
 
+def test_an_eligible_candidate_with_no_value_of_one_metric_is_left_out_of_that_metric_only():
+    candidates, observations, _, cases = _world(1, n=5)
+    tokens = {cid: {case: [100.0 + i] for case in cases} for i, cid in enumerate(candidates)}
+    tokens["c3"] = {case: [None] for case in cases}  # e.g. an evaluator N/A on every case for it
+    data = FitData(
+        space=SPACE,
+        text_blocks={"text": ["text"]},
+        candidates=candidates,
+        cases=cases,
+        scores=_scores({"score": observations, "tokens": tokens}),
+        ranges={"score": (None, None), "tokens": (0.0, None)},
+    )
+    fit = BayesBenchModel().fit(data)
+    assert "c3" in fit.candidates
+    assert fit.metrics["score"].posterior.n == 5 * len(cases)
+    assert fit.metrics["tokens"].posterior.n == 4 * len(cases)
+
+
 def test_a_goal_metric_no_eligible_candidate_has_raises():
     candidates, observations, _, cases = _world(1, n=4)
     data = FitData(
@@ -291,6 +309,9 @@ def test_an_unbounded_metric_is_scaled_by_twice_the_baselines_mean():
     baseline = np.mean([np.mean(runs) for runs in observations["c0"].values()])
     assert fit.metrics["score"].offset == 0.0
     assert fit.metrics["score"].unit == pytest.approx(2 * baseline)
+    ineligible = _fit(candidates, observations, cases, ineligible={"c0"})  # e.g. the end phase's validation fit
+    assert "c0" not in ineligible.candidates
+    assert ineligible.metrics["score"].unit == pytest.approx(2 * baseline)
     bounded = _fit(candidates, observations, cases, ranges={"score": (-1.0, 3.0)})
     assert (bounded.metrics["score"].offset, bounded.metrics["score"].unit) == (-1.0, 4.0)
     assert bounded.diagnostics["score"]["scale"] == {"unit": 4.0, "offset": -1.0}
