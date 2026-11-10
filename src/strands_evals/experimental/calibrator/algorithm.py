@@ -30,7 +30,7 @@ class CalibrationSample:
     evaluator_scores: Mapping[str, float]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class CalibrationData:
     """Validated observations and measurement diagnostics supplied to an algorithm."""
 
