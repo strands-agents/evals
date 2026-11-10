@@ -11,12 +11,15 @@ from .algorithm import CalibrationAlgorithm, CalibrationData, CalibrationModel
 class EqualWeightingModel(CalibrationModel):
     """Fitted equal-weight average."""
 
-    evaluator_weights: dict[str, float]
+    evaluator_weights: Mapping[str, float]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "evaluator_weights", MappingProxyType(dict(self.evaluator_weights)))
 
     @property
     def weights(self) -> Mapping[str, float]:
         """Return the normalized evaluator weights."""
-        return dict(self.evaluator_weights)
+        return self.evaluator_weights
 
     @property
     def parameters(self) -> Mapping[str, Any]:
