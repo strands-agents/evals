@@ -101,8 +101,6 @@ class Optimizer:
             on_iteration: Called with each finished iteration.
 
         Raises:
-            ImportError: optuna (in the `optimization` extra) is missing, naming the install command. numpy
-                and scipy are checked when `strands_evals.optimization` is imported.
             TypeError: Conflicting arguments, e.g. `factory` and `build_task` together.
             ValueError: No evaluators and no objective, fewer than one train or validation case, a bad
                 `name`, or a budget below the baseline plus the end phase's reserve. (Split shares not

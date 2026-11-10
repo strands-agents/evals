@@ -77,11 +77,11 @@ class BayesBenchModel(ScoreModel):
         Args:
             data: The candidates' scores on one split; the baseline is the first of `data.candidates`.
             previous: The last successful fit, whose held-out checks are carried forward; another model's fit
-                counts as none.
+                counts as none. A candidate measured on a case `previous` wasn't fitted on isn't checked.
 
         Raises:
             ValueError: A goal metric no eligible candidate has a value of (e.g. an evaluator N/A on every case),
-                or an eligible candidate has a value on a case that isn't in `data.cases` (or `previous`'s).
+                or an eligible candidate has a value on a case that isn't in `data.cases`.
         """
         pool = {
             cid: values
@@ -156,6 +156,8 @@ class BayesBenchModel(ScoreModel):
                 for cid in pool:
                     if cid in before_fit.candidates or cid not in means:
                         continue
+                    if not set(measured_cases[cid]) <= set(earlier.design.cases):
+                        continue  # the earlier fit never saw these cases, so it can't predict them
                     # predicted over the cases it was measured on (an evaluator N/A on a case leaves it out), as
                     # its mean is; with every case measured, the same as the earlier fit's average over the cases
                     cases_measured = measured_cases[cid]

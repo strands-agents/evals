@@ -320,6 +320,23 @@ def test_the_held_out_check_predicts_over_the_cases_a_candidate_was_measured_on(
     assert some_cases["z_mean"] == pytest.approx(every_case["z_mean"], abs=0.1)  # about 1.9 apart without the subset
 
 
+def test_a_previous_fit_on_other_cases_checks_nothing():
+    candidates, observations, _, cases = _world(1, n=12)
+
+    def on(case_names, n):
+        ids = list(candidates)[:n]
+        return _data(
+            {c: candidates[c] for c in ids},
+            {c: {k: observations[c][k] for k in case_names} for c in ids},
+            case_names,
+        )
+
+    model = BayesBenchModel()
+    first = model.fit(on(cases[:10], 6))
+    second = model.fit(on(cases[10:], 12), previous=first)
+    assert second.diagnostics["score"]["n_holdout"] == 0
+
+
 def test_a_value_on_a_case_outside_the_split_raises():
     candidates, observations, _, cases = _world(1, n=5)
     with pytest.raises(ValueError, match="unknown case 'case0'"):
