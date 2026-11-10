@@ -1,10 +1,10 @@
 """Typed-rubric scoring through a decision model.
 
-A rubric is a set of typed questions (`Noul`, `Score`, `Choice`, defined in
+A rubric is a set of typed questions (`Noul`, `Scale`, `Choice`, defined in
 `strands_evals.types.typed_rubric`). One `DecisionModel.ask` call answers all of them, and each
 question's probability distribution is turned into a score with a fixed formula, so the same rubric
 and backend response always give the same rows. The formulas match DeepEval's JevEval: `Noul`
-scores P(expected), `Score` the expected level, and `Choice` the expected credit over its
+scores P(expected), `Scale` the expected level, and `Choice` the expected credit over its
 applicable options.
 
 Requires a `DecisionModel` that reports per-question probabilities in
@@ -29,7 +29,7 @@ from ..extractors import TraceExtractor
 from ..types.evaluation import NOT_APPLICABLE, EvaluationData, EvaluationOutput, InputT, OutputT
 from ..types.evaluation_report import EvaluationReport
 from ..types.trace import EvaluationLevel
-from ..types.typed_rubric import _QUESTION_ADAPTER, Choice, Noul, RubricQuestion, Score
+from ..types.typed_rubric import _QUESTION_ADAPTER, Choice, Noul, RubricQuestion, Scale
 from .evaluator import Evaluator
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ def _labels(question: RubricQuestion) -> tuple[str, ...]:
     match question:
         case Noul():
             return ("true", "false")
-        case Score():
+        case Scale():
             return question.levels
         case Choice():
             return tuple(question.options)
@@ -87,7 +87,7 @@ def _score_noul(question: Noul, distribution: Mapping[str, float]) -> _Verdict:
     return _Verdict(score=score, selected=selected, reason=reason)
 
 
-def _score_scale(question: Score, distribution: Mapping[str, float]) -> _Verdict:
+def _score_scale(question: Scale, distribution: Mapping[str, float]) -> _Verdict:
     top = len(question.levels) - 1
     expected_level = sum(index * distribution[level] for index, level in enumerate(question.levels))
     # `max` keeps the first of tied labels, so ties go to declaration order.
@@ -117,7 +117,7 @@ def _score(question: RubricQuestion, distribution: Mapping[str, float]) -> _Verd
     match question:
         case Noul():
             return _score_noul(question, distribution)
-        case Score():
+        case Scale():
             return _score_scale(question, distribution)
         case Choice():
             return _score_choice(question, distribution)

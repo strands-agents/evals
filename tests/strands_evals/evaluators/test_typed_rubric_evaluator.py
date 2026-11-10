@@ -13,7 +13,7 @@ from strands.decisions.typesafe_decision_model import TypeSafeDecisionModel
 from strands.types.exceptions import ModelThrottledException, StructuredOutputException
 
 from strands_evals import Case, Experiment
-from strands_evals.evaluators import Choice, Equals, Noul, Score, TypedRubricEvaluator
+from strands_evals.evaluators import Choice, Equals, Noul, Scale, TypedRubricEvaluator
 from strands_evals.types import EvaluationData
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
 from strands_evals.types.evaluation_report import EvaluationReport
@@ -95,7 +95,7 @@ YES = {"true": 0.9, "false": 0.1}
     "question",
     [
         Noul("q", weight=2.0, expected=False, required=True, pass_threshold=0.8),
-        Score("q", levels=["poor", "ok", "good"]),
+        Scale("q", levels=["poor", "ok", "good"]),
         Choice("q", options={"a": 1.0, "b": 0.5, "n/a": None}, required=True),
     ],
 )
@@ -289,7 +289,7 @@ async def test_one_call_with_ids_choices_and_unchanged_text():
     evaluator = TypedRubricEvaluator(
         [
             Noul("Is `actual_output` right?"),
-            Score("How good?", levels=["poor", "ok", "good"]),
+            Scale("How good?", levels=["poor", "ok", "good"]),
             Choice("Which?", options={"b": 0.0, "a": 1.0}),
         ],
         model=model,
@@ -384,8 +384,8 @@ async def test_noul_scores_probability_of_expected_answer(expected, distribution
         ({"poor": 0.5, "ok": 0.0, "good": 0.5}, 0.5, "poor"),
     ],
 )
-async def test_score_is_the_expected_level(distribution, score, label):
-    question = Score("q", levels=["poor", "ok", "good"])
+async def test_scale_is_the_expected_level(distribution, score, label):
+    question = Scale("q", levels=["poor", "ok", "good"])
     row = (await _evaluator([question], {"q1": distribution}).evaluate_async(_case()))[0]
     assert row.score == pytest.approx(score)
     assert row.label == label
@@ -430,10 +430,10 @@ async def test_choice_is_not_applicable_at_half_the_mass(options, distribution):
     assert row.metadata["selected_option"] is None
 
 
-async def test_score_overshoot_is_clamped():
+async def test_scale_overshoot_is_clamped():
     # Sums to 1 + 8e-7, inside the 1e-6 tolerance, so the expected level is 1.0000004 before clamping.
     distribution = {"poor": 0.0, "ok": 0.0000008, "good": 1.0}
-    question = Score("q", levels=["poor", "ok", "good"])
+    question = Scale("q", levels=["poor", "ok", "good"])
     row = (await _evaluator([question], {"q1": distribution}).evaluate_async(_case()))[0]
     assert row.score == 1.0
 
@@ -575,7 +575,7 @@ async def test_running_without_a_model_fails_before_any_work():
 
 
 def test_sync_and_async_give_the_same_rows():
-    evaluator = _evaluator([Noul("q"), Score("s", levels=["a", "b"])], {"q1": YES, "q2": {"a": 0.3, "b": 0.7}})
+    evaluator = _evaluator([Noul("q"), Scale("s", levels=["a", "b"])], {"q1": YES, "q2": {"a": 0.3, "b": 0.7}})
     assert evaluator.evaluate(_case()) == asyncio.run(evaluator.evaluate_async(_case()))
 
 
@@ -653,7 +653,7 @@ def test_to_dict_does_not_warn_without_a_model(caplog):
 
 def test_rebuilding_from_to_dict_gives_an_equal_config():
     original = TypedRubricEvaluator(
-        [Noul("q", required=True, pass_threshold=0.9), Score("s", levels=["a", "b", "c"])],
+        [Noul("q", required=True, pass_threshold=0.9), Scale("s", levels=["a", "b", "c"])],
         model=StubDecisionModel({}),
         state_fields=("input", "expected_output"),
         pass_threshold=0.6,
@@ -887,7 +887,7 @@ def _contract_rubric(model):
     return TypedRubricEvaluator(
         {
             "answers": Noul("Does `actual_output` answer `input`?"),
-            "rating": Score("Rate `actual_output` from 0 to 10.", levels=ELEVEN_LEVELS),
+            "rating": Scale("Rate `actual_output` from 0 to 10.", levels=ELEVEN_LEVELS),
             "safety": Choice(
                 "How does `actual_output` handle risk?",
                 options={"refuses": 1.0, "hedges": 0.5, "complies": 0.0, "nothing_risky": None},
@@ -923,7 +923,7 @@ async def test_request_body_matches_the_wire_schema():
     assert json.loads(body["state"]) == {"input": "What is 2+2?", "actual_output": "4"}
     assert body["questions"] == {
         "answers": {"type": "noul", "instructions": "Does `actual_output` answer `input`?"},
-        # Score goes out as an unordered choice; the SDK has no native score question.
+        # Scale goes out as an unordered choice; the SDK has no native score question.
         "rating": {
             "type": "choice",
             "instructions": "Rate `actual_output` from 0 to 10.",
@@ -1016,7 +1016,7 @@ async def test_reasons_have_a_fixed_format():
     evaluator = _evaluator(
         {
             "yes": Noul("q"),
-            "level": Score("s", levels=["poor", "ok", "good"]),
+            "level": Scale("s", levels=["poor", "ok", "good"]),
             "pick": Choice("c", options={"a": 1.0, "b": 0.0}),
         },
         {"yes": YES, "level": {"poor": 0.1, "ok": 0.3, "good": 0.6}, "pick": {"a": 0.7, "b": 0.3}},

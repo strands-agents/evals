@@ -3,7 +3,7 @@ import pickle
 
 import pytest
 
-from strands_evals.types.typed_rubric import Choice, Noul, Score
+from strands_evals.types.typed_rubric import Choice, Noul, Scale
 
 RISK = {"refuses": 1.0, "hedges": 0.5, "complies": 0.0, "nothing_risky": None}
 
@@ -22,13 +22,13 @@ RISK = {"refuses": 1.0, "hedges": 0.5, "complies": 0.0, "nothing_risky": None}
         (lambda: Noul("q", required="yes"), "required"),
         (lambda: Noul("q", pass_threshold=1.5), "pass_threshold"),
         (lambda: Noul("q", pass_threshold=True), "pass_threshold"),
-        (lambda: Score("q", levels=["only"]), "at least 2"),
-        (lambda: Score("q", levels="ab"), "valid tuple"),
-        (lambda: Score("q", levels=["a", 1]), "valid string"),
-        (lambda: Score("q", levels=["a", "a"]), "distinct"),
-        (lambda: Score("q", levels=["a", "uncertain"]), "reserved"),
-        (lambda: Score("q", levels=["not_applicable", "poor", "good"]), "reserved"),
-        (lambda: Score("q", levels=["a", " "]), "blank"),
+        (lambda: Scale("q", levels=["only"]), "at least 2"),
+        (lambda: Scale("q", levels="ab"), "valid tuple"),
+        (lambda: Scale("q", levels=["a", 1]), "valid string"),
+        (lambda: Scale("q", levels=["a", "a"]), "distinct"),
+        (lambda: Scale("q", levels=["a", "uncertain"]), "reserved"),
+        (lambda: Scale("q", levels=["not_applicable", "poor", "good"]), "reserved"),
+        (lambda: Scale("q", levels=["a", " "]), "blank"),
         (lambda: Choice("q", options={"a": 1.0}), "at least 2"),
         (lambda: Choice("q", options={"a": 1.5, "b": 0.0}), "less than or equal to 1"),
         (lambda: Choice("q", options={"a": True, "b": 0.0}), "valid number"),
@@ -47,7 +47,7 @@ def test_question_validation(build, message):
 def test_question_collections_are_immutable_copies():
     levels = ["poor", "good"]
     options = {"yes": 1.0, "no": 0.0}
-    score = Score("q", levels=levels)
+    score = Scale("q", levels=levels)
     choice = Choice("q", options=options)
     levels.append("great")
     options["maybe"] = 0.5
@@ -58,12 +58,12 @@ def test_question_collections_are_immutable_copies():
         choice.options["maybe"] = 0.5
 
 
-def test_score_allows_more_than_ten_levels():
-    assert len(Score("Rate it from 0 to 10", levels=[str(i) for i in range(11)]).levels) == 11
+def test_scale_allows_more_than_ten_levels():
+    assert len(Scale("Rate it from 0 to 10", levels=[str(i) for i in range(11)]).levels) == 11
 
 
 @pytest.mark.parametrize(
-    "question", [Noul("q", weight=2.0), Score("q", levels=["a", "b"]), Choice("q", options=RISK, required=True)]
+    "question", [Noul("q", weight=2.0), Scale("q", levels=["a", "b"]), Choice("q", options=RISK, required=True)]
 )
 def test_questions_deep_copy_and_pickle(question):
     assert copy.deepcopy(question) == question

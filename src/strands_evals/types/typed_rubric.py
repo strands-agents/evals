@@ -80,16 +80,17 @@ class Noul:
 
 
 @dataclass(frozen=True, config=_CONFIG)
-class Score:
+class Scale:
     """A rating on an ordered scale, scored as the expected level normalised to [0, 1].
 
-    The backend picks among the levels as a categorical choice. The ordering is used only by the
-    scoring formula, `sum(index * p) / (len(levels) - 1)`, so this is not native ordinal inference.
+    DeepEval's JevEval calls this question type `Score`. The backend picks among the levels as a
+    categorical choice. The ordering is used only by the scoring formula,
+    `sum(index * p) / (len(levels) - 1)`, so this is not native ordinal inference.
 
     Attributes:
         text: The question, naming the state fields it reads.
         levels: At least 2 distinct labels, worst first. Any sequence; stored as a tuple. No upper
-            bound: `Score` is sent as a choice question, and each backend enforces its own limit.
+            bound: `Scale` is sent as a choice question, and each backend enforces its own limit.
         weight: Relative weight in the composite score, in [1e-6, 1e6].
         required: When True, the case fails if this question fails, whatever the composite.
         pass_threshold: This question's pass threshold. None uses the evaluator's.
@@ -100,7 +101,7 @@ class Score:
     weight: _Weight = 1.0
     required: _Flag = False
     pass_threshold: _Threshold | None = None
-    question_type: Literal["Score"] = Field("Score", kw_only=True, repr=False)
+    question_type: Literal["Scale"] = Field("Scale", kw_only=True, repr=False)
 
 
 @dataclass(frozen=True, config=_CONFIG)
@@ -139,7 +140,7 @@ class Choice:
         return (Choice, (self.text, dict(self.options), self.weight, self.required, self.pass_threshold))
 
 
-RubricQuestion = Noul | Score | Choice
+RubricQuestion = Noul | Scale | Choice
 """Any question type a `TypedRubricEvaluator` accepts."""
 
 # Validates a question, or decodes the tagged dict that `_QUESTION_ADAPTER.dump_python` writes.

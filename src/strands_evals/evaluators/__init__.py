@@ -1,4 +1,4 @@
-from ..types.typed_rubric import Choice, Noul, Score
+from ..types.typed_rubric import Choice, Noul, Scale
 from .coherence_evaluator import CoherenceEvaluator
 from .conciseness_evaluator import ConcisenessEvaluator
 from .correctness_evaluator import CorrectnessEvaluator
@@ -70,6 +70,6 @@ __all__ = [
     "ToolCalled",
     "TypedRubricEvaluator",
     "Noul",
-    "Score",
+    "Scale",
     "Choice",
 ]

@@ -214,7 +214,7 @@ strands-evals/
 │       ├── trace.py                          # Session, Trace, SpanUnion
 │       ├── detector.py                       # FailureItem, RCAItem, DiagnosisResult, ...
 │       ├── multimodal.py
-│       ├── typed_rubric.py                   # Noul / Score / Choice rubric question types (pydantic dataclasses)
+│       ├── typed_rubric.py                   # Noul / Scale / Choice rubric question types (pydantic dataclasses)
 │       ├── redteam/
 │       │   ├── config.py                     # AttackGoal, RedTeamConfig, Severity
 │       │   ├── risk_category.py              # RISK_CATEGORIES, DEFAULT_SEVERITY
