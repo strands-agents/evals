@@ -155,7 +155,7 @@ Then, read each case for secrets the pattern doesn't cover (ex. API keys, passwo
 jq -r '.cases[] | [(.input | ascii_downcase | gsub("[^a-z0-9]+"; " ") | .[0:100]), .name] | @tsv' <experiment_file> | sort
 ```
 
-Treat cases as duplicates when their inputs make the same request about the same target and differ only in wording, typos, or added context (ex. "can kiro cli spawn subagents" and "can kiro cli spawn subagents?"). Inputs that share wording but point at different files, URLs, or repos aren't duplicates. Read the full inputs of adjacent rows and of cases with similar names, since the sort only groups matching prefixes. In each group, keep the case whose input best stands alone, or the earliest `timestamp` on a tie, and remove the rest. If you removed any, redo step 4's counts over the episodes of the remaining cases (matched by `metadata.session_file` and `metadata.episode_index`) and update `evaluators` to match.
+Treat cases as duplicates when their inputs make the same request about the same target and differ only in wording, typos, or added context (ex. "can kiro cli spawn subagents" and "can kiro cli spawn subagents?"). Inputs that share wording but point at different files, URLs, or repos aren't duplicates. Read the full inputs of adjacent rows and of cases with similar names, since the sort only groups matching prefixes. In each group, keep the case whose input best stands alone, or the earliest `timestamp` on a tie, and remove the rest.
 
 **Actionability.** Read each case's `input` and `expected_assertion` as the agent running it would, with only a shell and web access. Mark a case inactionable if it matches any of the following (but don't remove them):
 
@@ -168,17 +168,19 @@ Treat cases as duplicates when their inputs make the same request about the same
 
 ### 7. Handoff to human
 
-Report the experiment file path. List each suggested evaluator with its failure mode's episode count out of the cases in the file and one `evidence` quote and name any modes that appeared but fell below 10%. Say how many secrets you redacted and in which cases, without repeating the values. List each removed duplicate by `name` with the case it duplicated. List each inactionable case by `name` with its reason, and recommend dropping it. Tell the user to run it with `strands-evals run <file> --agent <module>:<factory>`.
+Report the experiment file path. List each suggested evaluator with its failure mode's episode count out of all episodes from step 3 and one `evidence` quote and name any modes that appeared but fell below 10%. Say how many secrets you redacted and in which cases, without repeating the values. List each removed duplicate by `name` with the case it duplicated. List each inactionable case by `name` with its reason, and recommend dropping it. Tell the user to run it with `strands-evals run <file> --agent <module>:<factory>`.
 
-Ask the user to review the experiment file and whether they want any of the post-generation actions below (drop cases, smoke-test the experiment). Wait for their response. If you can't wait for a reply, keep every case, say which ones you'd drop, and delete the temporary files.
+Delete all temp files or directories you created during this run (ex. the episode files from step 3). Don't delete the experiment file or the session files. Report how many files you deleted.
+
+Ask the user to review the experiment file and whether they want any of the post-generation actions below (drop cases, smoke-test the experiment). Wait for their response. If you can't wait for a reply, keep every case, say which ones you'd drop, and skip the other actions.
 
 ## Post-generation
 
-Run these only if the user asks for them after step 7. The only exception is "Delete temporary files", which must always run last.
+Run these only if the user asks for them after step 7.
 
 ### Drop cases
 
-Remove the cases the user names (ex. the inactionable cases from step 6) from the experiment file. Redo step 4's counts over the episodes of the remaining cases and update `evaluators` to match, then run `strands-evals validate <experiment_file>` again and fix any issues that occur. Report any evaluator that was added or removed, with its new count.
+Remove the cases the user names (ex. the inactionable cases from step 6) from the experiment file. Then run `strands-evals validate <experiment_file>` again and fix any issues that occur.
 
 ### Smoke-test
 
@@ -195,7 +197,3 @@ strands-evals run <experiment_file> --case 0 --agent "$d/default_agent.py:build_
 ```
 
 Report whether the run completed and each evaluator's result. A failing score is fine here; this tests the file, not the agent. If it errors (ex. missing model credentials), report the error. Then delete the temp directory.
-
-### Delete temporary files
-
-Delete all temp files or directories you created during this run. Don't delete the experiment file or the session files. Report how many files you deleted. Run this after any other post-generation actions the user asked for, since dropping cases rereads the episode files.
