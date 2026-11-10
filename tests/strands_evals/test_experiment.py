@@ -28,7 +28,7 @@ from strands_evals.evaluators import (
 from strands_evals.evaluators.skill_selection_accuracy_evaluator import SkillSelectionScore
 from strands_evals.experiment import is_throttling_error
 from strands_evals.providers.trace_provider import TraceProvider
-from strands_evals.types import EvaluationData, EvaluationOutput
+from strands_evals.types import COULD_NOT_EVALUATE, EvaluationData, EvaluationOutput
 from strands_evals.types.evaluation import NOT_APPLICABLE
 from strands_evals.types.trace import (
     AgentInvocationSpan,
@@ -1273,33 +1273,71 @@ def test_experiment_run_evaluations_evaluator_error_isolated():
 def test_experiment_run_evaluations_context_overflow_is_not_applicable():
     """A judge whose prompt overflows the context window yields a could-not-evaluate result.
 
-    The overflow is recorded as a NOT_APPLICABLE row (test_pass=True) rather than a quality-0
-    failure, so it is dropped from the overall score instead of silently dragging it down. A
-    genuine evaluator error still surfaces as a score-0 failure.
+    Nothing was judged, so the row fails (pass/fail gates still catch it) but is marked
+    COULD_NOT_EVALUATE, which keeps its placeholder 0.0 out of the overall score.
     """
     case = Case(name="test", input="hello", expected_output="hello")
 
     # MockEvaluator succeeds (1.0); OverflowEvaluator's judge overflows.
     experiment = Experiment(cases=[case], evaluators=[MockEvaluator(), OverflowEvaluator()])
 
-    def echo_task(c):
-        return c.input
-
-    report = experiment.run_evaluations(echo_task)
+    report = experiment.run_evaluations(lambda c: c.input)
 
     rows_by_evaluator = {row["evaluator"]: i for i, row in enumerate(report.cases)}
     overflow_idx = rows_by_evaluator["OverflowEvaluator"]
 
-    # Overflow becomes a could-not-evaluate row: passes (not a failure) and labeled NOT_APPLICABLE.
-    assert report.test_passes[overflow_idx] is True
+    # Fail-closed: a run where the judge never read the trace must not pass a gate.
+    assert report.test_passes[overflow_idx] is False
     assert "Could not evaluate" in report.reasons[overflow_idx]
     overflow_rows = report.detailed_results[overflow_idx]
     assert len(overflow_rows) == 1
     assert overflow_rows[0].label == NOT_APPLICABLE
-    assert overflow_rows[0].not_applicable is True
+    assert overflow_rows[0].test_pass is False
+    assert overflow_rows[0].could_not_evaluate is True
+    assert overflow_rows[0].metadata == {COULD_NOT_EVALUATE: "judge_context_window_exceeded"}
 
-    # The not-applicable case is excluded from the overall score, so only MockEvaluator's 1.0 counts.
+    # The unjudged case is excluded from the overall score, so only MockEvaluator's 1.0 counts.
+    assert EvaluationReport.is_applicable(overflow_rows) is False
     assert report.overall_score == 1.0
+
+
+def test_experiment_run_evaluations_wrapped_context_overflow_is_detected():
+    """An overflow re-raised from another exception is still recognized, by type, via the cause chain."""
+
+    class WrappingEvaluator(Evaluator[str, str]):
+        def evaluate(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
+            try:
+                raise ContextWindowOverflowException("Input is too long for requested model")
+            except ContextWindowOverflowException as e:
+                raise RuntimeError("judge call failed") from e
+
+    experiment = Experiment(cases=[Case(name="t", input="x")], evaluators=[WrappingEvaluator()])
+
+    report = experiment.run_evaluations(lambda c: c.input)
+
+    assert report.detailed_results[0][0].could_not_evaluate is True
+    assert report.test_passes[0] is False
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["expected_output too long for comparison", "context window", "max_tokens reached", "input too large"],
+)
+def test_experiment_run_evaluations_overflow_like_message_is_still_a_failure(message):
+    """Only the exception type marks an overflow. A message that merely sounds like one is a real error."""
+
+    class MessageEvaluator(Evaluator[str, str]):
+        def evaluate(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
+            raise ValueError(message)
+
+    experiment = Experiment(cases=[Case(name="t", input="x")], evaluators=[MessageEvaluator()])
+
+    report = experiment.run_evaluations(lambda c: c.input)
+
+    assert report.detailed_results[0] == []  # the generic failure shape, not an unjudged row
+    assert report.test_passes[0] is False
+    assert report.overall_score == 0.0
+    assert "Evaluator error" in report.reasons[0]
 
 
 def test_experiment_run_evaluations_evaluator_error_still_fails():

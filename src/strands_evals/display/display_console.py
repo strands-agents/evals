@@ -10,11 +10,14 @@ console = Console()
 def _case_is_applicable(case: dict) -> bool:
     """Whether a displayed case's rows carry a verdict, so it belongs in the pass rate.
 
-    Mirrors EvaluationReport.is_applicable: a case is dropped only when it has rows and every row
-    both declined to judge (not_applicable) and passed. A case with no detailed rows, or any row
-    that either judged or failed, stays in the rate.
+    Mirrors `EvaluationReport.is_applicable` (it can't be imported here without a cycle): a case is
+    dropped when every row was never judged (`could_not_evaluate`), or when it has rows and every
+    row both declined to judge (not_applicable) and passed. A case with no detailed rows, or any
+    row that judged or failed for another reason, stays in the rate.
     """
     outputs = case.get("detailed_results") or []
+    if outputs and all(output.could_not_evaluate for output in outputs):
+        return False
     return not outputs or any(not output.not_applicable or not output.test_pass for output in outputs)
 
 

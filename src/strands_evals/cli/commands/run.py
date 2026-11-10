@@ -256,15 +256,21 @@ def _print_summary(report: EvaluationReport) -> None:
     summary still reads `<evaluator>: P/T passed (avg)` per evaluator.
 
     Each average is computed the same way as `report.overall_score`, dropping cases that had
-    nothing to judge. Averaging their placeholder 0.0 instead would print a lower per-evaluator
-    number than the overall score computed from the very same rows.
+    nothing to judge or that the evaluator could not judge. The latter still count as not passed
+    and are listed separately as "could not evaluate". Averaging their placeholder 0.0 instead
+    would print a lower per-evaluator number than the overall score computed from the same rows.
     """
     by_eval: dict[str, list[int]] = {}
     by_eval_scores: dict[str, list[float]] = {}
+    by_eval_unjudged: dict[str, int] = {}
     for i, case in enumerate(report.cases):
         name = case.get("evaluator", "unknown")
         by_eval.setdefault(name, []).append(int(report.test_passes[i]))
         outputs = report.detailed_results[i] if i < len(report.detailed_results) else []
+        # Cases the evaluator never judged (e.g. the judge's context window overflowed) count as
+        # not passed, and are named separately so they don't read as the agent failing.
+        unjudged = bool(outputs) and all(output.could_not_evaluate for output in outputs)
+        by_eval_unjudged[name] = by_eval_unjudged.get(name, 0) + int(unjudged)
         if EvaluationReport.is_applicable(outputs):
             by_eval_scores.setdefault(name, []).append(report.scores[i])
         else:
@@ -276,7 +282,8 @@ def _print_summary(report: EvaluationReport) -> None:
         total = len(passes)
         scores = by_eval_scores[name]
         avg = sum(scores) / len(scores) if scores else 0.0
-        parts.append(f"{name}: {passed}/{total} passed ({avg:.2f})")
+        unjudged_note = f", {by_eval_unjudged[name]} could not evaluate" if by_eval_unjudged.get(name) else ""
+        parts.append(f"{name}: {passed}/{total} passed{unjudged_note} ({avg:.2f})")
 
     parts.append(f"overall: {report.overall_score:.2f}")
     print(" | ".join(parts), file=sys.stderr)  # noqa: T201

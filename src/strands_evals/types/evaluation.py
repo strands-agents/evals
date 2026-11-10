@@ -119,6 +119,16 @@ mean. Anything reporting an average has to drop them the same way, or the same r
 different numbers depending on where they are displayed.
 """
 
+COULD_NOT_EVALUATE = "could_not_evaluate"
+"""`EvaluationOutput.metadata` key marking a row whose evaluator never produced a verdict.
+
+Set on a `NOT_APPLICABLE` row when the evaluator could not run at all, for example because the
+judge's prompt overflowed its context window. The value names the cause. Unlike a row that had
+nothing to judge, such a row fails (`test_pass=False`), so pass/fail consumers such as `--fail-on`
+gates, summaries and red-team tallies count it as not passed. `EvaluationReport.is_applicable`
+still leaves it out of averages, because its 0.0 is not a judgment of the agent.
+"""
+
 
 class EvaluationOutput(BaseModel):
     """
@@ -146,3 +156,8 @@ class EvaluationOutput(BaseModel):
     def not_applicable(self) -> bool:
         """Whether this row had nothing to judge, so its score is not a verdict."""
         return self.label == NOT_APPLICABLE
+
+    @property
+    def could_not_evaluate(self) -> bool:
+        """Whether the evaluator never produced a verdict for this row (see `COULD_NOT_EVALUATE`)."""
+        return self.not_applicable and bool((self.metadata or {}).get(COULD_NOT_EVALUATE))

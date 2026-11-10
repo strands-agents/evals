@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import cast
 
 from opentelemetry.trace import format_trace_id
+from strands.types.exceptions import ContextWindowOverflowException
 from tenacity import (
     RetryError,
     retry,
@@ -18,7 +19,6 @@ from typing_extensions import Any, Generic
 
 from .case import Case
 from .detectors.diagnosis import diagnose_session
-from .detectors.utils import _is_context_exceeded
 from .evaluation_data_store import EvaluationDataStore
 from .evaluators.coherence_evaluator import CoherenceEvaluator
 from .evaluators.conciseness_evaluator import ConcisenessEvaluator
@@ -57,7 +57,7 @@ from .evaluators.typed_rubric_evaluator import TypedRubricEvaluator
 from .telemetry import get_tracer, serialize
 from .telemetry._cloudwatch_logger import _send_to_cloudwatch
 from .types.detector import DiagnosisConfig
-from .types.evaluation import EvaluationData, InputT, OutputT
+from .types.evaluation import COULD_NOT_EVALUATE, NOT_APPLICABLE, EvaluationData, EvaluationOutput, InputT, OutputT
 from .types.evaluation_report import EvaluationReport, ReportT
 from .types.trace import Session
 from .utils import is_throttling_error
@@ -69,6 +69,24 @@ logger.setLevel(logging.INFO)
 _MAX_RETRY_ATTEMPTS = 6
 _INITIAL_RETRY_DELAY = 4
 _MAX_RETRY_DELAY = 240  # 4 minutes
+
+
+def _is_context_overflow(exception: BaseException) -> bool:
+    """Whether `exception` is, or was raised from, a judge context-window overflow.
+
+    Type-only on purpose. `detectors.utils._is_context_exceeded` also matches message substrings
+    such as "too long", which is fine where a false positive only triggers chunking. Here a false
+    positive would turn a real evaluator error (say `ValueError("expected_output too long")`) into
+    an unjudged row and hide it, so only `ContextWindowOverflowException` counts.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exception
+    while current is not None and id(current) not in seen:
+        if isinstance(current, ContextWindowOverflowException):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
 
 
 class Experiment(Generic[InputT, OutputT, ReportT]):
@@ -453,25 +471,25 @@ class Experiment(Generic[InputT, OutputT, ReportT]):
                 "detailed_results": [],
             }
         except Exception as e:
-            # A judge whose prompt overflowed the model's context window produced no verdict, so
-            # the case is not-applicable rather than a quality-0 failure: emit a NOT_APPLICABLE row
-            # (the same shape a declining evaluator emits) so is_applicable/calculate_overall_score
-            # drop it from the average instead of scoring it 0. Every other error is a genuine
-            # failure and keeps its empty-detailed-results, score-0 shape (which is_applicable
-            # counts as a real failure).
-            if _is_context_exceeded(e):
+            # A judge whose prompt overflowed its context window never produced a verdict. Record a
+            # NOT_APPLICABLE row marked COULD_NOT_EVALUATE: is_applicable leaves it out of averages
+            # (its 0.0 is not a judgment of the agent), and test_pass=False keeps pass/fail gates
+            # failing, since nothing was judged. Every other error keeps its score-0 failure shape.
+            if _is_context_overflow(e):
+                reason = f"Could not evaluate: judge context window exceeded ({str(e)})"
                 return {
                     "evaluator_name": evaluator.get_name(),
                     "evaluator_type": evaluator.get_type_name(),
-                    "test_pass": True,
+                    "test_pass": False,
                     "score": 0,
-                    "reason": f"Could not evaluate: judge context window exceeded ({str(e)})",
+                    "reason": reason,
                     "detailed_results": [
                         EvaluationOutput(
                             score=0.0,
-                            test_pass=True,
-                            reason=f"Could not evaluate: judge context window exceeded ({str(e)})",
+                            test_pass=False,
+                            reason=reason,
                             label=NOT_APPLICABLE,
+                            metadata={COULD_NOT_EVALUATE: "judge_context_window_exceeded"},
                         )
                     ],
                 }

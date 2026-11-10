@@ -8,6 +8,7 @@ from .detector import (
     RCAStructuredOutput,
 )
 from .evaluation import (
+    COULD_NOT_EVALUATE,
     NOT_APPLICABLE,
     EnvironmentState,
     EvaluationData,
@@ -23,6 +24,7 @@ from .simulation import ActorProfile, ActorResponse
 from .typed_rubric import Choice, Noul, RubricQuestion, Scale
 
 __all__ = [
+    "COULD_NOT_EVALUATE",
     "NOT_APPLICABLE",
     "EnvironmentState",
     "Interaction",

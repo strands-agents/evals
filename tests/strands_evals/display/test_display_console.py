@@ -1,5 +1,5 @@
 from strands_evals.display.display_console import _case_is_applicable
-from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
+from strands_evals.types.evaluation import COULD_NOT_EVALUATE, NOT_APPLICABLE, EvaluationOutput
 
 
 def _case(test_pass, detailed_results):
@@ -25,3 +25,10 @@ def test_not_applicable_row_that_failed_is_kept():
 def test_case_with_a_judged_row_is_applicable():
     rows = [EvaluationOutput(score=1.0, test_pass=True, reason="judged")]
     assert _case_is_applicable(_case(True, rows)) is True
+
+
+def test_case_the_evaluator_could_not_judge_is_dropped_from_the_rate():
+    row = EvaluationOutput(
+        score=0.0, test_pass=False, label=NOT_APPLICABLE, metadata={COULD_NOT_EVALUATE: "judge_context_window_exceeded"}
+    )
+    assert _case_is_applicable({"detailed_results": [row]}) is False
