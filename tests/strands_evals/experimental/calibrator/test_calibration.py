@@ -1,16 +1,21 @@
 from collections.abc import Mapping
+from datetime import date
 
 import pytest
 
-from strands_evals.experimental import Calibrator
-from strands_evals.experimental.calibrator import CalibrationData
+from strands_evals.experimental.calibrator import (
+    CalibrationAlgorithm,
+    CalibrationData,
+    CalibrationModel,
+    Calibrator,
+)
 from strands_evals.types.evaluation_report import EvaluationReport
 
 
 def _report(
     scores: dict[str, dict[str, float]],
     *,
-    case_inputs: dict[str, str] | None = None,
+    case_expected_outputs: dict[str, str] | None = None,
 ) -> EvaluationReport:
     report_scores: list[float] = []
     cases: list[dict[str, object]] = []
@@ -22,8 +27,8 @@ def _report(
                 "name": case_name,
                 "evaluator": evaluator_name,
             }
-            if case_inputs is not None:
-                case["input"] = case_inputs[case_name]
+            if case_expected_outputs is not None:
+                case["expected_output"] = case_expected_outputs[case_name]
             cases.append(case)
             passes.append(score >= 0.5)
     return EvaluationReport(
@@ -67,11 +72,7 @@ class _OpaqueConfiguration:
     pass
 
 
-class _MaximumScoreModel:
-    algorithm_id = "maximum_score"
-    algorithm_version = 1
-    weights = None
-
+class _MaximumScoreModel(CalibrationModel):
     def __init__(self, observation_count: int) -> None:
         self._observation_count = observation_count
 
@@ -86,19 +87,16 @@ class _MaximumScoreModel:
         return max(evaluator_scores.values())
 
 
-class _MaximumScoreAlgorithm:
-    algorithm_id = "maximum_score"
-    algorithm_version = 1
+class _MaximumScoreAlgorithm(CalibrationAlgorithm):
+    @property
+    def identity(self) -> str:
+        return "maximum_score:v1"
 
     def fit(self, data: CalibrationData) -> _MaximumScoreModel:
         return _MaximumScoreModel(len(data.observations))
 
 
-class _OpaqueParameterModel:
-    algorithm_id = "opaque_parameter"
-    algorithm_version = 1
-    weights = None
-
+class _OpaqueParameterModel(CalibrationModel):
     @property
     def parameters(self) -> dict[str, object]:
         return {"opaque": _OpaqueConfiguration()}
@@ -107,9 +105,10 @@ class _OpaqueParameterModel:
         return sum(evaluator_scores.values()) / len(evaluator_scores)
 
 
-class _OpaqueParameterAlgorithm:
-    algorithm_id = "opaque_parameter"
-    algorithm_version = 1
+class _OpaqueParameterAlgorithm(CalibrationAlgorithm):
+    @property
+    def identity(self) -> str:
+        return "opaque_parameter:v1"
 
     def fit(self, data: CalibrationData) -> _OpaqueParameterModel:
         return _OpaqueParameterModel()
@@ -122,7 +121,7 @@ def test_calibrator_starts_with_uncalibrated_equal_weights() -> None:
     )
 
     assert calibrator.weights == {"first": 0.5, "second": 0.5}
-    assert calibrator.algorithm_id == "equal_weighting"
+    assert calibrator.algorithm_identity == "equal_weighting:v1"
     assert calibrator.status == "uncalibrated"
     assert calibrator.is_fitted is False
 
@@ -138,6 +137,14 @@ def test_score_uses_equal_weights_before_calibration() -> None:
 
     assert calibrator.score([[report]]) == pytest.approx(0.5)
     assert calibrator.status == "uncalibrated"
+
+
+def test_score_clamps_floating_point_roundoff() -> None:
+    evaluator_names = [f"evaluator-{index}" for index in range(9)]
+    calibrator = Calibrator(step_sizes={name: 0.5 for name in evaluator_names})
+    report = _report({name: {"case-a": 1.0} for name in evaluator_names})
+
+    assert calibrator.score([[report]]) == 1.0
 
 
 @pytest.mark.parametrize(
@@ -172,7 +179,7 @@ def test_fit_records_design_and_measurement_diagnostics() -> None:
             "noisy": 0.0,
         }
     )
-    assert calibrator.status == "uncalibrated"
+    assert calibrator.status == "calibrated"
     assert calibrator.is_fitted is True
 
 
@@ -196,6 +203,31 @@ def test_repeatability_treats_agent_run_variation_as_output_signal() -> None:
     assert calibrator.repeatabilities["quality"] == pytest.approx(1.0)
 
 
+def test_variance_estimators_match_hand_computed_grid() -> None:
+    reports = [
+        [
+            _report({"quality": {"case-a": 0.5, "case-b": 0.25}}),
+            _report({"quality": {"case-a": 1.0, "case-b": 0.75}}),
+        ],
+        [
+            _report({"quality": {"case-a": 0.25, "case-b": 0.0}}),
+            _report({"quality": {"case-a": 0.75, "case-b": 0.5}}),
+        ],
+    ]
+    calibrator = Calibrator(step_sizes={"quality": 0.25})
+
+    calibrator.fit(reports)
+
+    assert calibrator.variance_components["quality"] == pytest.approx(
+        {
+            "judge": 0.125,
+            "agent": 0.0,
+            "case": 0.015625,
+        }
+    )
+    assert calibrator.repeatabilities["quality"] == pytest.approx(0.2)
+
+
 def test_calibrator_can_fit_custom_non_weighting_algorithm() -> None:
     calibrator = Calibrator(
         step_sizes={"stable": 0.5, "noisy": 0.5},
@@ -204,13 +236,13 @@ def test_calibrator_can_fit_custom_non_weighting_algorithm() -> None:
 
     calibrator.fit(_calibration_reports())
 
-    assert calibrator.algorithm_id == "maximum_score"
-    assert calibrator.algorithm_version == 1
+    assert calibrator.algorithm_identity == "maximum_score:v1"
     assert calibrator.weights is None
     assert calibrator.model_parameters == {
         "observation_count": 16,
         "reducer": "maximum",
     }
+    assert calibrator.status == "calibrated"
     assert calibrator.score(_calibration_reports()) == pytest.approx(0.75)
 
 
@@ -279,17 +311,41 @@ def test_fit_rejects_changed_repetition_design() -> None:
 def test_fit_rejects_changed_case_definition() -> None:
     original = _report(
         {"quality": {"case-a": 0.0, "case-b": 1.0}},
-        case_inputs={"case-a": "first", "case-b": "second"},
+        case_expected_outputs={"case-a": "first", "case-b": "second"},
     )
     changed = _report(
         {"quality": {"case-a": 0.0, "case-b": 1.0}},
-        case_inputs={"case-a": "changed", "case-b": "second"},
+        case_expected_outputs={"case-a": "changed", "case-b": "second"},
     )
     calibrator = Calibrator(step_sizes={"quality": 0.5})
     calibrator.fit(_repeat_report(original))
 
     with pytest.raises(ValueError, match="changed_components=\\['cases'\\]"):
         calibrator.fit(_repeat_report(changed))
+
+
+def test_fit_accepts_task_rewritten_inputs() -> None:
+    reports = _calibration_reports()
+    for run_index, run_reports in enumerate(reports):
+        for replay_index, report in enumerate(run_reports):
+            for case in report.cases:
+                case["input"] = f"{case['name']}-run-{run_index}-replay-{replay_index}"
+    calibrator = Calibrator(step_sizes={"stable": 0.5, "noisy": 0.5})
+
+    calibrator.fit(reports)
+
+    assert calibrator.is_fitted is True
+
+
+def test_fit_accepts_json_serializable_case_metadata() -> None:
+    report = _report({"quality": {"case-a": 0.0, "case-b": 1.0}})
+    for case in report.cases:
+        case["metadata"] = {"created": date(2026, 11, 10)}
+    calibrator = Calibrator(step_sizes={"quality": 0.5})
+
+    calibrator.fit(_repeat_report(report))
+
+    assert calibrator.is_fitted is True
 
 
 def test_fit_rejects_mismatched_evaluator_names() -> None:
@@ -308,21 +364,6 @@ def test_fit_rejects_single_report() -> None:
         calibrator.fit(report)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize(
-    ("algorithm", "message"),
-    [
-        (object(), "algorithm_id must be a non-empty string"),
-        (type("MissingVersion", (), {"algorithm_id": "test", "fit": lambda self, data: None})(), "algorithm_version"),
-        (
-            type(
-                "MissingFit",
-                (),
-                {"algorithm_id": "test", "algorithm_version": 1},
-            )(),
-            "callable fit",
-        ),
-    ],
-)
-def test_calibrator_rejects_invalid_algorithm(algorithm: object, message: str) -> None:
-    with pytest.raises(ValueError, match=message):
-        Calibrator(step_sizes={"quality": 0.5}, algorithm=algorithm)  # type: ignore[arg-type]
+def test_calibrator_rejects_invalid_algorithm() -> None:
+    with pytest.raises(TypeError, match="algorithm must be a CalibrationAlgorithm"):
+        Calibrator(step_sizes={"quality": 0.5}, algorithm=object())  # type: ignore[arg-type]

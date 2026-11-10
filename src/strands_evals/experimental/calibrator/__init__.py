@@ -1,5 +1,4 @@
 from ._calibration import CalibrationStatus
-from ._calibration import CalibrationStatus
 from .algorithm import (
     CalibrationAlgorithm,
     CalibrationData,

@@ -3,7 +3,7 @@
 import math
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any
 
 from typing_extensions import Self
 
@@ -20,11 +20,9 @@ from ._calibration import (
 from .algorithm import (
     CalibrationAlgorithm,
     CalibrationData,
-    EqualWeightingAlgorithm,
-    EqualWeightingModel,
-    FittedCalibrationModel,
-    _equal_weights,
+    CalibrationModel,
 )
+from .equal_weighting import EqualWeightingAlgorithm, EqualWeightingModel
 
 
 class Calibrator:
@@ -45,6 +43,10 @@ class Calibrator:
     ```
 
     Fitting requires at least two cases, two agent runs, and two judge replays.
+    Refitting the same instance requires the original cases and repetition
+    design. Within each agent run, every replay must judge the same fixed
+    output.
+
     Scoring may use new cases and different positive run or replay counts as
     long as the evaluator set matches the fitted model.
     """
@@ -65,6 +67,7 @@ class Calibrator:
             algorithm: Custom fitting strategy. Defaults to equal weighting.
 
         Raises:
+            TypeError: If `algorithm` does not implement `CalibrationAlgorithm`.
             ValueError: If no evaluators are provided, a step is invalid, or
                 the algorithm configuration is invalid.
         """
@@ -79,23 +82,19 @@ class Calibrator:
             raise ValueError(f"step_sizes must be finite and greater than zero: {invalid}")
 
         self._step_sizes = {name: float(step) for name, step in step_sizes.items()}
-        self._algorithm = _validate_algorithm(
-            EqualWeightingAlgorithm() if algorithm is None else algorithm,
+        default_algorithm = EqualWeightingAlgorithm()
+        self._algorithm = _validate_algorithm(default_algorithm if algorithm is None else algorithm)
+        weight = 1.0 / len(self._step_sizes)
+        self._model: CalibrationModel = EqualWeightingModel(
+            evaluator_weights={name: weight for name in self._step_sizes},
         )
-        self._model: FittedCalibrationModel = EqualWeightingModel(
-            evaluator_weights=MappingProxyType(_equal_weights(tuple(self._step_sizes))),
-        )
+        self._algorithm_identity = default_algorithm.identity
         self._state = _initial_calibration_state()
 
     @property
-    def algorithm_id(self) -> str:
-        """Return the active scoring model's algorithm identifier."""
-        return self._model.algorithm_id
-
-    @property
-    def algorithm_version(self) -> int:
-        """Return the active scoring model's algorithm version."""
-        return self._model.algorithm_version
+    def algorithm_identity(self) -> str:
+        """Return the active scoring model's stable, versioned identity."""
+        return self._algorithm_identity
 
     @property
     def weights(self) -> dict[str, float] | None:
@@ -128,7 +127,11 @@ class Calibrator:
 
     @property
     def repeatabilities(self) -> dict[str, float]:
-        """Return judge-repeatability estimates for fixed agent outputs."""
+        """Return replay-mean reliability at the fitted judge replay count.
+
+        The estimate depends on the number of judge replays. A dataset with no
+        observed signal or noise reports `0.0` conservatively.
+        """
         return dict(self._state.repeatabilities)
 
     @property
@@ -164,12 +167,12 @@ class Calibrator:
         data = _build_algorithm_data(dataset, fitted_state, self._step_sizes)
         fitted_model = _validate_fitted_model(
             self._algorithm.fit(data),
-            self._algorithm,
             set(self._step_sizes),
         )
         _score_dataset(fitted_model, dataset)
         self._state = fitted_state
         self._model = fitted_model
+        self._algorithm_identity = self._algorithm.identity
         return self
 
     def score(self, reports_by_run: list[list[EvaluationReport]]) -> float:
@@ -206,48 +209,35 @@ def _build_algorithm_data(
     step_sizes: dict[str, float],
 ) -> CalibrationData:
     """Build an immutable public view of one validated calibration dataset."""
-    variance_components = {
-        name: MappingProxyType(dict(components)) for name, components in state.variance_components.items()
-    }
     return CalibrationData(
         observations=dataset.observations(),
-        examples=dataset.examples(),
         evaluator_names=dataset.evaluator_names,
         case_names=dataset.case_names,
         agent_runs=dataset.run_count,
         judge_replays=dataset.replay_count,
-        step_sizes=MappingProxyType(dict(step_sizes)),
-        variance_components=MappingProxyType(variance_components),
-        repeatabilities=MappingProxyType(dict(state.repeatabilities)),
+        step_sizes=step_sizes,
+        variance_components=state.variance_components,
+        repeatabilities=state.repeatabilities,
     )
 
 
 def _validate_algorithm(algorithm: object) -> CalibrationAlgorithm:
     """Validate the stable identity and fitting surface of an algorithm."""
-    algorithm_id = getattr(algorithm, "algorithm_id", None)
-    algorithm_version = getattr(algorithm, "algorithm_version", None)
-    if not isinstance(algorithm_id, str) or not algorithm_id:
-        raise ValueError("algorithm_id must be a non-empty string")
-    if not isinstance(algorithm_version, int) or isinstance(algorithm_version, bool) or algorithm_version < 1:
-        raise ValueError("algorithm_version must be an integer greater than or equal to 1")
-    if not callable(getattr(algorithm, "fit", None)):
-        raise ValueError("algorithm must define a callable fit method")
-    return cast(CalibrationAlgorithm, algorithm)
+    if not isinstance(algorithm, CalibrationAlgorithm):
+        raise TypeError("algorithm must be a CalibrationAlgorithm")
+    if not isinstance(algorithm.identity, str) or not algorithm.identity:
+        raise ValueError("algorithm identity must be a non-empty string")
+    return algorithm
 
 
 def _validate_fitted_model(
     model: object,
-    algorithm: CalibrationAlgorithm,
     evaluator_names: set[str],
-) -> FittedCalibrationModel:
-    """Validate the identity and optional weights of a fitted model."""
-    if getattr(model, "algorithm_id", None) != algorithm.algorithm_id:
-        raise ValueError("fitted model algorithm_id must match the configured algorithm")
-    if getattr(model, "algorithm_version", None) != algorithm.algorithm_version:
-        raise ValueError("fitted model algorithm_version must match the configured algorithm")
-    if not callable(getattr(model, "predict", None)):
-        raise ValueError("fitted model must define a callable predict method")
-    parameters = getattr(model, "parameters", None)
+) -> CalibrationModel:
+    """Validate a fitted model's parameters and optional weights."""
+    if not isinstance(model, CalibrationModel):
+        raise TypeError("fitted model must be a CalibrationModel")
+    parameters = model.parameters
     if not isinstance(parameters, Mapping):
         raise ValueError("fitted model parameters must be a mapping")
     try:
@@ -256,25 +246,23 @@ def _validate_fitted_model(
         raise ValueError("fitted model parameters must be deterministic and JSON-compatible") from error
     if not isinstance(normalized_parameters, dict):
         raise ValueError("fitted model parameters must normalize to a mapping")
-    weights = getattr(model, "weights", None)
+    weights = model.weights
     if weights is None:
-        return cast(FittedCalibrationModel, model)
+        return model
     if not isinstance(weights, Mapping):
         raise ValueError("fitted model weights must be a mapping or None")
     if set(weights) != evaluator_names:
         raise ValueError("fitted model weights must match the configured evaluators")
     if any(
-        not isinstance(weight, (int, float)) or isinstance(weight, bool) or not math.isfinite(weight) or weight < 0.0
+        not isinstance(weight, (int, float)) or isinstance(weight, bool) or not math.isfinite(weight)
         for weight in weights.values()
     ):
-        raise ValueError("fitted model weights must be finite and non-negative")
-    if not math.isclose(sum(weights.values()), 1.0, abs_tol=1e-12):
-        raise ValueError("fitted model weights must sum to 1")
-    return cast(FittedCalibrationModel, model)
+        raise ValueError("fitted model weights must be finite numbers")
+    return model
 
 
 def _predict_model(
-    model: FittedCalibrationModel,
+    model: CalibrationModel,
     evaluator_scores: dict[str, float],
 ) -> float:
     """Predict and validate a score from a fitted calibration model."""
@@ -287,9 +275,9 @@ def _predict_model(
 
 
 def _score_dataset(
-    model: FittedCalibrationModel,
+    model: CalibrationModel,
     dataset: _CalibrationDataset,
 ) -> float:
-    """Average model predictions across case-run examples."""
-    predictions = [_predict_model(model, dict(example.evaluator_scores)) for example in dataset.examples()]
+    """Average model predictions across case-run samples."""
+    predictions = [_predict_model(model, dict(sample.evaluator_scores)) for sample in dataset.samples()]
     return sum(predictions) / len(predictions)

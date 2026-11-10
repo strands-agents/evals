@@ -4,14 +4,14 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
+from datetime import date, datetime, time
 from enum import Enum
-from types import MappingProxyType
 from typing import Any, Literal
 
 from pydantic import BaseModel
 
 from ...types.evaluation_report import EvaluationReport
-from .algorithm import CalibrationExample, CalibrationObservation
+from .algorithm import CalibrationObservation, CalibrationSample
 
 _EPSILON = 1e-15
 _ERROR_REASON_PREFIXES = ("An error occurred:", "Evaluator error:")
@@ -22,10 +22,11 @@ _RUNTIME_CASE_FIELDS = {
     "actual_trajectory",
     "evaluator",
     "evaluator_type",
+    "input",
     "session_id",
 }
 
-CalibrationStatus = Literal["uncalibrated", "equal_weight_fallback", "calibrated"]
+CalibrationStatus = Literal["uncalibrated", "calibrated"]
 
 _ParsedReports = list[list[dict[str, dict[str, float]]]]
 _CaseSignatures = tuple[tuple[str, str], ...]
@@ -82,10 +83,7 @@ class _CalibrationDataset:
     ) -> "_CalibrationDataset":
         """Parse and validate reports as a balanced fit or scoring dataset."""
         if not isinstance(reports_by_run, list):
-            raise ValueError(
-                "reports_by_run must be a list of agent-run report lists; "
-                "a single EvaluationReport does not contain a repeated scoring design"
-            )
+            raise ValueError("reports_by_run must be a list of agent-run report lists")
         if not reports_by_run:
             raise ValueError("reports_by_run must contain at least one agent run")
         if any(not isinstance(reports, list) for reports in reports_by_run):
@@ -150,20 +148,16 @@ class _CalibrationDataset:
             for case_name in self.case_names
         )
 
-    def examples(self) -> tuple[CalibrationExample, ...]:
+    def samples(self) -> tuple[CalibrationSample, ...]:
         """Aggregate judge replays to one feature vector per case and agent run."""
         return tuple(
-            CalibrationExample(
+            CalibrationSample(
                 case_name=case_name,
                 agent_run=run_index,
-                evaluator_scores=MappingProxyType(
-                    {
-                        evaluator_name: _mean(
-                            [report_scores[evaluator_name][case_name] for report_scores in run_reports]
-                        )
-                        for evaluator_name in self.evaluator_names
-                    }
-                ),
+                evaluator_scores={
+                    evaluator_name: _mean([report_scores[evaluator_name][case_name] for report_scores in run_reports])
+                    for evaluator_name in self.evaluator_names
+                },
             )
             for run_index, run_reports in enumerate(self.parsed)
             for case_name in self.case_names
@@ -240,10 +234,15 @@ def _normalize_configuration_value(value: Any) -> Any:
         return {"float": repr(value)}
     if isinstance(value, bytes):
         return {"bytes_sha256": hashlib.sha256(value).hexdigest()}
+    if isinstance(value, (date, datetime, time)):
+        return {
+            "type": f"{value.__class__.__module__}.{value.__class__.__qualname__}",
+            "value": value.isoformat(),
+        }
     if isinstance(value, Enum):
         return _normalize_configuration_value(value.value)
     if isinstance(value, BaseModel):
-        return _normalize_configuration_value(value.model_dump())
+        return _normalize_configuration_value(value.model_dump(mode="json"))
     if isinstance(value, dict):
         return {
             str(key): _normalize_configuration_value(item)
@@ -333,7 +332,7 @@ def _extract_case_signatures(report: EvaluationReport) -> _CaseSignatures:
 
 
 def _estimate_statistics(dataset: _CalibrationDataset, evaluator_name: str) -> _EvaluatorStatistics:
-    """Estimate variance components and repeatability across fixed outputs."""
+    """Estimate variance components and replay-mean repeatability."""
     replay_variances: list[float] = []
     run_means_by_case: dict[str, list[float]] = {case_name: [] for case_name in dataset.case_names}
 
@@ -395,7 +394,7 @@ def _fit_dataset(dataset: _CalibrationDataset) -> _CalibrationState:
         repeatabilities=repeatabilities,
         calibration_design=(dataset.run_count, dataset.replay_count),
         calibration_structure=dataset.structure,
-        status="uncalibrated",
+        status="calibrated",
     )
 
 
