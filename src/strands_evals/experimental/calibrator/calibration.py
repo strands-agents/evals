@@ -281,9 +281,9 @@ def _predict_model(
     score = model.predict(MappingProxyType(dict(evaluator_scores)))
     if not isinstance(score, (int, float)) or isinstance(score, bool) or not math.isfinite(score):
         raise ValueError("fitted model prediction must be a finite number")
-    if not 0.0 <= score <= 1.0:
+    if not -1e-9 <= score <= 1.0 + 1e-9:
         raise ValueError(f"fitted model prediction must be between 0 and 1, got {score}")
-    return float(score)
+    return min(max(float(score), 0.0), 1.0)
 
 
 def _score_dataset(
