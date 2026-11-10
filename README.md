@@ -626,7 +626,7 @@ rubric = TypedRubricEvaluator(
             pass_threshold=0.9,  # this question's own bar
         ),
     },
-    model=decision_model,
+    decision_model=decision_model,
     state_fields=["input", "actual_output"],  # the only fields the model sees
 )
 report = Experiment(cases=cases, evaluators=[rubric]).run_evaluations(task)
@@ -655,7 +655,7 @@ it after loading:
 experiment = Experiment.from_file("experiment.json")
 for evaluator in experiment.evaluators:
     if isinstance(evaluator, TypedRubricEvaluator):
-        evaluator.model = decision_model
+        evaluator.decision_model = decision_model
 ```
 
 ### Tool Usage and Parameter Evaluation

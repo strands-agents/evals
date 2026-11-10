@@ -223,9 +223,10 @@ class TypedRubricEvaluator(Evaluator[InputT, OutputT]):
     - `user_prompt`, `assistant_response`: read from the last turn of `actual_trajectory`, which
       must then be a `Session`.
 
-    `model` is required. Pass `None` only when the model will be attached later through
-    `evaluator.model`, which is how `Experiment.from_dict` rebuilds this evaluator: `to_dict`
-    saves the rubric but never the model.
+    `decision_model` is required. Pass `None` only when it will be attached later through
+    `evaluator.decision_model`, which is how `Experiment.from_dict` rebuilds this evaluator:
+    `to_dict` saves the rubric but never the decision model. It is named apart from the `model`
+    argument other evaluators take, which is a generative judge model.
 
     Prefer `evaluate_async` (which `Experiment` uses). The sync `evaluate` runs on a separate event
     loop, so a backend holding a loop-bound HTTP client is not safe across sync calls. Configure a
@@ -243,7 +244,7 @@ class TypedRubricEvaluator(Evaluator[InputT, OutputT]):
                     pass_threshold=0.9,
                 ),
             },
-            model=decision_model,
+            decision_model=decision_model,
         )
         ```
     """
@@ -252,7 +253,7 @@ class TypedRubricEvaluator(Evaluator[InputT, OutputT]):
         self,
         questions: Mapping[str, RubricQuestion | Mapping[str, Any]] | Sequence[RubricQuestion | Mapping[str, Any]],
         *,
-        model: DecisionModel | None,
+        decision_model: DecisionModel | None,
         state_fields: Sequence[str] = ("input", "actual_output"),
         pass_threshold: float = 0.5,
         name: str | None = None,
@@ -263,14 +264,14 @@ class TypedRubricEvaluator(Evaluator[InputT, OutputT]):
             questions: A mapping of question id to question, or a sequence of questions that gets
                 the ids `q1`, `q2`, ... in order. Each question may also be the tagged dict that
                 `to_dict` writes for it.
-            model: The decision model that answers the rubric. `None` leaves the evaluator without
-                a model until one is set through `evaluator.model`.
+            decision_model: The decision model that answers the rubric. `None` leaves the
+                evaluator without one until it is set through `evaluator.decision_model`.
             state_fields: Fields to send to the model. Any sequence; stored as a tuple.
             pass_threshold: Threshold for the composite score, and for questions that set none.
             name: Instance name for reports and telemetry. Defaults to the class name.
 
         Raises:
-            TypeError: If `model` is not a `DecisionModel` or None.
+            TypeError: If `decision_model` is not a `DecisionModel` or None.
             ValueError: If the rubric, fields or threshold are invalid.
         """
         questions_by_id = _question_entries(questions)
@@ -284,23 +285,26 @@ class TypedRubricEvaluator(Evaluator[InputT, OutputT]):
         self._uses_trace = uses_trace
         self._pass_threshold = float(pass_threshold)
         self._warn_on_unselected_field_references()
-        self.model = model
+        self.decision_model = decision_model
         self.aggregator = self._aggregate
 
     @property
-    def model(self) -> DecisionModel | None:
+    def decision_model(self) -> DecisionModel | None:
         """The decision model that answers the rubric, or None until one is attached."""
-        return self._model
+        return self._decision_model
 
-    @model.setter
-    def model(self, value: DecisionModel | None) -> None:
+    @decision_model.setter
+    def decision_model(self, value: DecisionModel | None) -> None:
         if value is not None and not isinstance(value, DecisionModel):
-            raise TypeError(f"model must be a strands.decisions.DecisionModel or None, got {type(value).__name__}")
+            raise TypeError(
+                f"decision_model must be a strands.decisions.DecisionModel or None, got {type(value).__name__}"
+            )
         if value is None:
             logger.warning(
-                "evaluator=<%s> | no decision model attached, set evaluator.model before running", self.get_name()
+                "evaluator=<%s> | no decision model attached, set evaluator.decision_model before running",
+                self.get_name(),
             )
-        self._model = value
+        self._decision_model = value
 
     @property
     def questions(self) -> Mapping[str, RubricQuestion]:
@@ -319,9 +323,11 @@ class TypedRubricEvaluator(Evaluator[InputT, OutputT]):
             TypeError: If a trace field is selected and `actual_trajectory` is not a `Session`.
             ValueError: If the state cannot be built or the response is incomplete or malformed.
         """
-        model = self._model
-        if model is None:
-            raise RuntimeError(f"evaluator <{self.get_name()}> has no decision model attached; set evaluator.model")
+        decision_model = self._decision_model
+        if decision_model is None:
+            raise RuntimeError(
+                f"evaluator <{self.get_name()}> has no decision model attached; set evaluator.decision_model"
+            )
         state = self._build_state(evaluation_case)
         # Built fresh per call so a backend that mutates its input cannot affect another call.
         # Uncertainty is disabled: scores come from the distribution, so an `Uncertain` answer
@@ -330,7 +336,7 @@ class TypedRubricEvaluator(Evaluator[InputT, OutputT]):
             question_id: {"question": question.text, "choices": _sdk_choices(question), "uncertainty": False}
             for question_id, question in self._questions.items()
         }
-        result = await model.ask(state, sdk_questions)
+        result = await decision_model.ask(state, sdk_questions)
         distributions = self._validate_result(result)
         return [
             self._build_row(question_id, question, result, distributions[question_id])
@@ -340,12 +346,13 @@ class TypedRubricEvaluator(Evaluator[InputT, OutputT]):
     def to_dict(self) -> dict[str, Any]:
         """Serialize the rubric configuration. The decision model is never written.
 
-        `"model": None` lets `Experiment.from_dict` call the constructor; re-attach the model with
-        `evaluator.model = ...` after loading.
+        `"decision_model": None` lets `Experiment.from_dict` call the constructor; re-attach the
+        decision model with `evaluator.decision_model = ...` after loading.
         """
-        if self._model is not None:
+        if self._decision_model is not None:
             logger.warning(
-                "evaluator=<%s> | decision model is not serialized, re-attach it with evaluator.model after loading",
+                "evaluator=<%s> | decision model is not serialized, "
+                "re-attach it with evaluator.decision_model after loading",
                 self.get_name(),
             )
         data: dict[str, Any] = {
@@ -354,9 +361,8 @@ class TypedRubricEvaluator(Evaluator[InputT, OutputT]):
                 question_id: _QUESTION_ADAPTER.dump_python(question, mode="json")
                 for question_id, question in self._questions.items()
             },
-            # Not `model_id`: `Experiment.from_dict` turns that into a generative model string.
-            # An explicit None satisfies the keyword-only `model` argument on reload.
-            "model": None,
+            # An explicit None satisfies the keyword-only `decision_model` argument on reload.
+            "decision_model": None,
             "state_fields": list(self._state_fields),
             "pass_threshold": self._pass_threshold,
         }
@@ -466,7 +472,7 @@ class TypedRubricEvaluator(Evaluator[InputT, OutputT]):
             "latency_ms": metadata.latency_ms,
         }
         if metadata.provider_name is None:
-            row_metadata["backend"] = type(self._model).__name__
+            row_metadata["backend"] = type(self._decision_model).__name__
 
         if verdict.score is None:
             return EvaluationOutput(

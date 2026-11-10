@@ -67,8 +67,8 @@ def _case(**fields):
 
 
 def _evaluator(questions, probabilities, **kwargs):
-    model = kwargs.pop("model", None) or StubDecisionModel(probabilities)
-    return TypedRubricEvaluator(questions, model=model, **kwargs)
+    model = kwargs.pop("decision_model", None) or StubDecisionModel(probabilities)
+    return TypedRubricEvaluator(questions, decision_model=model, **kwargs)
 
 
 def _session(*turns):
@@ -100,17 +100,17 @@ YES = {"true": 0.9, "false": 0.1}
     ],
 )
 def test_question_round_trips_through_its_tagged_dict(question):
-    data = TypedRubricEvaluator([question], model=None).to_dict()["questions"]["q1"]
+    data = TypedRubricEvaluator([question], decision_model=None).to_dict()["questions"]["q1"]
     assert json.loads(json.dumps(data)) == data
     assert data["question_type"] == type(question).__name__
-    assert TypedRubricEvaluator([data], model=None).questions["q1"] == question
+    assert TypedRubricEvaluator([data], decision_model=None).questions["q1"] == question
 
 
 def test_invalid_tagged_question_names_its_id():
     with pytest.raises(ValueError, match=r"(?s)question <q2> \| .*weight"):
-        TypedRubricEvaluator([Noul("ok"), {"question_type": "Noul", "text": "q", "weight": 0}], model=None)
+        TypedRubricEvaluator([Noul("ok"), {"question_type": "Noul", "text": "q", "weight": 0}], decision_model=None)
     with pytest.raises(ValueError, match=r"(?s)question <safety> \| .*wieght"):
-        TypedRubricEvaluator({"safety": {"question_type": "Noul", "text": "q", "wieght": 2}}, model=None)
+        TypedRubricEvaluator({"safety": {"question_type": "Noul", "text": "q", "wieght": 2}}, decision_model=None)
 
 
 @pytest.mark.parametrize(
@@ -124,7 +124,7 @@ def test_invalid_tagged_question_names_its_id():
 )
 def test_unknown_question_shapes_are_rejected(item, message):
     with pytest.raises(ValueError, match=message):
-        TypedRubricEvaluator([item], model=None)
+        TypedRubricEvaluator([item], decision_model=None)
 
 
 # --- constructor ------------------------------------------------------------------------------
@@ -137,17 +137,17 @@ def test_model_is_keyword_only_and_required():
 
 def test_explicit_none_model_warns(caplog):
     with caplog.at_level(logging.WARNING):
-        evaluator = TypedRubricEvaluator([Noul("q")], model=None)
-    assert evaluator.model is None
+        evaluator = TypedRubricEvaluator([Noul("q")], decision_model=None)
+    assert evaluator.decision_model is None
     assert "no decision model attached" in caplog.text
 
 
 def test_model_must_be_a_decision_model():
     with pytest.raises(TypeError, match="DecisionModel"):
-        TypedRubricEvaluator([Noul("q")], model="global.anthropic.claude-sonnet-4-6")
-    evaluator = TypedRubricEvaluator([Noul("q")], model=None)
+        TypedRubricEvaluator([Noul("q")], decision_model="global.anthropic.claude-sonnet-4-6")
+    evaluator = TypedRubricEvaluator([Noul("q")], decision_model=None)
     with pytest.raises(TypeError, match="DecisionModel"):
-        evaluator.model = object()
+        evaluator.decision_model = object()
 
 
 @pytest.mark.parametrize(
@@ -163,14 +163,16 @@ def test_model_must_be_a_decision_model():
     ],
 )
 def test_constructor_validation(kwargs, message):
-    args = {"questions": [Noul("q")], "model": None, **kwargs}
+    args = {"questions": [Noul("q")], "decision_model": None, **kwargs}
     with pytest.raises(ValueError, match=message):
         TypedRubricEvaluator(**args)
 
 
 def test_state_fields_accept_any_sequence():
     for fields in (["input"], ("input",)):
-        assert TypedRubricEvaluator([Noul("q")], model=None, state_fields=fields).to_dict()["state_fields"] == ["input"]
+        assert TypedRubricEvaluator([Noul("q")], decision_model=None, state_fields=fields).to_dict()[
+            "state_fields"
+        ] == ["input"]
 
 
 # --- state ------------------------------------------------------------------------------------
@@ -184,7 +186,7 @@ class Order(BaseModel):
 async def test_state_keeps_field_order_and_sorts_nested_keys():
     model = StubDecisionModel({"q1": YES})
     evaluator = TypedRubricEvaluator(
-        [Noul("q")], model=model, state_fields=["metadata", "input", "actual_output", "expected_output"]
+        [Noul("q")], decision_model=model, state_fields=["metadata", "input", "actual_output", "expected_output"]
     )
     await evaluator.evaluate_async(_case(metadata={"b": 1, "a": [Order(item="x", quantity=2)]}))
 
@@ -203,7 +205,7 @@ async def test_state_keeps_field_order_and_sorts_nested_keys():
 
 async def test_state_is_identical_across_calls():
     model = StubDecisionModel({"q1": YES})
-    evaluator = TypedRubricEvaluator([Noul("q")], model=model, state_fields=["input", "metadata"])
+    evaluator = TypedRubricEvaluator([Noul("q")], decision_model=model, state_fields=["input", "metadata"])
     await evaluator.evaluate_async(_case(metadata={"y": 1, "x": 2}))
     await evaluator.evaluate_async(_case(metadata={"x": 2, "y": 1}))
     assert model.calls[0][0] == model.calls[1][0]
@@ -224,7 +226,7 @@ async def test_actual_output_required_only_when_selected():
 )
 async def test_unencodable_state_names_the_field(metadata):
     model = StubDecisionModel({"q1": YES})
-    evaluator = TypedRubricEvaluator([Noul("q")], model=model, state_fields=["metadata"])
+    evaluator = TypedRubricEvaluator([Noul("q")], decision_model=model, state_fields=["metadata"])
     with pytest.raises(ValueError, match="state field <metadata>"):
         await evaluator.evaluate_async(_case(metadata=metadata))
     assert model.calls == []
@@ -244,7 +246,7 @@ def test_question_naming_an_unselected_field_warns(caplog):
                 Noul("Does `actual_output` call `search`?"),
                 Noul("Is `input` answered?"),
             ],
-            model=None,
+            decision_model=None,
         )
     warnings = [record.getMessage() for record in caplog.records if "not in state_fields" in record.getMessage()]
     assert warnings == [
@@ -255,7 +257,9 @@ def test_question_naming_an_unselected_field_warns(caplog):
 
 async def test_trace_fields_come_from_the_last_turn():
     model = StubDecisionModel({"q1": YES})
-    evaluator = TypedRubricEvaluator([Noul("q")], model=model, state_fields=["user_prompt", "assistant_response"])
+    evaluator = TypedRubricEvaluator(
+        [Noul("q")], decision_model=model, state_fields=["user_prompt", "assistant_response"]
+    )
     session = _session(("first question", "first answer"), ("second question", "second answer"))
     await evaluator.evaluate_async(_case(actual_trajectory=session))
 
@@ -292,7 +296,7 @@ async def test_one_call_with_ids_choices_and_unchanged_text():
             Scale("How good?", levels=["poor", "ok", "good"]),
             Choice("Which?", options={"b": 0.0, "a": 1.0}),
         ],
-        model=model,
+        decision_model=model,
     )
     await evaluator.evaluate_async(_case())
 
@@ -312,7 +316,7 @@ async def test_questions_are_rebuilt_for_every_call():
             return result
 
     model = MutatingModel({"q1": {"a": 1.0, "b": 0.0}})
-    evaluator = TypedRubricEvaluator([Choice("q", options={"a": 1.0, "b": 0.0})], model=model)
+    evaluator = TypedRubricEvaluator([Choice("q", options={"a": 1.0, "b": 0.0})], decision_model=model)
     await evaluator.evaluate_async(_case())
     await evaluator.evaluate_async(_case())
     assert model.calls[1][1]["q1"]["choices"] == ["a", "b"]
@@ -338,14 +342,14 @@ async def test_questions_are_rebuilt_for_every_call():
 )
 async def test_malformed_responses_fail_the_whole_rubric(probabilities, answers, confidence, message):
     model = StubDecisionModel(probabilities, answers=answers, confidence=confidence)
-    evaluator = TypedRubricEvaluator([Noul("q")], model=model)
+    evaluator = TypedRubricEvaluator([Noul("q")], decision_model=model)
     with pytest.raises(ValueError, match=message):
         await evaluator.evaluate_async(_case())
 
 
 async def test_committed_answer_need_not_be_the_most_likely():
     model = StubDecisionModel({"q1": {"true": 0.4, "false": 0.6}}, answers={"q1": True})
-    rows = await TypedRubricEvaluator([Noul("q")], model=model).evaluate_async(_case())
+    rows = await TypedRubricEvaluator([Noul("q")], decision_model=model).evaluate_async(_case())
     assert rows[0].score == pytest.approx(0.4)
     assert rows[0].label == "false"
     assert rows[0].metadata["answer"] is True
@@ -354,7 +358,7 @@ async def test_committed_answer_need_not_be_the_most_likely():
 async def test_uncertain_answer_despite_disabled_uncertainty_is_an_error():
     model = StubDecisionModel({"q1": {"true": 0.55, "false": 0.45}}, answers={"q1": Uncertain("low confidence")})
     with pytest.raises(ValueError, match="uncertainty was disabled"):
-        await TypedRubricEvaluator([Noul("q")], model=model).evaluate_async(_case())
+        await TypedRubricEvaluator([Noul("q")], decision_model=model).evaluate_async(_case())
 
 
 # --- scoring ----------------------------------------------------------------------------------
@@ -457,7 +461,7 @@ async def test_score_exactly_at_threshold_passes():
 async def test_row_metadata_shape():
     model = StubDecisionModel({"q1": YES}, confidence={"q1": 0.8}, latency_ms=42)
     question = Noul("q", weight=2.0, required=True)
-    row = (await TypedRubricEvaluator([question], model=model).evaluate_async(_case()))[0]
+    row = (await TypedRubricEvaluator([question], decision_model=model).evaluate_async(_case()))[0]
 
     assert row.metadata == {
         "evaluated_by": "TypedRubricEvaluator",
@@ -480,7 +484,7 @@ async def test_row_metadata_shape():
 
 async def test_backend_class_recorded_only_without_provider_name():
     model = StubDecisionModel({"q1": YES}, provider_name=None, model_id=None)
-    row = (await TypedRubricEvaluator([Noul("q")], model=model).evaluate_async(_case()))[0]
+    row = (await TypedRubricEvaluator([Noul("q")], decision_model=model).evaluate_async(_case()))[0]
     assert row.metadata["backend"] == "StubDecisionModel"
     assert row.metadata["confidence"] is None
 
@@ -500,12 +504,12 @@ async def test_rows_are_deterministic_for_a_fixed_response():
 
 
 def _rows(evaluator, probabilities):
-    evaluator.model = StubDecisionModel(probabilities)
+    evaluator.decision_model = StubDecisionModel(probabilities)
     return evaluator.evaluate(_case())
 
 
 def test_composite_is_the_weighted_mean_and_can_outweigh_a_failure():
-    evaluator = TypedRubricEvaluator([Noul("a", weight=3.0), Noul("b", weight=1.0)], model=None)
+    evaluator = TypedRubricEvaluator([Noul("a", weight=3.0), Noul("b", weight=1.0)], decision_model=None)
     rows = _rows(evaluator, {"q1": {"true": 1.0, "false": 0.0}, "q2": {"true": 0.0, "false": 1.0}})
     score, passed, reason = evaluator.aggregator(rows)
     assert score == pytest.approx(0.75)
@@ -515,7 +519,8 @@ def test_composite_is_the_weighted_mean_and_can_outweigh_a_failure():
 
 def test_failed_required_question_fails_the_case_without_changing_the_score():
     evaluator = TypedRubricEvaluator(
-        [Noul("quality", weight=3.0), Noul("safety", weight=1.0, required=True, pass_threshold=0.9)], model=None
+        [Noul("quality", weight=3.0), Noul("safety", weight=1.0, required=True, pass_threshold=0.9)],
+        decision_model=None,
     )
     rows = _rows(evaluator, {"q1": {"true": 1.0, "false": 0.0}, "q2": {"true": 0.8, "false": 0.2}})
     score, passed, reason = evaluator.aggregator(rows)
@@ -525,7 +530,9 @@ def test_failed_required_question_fails_the_case_without_changing_the_score():
 
 
 def test_not_applicable_required_question_does_not_block():
-    evaluator = TypedRubricEvaluator([Noul("quality"), Choice("safety", options=RISK, required=True)], model=None)
+    evaluator = TypedRubricEvaluator(
+        [Noul("quality"), Choice("safety", options=RISK, required=True)], decision_model=None
+    )
     rows = _rows(
         evaluator,
         {"q1": YES, "q2": {"refuses": 0.0, "hedges": 0.0, "complies": 0.1, "nothing_risky": 0.9}},
@@ -536,7 +543,7 @@ def test_not_applicable_required_question_does_not_block():
 
 
 def test_all_not_applicable_case_passes_with_placeholder_score():
-    evaluator = TypedRubricEvaluator([Choice("safety", options=RISK)], model=None)
+    evaluator = TypedRubricEvaluator([Choice("safety", options=RISK)], decision_model=None)
     rows = _rows(evaluator, {"q1": {"refuses": 0.0, "hedges": 0.0, "complies": 0.0, "nothing_risky": 1.0}})
     score, passed, reason = evaluator.aggregator(rows)
     assert (score, passed) == (0.0, True)
@@ -544,14 +551,14 @@ def test_all_not_applicable_case_passes_with_placeholder_score():
 
 
 def test_extreme_weights_stay_finite():
-    evaluator = TypedRubricEvaluator([Noul("a", weight=1e6), Noul("b", weight=1e-6)], model=None)
+    evaluator = TypedRubricEvaluator([Noul("a", weight=1e6), Noul("b", weight=1e-6)], decision_model=None)
     rows = _rows(evaluator, {"q1": {"true": 0.5, "false": 0.5}, "q2": {"true": 0.5, "false": 0.5}})
     score, _, _ = evaluator.aggregator(rows)
     assert score == pytest.approx(0.5)
 
 
 def test_weights_come_from_the_rubric_not_row_metadata():
-    evaluator = TypedRubricEvaluator([Noul("a", weight=3.0), Noul("b", weight=1.0)], model=None)
+    evaluator = TypedRubricEvaluator([Noul("a", weight=3.0), Noul("b", weight=1.0)], decision_model=None)
     rows = _rows(evaluator, {"q1": {"true": 1.0, "false": 0.0}, "q2": {"true": 0.0, "false": 1.0}})
     rows[1].metadata["weight"] = 1000.0
     assert evaluator.aggregator(rows)[0] == pytest.approx(0.75)
@@ -559,8 +566,10 @@ def test_weights_come_from_the_rubric_not_row_metadata():
 
 @pytest.mark.parametrize("count", [0, 1, 3])
 def test_wrong_row_count_is_an_error(count):
-    rows = _rows(TypedRubricEvaluator([Noul("a"), Noul("b"), Noul("c")], model=None), {"q1": YES, "q2": YES, "q3": YES})
-    evaluator = TypedRubricEvaluator([Noul("a"), Noul("b")], model=None)
+    rows = _rows(
+        TypedRubricEvaluator([Noul("a"), Noul("b"), Noul("c")], decision_model=None), {"q1": YES, "q2": YES, "q3": YES}
+    )
+    evaluator = TypedRubricEvaluator([Noul("a"), Noul("b")], decision_model=None)
     with pytest.raises(ValueError, match="rubric rows"):
         evaluator.aggregator(rows[:count])
 
@@ -569,7 +578,7 @@ def test_wrong_row_count_is_an_error(count):
 
 
 async def test_running_without_a_model_fails_before_any_work():
-    evaluator = TypedRubricEvaluator([Noul("q")], model=None, state_fields=["assistant_response"])
+    evaluator = TypedRubricEvaluator([Noul("q")], decision_model=None, state_fields=["assistant_response"])
     with pytest.raises(RuntimeError, match="no decision model attached"):
         await evaluator.evaluate_async(_case(actual_trajectory=None))
 
@@ -584,7 +593,7 @@ async def test_concurrent_cases_do_not_share_state():
         p = 0.9 if json.loads(state)["input"] == "good" else 0.1
         return {"q1": {"true": p, "false": round(1 - p, 10)}}
 
-    evaluator = TypedRubricEvaluator([Noul("q")], model=StubDecisionModel(probabilities))
+    evaluator = TypedRubricEvaluator([Noul("q")], decision_model=StubDecisionModel(probabilities))
     inputs = ["good", "bad"] * 10
     results = await asyncio.gather(*(evaluator.evaluate_async(_case(input=value)) for value in inputs))
     assert [rows[0].score for rows in results] == pytest.approx([0.9 if value == "good" else 0.1 for value in inputs])
@@ -595,7 +604,7 @@ async def test_backend_errors_propagate():
         async def _ask(self, state, questions, **kwargs):
             raise ConnectionError("backend down")
 
-    evaluator = TypedRubricEvaluator([Noul("q")], model=FailingModel({}))
+    evaluator = TypedRubricEvaluator([Noul("q")], decision_model=FailingModel({}))
     with pytest.raises(ConnectionError):
         await evaluator.evaluate_async(_case())
 
@@ -606,7 +615,7 @@ async def test_backend_errors_propagate():
 def test_to_dict_writes_the_rubric_but_never_the_model(caplog):
     evaluator = TypedRubricEvaluator(
         [Noul("q", weight=2.0), Choice("c", options={"a": 1.0, "b": None})],
-        model=StubDecisionModel({}),
+        decision_model=StubDecisionModel({}),
         state_fields=["input"],
         pass_threshold=0.7,
         name="quality",
@@ -634,17 +643,17 @@ def test_to_dict_writes_the_rubric_but_never_the_model(caplog):
                 "question_type": "Choice",
             },
         },
-        "model": None,
+        "decision_model": None,
         "state_fields": ["input"],
         "pass_threshold": 0.7,
         "name": "quality",
     }
     assert "model_id" not in data
-    assert "re-attach it with evaluator.model" in caplog.text
+    assert "re-attach it with evaluator.decision_model" in caplog.text
 
 
 def test_to_dict_does_not_warn_without_a_model(caplog):
-    evaluator = TypedRubricEvaluator([Noul("q")], model=None)
+    evaluator = TypedRubricEvaluator([Noul("q")], decision_model=None)
     caplog.clear()
     with caplog.at_level(logging.WARNING):
         evaluator.to_dict()
@@ -654,7 +663,7 @@ def test_to_dict_does_not_warn_without_a_model(caplog):
 def test_rebuilding_from_to_dict_gives_an_equal_config():
     original = TypedRubricEvaluator(
         [Noul("q", required=True, pass_threshold=0.9), Scale("s", levels=["a", "b", "c"])],
-        model=StubDecisionModel({}),
+        decision_model=StubDecisionModel({}),
         state_fields=("input", "expected_output"),
         pass_threshold=0.6,
         name="rubric",
@@ -690,7 +699,9 @@ def _echo(case):
 
 
 def test_experiment_uses_the_weighted_aggregator_and_keeps_every_row():
-    evaluator = TypedRubricEvaluator([Noul("Is it helpful?", weight=3.0), SAFETY], model=_risk_model(SAFETY_BY_INPUT))
+    evaluator = TypedRubricEvaluator(
+        [Noul("Is it helpful?", weight=3.0), SAFETY], decision_model=_risk_model(SAFETY_BY_INPUT)
+    )
     report = _experiment([evaluator]).run_evaluations(_echo)
 
     assert report.scores == pytest.approx([(3 * 0.9 + 1.0) / 4, (3 * 0.9) / 4, 0.9])
@@ -701,7 +712,7 @@ def test_experiment_uses_the_weighted_aggregator_and_keeps_every_row():
 
 
 def test_experiment_async_matches_sync():
-    evaluator = TypedRubricEvaluator([Noul("Is it helpful?"), SAFETY], model=_risk_model(SAFETY_BY_INPUT))
+    evaluator = TypedRubricEvaluator([Noul("Is it helpful?"), SAFETY], decision_model=_risk_model(SAFETY_BY_INPUT))
     sync_report = _experiment([evaluator]).run_evaluations(_echo)
     async_report = asyncio.run(_experiment([evaluator]).run_evaluations_async(_echo, max_workers=3))
     assert async_report.scores == pytest.approx(sync_report.scores)
@@ -709,8 +720,10 @@ def test_experiment_async_matches_sync():
 
 
 def test_named_rubrics_coexist_with_other_evaluators():
-    quality = TypedRubricEvaluator([Noul("q")], model=StubDecisionModel({"q1": YES}), name="quality")
-    tone = TypedRubricEvaluator([Noul("t")], model=StubDecisionModel({"q1": {"true": 0.2, "false": 0.8}}), name="tone")
+    quality = TypedRubricEvaluator([Noul("q")], decision_model=StubDecisionModel({"q1": YES}), name="quality")
+    tone = TypedRubricEvaluator(
+        [Noul("t")], decision_model=StubDecisionModel({"q1": {"true": 0.2, "false": 0.8}}), name="tone"
+    )
     report = _experiment([quality, tone, Equals(value="safe")], inputs=["safe"]).run_evaluations(_echo)
 
     by_name = {row["evaluator"]: score for row, score in zip(report.cases, report.scores, strict=True)}
@@ -720,7 +733,7 @@ def test_named_rubrics_coexist_with_other_evaluators():
 def test_all_not_applicable_case_is_left_out_of_the_overall_score():
     evaluator = TypedRubricEvaluator(
         [Choice("c", options=RISK)],
-        model=StubDecisionModel(lambda state: {"q1": SAFETY_BY_INPUT[json.loads(state)["input"]]}),
+        decision_model=StubDecisionModel(lambda state: {"q1": SAFETY_BY_INPUT[json.loads(state)["input"]]}),
     )
     report = _experiment([evaluator], inputs=["safe", "benign"]).run_evaluations(_echo)
     assert report.scores == [1.0, 0.0]
@@ -732,7 +745,7 @@ def test_backend_error_fails_only_that_evaluator():
         async def _ask(self, state, questions, **kwargs):
             raise ConnectionError("backend down")
 
-    rubric = TypedRubricEvaluator([Noul("q")], model=FailingModel({}))
+    rubric = TypedRubricEvaluator([Noul("q")], decision_model=FailingModel({}))
     report = _experiment([rubric, Equals(value="safe")], inputs=["safe"]).run_evaluations(_echo)
 
     rows = {row["evaluator"]: index for index, row in enumerate(report.cases)}
@@ -750,7 +763,7 @@ def test_throttled_backend_is_retried():
             return await super()._ask(state, questions, **kwargs)
 
     model = ThrottledOnceModel({"q1": YES})
-    evaluator = TypedRubricEvaluator([Noul("q")], model=model)
+    evaluator = TypedRubricEvaluator([Noul("q")], decision_model=model)
     with (
         patch("strands_evals.experiment._INITIAL_RETRY_DELAY", 0.01),
         patch("strands_evals.experiment._MAX_RETRY_DELAY", 0.02),
@@ -769,7 +782,9 @@ def test_failed_required_question_is_labelled_no_in_telemetry():
         labels.append(real_get_label(self, *args, **kwargs))
         return labels[-1]
 
-    evaluator = TypedRubricEvaluator([Noul("Is it helpful?", weight=3.0), SAFETY], model=_risk_model(SAFETY_BY_INPUT))
+    evaluator = TypedRubricEvaluator(
+        [Noul("Is it helpful?", weight=3.0), SAFETY], decision_model=_risk_model(SAFETY_BY_INPUT)
+    )
     with patch.object(TypedRubricEvaluator, "_get_label", recording):
         report = _experiment([evaluator], inputs=["unsafe"]).run_evaluations(_echo)
 
@@ -781,7 +796,10 @@ def test_failed_required_question_is_labelled_no_in_telemetry():
 
 def test_experiment_file_round_trip_and_model_reattachment(tmp_path):
     rubric = TypedRubricEvaluator(
-        [Noul("Is it helpful?"), SAFETY], model=_risk_model(SAFETY_BY_INPUT), state_fields=["input"], name="rubric"
+        [Noul("Is it helpful?"), SAFETY],
+        decision_model=_risk_model(SAFETY_BY_INPUT),
+        state_fields=["input"],
+        name="rubric",
     )
     path = tmp_path / "experiment.json"
     _experiment([rubric, Equals(value="safe")], inputs=["safe"]).to_file(str(path))
@@ -795,14 +813,14 @@ def test_experiment_file_round_trip_and_model_reattachment(tmp_path):
     assert "no decision model attached" in before.reasons[rows["rubric"]]
     assert before.test_passes[rows["Equals"]] is True
 
-    reloaded.model = _risk_model(SAFETY_BY_INPUT)
+    reloaded.decision_model = _risk_model(SAFETY_BY_INPUT)
     after = loaded.run_evaluations(_echo)
     assert after.scores[rows["rubric"]] == pytest.approx((0.9 + 1.0) / 2)
 
 
 def test_row_metadata_survives_report_json_and_flatten(tmp_path):
-    first = TypedRubricEvaluator([Noul("q")], model=StubDecisionModel({"q1": YES}), name="first")
-    second = TypedRubricEvaluator([Noul("q")], model=StubDecisionModel({"q1": YES}), name="second")
+    first = TypedRubricEvaluator([Noul("q")], decision_model=StubDecisionModel({"q1": YES}), name="first")
+    second = TypedRubricEvaluator([Noul("q")], decision_model=StubDecisionModel({"q1": YES}), name="second")
     reports = [_experiment([evaluator], inputs=["safe"]).run_evaluations(_echo) for evaluator in (first, second)]
 
     flattened = EvaluationReport.flatten(reports)
@@ -821,7 +839,7 @@ def test_row_metadata_survives_report_json_and_flatten(tmp_path):
 
 async def test_mapping_keys_become_question_ids():
     model = StubDecisionModel({"helpful": YES, "safety": SAFETY_BY_INPUT["unsafe"]})
-    evaluator = TypedRubricEvaluator({"helpful": Noul("Is it helpful?"), "safety": SAFETY}, model=model)
+    evaluator = TypedRubricEvaluator({"helpful": Noul("Is it helpful?"), "safety": SAFETY}, decision_model=model)
     rows = await evaluator.evaluate_async(_case())
 
     assert list(model.calls[0][1]) == ["helpful", "safety"]
@@ -832,12 +850,12 @@ async def test_mapping_keys_become_question_ids():
 
 
 def test_mapping_ids_survive_to_dict_and_insertion():
-    evaluator = TypedRubricEvaluator({"safety": SAFETY, "helpful": Noul("h")}, model=None)
+    evaluator = TypedRubricEvaluator({"safety": SAFETY, "helpful": Noul("h")}, decision_model=None)
     data = evaluator.to_dict()
     assert list(data["questions"]) == ["safety", "helpful"]
 
     # Inserting a question keeps every existing id pointing at the same question.
-    rebuilt = TypedRubricEvaluator({"tone": Noul("t"), **data["questions"]}, model=None)
+    rebuilt = TypedRubricEvaluator({"tone": Noul("t"), **data["questions"]}, decision_model=None)
     assert list(rebuilt.questions) == ["tone", "safety", "helpful"]
     assert rebuilt.questions["safety"] == SAFETY
     with pytest.raises(TypeError):
@@ -847,14 +865,14 @@ def test_mapping_ids_survive_to_dict_and_insertion():
 @pytest.mark.parametrize("questions", [{"": Noul("q")}, {" ": Noul("q")}, {1: Noul("q")}, {}])
 def test_invalid_question_ids_are_rejected(questions):
     with pytest.raises(ValueError, match="question"):
-        TypedRubricEvaluator(questions, model=None)
+        TypedRubricEvaluator(questions, decision_model=None)
 
 
 # --- copying ----------------------------------------------------------------------------------
 
 
 def test_evaluator_with_a_choice_deep_copies():
-    evaluator = TypedRubricEvaluator({"safety": SAFETY}, model=None)
+    evaluator = TypedRubricEvaluator({"safety": SAFETY}, decision_model=None)
     assert copy.deepcopy(evaluator).to_dict() == evaluator.to_dict()
 
 
@@ -893,7 +911,7 @@ def _contract_rubric(model):
                 options={"refuses": 1.0, "hedges": 0.5, "complies": 0.0, "nothing_risky": None},
             ),
         },
-        model=model,
+        decision_model=model,
     )
 
 
@@ -992,7 +1010,8 @@ async def test_malformed_spec_responses_are_rejected_by_the_sdk(answers, message
 @pytest.mark.parametrize("threshold", [0.0, 1.0])
 def test_threshold_bounds_are_inclusive(threshold):
     assert (
-        TypedRubricEvaluator([Noul("q")], model=None, pass_threshold=threshold).to_dict()["pass_threshold"] == threshold
+        TypedRubricEvaluator([Noul("q")], decision_model=None, pass_threshold=threshold).to_dict()["pass_threshold"]
+        == threshold
     )
 
 
@@ -1000,12 +1019,12 @@ def test_threshold_bounds_are_inclusive(threshold):
 async def test_confidence_bounds_are_inclusive(confidence):
     # A noul of exactly 0.5 has confidence |2p - 1| = 0, so 0.0 is a value real backends return.
     model = StubDecisionModel({"q1": {"true": 0.5, "false": 0.5}}, confidence={"q1": confidence})
-    rows = await TypedRubricEvaluator([Noul("q")], model=model).evaluate_async(_case())
+    rows = await TypedRubricEvaluator([Noul("q")], decision_model=model).evaluate_async(_case())
     assert rows[0].metadata["confidence"] == confidence
 
 
 def test_composite_exactly_at_the_threshold_passes():
-    evaluator = TypedRubricEvaluator([Noul("a"), Noul("b")], model=None, pass_threshold=0.5)
+    evaluator = TypedRubricEvaluator([Noul("a"), Noul("b")], decision_model=None, pass_threshold=0.5)
     rows = _rows(evaluator, {"q1": {"true": 1.0, "false": 0.0}, "q2": {"true": 0.0, "false": 1.0}})
     score, passed, _ = evaluator.aggregator(rows)
     assert score == 0.5
@@ -1037,7 +1056,7 @@ async def test_reasons_have_a_fixed_format():
 
 @pytest.mark.parametrize("kwargs", [{"questions": 5}, {"questions": None}, {"state_fields": 5}, {"state_fields": None}])
 def test_non_collection_arguments_are_rejected(kwargs):
-    args = {"questions": [Noul("q")], "model": None, **kwargs}
+    args = {"questions": [Noul("q")], "decision_model": None, **kwargs}
     with pytest.raises(ValueError, match="questions|state_fields"):
         TypedRubricEvaluator(**args)
 
@@ -1048,20 +1067,20 @@ class Stamped(BaseModel):
 
 async def test_nested_pydantic_values_are_dumped_in_json_mode():
     model = StubDecisionModel({"q1": YES})
-    evaluator = TypedRubricEvaluator([Noul("q")], model=model, state_fields=["metadata"])
+    evaluator = TypedRubricEvaluator([Noul("q")], decision_model=model, state_fields=["metadata"])
     await evaluator.evaluate_async(_case(metadata={"event": Stamped(at=datetime(2026, 11, 3, 12, 0, 0))}))
     assert json.loads(model.calls[0][0]) == {"metadata": {"event": {"at": "2026-11-03T12:00:00"}}}
 
 
 async def test_distribution_errors_name_the_question():
     model = StubDecisionModel({"q1": YES, "safety": {"true": 0.6, "false": 0.6}})
-    evaluator = TypedRubricEvaluator({"q1": Noul("q"), "safety": Noul("s")}, model=model)
+    evaluator = TypedRubricEvaluator({"q1": Noul("q"), "safety": Noul("s")}, decision_model=model)
     with pytest.raises(ValueError, match=r"question <safety> \| probabilities must sum to 1"):
         await evaluator.evaluate_async(_case())
 
 
 def test_label_follows_the_verdict_not_the_score():
-    evaluator = TypedRubricEvaluator([Noul("q")], model=None)
+    evaluator = TypedRubricEvaluator([Noul("q")], decision_model=None)
     judged = [EvaluationOutput(score=0.8, test_pass=False, reason="gate failed")]
     not_applicable = [EvaluationOutput(score=0.0, test_pass=True, reason="nothing to judge", label=NOT_APPLICABLE)]
     assert evaluator._get_label(0.8, False, judged) == "NO"
