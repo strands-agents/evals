@@ -6,7 +6,7 @@ from .algorithm import (
     CalibrationSample,
     VarianceSource,
 )
-from .equal_weighting import EqualWeightingAlgorithm
+from .equal_weighting import EqualWeightingAlgorithm, EqualWeightingModel
 
 __all__ = [
     "CalibrationAlgorithm",
@@ -15,5 +15,6 @@ __all__ = [
     "CalibrationObservation",
     "CalibrationSample",
     "EqualWeightingAlgorithm",
+    "EqualWeightingModel",
     "VarianceSource",
 ]

@@ -5,12 +5,13 @@ from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from statistics import fmean
+from types import MappingProxyType
 from typing import Any, Literal
 
 VarianceSource = Literal["judge", "agent", "case"]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class CalibrationObservation:
     """One evaluator score in a repeated calibration experiment."""
 
@@ -21,7 +22,7 @@ class CalibrationObservation:
     score: float
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class CalibrationSample:
     """Replay-aggregated evaluator scores for one case and agent run."""
 
@@ -29,10 +30,18 @@ class CalibrationSample:
     agent_run: int
     evaluator_scores: Mapping[str, float]
 
+    def __post_init__(self) -> None:
+        """Copy evaluator scores into an immutable mapping."""
+        object.__setattr__(
+            self,
+            "evaluator_scores",
+            MappingProxyType(dict(self.evaluator_scores)),
+        )
+
 
 @dataclass(frozen=True, kw_only=True)
 class CalibrationData:
-    """Validated observations and measurement diagnostics supplied to an algorithm."""
+    """Immutable observations and measurement diagnostics supplied to an algorithm."""
 
     observations: tuple[CalibrationObservation, ...]
     evaluator_names: tuple[str, ...]
@@ -42,6 +51,37 @@ class CalibrationData:
     step_sizes: Mapping[str, float]
     variance_components: Mapping[str, Mapping[VarianceSource, float]]
     repeatabilities: Mapping[str, float]
+
+    def __post_init__(self) -> None:
+        """Copy mutable inputs and validate evaluator names."""
+        if not self.evaluator_names:
+            raise ValueError("calibration data must contain at least one evaluator")
+        if len(set(self.evaluator_names)) != len(self.evaluator_names):
+            raise ValueError("calibration evaluator names must be unique")
+
+        object.__setattr__(self, "observations", tuple(self.observations))
+        object.__setattr__(self, "evaluator_names", tuple(self.evaluator_names))
+        object.__setattr__(self, "case_names", tuple(self.case_names))
+        object.__setattr__(
+            self,
+            "step_sizes",
+            MappingProxyType(dict(self.step_sizes)),
+        )
+        object.__setattr__(
+            self,
+            "variance_components",
+            MappingProxyType(
+                {
+                    evaluator_name: MappingProxyType(dict(components))
+                    for evaluator_name, components in self.variance_components.items()
+                }
+            ),
+        )
+        object.__setattr__(
+            self,
+            "repeatabilities",
+            MappingProxyType(dict(self.repeatabilities)),
+        )
 
     @property
     def samples(self) -> tuple[CalibrationSample, ...]:
@@ -90,7 +130,7 @@ class CalibrationAlgorithm(ABC):
     @property
     @abstractmethod
     def identity(self) -> str:
-        """Return the stable algorithm identity."""
+        """Return the stable, versioned identity used by persisted profiles."""
         ...
 
     @abstractmethod

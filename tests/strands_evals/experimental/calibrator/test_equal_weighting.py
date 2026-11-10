@@ -6,14 +6,27 @@ from strands_evals.experimental.calibrator import (
     CalibrationModel,
     CalibrationObservation,
     EqualWeightingAlgorithm,
+    EqualWeightingModel,
 )
 
 
 def _data() -> CalibrationData:
     return CalibrationData(
         observations=(
-            CalibrationObservation("first", "case-a", 0, 0, 0.2),
-            CalibrationObservation("second", "case-a", 0, 0, 0.8),
+            CalibrationObservation(
+                evaluator_name="first",
+                case_name="case-a",
+                agent_run=0,
+                judge_replay=0,
+                score=0.2,
+            ),
+            CalibrationObservation(
+                evaluator_name="second",
+                case_name="case-a",
+                agent_run=0,
+                judge_replay=0,
+                score=0.8,
+            ),
         ),
         evaluator_names=("first", "second"),
         case_names=("case-a",),
@@ -46,11 +59,12 @@ def test_equal_weighting_model_rejects_changed_evaluator_set() -> None:
         model.predict({"first": 0.2})
 
 
-def test_equal_weighting_model_weights_are_a_copy() -> None:
-    model = EqualWeightingAlgorithm().fit(_data())
+def test_equal_weighting_model_copies_and_protects_weights() -> None:
+    evaluator_weights = {"first": 0.5, "second": 0.5}
+    model = EqualWeightingModel(evaluator_weights=evaluator_weights)
 
-    weights = model.weights
-    assert isinstance(weights, dict)
-    weights["first"] = 1.0
+    evaluator_weights["first"] = 1.0
 
     assert model.weights == {"first": 0.5, "second": 0.5}
+    with pytest.raises(TypeError):
+        model.evaluator_weights["first"] = 1.0  # type: ignore[index]
