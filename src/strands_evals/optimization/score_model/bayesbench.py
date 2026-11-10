@@ -14,7 +14,6 @@ One model per goal metric: a conjugate Gaussian posterior over the columns `_Des
   against that fit's prediction (`bayesbench.HeldOutDiagnostics`). The checks live in each fit and are copied
   forward from `previous`, so a fit is a pure function of the chain of fits before it.
 
-numpy and scipy are imported lazily: they are in the optional `optimization` extra.
 """
 
 from __future__ import annotations
@@ -26,7 +25,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
+import numpy as np
+
 from ...types.optimization import Estimate, Values
+from ..bayesbench import HeldOutDiagnostics, Mixture, Posterior, prior_scale_weights
 from .design import _Design
 from .protocols import Fit, FitData, ScoreModel
 
@@ -47,8 +49,6 @@ GRID = {
 }
 MIXTURE_SIZE = 24  # the likeliest grid points kept, at most; those with less than 1e-4 of the weight are dropped
 
-_INSTALL = 'BayesBenchModel needs the optimization extra: pip install "strands-agents-evals[optimization]"'
-
 
 class BayesBenchModel(ScoreModel):
     """A Bayesian linear model per goal metric over the declared options.
@@ -65,18 +65,6 @@ class BayesBenchModel(ScoreModel):
 
     name: ClassVar[str] = "bayesbench"
 
-    def __init__(self) -> None:
-        """Check the optional extra is installed.
-
-        Raises:
-            ImportError: numpy or scipy is missing, with the install command.
-        """
-        try:
-            import numpy  # noqa: F401  # optional extra: optimization
-            import scipy  # noqa: F401  # optional extra: optimization
-        except ImportError as err:
-            raise ImportError(_INSTALL) from err
-
     def config(self) -> dict[str, Any]:
         """No settings: `{}`."""
         return {}
@@ -92,12 +80,9 @@ class BayesBenchModel(ScoreModel):
                 counts as none.
 
         Raises:
-            ValueError: A goal metric no eligible candidate has a value of (e.g. an evaluator N/A on every case).
+            ValueError: A goal metric no eligible candidate has a value of (e.g. an evaluator N/A on every case),
+                or an eligible candidate has a value on a case that isn't in `data.cases` (or `previous`'s).
         """
-        import numpy as np  # optional extra: optimization
-
-        from ..bayesbench import HeldOutDiagnostics, Mixture, Posterior, prior_scale_weights
-
         pool = {
             cid: values
             for cid, values in data.candidates.items()
@@ -124,7 +109,7 @@ class BayesBenchModel(ScoreModel):
             offset, unit = _scale(range_, by_candidate.get(baseline))
             rows, ys, spreads = [], [], []
             means: dict[str, float] = {}
-            n_cases: dict[str, int] = {}
+            measured_cases: dict[str, list[str]] = {}  # the cases each candidate has a value on
             for cid in pool:
                 per_case = {
                     case: [(v - offset) / unit for v in runs]
@@ -138,7 +123,7 @@ class BayesBenchModel(ScoreModel):
                         spreads.append(statistics.variance(scaled) / len(scaled))
                 if per_case:
                     means[cid] = statistics.fmean(statistics.fmean(s) for s in per_case.values())
-                    n_cases[cid] = len(per_case)
+                    measured_cases[cid] = list(per_case)
             if not rows:
                 raise ValueError(f"BayesBenchModel: no eligible candidate has a value of {metric}")
             phi, y = np.vstack(rows), np.asarray(ys)
@@ -171,14 +156,18 @@ class BayesBenchModel(ScoreModel):
                 for cid in pool:
                     if cid in before_fit.candidates or cid not in means:
                         continue
-                    predicted, variance = earlier.posterior.predictive(earlier.design.row(pool[cid]))
+                    # predicted over the cases it was measured on (an evaluator N/A on a case leaves it out), as
+                    # its mean is; with every case measured, the same as the earlier fit's average over the cases
+                    cases_measured = measured_cases[cid]
+                    row = np.mean([earlier.design.row(pool[cid], case) for case in cases_measured], axis=0)
+                    predicted, variance = earlier.posterior.predictive(row)
                     check.record(
                         # on the earlier fit's scale, as its prediction and noise are: an unbounded metric's unit
                         # moves with the baseline's mean between fits
                         (means[cid] * unit + offset - earlier.offset) / earlier.unit,
                         float(predicted[0]),
                         float(variance[0]) + earlier.own(None),  # a candidate it hadn't fitted: own effect at the prior
-                        earlier.noise / n_cases[cid],
+                        earlier.noise / len(cases_measured),
                         cid,
                     )
             if metric in checks:
@@ -267,8 +256,6 @@ class BayesBenchMetric:
 
         The sd uses the variance of a ratio of two correlated estimates (the delta method).
         """
-        import numpy as np  # optional extra: optimization
-
         a = self.design.row(values, candidate=candidate)
         b = self.design.row(reference, candidate=reference_candidate)
         mean, var = self.posterior.predictive(np.vstack([a, b]))
@@ -336,8 +323,6 @@ def _scale(range_: tuple[float | None, float | None], baseline: Mapping[str, Any
 
 def _prior(layout: _Design, intercept: float, scales: Mapping[str, float]) -> tuple[Any, Any]:
     """The prior's mean and variances; `scales` overrides the sd of a group (`main`, `pair`, `candidate`)."""
-    import numpy as np  # optional extra: optimization
-
     tau = {"main": TAU_MAIN, "pair": TAU_PAIR, "candidate": TAU_CANDIDATE, **scales}
     mean = np.zeros(layout.p)
     var = np.empty(layout.p)

@@ -12,7 +12,7 @@
    unexplained (a rewrite's text, a number within its bin);
 5. the case (the first is the reference), so case difficulty is shared by every candidate.
 
-Groups 2-5 have main effects only. numpy is imported lazily: it is in the optional `optimization` extra.
+Groups 2-5 have main effects only.
 """
 
 from __future__ import annotations
@@ -23,7 +23,10 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+import numpy as np
+
 from ...types.optimization import Value, Values
+from ..bayesbench import Encoder, FactorSpace
 from ..declaration.space import Space
 from .protocols import Fit
 
@@ -108,13 +111,12 @@ class _Design:
             candidates: The fitted candidates' values, in scoring order (the baseline first).
             cases: The split's case names.
         """
-        from ..bayesbench import Encoder, FactorSpace  # optional extra: optimization
-
         fitted = list(candidates.values())
+        infos = {info.key: info for info in space.params()}
         in_texts = {k for keys in text_blocks.values() for k in keys}
         self.factors: list[_Factor] = []
         self.omitted: list[dict[str, str]] = []
-        for info in space.params():
+        for info in infos.values():
             key = info.key
             # A one-option choice (a bare component()) can never change, so it isn't a factor.
             if key in in_texts or info.kind == "text" or (info.kind == "choice" and len(info.options or ()) < 2):
@@ -144,19 +146,17 @@ class _Design:
             else None
         )
         self.texts: list[_Factor] = []
-        defaults = {info.key: info.default for info in space.params()}
         for name, keys in text_blocks.items():
             text = _Factor(
                 f"rewritten:{name}",
                 "text",
                 ["default", "rewritten"],
                 tuple(keys),
-                defaults={k: defaults[k] for k in keys},
+                defaults={k: infos[k].default for k in keys},
             )
             if any(text.level(v) == "rewritten" for v in fitted):
                 self.texts.append(text)
         self.cases = list(cases)
-        infos = {info.key: info for info in space.params()}
         self.trends: list[tuple[str, bool, float, float]] = []
         self.bin_centers: dict[tuple[str, str], float] = {}
         for f in self.factors:
@@ -181,6 +181,7 @@ class _Design:
         self.n_text = len(self.texts)  # one column each: "rewritten"
         self.p = self.n_design + self.n_text + len(self.trends) + len(self.candidate_ids) + max(len(self.cases) - 1, 0)
         self._candidate_column = {cid: j for j, cid in enumerate(self.candidate_ids)}
+        self._case_column = {name: j for j, name in enumerate(self.cases[1:])}  # the first case is the reference
 
     @property
     def trend_start(self) -> int:
@@ -208,9 +209,11 @@ class _Design:
 
     def row(self, values: Values, case: str | None = None, candidate: str | None = None) -> Any:
         """A configuration's row: at one case, or (`case=None`) averaged over the cases; with the candidate's own
-        effect when `candidate` is a fitted one, else at what its factors predict."""
-        import numpy as np  # optional extra: optimization
+        effect when `candidate` is a fitted one, else at what its factors predict.
 
+        Raises:
+            ValueError: `case` is not one of this fit's cases.
+        """
         x = np.zeros(self.p)
         if self.encoder:
             x[: self.n_design] = self.encoder.row(tuple(self._level(f, values) for f in self.factors))
@@ -226,8 +229,10 @@ class _Design:
             x[self.candidate_start + self._candidate_column[candidate]] = 1.0
         if case is None:
             x[self.case_start :] = 1.0 / len(self.cases) if len(self.cases) > 1 else 0.0
-        elif case in self.cases[1:]:
-            x[self.case_start + self.cases.index(case) - 1] = 1.0
+        elif (column := self._case_column.get(case)) is not None:
+            x[self.case_start + column] = 1.0
+        elif not self.cases or case != self.cases[0]:
+            raise ValueError(f"unknown case {case!r}: not one of this fit's cases")
         return x
 
     def contrasts(self) -> Iterator[tuple[_Factor, str, Any]]:
@@ -235,8 +240,6 @@ class _Design:
 
         A binned number's contrast includes its trend between the two bins' centers. The inactive level has none.
         """
-        import numpy as np  # optional extra: optimization
-
         reference = tuple(f.levels[0] for f in self.factors)
         for factor in self.factors:
             assert self.encoder is not None  # there are factors

@@ -1,6 +1,5 @@
 import json
 import random
-import sys
 
 import numpy as np
 import pytest
@@ -303,6 +302,38 @@ def test_the_held_out_check_of_an_unbounded_metric_ignores_a_change_of_scale():
         assert new_scale.diagnostics["score"][key] == pytest.approx(same_scale.diagnostics["score"][key])
 
 
+def test_the_held_out_check_predicts_over_the_cases_a_candidate_was_measured_on():
+    # The new candidates have no value on the 5 easiest cases (an evaluator N/A there): their means cover only the
+    # harder cases, so a prediction averaged over every case would miss them by the case difficulty left out.
+    candidates, observations, _, cases = _world(1, n=12, noise=0.02)
+    model = BayesBenchModel()
+    first = model.fit(_chain_data(candidates, observations, cases, 6))
+    difficulty = {case: np.mean([np.mean(observations[cid][case]) for cid in candidates]) for case in cases}
+    easiest = sorted(cases, key=difficulty.get, reverse=True)[:5]
+    partial = {
+        cid: {case: runs for case, runs in by_case.items() if i < 6 or case not in easiest}
+        for i, (cid, by_case) in enumerate(observations.items())
+    }
+    every_case = model.fit(_data(candidates, observations, cases), previous=first).diagnostics["score"]
+    some_cases = model.fit(_data(candidates, partial, cases), previous=first).diagnostics["score"]
+    assert some_cases["n_holdout"] == every_case["n_holdout"] == 6
+    assert some_cases["z_mean"] == pytest.approx(every_case["z_mean"], abs=0.1)  # about 1.9 apart without the subset
+
+
+def test_a_value_on_a_case_outside_the_split_raises():
+    candidates, observations, _, cases = _world(1, n=5)
+    with pytest.raises(ValueError, match="unknown case 'case0'"):
+        _fit(candidates, observations, cases[1:])
+
+
+def test_a_row_at_a_case_the_fit_doesnt_have_raises():
+    candidates, observations, _, cases = _world(1, n=5)
+    layout = _fit(candidates, observations, cases).metrics["score"].design
+    assert layout.row(candidates["c0"], cases[0]).shape == (layout.p,)  # the reference case
+    with pytest.raises(ValueError, match="unknown case 'nope'"):
+        layout.row(candidates["c0"], "nope")
+
+
 def test_an_unbounded_metric_is_scaled_by_twice_the_baselines_mean():
     candidates, observations, _, cases = _world(1, n=5)
     fit = _fit(candidates, observations, cases)
@@ -449,12 +480,6 @@ def test_a_flagged_fit_gives_no_effects_but_keeps_its_diagnostics():
     assert out["reason"] == "flagged: score"
     assert out["effects"] == out["factors"] == []
     assert out["metrics"]["score"]["diagnostics"]["flagged"] is True
-
-
-def test_without_the_extra_the_model_cant_be_built(monkeypatch):
-    monkeypatch.setitem(sys.modules, "numpy", None)
-    with pytest.raises(ImportError, match=r"pip install \"strands-agents-evals\[optimization\]\""):
-        BayesBenchModel()
 
 
 def test_config_is_empty():

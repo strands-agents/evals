@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ...types.optimization import Estimate
+from ..bayesbench import linear_contrast
 from ..scoring.objectives import AtMost, Criteria, Maximize, Minimize
 from .bayesbench import BayesBenchFit
 from .design import design
@@ -24,8 +25,6 @@ def effects(fit: Fit) -> list[dict[str, Any]]:
     """
     if not isinstance(fit, BayesBenchFit):
         return []
-    from ..bayesbench import linear_contrast  # optional extra: optimization
-
     rows = []
     for metric, model in fit.metrics.items():
         for factor, level, contrast_row in fit.design.contrasts():
