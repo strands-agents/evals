@@ -223,18 +223,66 @@ def test_the_fit_is_deterministic():
     assert effects(first) == effects(second)
 
 
+def _chain_data(candidates, observations, cases, n):
+    ids = list(candidates)[:n]
+    return _data({c: candidates[c] for c in ids}, {c: observations[c] for c in ids}, cases)
+
+
 def test_the_held_out_checks_carry_forward_without_changing_the_previous_fit():
-    candidates, observations, _, cases = _world(6, n=12)
+    candidates, observations, _, cases = _world(6, n=18)
     model = BayesBenchModel()
-    first_ids = list(candidates)[:6]
-    first = model.fit(_data({c: candidates[c] for c in first_ids}, {c: observations[c] for c in first_ids}, cases))
-    before = json.dumps(first.diagnostics, sort_keys=True)
-    second = model.fit(_data(candidates, observations, cases), previous=first)
-    again = model.fit(_data(candidates, observations, cases), previous=first)
+    first = model.fit(_chain_data(candidates, observations, cases, 6))
+    second = model.fit(_chain_data(candidates, observations, cases, 12), previous=first)
     assert first.diagnostics["score"]["n_holdout"] == 0
-    assert second.diagnostics["score"]["n_holdout"] == 6  # the candidates new since the first fit
-    assert json.dumps(first.diagnostics, sort_keys=True) == before
-    assert second.diagnostics == again.diagnostics
+    assert second.checks["score"].n_holdout == 6  # the candidates new since the first fit
+    third = model.fit(_chain_data(candidates, observations, cases, 18), previous=second)
+    third_again = model.fit(_chain_data(candidates, observations, cases, 18), previous=second)
+    assert second.checks["score"].n_holdout == 6  # refitting from `second` twice never changes its checks
+    assert third.checks["score"].n_holdout == third_again.checks["score"].n_holdout == 12
+    assert third.diagnostics == third_again.diagnostics
+
+
+def test_the_held_out_check_flags_a_model_whose_predictions_keep_missing():
+    # Later candidates do systematically better than any option explains, so the checks fill a window and flag.
+    rng = random.Random(4)
+    space = Space({"mode": OneOf("a", "b", default="a"), "k": Int(1, 10, default=3)})
+    candidates = {"c0": {"mode": "a", "k": 3}}
+    candidates.update({f"c{i}": {"mode": rng.choice("ab"), "k": rng.randint(1, 10)} for i in range(1, 28)})
+    cases = ["x", "y", "z"]
+    observations = {}
+    for i, (cid, v) in enumerate(candidates.items()):
+        drift = 0.012 * i + rng.gauss(0, 0.08)
+        observations[cid] = {c: [0.3 + 0.05 * (v["mode"] == "b") + drift + rng.gauss(0, 0.02)] for c in cases}
+    model, fit = BayesBenchModel(), None
+    for n in (2, 4, 8, 12, 16, 20):
+        ids = list(candidates)[:n]
+        data = _data(
+            {c: candidates[c] for c in ids},
+            {c: observations[c] for c in ids},
+            cases,
+            space=space,
+            text_blocks={},
+            ranges={"score": (0.0, 1.0)},
+        )
+        fit = model.fit(data, previous=fit)
+    assert fit.diagnostics["score"]["n_holdout"] == 18
+    assert fit.flagged == ["score"]
+    out = effects_json(fit, CRITERIA)
+    assert out["reason"] == "flagged: score" and out["effects"] == []
+
+
+def test_the_held_out_check_of_an_unbounded_metric_ignores_a_change_of_scale():
+    # Only the baseline's runs differ, which moves this fit's unit (twice the baseline's mean): the new candidates'
+    # z-scores, against the earlier fit's prediction, must not move with it.
+    candidates, observations, _, cases = _world(3, n=12)
+    model = BayesBenchModel()
+    first = model.fit(_chain_data(candidates, observations, cases, 6))
+    shifted = {**observations, "c0": {case: [*runs, 2 * runs[0]] for case, runs in observations["c0"].items()}}
+    same_scale = model.fit(_data(candidates, observations, cases), previous=first)
+    new_scale = model.fit(_data(candidates, shifted, cases), previous=first)
+    assert new_scale.metrics["score"].unit != pytest.approx(same_scale.metrics["score"].unit)
+    for key in ("n_holdout", "z_mean", "z_sq_sum"):
+        assert new_scale.diagnostics["score"][key] == pytest.approx(same_scale.diagnostics["score"][key])
 
 
 def test_an_unbounded_metric_is_scaled_by_twice_the_baselines_mean():

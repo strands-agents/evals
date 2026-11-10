@@ -173,7 +173,9 @@ class BayesBenchModel(ScoreModel):
                         continue
                     predicted, variance = earlier.posterior.predictive(earlier.design.row(pool[cid]))
                     check.record(
-                        means[cid],
+                        # on the earlier fit's scale, as its prediction and noise are: an unbounded metric's unit
+                        # moves with the baseline's mean between fits
+                        (means[cid] * unit + offset - earlier.offset) / earlier.unit,
                         float(predicted[0]),
                         float(variance[0]) + earlier.own(None),  # a candidate it hadn't fitted: own effect at the prior
                         earlier.noise / n_cases[cid],
