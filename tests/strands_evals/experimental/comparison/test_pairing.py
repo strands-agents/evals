@@ -5,7 +5,14 @@ from pydantic import ValidationError
 
 from strands_evals import Case, Experiment
 from strands_evals.evaluators import Equals
-from strands_evals.experimental.comparison import PairedScore, pair_reports
+from strands_evals.experimental.comparison import (
+    PairedScore,
+    PairedTrialScore,
+    aggregate_trial_pairs,
+    pair_report_trials,
+    pair_reports,
+    summarize_pairs,
+)
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
 from strands_evals.types.evaluation_report import EvaluationReport
 
@@ -227,3 +234,284 @@ def test_rejects_report_shape_mismatch():
 
     with pytest.raises(ValueError, match="1 cases but 0 scores"):
         pair_reports(baseline=baseline, candidate=baseline)
+
+
+def test_pairs_and_aggregates_reports_across_trials():
+    baseline_reports = [
+        _report(
+            [
+                _row(name="case-b", evaluator="correctness", score=0.3),
+                _row(name="case-a", evaluator="correctness", score=0.1),
+            ]
+        ),
+        _report(
+            [
+                _row(name="case-a", evaluator="correctness", score=0.5),
+                _row(name="case-b", evaluator="correctness", score=0.7),
+            ]
+        ),
+    ]
+    candidate_reports = [
+        _report(
+            [
+                _row(name="case-a", evaluator="correctness", score=0.3),
+                _row(name="case-b", evaluator="correctness", score=0.4),
+            ]
+        ),
+        _report(
+            [
+                _row(name="case-b", evaluator="correctness", score=0.9),
+                _row(name="case-a", evaluator="correctness", score=0.6),
+            ]
+        ),
+    ]
+
+    trial_pairs = pair_report_trials(baseline_reports=baseline_reports, candidate_reports=candidate_reports)
+    aggregated = aggregate_trial_pairs(trial_pairs)
+    summary = summarize_pairs(aggregated)[0]
+
+    assert [(pair.case_id, pair.trial_index) for pair in trial_pairs] == [
+        ("case-a", 0),
+        ("case-a", 1),
+        ("case-b", 0),
+        ("case-b", 1),
+    ]
+    assert [pair.delta for pair in trial_pairs] == pytest.approx([0.2, 0.1, 0.1, 0.2])
+    assert [pair.case_id for pair in aggregated] == ["case-a", "case-b"]
+    assert [pair.baseline_score for pair in aggregated] == pytest.approx([0.3, 0.5])
+    assert [pair.candidate_score for pair in aggregated] == pytest.approx([0.45, 0.65])
+    assert [pair.delta for pair in aggregated] == pytest.approx([0.15, 0.15])
+    assert all(pair.baseline_index is None for pair in aggregated)
+    assert all(pair.candidate_index is None for pair in aggregated)
+    assert [pair.baseline_trial_count for pair in aggregated] == [2, 2]
+    assert [pair.candidate_trial_count for pair in aggregated] == [2, 2]
+    assert summary.case_count == 2
+    assert summary.mean_delta == pytest.approx(0.15)
+
+
+@pytest.mark.parametrize(
+    ("baseline_reports", "candidate_reports", "message"),
+    [
+        ([], [], "at least one trial"),
+        (
+            [_report([_row(name="case", score=0.0)])],
+            [
+                _report([_row(name="case", score=0.0)]),
+                _report([_row(name="case", score=0.0)]),
+            ],
+            "same number of trials",
+        ),
+    ],
+)
+def test_rejects_invalid_trial_report_counts(
+    baseline_reports: list[EvaluationReport],
+    candidate_reports: list[EvaluationReport],
+    message: str,
+):
+    with pytest.raises(ValueError, match=message):
+        pair_report_trials(baseline_reports=baseline_reports, candidate_reports=candidate_reports)
+
+
+def test_rejects_case_evaluator_row_changes_across_trials():
+    baseline_reports = [
+        _report([_row(name="case-a", score=0.1)]),
+        _report([_row(name="case-b", score=0.2)]),
+    ]
+    candidate_reports = [
+        _report([_row(name="case-a", score=0.3)]),
+        _report([_row(name="case-b", score=0.4)]),
+    ]
+
+    with pytest.raises(ValueError, match="trial_index=1.*missing=.*case-a.*unexpected=.*case-b"):
+        pair_report_trials(baseline_reports=baseline_reports, candidate_reports=candidate_reports)
+
+
+def test_allows_applicability_changes_across_trials():
+    not_applicable = [EvaluationOutput(score=0.0, test_pass=True, label=NOT_APPLICABLE)]
+    baseline_reports = [
+        _report([_row(name="case", score=0.0, details=not_applicable)]),
+        _report([_row(name="case", score=0.2)]),
+        _report([_row(name="case", score=0.4)]),
+    ]
+    candidate_reports = [
+        _report([_row(name="case", score=0.6)]),
+        _report([_row(name="case", score=0.0, details=not_applicable)]),
+        _report([_row(name="case", score=0.8)]),
+    ]
+
+    trial_pairs = pair_report_trials(baseline_reports=baseline_reports, candidate_reports=candidate_reports)
+    aggregated = aggregate_trial_pairs(trial_pairs)
+    reordered_pairs = pair_report_trials(
+        baseline_reports=baseline_reports,
+        candidate_reports=[candidate_reports[1], candidate_reports[0], candidate_reports[2]],
+    )
+    reordered = aggregate_trial_pairs(reordered_pairs)
+
+    assert [(pair.case_id, pair.trial_index) for pair in trial_pairs] == [
+        ("case", 0),
+        ("case", 1),
+        ("case", 2),
+    ]
+    assert [pair.delta for pair in trial_pairs] == [None, None, pytest.approx(0.4)]
+    assert len(aggregated) == 1
+    assert aggregated[0].baseline_score == pytest.approx(0.3)
+    assert aggregated[0].candidate_score == pytest.approx(0.7)
+    assert aggregated[0].baseline_trial_count == 2
+    assert aggregated[0].candidate_trial_count == 2
+    assert reordered == aggregated
+
+
+def test_rejects_when_one_side_is_never_applicable():
+    not_applicable = [EvaluationOutput(score=0.0, test_pass=True, label=NOT_APPLICABLE)]
+    baseline_reports = [
+        _report([_row(name="case", evaluator="correctness", score=0.0, details=not_applicable)]),
+        _report([_row(name="case", evaluator="correctness", score=0.0, details=not_applicable)]),
+    ]
+    candidate_reports = [
+        _report([_row(name="case", evaluator="correctness", score=0.5)]),
+        _report([_row(name="case", evaluator="correctness", score=1.0)]),
+    ]
+    trial_pairs = pair_report_trials(baseline_reports=baseline_reports, candidate_reports=candidate_reports)
+
+    with pytest.raises(ValueError, match="no applicable trials.*missing='baseline'"):
+        aggregate_trial_pairs(trial_pairs)
+
+
+def test_tracks_full_and_partial_trial_support():
+    not_applicable = [EvaluationOutput(score=0.0, test_pass=True, label=NOT_APPLICABLE)]
+    baseline_reports = [
+        _report(
+            [
+                _row(name="full", score=0.1),
+                _row(name="partial", score=0.0, details=not_applicable),
+            ]
+        ),
+        _report([_row(name="full", score=0.2), _row(name="partial", score=0.4)]),
+        _report([_row(name="full", score=0.3), _row(name="partial", score=0.6)]),
+    ]
+    candidate_reports = [
+        _report([_row(name="full", score=0.2), _row(name="partial", score=0.5)]),
+        _report(
+            [
+                _row(name="full", score=0.3),
+                _row(name="partial", score=0.0, details=not_applicable),
+            ]
+        ),
+        _report([_row(name="full", score=0.4), _row(name="partial", score=0.9)]),
+    ]
+
+    trial_pairs = pair_report_trials(baseline_reports=baseline_reports, candidate_reports=candidate_reports)
+    aggregated = aggregate_trial_pairs(trial_pairs)
+
+    assert [(pair.case_id, pair.trial_index) for pair in trial_pairs] == [
+        ("full", 0),
+        ("full", 1),
+        ("full", 2),
+        ("partial", 0),
+        ("partial", 1),
+        ("partial", 2),
+    ]
+    assert [(pair.case_id, pair.baseline_score, pair.candidate_score) for pair in trial_pairs] == [
+        ("full", 0.1, 0.2),
+        ("full", 0.2, 0.3),
+        ("full", 0.3, 0.4),
+        ("partial", None, 0.5),
+        ("partial", 0.4, None),
+        ("partial", 0.6, 0.9),
+    ]
+    assert [(pair.case_id, pair.baseline_trial_count, pair.candidate_trial_count) for pair in aggregated] == [
+        ("full", 3, 3),
+        ("partial", 2, 2),
+    ]
+    assert aggregated[1].baseline_score == pytest.approx(0.5)
+    assert aggregated[1].candidate_score == pytest.approx(0.7)
+
+
+def test_trial_score_is_distinct_from_aggregated_score_and_validates_index():
+    trial_pair = PairedTrialScore(
+        case_id="case",
+        evaluator="correctness",
+        baseline_index=0,
+        candidate_index=1,
+        baseline_score=0.1,
+        candidate_score=0.2,
+        trial_index=0,
+    )
+
+    assert not isinstance(trial_pair, PairedScore)
+    assert trial_pair.delta == pytest.approx(0.1)
+    with pytest.raises(ValidationError):
+        trial_pair.candidate_score = 0.9
+    with pytest.raises(ValidationError):
+        PairedTrialScore(
+            case_id="case",
+            evaluator="correctness",
+            baseline_index=0,
+            candidate_index=1,
+            baseline_score=0.1,
+            candidate_score=0.2,
+            trial_index=-1,
+        )
+
+
+def test_rejects_duplicate_trial_pairs():
+    pair = PairedTrialScore(
+        case_id="case-a",
+        evaluator="correctness",
+        baseline_index=0,
+        candidate_index=0,
+        baseline_score=0.1,
+        candidate_score=0.2,
+        trial_index=0,
+    )
+
+    with pytest.raises(ValueError, match="duplicate trial/case/evaluator row"):
+        aggregate_trial_pairs([pair, pair])
+
+
+def test_aggregate_trial_pairs_returns_empty_list():
+    assert aggregate_trial_pairs([]) == []
+
+
+def test_orders_multiple_evaluators_and_omits_always_not_applicable_rows():
+    not_applicable = [EvaluationOutput(score=0.0, test_pass=True, label=NOT_APPLICABLE)]
+    baseline_reports = [
+        _report(
+            [
+                _row(name="case", evaluator="helpfulness", score=0.2),
+                _row(name="case", evaluator="correctness", score=0.4),
+                _row(name="case", evaluator="safety", score=0.0, details=not_applicable),
+            ]
+        ),
+        _report(
+            [
+                _row(name="case", evaluator="safety", score=0.0, details=not_applicable),
+                _row(name="case", evaluator="correctness", score=0.6),
+                _row(name="case", evaluator="helpfulness", score=0.8),
+            ]
+        ),
+    ]
+    candidate_reports = [
+        _report(
+            [
+                _row(name="case", evaluator="correctness", score=0.5),
+                _row(name="case", evaluator="safety", score=0.0, details=not_applicable),
+                _row(name="case", evaluator="helpfulness", score=0.3),
+            ]
+        ),
+        _report(
+            [
+                _row(name="case", evaluator="helpfulness", score=0.9),
+                _row(name="case", evaluator="correctness", score=0.7),
+                _row(name="case", evaluator="safety", score=0.0, details=not_applicable),
+            ]
+        ),
+    ]
+
+    trial_pairs = pair_report_trials(baseline_reports=baseline_reports, candidate_reports=candidate_reports)
+    aggregated = aggregate_trial_pairs(trial_pairs)
+
+    assert [(pair.evaluator, pair.case_id) for pair in aggregated] == [
+        ("correctness", "case"),
+        ("helpfulness", "case"),
+    ]

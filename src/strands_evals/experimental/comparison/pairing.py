@@ -2,6 +2,9 @@
 
 import hashlib
 import json
+from collections import defaultdict
+from collections.abc import Sequence
+from statistics import fmean
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
@@ -9,32 +12,71 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field
 from ...types.evaluation_report import EvaluationReport
 
 
-class PairedScore(BaseModel):
-    """One evaluator score matched between baseline and candidate reports.
-
-    Attributes:
-        case_id: Stable identifier derived from the case name or input.
-        evaluator: Name of the evaluator that produced both scores.
-        baseline_index: Source row in the baseline report.
-        candidate_index: Source row in the candidate report.
-        baseline_score: Score produced by the baseline.
-        candidate_score: Score produced by the candidate.
-        delta: Candidate score minus baseline score.
-    """
-
+class _ScorePair(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     case_id: str
     evaluator: str
-    baseline_index: int = Field(ge=0)
-    candidate_index: int = Field(ge=0)
+
+
+class PairedScore(_ScorePair):
+    """One evaluator score matched between baseline and candidate reports.
+
+    `baseline_index` and `candidate_index` identify source rows for a direct
+    report pair. They are `None` after multiple trial rows have been averaged.
+
+    Attributes:
+        case_id: Stable identifier derived from the case name or input.
+        evaluator: Name of the evaluator that produced both scores.
+        baseline_score: Score produced by the baseline.
+        candidate_score: Score produced by the candidate.
+        baseline_index: Source row in the baseline report, when applicable.
+        candidate_index: Source row in the candidate report, when applicable.
+        baseline_trial_count: Applicable baseline trials included in an
+            aggregate, or `None` for a direct report pair.
+        candidate_trial_count: Applicable candidate trials included in an
+            aggregate, or `None` for a direct report pair.
+        delta: Candidate score minus baseline score.
+    """
+
     baseline_score: float
     candidate_score: float
+    baseline_index: int | None = Field(default=None, ge=0)
+    candidate_index: int | None = Field(default=None, ge=0)
+    baseline_trial_count: int | None = Field(default=None, ge=1)
+    candidate_trial_count: int | None = Field(default=None, ge=1)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def delta(self) -> float:
         """Return the candidate-minus-baseline score change."""
+        return self.candidate_score - self.baseline_score
+
+
+class PairedTrialScore(_ScorePair):
+    """One evaluator's baseline and candidate observations for a trial.
+
+    Attributes:
+        baseline_score: Baseline score, or `None` when not applicable.
+        candidate_score: Candidate score, or `None` when not applicable.
+        baseline_index: Source row in the baseline report for this trial.
+        candidate_index: Source row in the candidate report for this trial.
+        trial_index: Zero-based position of the trial in the report sequences.
+        delta: Candidate-minus-baseline change when both sides are applicable.
+    """
+
+    baseline_score: float | None
+    candidate_score: float | None
+    baseline_index: int = Field(ge=0)
+    candidate_index: int = Field(ge=0)
+    trial_index: int = Field(ge=0)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def delta(self) -> float | None:
+        """Return the change when both observations are applicable."""
+        if self.baseline_score is None or self.candidate_score is None:
+            return None
         return self.candidate_score - self.baseline_score
 
 
@@ -115,6 +157,156 @@ def pair_reports(*, baseline: EvaluationReport, candidate: EvaluationReport) -> 
         )
 
     return pairs
+
+
+def pair_report_trials(
+    *,
+    baseline_reports: Sequence[EvaluationReport],
+    candidate_reports: Sequence[EvaluationReport],
+) -> list[PairedTrialScore]:
+    """Align baseline and candidate report observations across trials.
+
+    Every trial must contain the same case/evaluator rows. Applicability may
+    vary independently between baseline and candidate trials because repeated
+    agent runs are not paired by seed or state. Each side is averaged over its
+    own applicable trials during aggregation. Returned rows retain their trial
+    and source indices.
+
+    Args:
+        baseline_reports: Baseline reports ordered by trial.
+        candidate_reports: Candidate reports ordered by trial.
+
+    Returns:
+        Aligned evaluator observations from every trial.
+
+    Raises:
+        ValueError: If no trials are supplied, the trial counts differ, or the
+            reports are not comparable across trials.
+    """
+
+    if not baseline_reports or not candidate_reports:
+        raise ValueError("baseline and candidate report sequences must contain at least one trial")
+    if len(baseline_reports) != len(candidate_reports):
+        raise ValueError(
+            "baseline and candidate report sequences must contain the same number of trials: "
+            f"baseline={len(baseline_reports)}, candidate={len(candidate_reports)}"
+        )
+
+    reference_row_keys: set[tuple[str, str]] | None = None
+    trial_pairs: list[PairedTrialScore] = []
+    for trial_index, (baseline, candidate) in enumerate(zip(baseline_reports, candidate_reports, strict=True)):
+        try:
+            baseline_rows = _index_report(baseline, f"baseline trial {trial_index}")
+            candidate_rows = _index_report(candidate, f"candidate trial {trial_index}")
+        except ValueError as error:
+            raise ValueError(f"trial {trial_index}: {error}") from error
+
+        row_keys = set(baseline_rows)
+        candidate_keys = set(candidate_rows)
+        if row_keys != candidate_keys:
+            raise ValueError(
+                f"trial {trial_index}: reports do not contain the same case/evaluator rows: "
+                f"baseline_only={_summarize_keys(row_keys - candidate_keys)}, "
+                f"candidate_only={_summarize_keys(candidate_keys - row_keys)}"
+            )
+        if reference_row_keys is None:
+            reference_row_keys = row_keys
+        elif row_keys != reference_row_keys:
+            raise ValueError(
+                "trial reports do not contain the same case/evaluator rows: "
+                f"trial_index={trial_index}, "
+                f"missing={_summarize_keys(reference_row_keys - row_keys)}, "
+                f"unexpected={_summarize_keys(row_keys - reference_row_keys)}"
+            )
+
+        for evaluator, case_id in sorted(row_keys):
+            baseline_index = baseline_rows[(evaluator, case_id)]
+            candidate_index = candidate_rows[(evaluator, case_id)]
+            baseline_details = (
+                baseline.detailed_results[baseline_index] if baseline_index < len(baseline.detailed_results) else []
+            )
+            candidate_details = (
+                candidate.detailed_results[candidate_index] if candidate_index < len(candidate.detailed_results) else []
+            )
+            baseline_applicable = EvaluationReport.is_applicable(baseline_details)
+            candidate_applicable = EvaluationReport.is_applicable(candidate_details)
+            trial_pairs.append(
+                PairedTrialScore(
+                    case_id=case_id,
+                    evaluator=evaluator,
+                    baseline_index=baseline_index,
+                    candidate_index=candidate_index,
+                    baseline_score=baseline.scores[baseline_index] if baseline_applicable else None,
+                    candidate_score=candidate.scores[candidate_index] if candidate_applicable else None,
+                    trial_index=trial_index,
+                )
+            )
+
+    return sorted(trial_pairs, key=lambda pair: (pair.evaluator, pair.case_id, pair.trial_index))
+
+
+def aggregate_trial_pairs(pairs: Sequence[PairedTrialScore]) -> list[PairedScore]:
+    """Average repeated trial scores within each case and evaluator.
+
+    Baseline and candidate scores are averaged independently over the trials
+    where each side is applicable. Rows that are never applicable on either
+    side are omitted. A row that is applicable on only one side across all
+    trials is rejected because no comparison can be formed. Aggregating before
+    statistical comparison keeps repeated agent runs from being treated as
+    independent cases.
+
+    Args:
+        pairs: Trial-indexed scores returned by `pair_report_trials`.
+
+    Returns:
+        One averaged paired score per case and evaluator, including the
+        applicable trial count for each side.
+
+    Raises:
+        ValueError: If a trial row is duplicated or a case/evaluator row has
+            no applicable trials on one side.
+    """
+
+    if not pairs:
+        return []
+
+    grouped: defaultdict[tuple[str, str], list[PairedTrialScore]] = defaultdict(list)
+    seen: set[tuple[int, str, str]] = set()
+    for pair in pairs:
+        row_key = (pair.trial_index, pair.evaluator, pair.case_id)
+        if row_key in seen:
+            raise ValueError(
+                "pairs contain duplicate trial/case/evaluator row: "
+                f"trial_index={pair.trial_index}, case_id={pair.case_id!r}, evaluator={pair.evaluator!r}"
+            )
+        seen.add(row_key)
+        grouped[(pair.evaluator, pair.case_id)].append(pair)
+
+    aggregated: list[PairedScore] = []
+    for evaluator, case_id in sorted(grouped):
+        case_pairs = grouped[(evaluator, case_id)]
+        baseline_scores = [pair.baseline_score for pair in case_pairs if pair.baseline_score is not None]
+        candidate_scores = [pair.candidate_score for pair in case_pairs if pair.candidate_score is not None]
+        if not baseline_scores and not candidate_scores:
+            continue
+        if not baseline_scores or not candidate_scores:
+            missing_side = "baseline" if not baseline_scores else "candidate"
+            raise ValueError(
+                "case/evaluator row has no applicable trials on one side: "
+                f"case_id={case_id!r}, evaluator={evaluator!r}, missing={missing_side!r}"
+            )
+        aggregated.append(
+            PairedScore(
+                case_id=case_id,
+                evaluator=evaluator,
+                baseline_score=fmean(baseline_scores),
+                candidate_score=fmean(candidate_scores),
+                baseline_trial_count=len(baseline_scores),
+                candidate_trial_count=len(candidate_scores),
+            )
+        )
+
+    return aggregated
 
 
 def _index_report(report: EvaluationReport, report_name: str) -> dict[tuple[str, str], int]:
