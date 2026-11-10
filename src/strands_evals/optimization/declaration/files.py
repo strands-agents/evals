@@ -11,6 +11,8 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
+from strands import Skill
+
 from .markers import _check_positive_int, _check_str, _Marker
 
 
@@ -213,30 +215,219 @@ class JsonField(_Marker):
 
 
 class SkillLibrary(_Marker):
-    """A directory of skill files; each member's text is editable.
+    """A directory of skills; each skill's `SKILL.md` text is editable.
 
-    Member keys are `<declared name>/<path relative to the library>`, e.g. `skills/triage/SKILL.md`.
-    Resolves to the candidate's copy of the directory.
+    The first argument is the path of the folder the agent loads its skills from, the same path
+    passed to `AgentSkills`; the declared name (`skills=` below) is the factory's parameter:
+
+        skills/                    # SkillLibrary("skills")
+          triage/SKILL.md          # key skills/triage/SKILL.md
+          billing/SKILL.md         # key skills/billing/SKILL.md
+
+        @tunable(skills=SkillLibrary("skills"))
+        def create_agent(skills: Path) -> Agent:
+            return Agent(plugins=[AgentSkills(skills=skills)])  # the candidate's copy of skills/
+
+    The skills are found as the Strands skills runtime finds them: the directory itself when it holds
+    a `SKILL.md` (or `skill.md`), else each subdirectory that does. Each `SKILL.md` is one text value,
+    keyed `<declared name>/<path relative to the library>`, e.g. `skills/triage/SKILL.md`. Other files
+    (references, scripts) are copied with the library but not edited; a `FileText` or `JsonField` may
+    declare one of them.
+
+    To tune only some skills of a library, name them: `SkillLibrary("skills", only=("triage",))`
+    tunes `skills/triage/SKILL.md` and copies the other skills as they are, never edited, so the
+    factory loads the library from the same path as without `only`.
+
+    A `SKILL.md` must open with a YAML frontmatter block (between `---` lines) holding a non-empty
+    `name` and `description`, parsed as the Strands skills runtime parses it, and a proposed text
+    must keep the baseline's `name`, so the skill keeps its identity. The factory receives the path of
+    this directory in the candidate's copy (the original directory in the plain call); the copy keeps
+    the directory's name, which the runtime checks against a skill's `name`.
     """
 
-    def __init__(self, path: str | Path, *, size_cap: int | None = None, edit_instructions: str | None = None):
-        """Declare every member's text as tunable.
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        only: list[str] | tuple[str, ...] | None = None,
+        size_cap: int | None = None,
+        edit_instructions: str | None = None,
+    ):
+        """Declare every skill's `SKILL.md` text as tunable, or only the named skills'.
 
         Args:
-            path: The directory of skill files.
-            size_cap: Max characters per member; None means `max(2000, 3 * len(baseline))`.
-            edit_instructions: Shown to the proposer next to every member.
+            path: The directory of skills, or one skill's directory; a relative path is taken from the
+                current working directory.
+            only: The skills to tune, a list or tuple of directory names, e.g. `("triage", "billing")`;
+                None tunes every skill. The others are copied but not edited.
+            size_cap: Max characters per `SKILL.md`; None means `max(2000, 3 * len(baseline))` for each.
+            edit_instructions: Shown to the proposer next to every `SKILL.md`.
+
+        Raises:
+            FileNotFoundError: `path` is not a directory.
+            TypeError: `size_cap` isn't a positive integer, `edit_instructions` isn't a str, `only`
+                isn't a non-empty list or tuple of names of skills in the directory (or `path` is a
+                single skill), the directory or a folder in it can't be read (every candidate's copy
+                would fail on it), the directory holds no skill, a tuned skill's directory or `SKILL.md`
+                is a symlink (its copy would write through to, or keep following, the original), a
+                tuned `SKILL.md` isn't UTF-8 or lacks the frontmatter above, or a tuned skill has the
+                same `name` as another skill (the runtime keeps only one).
         """
-        raise NotImplementedError
+        _check_positive_int("size_cap", size_cap)
+        _check_str("edit_instructions", edit_instructions)
+        if not isinstance(path, (str, Path)):
+            raise TypeError(f"SkillLibrary path must be a str or Path, got {path!r}")
+        if only is not None and not (isinstance(only, (list, tuple)) and all(isinstance(name, str) for name in only)):
+            raise TypeError(f"SkillLibrary only must be a list or tuple of skill names, got {only!r}")
+        if only is not None and not only:
+            raise TypeError("SkillLibrary only names no skill; pass None to tune every skill")
+        selected = None if only is None else set(only)
+        self.path = Path(path).expanduser().resolve()
+        if not self.path.is_dir():
+            where = (
+                ""
+                if Path(path).is_absolute()
+                else f" (looked for {self.path}, from the working directory {Path.cwd()})"
+            )
+            raise FileNotFoundError(f"SkillLibrary: {path} is not a directory{where}")
+        self.size_cap = size_cap
+        self.edit_instructions = edit_instructions
+        root_file = _skill_file_in(self.path)
+        untuned_files: list[Path] = []  # the `SKILL.md` of each skill `only` leaves out
+        if root_file is not None:
+            if selected is not None:
+                raise TypeError(f"SkillLibrary: {self.path} is a single skill; only= picks skills of a directory")
+            skill_files = [root_file]
+        else:
+            found = {
+                child.name: (child, skill_file)
+                for child in sorted(self.path.iterdir())
+                if child.is_dir() and (skill_file := _skill_file_in(child)) is not None
+            }
+            if not found:
+                raise TypeError(f"SkillLibrary: {self.path} holds no skill (no SKILL.md in it or in a subdirectory)")
+            unknown = sorted((selected or set()) - found.keys())
+            if unknown:
+                raise TypeError(
+                    f"SkillLibrary: no skill named {', '.join(map(repr, unknown))} in {self.path} "
+                    f"(it has {', '.join(found)})"
+                )
+            skill_files = []
+            for name, (child, skill_file) in found.items():
+                if selected is not None and name not in selected:
+                    untuned_files.append(skill_file)
+                    continue
+                if child.is_symlink():
+                    raise TypeError(
+                        f"SkillLibrary: {child} is a symlink; its copy would write through to the original, "
+                        "so replace it with a directory"
+                    )
+                skill_files.append(skill_file)
+        # Path relative to the library (posix) -> the member, in the runtime's order.
+        self._members = {
+            file.relative_to(self.path).as_posix(): _SkillFile(file, self.path, size_cap, edit_instructions)
+            for file in skill_files
+        }
+        # The runtime loads one skill per name, so a tuned skill sharing its name with another skill
+        # might never reach the agent.
+        folders: dict[str, Path] = {}  # a tuned skill's name -> its folder
+        for member in self._members.values():
+            other = folders.setdefault(member._name, member.path.parent)
+            if other != member.path.parent:
+                raise TypeError(
+                    f"SkillLibrary: {other} and {member.path.parent} both name their skill {member._name!r}; "
+                    "the runtime keeps only one, so give each a unique name"
+                )
+        for file in untuned_files:
+            try:
+                text = file.read_bytes()
+            except OSError as error:  # every candidate's copy would fail on it
+                raise TypeError(
+                    f"SkillLibrary: can't read {file} ({error.strerror}), which every candidate's copy needs"
+                ) from error
+            try:
+                name = _skill_name(text.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):  # the runtime can't load it either
+                continue
+            if name in folders:
+                raise TypeError(
+                    f"SkillLibrary: {folders[name]} and {file.parent} both name their skill {name!r}; "
+                    "the runtime keeps only one, so give each a unique name"
+                )
+
+
+class _SkillFile(_Marker):
+    """One `SKILL.md` of a `SkillLibrary`: its text, written into the candidate's copy."""
+
+    def __init__(self, path: Path, copied: Path, size_cap: int | None, edit_instructions: str | None):
+        if path.is_symlink():  # the copy would keep the link, so the baseline would follow the original
+            raise TypeError(f"SkillLibrary: {path} is a symlink; replace it with the file it links to")
+        self.path = path
+        self.copied = copied  # the library's directory, which the candidate's copy holds
+        self.default = _read_text(path, "SkillLibrary")
+        self.size_cap = size_cap
+        self.edit_instructions = edit_instructions
+        try:
+            self._name = _skill_name(self.default)
+        except ValueError as error:
+            raise TypeError(f"SkillLibrary: {path}: {error}") from error
 
     def write(self, value: str, target: Path) -> None:
-        """Replace one member's text, keeping its frontmatter well-formed.
+        """Replace the text of `target`; one that already holds `value` keeps the original's bytes."""
+        if target.is_file() and target.read_bytes() == value.encode("utf-8"):
+            return
+        _replace_file(target, value)
 
-        Args:
-            value: The member's new text.
-            target: The member's file inside the copy.
-        """
-        raise NotImplementedError
+    def _original(self) -> str:
+        """The whole file's text at declaration."""
+        return self.default
+
+    def _render(self, value: str, text: str) -> str:
+        """The whole file's text with `value` applied to `text`."""
+        return value
+
+    def _canonical(self, value: Any) -> Any:
+        """The value as is: a file's text has no other form."""
+        return value
+
+    def _format_problem(self, value: str) -> str | None:
+        """A one-line problem with the frontmatter of `value`, or None; the `name` must stay the baseline's."""
+        if value == self.default:  # parsed in __init__
+            return None
+        try:
+            name = _skill_name(value)
+        except ValueError as error:
+            return str(error)
+        if name != self._name:
+            return f"the frontmatter name must stay {self._name!r}, got {name!r}"
+        return None
+
+
+def _skill_file_in(folder: Path) -> Path | None:
+    """`folder/SKILL.md`, else `folder/skill.md`, as named on disk; None when it has neither.
+
+    Names are read from the folder, not tested with `is_file()`, which on a case-insensitive file
+    system finds `skill.md` as `SKILL.md`.
+    """
+    try:
+        names = {entry.name for entry in folder.iterdir()}
+    except OSError as error:  # every candidate's copy would fail on it
+        raise TypeError(
+            f"SkillLibrary: can't read {folder} ({error.strerror}), which every candidate's copy needs"
+        ) from error
+    for name in ("SKILL.md", "skill.md"):
+        if name in names and (folder / name).is_file():
+            return folder / name
+    return None
+
+
+def _skill_name(text: str) -> str:
+    """The `name` in a `SKILL.md`'s frontmatter, parsed as the Strands skills runtime parses it.
+
+    Raises `ValueError` saying what is wrong: no frontmatter block, YAML the runtime can't read, or
+    no `name` or `description`.
+    """
+    return Skill.from_content(text).name
 
 
 def _outer_folders(folders: Iterable[Path]) -> tuple[Path, ...]:
@@ -248,16 +439,20 @@ def _outer_folders(folders: Iterable[Path]) -> tuple[Path, ...]:
     return tuple(outer)
 
 
-def _copy_folder_name(folder: Path) -> str:
-    """`<folder name>-<first 8 hex of the sha256 of its absolute path>`, so a/prompts and b/prompts don't collide."""
-    return f"{folder.name}-{hashlib.sha256(str(folder).encode('utf-8')).hexdigest()[:8]}"
+def _folder_in_copy(folder: Path) -> Path:
+    """`<first 8 hex of the sha256 of its absolute path>/<folder name>`.
+
+    The hash keeps a/prompts and b/prompts apart; the copy keeps the folder's own name, which a
+    skills runtime checks against a skill's `name`.
+    """
+    return Path(hashlib.sha256(str(folder).encode("utf-8")).hexdigest()[:8]) / folder.name
 
 
 def _location_in_copy(folders: Sequence[Path], file: Path) -> Path:
     """Where `file` lands inside a candidate's copy, relative to it."""
     for folder in folders:
         if file.is_relative_to(folder):
-            return Path(_copy_folder_name(folder)) / file.relative_to(folder)
+            return _folder_in_copy(folder) / file.relative_to(folder)
     raise KeyError(f"{file} is under none of the copied folders")
 
 

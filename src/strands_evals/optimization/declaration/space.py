@@ -20,10 +20,11 @@ from .files import (
     FileText,
     JsonField,
     SkillLibrary,
-    _copy_folder_name,
+    _folder_in_copy,
     _ignore_containing,
     _location_in_copy,
     _outer_folders,
+    _SkillFile,
 )
 from .markers import _UNSET, Choice, Component, Float, Int, OneOf, TextValue, _default_size_cap, _is_option, choice
 from .tools import ToolDescriptions
@@ -93,13 +94,14 @@ class Space:
             TypeError: No markers, a name that is empty or contains `.` or `/`, an unknown marker
                 type, a marker with no default, a default that fails `validate` (e.g. a text
                 default over its size cap), or two file markers on the same text (a `FileText`'s
-                file declared again, or two `JsonField`s on one field or one inside the other).
+                or a skill's file declared again, or two `JsonField`s on one field or one inside
+                the other).
         """
         if not markers:
             raise TypeError("nothing to optimize: declare at least one marker")
         self._markers: dict[str, Marker] = {}
         self._params: dict[str, ParamInfo] = {}
-        self._files: dict[str, FileText | JsonField] = {}  # file-backed key -> its marker
+        self._files: dict[str, FileText | JsonField | _SkillFile] = {}  # file-backed key -> its marker
         for name, marker in markers.items():
             if not isinstance(name, str) or not name or "." in name or "/" in name:
                 raise TypeError(f"declared name {name!r} must be a non-empty string without '.' or '/'")
@@ -108,17 +110,27 @@ class Space:
             if not isinstance(marker, Marker):
                 raise TypeError(f"{name}: {type(marker).__name__} is not a marker")
             self._markers[name] = marker
+            files: dict[str, FileText | JsonField | _SkillFile]
+            if isinstance(marker, SkillLibrary):
+                files = {f"{name}/{relative}": member for relative, member in marker._members.items()}
+            else:
+                files = {name: marker} if isinstance(marker, (FileText, JsonField)) else {}
             for info in _flatten(name, marker):
-                if isinstance(marker, (FileText, JsonField)):
-                    _check_no_overlap(info.key, marker, self._files)
-                    self._files[info.key] = marker
+                if info.key in files:
+                    _check_no_overlap(info.key, files[info.key], self._files)
+                    self._files[info.key] = files[info.key]
                 problem = self._problem(info, info.default)
                 if problem is not None:
                     raise TypeError(f"invalid default: {problem}")
                 self._params[info.key] = info
-        # Folders a candidate's copy holds; fixed by the declaration, so every copy has one layout.
-        self._copy_folders = _outer_folders(marker.path.parent for marker in self._files.values())
-        self._copies_files = any(isinstance(m, FileText) and m.as_path for m in self._files.values())
+        # Folders a candidate's copy holds (a SkillLibrary's whole directory); fixed by the declaration,
+        # so every copy has one layout.
+        self._copy_folders = _outer_folders(
+            m.copied if isinstance(m, _SkillFile) else m.path.parent for m in self._files.values()
+        )
+        self._copies_files = any(
+            isinstance(m, _SkillFile) or (isinstance(m, FileText) and m.as_path) for m in self._files.values()
+        )
 
     def params(self) -> list[ParamInfo]:
         """Every flat key, in declaration order, a choice before its sub-keys.
@@ -221,6 +233,8 @@ class Space:
         - `tool_descriptions`: new copies of the tools with the candidate's descriptions.
         - `FileText(as_path=True)`: the path of the file inside `workspace`, or the original path
           when `workspace` is None (the plain call).
+        - `SkillLibrary`: the path of the directory inside `workspace`, or the original directory
+          when `workspace` is None.
         - Any other marker: the value itself, e.g. `0.2` or the prompt text.
 
         `values` must already pass `validate`; nothing is checked here. A component's fixed kwargs
@@ -242,22 +256,23 @@ class Space:
             return alternative.build({arg: values[f"{name}.{label}.{arg}"] for arg in alternative.tunable})
         if isinstance(marker, ToolDescriptions):
             return marker.build({tool: cast(str, values[f"{name}.{tool}"]) for tool in marker.tools})
-        if isinstance(marker, FileText) and marker.as_path:
+        if isinstance(marker, SkillLibrary) or (isinstance(marker, FileText) and marker.as_path):
             return marker.path if workspace is None else workspace / _location_in_copy(self._copy_folders, marker.path)
         return values[name]
 
     def create_candidate_copy(self, values: Values, directory: Path) -> Path:
         """Copy each file-backed value's folder into `directory`, then write every active file-backed key.
 
-        Each source folder goes to `directory/<folder name>-<short hash of its original path>/`; a folder
-        inside another is copied once, as part of the outer one. Each active key is written by its
-        marker's `write()`, so the copy holds the candidate's values even if a source file changed
+        Each source folder goes to `directory/<short hash of its original path>/<folder name>/`, so it
+        keeps its name; a folder inside another is copied once, as part of the outer one. Each active
+        key is written by its marker's `write()`, so the copy holds the candidate's values even if a source file changed
         since declaration; a file that already holds its value keeps the original bytes. Built in a
         temp folder and renamed into place, with a marker file naming the file-backed values it holds,
         so a second call with the same values returns at once and one with other values raises. An
         empty `directory` is replaced; concurrent calls for the same values all succeed. Originals are
         never written: files are replaced rather than written through, and a folder containing
-        `directory` (e.g. the run directory under the project) is left out of the copy.
+        `directory` (e.g. the run directory under the project) is left out of the copy. A symlink
+        leads where the original's leads, into the copy when that is copied too.
 
         Args:
             values: The candidate's values; must already pass `validate`.
@@ -278,9 +293,11 @@ class Space:
             destinations = (building.resolve(), directory.resolve())
             for folder in self._copy_folders:
                 shutil.copytree(
-                    folder, building / _copy_folder_name(folder), symlinks=True, ignore=_ignore_containing(destinations)
+                    folder, building / _folder_in_copy(folder), symlinks=True, ignore=_ignore_containing(destinations)
                 )
             _make_folders_writable(building)  # a read-only source folder would block the writes below
+            for folder in self._copy_folders:
+                _relink(building, folder, self._copy_folders)
             for info in self._params.values():
                 if info.source is None or not self.is_active(info.key, values):
                     continue
@@ -403,6 +420,18 @@ def _flatten(name: str, marker: Marker) -> list[ParamInfo]:
     if isinstance(marker, JsonField):
         source = FileSource(marker.path, marker.pointer, False)
         return [_text(name, name, marker.default, marker.size_cap, marker.edit_instructions, source)]
+    if isinstance(marker, SkillLibrary):
+        return [
+            _text(
+                f"{name}/{relative}",
+                name,
+                member.default,
+                member.size_cap,
+                member.edit_instructions,
+                FileSource(member.path, None, True),
+            )
+            for relative, member in marker._members.items()
+        ]
     raise TypeError(f"{name}: {type(marker).__name__} can't be declared yet")
 
 
@@ -439,8 +468,14 @@ def _text(
     return ParamInfo(key, name, "text", default, size_cap=cap, edit_instructions=edit_instructions, source=source)
 
 
-def _check_no_overlap(key: str, marker: FileText | JsonField, declared: Mapping[str, FileText | JsonField]) -> None:
+def _check_no_overlap(
+    key: str,
+    marker: FileText | JsonField | _SkillFile,
+    declared: Mapping[str, FileText | JsonField | _SkillFile],
+) -> None:
     """Raise `TypeError` if `marker` edits text another declared file marker edits too."""
+    # Every marker's path is already resolved: FileText and JsonField resolve theirs, and a skill's
+    # file and folder are never symlinks, so equal files have equal paths.
     for other_key, other in declared.items():
         if other.path != marker.path:
             continue
@@ -452,7 +487,7 @@ def _check_no_overlap(key: str, marker: FileText | JsonField, declared: Mapping[
                 f"{key}: {marker.pointer!r} and {other_key}'s {other.pointer!r} are the same field of {marker.path} "
                 "or one is inside the other"
             )
-        raise TypeError(f"{key}: {marker.path} is already declared by {other_key}; a FileText's file can't be shared")
+        raise TypeError(f"{key}: {marker.path} is already declared by {other_key}; a whole file's text can't be shared")
 
 
 def _check_value(info: ParamInfo, value: Any) -> str | None:
@@ -492,6 +527,30 @@ def _read_marker(directory: Path) -> str | None:
         return (directory / _COPY_MARKER).read_bytes().decode("ascii")
     except (FileNotFoundError, NotADirectoryError):
         return None
+
+
+def _relink(building: Path, folder: Path, folders: tuple[Path, ...]) -> None:
+    """Point each symlink in `folder`'s copy where the original link leads.
+
+    `copytree(symlinks=True)` copies a link's text, so a relative link out of the folder would lead
+    nowhere in the copy, and the candidate would lose a skill or file the baseline reads through it.
+    A link leading into a copied folder points at the copy (relative, so the copy can be renamed into
+    place), else at the original's real path.
+    """
+    copy = building / _folder_in_copy(folder)
+    for here, dirs, files in os.walk(copy):  # never descends into a symlinked folder
+        for name in dirs + files:
+            link = Path(here, name)
+            if not link.is_symlink():
+                continue
+            real = Path(os.path.realpath(folder / link.relative_to(copy)))
+            try:
+                target = os.path.relpath(building / _location_in_copy(folders, real), link.parent)
+            except KeyError:  # outside every copied folder
+                target = str(real)
+            if os.readlink(link) != target:
+                link.unlink()
+                os.symlink(target, link, target_is_directory=real.is_dir())
 
 
 def _make_folders_writable(root: Path) -> None:
