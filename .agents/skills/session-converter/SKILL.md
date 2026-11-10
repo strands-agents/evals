@@ -31,7 +31,7 @@ Question: How should I handle user messages that depend on outside context (ex. 
 
 Question: Should I check that URLs named in the cases still resolve?
 1. Check public (Recommended): request each public `https` URL and flag cases whose URLs are gone.
-2. Check all: also request internal, localhost, and credential-bearing URLs (ex. intranet docs the agent under test can reach).
+2. Check all: also request internal and localhost URLs (ex. intranet docs the agent under test can reach).
 3. Skip: make no network requests.
 
 ### 2. Locate sessions
@@ -160,7 +160,7 @@ Treat cases as duplicates when their inputs make the same request about the same
 **Actionability.** Read each case's `input` and `expected_assertion` as the agent running it would, with only a shell and web access. Mark a case inactionable if it matches any of the following (but don't remove them):
 
 - Needs a specific skill, MCP, data only the original user's session had (ex. a private dashboard, an earlier conversation), or resource modification (ex. writes files).
-- A path, URL, or repo symbol it names is gone. Check with `test -e <path>`, `curl -sL -o /dev/null -w "%{http_code}" <url>`, or `grep -rlw "<name>" <repo>`. Follow the URL checks answer from step 1: only curl public `https` URLs for check public, curl every URL for check all, don't curl for skip.
+- A path, URL, or repo symbol it names is gone. Check with `test -e <path>`, `curl -sL -o /dev/null -w "%{http_code}" <url>`, or `grep -rlw "<name>" <repo>`. Follow the URL checks answer from step 1: only curl public `https` URLs for check public, curl every URL for check all, don't curl for skip. For each option, skip URLs that require credentials.
 - A claim it makes about a tool, file, or format no longer holds (ex. "Kiro's `session.json` has no workspace path field"). Check the current file (ex. `jq 'keys' <file>`).
 - Points at a project, file, build, artifact, or earlier turn without naming it. Skip this check if the user chose to keep context-dependent inputs as-is.
 
