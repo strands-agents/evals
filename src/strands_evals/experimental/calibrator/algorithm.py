@@ -68,10 +68,9 @@ class CalibrationModel(ABC):
     """Scoring model returned by a `CalibrationAlgorithm`."""
 
     @property
-    @abstractmethod
     def weights(self) -> Mapping[str, float] | None:
         """Return evaluator weights when the model has a linear aggregation."""
-        ...
+        return None
 
     @property
     @abstractmethod
