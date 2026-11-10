@@ -92,6 +92,8 @@ class EventLog:
         self.path = path
         self._lock = threading.Lock()
         self._iteration = 0
+        # The events as parsed at open, reused by read() until the next append, so opening a run parses it once.
+        self._events: list[dict[str, Any]] | None = None
         if not path.exists():
             return
         events, end = self._parse()
@@ -99,6 +101,7 @@ class EventLog:
             logger.warning("%s: dropping a truncated last line (the run was killed while writing it)", path)
             with path.open("r+b") as file:
                 file.truncate(end)
+        self._events = events
         if events:
             self._iteration = events[-1].get("iteration", 0)
 
@@ -133,10 +136,14 @@ class EventLog:
                 file.write(line + "\n")
                 file.flush()
             self._iteration = iteration
+            self._events = None
 
     def read(self) -> list[dict[str, Any]]:
-        """Every event, dropping a truncated last line."""
-        return self._parse()[0]
+        """Every event, dropping a truncated last line; parsed again only after an append. Don't modify the list."""
+        with self._lock:
+            if self._events is None:
+                self._events = self._parse()[0]
+            return self._events
 
     def _parse(self) -> tuple[list[dict[str, Any]], int]:
         """The events and the byte offset where the last complete one ends."""

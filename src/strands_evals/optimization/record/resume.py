@@ -48,7 +48,8 @@ class OpenRound:
 
 @dataclass
 class ResumeState:
-    """State up to the last `iteration_end` event; a killed iteration is discarded and re-run.
+    """State up to the last closed iteration (one ending in `iteration_end`, or the partial iteration a `stop`
+    ends); a killed iteration is discarded and re-run.
 
     Attributes:
         parents: Candidate id -> parent id (None for the baseline).
@@ -111,7 +112,7 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
         config: The resumed optimizer's config, built by the code that wrote `run.json`.
 
     Returns:
-        The state up to the last `iteration_end` event.
+        The state up to the last closed iteration.
 
     Every search field comes only from closed iterations (`closed_events`), so a killed iteration is
     discarded and runs again; trials are always read, and `spent` counts every one.
@@ -127,12 +128,9 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
             raise ValueError(f"{changed}; start a new run to change it")
 
     events = run.events.read()
-    trials: dict[tuple[str, int, str], dict[str, Any]] = {}
-    for event in events:
-        if event["event"] == "trial":
-            record = event["record"]
-            trials[(record["candidate_id"], record["run_index"], record["case_name"])] = record
-    spent = sum(r["rollouts"] + sum(a["rollouts"] for a in r["previous_attempts"]) for r in trials.values())
+    # The last trial per key, as RunDirectory.open indexed it.
+    trials = run._trials.values()
+    spent = sum(r["rollouts"] + sum(a["rollouts"] for a in r["previous_attempts"]) for r in trials)
 
     state = ResumeState(
         parents={},

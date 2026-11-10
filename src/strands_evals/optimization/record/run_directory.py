@@ -35,6 +35,10 @@ class RunDirectory:
     `result.json` (the whole result, written last), and `candidates/<id>/optimization_files/` (only when a
     value reaches the agent as a path). No per-candidate values, trial, or report files.
 
+    One process per run, and nothing enforces it: opening a run that another process is still writing can
+    cut that process's last line (`EventLog` trims a cut-off last line when it opens the log), and the next
+    resume then rejects the log as corrupt.
+
     Attributes:
         config: The `config` event's contents (= `run.json`), as read back.
     """
@@ -44,10 +48,10 @@ class RunDirectory:
     events: EventLog
     config: dict[str, Any]
 
-    def __init__(self, root: Path, config: dict[str, Any]):
+    def __init__(self, root: Path, config: dict[str, Any], events: EventLog):
         self.root = root
         self.run_id = root.name
-        self.events = EventLog(root / "events.jsonl")
+        self.events = events
         self.config = config
         # Candidate id -> its latest full (not rescore) propose event; insertion order = display number.
         self._candidates: dict[str, dict[str, Any]] = {}
@@ -91,7 +95,7 @@ class RunDirectory:
             )
         )
         (root / "run.json").write_text(json.dumps(contents, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        run = cls(root, contents)
+        run = cls(root, contents, EventLog(root / "events.jsonl"))
         run.events.append("config", iteration=0, config=contents)
         return run
 
@@ -116,8 +120,7 @@ class RunDirectory:
                 f"{path} was written with schema_version {config.get('schema_version')!r}; "
                 f"this version reads {SCHEMA_VERSION}"
             )
-        run = cls(path, config)
-        run.events = log
+        run = cls(path, config, log)
         closed = {id(event) for event in closed_events(events)}
         for event in events:
             if event["event"] == "propose" and not event["rescore"]:
@@ -188,7 +191,7 @@ class RunDirectory:
         return int(self._candidates[candidate_id]["number"])
 
     def load_candidate(self, candidate_id: str) -> Candidate:
-        """From the index (its first `propose` event).
+        """From the index (its latest full `propose` event).
 
         Raises:
             KeyError: The candidate was never saved.

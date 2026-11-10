@@ -91,7 +91,7 @@ class TrialCache(Protocol):
     """Saved trials; implemented by `record.RunDirectory`.
 
     No reports: the trial records hold every evaluation, each evaluator's per-row outputs included
-    (`TrialRecord.details`), so reports are rebuilt from them (`RunDirectory.reports`).
+    (`TrialRecord.details`), so reports are rebuilt from them (`OptimizationResult.reports`).
     """
 
     def load_trial(self, candidate_id: str, run_index: int, case_name: str) -> TrialRecord | None:

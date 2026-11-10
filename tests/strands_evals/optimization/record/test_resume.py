@@ -2,6 +2,7 @@ import copy
 
 import pytest
 
+from strands_evals.optimization.record.events import EventLog
 from strands_evals.optimization.record.resume import FitReplay, load_state
 from strands_evals.optimization.record.run_directory import RunDirectory
 from strands_evals.types.optimization import Patch, Usage
@@ -174,6 +175,20 @@ def test_load_state_counts_every_trial_in_spent(run):
 
     # base a + base b (and its earlier attempt) + c1 a + the killed iteration's c3 a.
     assert state.spent == 5
+
+
+def test_resume_parses_the_log_once_until_the_next_append(run, monkeypatch):
+    parses = []
+    parse = EventLog._parse
+    monkeypatch.setattr(EventLog, "_parse", lambda self: parses.append(1) or parse(self))
+
+    reopened = RunDirectory.open(run.root)
+    load_state(reopened, config=CONFIG)
+    assert len(parses) == 1
+
+    reopened.events.append("resume", spent=5, budget={}, code={})
+    assert reopened.events.read()[-1]["event"] == "resume"  # an append makes the next read parse again
+    assert len(parses) == 2
 
 
 def test_two_nested_rounds_stay_open_outermost_first(run):
