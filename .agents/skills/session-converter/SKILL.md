@@ -27,6 +27,13 @@ Question: How should I handle user messages that depend on outside context (ex. 
 2. Drop: filter out episodes whose input depends on outside context.
 3. Keep: keep the input as written.
 
+**URL checks.** The validation step may request URLs to verify if they are still valid.
+
+Question: Should I check that URLs named in the cases still resolve?
+1. Check public (Recommended): request each public `https` URL and flag cases whose URLs are gone.
+2. Check all: also request internal, localhost, and credential-bearing URLs (ex. intranet docs the agent under test can reach).
+3. Skip: make no network requests.
+
 ### 2. Locate sessions
 
 Find every session file on the local filesystem that matches the user's criteria. Don't open whole files to do it: session files can be large, so read metadata, use `ls -t`, `find -newermt`, `grep`, `jq`, or targeted reads. Read the criteria from the prompt:
@@ -140,7 +147,7 @@ Run the following validations on the generated experiment file:
 jq -r --arg p '\ba[ks]ia[0-9a-z]{16}|\bgh[pousr]_[a-z0-9]{36,}|\bgithub_pat_[a-z0-9_]{22,}|\bglpat-[a-z0-9_-]{20,}|\b[sr]k[-_][a-z0-9_-]{20,}|\baiza[0-9a-z_-]{35}|\bnpm_[a-z0-9]{36}|\bhf_[a-z0-9]{30,}|\bxox[abprs]-[a-z0-9-]{10,}|hooks\.slack\.com/services/[a-z0-9/]+|accountkey=[a-z0-9+/=]{20,}|\beyJ[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}|-----BEGIN [a-z ]*PRIVATE KEY( BLOCK)?-----|bearer [a-z0-9._~+/-]{16,}|authorization:\s*basic [a-z0-9+/=]{8,}|://[^/:@\s]+:[^/@\s]+@|\b(iqojb3jpz2lu|fwogzxivyxdz)[a-z0-9+/=]{20,}|\babsk[a-z0-9+/=]{40,}|\bxapp-[a-z0-9-]{20,}|\bya29\.[a-z0-9_-]{30,}|\bgocspx-[a-z0-9_-]{20,}|\bwhsec_[a-z0-9]{24,}|\bsg\.[a-z0-9_-]{22}\.[a-z0-9_-]{43}|\bpypi-age[a-z0-9_-]{50,}|\bdo[por]_v1_[a-f0-9]{64}|\bshp(at|ca|pa|ss)_[a-f0-9]{32}|\blin_api_[a-z0-9]{40}|\bdapi[a-f0-9]{32}|[?&]sig=[a-z0-9%+/=]{20,}|(aws_secret_access_key|client_secret|secret_key|access_token|refresh_token|api[_-]?key|passw(or)?d)["\x27]?\s*[:=]\s*["\x27]?(?![<${(]|os\.environ)[^\s"\x27,]{8,}' '.cases[] | .name as $n | .. | strings | match($p; "gi") | "\($n): \(.string)"' <experiment_file>
 ```
 
-Then, read each case for secrets the pattern doesn't cover (ex. API keys, passwords, or cookies assigned in config or prose, internal hostnames with credentials). Replace each secret value with `<redacted>`, keeping the surrounding text, unless it's clearly a placeholder (ex. `<your-api-key>`). Run the search again and confirm it prints every remaining match is `<redacted>` or a placeholder you kept.
+Then, read each case for secrets the pattern doesn't cover (ex. API keys, passwords, or cookies assigned in config or prose, internal hostnames with credentials). Replace each secret value with `<redacted>` and keep the surrounding text. Leave clear placeholders (ex. `<your-api-key>`) as they are. Run the search again and confirm every remaining match contains `<redacted>` or is a placeholder you kept.
 
 **Duplicates.** List the cases sorted by normalized input, so near-duplicates sit next to each other:
 
@@ -153,7 +160,7 @@ Treat cases as duplicates when their inputs make the same request about the same
 **Actionability.** Read each case's `input` and `expected_assertion` as the agent running it would, with only a shell and web access. Mark a case inactionable if it matches any of the following (but don't remove them):
 
 - Needs a specific skill, MCP, data only the original user's session had (ex. a private dashboard, an earlier conversation), or resource modification (ex. writes files).
-- A path, URL, or repo symbol it names is gone. Check with `test -e <path>`, `curl -sL -o /dev/null -w "%{http_code}" <url>`, or `grep -rlw "<name>" <repo>`.
+- A path, URL, or repo symbol it names is gone. Check with `test -e <path>`, `curl -sL -o /dev/null -w "%{http_code}" <url>`, or `grep -rlw "<name>" <repo>`. Follow the URL checks answer from step 1: only curl public `https` URLs for check public, curl every URL for check all, don't curl for skip.
 - A claim it makes about a tool, file, or format no longer holds (ex. "Kiro's `session.json` has no workspace path field"). Check the current file (ex. `jq 'keys' <file>`).
 - Points at a project, file, build, artifact, or earlier turn without naming it. Skip this check if the user chose to keep context-dependent inputs as-is.
 
@@ -161,13 +168,13 @@ Treat cases as duplicates when their inputs make the same request about the same
 
 ### 7. Handoff to human
 
-Report the experiment file path. List each suggested evaluator with its failure mode's episode count out of the cases in the file and one `evidence` quote and name any modes that appeared but fell below 10%. Say how many secrets you redacted and in which cases, without repeating the values. List each removed duplicate by `name` with the case it duplicated. List each inactionable case by `name` with its reason, and recommend dropping it. Delete the temporary episode files.
+Report the experiment file path. List each suggested evaluator with its failure mode's episode count out of the cases in the file and one `evidence` quote and name any modes that appeared but fell below 10%. Say how many secrets you redacted and in which cases, without repeating the values. List each removed duplicate by `name` with the case it duplicated. List each inactionable case by `name` with its reason, and recommend dropping it. Tell the user to run it with `strands-evals run <file> --agent <module>:<factory>`.
 
-Ask the user to review the experiment file and whether they want any of the post-generation actions below (drop cases, smoke-test the experiment). Wait for their response. If you can't wait for a reply, keep every case, say which ones you'd drop, and skip the actions. Once the file is approved, tell the user to run it with `strands-evals run <file> --agent <module>:<factory>`. If you can't wait for a reply, delete them after the report.
+Ask the user to review the experiment file and whether they want any of the post-generation actions below (drop cases, smoke-test the experiment). Wait for their response. If you can't wait for a reply, keep every case, say which ones you'd drop, and delete the temporary files.
 
 ## Post-generation
 
-Run these only if the user asks for them after step 7.
+Run these only if the user asks for them after step 7. The only exception is "Delete temporary files", which must always run last.
 
 ### Drop cases
 
@@ -188,3 +195,7 @@ strands-evals run <experiment_file> --case 0 --agent "$d/default_agent.py:build_
 ```
 
 Report whether the run completed and each evaluator's result. A failing score is fine here; this tests the file, not the agent. If it errors (ex. missing model credentials), report the error. Then delete the temp directory.
+
+### Delete temporary files
+
+Delete all temp files or directories you created during this run. Don't delete the experiment file or the session files. Report how many files you deleted. Run this after any other post-generation actions the user asked for, since dropping cases rereads the episode files.
