@@ -270,8 +270,8 @@ class SkillLibrary(_Marker):
                 single skill), the directory or a folder in it can't be read (every candidate's copy
                 would fail on it), the directory holds no skill, a tuned skill's directory or `SKILL.md`
                 is a symlink (its copy would write through to, or keep following, the original), a
-                tuned `SKILL.md` isn't UTF-8 or lacks the frontmatter above, or two tuned skills have
-                the same `name` (the runtime keeps only one).
+                tuned `SKILL.md` isn't UTF-8 or lacks the frontmatter above, or a tuned skill has the
+                same `name` as another skill (the runtime keeps only one).
         """
         _check_positive_int("size_cap", size_cap)
         _check_str("edit_instructions", edit_instructions)
@@ -293,6 +293,7 @@ class SkillLibrary(_Marker):
         self.size_cap = size_cap
         self.edit_instructions = edit_instructions
         root_file = _skill_file_in(self.path)
+        untuned_files: list[Path] = []  # the `SKILL.md` of each skill `only` leaves out
         if root_file is not None:
             if selected is not None:
                 raise TypeError(f"SkillLibrary: {self.path} is a single skill; only= picks skills of a directory")
@@ -314,6 +315,7 @@ class SkillLibrary(_Marker):
             skill_files = []
             for name, (child, skill_file) in found.items():
                 if selected is not None and name not in selected:
+                    untuned_files.append(skill_file)
                     continue
                 if child.is_symlink():
                     raise TypeError(
@@ -326,12 +328,30 @@ class SkillLibrary(_Marker):
             file.relative_to(self.path).as_posix(): _SkillFile(file, self.path, size_cap, edit_instructions)
             for file in skill_files
         }
-        folders: dict[str, Path] = {}
+        # The runtime loads one skill per name, so a tuned skill sharing its name with another skill
+        # might never reach the agent.
+        folders: dict[str, Path] = {}  # a tuned skill's name -> its folder
         for member in self._members.values():
             other = folders.setdefault(member._name, member.path.parent)
-            if other != member.path.parent:  # the runtime would load only one of them
+            if other != member.path.parent:
                 raise TypeError(
                     f"SkillLibrary: {other} and {member.path.parent} both name their skill {member._name!r}; "
+                    "the runtime keeps only one, so give each a unique name"
+                )
+        for file in untuned_files:
+            try:
+                text = file.read_bytes()
+            except OSError as error:  # every candidate's copy would fail on it
+                raise TypeError(
+                    f"SkillLibrary: can't read {file} ({error.strerror}), which every candidate's copy needs"
+                ) from error
+            try:
+                name = _skill_name(text.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):  # the runtime can't load it either
+                continue
+            if name in folders:
+                raise TypeError(
+                    f"SkillLibrary: {folders[name]} and {file.parent} both name their skill {name!r}; "
                     "the runtime keeps only one, so give each a unique name"
                 )
 

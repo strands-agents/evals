@@ -675,7 +675,7 @@ def test_only_copies_every_skill_and_a_strict_runtime_loads_them(library):
     assert make().path == library.resolve()  # the plain call: the original library
 
 
-def test_only_never_reads_the_skills_it_does_not_tune(library):
+def test_only_accepts_a_malformed_skill_it_does_not_tune(library):
     (library / "billing" / "skill.md").write_text("No frontmatter.\n", newline="")
     space = Space({"skills": SkillLibrary(library, only=("triage",))})
     assert [info.key for info in space.params()] == ["skills/triage/SKILL.md"]
@@ -784,11 +784,17 @@ def test_a_symlink_to_a_tuned_file_leads_to_the_candidates_copy_of_it(library):
     assert (library / "triage" / "SKILL.md").read_text() != edited
 
 
-def test_two_tuned_skills_with_one_name_fail_at_declaration(library):
+@pytest.mark.parametrize("only", [None, ["triage"], ["billing"]])
+def test_a_tuned_skill_sharing_its_name_with_another_fails_at_declaration(library, only):
     (library / "billing" / "skill.md").write_text(skill_text("triage", "Also triage."), newline="")
     with pytest.raises(TypeError, match="both name their skill 'triage'"):
-        SkillLibrary(library)
-    assert SkillLibrary(library, only=["triage"])  # an untuned skill is never read
+        SkillLibrary(library, only=only)
+
+
+def test_untuned_skills_sharing_a_name_are_left_as_the_runtime_loads_them(library):
+    (library / "faq").mkdir()
+    (library / "faq" / "SKILL.md").write_text(skill_text("billing", "Answer FAQs."), newline="")
+    assert SkillLibrary(library, only=["triage"])  # neither is tuned, so no trial is spent on either
 
 
 @pytest.mark.parametrize(
@@ -839,7 +845,7 @@ def test_the_baseline_skill_md_is_parsed_once(library, monkeypatch):
     monkeypatch.setattr(files, "_skill_name", lambda text: parsed.append(text) or parse(text))
     space = Space({"skills": SkillLibrary(library, only=("triage",))})
     space.validate(space.complete({}))
-    assert len(parsed) == 1
+    assert parsed.count((library / "triage" / "SKILL.md").read_text()) == 1
 
 
 def test_a_skill_md_over_its_size_cap_fails_validation(library):
@@ -932,9 +938,13 @@ def test_a_skill_md_that_is_a_symlink_fails_at_declaration(library, tmp_path, li
         SkillLibrary(library)
     with pytest.raises(TypeError, match="is a symlink"):
         SkillLibrary(library / "router")
-    assert [info.key for info in Space({"s": SkillLibrary(library, only=("triage",))}).params()] == [
-        "s/triage/SKILL.md"
-    ]  # an untuned skill is never read
+    if linked_to == "another skill's":  # untuned, it is a second skill named triage
+        with pytest.raises(TypeError, match="both name their skill 'triage'"):
+            SkillLibrary(library, only=("triage",))
+    else:  # untuned, it is only copied
+        assert [info.key for info in Space({"s": SkillLibrary(library, only=("triage",))}).params()] == [
+            "s/triage/SKILL.md"
+        ]
 
 
 @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="needs POSIX permissions, not as root")
@@ -948,6 +958,16 @@ def test_an_unreadable_folder_fails_at_declaration(library):
             SkillLibrary(library, only=("triage",))  # untuned too: the copy holds every folder
     finally:
         locked.chmod(0o755)
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="needs POSIX permissions, not as root")
+def test_an_unreadable_untuned_skill_md_fails_at_declaration(library):
+    (library / "billing" / "skill.md").chmod(0o000)
+    try:
+        with pytest.raises(TypeError, match=r"can't read .*billing.skill\.md .*every candidate's copy needs"):
+            SkillLibrary(library, only=("triage",))
+    finally:
+        (library / "billing" / "skill.md").chmod(0o644)
 
 
 def test_a_skill_edit_diffs_on_its_real_file(library):
