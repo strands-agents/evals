@@ -651,10 +651,13 @@ class Experiment(Generic[InputT, OutputT, ReportT]):
             asyncio.create_task(self._worker(queue, task, results, evaluation_data_store)) for _ in range(num_workers)
         ]
 
-        await queue.join()
-        for worker in workers:
-            worker.cancel()
-        await asyncio.gather(*workers, return_exceptions=True)
+        try:
+            await queue.join()
+        finally:
+            # also when this call is cancelled: a worker left running would finish its case on its own
+            for worker in workers:
+                worker.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
 
         # Organize results by evaluator (keyed on instance name so two instances
         # of the same class with distinct `name=` kwargs do not collide).
