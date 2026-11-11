@@ -1,4 +1,18 @@
-"""Eval-driven optimization of agent prompts, components, and numeric knobs."""
+"""Eval-driven optimization of agent prompts, components, and numeric knobs.
+
+Needs the optional `optimization` extra (numpy, scipy): importing this package without it raises `ImportError`
+with the install command. Production code that shouldn't need the extra can leave its agent factory undecorated
+and mount it from the eval script with `tunable(fn, inject={...})`.
+"""
+
+try:
+    import numpy  # noqa: F401  # optional extra: optimization
+    import scipy  # noqa: F401  # optional extra: optimization
+except ImportError as error:
+    raise ImportError(
+        "strands_evals.optimization needs the optional dependencies; install them with "
+        "pip install 'strands-agents-evals[optimization]'"
+    ) from error
 
 from ..types.optimization import (
     AttemptRecord,

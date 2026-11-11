@@ -11,6 +11,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from scipy import stats
+
 from ..types.optimization import CandidateScores, PairedComparison, ValidationReport, Values
 from .score_model.protocols import Fit
 from .score_model.ranking import Mean, PickRule
@@ -189,7 +191,4 @@ def _shared_cases(candidate: Mapping[str, float], reference: Mapping[str, float]
 
 def _t_quantile(level: float, df: int) -> float:
     """The two-sided `level` quantile of Student's t with `df` degrees of freedom."""
-    # optional extra: optimization
-    from scipy.stats import t
-
-    return float(t.ppf(0.5 + level / 2, df))
+    return float(stats.t.ppf(0.5 + level / 2, df))

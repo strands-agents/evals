@@ -39,8 +39,8 @@ class CandidateScores(BaseModel):
             evaluator's range).
         objective_by_run: Case name -> each run's objective (None = not measured); written to the `score`
             event.
-        metrics_by_run: Case name -> metric name -> each run's value; what `FitData.observations` is
-            built from.
+        metrics_by_run: Case name -> metric name -> each run's value; what the score model fits (via
+            `FitData.scores`).
         objective: The measured objective: `Criteria.objective_value` over each goal metric's mean across
             cases; what the ranking uses without a fit.
         is_eligible: Every case has at least one run that counts for every goal metric; an evaluator N/A on a

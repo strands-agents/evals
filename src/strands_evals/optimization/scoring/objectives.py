@@ -9,6 +9,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from scipy import stats
+
 from ...evaluators.evaluator import Evaluator
 from ...types.evaluation_report import EvaluationReport
 from ...types.optimization import (
@@ -565,8 +567,6 @@ def measured_metrics(scores: CandidateScores, registry: MetricRegistry) -> dict[
         scores: One candidate's scores on one split.
         registry: Gives each metric's range, which the interval is clipped to.
     """
-    from scipy import stats  # optional extra: optimization
-
     metrics = dict.fromkeys(metric for runs in scores.metrics_by_run.values() for metric in runs)
     by_metric: dict[str, list[float]] = {}
     for metric in metrics:
