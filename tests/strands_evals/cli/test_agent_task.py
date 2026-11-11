@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
 from opentelemetry import baggage, context
+from strands import Agent
+from strands.models.model import Model
 
 from strands_evals.case import Case
+from strands_evals.cli import _agent_task as agent_task_module
 from strands_evals.cli._agent_task import synthesize_task_function
 from strands_evals.cli._entrypoint import ResolvedEntryPoint, classify_agent
-from strands_evals.types.trace import Session
+from strands_evals.types.trace import AgentInvocationSpan, Session
 
 
 def test_synth_callable_no_arg_returns_output_and_session():
@@ -156,3 +160,56 @@ def test_synth_one_arg_factory_called_with_case():
 
     assert received["case"] is case
     assert result["output"] == "answered hi for c1"
+
+
+class _TextModel(Model):
+    """Replies `reply <n>` to the n-th call."""
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def get_config(self):
+        return {}
+
+    def update_config(self, **model_config):
+        pass
+
+    def structured_output(self, *args, **kwargs):
+        raise NotImplementedError
+
+    async def stream(self, *args, **kwargs):
+        self.call_count += 1
+        yield {"contentBlockDelta": {"delta": {"text": f"reply {self.call_count}"}}}
+        yield {"contentBlockStop": {}}
+        yield {"messageStop": {"stopReason": "end_turn"}}
+
+
+@pytest.mark.parametrize("last_reply", [None, "bye"], ids=["no-message", "stop"])
+def test_synth_runs_simulated_conversation_when_case_has_actor_profile(monkeypatch, last_reply):
+    """An actor profile drives a multi-turn loop and the trajectory holds only the agent's turns."""
+    simulator_agent = Agent(model=_TextModel(), callback_handler=None)
+    replies = iter(["follow-up 1", last_reply])
+
+    def act(agent_message):
+        simulator_agent(agent_message)
+        return MagicMock(structured_output=MagicMock(message=next(replies)))
+
+    simulator = MagicMock(has_next=MagicMock(side_effect=[True, True, False]), act=MagicMock(side_effect=act))
+    from_case = MagicMock(return_value=simulator)
+    monkeypatch.setattr(agent_task_module.ActorSimulator, "from_case_for_user_simulator", from_case)
+
+    entry = ResolvedEntryPoint(
+        kind="callable_no_arg", obj=lambda: Agent(model=_TextModel(), callback_handler=None), spec="x:y"
+    )
+    profile = {"traits": {"style": "terse"}, "context": "a developer", "actor_goal": "fix the bug"}
+    case = Case[str, str](name="c1", input="hi", metadata={"actor_profile": profile})
+    result = synthesize_task_function(entry)(case)
+
+    from_case.assert_called_once_with(case=case)
+    assert [call.args[0].strip() for call in simulator.act.call_args_list] == ["reply 1", "reply 2"]
+    assert result["output"].strip() == "reply 2"
+    traces = result["trajectory"].traces
+    assert [span.user_prompt for trace in traces for span in trace.spans if isinstance(span, AgentInvocationSpan)] == [
+        "hi",
+        "follow-up 1",
+    ]

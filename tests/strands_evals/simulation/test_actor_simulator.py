@@ -91,6 +91,32 @@ def test_from_case_for_user_simulator(mock_agent_class, sample_case):
 
 
 @patch("strands_evals.simulation.actor_simulator.Agent")
+def test_from_case_for_user_simulator_uses_case_actor_profile(mock_agent_class, sample_actor_profile):
+    """Test factory method uses metadata["actor_profile"] instead of generating one."""
+    case = Case(input="I want to plan a trip to Tokyo", metadata={"actor_profile": sample_actor_profile.model_dump()})
+
+    simulator = ActorSimulator.from_case_for_user_simulator(case=case)
+
+    assert simulator.actor_profile == sample_actor_profile
+    assert mock_agent_class.call_count == 1  # Simulator only, no profile generation
+
+
+@patch("strands_evals.simulation.actor_simulator.Agent")
+def test_from_case_for_user_simulator_generates_profile_when_case_actor_profile_invalid(
+    mock_agent_class, sample_actor_profile, caplog
+):
+    """Test factory method warns and generates a profile when metadata["actor_profile"] is invalid."""
+    mock_agent_class.return_value.return_value.structured_output = sample_actor_profile
+    case = Case(name="c1", input="I want to plan a trip to Tokyo", metadata={"actor_profile": {"traits": {}}})
+
+    simulator = ActorSimulator.from_case_for_user_simulator(case=case)
+
+    assert simulator.actor_profile == sample_actor_profile
+    assert mock_agent_class.call_count == 2  # Once for profile gen, once for simulator
+    assert "case=<c1>, errors=<context: Field required; actor_goal: Field required>" in caplog.text
+
+
+@patch("strands_evals.simulation.actor_simulator.Agent")
 def test_generate_profile_from_case(mock_agent_class, sample_case):
     """Test profile generation from case."""
     mock_agent = MagicMock()
