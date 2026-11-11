@@ -27,13 +27,15 @@ class Block:
     Attributes:
         proposer: Proposes values for these variables.
         variables: The declared names or keys as given.
-        name: Defaults to `type(proposer).__name__`. It keys `observe` events and the resume state,
-            so it must be stable across resume.
+        name: The name given, else None until `Search.resolve` names the block after the kind of keys it
+            holds ("structure", "numbers", "text", else "block"), made unique among the search's blocks
+            ("numbers 2"). It keys `observe` events and the resume state, so it must be stable across
+            resume: the same search over the same space always gets the same names.
     """
 
     proposer: Proposer
     variables: tuple[str, ...]
-    name: str
+    name: str | None
 
     def __init__(self, proposer: Proposer, *variables: str, name: str | None = None):
         """Give `proposer` ownership of `variables`.
@@ -41,7 +43,7 @@ class Block:
         Args:
             proposer: Proposes values for these variables.
             *variables: Declared names or flat keys.
-            name: Stable block name; defaults to the proposer's class name.
+            name: Stable block name; None lets `Search.resolve` name it after its kind.
 
         Raises:
             TypeError: `proposer` is not a `Proposer`, or a variable or `name` is not a string.
@@ -63,9 +65,10 @@ class Block:
             raise ValueError("Block(name=...) must not be empty")
         self.proposer = proposer
         self.variables = tuple(variables)
-        self.name = name if name is not None else type(proposer).__name__
+        self.name = name
 
     def __repr__(self) -> str:
+        """`Block(TPE(), 'temperature', name='numbers')`: the proposer's class, the variables, the name."""
         return f"Block({type(self.proposer).__name__}(), {', '.join(map(repr, self.variables))}, name={self.name!r})"
 
 
@@ -75,7 +78,8 @@ class Step:
 
     Attributes:
         blocks: Who proposes. With several blocks, candidate i merges patch i of every block.
-        n: Candidates in the step (`proposals_per_iteration`; a round's opener: 1).
+        n: Candidates in the step (`proposals_per_iteration`; a round's opener: 1; inside a `Nested`
+            round, at most the room the round has left).
         parents: The step's pool, the candidates selection may choose from; None = every eligible candidate.
         round: The round path, outermost `Nested` first: `(2,)` = round 2 of the only `Nested`, `(2, 0)` =
             round 0 of the inner `Nested` within the outer's round 2. None outside any `Nested`.
@@ -151,6 +155,12 @@ class Joint(Schedule):
     name: ClassVar[str] = "joint"
 
     def next(self, ctx: ScheduleContext) -> Step | None:
+        """Every block of `ctx.blocks`, `ctx.proposals_per_iteration` candidates.
+
+        None when there are no blocks (a round that narrowed them all out) or when the last step saved no
+        candidate (every proposal invalid or a duplicate), since the next one would ask the same proposers
+        the same question.
+        """
         if not ctx.blocks or (ctx.past and not _saved(ctx.past[-1])):
             return None
         return Step(tuple(ctx.blocks), ctx.proposals_per_iteration, None, None, "inner", ())
@@ -165,6 +175,12 @@ class Alternate(Schedule):
     name: ClassVar[str] = "alternate"
 
     def next(self, ctx: ScheduleContext) -> Step | None:
+        """The next block in turn: block `len(ctx.past) % len(ctx.blocks)`.
+
+        Steps that saved nothing still advance the turn, so one stuck block doesn't hold up the others.
+        None when there are no blocks, or when the last `len(ctx.blocks)` steps (a full cycle, every block
+        asked once) saved no candidate.
+        """
         if not ctx.blocks:
             return None
         misses = 0
@@ -182,9 +198,12 @@ class Nested(Schedule):
     """Rounds over a structural block, with an inner schedule inside each round.
 
     Each round opens with one candidate that changes only `outer`, from the incumbent (`ctx.ranking[0]`);
-    then up to `inner_iterations` inner steps that save a candidate (the inner schedule's blocks, narrowed to
-    those with an active key in `ctx.keys` under the opener's values) whose parents are the round's own
-    eligible candidates (the incumbent if none is). An opener repeating a measured candidate opens the round
+    then inner steps (the inner schedule's blocks, narrowed to those with an active key in `ctx.keys` under
+    the opener's values) whose parents are the round's own eligible candidates (the incumbent if none is).
+    A round holds `1 + inner_iterations * ctx.proposals_per_iteration` candidates: every opener in it, an
+    inner `Nested`'s included, uses 1, and a step that saved a candidate uses its `n`. A step's `n` is cut
+    to the room left, so the last one can be narrower, and the round ends when the room is used up; a step
+    that saved nothing uses none. An opener repeating a measured candidate opens the round
     on it at no cost. At the round's end the outer proposer observes the round's best candidate
     (`Observation.source_id`); an opener that isn't eligible is observed as None with outcome `ineligible`,
     and the round's inner steps are skipped, as they are when the opener saved nothing (every draw invalid).
@@ -194,9 +213,9 @@ class Nested(Schedule):
     Nested inner schedules add one entry to `Step.round` per level.
 
     Attributes:
-        outer: The outer block's name.
+        outer: The outer block's name (a `Block` given unnamed is named by `Search.resolve`).
         inner: The schedule inside a round.
-        inner_iterations: Inner steps per round.
+        inner_iterations: A round's room, in full steps after its opener.
     """
 
     name: ClassVar[str] = "nested"
@@ -206,26 +225,56 @@ class Nested(Schedule):
 
         Args:
             outer: The structural block (or its name) each round opens on.
-            inner: The schedule inside a round; None means `Joint()`.
-            inner_iterations: Inner steps per round.
+            inner: The schedule inside a round; None means `Joint()`. (The default search's rounds run
+                `Alternate()` instead: `Search(within=)`.)
+            inner_iterations: A round's room, in full steps after its opener: the round holds
+                `1 + inner_iterations * proposals_per_iteration` candidates.
 
         Raises:
-            TypeError: `outer` is not a `Block` or a block name, or `inner` is not a `Schedule`.
-            ValueError: `inner_iterations` is negative.
+            TypeError: `outer` is not a `Block` or a block name, `inner` is not a `Schedule`, or
+                `inner_iterations` is not an int.
+            ValueError: `outer` is an empty name, or `inner_iterations` is negative.
         """
-        if isinstance(outer, Block):
-            outer = outer.name
-        if not isinstance(outer, str) or not outer:
+        if not isinstance(outer, (Block, str)):
             raise TypeError(f"Nested(outer=...) takes a Block or a block name, not {outer!r}")
+        if outer == "":
+            raise ValueError("Nested(outer=...) must not be an empty name")
         if inner is not None and not isinstance(inner, Schedule):
             raise TypeError(f"Nested(inner=...) takes a Schedule, not {inner!r}")
-        if not isinstance(inner_iterations, int) or isinstance(inner_iterations, bool) or inner_iterations < 0:
-            raise ValueError(f"Nested(inner_iterations=...) must be an int >= 0, not {inner_iterations!r}")
-        self.outer = outer
+        if not isinstance(inner_iterations, int) or isinstance(inner_iterations, bool):
+            raise TypeError(f"Nested(inner_iterations=...) must be an int, not {inner_iterations!r}")
+        if inner_iterations < 0:
+            raise ValueError(f"Nested(inner_iterations=...) must be >= 0, not {inner_iterations}")
+        self._outer = outer
         self.inner = inner if inner is not None else Joint()
         self.inner_iterations = inner_iterations
 
+    @property
+    def outer(self) -> str:
+        """The outer block's name."""
+        name = self._outer if isinstance(self._outer, str) else self._outer.name
+        if name is None:
+            raise ValueError("Nested's outer block has no name yet; Search.resolve names it")
+        return name
+
     def next(self, ctx: ScheduleContext) -> Step | None:
+        """The current round's next step, or the next round's opener, rebuilt from `ctx.past`.
+
+        1. `outer` not among `ctx.blocks`: hand the whole context to the inner schedule.
+        2. Group `ctx.past` by the first entry of each record's round path; the highest is the current
+           round, and its first record is its opener. No rounds yet: open round 0.
+        3. The opener's candidate is its last proposal that isn't `invalid` (a duplicate opens the round
+           on the measured candidate). When it is eligible and the round has room left (`_room_left`),
+           ask the inner schedule for a step on the round's own context (`_round_context`) and return it
+           with its `n` cut to the room left, this round's index prepended to its path and, when it names
+           no parents, the round's ranking as its parents.
+        4. Otherwise the round is over: count the rounds, newest first, that saved nothing (an opener
+           that opened on a duplicate or saved nothing counts as nothing new). More than `ctx.redraws`
+           of them in a row: None. Else open the next round.
+
+        Raises:
+            ValueError: A round whose first record isn't its opener (a record out of order).
+        """
         blocks = {block.name: block for block in ctx.blocks}
         if self.outer not in blocks:
             return self.inner.next(ctx)
@@ -242,13 +291,14 @@ class Nested(Schedule):
             raise ValueError(f"round {current} of Nested({self.outer!r}) has no opener as its first iteration")
         opener_id = next((p.candidate_id for p in reversed(opener.proposals) if p.outcome != "invalid"), None)
         if opener_id is not None and opener_id in ctx.eligible:
-            steps = sum(1 for record in records[1:] if record.role == "inner" and _saved(record))
-            if steps < self.inner_iterations:
+            room = self._room_left(ctx, records)
+            if room > 0:
                 sub = self._round_context(ctx, records, opener_id)
                 step = self.inner.next(sub)
                 if step is not None:
                     return dataclasses.replace(
                         step,
+                        n=min(step.n, room),
                         parents=step.parents if step.parents is not None else tuple(sub.ranking),
                         round=(current, *(step.round or ())),
                     )
@@ -269,7 +319,21 @@ class Nested(Schedule):
             "inner_iterations": self.inner_iterations,
         }
 
+    def _room_left(self, ctx: ScheduleContext, records: Sequence[IterationRecord]) -> int:
+        """Candidates the round can still make: `1 + inner_iterations * proposals_per_iteration`, less 1 for
+        each opener in it (its own and an inner `Nested`'s, whatever they proposed) and, for each step that
+        saved a candidate, the `n` it was given (`proposals_per_iteration`, or the room left if less)."""
+        room = self.inner_iterations * ctx.proposals_per_iteration  # after the round's own opener
+        for record in records[1:]:
+            if record.role == "opener":
+                room -= 1 if record.proposals else 0
+            elif _saved(record):
+                room -= min(ctx.proposals_per_iteration, room)
+        return room
+
     def _opener(self, ctx: ScheduleContext, round_index: int, outer: Block) -> Step:
+        """Round `round_index`'s opener: one candidate from the incumbent (`ctx.ranking[0]`) changing only
+        `outer`, whose `observe` waits for the round's end."""
         return Step((outer,), 1, (ctx.ranking[0],), (round_index,), "opener", (self.outer,))
 
     def _round_context(
@@ -281,7 +345,7 @@ class Nested(Schedule):
         blocks = [
             block
             for block in ctx.blocks
-            if block.name != self.outer and any(ctx.space.is_active(key, opened) for key in ctx.keys[block.name])
+            if block.name != self.outer and any(ctx.space.is_active(key, opened) for key in ctx.keys[_name(block)])
         ]
         ids = {opener_id} | {
             p.candidate_id
@@ -303,9 +367,12 @@ class Search:
         blocks: The user's blocks, in order.
         schedule: Plans each iteration; None means the default schedule (one `Nested` per structural block
             around `within`, or `Joint()` with no structural block).
-        within: The default schedule's inner schedule; None means `Alternate()`.
+        within: The default schedule's inner schedule; None means `Alternate()`. Unused when the default
+            has nothing to nest (no structural block, or one structural block and nothing else): then it is
+            `Joint()`.
         redraws: Caps re-asks per block per iteration after a duplicate (of an eligible candidate), an
-            invalid patch, a patch touching keys outside its block, or no patches at all.
+            invalid patch, a patch touching keys outside its block, or no patches at all. A round's opener
+            is never re-asked on a duplicate: the round opens on that candidate.
     """
 
     blocks: tuple[Block, ...]
@@ -327,13 +394,15 @@ class Search:
             blocks: The user's blocks, in order.
             schedule: Plans each iteration; None means the default schedule.
             within: What the default schedule runs inside its rounds, e.g. `Joint()` to change every
-                block on every inner step; None means `Alternate()`.
+                block on every inner step; None means `Alternate()`. Unused when the default has nothing to
+                nest (no structural block, or one structural block and nothing else): then it is `Joint()`.
             redraws: Re-asks per block per iteration after an unusable proposal.
 
         Raises:
-            TypeError: A block is not a `Block`, or `schedule` or `within` is not a `Schedule`.
-            ValueError: Two blocks share a name, `redraws` is negative, or both `schedule` and `within` are
-                given (`within` shapes only the default schedule).
+            TypeError: A block is not a `Block`, `schedule` or `within` is not a `Schedule`, or `redraws`
+                is not an int.
+            ValueError: Two named blocks share a name, `redraws` is negative, or both `schedule` and
+                `within` are given (`within` shapes only the default schedule).
         """
         blocks = tuple(blocks)
         not_blocks = [b for b in blocks if not isinstance(b, Block)]
@@ -341,6 +410,8 @@ class Search:
             raise TypeError(f"Search(blocks=...) takes Block objects, not {not_blocks!r}")
         seen: set[str] = set()
         for block in blocks:
+            if block.name is None:
+                continue
             if block.name in seen:
                 raise ValueError(f"two blocks are named {block.name!r}; give one of them Block(..., name=...)")
             seen.add(block.name)
@@ -353,8 +424,10 @@ class Search:
                 "Search(within=...) shapes only the default schedule; with schedule=... given, put the inner "
                 "schedule inside it"
             )
-        if not isinstance(redraws, int) or isinstance(redraws, bool) or redraws < 0:
-            raise ValueError(f"Search(redraws=...) must be an int >= 0, not {redraws!r}")
+        if not isinstance(redraws, int) or isinstance(redraws, bool):
+            raise TypeError(f"Search(redraws=...) must be an int, not {redraws!r}")
+        if redraws < 0:
+            raise ValueError(f"Search(redraws=...) must be >= 0, not {redraws}")
         self.blocks = blocks
         self.schedule = schedule
         self.within = within
@@ -375,33 +448,39 @@ class Search:
         Default blocks are appended after the user's blocks, in the order their first key is declared, so
         `Search()` is the default search. `Thompson` is never a default block.
 
+        Every block gets a name: an unnamed one is named after the kind of keys it holds ("structure" for
+        `choice()` selectors only, "numbers" for `int` / `float` / `one_of` only, "text" for text only,
+        else "block"), set on the `Block` itself; the default blocks after their kind. A name already
+        taken gets the next free number ("numbers 2", "numbers 3"), your named blocks first, then your
+        unnamed ones in order, then the defaults.
+
         The schedule is `self.schedule`, else the default built over every resolved block, defaults
         included: one `Nested` per structural block (one holding a choice key with 2+ options), outermost
         first (a block whose keys exist only under another block's choice comes after it), around
         `self.within` (default `Alternate()`); when every block is structural, the innermost isn't nested;
-        `Joint()` when there is no structural block.
+        `Joint()` when there is no structural block. The schedule is checked either way.
 
         Raises:
             ValueError: A variable that is neither a declared name nor a key; a key two blocks name the
                 same way (both directly, or both through a declared name); a block left with no key; a
                 variable whose kind the block's proposer can't propose (not in `proposer.kinds`, e.g. text
-                given to `TPE`), naming the key and the block; a default block whose name a user block
-                already has ("text", "structure", "numbers"), suggesting `Block(..., name=)`; or a given
-                `Nested` whose outer block is outside its scope, or whose outer keys exist only under a
-                choice in one of its inner blocks.
+                given to `TPE`), naming the key and the block; or a `Nested` (given, or in `within`) whose
+                outer block is outside its scope, or whose outer keys exist only under a choice in one of
+                its inner blocks.
         """
         params = space.params()
         order = {info.key: i for i, info in enumerate(params)}
         by_name: dict[str, list[str]] = {}
         for info in params:
             by_name.setdefault(info.name, []).append(info.key)
+        label = [block.name or f"block {i + 1}" for i, block in enumerate(self.blocks)]
         claims: dict[str, tuple[int, bool]] = {}  # key -> (block index, named directly)
         for i, block in enumerate(self.blocks):
             for variable in block.variables:
                 expanded = by_name.get(variable) or ([variable] if variable in order else None)
                 if expanded is None:
                     raise ValueError(
-                        f"block {block.name!r} names {variable!r}, which is neither a declared name nor a key; "
+                        f"{label[i]!r} names {variable!r}, which is neither a declared name nor a key; "
                         f"declared names: {sorted(by_name)}"
                     )
                 for key in expanded:
@@ -410,23 +489,33 @@ class Search:
                     if held is None or (direct and not held[1]):
                         claims[key] = (i, direct)
                     elif held[0] != i and held[1] == direct:
-                        raise ValueError(
-                            f"{key} is in blocks {self.blocks[held[0]].name!r} and {block.name!r}; give it one block"
-                        )
-        owner = {key: self.blocks[i].name for key, (i, _) in claims.items()}
+                        raise ValueError(f"{key} is in blocks {label[held[0]]!r} and {label[i]!r}; give it one block")
+        taken = {block.name for block in self.blocks if block.name is not None}
+
+        def unique(base: str) -> str:
+            name, n = base, 2
+            while name in taken:
+                name, n = f"{base} {n}", n + 1
+            taken.add(name)
+            return name
+
         resolved: list[tuple[Block, list[str]]] = []
         for i, block in enumerate(self.blocks):
             ordered = [info.key for info in params if claims.get(info.key, (None,))[0] == i]
             if not ordered:
-                raise ValueError(f"block {block.name!r} holds no variable of its own (other blocks name all of them)")
+                raise ValueError(f"{label[i]!r} holds no variable of its own (other blocks name all of them)")
             for key in ordered:
                 kind = space.param(key).kind
                 if kind not in block.proposer.kinds:
                     raise ValueError(
-                        f"block {block.name!r} holds {key} ({kind}), which {type(block.proposer).__name__} can't "
+                        f"{label[i]!r} holds {key} ({kind}), which {type(block.proposer).__name__} can't "
                         f"propose; put it in another block"
                     )
+            if block.name is None:
+                kinds = {space.param(key).kind for key in ordered}
+                block.name = unique(next((g for g, ks in _GROUPS.items() if kinds <= ks), "block"))
             resolved.append((block, ordered))
+        owner = {key for _, keys in resolved for key in keys}
         defaults: dict[str, list[str]] = {}
         for info in params:
             if info.key in owner:
@@ -439,22 +528,33 @@ class Search:
             else:
                 defaults.setdefault("numbers", []).append(info.key)
         for group, keys in defaults.items():
-            if any(block.name == group for block in self.blocks):
-                raise ValueError(
-                    f"{keys} need the default block {group!r}, but one of your blocks has that name; rename it "
-                    f"with Block(..., name=...)"
-                )
             proposer: Proposer = (
                 Reflection() if group == "text" else TPE(n_startup_trials=2) if group == "structure" else TPE()
             )
-            logger.info("default block %r (%s) for %s", group, type(proposer).__name__, keys)
-            resolved.append((Block(proposer, *keys, name=group), keys))
-        block_of = {key: block.name for block, keys in resolved for key in keys}
-        keys_of = {block.name: keys for block, keys in resolved}
-        if self.schedule is None:
-            return resolved, _default_schedule(resolved, space, block_of, self.within)
-        _check(self.schedule, [block.name for block, _ in resolved], keys_of, space, block_of)
-        return resolved, self.schedule
+            name = unique(group)
+            logger.info("default block %r (%s) for %s", name, type(proposer).__name__, keys)
+            resolved.append((Block(proposer, *keys, name=name), keys))
+        block_of = {key: _name(block) for block, keys in resolved for key in keys}
+        keys_of = {_name(block): keys for block, keys in resolved}
+        schedule = self.schedule
+        if schedule is None:
+            schedule = _default_schedule(resolved, space, block_of, self.within)
+        _check(schedule, [_name(block) for block, _ in resolved], keys_of, space, block_of)
+        return resolved, schedule
+
+
+_GROUPS: dict[str, frozenset[str]] = {
+    "structure": frozenset({"choice"}),
+    "numbers": frozenset({"int", "float", "one_of"}),
+    "text": frozenset({"text"}),
+}  # the kinds of keys a block may hold to be named after its group
+
+
+def _name(block: Block) -> str:
+    """A resolved block's name (`Search.resolve` names every block)."""
+    if block.name is None:
+        raise ValueError(f"{block!r} has no name; Search.resolve names it")
+    return block.name
 
 
 def _saved(record: IterationRecord) -> bool:
@@ -463,6 +563,7 @@ def _saved(record: IterationRecord) -> bool:
 
 
 def _is_structural(info: ParamInfo) -> bool:
+    """Whether a key is a `choice()` selector with 2+ options; a block holding one is structural."""
     return info.kind == "choice" and len(info.options or ()) >= 2
 
 
@@ -482,6 +583,13 @@ def _default_schedule(
     block_of: Mapping[str, str],
     within: Schedule | None,
 ) -> Schedule:
+    """The schedule `Search.resolve` builds when none is given.
+
+    The structural blocks are ordered outermost first: a block whose keys exist only under another
+    block's choice comes after that block (a cycle raises `ValueError`). Each becomes a `Nested` level
+    around `within` (default `Alternate()`). When every block is structural, the innermost one is the
+    inner schedule's only block instead of a level. With no level left, `Joint()`.
+    """
     structural = [(block, keys) for block, keys in resolved if any(_is_structural(space.param(key)) for key in keys)]
     after = {
         block.name: {block_of[s] for key in keys for s in _selectors(space, key) if s in block_of} - {block.name}

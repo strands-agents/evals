@@ -9,10 +9,11 @@ from typing import Any, ClassVar
 
 from strands.models.model import Model
 
-from ...evaluators.evaluator import DEFAULT_BEDROCK_MODEL_ID
 from ...types.optimization import Observation, Patch
 from ..declaration.space import ParamKind
 from .proposer import ProposalRequest, Proposer
+
+_DEFAULT_MODEL_ID = "global.anthropic.claude-sonnet-5-5"  # run at temperature 1.0
 
 
 class Reflection(Proposer):
@@ -51,7 +52,8 @@ class Reflection(Proposer):
         """Configure the proposer agent.
 
         Args:
-            model: The proposer's model; None means the repo's default Bedrock model.
+            model: The proposer's model; None means Claude Sonnet 5.5 on Bedrock
+                (`global.anthropic.claude-sonnet-5-5`) at temperature 1.0.
             system_prompt: Replaces the default prompt.
             success_threshold: Reward a trial needs to count as a success; None splits by rank.
 
@@ -93,7 +95,7 @@ class Reflection(Proposer):
         if isinstance(self.model, str):
             model_id: str | None = self.model
         elif self.model is None:
-            model_id = DEFAULT_BEDROCK_MODEL_ID
+            model_id = _DEFAULT_MODEL_ID
         else:
             model_id = self.model.get_config().get("model_id")
         prompt = None if self.system_prompt is None else hashlib.sha256(self.system_prompt.encode()).hexdigest()

@@ -1,4 +1,5 @@
 import copy
+import random
 import warnings
 
 import pytest
@@ -92,9 +93,18 @@ def shape(schedule):
 # ---- Block and Search -------------------------------------------------------------------------------------------
 
 
-def test_block_defaults_its_name_to_the_proposer_class():
-    assert Block(TPE(), "temperature").name == "TPE"
-    assert Block(TPE(), "temperature", name="numbers").name == "numbers"
+def test_an_unnamed_block_is_named_after_its_kind_made_unique():
+    a, b, mixed = Block(TPE(), "temperature"), Block(TPE(), "effort"), Block(Fake(), "manager")
+    assert a.name is None
+
+    resolved, _ = Search([a, b, mixed]).resolve(full_space())
+
+    assert [block.name for block, _ in resolved] == ["numbers", "numbers 2", "block", "text"]
+    assert a.name == "numbers"  # named on the Block itself
+    # a default block whose name is taken gets the next number; your named blocks keep theirs
+    resolved, _ = Search([Block(Fake(), "temperature", name="numbers")]).resolve(full_space())
+    assert [block.name for block, _ in resolved] == ["numbers", "structure", "numbers 2", "text"]
+    assert Block(TPE(), "temperature", name="mine").name == "mine"
 
 
 @pytest.mark.parametrize(
@@ -113,7 +123,7 @@ def test_block_rejects_bad_arguments(make, error):
 
 def test_search_rejects_two_blocks_with_one_name():
     with pytest.raises(ValueError, match="two blocks are named 'TPE'"):
-        Search([Block(TPE(), "temperature"), Block(TPE(), "effort")])
+        Search([Block(TPE(), "temperature", name="TPE"), Block(TPE(), "effort", name="TPE")])
 
 
 def test_search_rejects_negative_redraws_and_non_blocks():
@@ -173,7 +183,6 @@ def test_a_flat_key_is_one_variable_and_keeps_declaration_order():
         ),
         ([Block(Fake(), "nope", name="a")], "neither a declared name nor a key"),
         ([Block(TPE(), "prompt")], r"prompt \(text\), which TPE can't propose"),
-        ([Block(Fake(), "temperature", name="numbers")], "need the default block 'numbers'"),
     ],
 )
 def test_resolve_rejects_bad_blocks(blocks, message):
@@ -195,6 +204,7 @@ def test_proposer_configs():
     assert config["success_threshold"] is None
     assert len(config["system_prompt_sha256"]) == 64
     assert Reflection().config()["system_prompt_sha256"] is None
+    assert Reflection().config()["model"] == "global.anthropic.claude-sonnet-5-5"
     with pytest.raises(ValueError, match="success_threshold"):
         Reflection(success_threshold=1.5)
     with pytest.raises(ValueError, match="n_startup_trials"):
@@ -253,7 +263,7 @@ def test_a_key_named_directly_wins_over_a_declared_name():
         ("structure", "Fake", ["manager", "manager.Summary.ratio"]),
         ("window", "TPE", ["manager.Window.size"]),
     ]
-    with pytest.raises(ValueError, match="block 'all' holds no variable of its own"):
+    with pytest.raises(ValueError, match="'all' holds no variable of its own"):
         Search([Block(Fake(), "tools", name="all"), Block(Fake(), "tools.lookup", name="one")]).resolve(
             Space({"tools": tool_descriptions(lookup)})
         )
@@ -293,6 +303,29 @@ def test_within_sets_the_default_rounds_inner_schedule():
         Search(within="alternate")
     with pytest.raises(ValueError, match="shapes only the default schedule"):
         Search(schedule=Joint(), within=Alternate())
+
+
+def test_every_schedule_is_checked_the_default_and_within_included():
+    with pytest.raises(ValueError, match="no such block in its scope"):
+        Search(within=Nested("strucutre")).resolve(full_space())
+
+
+def test_a_wrong_type_is_a_type_error_and_a_bad_value_a_value_error():
+    with pytest.raises(TypeError, match="must be an int"):
+        Nested("s", inner_iterations="4")
+    with pytest.raises(TypeError, match="must be an int"):
+        Search(redraws="3")
+    with pytest.raises(ValueError, match="empty name"):
+        Nested("")
+
+
+def test_nested_takes_an_unnamed_block_named_by_resolve():
+    structure = Block(TPE(n_startup_trials=2), "manager")
+    nested = Nested(structure, Alternate())
+
+    _, schedule = Search([structure], schedule=nested).resolve(full_space())
+
+    assert schedule is nested and nested.outer == structure.name == "block"
 
 
 def test_nested_config():
@@ -558,4 +591,140 @@ def test_two_levels_place_the_inner_rounds_inside_the_outer_round():
     ]
     # an inner opener opens from the enclosing round's incumbent
     assert steps[4].parents == ("c4",)
+    # the outer round holds 1 + 3 * 4 = 13 candidates; the inner openers use 2, so the last step gets the 2 left
+    assert [s.n for s in steps[:6]] == [1, 1, 4, 4, 1, 2]
     assert history.replays(lambda: Nested("a", Nested("b", Alternate(), inner_iterations=2), inner_iterations=3))
+
+
+def test_inner_openers_use_up_the_outer_round():
+    # every inner opener saves and every inner step repeats: the outer round still ends
+    space = two_structures(temperature=Float(0.0, 1.0, default=0.5))
+    blocks = [
+        Block(Fake(), "manager", name="a"),
+        Block(Fake(), "router", name="b"),
+        Block(Fake(), "temperature", name="t"),
+    ]
+    history = History(Nested("a", Nested("b", Joint(), inner_iterations=2), inner_iterations=3), blocks, space)
+    for _ in range(60):
+        step = history.plan()
+        history.save(step, "feasible" if step.role == "opener" else ("duplicate", "base"))
+
+    outer_rounds = {record.round[0] for record in history.past}
+    inner_rounds = {record.round for record in history.past if len(record.round) == 2 and record.round[0] == 0}
+    assert len(outer_rounds) > 1
+    assert len(inner_rounds) == 12  # the outer round's 12 slots after its opener, one per inner opener
+    assert history.replays(lambda: Nested("a", Nested("b", Joint(), inner_iterations=2), inner_iterations=3))
+
+
+def test_at_width_one_a_round_holds_its_steps_and_the_inner_openers():
+    space = two_structures(temperature=Float(0.0, 1.0, default=0.5))
+    blocks = [
+        Block(Fake(), "manager", name="a"),
+        Block(Fake(), "router", name="b"),
+        Block(Fake(), "temperature", name="t"),
+    ]
+    history = History(Nested("a", Nested("b", Joint(), inner_iterations=2), inner_iterations=6), blocks, space, n=1)
+    history.run(lambda step, i: ["feasible"] if i < 20 else [("duplicate", "base")])
+
+    first = [record for record in history.past if record.round[0] == 0]
+    assert len(first) == 7  # 1 + 6 slots: the opener, then 2 inner rounds of an opener and 2 steps
+    assert {record.round for record in first if len(record.round) == 2} == {(0, 0), (0, 1)}
+    assert history.replays(lambda: Nested("a", Nested("b", Joint(), inner_iterations=2), inner_iterations=6))
+
+
+def test_a_joint_step_that_saved_nothing_ends_its_round_early():
+    history = History(Nested("structure", Joint(), inner_iterations=4), blocks4())
+    history.save(history.plan(), "feasible")  # the opener; the round has room for 16 more
+    history.save(history.plan(), ("duplicate", "base"))  # Joint's first step saves nothing
+
+    assert view(history.plan())[3:5] == ((1,), "opener")
+
+
+TWO_BASE = {
+    "manager": "Window",
+    "manager.Window.size": 40,
+    "router": "router",
+    "router.router.k": 2,
+    "temperature": 0.5,
+}
+
+
+def shapes():
+    """(name, schedule factory, blocks factory, space factory, base values) for the randomized test."""
+
+    def two():
+        return two_structures(temperature=Float(0.0, 1.0, default=0.5))
+
+    def three():
+        return [
+            Block(Fake(), "manager", name="a"),
+            Block(Fake(), "router", name="b"),
+            Block(Fake(), "temperature", name="t"),
+        ]
+
+    return [
+        ("one level", lambda: Nested("structure", Alternate(), inner_iterations=2), blocks4, None, BASE),
+        (
+            "two levels",
+            lambda: Nested("a", Nested("b", Joint(), inner_iterations=2), inner_iterations=3),
+            three,
+            two,
+            TWO_BASE,
+        ),
+        ("openers only", lambda: Nested("structure", inner_iterations=0), blocks4, None, BASE),
+        ("default", lambda: None, lambda: [], two, TWO_BASE),
+    ]
+
+
+@pytest.mark.parametrize("shape", range(4), ids=lambda i: shapes()[i][0])
+@pytest.mark.parametrize("seed", range(25))
+def test_random_histories_keep_every_round_rule(shape, seed):
+    name, make_schedule, make_blocks, make_space, base = shapes()[shape]
+    rng = random.Random(f"{seed}:{name}")
+    history = History(make_schedule(), make_blocks(), make_space() if make_space else None, redraws=1)
+    history.values["base"] = base
+    schedule = history.schedule
+
+    def result(step, i):
+        def one():
+            # new candidates for 40 steps, then only repeats and invalid draws, so the rounds must end
+            outcome = rng.choice(
+                ["feasible", "feasible", "ineligible", "invalid", "duplicate"] if i < 40 else ["invalid", "duplicate"]
+            )
+            if outcome == "duplicate":
+                return ("duplicate", rng.choice(sorted(history.eligible)))
+            if outcome == "feasible" and make_space is None and rng.random() < 0.5:
+                return ("feasible", SUMMARY)
+            return outcome
+
+        return [one() for _ in range(step.n)]
+
+    steps = history.run(result)
+
+    assert steps[-1] is None
+    for step, record in zip(steps, history.past, strict=False):
+        assert step is not None and step.blocks and 1 <= step.n <= history.n
+        assert record.round is not None
+    if isinstance(schedule, Nested):
+        # outer rounds are numbered without gaps, and each holds at most 1 + inner_iterations * n candidates
+        outer = sorted({record.round[0] for record in history.past})
+        assert outer == list(range(len(outer)))
+        for r in outer:
+            used = sum(
+                1 if record.role == "opener" else step.n
+                for step, record in zip(steps, history.past, strict=False)
+                if record.round[0] == r
+                and (
+                    record.role == "opener" or any(p.outcome not in ("invalid", "duplicate") for p in record.proposals)
+                )
+            )
+            assert used <= 1 + schedule.inner_iterations * history.n
+        # it ended after redraws + 1 outer rounds in a row that saved nothing new
+        empty = 0
+        for r in reversed(outer):
+            records = [record for record in history.past if record.round[0] == r]
+            if any(p.outcome not in ("invalid", "duplicate") for record in records for p in record.proposals):
+                break
+            empty += 1
+        assert empty == history.redraws + 1
+    assert history.replays(lambda: copy.deepcopy(schedule))  # a schedule keeps no state, so a copy is a fresh one
