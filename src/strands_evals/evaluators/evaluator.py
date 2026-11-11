@@ -6,7 +6,8 @@ from strands.models.model import Model
 from typing_extensions import Any, Generic, TypeGuard
 
 from ..extractors import TraceExtractor
-from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
+from ..types.evaluation import NOT_APPLICABLE, EvaluationData, EvaluationOutput, InputT, OutputT
+from ..types.evaluation_report import EvaluationReport
 from ..types.trace import (
     AssistantMessage,
     Context,
@@ -76,6 +77,34 @@ class Evaluator(Generic[InputT, OutputT]):
             return DEFAULT_BEDROCK_MODEL_ID
         else:
             return ""
+
+    def _get_label(self, score: float, passed: bool, outputs: list[EvaluationOutput] | None = None) -> str:
+        """Label a case's aggregate result for experiment telemetry.
+
+        Uses the evaluator's `_score_mapping` when the score maps to one of its labels, otherwise
+        "YES" or "NO" from the aggregate verdict, so the label always agrees with `test_pass`.
+
+        Args:
+            score: The aggregate score.
+            passed: The aggregate verdict.
+            outputs: The rows the score was aggregated from, when available. A case whose every
+                row was not-applicable has no verdict to report, and its 0.0 is a placeholder
+                rather than a score, so reverse-mapping it would emit the mapping's worst label for
+                a case that was never judged.
+
+        Returns:
+            The label for the case.
+        """
+        if outputs is not None and not EvaluationReport.is_applicable(outputs):
+            return NOT_APPLICABLE
+
+        score_mapping = getattr(self, "_score_mapping", None)
+        if score_mapping:
+            reverse_mapping = {v: k for k, v in score_mapping.items()}
+            if score in reverse_mapping:
+                return str(reverse_mapping[score])
+
+        return "YES" if passed else "NO"
 
     @staticmethod
     def _default_aggregator(outputs: list[EvaluationOutput]) -> tuple[float, bool, str]:

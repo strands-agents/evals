@@ -26,7 +26,7 @@ from strands_evals.evaluators import (
     TrajectoryEvaluator,
 )
 from strands_evals.evaluators.skill_selection_accuracy_evaluator import SkillSelectionScore
-from strands_evals.experiment import _get_label_from_score, is_throttling_error
+from strands_evals.experiment import is_throttling_error
 from strands_evals.providers.trace_provider import TraceProvider
 from strands_evals.types import EvaluationData, EvaluationOutput
 from strands_evals.types.evaluation import NOT_APPLICABLE
@@ -1879,11 +1879,31 @@ def test_all_not_applicable_case_is_not_labeled_with_a_verdict():
     not_applicable = [EvaluationOutput(score=0.0, test_pass=True, reason="nothing to judge", label=NOT_APPLICABLE)]
     judged_no = [EvaluationOutput(score=0.0, test_pass=False, reason="wrong pick", label="No")]
 
-    assert _get_label_from_score(evaluator, 0.0, not_applicable) == NOT_APPLICABLE
+    assert evaluator._get_label(0.0, True, not_applicable) == NOT_APPLICABLE
     # A real zero-scored verdict still maps to the mapping's label, and so does every existing
     # caller that passes no rows at all.
-    assert _get_label_from_score(evaluator, 0.0, judged_no) == str(SkillSelectionScore.NO)
-    assert _get_label_from_score(evaluator, 0.0) == str(SkillSelectionScore.NO)
+    assert evaluator._get_label(0.0, False, judged_no) == str(SkillSelectionScore.NO)
+    assert evaluator._get_label(0.0, False) == str(SkillSelectionScore.NO)
+
+
+def test_default_label_follows_the_verdict():
+    """The label must agree with `test_pass`. With the default aggregator, rows 0.9 (pass) and 0.4
+    (fail) average 0.65 but the case fails, so a score-based label would report it as YES.
+    """
+    rows = [
+        EvaluationOutput(score=0.9, test_pass=True, reason="a"),
+        EvaluationOutput(score=0.4, test_pass=False, reason="b"),
+    ]
+    score, passed, _ = Evaluator._default_aggregator(rows)
+    assert (score, passed) == (pytest.approx(0.65), False)
+    assert MockEvaluator()._get_label(score, passed, rows) == "NO"
+    assert MockEvaluator()._get_label(0.2, True, rows) == "YES"
+
+
+def test_score_mapping_labels_are_kept():
+    evaluator = SkillSelectionAccuracyEvaluator()
+    judged = [EvaluationOutput(score=1.0, test_pass=True, reason="good pick", label="Yes")]
+    assert evaluator._get_label(1.0, True, judged) == str(SkillSelectionScore.YES)
 
 
 def test_deterministic_evaluator_error_isolation():
