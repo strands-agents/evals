@@ -312,6 +312,11 @@ def _evaluator_configuration(evaluator: Evaluator) -> dict[str, Any]:
         elif hasattr(evaluator, f"_{name}"):
             value = getattr(evaluator, f"_{name}")
         else:
+            warnings.warn(
+                f"evaluator {evaluator.get_name()!r} stores constructor parameter {name!r} under another "
+                f"attribute; its fingerprint falls back to to_dict() and may miss configuration changes",
+                stacklevel=2,
+            )
             return {
                 "implementation": f"{evaluator.__class__.__module__}.{evaluator.__class__.__qualname__}",
                 "name": evaluator.get_name(),
