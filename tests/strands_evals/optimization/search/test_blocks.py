@@ -100,7 +100,7 @@ def test_an_unnamed_block_is_named_after_its_kind_made_unique():
     resolved, _ = Search([a, b, mixed]).resolve(full_space())
 
     assert [block.name for block, _ in resolved] == ["numbers", "numbers 2", "block", "text"]
-    assert a.name == "numbers"  # named on the Block itself
+    assert a.name is None  # named on the returned copy; your Block is unchanged
     # a default block whose name is taken gets the next number; your named blocks keep theirs
     resolved, _ = Search([Block(Fake(), "temperature", name="numbers")]).resolve(full_space())
     assert [block.name for block, _ in resolved] == ["numbers", "structure", "numbers 2", "text"]
@@ -282,7 +282,7 @@ def test_a_given_schedule_is_checked_and_returned():
     space = full_space()
     nested = Nested("structure", Alternate())
     _, schedule = Search(schedule=nested).resolve(space)
-    assert schedule is nested
+    assert schedule.config() == nested.config()  # a copy: the Nested names its outer block
 
     with pytest.raises(ValueError, match="no such block in its scope"):
         Search(schedule=Nested("nope")).resolve(space)
@@ -323,9 +323,30 @@ def test_nested_takes_an_unnamed_block_named_by_resolve():
     structure = Block(TPE(n_startup_trials=2), "manager")
     nested = Nested(structure, Alternate())
 
-    _, schedule = Search([structure], schedule=nested).resolve(full_space())
+    resolved, schedule = Search([structure], schedule=nested).resolve(full_space())
 
-    assert schedule is nested and nested.outer == structure.name == "block"
+    assert schedule is not nested and schedule.outer == resolved[0][0].name == "block"
+
+
+def test_resolve_leaves_the_users_blocks_and_schedule_unchanged():
+    structure = Block(TPE(n_startup_trials=2), "manager")
+    numbers = Block(TPE(), "temperature")
+    nested = Nested(structure, Alternate())
+    search = Search([structure, numbers], schedule=nested)
+
+    first, _ = search.resolve(full_space())
+    second, _ = search.resolve(full_space())
+
+    assert structure.name is None and numbers.name is None and nested._outer is structure
+    assert [b.name for b, _ in first] == [b.name for b, _ in second] == ["block", "numbers", "numbers 2", "text"]
+    assert first[0][0] is not structure and first[0][0].proposer is structure.proposer
+    with pytest.raises(ValueError, match="no name"):
+        _ = nested.outer
+
+
+def test_a_nested_on_an_unnamed_block_outside_the_search_raises():
+    with pytest.raises(ValueError, match="not in this Search"):
+        Search(schedule=Nested(Block(TPE(), "manager"))).resolve(full_space())
 
 
 def test_nested_config():
@@ -415,6 +436,7 @@ class History:
                 round=step.round,
                 role=step.role,
                 blocks=[b.name for b in step.blocks],
+                n_candidates=step.n_candidates,
                 proposals=proposals,
                 rollouts_spent=0,
             )
@@ -436,7 +458,14 @@ class History:
 def view(step):
     if step is None:
         return None
-    return ([b.name for b in step.blocks], step.n, step.parents, step.round, step.role, step.observe_at_round_end)
+    return (
+        [b.name for b in step.blocks],
+        step.n_candidates,
+        step.parents,
+        step.round,
+        step.role,
+        step.observe_at_round_end,
+    )
 
 
 def blocks4():
@@ -592,7 +621,7 @@ def test_two_levels_place_the_inner_rounds_inside_the_outer_round():
     # an inner opener opens from the enclosing round's incumbent
     assert steps[4].parents == ("c4",)
     # the outer round holds 1 + 3 * 4 = 13 candidates; the inner openers use 2, so the last step gets the 2 left
-    assert [s.n for s in steps[:6]] == [1, 1, 4, 4, 1, 2]
+    assert [s.n_candidates for s in steps[:6]] == [1, 1, 4, 4, 1, 2]
     assert history.replays(lambda: Nested("a", Nested("b", Alternate(), inner_iterations=2), inner_iterations=3))
 
 
@@ -630,6 +659,48 @@ def test_at_width_one_a_round_holds_its_steps_and_the_inner_openers():
     assert len(first) == 7  # 1 + 6 slots: the opener, then 2 inner rounds of an opener and 2 steps
     assert {record.round for record in first if len(record.round) == 2} == {(0, 0), (0, 1)}
     assert history.replays(lambda: Nested("a", Nested("b", Joint(), inner_iterations=2), inner_iterations=6))
+
+
+def test_an_outer_round_is_charged_the_n_a_deeper_round_gave():
+    # three levels, 4 per step: the middle round's room (4, less one inner opener) cuts the innermost step to 3,
+    # and the outer round is charged 3, not 4, so it still holds 1 + 2 * 4 = 9 candidates
+    space = two_structures(temperature=Float(0.0, 1.0, default=0.5), top_p=Float(0.0, 1.0, default=0.9))
+    blocks = [
+        Block(Fake(), "manager", name="a"),
+        Block(Fake(), "router", name="b"),
+        Block(Fake(), "temperature", name="c"),
+        Block(Fake(), "top_p", name="p"),
+    ]
+
+    def make():
+        return Nested(
+            "a", Nested("b", Nested("c", Joint(), inner_iterations=1), inner_iterations=1), inner_iterations=2
+        )
+
+    history = History(make(), blocks, space)
+    history.values["base"] = {**TWO_BASE, "top_p": 0.9}
+    while (step := history.plan()) is not None and step.round[0] == 0:
+        history.save(step, *["feasible"] * step.n_candidates)
+
+    assert [(r.round, r.role, r.n_candidates) for r in history.past] == [
+        ((0,), "opener", 1),
+        ((0, 0), "opener", 1),
+        ((0, 0, 0), "opener", 1),
+        ((0, 0, 0), "inner", 3),
+        ((0, 1), "opener", 1),
+        ((0, 1, 0), "opener", 1),
+        ((0, 1, 0), "inner", 1),
+    ]
+    assert step.round == (1,)
+    assert history.replays(make)
+
+
+def test_nested_raises_on_an_empty_ranking():
+    history = nested_history()
+    history.ranking = []
+
+    with pytest.raises(ValueError, match="no eligible candidate"):
+        history.plan()
 
 
 def test_a_joint_step_that_saved_nothing_ends_its_round_early():
@@ -697,13 +768,13 @@ def test_random_histories_keep_every_round_rule(shape, seed):
                 return ("feasible", SUMMARY)
             return outcome
 
-        return [one() for _ in range(step.n)]
+        return [one() for _ in range(step.n_candidates)]
 
     steps = history.run(result)
 
     assert steps[-1] is None
     for step, record in zip(steps, history.past, strict=False):
-        assert step is not None and step.blocks and 1 <= step.n <= history.n
+        assert step is not None and step.blocks and 1 <= step.n_candidates <= history.n
         assert record.round is not None
     if isinstance(schedule, Nested):
         # outer rounds are numbered without gaps, and each holds at most 1 + inner_iterations * n candidates
@@ -712,7 +783,7 @@ def test_random_histories_keep_every_round_rule(shape, seed):
         for r in outer:
             # the round's own opener uses 1, an inner opener 1 unless it repeated, a step that saved its n
             used = sum(
-                1 if record.role == "opener" else step.n
+                1 if record.role == "opener" else step.n_candidates
                 for step, record in zip(steps, history.past, strict=False)
                 if record.round[0] == r
                 and (
