@@ -148,7 +148,7 @@ Treat cases as duplicates when their inputs make the same request about the same
 
 Report the experiment file path. List each suggested evaluator with its failure mode's episode count out of the cases in the file and one `evidence` quote (redact any secrets in it) and name any modes that appeared but fell below 10%. Say how many secrets you redacted and in which cases, without repeating the values. List each removed duplicate by `name` with the case it duplicated. List each inactionable case by `name` with its reason, and recommend dropping it. Tell the user to run it with `strands-evals run <file> --agent <module>:<factory>`. Then delete the episode files from step 3 and the download directory from step 2.
 
-Ask the user to review the experiment file and whether they want any of the post-generation actions below (drop cases, smoke-test the experiment, synthesize additional cases). Wait for their response. If you can't wait for a reply, keep every case and say which ones you'd drop.
+Ask the user to review the experiment file and whether they want any of the post-generation actions below (drop cases, smoke-test the experiment, synthesize additional cases, add actor profiles). Wait for their response. If you can't wait for a reply, keep every case and say which ones you'd drop.
 
 ## Post-generation
 
@@ -188,3 +188,16 @@ If it errors (ex. missing model credentials, `ModuleNotFoundError`), report the 
 - Write `expected_assertion` from its `input`, in the same style as the existing cases' assertions.
 
 Run step 6 over the new cases, but skip its `evaluators` update after removing duplicates. Remove each new case that duplicates a real case or an earlier synthetic case, or that the actionability check flags. Exclude synthetic cases from the failure mode counts. Repeat from the script run until the kept synthetic cases reach the requested number, stopping early after 3 runs or after a run that keeps no cases. Report how many synthetic cases were kept out of the number requested, how many runs it took, and how many were removed as duplicates and as inactionable.
+
+### Add actor profiles
+
+Read each case's `input` and `expected_assertion`. Group cases whose users share expertise, communication style, and kind of request (ex. "terse maintainer debugging CI"). Put each case in exactly one group, and give each group a short kebab-case label. Generate an actor profile for each group, grounded in the cases' inputs and expected_assertions. Don't add names, emails, secrets, or other personal details.
+
+- `traits.persona`: one sentence on the group's expertise, communication style, and patience.
+- `traits.supplementary_profile`: one sentence on what the group's users are usually working on.
+- `context`: one or two sentences of shared background.
+- `actor_goal`: one sentence on the goal the group's users share, from their side (ex. "Get a failing CI check passing"), based on the group's `expected_assertion`s.
+
+Add the group's profile to each of its cases' `metadata` as `"actor_profile": {"traits": {...}, "context": "<context>", "actor_goal": "<actor_goal>"}` and `{"evaluator_type": "GoalSuccessRateEvaluator"}` to `evaluators` if it isn't there. Run `strands-evals validate <experiment_file>` again. Fix any issues that occur.
+
+List each group's label, case count, and traits, and say whether you added GoalSuccessRateEvaluator. Tell the user the experiment cases now run as multi-turn conversations.
