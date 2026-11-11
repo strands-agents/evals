@@ -2,25 +2,58 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+import warnings
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from hashlib import sha256
+from typing import Any, ClassVar, Literal
 
-from ...types.optimization import Evidence, Observation, Patch
-from ..declaration.space import ParamKind
+from ...types.optimization import Evidence, Observation, Patch, Value, Values
+from ..candidate import content_id
+from ..declaration.space import ParamInfo, ParamKind, Space
+from ..scoring.objectives import Maximize
 from .proposer import ProposalRequest, Proposer
 
 
-class TPE(Proposer):
-    """Optuna TPE with one study per context (the values outside its block); studies maximize.
+@dataclass(frozen=True)
+class _Told:
+    """One candidate as TPE was told it: its values and the snapshot it was valued at, never re-valued."""
 
-    `TPESampler(multivariate=True, group=True, constant_liar=True, constraints_func=...)`: a
-    step's n proposals are asked before any is told. Each candidate is valued as it was told, once, when
-    observed (its own block) or shared as evidence (other blocks): `objective` as the value, `violations`
-    as Optuna constraint values, `objective=None` as `TrialState.FAIL`; invalid patches are left out, and a
-    later refit doesn't re-value it. `observe` and `evidence` append to TPE's own list (replayed on
-    resume); the study for a context is rebuilt from that list before each ask, and the sampler is
-    reseeded from `f"{seed}:{iteration}:{redraw}:{context id}"` through sha256. `seed=None` uses the run
-    seed. Under a `Pareto` objective each study is multi-objective, one direction per objective, told
-    `term_values` instead of `objective`.
+    values: Values
+    objective: float | None
+    term_values: list[float] | None
+    violations: list[float] | None
+
+
+@dataclass(frozen=True)
+class _Pending:
+    """A patch proposed and not yet observed: a running trial in its context's study (constant liar)."""
+
+    context: str
+    params: dict[str, Any]
+    patch: Patch
+
+
+class TPE(Proposer):
+    """Optuna TPE with one study per context (the choices outside its block); studies maximize.
+
+    `TPESampler(multivariate=True, group=True, constant_liar=True)`: proposals not yet observed are running
+    trials, so a step's n proposals keep apart before any is told, whether they come from one `propose` call
+    or several. Each candidate is valued as it was told, once, when observed (its own block) or shared as
+    evidence (other blocks): `objective` as the value, `violations` as the trial's constraint values,
+    `objective=None` as `TrialState.FAIL`; invalid patches are left out, and a later refit doesn't re-value
+    it. A duplicate is told the existing candidate's snapshot. `observe` and `evidence` append to TPE's own
+    list (replayed on resume); the study for a context is rebuilt from that list before each ask, and the
+    sampler is reseeded from `f"{seed}:{iteration}:{redraw}:{context id}:{pending}"` through sha256, where
+    `pending` counts the context's proposals not yet observed, so two asks in one step draw differently.
+    `seed=None` uses the run seed. Under a `Pareto` objective each study is multi-objective, one direction
+    per objective, told `term_values` instead of `objective`.
+
+    The context: a block holding a choice with two or more options has one; any other block one per
+    combination of the choices outside it, so numbers under a choice's alternative are learned per
+    structure. Keys are suggested in declaration order, a choice before its sub-keys, and a key inactive
+    under the choices so far is not suggested. Choices and `OneOf` options are categories, told by position,
+    so options Python compares equal (`1` and `True`) stay apart.
     """
 
     kinds: ClassVar[frozenset[ParamKind]] = frozenset({"int", "float", "one_of", "choice"})
@@ -43,16 +76,169 @@ class TPE(Proposer):
             raise ValueError(f"TPE(n_startup_trials=...) must be an int >= 0, not {n_startup_trials!r}")
         self.seed = seed
         self.n_startup_trials = n_startup_trials
+        self._told: list[_Told] = []
+        self._pending: list[_Pending] = []
 
     async def propose(self, request: ProposalRequest) -> list[Patch]:
-        raise NotImplementedError
+        """Ask `request.n` trials of the parent's context's study, each a patch on the block's active keys.
+
+        Returns `[]` when no block key is active under the parent's choices.
+        """
+        import optuna  # optional extra: optimization
+
+        space = request.space
+        owned = set(request.keys)
+        keys = [info.key for info in space.params() if info.key in owned]  # a choice before its sub-keys
+        context = _context_of(space, keys, request.parent.values)
+        seed = request.seed if self.seed is None else self.seed
+        patches: list[Patch] = []
+        for _ in range(request.n):
+            pending = [p for p in self._pending if p.context == context]
+            key = f"{seed}:{request.iteration}:{request.redraw}:{context}:{len(pending)}"
+            # 4 bytes: Optuna seeds numpy's RandomState, which takes < 2**32
+            study = self._study_for(
+                context, space, keys, request, int.from_bytes(sha256(key.encode()).digest()[:4], "big")
+            )
+            trial = study.ask()
+            current: dict[str, Value] = dict(request.parent.values)
+            updates: dict[str, Value] = {}
+            params: dict[str, Any] = {}
+            for k in keys:
+                if not space.is_active(k, current):
+                    continue
+                info = space.param(k)
+                if info.kind == "int":
+                    params[k] = trial.suggest_int(k, int(info.min_value), int(info.max_value), log=info.log)  # type: ignore[arg-type]
+                    updates[k] = params[k]
+                elif info.kind == "float":
+                    params[k] = trial.suggest_float(k, info.min_value, info.max_value, log=info.log)  # type: ignore[arg-type]
+                    updates[k] = float(params[k])
+                else:
+                    assert info.options is not None
+                    params[k] = trial.suggest_categorical(k, tuple(range(len(info.options))))
+                    updates[k] = info.options[params[k]]
+                current[k] = updates[k]
+            if not updates:
+                return []
+            told = sum(1 for t in study.trials if t.state != optuna.trial.TrialState.RUNNING)
+            phase = "random startup" if told < self.n_startup_trials else f"modeled on {told} told trials"
+            patch = Patch(updates=updates, rationale=f"TPE: {phase}", state={"context": context})
+            self._pending.append(_Pending(context, params, patch))
+            patches.append(patch)
+        return patches
 
     def observe(self, observation: Observation) -> None:
-        raise NotImplementedError
+        """Close the patch's running trial and keep the candidate as told; an invalid patch is left out."""
+        for i, pending in enumerate(self._pending):
+            if pending.patch == observation.patch:
+                del self._pending[i]
+                break
+        if observation.outcome == "invalid" or observation.values is None:
+            return
+        self._told.append(
+            _Told(observation.values, observation.objective, observation.term_values, observation.violations)
+        )
 
     def evidence(self, evidence: Evidence) -> None:
-        raise NotImplementedError
+        """Keep another block's candidate as told, so it informs the study of its context."""
+        self._told.append(_Told(evidence.values, evidence.objective, evidence.term_values, evidence.violations))
 
     def config(self) -> dict[str, Any]:
         """`seed` and `n_startup_trials`."""
         return {"seed": self.seed, "n_startup_trials": self.n_startup_trials}
+
+    def _study_for(self, context: str, space: Space, keys: Sequence[str], request: ProposalRequest, seed: int) -> Any:
+        """A fresh study for `context`: every told candidate in it, then its pending proposals as running trials."""
+        import optuna  # optional extra: optimization
+        from optuna.trial import TrialState, create_trial  # optional extra: optimization
+
+        criteria = request.criteria
+        verbosity = optuna.logging.get_verbosity()
+        optuna.logging.set_verbosity(optuna.logging.WARNING)  # "A new study created in memory" on every ask
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", optuna.exceptions.ExperimentalWarning)  # multivariate, group
+                sampler = optuna.samplers.TPESampler(
+                    seed=seed,
+                    n_startup_trials=self.n_startup_trials,
+                    multivariate=True,
+                    group=True,
+                    constant_liar=True,
+                )
+            if criteria.is_pareto:
+                directions: list[Literal["maximize", "minimize"]] = [
+                    "maximize" if isinstance(o, Maximize) else "minimize"
+                    for o in criteria.objective.objectives  # type: ignore[union-attr]
+                ]
+                study = optuna.create_study(directions=directions, sampler=sampler)
+            else:
+                study = optuna.create_study(direction="maximize", sampler=sampler)
+        finally:
+            optuna.logging.set_verbosity(verbosity)
+        for told in self._told:
+            if _context_of(space, keys, told.values) != context:
+                continue
+            params = {k: _internal(space.param(k), told.values[k]) for k in keys if k in told.values}
+            if not params:
+                continue
+            distributions = {k: _distribution(space.param(k)) for k in params}
+            if criteria.is_pareto:
+                values = told.term_values
+            else:
+                values = None if told.objective is None else [told.objective]
+            if values is None:
+                study.add_trial(create_trial(state=TrialState.FAIL, params=params, distributions=distributions))
+                continue
+            constraints = {str(i): v for i, v in enumerate(told.violations or [])} or None
+            study.add_trial(
+                create_trial(params=params, distributions=distributions, values=values, constraints=constraints)
+            )
+        for pending in self._pending:
+            if pending.context == context:
+                distributions = {k: _distribution(space.param(k)) for k in pending.params}
+                study.add_trial(
+                    create_trial(state=TrialState.RUNNING, params=pending.params, distributions=distributions)
+                )
+        return study
+
+
+def _context_of(space: Space, keys: Sequence[str], values: Values) -> str:
+    """The id of the landscape `values` belong to for a block of `keys`.
+
+    A block holding a choice with two or more options has one landscape; any other block one per
+    combination of the choices outside it.
+    """
+    owned = set(keys)
+    infos = [space.param(k) for k in keys]
+    if any(i.kind == "choice" and len(i.options or ()) >= 2 for i in infos):
+        return content_id({})
+    choices: Mapping[str, Value] = {
+        info.key: values[info.key]
+        for info in space.params()
+        if info.kind == "choice" and info.key not in owned and info.key in values
+    }
+    return content_id(choices)
+
+
+def _distribution(info: ParamInfo) -> Any:
+    """The Optuna distribution of one key; a choice or `OneOf` is a category per option position."""
+    from optuna.distributions import (  # optional extra: optimization
+        CategoricalDistribution,
+        FloatDistribution,
+        IntDistribution,
+    )
+
+    if info.kind == "int":
+        return IntDistribution(int(info.min_value), int(info.max_value), log=info.log)  # type: ignore[arg-type]
+    if info.kind == "float":
+        return FloatDistribution(info.min_value, info.max_value, log=info.log)  # type: ignore[arg-type]
+    assert info.options is not None
+    return CategoricalDistribution(tuple(range(len(info.options))))
+
+
+def _internal(info: ParamInfo, value: Value) -> Any:
+    """`value` as the trial holds it: a number as is, an option by its position (type and value must match)."""
+    if info.kind in ("int", "float"):
+        return value
+    assert info.options is not None
+    return next(i for i, o in enumerate(info.options) if type(o) is type(value) and o == value)
