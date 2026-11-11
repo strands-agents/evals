@@ -32,7 +32,9 @@ class ProposalRequest:
         fit: Read-only; None before 2 candidates are eligible.
         candidates: Every scored candidate so far: eligible ones in ranking order, then the ineligible in
             scoring order. Invalid, duplicate, and unscored proposals never appear.
-        n: How many patches to return.
+        n: How many patches to return: the step's `Step.n_candidates` (at most `proposals_per_iteration`),
+            or fewer when the budget can't score them all, on a redraw (only the shortfall), or for a
+            concurrent proposer (1 per call).
         iteration: So a proposer can seed per iteration.
         seed: The run seed.
         redraw: The redraw number within this iteration and block (0 = first ask; `Search.redraws` caps it).

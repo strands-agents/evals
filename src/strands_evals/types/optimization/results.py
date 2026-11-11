@@ -36,7 +36,7 @@ class IterationRecord(BaseModel):
     `round` is the round path, outermost `Nested` first (`Step.round`); None outside any `Nested`.
     `n_candidates` is how many candidates the schedule gave the step (`Step.n_candidates`, already cut to
     the room of every round around it), which each enclosing `Nested` round charges when the step saved a
-    candidate.
+    candidate, or, for an opener, unless it repeated a measured candidate.
     """
 
     model_config = ConfigDict(frozen=True)

@@ -58,13 +58,6 @@ class Fake(Proposer):
         pass
 
 
-@pytest.fixture(autouse=True)
-def _quiet_reflection():
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", "Reflection runs model-written", UserWarning)
-        yield
-
-
 def manager():
     return choice(component(Window, size=Int(1, 100)), component(Summary, ratio=Float(0.1, 0.9)))
 
@@ -190,11 +183,17 @@ def test_resolve_rejects_bad_blocks(blocks, message):
         Search(blocks).resolve(full_space())
 
 
-def test_reflection_warns_that_its_shell_is_not_a_sandbox():
+async def test_reflection_warns_once_when_it_first_proposes():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        with pytest.raises(UserWarning, match="not a sandbox"):
-            Reflection()
+        reflection = Reflection()  # building one, as resolve does for the default text block, doesn't warn
+        Search().resolve(full_space())
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for _ in range(2):
+            with pytest.raises(NotImplementedError):
+                await reflection.propose(None)
+    assert len([w for w in caught if "not a sandbox" in str(w.message)]) == 1
 
 
 def test_proposer_configs():
@@ -276,6 +275,17 @@ def test_a_block_under_another_blocks_choice_comes_after_it():
     _, schedule = Search(blocks).resolve(space)
 
     assert shape(schedule) == ("nested", "a", ("nested", "b", "alternate"))
+
+
+def test_a_key_under_a_one_option_choice_depends_on_no_block():
+    # "router" is a bare component (one option), claimed by a non-structural block; the structural block holding
+    # its k is neither ordered after that block nor rejected as nested around it
+    space = Space({"manager": manager(), "router": component(Router, k=Int(1, 5))})
+    blocks = [Block(TPE(), "router", name="r"), Block(TPE(), "manager", "router.Router.k", name="a")]
+
+    _, schedule = Search(blocks).resolve(space)
+    assert shape(schedule) == ("nested", "a", "alternate")
+    Search(blocks, schedule=Nested("a")).resolve(space)
 
 
 def test_a_given_schedule_is_checked_and_returned():
@@ -392,6 +402,7 @@ class History:
             values=dict(self.values),
             eligible=frozenset(self.eligible),
             ranking=list(self.ranking),
+            run_ranking=list(self.ranking),
             proposals_per_iteration=self.n,
             redraws=self.redraws,
         )
@@ -692,6 +703,38 @@ def test_an_outer_round_is_charged_the_n_a_deeper_round_gave():
         ((0, 1, 0), "inner", 1),
     ]
     assert step.round == (1,)
+    assert history.replays(make)
+
+
+def test_an_inner_round_ranks_an_opener_repeating_a_candidate_from_an_earlier_round():
+    # outer round 1's b-opener lands on the baseline, which outer round 1 never made, so only the run's ranking
+    # holds it; the inner round still builds on it, and keeps it ahead of a worse candidate the round makes
+    space = two_structures(temperature=Float(0.0, 1.0, default=0.5))
+    blocks = [
+        Block(Fake(), "manager", name="a"),
+        Block(Fake(), "router", name="b"),
+        Block(Fake(), "temperature", name="t"),
+    ]
+
+    def make():
+        return Nested("a", Nested("b", Alternate(), inner_iterations=2), inner_iterations=4)
+
+    history = History(make(), blocks, space, n=1)
+    history.values["base"] = dict(TWO_BASE)
+    while (step := history.plan()).round[0] == 0:
+        history.save(step, "feasible")
+    history.save(step, "feasible")  # outer round 1's a-opener: a new candidate, the round's only one
+    inner_opener = history.plan()
+    assert view(inner_opener)[3:5] == ((1, 0), "opener")
+    history.save(inner_opener, ("duplicate", "base"))
+
+    first = history.plan()
+    assert view(first) == (["t"], 1, ("base",), (1, 0), "inner", ())
+    history.save(first, "feasible")
+    worse = history.ranking.pop(0)
+    history.ranking.append(worse)  # the round's new candidate ranks below the baseline
+
+    assert history.plan().parents == ("base", worse)
     assert history.replays(make)
 
 

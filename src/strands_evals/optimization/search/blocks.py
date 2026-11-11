@@ -79,8 +79,9 @@ class Step:
 
     Attributes:
         blocks: Who proposes. With several blocks, candidate i merges patch i of every block.
-        n_candidates: Candidates in the step (`proposals_per_iteration`; a round's opener: 1; inside a `Nested`
-            round, at most the room the round has left).
+        n_candidates: Candidates in the step: `proposals_per_iteration` (the full width), or fewer (a round's
+            opener: 1; inside a `Nested` round, at most the room the round has left). The optimizer may ask
+            each proposer for fewer still (`ProposalRequest.n`).
         parents: The step's pool, the candidates selection may choose from; None = every eligible candidate.
         round: The round path, outermost `Nested` first: `(2,)` = round 2 of the only `Nested`, `(2, 0)` =
             round 0 of the inner `Nested` within the outer's round 2. None outside any `Nested`.
@@ -109,8 +110,12 @@ class ScheduleContext:
         space: Narrows blocks to those active under an opener's values.
         values: Candidate id -> values, every saved candidate.
         eligible: Ids eligible now (a re-scored candidate can become eligible later).
-        ranking: Eligible ids in ranking order (the incumbent first). Never empty: the baseline is eligible
-            (else the run stops at setup), and an eligible candidate stays eligible.
+        ranking: Eligible ids in ranking order (the incumbent first); inside a `Nested` round, only the
+            round's own candidates. Never empty: the baseline is eligible (else the run stops at setup), an
+            eligible candidate stays eligible, and a round holds its opener.
+        run_ranking: Every eligible id in ranking order, inside a `Nested` round too; equal to `ranking`
+            outside any round. A round orders its candidates by it, since its opener can repeat a candidate
+            from an earlier round, which the enclosing round's `ranking` doesn't hold.
         proposals_per_iteration: A step's candidates (an opener's: 1).
         redraws: `Search.redraws`; `Nested` stops after `redraws + 1` rounds in a row measure nothing new.
     """
@@ -122,6 +127,7 @@ class ScheduleContext:
     values: Mapping[str, Values]
     eligible: frozenset[str]
     ranking: Sequence[str]
+    run_ranking: Sequence[str]
     proposals_per_iteration: int
     redraws: int
 
@@ -206,7 +212,8 @@ class Nested(Schedule):
     inner `Nested`'s opener 1 unless it repeats a measured candidate (then it costs only its own round), and
     a step that saved a candidate the `n_candidates` it was given (`IterationRecord.n_candidates`). A step's
     `n_candidates` is cut to the room left in every round around it, so the last one can be narrower, and
-    the round ends when the room is used up; a step that saved nothing uses none. An opener repeating a
+    the round ends when the room is used up; an inner step that saved nothing uses none, while an opener
+    that saved nothing (every draw invalid) still uses its 1. An opener repeating a
     measured candidate opens the round on it at no cost. At the round's end the outer proposer observes the
     round's best candidate (`Observation.source_id`); an opener that isn't eligible is observed as None with
     outcome `ineligible`, and the round's inner steps are skipped, as they are when the opener saved nothing
@@ -228,7 +235,10 @@ class Nested(Schedule):
         """Configure the rounds.
 
         Args:
-            outer: The structural block (or its name) each round opens on.
+            outer: The structural block (or its name) each round opens on. An unnamed `Block` is named by
+                `Search.resolve`, which reaches a `Nested` given as the schedule, in `within=`, or inside
+                another `Nested`, but not one inside your own `Schedule` subclass: there, give the block
+                `name=` (or pass the name).
             inner: The schedule inside a round; None means `Joint()`. (The default search's rounds run
                 `Alternate()` instead: `Search(within=)`.)
             inner_iterations: A round's room, in full steps after its opener: the round holds
@@ -353,7 +363,9 @@ class Nested(Schedule):
         self, ctx: ScheduleContext, records: Sequence[IterationRecord], opener_id: str
     ) -> ScheduleContext:
         """The inner schedule's view of the round: its own steps, the blocks active under the opener, and
-        the round's eligible candidates (the opener among them, since only an eligible opener gets here)."""
+        the round's eligible candidates (the opener among them, since only an eligible opener gets here),
+        ordered by `ctx.run_ranking`: an opener that repeats a candidate from an earlier round belongs to this
+        round only, so the enclosing round's `ctx.ranking` doesn't hold it."""
         opened = ctx.values[opener_id]
         blocks = [
             block
@@ -366,7 +378,7 @@ class Nested(Schedule):
             for p in record.proposals
             if p.candidate_id is not None and p.outcome not in ("invalid", "duplicate")
         }
-        ranking = [i for i in ctx.ranking if i in ids]
+        ranking = [i for i in ctx.run_ranking if i in ids]
         past = [record.model_copy(update={"round": (record.round or ())[1:] or None}) for record in records[1:]]
         return dataclasses.replace(ctx, past=past, blocks=blocks, ranking=ranking)
 
@@ -610,11 +622,13 @@ def _is_structural(info: ParamInfo) -> bool:
 
 
 def _selectors(space: Space, key: str) -> list[str]:
-    """The choice keys `key` exists under, innermost first."""
+    """The choice keys with 2+ options `key` exists under, innermost first (a one-option choice, a bare
+    `component()`, is always active, so nothing depends on it)."""
     out = []
     condition = space.param(key).active_when
     while condition is not None:
-        out.append(condition[0])
+        if _is_structural(space.param(condition[0])):
+            out.append(condition[0])
         condition = space.param(condition[0]).active_when
     return out
 

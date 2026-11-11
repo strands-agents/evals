@@ -72,19 +72,23 @@ class Reflection(Proposer):
             or not 0 <= success_threshold <= 1
         ):
             raise ValueError(f"Reflection(success_threshold=...) must be in [0, 1] or None, not {success_threshold!r}")
-        warnings.warn(
-            "Reflection runs model-written shell commands on this machine, with this process's environment "
-            "(credentials included) and network. Its path check guards a cooperative model's mistakes and is "
-            "not a sandbox, and trace text can carry prompt injection. Run the optimizer in a container or VM "
-            "without credentials it doesn't need.",
-            UserWarning,
-            stacklevel=2,
-        )
         self.model = model
         self.system_prompt = system_prompt
         self.success_threshold = success_threshold
+        self._warned = False
 
     async def propose(self, request: ProposalRequest) -> list[Patch]:
+        """Warns once per instance, on the first call, that the shell is not a sandbox."""
+        if not self._warned:
+            self._warned = True
+            warnings.warn(
+                "Reflection runs model-written shell commands on this machine, with this process's environment "
+                "(credentials included) and network. Its path check guards a cooperative model's mistakes and is "
+                "not a sandbox, and trace text can carry prompt injection. Run the optimizer in a container or VM "
+                "without credentials it doesn't need.",
+                UserWarning,
+                stacklevel=2,
+            )
         raise NotImplementedError
 
     def observe(self, observation: Observation) -> None:
