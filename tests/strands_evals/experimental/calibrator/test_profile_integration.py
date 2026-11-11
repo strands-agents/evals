@@ -221,12 +221,13 @@ def test_collection_fingerprints_evaluator_with_aliased_constructor_parameter() 
         ],
     )
 
-    result = Calibrator(step_sizes={"first": 0.5, "second": 0.5}).run_evaluations(
-        experiment,
-        lambda case: case.input,
-        agent_runs=2,
-        judge_replays=2,
-    )
+    with pytest.warns(UserWarning, match=r"fingerprint falls back to to_dict\(\)"):
+        result = Calibrator(step_sizes={"first": 0.5, "second": 0.5}).run_evaluations(
+            experiment,
+            lambda case: case.input,
+            agent_runs=2,
+            judge_replays=2,
+        )
 
     assert result.score == pytest.approx(0.5)
 
