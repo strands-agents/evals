@@ -710,12 +710,18 @@ def test_random_histories_keep_every_round_rule(shape, seed):
         outer = sorted({record.round[0] for record in history.past})
         assert outer == list(range(len(outer)))
         for r in outer:
+            # the round's own opener uses 1, an inner opener 1 unless it repeated, a step that saved its n
             used = sum(
                 1 if record.role == "opener" else step.n
                 for step, record in zip(steps, history.past, strict=False)
                 if record.round[0] == r
                 and (
-                    record.role == "opener" or any(p.outcome not in ("invalid", "duplicate") for p in record.proposals)
+                    (record.role == "opener" and record.round == (r,))
+                    or (record.role == "opener" and record.proposals[-1].outcome != "duplicate")
+                    or (
+                        record.role == "inner"
+                        and any(p.outcome not in ("invalid", "duplicate") for p in record.proposals)
+                    )
                 )
             )
             assert used <= 1 + schedule.inner_iterations * history.n
@@ -728,3 +734,21 @@ def test_random_histories_keep_every_round_rule(shape, seed):
             empty += 1
         assert empty == history.redraws + 1
     assert history.replays(lambda: copy.deepcopy(schedule))  # a schedule keeps no state, so a copy is a fresh one
+
+
+def test_a_repeated_inner_opener_costs_only_its_own_round():
+    space = two_structures(temperature=Float(0.0, 1.0, default=0.5))
+    blocks = [
+        Block(Fake(), "manager", name="a"),
+        Block(Fake(), "router", name="b"),
+        Block(Fake(), "temperature", name="t"),
+    ]
+    history = History(Nested("a", Nested("b", Joint(), inner_iterations=1), inner_iterations=4), blocks, space, n=1)
+    inner_openers = 0
+    while (step := history.plan()) is not None and step.round[0] == 0:
+        repeat = step.role == "opener" and len(step.round) == 2 and (inner_openers := inner_openers + 1) == 2
+        history.save(step, ("duplicate", history.ranking[0]) if repeat else "feasible")
+
+    saved = [r for r in history.past if r.round[0] == 0 and r.proposals[-1].outcome != "duplicate"]
+    assert len(saved) == 5  # 1 + 4 slots, the repeated inner opener not among them
+    assert history.replays(lambda: Nested("a", Nested("b", Joint(), inner_iterations=1), inner_iterations=4))

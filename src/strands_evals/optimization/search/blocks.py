@@ -200,8 +200,9 @@ class Nested(Schedule):
     Each round opens with one candidate that changes only `outer`, from the incumbent (`ctx.ranking[0]`);
     then inner steps (the inner schedule's blocks, narrowed to those with an active key in `ctx.keys` under
     the opener's values) whose parents are the round's own eligible candidates (the incumbent if none is).
-    A round holds `1 + inner_iterations * ctx.proposals_per_iteration` candidates: every opener in it, an
-    inner `Nested`'s included, uses 1, and a step that saved a candidate uses its `n`. A step's `n` is cut
+    A round holds `1 + inner_iterations * ctx.proposals_per_iteration` candidates: its opener uses 1, an
+    inner `Nested`'s opener 1 unless it repeats a measured candidate (then it costs only its own round), and
+    a step that saved a candidate uses its `n`. A step's `n` is cut
     to the room left, so the last one can be narrower, and the round ends when the room is used up; a step
     that saved nothing uses none. An opener repeating a measured candidate opens the round
     on it at no cost. At the round's end the outer proposer observes the round's best candidate
@@ -321,12 +322,14 @@ class Nested(Schedule):
 
     def _room_left(self, ctx: ScheduleContext, records: Sequence[IterationRecord]) -> int:
         """Candidates the round can still make: `1 + inner_iterations * proposals_per_iteration`, less 1 for
-        each opener in it (its own and an inner `Nested`'s, whatever they proposed) and, for each step that
-        saved a candidate, the `n` it was given (`proposals_per_iteration`, or the room left if less)."""
+        its own opener (whatever it proposed), 1 for each inner `Nested`'s opener that proposed something other
+        than a repeat (a repeated opener opens its round on the measured candidate and costs only that round),
+        and, for each step that saved a candidate, the `n` it was given (`proposals_per_iteration`, or the
+        room left if less)."""
         room = self.inner_iterations * ctx.proposals_per_iteration  # after the round's own opener
         for record in records[1:]:
             if record.role == "opener":
-                room -= 1 if record.proposals else 0
+                room -= 1 if record.proposals and record.proposals[-1].outcome != "duplicate" else 0
             elif _saved(record):
                 room -= min(ctx.proposals_per_iteration, room)
         return room
