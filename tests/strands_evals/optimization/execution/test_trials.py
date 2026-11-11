@@ -3,7 +3,9 @@ import copy
 import datetime
 import enum
 import gc
+import json
 import logging
+import math
 import os
 import threading
 
@@ -20,6 +22,7 @@ from strands_evals.optimization.declaration.tunable import _FactoryArgumentError
 from strands_evals.optimization.execution.rollout import make_task
 from strands_evals.optimization.execution.traces import TraceCapture
 from strands_evals.optimization.execution.trials import TrialRunner, _EvaluatorProxy, _TrialState
+from strands_evals.optimization.record.run_directory import RunDirectory
 from strands_evals.optimization.setup.budget import BudgetTracker
 from strands_evals.types import EvaluationOutput
 from strands_evals.types.evaluation import EnvironmentState
@@ -225,6 +228,20 @@ async def test_trajectory_interactions_and_state_that_arent_json_keep_their_shap
     assert record.environment_state == [EnvironmentState(name="grid", state={"0,1": "a thing"})]
     assert TrialRecord.model_validate_json(record.model_dump_json()) == record  # the save can't fail
     assert sum("isn't JSON-serializable" in message for message in caplog.messages) == 3  # once per field
+
+
+async def test_nan_and_infinity_are_converted_since_the_save_writes_strict_json(traces):
+    async def task(case):
+        return {"output": {"score": math.nan}, "trajectory": [{"x": math.nan, "y": [math.inf]}]}
+
+    records, _ = await _runner(traces, MemoryCache(), _cases("a"), [Fixed()]).run(
+        "cand", task, ["a"], runs=1, allowance=0
+    )
+
+    record = records[0]
+    assert record.output == "{'score': nan}"
+    assert record.trajectory == [{"x": None, "y": [None]}]
+    json.dumps(record.model_dump(mode="json"), allow_nan=False)  # what the run directory writes
 
 
 # cache
@@ -434,6 +451,62 @@ async def test_every_evaluator_failing_is_evaluator_invalid(traces):
     assert records[0].status is TrialStatus.EVALUATOR_INVALID
     assert records[0].evaluations == {}
     assert records[0].evaluator_errors == {"A": "ValueError", "B": "ValueError"}
+
+
+class Scores(Evaluator):
+    """Returns the next of `scores` on each call (the last one repeated)."""
+
+    def __init__(self, *scores, name="Scores"):
+        super().__init__(name=name)
+        self.scores, self.calls = scores, 0
+
+    async def evaluate_async(self, evaluation_case):
+        score = self.scores[min(self.calls, len(self.scores) - 1)]
+        self.calls += 1
+        return [EvaluationOutput(score=score, test_pass=True)]
+
+
+@pytest.mark.parametrize("score", [math.nan, math.inf, -math.inf])
+async def test_a_score_that_isnt_finite_is_a_failed_evaluator(traces, score):
+    runner = _runner(traces, MemoryCache(), _cases("a"), [Fixed("A"), Scores(score)], rerun_passes=0)
+
+    records, _ = await runner.run("cand", _plain, ["a"], runs=1, allowance=0)
+
+    assert records[0].status is TrialStatus.COMPLETED
+    assert "Scores" not in records[0].evaluations
+    assert records[0].evaluator_errors == {"Scores": "ValueError"}
+
+
+async def test_an_aggregate_that_isnt_finite_is_a_failed_evaluator(traces):
+    evaluator = Fixed("A")
+    evaluator.aggregator = lambda outputs: (math.nan, True, "")
+    runner = _runner(traces, MemoryCache(), _cases("a"), [evaluator], rerun_passes=0)
+
+    records, _ = await runner.run("cand", _plain, ["a"], runs=1, allowance=0)
+
+    assert records[0].status is TrialStatus.EVALUATOR_INVALID
+    assert records[0].evaluator_errors == {"A": "ValueError"}
+
+
+async def test_a_score_that_isnt_finite_is_re_judged(traces):
+    runner = _runner(traces, MemoryCache(), _cases("a"), [Scores(math.nan, 0.5)], rerun_passes=1)
+
+    records, spent = await runner.run("cand", _plain, ["a"], runs=1, allowance=0)
+
+    assert spent == 1
+    assert records[0].status is TrialStatus.COMPLETED
+    assert records[0].evaluations["Scores"].score == 0.5
+    assert [a.status for a in records[0].previous_attempts] == [TrialStatus.EVALUATOR_INVALID]
+
+
+async def test_a_score_that_isnt_finite_doesnt_fail_the_save(traces, tmp_path):
+    run = RunDirectory.create(tmp_path, {"cases": []})
+    runner = _runner(traces, run, _cases("a", "b"), [Scores(math.nan)], rerun_passes=0)
+
+    records, _ = await runner.run("cand", _plain, ["a", "b"], runs=1, allowance=0)
+
+    assert [r.status for r in records] == [TrialStatus.EVALUATOR_INVALID] * 2
+    assert RunDirectory.open(run.root).load_trial("cand", 0, "b") == records[1]
 
 
 async def test_one_evaluator_failing_leaves_the_trial_completed(traces):
@@ -733,7 +806,8 @@ def test_the_proxy_is_the_evaluator_to_experiment(traces):
 
     assert proxy.get_name() == "Mine"
     assert proxy.get_type_name() == "Fixed"
-    assert proxy.aggregator == evaluator.aggregator
+    outputs = [EvaluationOutput(score=0.5, test_pass=True, reason="ok")]
+    assert proxy.aggregator(outputs) == evaluator.aggregator(outputs)  # wrapped, only to check the score
     assert proxy._score_mapping == {"good": 1.0}
     assert proxy.evaluation_level is None
     assert copy.copy(proxy).get_name() == "Mine"

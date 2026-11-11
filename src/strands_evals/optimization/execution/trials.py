@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -40,11 +41,13 @@ class _TrialState:
 
 
 class _EvaluatorProxy:
-    """An evaluator as `Experiment` sees it: every attribute is the evaluator's own but `evaluate_async`.
+    """An evaluator as `Experiment` sees it: every attribute is the evaluator's own but two methods.
 
     `evaluate_async` registers the current trace, so a judge-only re-run (no attempt span) keeps its
-    judge spans, and records the type of any exception before re-raising it. Not a subclass:
-    `get_type_name` is a classmethod and would name the proxy.
+    judge spans, and records the type of any exception before re-raising it. A non-finite score (NaN or
+    infinity), in a row or from the aggregator, raises `ValueError`, so it is a failed evaluator like any
+    other (re-judged by the re-run passes) and the record never holds a score the save can't write. Not a
+    subclass: `get_type_name` is a classmethod and would name the proxy.
     """
 
     def __init__(self, evaluator: Evaluator, traces: TraceCapture, state: _TrialState) -> None:
@@ -67,11 +70,21 @@ class _EvaluatorProxy:
         name = self._evaluator.get_name()
         try:
             outputs = await self._evaluator.evaluate_async(evaluation_case)
+            score = next((o.score for o in outputs if not math.isfinite(o.score)), None)
+            if score is not None:
+                raise ValueError(f"evaluator {name} returned a score that isn't finite: {score!r}")
         except Exception as error:
             self._state.errors[name] = type(error).__name__
             raise
         self._state.errors.pop(name, None)  # Experiment retried a throttled call and it succeeded
         return outputs
+
+    def aggregator(self, outputs: list[EvaluationOutput]) -> tuple[float, bool, str]:
+        """The evaluator's own aggregator; a non-finite result raises `ValueError` (the span records it)."""
+        score, passed, reason = self._evaluator.aggregator(outputs)
+        if not math.isfinite(score):
+            raise ValueError(f"evaluator {self._evaluator.get_name()} aggregated a score that isn't finite: {score!r}")
+        return score, passed, reason
 
 
 class _TrialStore:
@@ -617,14 +630,15 @@ def _storable(value: Any, call: _Call, field_name: str) -> Any:
     """`value` if it can be saved as JSON, else a copy that can, warning once per call and field.
 
     So a non-JSON value the rollout returned doesn't make the save fail (a container that holds itself
-    still does). `output` becomes `str(output)`. Any other field keeps its shape and is converted as
-    pydantic saves it: models, datetimes, and non-string keys become JSON, bytes base64, and only
-    what pydantic can't encode becomes `str()`. A `Session` is returned as is.
+    still does). NaN and infinity count as non-JSON, as the save writes strict JSON. `output` becomes
+    `str(output)`. Any other field keeps its shape and is converted as pydantic saves it: models,
+    datetimes, and non-string keys become JSON, bytes base64, NaN and infinity null, and only what
+    pydantic can't encode becomes `str()`. A `Session` is returned as is.
     """
     if isinstance(value, Session):
         return value
     try:
-        json.dumps(value)
+        json.dumps(value, allow_nan=False)
     except (TypeError, ValueError):
         if field_name not in call.warned:
             call.warned.add(field_name)
@@ -634,5 +648,9 @@ def _storable(value: Any, call: _Call, field_name: str) -> Any:
                 field_name,
                 type(value).__name__,
             )
-        return str(value) if field_name == "output" else to_jsonable_python(value, fallback=str, bytes_mode="base64")
+        return (
+            str(value)
+            if field_name == "output"
+            else to_jsonable_python(value, fallback=str, bytes_mode="base64", inf_nan_mode="null")
+        )
     return value

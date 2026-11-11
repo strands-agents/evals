@@ -94,7 +94,7 @@ class RunDirectory:
                 allow_nan=False,
             )
         )
-        (root / "run.json").write_text(json.dumps(contents, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        _write_atomic(root / "run.json", json.dumps(contents, indent=2, ensure_ascii=False) + "\n")
         run = cls(root, contents, EventLog(root / "events.jsonl"))
         run.events.append("config", iteration=0, config=contents)
         return run
@@ -231,7 +231,9 @@ class RunDirectory:
         if trajectory is not None:
             text = json.dumps(trajectory, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
             digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-            _write_once(self.root / "transcripts" / f"{digest}.json", text)
+            path = self.root / "transcripts" / f"{digest}.json"
+            if not path.exists():
+                _write_atomic(path, text)
             transcript = {"hash": digest, "format": "session" if isinstance(record.trajectory, Session) else "list"}
         saved["transcript"] = transcript
         self.events.append("trial", record=saved)
@@ -240,7 +242,7 @@ class RunDirectory:
     def save_effects(self, effects: Mapping[str, Any]) -> None:
         """`<root>/effects.json`."""
         text = json.dumps(effects, indent=2, default=_encode, ensure_ascii=False, allow_nan=False)
-        (self.root / "effects.json").write_text(text + "\n", encoding="utf-8")
+        _write_atomic(self.root / "effects.json", text + "\n")
 
     def save_diff(self, stem: str, diff: str, values: Mapping[str, Any]) -> None:
         """`<root>/<stem>.diff` and `<root>/<stem>.values.json`, written at the end after `effects.json`.
@@ -254,10 +256,9 @@ class RunDirectory:
             values: The changed numbers and choices, `{key: {"old": ..., "new": ...}}`.
         """
         path = self.root / stem
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.with_name(f"{path.name}.diff").write_text(diff, encoding="utf-8")
+        _write_atomic(path.with_name(f"{path.name}.diff"), diff)
         text = json.dumps(values, indent=2, default=_encode, ensure_ascii=False, allow_nan=False)
-        path.with_name(f"{path.name}.values.json").write_text(text + "\n", encoding="utf-8")
+        _write_atomic(path.with_name(f"{path.name}.values.json"), text + "\n")
 
     def save_result(self, result: Mapping[str, Any]) -> None:
         """`<root>/result.json`: the whole `OptimizationResult` (`to_dict()`), written last, after the diffs.
@@ -265,13 +266,11 @@ class RunDirectory:
         Derived from the events, so a resumed finished run rewrites it; never read on resume.
         """
         text = json.dumps(result, indent=2, default=_encode, ensure_ascii=False, allow_nan=False)
-        (self.root / "result.json").write_text(text + "\n", encoding="utf-8")
+        _write_atomic(self.root / "result.json", text + "\n")
 
 
-def _write_once(path: Path, text: str) -> None:
-    """Write `path` unless it exists, through a temp file renamed into place, so an existing file is complete."""
-    if path.exists():
-        return
+def _write_atomic(path: Path, text: str) -> None:
+    """Write `path` through a temp file renamed into place, so a reader sees the old file or the whole new one."""
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, temp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:

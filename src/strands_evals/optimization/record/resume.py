@@ -20,6 +20,9 @@ from ...types.optimization import (
 from .events import _encode, closed_events
 from .run_directory import RunDirectory
 
+# What `Optimizer.resume` is given again; every other `run.json` field is read from it.
+_COMPARED = ("cases", "space", "objective", "constraints", "search", "selection", "score_model")
+
 
 @dataclass(frozen=True)
 class FitReplay:
@@ -121,7 +124,7 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
         ValueError: A field that may not change differs, naming the field, e.g.
             "objective changed: 'Helpfulness' -> 'WeightedSum(...)'".
     """
-    given = json.loads(json.dumps(dict(config), default=_encode, allow_nan=False))
+    given = json.loads(json.dumps({field: config.get(field) for field in _COMPARED}, default=_encode, allow_nan=False))
     for field in _COMPARED:
         changed = _difference(run.config.get(field), given.get(field), field)
         if changed is not None:
@@ -212,10 +215,6 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
         elif name == "stop":
             state.stop_reason = event["reason"]
     return state
-
-
-# What `Optimizer.resume` is given again; every other `run.json` field is read from it.
-_COMPARED = ("cases", "space", "objective", "constraints", "search", "selection", "score_model")
 
 
 def _difference(old: Any, new: Any, path: str) -> str | None:
