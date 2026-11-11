@@ -193,6 +193,9 @@ def test_insufficient_signal_replicates_remain_visible() -> None:
     assert summary.upper_97_5 is None
     assert summary.defined_replicates == 0
     assert summary.undefined_replicates == 20
+    repeatability = bootstrap.repeatability_intervals["first"]
+    assert repeatability.defined_replicates == 0
+    assert repeatability.undefined_replicates == 20
 
     diagnostic_calibrator = Calibrator(
         step_sizes={"first": 0.5, "second": 0.5},
