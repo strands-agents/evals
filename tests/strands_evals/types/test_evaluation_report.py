@@ -426,6 +426,29 @@ class TestFormatInputForDisplay:
 class TestEvaluationReportFileOperations:
     """Tests for file save/load roundtripping."""
 
+    def test_calibration_context_roundtrip(self):
+        report = EvaluationReport(
+            overall_score=1.0,
+            scores=[1.0],
+            cases=[{"name": "case-1", "evaluator": "Eval1"}],
+            test_passes=[True],
+            calibration_context={
+                "version": "1",
+                "dataset": "dataset-hash",
+                "evaluators": "evaluator-hash",
+                "step_sizes": "step-hash",
+                "overall": "overall-hash",
+                "metadata": {"dataset": {"case_count": 1}},
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "calibrated.json"
+            report.to_file(str(path))
+            loaded = EvaluationReport.from_file(str(path))
+
+        assert loaded.calibration_context == report.calibration_context
+
     def test_flattened_report_roundtrip(self):
         report1 = EvaluationReport(
             overall_score=1.0,
