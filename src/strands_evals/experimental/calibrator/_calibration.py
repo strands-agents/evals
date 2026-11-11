@@ -11,7 +11,7 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from ...types.evaluation_report import EvaluationReport
-from .algorithm import CalibrationObservation, CalibrationSample
+from .algorithm import CalibrationObservation, CalibrationSample, VarianceSource
 
 _EPSILON = 1e-15
 _ERROR_REASON_PREFIXES = ("An error occurred:", "Evaluator error:")
@@ -37,7 +37,7 @@ _CalibrationStructure = tuple[tuple[str, ...], _CaseSignatures]
 class _EvaluatorStatistics:
     """Variance components and judge repeatability for one evaluator."""
 
-    variance_components: dict[str, float]
+    variance_components: dict[VarianceSource, float]
     repeatability: float
 
 
@@ -45,7 +45,7 @@ class _EvaluatorStatistics:
 class _CalibrationState:
     """Complete immutable-by-replacement state for one calibrator."""
 
-    variance_components: dict[str, dict[str, float]]
+    variance_components: dict[str, dict[VarianceSource, float]]
     repeatabilities: dict[str, float]
     calibration_design: tuple[int, int] | None
     calibration_structure: _CalibrationStructure | None
@@ -382,7 +382,7 @@ def _initial_calibration_state() -> _CalibrationState:
 
 def _fit_dataset(dataset: _CalibrationDataset) -> _CalibrationState:
     """Estimate measurement diagnostics and return a replacement fitted state."""
-    variance_components: dict[str, dict[str, float]] = {}
+    variance_components: dict[str, dict[VarianceSource, float]] = {}
     repeatabilities: dict[str, float] = {}
     for evaluator_name in dataset.evaluator_names:
         statistics = _estimate_statistics(dataset, evaluator_name)

@@ -21,6 +21,7 @@ from .algorithm import (
     CalibrationAlgorithm,
     CalibrationData,
     CalibrationModel,
+    VarianceSource,
 )
 from .equal_weighting import EqualWeightingAlgorithm, EqualWeightingModel
 
@@ -121,7 +122,7 @@ class Calibrator:
         }
 
     @property
-    def variance_components(self) -> dict[str, dict[str, float]]:
+    def variance_components(self) -> dict[str, dict[VarianceSource, float]]:
         """Return corrected non-negative variance estimates by evaluator."""
         return {name: dict(components) for name, components in self._state.variance_components.items()}
 
