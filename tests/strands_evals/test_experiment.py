@@ -1886,13 +1886,24 @@ def test_all_not_applicable_case_is_not_labeled_with_a_verdict():
     assert evaluator._get_label(0.0, False) == str(SkillSelectionScore.NO)
 
 
-def test_default_label_ignores_the_verdict():
-    """The base label comes from the score, so evaluators that do not override `_get_label` keep
-    their existing telemetry labels even when `test_pass` disagrees with `score >= 0.5`.
+def test_default_label_follows_the_verdict():
+    """The label must agree with `test_pass`. With the default aggregator, rows 0.9 (pass) and 0.4
+    (fail) average 0.65 but the case fails, so a score-based label would report it as YES.
     """
-    judged = [EvaluationOutput(score=0.8, test_pass=False, reason="gate failed")]
-    assert MockEvaluator()._get_label(0.8, False, judged) == "YES"
-    assert MockEvaluator()._get_label(0.2, True, judged) == "NO"
+    rows = [
+        EvaluationOutput(score=0.9, test_pass=True, reason="a"),
+        EvaluationOutput(score=0.4, test_pass=False, reason="b"),
+    ]
+    score, passed, _ = Evaluator._default_aggregator(rows)
+    assert (score, passed) == (pytest.approx(0.65), False)
+    assert MockEvaluator()._get_label(score, passed, rows) == "NO"
+    assert MockEvaluator()._get_label(0.2, True, rows) == "YES"
+
+
+def test_score_mapping_labels_are_kept():
+    evaluator = SkillSelectionAccuracyEvaluator()
+    judged = [EvaluationOutput(score=1.0, test_pass=True, reason="good pick", label="Yes")]
+    assert evaluator._get_label(1.0, True, judged) == str(SkillSelectionScore.YES)
 
 
 def test_deterministic_evaluator_error_isolation():

@@ -27,7 +27,6 @@ from typing_extensions import assert_never
 from .._async import run_async
 from ..extractors import TraceExtractor
 from ..types.evaluation import NOT_APPLICABLE, EvaluationData, EvaluationOutput, InputT, OutputT
-from ..types.evaluation_report import EvaluationReport
 from ..types.trace import EvaluationLevel
 from ..types.typed_rubric import _QUESTION_ADAPTER, Choice, Noul, RubricQuestion, Scale
 from .evaluator import Evaluator
@@ -369,12 +368,6 @@ class TypedRubricEvaluator(Evaluator[InputT, OutputT]):
         if self.name is not None:
             data["name"] = self.name
         return data
-
-    def _get_label(self, score: float, passed: bool, outputs: list[EvaluationOutput] | None = None) -> str:
-        """Label from the aggregate verdict, which accounts for required questions and thresholds."""
-        if outputs is not None and not EvaluationReport.is_applicable(outputs):
-            return NOT_APPLICABLE
-        return "YES" if passed else "NO"
 
     def _warn_on_unselected_field_references(self) -> None:
         # Only known field names in backticks count, so ordinary code spans in a question are ignored.

@@ -81,12 +81,12 @@ class Evaluator(Generic[InputT, OutputT]):
     def _get_label(self, score: float, passed: bool, outputs: list[EvaluationOutput] | None = None) -> str:
         """Label a case's aggregate result for experiment telemetry.
 
-        Uses the evaluator's `_score_mapping` when it has one, otherwise "YES" for scores >= 0.5
-        and "NO" below. Override when the evaluator's pass rule is not `score >= 0.5`.
+        Uses the evaluator's `_score_mapping` when the score maps to one of its labels, otherwise
+        "YES" or "NO" from the aggregate verdict, so the label always agrees with `test_pass`.
 
         Args:
             score: The aggregate score.
-            passed: The aggregate verdict. Unused here; available to overrides.
+            passed: The aggregate verdict.
             outputs: The rows the score was aggregated from, when available. A case whose every
                 row was not-applicable has no verdict to report, and its 0.0 is a placeholder
                 rather than a score, so reverse-mapping it would emit the mapping's worst label for
@@ -104,7 +104,7 @@ class Evaluator(Generic[InputT, OutputT]):
             if score in reverse_mapping:
                 return str(reverse_mapping[score])
 
-        return "YES" if score >= 0.5 else "NO"
+        return "YES" if passed else "NO"
 
     @staticmethod
     def _default_aggregator(outputs: list[EvaluationOutput]) -> tuple[float, bool, str]:
