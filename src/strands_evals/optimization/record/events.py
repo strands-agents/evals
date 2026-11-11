@@ -117,8 +117,10 @@ class EventLog:
 
         Raises:
             TypeError: A field isn't JSON-serializable.
-            ValueError: A field holds NaN or infinity (not JSON).
+            ValueError: A field holds NaN or infinity (not JSON), or is named `time` (the log's own field).
         """
+        if "time" in fields:
+            raise ValueError("an event field can't be named 'time': the log writes it")
         with self._lock:
             iteration = fields.pop("iteration", self._iteration)
             line = json.dumps(

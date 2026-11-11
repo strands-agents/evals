@@ -244,6 +244,22 @@ async def test_nan_and_infinity_are_converted_since_the_save_writes_strict_json(
     json.dumps(record.model_dump(mode="json"), allow_nan=False)  # what the run directory writes
 
 
+async def test_nan_in_a_models_float_field_is_null_in_memory_as_after_a_reload(traces):
+    class Step(BaseModel):
+        confidence: float
+
+    async def task(case):
+        return {"output": "ok", "trajectory": [Step(confidence=math.nan)]}
+
+    records, _ = await _runner(traces, MemoryCache(), _cases("a"), [Fixed()]).run(
+        "cand", task, ["a"], runs=1, allowance=0
+    )
+
+    record = records[0]
+    assert record.trajectory == [{"confidence": None}]
+    assert TrialRecord.model_validate_json(record.model_dump_json()) == record
+
+
 # cache
 
 

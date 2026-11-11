@@ -2,12 +2,13 @@ import asyncio
 import gc
 import json
 import os
+import stat
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from strands_evals.optimization import FileText, JsonField, SkillLibrary, Space, TextValue, tunable
-from strands_evals.optimization.declaration.files import _location_in_copy
+from strands_evals.optimization.declaration.files import _location_in_copy, _write_text_atomically
 from strands_evals.optimization.declaration.tunable import _KEPT_UNTIL_EXIT
 
 
@@ -980,3 +981,37 @@ def test_a_skill_edit_diffs_on_its_real_file(library):
     text = diff(space, base, other, root=library.parent)
     assert text.startswith("--- a/skills/triage/SKILL.md\n+++ b/skills/triage/SKILL.md\n")
     assert "-Do the thing.\n+Check the level first.\n" in text
+
+
+# _write_text_atomically
+
+
+def test_replacing_a_file_keeps_its_mode_and_a_new_file_gets_a_plain_writes_mode(tmp_path):
+    script = tmp_path / "run.sh"
+    script.write_text("old")
+    script.chmod(0o755)
+    umask = os.umask(0o022)
+    try:
+        _write_text_atomically(script, "new")
+        _write_text_atomically(tmp_path / "sub" / "new.txt", "text")  # the parent folder is created
+    finally:
+        os.umask(umask)
+
+    assert script.read_text() == "new"
+    assert stat.S_IMODE(script.stat().st_mode) == 0o755
+    assert stat.S_IMODE((tmp_path / "sub" / "new.txt").stat().st_mode) == 0o644
+
+
+def test_a_failed_replace_keeps_the_old_file_and_leaves_no_temp_file(tmp_path, monkeypatch):
+    target = tmp_path / "a.txt"
+    target.write_text("old")
+
+    def fail(source, destination):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", fail)
+    with pytest.raises(OSError, match="disk full"):
+        _write_text_atomically(target, "new")
+
+    assert target.read_text() == "old"
+    assert [p.name for p in tmp_path.iterdir()] == ["a.txt"]

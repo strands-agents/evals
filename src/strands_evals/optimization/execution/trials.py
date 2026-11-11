@@ -14,7 +14,7 @@ from typing import Any, Protocol, cast
 
 import opentelemetry.context as otel_context
 import opentelemetry.trace as trace_api
-from pydantic_core import to_jsonable_python
+from pydantic_core import to_json
 
 from ...case import Case
 from ...evaluators.evaluator import Evaluator
@@ -651,6 +651,7 @@ def _storable(value: Any, call: _Call, field_name: str) -> Any:
         return (
             str(value)
             if field_name == "output"
-            else to_jsonable_python(value, fallback=str, bytes_mode="base64", inf_nan_mode="null")
+            # Through JSON text, so NaN in a model's float field is null here too, as it is after a reload.
+            else json.loads(to_json(value, fallback=str, bytes_mode="base64", inf_nan_mode="null"))
         )
     return value

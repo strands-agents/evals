@@ -66,7 +66,7 @@ class FileText(_Marker):
         """
         if target.is_file() and target.read_bytes() == value.encode("utf-8"):
             return
-        _replace_file(target, value)
+        _write_text_atomically(target, value)
 
     def _original(self) -> str:
         """The whole file's text at declaration."""
@@ -157,7 +157,7 @@ class JsonField(_Marker):
             ) from error
         if self._holds(value, text):
             return
-        _replace_file(target, self._render(value, text))
+        _write_text_atomically(target, self._render(value, text))
 
     def _holds(self, value: str, text: str) -> bool:
         """Whether the field at the pointer in `text` already equals `value` (same JSON, same type)."""
@@ -376,7 +376,7 @@ class _SkillFile(_Marker):
         """Replace the text of `target`; one that already holds `value` keeps the original's bytes."""
         if target.is_file() and target.read_bytes() == value.encode("utf-8"):
             return
-        _replace_file(target, value)
+        _write_text_atomically(target, value)
 
     def _original(self) -> str:
         """The whole file's text at declaration."""
@@ -493,16 +493,24 @@ def _read_text(path: Path, marker: str) -> str:
         raise TypeError(f"{marker}: {path} is not UTF-8 text") from error
 
 
-def _replace_file(target: Path, text: str) -> None:
+def _write_text_atomically(target: Path, text: str) -> None:
     """Write `text` to `target` through a temp file and a rename, never through a symlink.
 
-    The new file keeps `target`'s permission bits (e.g. a script's executable bit).
+    A reader sees the old file or the whole new one. The new file keeps `target`'s permission bits
+    (e.g. a script's executable bit), or gets a plain write's mode when `target` doesn't exist. The
+    parent folder is created, and the temp file is removed if the write fails.
     """
+    target.parent.mkdir(parents=True, exist_ok=True)
     temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-    temp.write_bytes(text.encode("utf-8"))
-    if target.exists():
-        shutil.copymode(target, temp)
-    os.replace(temp, target)
+    try:
+        with temp.open("xb") as file:
+            file.write(text.encode("utf-8"))
+        if target.exists():
+            shutil.copymode(target, temp)
+        os.replace(temp, target)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
 
 
 def _reject_constant(name: str) -> Any:

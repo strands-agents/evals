@@ -39,6 +39,8 @@ def test_a_field_that_is_not_json_raises(tmp_path):
         log.append("stop", reason=object())
     with pytest.raises(ValueError):
         log.append("stop", reason=math.nan)
+    with pytest.raises(ValueError, match="'time'"):
+        log.append("stop", reason="budget", time="2026-01-01")
     assert log.read() == []
 
 

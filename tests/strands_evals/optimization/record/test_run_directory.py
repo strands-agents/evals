@@ -1,5 +1,7 @@
 import json
+import os
 import re
+import stat
 from datetime import datetime
 
 import pytest
@@ -250,3 +252,17 @@ def test_effects_diffs_and_the_result_are_written(tmp_path):
     assert json.loads((run.root / "best.values.json").read_text()) == {"x": {"old": 1, "new": 2}}
     assert json.loads((run.root / "front" / "1-abc.values.json").read_text()) == {}
     assert run.workspace("abc") == run.root / "candidates" / "abc" / "optimization_files"
+
+
+def test_the_files_written_whole_get_a_plain_writes_mode(tmp_path):
+    umask = os.umask(0o022)
+    try:
+        run = RunDirectory.create(tmp_path, CONFIG)
+        run.save_effects({"effects": []})
+        run.save_diff("best", "", {})
+        run.save_result({})
+    finally:
+        os.umask(umask)
+
+    for name in ["run.json", "effects.json", "best.diff", "best.values.json", "result.json", "events.jsonl"]:
+        assert stat.S_IMODE((run.root / name).stat().st_mode) == 0o644, name
