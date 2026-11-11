@@ -254,6 +254,7 @@ def test_effects_diffs_and_the_result_are_written(tmp_path):
     assert run.workspace("abc") == run.root / "candidates" / "abc" / "optimization_files"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX permission bits")
 def test_the_files_written_whole_get_a_plain_writes_mode(tmp_path):
     umask = os.umask(0o022)
     try:

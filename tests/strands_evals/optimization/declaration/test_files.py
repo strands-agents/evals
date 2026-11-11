@@ -986,6 +986,7 @@ def test_a_skill_edit_diffs_on_its_real_file(library):
 # _write_text_atomically
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX permission bits")
 def test_replacing_a_file_keeps_its_mode_and_a_new_file_gets_a_plain_writes_mode(tmp_path):
     script = tmp_path / "run.sh"
     script.write_text("old")
