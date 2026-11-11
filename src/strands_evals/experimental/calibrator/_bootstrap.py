@@ -89,6 +89,28 @@ class BootstrapDiagnostics:
             MappingProxyType(dict(self.composite_score_intervals)),
         )
 
+    def __deepcopy__(self, memo: dict[int, object]) -> "BootstrapDiagnostics":
+        """Return this immutable value for deep-copy operations."""
+        memo[id(self)] = self
+        return self
+
+    def __reduce__(self) -> tuple[object, tuple[object, ...]]:
+        """Rebuild this value from pickle-compatible mappings."""
+        return (
+            _restore_bootstrap_diagnostics,
+            (
+                self.replicates,
+                self.seed,
+                dict(self.repeatability_intervals),
+                {
+                    evaluator_name: dict(intervals)
+                    for evaluator_name, intervals in self.variance_component_intervals.items()
+                },
+                {method: dict(intervals) for method, intervals in self.candidate_weight_intervals.items()},
+                dict(self.composite_score_intervals),
+            ),
+        )
+
     def to_dict(self) -> dict[str, object]:
         """Return JSON-compatible bootstrap diagnostics."""
         return {
@@ -109,6 +131,25 @@ class BootstrapDiagnostics:
                 method: summary.to_dict() for method, summary in self.composite_score_intervals.items()
             },
         }
+
+
+def _restore_bootstrap_diagnostics(
+    replicates: int,
+    seed: int,
+    repeatability_intervals: dict[str, BootstrapSummary],
+    variance_component_intervals: dict[str, dict[VarianceSource, BootstrapSummary]],
+    candidate_weight_intervals: dict[WeightingMethod, dict[str, BootstrapSummary]],
+    composite_score_intervals: dict[WeightingMethod, BootstrapSummary],
+) -> BootstrapDiagnostics:
+    """Rebuild immutable diagnostics from pickle-compatible mappings."""
+    return BootstrapDiagnostics(
+        replicates=replicates,
+        seed=seed,
+        repeatability_intervals=repeatability_intervals,
+        variance_component_intervals=variance_component_intervals,
+        candidate_weight_intervals=candidate_weight_intervals,
+        composite_score_intervals=composite_score_intervals,
+    )
 
 
 def compute_candidate_weights(

@@ -1,3 +1,5 @@
+import copy
+import pickle
 import random
 from typing import Any
 
@@ -137,6 +139,16 @@ def test_hierarchical_bootstrap_is_reproducible() -> None:
     assert isinstance(first.bootstrap, BootstrapDiagnostics)
     assert first.bootstrap.replicates == 20
     assert first.bootstrap.seed == 42
+
+
+def test_bootstrap_diagnostics_support_deepcopy_and_pickle() -> None:
+    calibrator = Calibrator(step_sizes={"stable": 0.5, "noisy": 0.5})
+    calibrator.fit(_reports(), bootstrap_replicates=20, bootstrap_seed=42)
+
+    bootstrap = calibrator.bootstrap
+    assert bootstrap is not None
+    assert copy.deepcopy(bootstrap) is bootstrap
+    assert pickle.loads(pickle.dumps(bootstrap)) == bootstrap
 
 
 def test_fit_without_bootstrap_clears_previous_intervals() -> None:
@@ -329,3 +341,5 @@ def test_run_evaluations_returns_bootstrap_diagnostics() -> None:
     assert result.bootstrap.replicates == 2
     assert result.bootstrap.seed == 9
     assert result.model_dump()["bootstrap"]["replicates"] == 2
+    assert result.model_copy(deep=True).bootstrap == result.bootstrap
+    assert pickle.loads(pickle.dumps(result)).bootstrap == result.bootstrap
