@@ -2,6 +2,7 @@ import asyncio
 import copy
 import json
 import logging
+import random
 from datetime import datetime
 from unittest.mock import patch
 
@@ -14,6 +15,7 @@ from strands.types.exceptions import ModelThrottledException, StructuredOutputEx
 
 from strands_evals import Case, Experiment
 from strands_evals.evaluators import Choice, Equals, Noul, Scale, TypedRubricEvaluator
+from strands_evals.evaluators.typed_rubric_evaluator import _score, _sdk_choices
 from strands_evals.types import EvaluationData
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
 from strands_evals.types.evaluation_report import EvaluationReport
@@ -1086,3 +1088,22 @@ def test_label_follows_the_verdict_not_the_score():
     assert evaluator._get_label(0.8, False, judged) == "NO"
     assert evaluator._get_label(0.2, True, judged) == "YES"
     assert evaluator._get_label(0.0, True, not_applicable) == NOT_APPLICABLE
+
+
+@pytest.mark.parametrize("n", [2, 3, 5, 11])
+@pytest.mark.parametrize("seed", range(20))
+def test_scale_scores_like_choice_with_evenly_spaced_credits(n, seed):
+    # This equivalence is Scale's documented contract, so it must not drift.
+    rng = random.Random(seed)
+    levels = [f"l{i}" for i in range(n)]
+    weights = [rng.random() for _ in levels]
+    if seed % 4 == 0:  # force a tie on the most likely level
+        weights[0] = weights[-1] = max(weights)
+    total = sum(weights)
+    distribution = {level: w / total for level, w in zip(levels, weights, strict=True)}
+
+    scale = _score(Scale("q", levels=levels), distribution)
+    choice = _score(Choice("q", options={level: i / (n - 1) for i, level in enumerate(levels)}), distribution)
+    assert scale.score == pytest.approx(choice.score, abs=1e-12)
+    assert scale.selected == choice.selected
+    assert _sdk_choices(Scale("q", levels=levels)) == levels

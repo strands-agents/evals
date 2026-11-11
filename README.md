@@ -635,7 +635,7 @@ report = Experiment(cases=cases, evaluators=[rubric]).run_evaluations(task)
 | Question | Score |
 |---|---|
 | `Noul` (yes/no) | P(expected answer) |
-| `Scale` (ordered levels, worst first) | Expected level, scaled to [0, 1] |
+| `Scale` (ordered levels, worst first) | Expected level, scaled to [0, 1]: the same as a `Choice` with credits evenly spaced from 0 to 1 |
 | `Choice` (options with credits) | Expected credit over options with a numeric credit. When `None`-credit options hold at least half the probability, the row is not applicable and is left out of the composite |
 
 The keys are question ids, used in each row's `metadata` and reasons. A plain list also works

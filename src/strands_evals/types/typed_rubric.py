@@ -83,9 +83,12 @@ class Noul:
 class Scale:
     """A rating on an ordered scale, scored as the expected level normalised to [0, 1].
 
-    DeepEval's JevEval calls this question type `Score`. The backend picks among the levels as a
-    categorical choice. The ordering is used only by the scoring formula,
-    `sum(index * p) / (len(levels) - 1)`, so this is not native ordinal inference.
+    The levels are sent to the backend as a `choice` question and scored with
+    `sum(index * p) / (len(levels) - 1)`, which is the same as a `Choice` whose credits are
+    evenly spaced from 0 to 1. That formula is the contract: if the SDK later adds native score
+    questions, they will be a separate opt-in, so a `Scale` rubric's scores never change. The
+    backend is not told the levels are ordered, so this is not native ordinal inference.
+    DeepEval's JevEval calls this question type `Score`.
 
     Attributes:
         text: The question, naming the state fields it reads.
