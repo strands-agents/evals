@@ -46,6 +46,10 @@ class _NonCopyableOutput:
         self.lock = Lock()
 
 
+class _ExtendedCase(Case[str, str]):
+    difficulty: str
+
+
 def _experiment(
     *evaluators: Evaluator[str, str],
     cases: list[Case[str, str]] | None = None,
@@ -390,6 +394,27 @@ def test_run_evaluations_rejects_changed_case_definition_before_task_execution()
 
     assert task_calls == 0
     assert evaluator.calls == 0
+
+
+def test_run_evaluations_accepts_unchanged_case_subclasses() -> None:
+    evaluator = _CountingEvaluator(name="quality")
+    calibrator = Calibrator(step_sizes={"quality": 0.5})
+    experiment = _experiment(
+        evaluator,
+        cases=[
+            _ExtendedCase(name="good-case", input="good", difficulty="easy"),
+            _ExtendedCase(name="bad-case", input="bad", difficulty="hard"),
+        ],
+    )
+
+    for _ in range(2):
+        result = calibrator.run_evaluations(
+            experiment,
+            lambda case: case.input,
+            agent_runs=2,
+            judge_replays=2,
+        )
+        assert result.status == "calibrated"
 
 
 def test_run_evaluations_rejects_unsupported_case_metadata_before_task_execution() -> None:

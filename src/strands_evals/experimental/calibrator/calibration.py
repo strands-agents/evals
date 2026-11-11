@@ -12,7 +12,7 @@ from typing_extensions import Self
 
 from ...case import Case
 from ...experiment import Experiment
-from ...types.evaluation import InputT, OutputT
+from ...types.evaluation import EvaluationData, InputT, OutputT
 from ...types.evaluation_report import EvaluationReport
 from ._calibration import (
     CalibrationStatus,
@@ -263,7 +263,10 @@ class Calibrator:
             raise ValueError(f"max_workers must be >= 1, got {max_workers}")
         evaluator_names = {evaluator.get_name() for evaluator in experiment.evaluators}
         _validate_evaluator_names(evaluator_names, set(self._step_sizes))
-        case_signatures = _extract_case_signatures_from_cases(case.model_dump() for case in cases)
+        report_case_fields = EvaluationData.model_fields.keys()
+        case_signatures = _extract_case_signatures_from_cases(
+            {key: value for key, value in case.model_dump().items() if key in report_case_fields} for case in cases
+        )
         _validate_calibration_compatibility(
             expected_design=self._state.calibration_design,
             actual_design=(agent_runs, judge_replays),
