@@ -1,6 +1,6 @@
 ---
 name: session-converter
-description: Use when the user wants to turn past local agent conversations (Codex, Claude Code, Kiro CLI, Strands CLI, or any other harness) into strands-evals experiments. Locates the relevant session files on the local filesystem, extracts their episodes (turns with a focused user goal), suggests evaluators, and writes an experiment JSON file. Skip for traces stored in trace providers (CloudWatch, Langfuse, OpenSearch).
+description: Use when the user wants to turn past agent conversations (Codex, Claude Code, Kiro CLI, Strands CLI, or any other harness) stored in local session files into strands-evals experiments. Locates the relevant session files, extracts their episodes, suggests evaluators, and writes an experiment JSON file. Skip for traces stored in trace providers (CloudWatch, Langfuse, OpenSearch).
 version: 0.1.0
 ---
 
@@ -26,6 +26,13 @@ Question: How should I handle user messages that depend on outside context (ex. 
 1. Fill (Recommended): rewrite the input to include the context it relies on, so it stands alone.
 2. Drop: filter out episodes whose input depends on outside context.
 3. Keep: keep the input as written.
+
+**URL checks.** The validation step may request URLs to verify if they are still valid.
+
+Question: Should I check that URLs named in the cases still resolve?
+1. Check public (Recommended): request each public `https` URL and flag cases whose URLs are gone.
+2. Check all: also request `http`, internal, and localhost URLs (ex. intranet docs the agent under test can reach).
+3. Skip: make no network requests.
 
 ### 2. Locate sessions
 
@@ -110,7 +117,8 @@ Write the experiment JSON file to the directory the user gives, defaulting to `.
         "session_file": "<session_file>",
         "conversation_id": "<conversation_id>",
         "timestamp": "<timestamp>",
-        "episode_index": <episode_index>
+        "episode_index": <episode_index>,
+        "failure_modes": ["<evaluator>"]
       }
     }
   ],
@@ -128,8 +136,64 @@ Write one case per kept episode from step 3, and one evaluator entry per evaluat
 - `conversation_id`: the conversation id listed for the episode's session file.
 - `timestamp`: the episode timestamp.
 - `episode_index`: the episode's 0-based position among the episodes returned for its session, as an integer.
+- `failure_modes`: the evaluator name of every failure mode assigned to the episode, once each. Use `[]` if it has none.
 - `evaluator`: the name of a chosen evaluator.
 
-## Output
+### 6. Validate the experiment file
 
-Report the experiment file path, the number of cases, and the total number of sessions. List each suggested evaluator with its failure mode's episode count and one `evidence` quote, and name any modes that appeared but fell below 10%. Tell the user to run it with `strands-evals run <file> --agent <module>:<factory>`. Then delete the episode files.
+Run the following validations on the generated experiment file:
+
+**Secrets** Find and remove secrets. Use the following command to check for known token formats and credential assignments.
+
+```bash
+jq -r --arg p '\ba[ks]ia[0-9a-z]{16}|\bgh[pousr]_[a-z0-9]{36,}|\bgithub_pat_[a-z0-9_]{22,}|\bglpat-[a-z0-9_-]{20,}|\b[sr]k[-_](?=[a-z_-]*[0-9])[a-z0-9_-]{20,}|\baiza[0-9a-z_-]{35}|\bnpm_[a-z0-9]{36}|\bhf_[a-z0-9]{30,}|\bxox[abprs]-[a-z0-9-]{10,}|hooks\.slack\.com/services/[a-z0-9/]+|accountkey=[a-z0-9+/=]{20,}|\beyJ[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}|-----BEGIN [a-z ]*PRIVATE KEY( BLOCK)?-----|bearer (?=[a-z._~+/-]*[0-9])[a-z0-9._~+/-]{16,}|authorization:\s*basic [a-z0-9+/=]{8,}|://[^/:@\s]+:[^/@\s]+@|\b(iqojb3jpz2lu|fwogzxivyxdz)[a-z0-9+/=]{20,}|\babsk[a-z0-9+/=]{40,}|\bxapp-[a-z0-9-]{20,}|\bya29\.[a-z0-9_-]{30,}|\bgocspx-[a-z0-9_-]{20,}|\bwhsec_[a-z0-9]{24,}|\bsg\.[a-z0-9_-]{22}\.[a-z0-9_-]{43}|\bpypi-age[a-z0-9_-]{50,}|\bdo[por]_v1_[a-f0-9]{64}|\bshp(at|ca|pa|ss)_[a-f0-9]{32}|\blin_api_[a-z0-9]{40}|\bdapi[a-f0-9]{32}|[?&]sig=[a-z0-9%+/=]{20,}|(aws_secret_access_key|client_secret|secret_key|access_token|refresh_token|api[_-]?key|passw(or)?d)["\x27]?\s*[:=]\s*["\x27]?(?![<${(]|os\.environ|process\.env|[a-z_][a-z0-9_.]*\()[^\s"\x27,]{8,}' '.cases[] | .name as $n | .. | strings | match($p; "gi") | "\($n): \(.string)"' <experiment_file>
+```
+
+Then, read each case for secrets the pattern doesn't cover (ex. API keys, passwords, or cookies assigned in config or prose, internal hostnames with credentials). Replace each secret value with `<redacted>` and keep the surrounding text. Leave clear placeholders (ex. `<your-api-key>`) as they are. Run the search again and confirm every remaining match contains `<redacted>`, is a placeholder you kept, or isn't a secret value (ex. code that reads a secret).
+
+**Duplicates.** List the cases sorted by normalized input, so near-duplicates sit next to each other:
+
+```bash
+jq -r '.cases[] | [(.input | .[0:400] | ascii_downcase | gsub("[^\\p{L}\\p{N}]+"; " ") | ltrimstr(" ") | .[0:100]), .name] | @tsv' <experiment_file> | sort
+```
+
+Treat cases as duplicates when their inputs make the same request about the same target and differ only in wording, typos, or added context (ex. "can kiro cli spawn subagents" and "can kiro cli spawn subagents?"). Inputs that share wording but point at different files, URLs, or repos aren't duplicates. Read the full inputs of adjacent rows and of cases with similar names, since the sort only groups matching prefixes. In each group, keep the case whose input best stands alone, or the earliest `timestamp` on a tie, and remove the rest. Set the kept case's `failure_modes` to the union of the group's `failure_modes`. If you removed any, update the `evaluators` using the methodology in step 4 with the cases' `failure_modes` instead of episode files.
+
+**Actionability.** Read each case's `input` and `expected_assertion` as the agent running it would, with only a shell and web access. Track cases that match any of the following (but don't modify the experiment file):
+
+- Needs a specific skill, MCP, data only the original user's session had (ex. a private dashboard, an earlier conversation), or resource modification (ex. writes files).
+- A path, URL, or repo symbol it names is inaccessible. Check with `test -e <path>`, `curl -sL --max-time 10 -o /dev/null -w "%{http_code}" <url>`, or `grep -rlw "<name>" <repo>`. Follow the URL checks answer from step 1: only curl public `https` URLs for check public, also curl http/private/localhost URLs for check all, don't curl for skip. For each option, skip URLs with embedded credentials and treat them as inaccessible.
+- A claim it makes about a tool, file, or format no longer holds (ex. "Kiro's `session.json` has no workspace path field"). Check the current file (ex. `jq 'keys' <file>`).
+- Points at a project, file, build, artifact, or earlier turn without naming it. Skip this check if the user chose to keep context-dependent inputs as-is.
+
+**Structure.** Run `strands-evals validate <experiment_file>`. If it fails, fix the file and run it again until it passes.
+
+### 7. Handoff to human
+
+Report the experiment file path. List each suggested evaluator with its failure mode's episode count out of the cases in the file and one `evidence` quote (redact any secrets in it) and name any modes that appeared but fell below 10%. Say how many secrets you redacted and in which cases, without repeating the values. List each removed duplicate by `name` with the case it duplicated. List each inactionable case by `name` with its reason, and recommend dropping it. Tell the user to run it with `strands-evals run <file> --agent <module>:<factory>`. Then delete the episode files from step 3.
+
+Ask the user to review the experiment file and whether they want any of the post-generation actions below (drop cases, smoke-test the experiment). Wait for their response. If you can't wait for a reply, keep every case and say which ones you'd drop.
+
+## Post-generation
+
+Run these only if the user asks for them after step 7.
+
+### Drop cases
+
+Remove the cases the user names (ex. the inactionable cases from step 6) from the experiment file. Update the `evaluators` using the methodology in step 4 with the cases' `failure_modes` instead of episode files. Then run `strands-evals validate <experiment_file>` again and fix any issues that occur. Report any evaluator that was added or removed, with its new count.
+
+### Smoke-test
+
+Run the first case against a default Strands agent to check that the experiment runs end-to-end:
+
+```bash
+d=$(mktemp -d) && cat > "$d/default_agent.py" <<'EOF'
+from strands import Agent
+
+def build_agent() -> Agent:
+    return Agent(callback_handler=None)
+EOF
+strands-evals run <experiment_file> --case 0 --agent "$d/default_agent.py:build_agent" --exit-zero -o "$d/report.json"
+```
+
+Report whether the run completed and each evaluator's result. A failing score is fine here; this tests the file, not the agent. The run errored if the exit code is non-zero (ex. an invalid file) or a `reason` starts with `An error occurred` (ex. missing model credentials) or `Evaluator error` (ex. the judge model is unavailable); report the error. Then delete the temp directory.
