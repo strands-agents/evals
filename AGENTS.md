@@ -132,6 +132,14 @@ strands-evals/
 │   │   └── (evaluator in evaluators/redteam/, types in types/redteam/)
 │   │
 │   ├── experimental/                         # Experimental features (no stability guarantees)
+│   │   └── calibrator/                       # Statistical evaluator calibration
+│   │       ├── __init__.py                   # Calibration public exports
+│   │       ├── algorithm.py                  # Pluggable fitting/model interfaces
+│   │       ├── equal_weighting.py            # Equal-weight baseline algorithm
+│   │       ├── calibration.py                # Public calibration facade
+│   │       ├── _bootstrap.py                 # Hierarchical bootstrap diagnostics
+│   │       ├── _calibration.py               # Private report/statistics helpers
+│   │       └── _collection.py                # Fixed-output replay collection
 │   │
 │   ├── detectors/                            # Failure detection + RCA
 │   │   ├── failure_detector.py               # detect_failures (model.stream text mode)
@@ -228,6 +236,12 @@ strands-evals/
 │   ├── chaos/
 │   ├── detectors/
 │   ├── experimental/
+│   │   └── calibrator/
+│   │       ├── test_algorithm.py
+│   │       ├── test_bootstrap.py
+│   │       ├── test_calibration.py
+│   │       ├── test_collection.py
+│   │       └── test_equal_weighting.py
 │   ├── redteam/                          # Mirrors src/strands_evals/redteam/
 │   ├── simulation/
 │   ├── extractors/
