@@ -283,6 +283,18 @@ def test_a_given_schedule_is_checked_and_returned():
         ).resolve(space)
 
 
+def test_within_sets_the_default_rounds_inner_schedule():
+    _, schedule = Search(within=Joint()).resolve(full_space())
+    assert shape(schedule) == ("nested", "structure", "joint")
+    # without a structural block the default is Joint() whatever within says
+    _, schedule = Search(within=Alternate()).resolve(Space({"temperature": Float(0.0, 1.0, default=0.5)}))
+    assert shape(schedule) == "joint"
+    with pytest.raises(TypeError, match=r"within=\.\.\.\) takes a Schedule"):
+        Search(within="alternate")
+    with pytest.raises(ValueError, match="shapes only the default schedule"):
+        Search(schedule=Joint(), within=Alternate())
+
+
 def test_nested_config():
     assert Nested(Block(TPE(), "manager", name="s"), Alternate(), inner_iterations=2).config() == {
         "outer": "s",
@@ -471,9 +483,13 @@ def test_a_repeated_opener_opens_the_round_on_the_measured_candidate():
     assert view(step) == (["window"], 4, ("c1",), (1,), "inner", ())
 
 
-def test_an_opener_that_saved_nothing_ends_the_rounds():
-    history = nested_history()
-    history.save(history.plan(), "invalid", "invalid")
+def test_an_opener_that_saved_nothing_ends_only_its_round():
+    history = nested_history(redraws=1)
+    history.save(history.plan(), "invalid", "invalid")  # round 0: every draw invalid, no inner steps
+
+    opener = history.plan()
+    assert view(opener) == (["structure"], 1, ("base",), (1,), "opener", ("structure",))
+    history.save(opener, "invalid")  # round 1 saves nothing either: redraws + 1 empty rounds in a row
 
     assert history.plan() is None
 

@@ -187,10 +187,11 @@ class Nested(Schedule):
     eligible candidates (the incumbent if none is). An opener repeating a measured candidate opens the round
     on it at no cost. At the round's end the outer proposer observes the round's best candidate
     (`Observation.source_id`); an opener that isn't eligible is observed as None with outcome `ineligible`,
-    and the round's inner steps are skipped. A round also ends when the inner schedule returns None. Rounds
-    stop after `ctx.redraws + 1` in a row measure nothing new, or after an opener that saved nothing; then
-    `next()` returns None. When `outer` is not among `ctx.blocks` (an enclosing round narrowed it out), the
-    inner schedule runs alone. Nested inner schedules add one entry to `Step.round` per level.
+    and the round's inner steps are skipped, as they are when the opener saved nothing (every draw invalid).
+    A round also ends when the inner schedule returns None. Rounds stop after `ctx.redraws + 1` in a row
+    measure nothing new (an opener that saved nothing counts as one); then `next()` returns None. When
+    `outer` is not among `ctx.blocks` (an enclosing round narrowed it out), the inner schedule runs alone.
+    Nested inner schedules add one entry to `Step.round` per level.
 
     Attributes:
         outer: The outer block's name.
@@ -240,9 +241,7 @@ class Nested(Schedule):
         if opener.role != "opener" or opener.round != (current,):
             raise ValueError(f"round {current} of Nested({self.outer!r}) has no opener as its first iteration")
         opener_id = next((p.candidate_id for p in reversed(opener.proposals) if p.outcome != "invalid"), None)
-        if opener_id is None:
-            return None
-        if opener_id in ctx.eligible:
+        if opener_id is not None and opener_id in ctx.eligible:
             steps = sum(1 for record in records[1:] if record.role == "inner" and _saved(record))
             if steps < self.inner_iterations:
                 sub = self._round_context(ctx, records, opener_id)
@@ -303,26 +302,38 @@ class Search:
     Attributes:
         blocks: The user's blocks, in order.
         schedule: Plans each iteration; None means the default schedule (one `Nested` per structural block
-            around `Alternate()`, or `Joint()` with no structural block).
+            around `within`, or `Joint()` with no structural block).
+        within: The default schedule's inner schedule; None means `Alternate()`.
         redraws: Caps re-asks per block per iteration after a duplicate (of an eligible candidate), an
             invalid patch, a patch touching keys outside its block, or no patches at all.
     """
 
     blocks: tuple[Block, ...]
     schedule: Schedule | None
+    within: Schedule | None
     redraws: int
 
-    def __init__(self, blocks: Sequence[Block] = (), *, schedule: Schedule | None = None, redraws: int = 3):
+    def __init__(
+        self,
+        blocks: Sequence[Block] = (),
+        *,
+        schedule: Schedule | None = None,
+        within: Schedule | None = None,
+        redraws: int = 3,
+    ):
         """Two blocks with the same name (e.g. two unnamed TPE blocks) raise `ValueError`.
 
         Args:
             blocks: The user's blocks, in order.
             schedule: Plans each iteration; None means the default schedule.
+            within: What the default schedule runs inside its rounds, e.g. `Joint()` to change every
+                block on every inner step; None means `Alternate()`.
             redraws: Re-asks per block per iteration after an unusable proposal.
 
         Raises:
-            TypeError: A block is not a `Block`, or `schedule` is not a `Schedule`.
-            ValueError: Two blocks share a name, or `redraws` is negative.
+            TypeError: A block is not a `Block`, or `schedule` or `within` is not a `Schedule`.
+            ValueError: Two blocks share a name, `redraws` is negative, or both `schedule` and `within` are
+                given (`within` shapes only the default schedule).
         """
         blocks = tuple(blocks)
         not_blocks = [b for b in blocks if not isinstance(b, Block)]
@@ -335,10 +346,18 @@ class Search:
             seen.add(block.name)
         if schedule is not None and not isinstance(schedule, Schedule):
             raise TypeError(f"Search(schedule=...) takes a Schedule, not {schedule!r}")
+        if within is not None and not isinstance(within, Schedule):
+            raise TypeError(f"Search(within=...) takes a Schedule, not {within!r}")
+        if schedule is not None and within is not None:
+            raise ValueError(
+                "Search(within=...) shapes only the default schedule; with schedule=... given, put the inner "
+                "schedule inside it"
+            )
         if not isinstance(redraws, int) or isinstance(redraws, bool) or redraws < 0:
             raise ValueError(f"Search(redraws=...) must be an int >= 0, not {redraws!r}")
         self.blocks = blocks
         self.schedule = schedule
+        self.within = within
         self.redraws = redraws
 
     def resolve(self, space: Space) -> tuple[list[tuple[Block, list[str]]], Schedule]:
@@ -359,8 +378,8 @@ class Search:
         The schedule is `self.schedule`, else the default built over every resolved block, defaults
         included: one `Nested` per structural block (one holding a choice key with 2+ options), outermost
         first (a block whose keys exist only under another block's choice comes after it), around
-        `Alternate()`; when every block is structural, the innermost isn't nested; `Joint()` when there is
-        no structural block.
+        `self.within` (default `Alternate()`); when every block is structural, the innermost isn't nested;
+        `Joint()` when there is no structural block.
 
         Raises:
             ValueError: A variable that is neither a declared name nor a key; a key two blocks name the
@@ -433,7 +452,7 @@ class Search:
         block_of = {key: block.name for block, keys in resolved for key in keys}
         keys_of = {block.name: keys for block, keys in resolved}
         if self.schedule is None:
-            return resolved, _default_schedule(resolved, space, block_of)
+            return resolved, _default_schedule(resolved, space, block_of, self.within)
         _check(self.schedule, [block.name for block, _ in resolved], keys_of, space, block_of)
         return resolved, self.schedule
 
@@ -458,7 +477,10 @@ def _selectors(space: Space, key: str) -> list[str]:
 
 
 def _default_schedule(
-    resolved: Sequence[tuple[Block, list[str]]], space: Space, block_of: Mapping[str, str]
+    resolved: Sequence[tuple[Block, list[str]]],
+    space: Space,
+    block_of: Mapping[str, str],
+    within: Schedule | None,
 ) -> Schedule:
     structural = [(block, keys) for block, keys in resolved if any(_is_structural(space.param(key)) for key in keys)]
     after = {
@@ -474,7 +496,7 @@ def _default_schedule(
         levels.append(ready[0])
     if len(structural) == len(resolved):
         levels = levels[:-1]
-    schedule: Schedule = Alternate() if levels else Joint()
+    schedule: Schedule = (within if within is not None else Alternate()) if levels else Joint()
     for block in reversed(levels):
         schedule = Nested(block, schedule)
     return schedule
