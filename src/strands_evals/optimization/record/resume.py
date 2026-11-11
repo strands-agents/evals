@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from ...types.optimization import (
@@ -16,7 +17,11 @@ from ...types.optimization import (
     Usage,
     ValidationReport,
 )
+from .events import _encode, closed_events
 from .run_directory import RunDirectory
+
+# What `Optimizer.resume` is given again; every other `run.json` field is read from it.
+_COMPARED = ("cases", "space", "objective", "constraints", "search", "selection", "score_model")
 
 
 @dataclass(frozen=True)
@@ -46,14 +51,16 @@ class OpenRound:
 
 @dataclass
 class ResumeState:
-    """State up to the last `iteration_end` event; a killed iteration is discarded and re-run.
+    """State up to the last closed iteration (one ending in `iteration_end`, or the partial iteration a `stop`
+    ends); a killed iteration is discarded and re-run.
 
     Attributes:
         parents: Candidate id -> parent id (None for the baseline).
         spent: Rebuilt from the saved trial records, not from `score` events: over the last record per
             key, `rollouts + sum(a.rollouts for a in previous_attempts)` (re-runs included).
         iteration: The last iteration with an `iteration_end` event (0 = only setup and the baseline).
-        candidates: Every saved candidate; their scores and the fit are rebuilt from their saved trials.
+        candidates: Every candidate proposed in a closed iteration, for duplicate checks (a killed
+            iteration's are proposed again as new); their scores and the fit are rebuilt from their saved trials.
         exhausted: Blocks that produced zero candidates on their latest turn.
         feedback: Per block name, its `observe` and `evidence` events interleaved in event order; replayed
             through each block's proposer before the first new iteration.
@@ -108,10 +115,131 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
         config: The resumed optimizer's config, built by the code that wrote `run.json`.
 
     Returns:
-        The state up to the last `iteration_end` event.
+        The state up to the last closed iteration.
+
+    Every search field comes only from closed iterations (`closed_events`), so a killed iteration is
+    discarded and runs again; trials are always read, and `spent` counts every one.
 
     Raises:
         ValueError: A field that may not change differs, naming the field, e.g.
             "objective changed: 'Helpfulness' -> 'WeightedSum(...)'".
     """
-    raise NotImplementedError
+    given = json.loads(json.dumps({field: config.get(field) for field in _COMPARED}, default=_encode, allow_nan=False))
+    for field in _COMPARED:
+        changed = _difference(run.config.get(field), given.get(field), field)
+        if changed is not None:
+            raise ValueError(f"{changed}; start a new run to change it")
+
+    events = run.events.read()
+    # The last trial per key, as RunDirectory.open indexed it.
+    trials = run._trials.values()
+    spent = sum(r["rollouts"] + sum(a["rollouts"] for a in r["previous_attempts"]) for r in trials)
+
+    state = ResumeState(
+        parents={},
+        spent=spent,
+        iteration=0,
+        candidates=[],
+        exhausted=set(),
+        feedback={},
+        history=[],
+        open_rounds=[],
+        fits=[],
+        iterations=[],
+        search_cost=Usage.zero(),
+        finalists=None,
+        validation=None,
+        is_test_done=False,
+        test=None,
+        test_reason=None,
+        front_test={},
+        stop_reason=None,
+    )
+    for event in closed_events(events):
+        name = event["event"]
+        if name == "propose":
+            candidate_id = event["candidate_id"]
+            if not event["rescore"] and candidate_id not in state.parents:
+                state.parents[candidate_id] = event["parent_id"]
+                state.candidates.append(candidate_id)
+            if event.get("patch") is not None:
+                state.open_rounds.append(
+                    OpenRound(
+                        tuple(event["round"]), candidate_id, event["origin"], Patch.model_validate(event["patch"])
+                    )
+                )
+        elif name == "duplicate" and event.get("patch") is not None:
+            state.open_rounds.append(
+                OpenRound(
+                    tuple(event["round"]), event["candidate_id"], event["block"], Patch.model_validate(event["patch"])
+                )
+            )
+        elif name == "unscored":
+            state.open_rounds = [
+                replace(r, opener_id=None) if r.opener_id == event["candidate_id"] else r for r in state.open_rounds
+            ]
+        elif name == "observe":
+            observation = Observation.model_validate(event["observation"])
+            state.feedback.setdefault(event["block"], []).append(observation)
+            if observation.patch.usage is not None:
+                state.search_cost = state.search_cost + observation.patch.usage
+            # An opener's deferred observe closes its round.
+            for index, open_round in enumerate(state.open_rounds):
+                if open_round.block == event["block"] and open_round.patch == observation.patch:
+                    del state.open_rounds[index]
+                    break
+        elif name == "evidence":
+            state.feedback.setdefault(event["block"], []).append(Evidence.model_validate(event["evidence"]))
+        elif name == "select":
+            state.history.append(event["parent_id"])
+        elif name == "fit":
+            state.fits.append(FitReplay(list(event["candidates"]), event["is_fitted"], event.get("error")))
+        elif name == "iteration_end":
+            record = IterationRecord.model_validate(event["record"])
+            state.iterations.append(record)
+            state.iteration = record.iteration
+            for block in record.blocks:
+                if block in event["exhausted"]:
+                    state.exhausted.add(block)
+                else:
+                    state.exhausted.discard(block)
+        elif name == "finalists":
+            state.finalists = list(event["candidate_ids"])
+        elif name == "picked":
+            state.validation = ValidationReport.model_validate(event["report"])
+        elif name == "test":
+            state.is_test_done = True
+            state.test = None if event["report"] is None else TestReport.model_validate(event["report"])
+            state.test_reason = event.get("reason")
+            state.front_test = {key: TestReport.model_validate(report) for key, report in event["front"].items()}
+        elif name == "stop":
+            state.stop_reason = event["reason"]
+    return state
+
+
+def _difference(old: Any, new: Any, path: str) -> str | None:
+    """Where `old` and `new` first differ, as `"<path> changed: <old> -> <new>"`; None when they are equal.
+
+    Lists of `{"key": ...}` records (the space) are matched by key, so the message names the parameter.
+    """
+    if isinstance(old, list) and isinstance(new, list):
+        if all(isinstance(item, dict) and "key" in item for item in [*old, *new]):
+            old_by_key = {item["key"]: item for item in old}
+            new_by_key = {item["key"]: item for item in new}
+            pairs = [
+                (f"{path}[{key!r}]", old_by_key.get(key), new_by_key.get(key)) for key in {**old_by_key, **new_by_key}
+            ]
+        elif len(old) == len(new):
+            pairs = [(f"{path}[{index}]", a, b) for index, (a, b) in enumerate(zip(old, new, strict=True))]
+        else:
+            pairs = None
+    elif isinstance(old, dict) and isinstance(new, dict):
+        pairs = [(f"{path}.{key}", old.get(key), new.get(key)) for key in {**old, **new}]
+    else:
+        pairs = None
+    if pairs is not None:
+        return next((found for at, a, b in pairs if (found := _difference(a, b, at)) is not None), None)
+    if old == new:
+        return None
+    shown = [text if len(text := repr(value)) <= 200 else text[:197] + "..." for value in (old, new)]
+    return f"{path} changed: {shown[0]} -> {shown[1]}"
