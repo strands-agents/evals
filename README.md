@@ -111,7 +111,7 @@ report.run_display()
 
 ## Command-Line Interface
 
-Installing `strands-agents-evals` also installs the `strands-evals` console script, a thin wrapper over the Python API for CI and one-off use. It has five subcommands:
+Installing `strands-agents-evals` also installs the `strands-evals` console script, a thin wrapper over the Python API for CI and one-off use:
 
 | Command | Purpose |
 | --- | --- |
@@ -120,6 +120,8 @@ Installing `strands-agents-evals` also installs the `strands-evals` console scri
 | `strands-evals report` | Render an existing `EvaluationReport` JSON via Rich, or dump it as JSON. |
 | `strands-evals diagnose` | Run `detect_failures`, `analyze_root_cause`, or the full `diagnose_session` pipeline on a Session JSON file. |
 | `strands-evals generate` | Synthesize an Experiment via `ExperimentGenerator` from a free-form `--context` or an existing `--experiment` file. |
+| `strands-evals fetch` | Pull a Session from a trace provider into Session JSON for `diagnose` or a trajectory evaluator. |
+| `strands-evals ui` | Browse the experiments and reports in a directory in a local page, and edit their cases in place. |
 
 Common flows:
 
@@ -147,7 +149,19 @@ strands-evals diagnose session.json --confidence medium
 # Generate a starter experiment from a tools description
 strands-evals generate --context "$(cat tools.txt)" --num-cases 10 \
   --evaluator TrajectoryEvaluator -o experiments/generated.json
+
+# Browse and edit the experiments under a directory in a browser
+strands-evals ui experiments/
+
+# Same discovery, printed instead of served (for CI, or just to see what is there)
+strands-evals ui experiments/ --list
 ```
+
+`ui` binds loopback on a random port and prints a URL carrying a one-time token; every request
+needs that token, so nothing else on the machine can read or write through it. Edits save back to
+the file they were loaded from, with a conflict check against the file's mtime so a concurrent
+`run` or editor is never silently overwritten. Pass `--read-only` to browse without the Save path
+at all.
 
 Run any subcommand with `--help` for the full flag set (custom evaluators via `MODULE:CLASS`, trace attributes, `--fail-on` exit-code rules, output formats, etc.).
 

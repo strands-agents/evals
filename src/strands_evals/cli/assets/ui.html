@@ -1,0 +1,3798 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>strands-evals</title>
+<style>
+  .app {
+    --bg:   var(--background, #f9f9f7);
+    --card: var(--card, #ffffff);
+    --pop:  var(--popover, #ffffff);
+    --ink1: var(--foreground, #0b0b0b);
+    --ink2: var(--muted-foreground, #52514e);
+    --ink3: #898781;
+    --hair: var(--border, rgba(11,11,11,.11));
+    --hair2: rgba(11,11,11,.06);
+    --accent: #2a78d6;
+    --good: #1a7f4b;
+    --bad:  #c03028;
+    --track: rgba(11,11,11,.07);
+    --r: 8px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .app {
+      --bg: var(--background, #0f0f0e);
+      --card: var(--card, #191918);
+      --pop: var(--popover, #232321);
+      --ink1: var(--foreground, #f7f7f5);
+      --ink2: var(--muted-foreground, #b4b2a9);
+      --ink3: #8a887f;
+      --hair: var(--border, rgba(255,255,255,.12));
+      --hair2: rgba(255,255,255,.07);
+      --accent: #5598e7;
+      --good: #3fae77;
+      --bad:  #e8655c;
+      --track: rgba(255,255,255,.09);
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--background, #f9f9f7); }
+  .app {
+    font: 14px/1.55 var(--font-sans, ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif);
+    color: var(--ink1); background: var(--bg); min-height: 520px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace); }
+
+  /* ── chrome ───────────────────────────────────────────── */
+  .bar {
+    display: flex; align-items: center; gap: 20px;
+    padding: 0 28px; height: 56px; border-bottom: 1px solid var(--hair);
+    background: var(--bg); position: sticky; top: 0; z-index: 5;
+  }
+  .brand { font-weight: 600; letter-spacing: -.01em; }
+  .brand span { color: var(--ink3); font-weight: 400; }
+  .tabs { display: flex; gap: 2px; }
+  .tab {
+    appearance: none; border: 0; background: none; font: inherit; color: var(--ink2);
+    padding: 6px 12px; border-radius: 6px; cursor: pointer;
+  }
+  .tab:hover { color: var(--ink1); background: var(--hair2); }
+  .tab.on { color: var(--ink1); font-weight: 550; background: var(--hair2); }
+  .grow { flex: 1; }
+  .path { color: var(--ink3); font-size: 12.5px; }
+  .path b { color: var(--ink2); font-weight: 500; }
+
+  main { padding: 28px; max-width: 1080px; }
+  .view { display: none; }
+  .view.on { display: block; }
+
+  h2 { font-size: 15px; font-weight: 600; margin: 0 0 2px; letter-spacing: -.01em; }
+  .sub { color: var(--ink3); font-size: 12.5px; margin: 0 0 20px; }
+
+  /* ── experiment ───────────────────────────────────────── */
+  .cols { display: grid; grid-template-columns: 236px 1fr; gap: 28px; align-items: start; }
+  .find {
+    width: 100%; font: inherit; font-size: 13px; color: var(--ink1);
+    padding: 7px 10px; border: 1px solid var(--hair); border-radius: 6px;
+    background: var(--card); margin-bottom: 8px;
+  }
+  .find:focus { outline: none; border-color: var(--accent); }
+  .list { list-style: none; margin: 0; padding: 0; }
+  .list li {
+    padding: 7px 10px; border-radius: 6px; cursor: pointer; font-size: 13px;
+    display: flex; align-items: center; gap: 8px; color: var(--ink2);
+  }
+  .list li:hover { background: var(--hair2); color: var(--ink1); }
+  .list li.on { background: var(--hair2); color: var(--ink1); font-weight: 550; }
+  .list li .dot {
+    width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
+    flex: none; opacity: 0; pointer-events: none;
+  }
+  .list li .dot.edited { opacity: 1; }
+  .list li .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .count { color: var(--ink3); font-size: 12px; padding: 10px 10px 0; }
+
+  .pane { background: var(--card); border: 1px solid var(--hair); border-radius: var(--r); }
+  .pane > header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; border-bottom: 1px solid var(--hair);
+  }
+  .pane > header .t { font-weight: 600; font-size: 13.5px; }
+  .pane > .body { padding: 16px; }
+
+  .field { margin-bottom: 16px; }
+  .field:last-child { margin-bottom: 0; }
+  .field > label {
+    display: block; font-size: 11.5px; letter-spacing: .02em; text-transform: uppercase;
+    color: var(--ink3); margin-bottom: 5px; font-weight: 550;
+  }
+  .field .hint { font-size: 12px; color: var(--ink3); margin-top: 5px; }
+  input.f, textarea.f {
+    width: 100%; font: inherit; font-size: 13.5px; color: var(--ink1); background: var(--bg);
+    border: 1px solid var(--hair); border-radius: 6px; padding: 8px 10px; resize: vertical;
+  }
+  textarea.f { line-height: 1.5; }
+  input.f:focus, textarea.f:focus { outline: none; border-color: var(--accent); background: var(--card); }
+  .empty { color: var(--ink3); font-style: italic; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .chip {
+    font-size: 12.5px; padding: 3px 8px; border-radius: 5px;
+    background: var(--hair2); border: 1px solid var(--hair); color: var(--ink2);
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .chip .x { cursor: pointer; color: var(--ink3); font-size: 13px; line-height: 1; }
+  .chip .x:hover { color: var(--bad); }
+  .chip .ord { color: var(--ink3); font-variant-numeric: tabular-nums; }
+  .addchip {
+    appearance: none; font: inherit; font-size: 12.5px; color: var(--ink2);
+    border: 1px dashed var(--hair); background: none; border-radius: 5px;
+    padding: 3px 9px; cursor: pointer;
+  }
+  .addchip:hover { color: var(--accent); border-color: var(--accent); }
+
+  .btn {
+    appearance: none; font: inherit; font-size: 13px; cursor: pointer;
+    padding: 6px 13px; border-radius: 6px; border: 1px solid var(--hair);
+    background: var(--card); color: var(--ink1);
+  }
+  .btn:hover { border-color: var(--ink3); }
+  .btn.pri { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 550; }
+  .btn.pri:hover { filter: brightness(1.07); }
+  .btn:disabled { opacity: .42; cursor: default; }
+  .btn:disabled:hover { border-color: var(--hair); }
+  .foot {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; border-top: 1px solid var(--hair);
+  }
+  .dirty { font-size: 12.5px; color: var(--ink3); }
+  .dirty.yes { color: var(--accent); }
+  .saved { font-size: 12.5px; color: var(--ink3); }
+  .saved.err { color: var(--bad); }
+
+  /* ── report ───────────────────────────────────────────── */
+  .hero { display: flex; align-items: baseline; gap: 28px; margin-bottom: 26px; }
+  .hero .big {
+    font-size: 54px; line-height: 1; font-weight: 600; letter-spacing: -.03em;
+  }
+  .hero .cap { font-size: 12.5px; color: var(--ink3); margin-top: 7px; }
+  .stats { display: flex; gap: 28px; }
+  .stat .v { font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+  .stat .k { font-size: 12px; color: var(--ink3); }
+
+  .ctl { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .ctl .find { width: 220px; margin: 0; }
+  .seg { display: flex; border: 1px solid var(--hair); border-radius: 6px; overflow: hidden; }
+  .seg button {
+    appearance: none; border: 0; background: var(--card); font: inherit; font-size: 12.5px;
+    color: var(--ink2); padding: 6px 11px; cursor: pointer;
+  }
+  .seg button + button { border-left: 1px solid var(--hair); }
+  .seg button.on { background: var(--hair2); color: var(--ink1); font-weight: 550; }
+
+  table.rep { width: 100%; border-collapse: collapse; }
+  table.rep th {
+    text-align: left; font-size: 11.5px; text-transform: uppercase; letter-spacing: .02em;
+    color: var(--ink3); font-weight: 550; padding: 0 12px 7px; border-bottom: 1px solid var(--hair);
+  }
+  table.rep th.n, table.rep td.n { text-align: right; }
+  table.rep td { padding: 10px 12px; border-bottom: 1px solid var(--hair2); vertical-align: top; }
+  table.rep tr.case { cursor: pointer; }
+  table.rep tr.case:hover td { background: var(--hair2); }
+  table.rep tr.case td:first-child { font-weight: 550; }
+  .ev { color: var(--ink2); font-size: 13px; }
+  .bar2 { display: inline-flex; align-items: center; gap: 8px; }
+  .bar2 .track { width: 72px; height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; }
+  .bar2 .fill { display: block; height: 6px; border-radius: 3px; background: var(--accent); }
+  .bar2 .num { font-variant-numeric: tabular-nums; font-size: 13px; min-width: 32px; }
+  .vb { font-size: 12.5px; display: inline-flex; align-items: center; gap: 5px; }
+  .vb.pass { color: var(--good); }
+  .vb.fail { color: var(--bad); }
+  .vb.na   { color: var(--ink3); }
+  .vb i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; display: inline-block; }
+  tr.detail td { background: var(--hair2); }
+  .kv { display: grid; grid-template-columns: 148px 1fr; gap: 4px 14px; font-size: 13px; }
+  .kv dt { color: var(--ink3); font-size: 12px; padding-top: 1px; }
+  .kv dd { margin: 0; }
+  .kv dd.m { font-family: var(--font-mono, ui-monospace, Menlo, monospace); font-size: 12.5px; }
+  .del { color: var(--bad); }
+  .ins { color: var(--good); }
+  /* runs picker + evaluators strip */
+  .evs { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 20px; }
+  .evchip {
+    display: inline-flex; align-items: baseline; gap: 8px; padding: 5px 10px;
+    border: 1px solid var(--hair); border-radius: 6px; background: var(--card); font-size: 12.5px;
+  }
+  .evchip b { font-weight: 600; }
+  .evchip .t, .evchip .c { color: var(--ink3); }
+  tr.run { cursor: pointer; }
+  tr.run:hover td, tr.run.on td { background: var(--hair2); }
+  tr.run td:first-child { font-weight: 550; }
+  tr.run .dim { color: var(--ink3); font-weight: 400; }
+  .nores { padding: 28px 12px; text-align: center; color: var(--ink3); }
+  .nores b { display: block; color: var(--ink1); font-weight: 600; margin-bottom: 3px; }
+  .caret {
+    display: inline-block; width: 0; height: 0; margin-right: 5px; color: var(--ink3);
+    border-left: 4.5px solid currentColor; border-top: 3.5px solid transparent;
+    border-bottom: 3.5px solid transparent; transition: transform .12s ease;
+  }
+  .caret.open { transform: rotate(90deg); }
+  tr.case:hover .caret { color: var(--ink1); }
+
+  /* ── additions: provenance, skipped files, narrow screens ── */
+  .roots { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 0 0 18px; }
+  .mode {
+    font-size: 11.5px; padding: 2px 7px; border-radius: 4px; border: 1px solid var(--hair);
+    color: var(--ink2); background: var(--card); white-space: nowrap;
+  }
+  .mode.live { color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, var(--hair)); }
+  .mode.ro { color: var(--ink3); }
+  .tag {
+    font-size: 11.5px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--hair);
+    color: var(--ink3); display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
+  }
+  .tag.ok { color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, var(--hair)); }
+  .tag.warn { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, var(--hair)); }
+  details.skips { margin-top: 14px; font-size: 12.5px; color: var(--ink3); }
+  details.skips summary { cursor: pointer; }
+  details.skips ul { margin: 8px 0 0; padding-left: 18px; }
+  details.skips code { font-family: var(--font-mono, ui-monospace, Menlo, monospace); color: var(--ink2); }
+  .evhead { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  .evchip.edit { cursor: pointer; }
+  .evchip.edit:hover { border-color: var(--accent); }
+  .evchip.on { border-color: var(--accent); }
+  .evchip.error { border-color: color-mix(in srgb, var(--bad) 55%, var(--hair)); }
+  .evchip.error .c:last-child { color: var(--bad); }
+  .evchip.warning .c:last-child { color: var(--ink3); }
+  .evnotes { font-size: 12.5px; color: var(--ink2); line-height: 1.7; margin: -8px 0 18px; }
+  .evnotes:empty { display: none; }
+  .evnotes code { font-family: var(--font-mono, ui-monospace, Menlo, monospace); color: var(--ink1); }
+  .evform {
+    border: 1px solid var(--hair); border-radius: var(--r); background: var(--card);
+    padding: 14px 16px; margin: 0 0 20px;
+  }
+  .evform .grid { display: grid; grid-template-columns: 170px 1fr; gap: 8px 14px; align-items: center; }
+  .evform label { font-size: 12.5px; color: var(--ink2); }
+  .evform input.f { font-size: 13px; max-width: 420px; }
+  .evform input[type="checkbox"].f { width: auto; max-width: none; }
+  .more {
+    width: 100%; margin-top: 10px; text-align: center; font-size: 12.5px; color: var(--ink2);
+    background: var(--card); border: 1px solid var(--hair); border-radius: 6px; padding: 7px; cursor: pointer;
+  }
+  .more:hover { border-color: var(--ink3); }
+  .reload { margin-left: 8px; }
+  .scroll { overflow-x: auto; }
+  @media (max-width: 880px) {
+    .cols { grid-template-columns: 1fr; gap: 16px; }
+    .list { max-height: 220px; overflow-y: auto; }
+    .hero { flex-wrap: wrap; gap: 16px; }
+    .stats { flex-wrap: wrap; gap: 18px; }
+    .ctl { flex-wrap: wrap; }
+    .ctl .find { width: 100%; }
+    .kv { grid-template-columns: 1fr; gap: 1px 0; }
+    .kv dt { padding-top: 7px; }
+    main { padding: 18px; }
+    .bar { padding: 0 16px; gap: 12px; }
+    .bar .path { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="bar">
+    <div class="brand">strands<span>-evals</span></div>
+    <nav class="tabs">
+      <button class="tab on" data-view="runs">Runs</button>
+      <button class="tab" data-view="experiment">Experiment</button>
+      <button class="tab" data-view="report">Report</button>
+    </nav>
+    <div class="grow"></div>
+    <div class="path mono" id="path"></div>
+  </header>
+
+  <main>
+    <section class="view on" id="v-runs">
+      <h2>Experiments in this folder</h2>
+      <p class="sub" id="runs-sub"></p>
+      <div class="roots">
+        <span class="mode" id="mode-tag"></span>
+        <span class="path mono" id="root-path"></span>
+      </div>
+      <div class="ctl">
+        <button class="btn" data-act="rescan">Rescan</button>
+        <button class="btn" data-act="pick">Open folder&hellip;</button>
+        <span class="grow"></span>
+        <span class="path" id="runs-count"></span>
+      </div>
+      <div class="scroll">
+        <table class="rep">
+          <thead><tr>
+            <th style="width:30%">Run</th><th style="width:24%">Experiment</th>
+            <th style="width:30%">Report</th><th>Modified</th>
+          </tr></thead>
+          <tbody id="runs-rows"></tbody>
+        </table>
+      </div>
+      <div id="skips"></div>
+      <input type="file" id="dirinput" webkitdirectory directory multiple hidden>
+    </section>
+
+    <section class="view" id="v-experiment">
+      <h2>Cases</h2>
+      <p class="sub" id="exp-sub"></p>
+      <div class="evhead">
+        <div class="evs" id="evs" style="margin:0"></div>
+        <div class="evnotes" id="evnotes"></div>
+      </div>
+      <div class="evform" id="evform" hidden></div>
+      <div class="cols">
+        <div>
+          <input class="find" id="case-find" placeholder="Filter cases" autocomplete="off">
+          <ul class="list" id="case-list"></ul>
+          <div class="count" id="case-count"></div>
+          <div class="ctl" style="margin:12px 0 0">
+            <button class="btn" id="add-case">+ Case</button>
+            <button class="btn" id="del-case">Delete</button>
+          </div>
+        </div>
+        <div class="pane">
+          <header>
+            <span class="t" id="form-title"></span>
+            <span class="grow"></span>
+            <span class="path mono" id="form-sid"></span>
+          </header>
+          <div class="body" id="form"></div>
+          <div class="foot">
+            <button class="btn pri" id="save" disabled>Save</button>
+            <button class="btn" id="revert" disabled>Revert</button>
+            <span class="saved mono" id="saved"></span>
+            <span class="grow"></span>
+            <span class="dirty" id="dirty">No unsaved changes</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="v-report">
+      <div class="hero">
+        <div>
+          <div class="big" id="r-score">&mdash;</div>
+          <div class="cap">Overall score · mean of applicable rows</div>
+        </div>
+        <div class="stats" id="r-stats"></div>
+      </div>
+      <div class="ctl">
+        <input class="find" id="rep-find" placeholder="Search cases and reasons" autocomplete="off">
+        <div class="seg" id="rep-seg">
+          <button class="on" data-f="all">All</button>
+          <button data-f="fail">Failing</button>
+          <button data-f="na">Not applicable</button>
+        </div>
+        <span class="grow"></span>
+        <span class="path" id="rep-count"></span>
+      </div>
+      <div class="scroll">
+        <table class="rep">
+          <thead>
+            <tr><th style="width:30%">Case</th><th style="width:22%">Evaluator</th><th style="width:26%">Score</th><th>Verdict</th></tr>
+          </thead>
+          <tbody id="rep-rows"></tbody>
+        </table>
+      </div>
+      <button class="more" id="rep-more" hidden></button>
+    </section>
+  </main>
+</div>
+
+<script type="application/json" id="experiment-json">{
+  "cases": [
+    {
+      "name": "order_status_lookup",
+      "session_id": "10ee8de1-fd76-4bc6-b914-52c682a4fc75",
+      "input": "Where is my order 11023?",
+      "expected_output": "Order 11023 is in transit. Here is the carrier tracking link.",
+      "expected_assertion": "The reply must state a status and include a tracking link.",
+      "expected_trajectory": [
+        "lookup_order",
+        "get_tracking"
+      ],
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "status"
+        ],
+        "turns": 1
+      }
+    },
+    {
+      "name": "password_reset",
+      "session_id": "0f092995-5d61-447a-9d24-3aed47653cef",
+      "input": "I can't log in and the reset email never arrives.",
+      "expected_output": "I sent a reset link to the address on file. Check your spam folder if it does not arrive.",
+      "expected_assertion": "The reply must trigger a reset and name the address it was sent to.",
+      "expected_trajectory": [
+        "find_account",
+        "send_password_reset"
+      ],
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "auth"
+        ],
+        "turns": 1
+      }
+    },
+    {
+      "name": "refund_edge_case",
+      "session_id": "1be21a8d-e97e-48e9-983f-a0e8226a1626",
+      "input": "I was charged twice for order #88412 and the second charge is past the 30-day refund window. I want both refunded today.",
+      "expected_output": "I refunded the duplicate charge of $42.00. The older charge is outside the 30-day window, so I escalated it to a supervisor for review.",
+      "expected_assertion": "The reply must refund exactly one charge and escalate the second rather than promising a refund for it.",
+      "expected_trajectory": [
+        "lookup_order",
+        "list_charges",
+        "issue_refund",
+        "escalate_to_supervisor"
+      ],
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": {
+        "priority": "high",
+        "tags": [
+          "refunds",
+          "policy-edge"
+        ],
+        "source": "session-2026-10-30-a91",
+        "turns": 2
+      }
+    },
+    {
+      "name": "shipping_eta",
+      "session_id": "17b8020e-e4b4-4d68-89dc-0cb5cf5575e8",
+      "input": "When will order 77301 arrive?",
+      "expected_output": "Order 77301 is scheduled to arrive Thursday. Weather in the region may delay it.",
+      "expected_assertion": "The reply must give a date or date range.",
+      "expected_trajectory": [
+        "lookup_order",
+        "get_tracking"
+      ],
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "status"
+        ],
+        "turns": 1
+      }
+    },
+    {
+      "name": "cancel_order",
+      "session_id": "50c71622-5131-4882-a077-d0ae612b3a03",
+      "input": "Cancel order 55120 before it ships.",
+      "expected_output": "Order 55120 is cancelled. The refund posts in 3-5 business days.",
+      "expected_assertion": "The reply must confirm the cancellation and name a refund timeline.",
+      "expected_trajectory": [
+        "lookup_order",
+        "cancel_order"
+      ],
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "cancellation"
+        ],
+        "turns": 1
+      }
+    },
+    {
+      "name": "escalate_to_human",
+      "session_id": "dc73c3b7-2886-4a2e-bb27-e389bea4c04a",
+      "input": "This is the fourth time I've asked. Get me a person.",
+      "expected_output": null,
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": {
+        "priority": "high",
+        "tags": [
+          "escalation"
+        ],
+        "turns": 1
+      }
+    },
+    {
+      "name": "duplicate_charge",
+      "session_id": "ae714d8a-0876-4488-9d56-89839476952a",
+      "input": "Two charges for the same order on my card.",
+      "expected_output": "I found the duplicate on order 66120 and refunded the later charge of $19.99.",
+      "expected_assertion": "The reply must refund exactly one charge.",
+      "expected_trajectory": [
+        "list_charges",
+        "issue_refund"
+      ],
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": {
+        "priority": "high",
+        "tags": [
+          "refunds"
+        ],
+        "turns": 1
+      }
+    },
+    {
+      "name": "address_change",
+      "session_id": "b7a9e6a3-181d-473f-a34e-5f4f26ebe3ee",
+      "input": "I need to change the shipping address on order 90210.",
+      "expected_output": "I updated the shipping address on order 90210. It has not shipped yet.",
+      "expected_assertion": "The reply must either update the address or explain why it cannot.",
+      "expected_trajectory": [
+        "lookup_order",
+        "update_address"
+      ],
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "logistics"
+        ],
+        "turns": 1
+      }
+    },
+    {
+      "name": "warranty_question",
+      "session_id": "0be59053-419b-4ce1-9875-c66bcfa82964",
+      "input": "Is the blender still under warranty? Bought it last March.",
+      "expected_output": "The blender has a 1-year warranty and was bought in March, so it is still covered.",
+      "expected_assertion": "The reply must state whether the warranty applies and why.",
+      "expected_trajectory": [
+        "lookup_purchase",
+        "get_warranty_terms"
+      ],
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": {
+        "priority": "low",
+        "tags": [
+          "warranty"
+        ],
+        "turns": 1
+      }
+    },
+    {
+      "name": "return_then_refund",
+      "session_id": "62286534-6da2-4b76-bd7a-9d8b25d6af83",
+      "input": "I want to return the jacket. How long until I see the money? Can you expedite it?",
+      "expected_output": "I started the return and emailed a label. Refunds post 3-5 business days after we receive the item, and we cannot expedite that.",
+      "expected_assertion": "The reply must not promise an expedited refund.",
+      "expected_trajectory": [
+        "start_return",
+        "get_refund_policy",
+        "create_label"
+      ],
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "returns"
+        ],
+        "turns": 3
+      }
+    },
+    {
+      "name": "angry_customer_deesc",
+      "session_id": "313a8dab-b000-42b2-8cdf-f5ffdbda10da",
+      "input": "This is unacceptable. I want a manager NOW. Fine, just fix it.",
+      "expected_output": "You are right to be frustrated. I applied a $15.00 credit and the order is on its way.",
+      "expected_assertion": "The reply must not recite policy verbatim and must resolve the issue.",
+      "expected_trajectory": [
+        "lookup_order",
+        "issue_credit"
+      ],
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": {
+        "priority": "high",
+        "tags": [
+          "tone"
+        ],
+        "turns": 3
+      }
+    },
+    {
+      "name": "session_timeout",
+      "session_id": "841815ef-1097-4ffd-89b5-14a9f0b38967",
+      "input": "...are you still there? hello?",
+      "expected_output": "I am still here. Your return on order 41900 is already started.",
+      "expected_assertion": "The reply must confirm the pending action rather than restarting it.",
+      "expected_trajectory": [
+        "lookup_order",
+        "get_return_status"
+      ],
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": {
+        "priority": "low",
+        "tags": [
+          "reliability"
+        ],
+        "turns": 4
+      }
+    },
+    {
+      "name": "multi_item_dispute",
+      "session_id": "60baaa50-cf5c-4648-aa2b-4fc1d44f45aa",
+      "input": "Two of the four items are wrong. I only want to return those two.",
+      "expected_output": "I started a return for the two incorrect items only. The other two stay on the order.",
+      "expected_assertion": "The reply must return exactly two items.",
+      "expected_trajectory": [
+        "lookup_order",
+        "start_return",
+        "create_label"
+      ],
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "returns"
+        ],
+        "turns": 2
+      }
+    }
+  ],
+  "evaluators": [
+    {
+      "evaluator_type": "OutputEvaluator"
+    },
+    {
+      "evaluator_type": "ToolTrajectoryEvaluator",
+      "threshold": 0.9
+    },
+    {
+      "evaluator_type": "RubricEvaluator",
+      "name": "support_rubric"
+    }
+  ]
+}</script>
+<script type="application/json" id="report-json">{
+  "overall_score": 0.9207407407407407,
+  "scores": [
+    1.0,
+    1.0,
+    0.53,
+    0.71,
+    1.0,
+    0.0,
+    1.0,
+    1.0,
+    0.96,
+    0.86,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.75,
+    1.0,
+    1.0,
+    0.0,
+    1.0,
+    1.0,
+    1.0,
+    0.67,
+    1.0,
+    0.0,
+    1.0,
+    0.6666666666666666,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "cases": [
+    {
+      "input": "Where is my order 11023?",
+      "actual_output": "Order 11023 is in transit. Here is the carrier tracking link.",
+      "name": "order_status_lookup",
+      "expected_output": "Order 11023 is in transit. Here is the carrier tracking link.",
+      "expected_assertion": "The reply must state a status and include a tracking link.",
+      "expected_trajectory": [
+        "lookup_order",
+        "get_tracking"
+      ],
+      "actual_trajectory": [
+        "lookup_order",
+        "get_tracking"
+      ],
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "status"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "OutputEvaluator",
+      "evaluator_type": "OutputEvaluator"
+    },
+    {
+      "input": "I can't log in and the reset email never arrives.",
+      "actual_output": "I sent a reset link to the address on file. Check your spam folder if it does not arrive.",
+      "name": "password_reset",
+      "expected_output": "I sent a reset link to the address on file. Check your spam folder if it does not arrive.",
+      "expected_assertion": "The reply must trigger a reset and name the address it was sent to.",
+      "expected_trajectory": [
+        "find_account",
+        "send_password_reset"
+      ],
+      "actual_trajectory": [
+        "find_account",
+        "send_password_reset"
+      ],
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "auth"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "OutputEvaluator",
+      "evaluator_type": "OutputEvaluator"
+    },
+    {
+      "input": "I was charged twice for order #88412 and the second charge is past the 30-day refund window. I want both refunded today.",
+      "actual_output": "I refunded the duplicate charge of $42.00 and I have also refunded the older charge of $42.00. Both should appear in 3-5 business days.",
+      "name": "refund_edge_case",
+      "expected_output": "I refunded the duplicate charge of $42.00. The older charge is outside the 30-day window, so I escalated it to a supervisor for review.",
+      "expected_assertion": "The reply must refund exactly one charge and escalate the second rather than promising a refund for it.",
+      "expected_trajectory": [
+        "lookup_order",
+        "list_charges",
+        "issue_refund",
+        "escalate_to_supervisor"
+      ],
+      "actual_trajectory": [
+        "lookup_order",
+        "list_charges",
+        "issue_refund",
+        "issue_refund"
+      ],
+      "metadata": {
+        "priority": "high",
+        "tags": [
+          "refunds",
+          "policy-edge"
+        ],
+        "source": "session-2026-10-30-a91",
+        "turns": 2
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "OutputEvaluator",
+      "evaluator_type": "OutputEvaluator"
+    },
+    {
+      "input": "When will order 77301 arrive?",
+      "actual_output": "Order 77301 is scheduled to arrive Thursday.",
+      "name": "shipping_eta",
+      "expected_output": "Order 77301 is scheduled to arrive Thursday. Weather in the region may delay it.",
+      "expected_assertion": "The reply must give a date or date range.",
+      "expected_trajectory": [
+        "lookup_order",
+        "get_tracking"
+      ],
+      "actual_trajectory": [
+        "lookup_order",
+        "get_tracking",
+        "get_tracking"
+      ],
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "status"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "OutputEvaluator",
+      "evaluator_type": "OutputEvaluator"
+    },
+    {
+      "input": "Cancel order 55120 before it ships.",
+      "actual_output": "Order 55120 is cancelled. The refund posts in 3-5 business days.",
+      "name": "cancel_order",
+      "expected_output": "Order 55120 is cancelled. The refund posts in 3-5 business days.",
+      "expected_assertion": "The reply must confirm the cancellation and name a refund timeline.",
+      "expected_trajectory": [
+        "lookup_order",
+        "cancel_order"
+      ],
+      "actual_trajectory": [
+        "lookup_order",
+        "cancel_order"
+      ],
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "cancellation"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "OutputEvaluator",
+      "evaluator_type": "OutputEvaluator"
+    },
+    {
+      "input": "This is the fourth time I've asked. Get me a person.",
+      "actual_output": "I am connecting you with a human agent now.",
+      "name": "escalate_to_human",
+      "expected_output": null,
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "actual_trajectory": [
+        "escalate_to_supervisor"
+      ],
+      "metadata": {
+        "priority": "high",
+        "tags": [
+          "escalation"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "OutputEvaluator",
+      "evaluator_type": "OutputEvaluator"
+    },
+    {
+      "input": "Two charges for the same order on my card.",
+      "actual_output": "I found the duplicate on order 66120 and refunded the later charge of $19.99.",
+      "name": "duplicate_charge",
+      "expected_output": "I found the duplicate on order 66120 and refunded the later charge of $19.99.",
+      "expected_assertion": "The reply must refund exactly one charge.",
+      "expected_trajectory": [
+        "list_charges",
+        "issue_refund"
+      ],
+      "actual_trajectory": [
+        "list_charges",
+        "list_charges",
+        "issue_refund"
+      ],
+      "metadata": {
+        "priority": "high",
+        "tags": [
+          "refunds"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "OutputEvaluator",
+      "evaluator_type": "OutputEvaluator"
+    },
+    {
+      "input": "I need to change the shipping address on order 90210.",
+      "actual_output": "I updated the shipping address on order 90210. It has not shipped yet.",
+      "name": "address_change",
+      "expected_output": "I updated the shipping address on order 90210. It has not shipped yet.",
+      "expected_assertion": "The reply must either update the address or explain why it cannot.",
+      "expected_trajectory": [
+        "lookup_order",
+        "update_address"
+      ],
+      "actual_trajectory": [
+        "lookup_order",
+        "update_address"
+      ],
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "logistics"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "OutputEvaluator",
+      "evaluator_type": "OutputEvaluator"
+    },
+    {
+      "input": "Is the blender still under warranty? Bought it last March.",
+      "actual_output": "The blender has a 1-year warranty and was bought in March, so it is likely still covered.",
+      "name": "warranty_question",
+      "expected_output": "The blender has a 1-year warranty and was bought in March, so it is still covered.",
+      "expected_assertion": "The reply must state whether the warranty applies and why.",
+      "expected_trajectory": [
+        "lookup_purchase",
+        "get_warranty_terms"
+      ],
+      "actual_trajectory": [
+        "lookup_purchase",
+        "get_warranty_terms"
+      ],
+      "metadata": {
+        "priority": "low",
+        "tags": [
+          "warranty"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "OutputEvaluator",
+      "evaluator_type": "OutputEvaluator"
+    },
+    {
+      "input": "I want to return the jacket. How long until I see the money? Can you expedite it?",
+      "actual_output": "I started the return and emailed a label. Refunds post 3-5 business days after we receive the item. Expediting is not available.",
+      "name": "return_then_refund",
+      "expected_output": "I started the return and emailed a label. Refunds post 3-5 business days after we receive the item, and we cannot expedite that.",
+      "expected_assertion": "The reply must not promise an expedited refund.",
+      "expected_trajectory": [
+        "start_return",
+        "get_refund_policy",
+        "create_label"
+      ],
+      "actual_trajectory": [
+        "start_return",
+        "create_label",
+        "get_refund_policy"
+      ],
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "returns"
+        ],
+        "turns": 3
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "OutputEvaluator",
+      "evaluator_type": "OutputEvaluator"
+    },
+    {
+      "input": "This is unacceptable. I want a manager NOW. Fine, just fix it.",
+      "actual_output": "You are right to be frustrated. I applied a $15.00 credit and the order is on its way.",
+      "name": "angry_customer_deesc",
+      "expected_output": "You are right to be frustrated. I applied a $15.00 credit and the order is on its way.",
+      "expected_assertion": "The reply must not recite policy verbatim and must resolve the issue.",
+      "expected_trajectory": [
+        "lookup_order",
+        "issue_credit"
+      ],
+      "actual_trajectory": [
+        "lookup_order",
+        "issue_credit"
+      ],
+      "metadata": {
+        "priority": "high",
+        "tags": [
+          "tone"
+        ],
+        "turns": 3
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "OutputEvaluator",
+      "evaluator_type": "OutputEvaluator"
+    },
+    {
+      "input": "...are you still there? hello?",
+      "actual_output": "I am still here. Your return on order 41900 is already started.",
+      "name": "session_timeout",
+      "expected_output": "I am still here. Your return on order 41900 is already started.",
+      "expected_assertion": "The reply must confirm the pending action rather than restarting it.",
+      "expected_trajectory": [
+        "lookup_order",
+        "get_return_status"
+      ],
+      "actual_trajectory": [],
+      "metadata": {
+        "priority": "low",
+        "tags": [
+          "reliability"
+        ],
+        "turns": 4
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "OutputEvaluator",
+      "evaluator_type": "OutputEvaluator"
+    },
+    {
+      "input": "Two of the four items are wrong. I only want to return those two.",
+      "actual_output": "I started a return for the two incorrect items only. The other two stay on the order.",
+      "name": "multi_item_dispute",
+      "expected_output": "I started a return for the two incorrect items only. The other two stay on the order.",
+      "expected_assertion": "The reply must return exactly two items.",
+      "expected_trajectory": [
+        "lookup_order",
+        "start_return",
+        "create_label"
+      ],
+      "actual_trajectory": [
+        "lookup_order",
+        "start_return",
+        "create_label"
+      ],
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "returns"
+        ],
+        "turns": 2
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "OutputEvaluator",
+      "evaluator_type": "OutputEvaluator"
+    },
+    {
+      "input": "Where is my order 11023?",
+      "actual_output": "Order 11023 is in transit. Here is the carrier tracking link.",
+      "name": "order_status_lookup",
+      "expected_output": "Order 11023 is in transit. Here is the carrier tracking link.",
+      "expected_assertion": "The reply must state a status and include a tracking link.",
+      "expected_trajectory": [
+        "lookup_order",
+        "get_tracking"
+      ],
+      "actual_trajectory": [
+        "lookup_order",
+        "get_tracking"
+      ],
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "status"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "ToolTrajectoryEvaluator",
+      "evaluator_type": "ToolTrajectoryEvaluator"
+    },
+    {
+      "input": "I can't log in and the reset email never arrives.",
+      "actual_output": "I sent a reset link to the address on file. Check your spam folder if it does not arrive.",
+      "name": "password_reset",
+      "expected_output": "I sent a reset link to the address on file. Check your spam folder if it does not arrive.",
+      "expected_assertion": "The reply must trigger a reset and name the address it was sent to.",
+      "expected_trajectory": [
+        "find_account",
+        "send_password_reset"
+      ],
+      "actual_trajectory": [
+        "find_account",
+        "send_password_reset"
+      ],
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "auth"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "ToolTrajectoryEvaluator",
+      "evaluator_type": "ToolTrajectoryEvaluator"
+    },
+    {
+      "input": "I was charged twice for order #88412 and the second charge is past the 30-day refund window. I want both refunded today.",
+      "actual_output": "I refunded the duplicate charge of $42.00 and I have also refunded the older charge of $42.00. Both should appear in 3-5 business days.",
+      "name": "refund_edge_case",
+      "expected_output": "I refunded the duplicate charge of $42.00. The older charge is outside the 30-day window, so I escalated it to a supervisor for review.",
+      "expected_assertion": "The reply must refund exactly one charge and escalate the second rather than promising a refund for it.",
+      "expected_trajectory": [
+        "lookup_order",
+        "list_charges",
+        "issue_refund",
+        "escalate_to_supervisor"
+      ],
+      "actual_trajectory": [
+        "lookup_order",
+        "list_charges",
+        "issue_refund",
+        "issue_refund"
+      ],
+      "metadata": {
+        "priority": "high",
+        "tags": [
+          "refunds",
+          "policy-edge"
+        ],
+        "source": "session-2026-10-30-a91",
+        "turns": 2
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "ToolTrajectoryEvaluator",
+      "evaluator_type": "ToolTrajectoryEvaluator"
+    },
+    {
+      "input": "When will order 77301 arrive?",
+      "actual_output": "Order 77301 is scheduled to arrive Thursday.",
+      "name": "shipping_eta",
+      "expected_output": "Order 77301 is scheduled to arrive Thursday. Weather in the region may delay it.",
+      "expected_assertion": "The reply must give a date or date range.",
+      "expected_trajectory": [
+        "lookup_order",
+        "get_tracking"
+      ],
+      "actual_trajectory": [
+        "lookup_order",
+        "get_tracking",
+        "get_tracking"
+      ],
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "status"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "ToolTrajectoryEvaluator",
+      "evaluator_type": "ToolTrajectoryEvaluator"
+    },
+    {
+      "input": "Cancel order 55120 before it ships.",
+      "actual_output": "Order 55120 is cancelled. The refund posts in 3-5 business days.",
+      "name": "cancel_order",
+      "expected_output": "Order 55120 is cancelled. The refund posts in 3-5 business days.",
+      "expected_assertion": "The reply must confirm the cancellation and name a refund timeline.",
+      "expected_trajectory": [
+        "lookup_order",
+        "cancel_order"
+      ],
+      "actual_trajectory": [
+        "lookup_order",
+        "cancel_order"
+      ],
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "cancellation"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "ToolTrajectoryEvaluator",
+      "evaluator_type": "ToolTrajectoryEvaluator"
+    },
+    {
+      "input": "This is the fourth time I've asked. Get me a person.",
+      "actual_output": "I am connecting you with a human agent now.",
+      "name": "escalate_to_human",
+      "expected_output": null,
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "actual_trajectory": [
+        "escalate_to_supervisor"
+      ],
+      "metadata": {
+        "priority": "high",
+        "tags": [
+          "escalation"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "ToolTrajectoryEvaluator",
+      "evaluator_type": "ToolTrajectoryEvaluator"
+    },
+    {
+      "input": "Two charges for the same order on my card.",
+      "actual_output": "I found the duplicate on order 66120 and refunded the later charge of $19.99.",
+      "name": "duplicate_charge",
+      "expected_output": "I found the duplicate on order 66120 and refunded the later charge of $19.99.",
+      "expected_assertion": "The reply must refund exactly one charge.",
+      "expected_trajectory": [
+        "list_charges",
+        "issue_refund"
+      ],
+      "actual_trajectory": [
+        "list_charges",
+        "list_charges",
+        "issue_refund"
+      ],
+      "metadata": {
+        "priority": "high",
+        "tags": [
+          "refunds"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "ToolTrajectoryEvaluator",
+      "evaluator_type": "ToolTrajectoryEvaluator"
+    },
+    {
+      "input": "I need to change the shipping address on order 90210.",
+      "actual_output": "I updated the shipping address on order 90210. It has not shipped yet.",
+      "name": "address_change",
+      "expected_output": "I updated the shipping address on order 90210. It has not shipped yet.",
+      "expected_assertion": "The reply must either update the address or explain why it cannot.",
+      "expected_trajectory": [
+        "lookup_order",
+        "update_address"
+      ],
+      "actual_trajectory": [
+        "lookup_order",
+        "update_address"
+      ],
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "logistics"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "ToolTrajectoryEvaluator",
+      "evaluator_type": "ToolTrajectoryEvaluator"
+    },
+    {
+      "input": "Is the blender still under warranty? Bought it last March.",
+      "actual_output": "The blender has a 1-year warranty and was bought in March, so it is likely still covered.",
+      "name": "warranty_question",
+      "expected_output": "The blender has a 1-year warranty and was bought in March, so it is still covered.",
+      "expected_assertion": "The reply must state whether the warranty applies and why.",
+      "expected_trajectory": [
+        "lookup_purchase",
+        "get_warranty_terms"
+      ],
+      "actual_trajectory": [
+        "lookup_purchase",
+        "get_warranty_terms"
+      ],
+      "metadata": {
+        "priority": "low",
+        "tags": [
+          "warranty"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "ToolTrajectoryEvaluator",
+      "evaluator_type": "ToolTrajectoryEvaluator"
+    },
+    {
+      "input": "I want to return the jacket. How long until I see the money? Can you expedite it?",
+      "actual_output": "I started the return and emailed a label. Refunds post 3-5 business days after we receive the item. Expediting is not available.",
+      "name": "return_then_refund",
+      "expected_output": "I started the return and emailed a label. Refunds post 3-5 business days after we receive the item, and we cannot expedite that.",
+      "expected_assertion": "The reply must not promise an expedited refund.",
+      "expected_trajectory": [
+        "start_return",
+        "get_refund_policy",
+        "create_label"
+      ],
+      "actual_trajectory": [
+        "start_return",
+        "create_label",
+        "get_refund_policy"
+      ],
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "returns"
+        ],
+        "turns": 3
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "ToolTrajectoryEvaluator",
+      "evaluator_type": "ToolTrajectoryEvaluator"
+    },
+    {
+      "input": "This is unacceptable. I want a manager NOW. Fine, just fix it.",
+      "actual_output": "You are right to be frustrated. I applied a $15.00 credit and the order is on its way.",
+      "name": "angry_customer_deesc",
+      "expected_output": "You are right to be frustrated. I applied a $15.00 credit and the order is on its way.",
+      "expected_assertion": "The reply must not recite policy verbatim and must resolve the issue.",
+      "expected_trajectory": [
+        "lookup_order",
+        "issue_credit"
+      ],
+      "actual_trajectory": [
+        "lookup_order",
+        "issue_credit"
+      ],
+      "metadata": {
+        "priority": "high",
+        "tags": [
+          "tone"
+        ],
+        "turns": 3
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "ToolTrajectoryEvaluator",
+      "evaluator_type": "ToolTrajectoryEvaluator"
+    },
+    {
+      "input": "...are you still there? hello?",
+      "actual_output": "I am still here. Your return on order 41900 is already started.",
+      "name": "session_timeout",
+      "expected_output": "I am still here. Your return on order 41900 is already started.",
+      "expected_assertion": "The reply must confirm the pending action rather than restarting it.",
+      "expected_trajectory": [
+        "lookup_order",
+        "get_return_status"
+      ],
+      "actual_trajectory": [],
+      "metadata": {
+        "priority": "low",
+        "tags": [
+          "reliability"
+        ],
+        "turns": 4
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "ToolTrajectoryEvaluator",
+      "evaluator_type": "ToolTrajectoryEvaluator"
+    },
+    {
+      "input": "Two of the four items are wrong. I only want to return those two.",
+      "actual_output": "I started a return for the two incorrect items only. The other two stay on the order.",
+      "name": "multi_item_dispute",
+      "expected_output": "I started a return for the two incorrect items only. The other two stay on the order.",
+      "expected_assertion": "The reply must return exactly two items.",
+      "expected_trajectory": [
+        "lookup_order",
+        "start_return",
+        "create_label"
+      ],
+      "actual_trajectory": [
+        "lookup_order",
+        "start_return",
+        "create_label"
+      ],
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "returns"
+        ],
+        "turns": 2
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "ToolTrajectoryEvaluator",
+      "evaluator_type": "ToolTrajectoryEvaluator"
+    },
+    {
+      "input": "Where is my order 11023?",
+      "actual_output": "Order 11023 is in transit. Here is the carrier tracking link.",
+      "name": "order_status_lookup",
+      "expected_output": "Order 11023 is in transit. Here is the carrier tracking link.",
+      "expected_assertion": "The reply must state a status and include a tracking link.",
+      "expected_trajectory": [
+        "lookup_order",
+        "get_tracking"
+      ],
+      "actual_trajectory": [
+        "lookup_order",
+        "get_tracking"
+      ],
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "status"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "support_rubric",
+      "evaluator_type": "RubricEvaluator"
+    },
+    {
+      "input": "I can't log in and the reset email never arrives.",
+      "actual_output": "I sent a reset link to the address on file. Check your spam folder if it does not arrive.",
+      "name": "password_reset",
+      "expected_output": "I sent a reset link to the address on file. Check your spam folder if it does not arrive.",
+      "expected_assertion": "The reply must trigger a reset and name the address it was sent to.",
+      "expected_trajectory": [
+        "find_account",
+        "send_password_reset"
+      ],
+      "actual_trajectory": [
+        "find_account",
+        "send_password_reset"
+      ],
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "auth"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "support_rubric",
+      "evaluator_type": "RubricEvaluator"
+    },
+    {
+      "input": "I was charged twice for order #88412 and the second charge is past the 30-day refund window. I want both refunded today.",
+      "actual_output": "I refunded the duplicate charge of $42.00 and I have also refunded the older charge of $42.00. Both should appear in 3-5 business days.",
+      "name": "refund_edge_case",
+      "expected_output": "I refunded the duplicate charge of $42.00. The older charge is outside the 30-day window, so I escalated it to a supervisor for review.",
+      "expected_assertion": "The reply must refund exactly one charge and escalate the second rather than promising a refund for it.",
+      "expected_trajectory": [
+        "lookup_order",
+        "list_charges",
+        "issue_refund",
+        "escalate_to_supervisor"
+      ],
+      "actual_trajectory": [
+        "lookup_order",
+        "list_charges",
+        "issue_refund",
+        "issue_refund"
+      ],
+      "metadata": {
+        "priority": "high",
+        "tags": [
+          "refunds",
+          "policy-edge"
+        ],
+        "source": "session-2026-10-30-a91",
+        "turns": 2
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "support_rubric",
+      "evaluator_type": "RubricEvaluator"
+    },
+    {
+      "input": "When will order 77301 arrive?",
+      "actual_output": "Order 77301 is scheduled to arrive Thursday.",
+      "name": "shipping_eta",
+      "expected_output": "Order 77301 is scheduled to arrive Thursday. Weather in the region may delay it.",
+      "expected_assertion": "The reply must give a date or date range.",
+      "expected_trajectory": [
+        "lookup_order",
+        "get_tracking"
+      ],
+      "actual_trajectory": [
+        "lookup_order",
+        "get_tracking",
+        "get_tracking"
+      ],
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "status"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "support_rubric",
+      "evaluator_type": "RubricEvaluator"
+    },
+    {
+      "input": "Cancel order 55120 before it ships.",
+      "actual_output": "Order 55120 is cancelled. The refund posts in 3-5 business days.",
+      "name": "cancel_order",
+      "expected_output": "Order 55120 is cancelled. The refund posts in 3-5 business days.",
+      "expected_assertion": "The reply must confirm the cancellation and name a refund timeline.",
+      "expected_trajectory": [
+        "lookup_order",
+        "cancel_order"
+      ],
+      "actual_trajectory": [
+        "lookup_order",
+        "cancel_order"
+      ],
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "cancellation"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "support_rubric",
+      "evaluator_type": "RubricEvaluator"
+    },
+    {
+      "input": "This is the fourth time I've asked. Get me a person.",
+      "actual_output": "I am connecting you with a human agent now.",
+      "name": "escalate_to_human",
+      "expected_output": null,
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "actual_trajectory": [
+        "escalate_to_supervisor"
+      ],
+      "metadata": {
+        "priority": "high",
+        "tags": [
+          "escalation"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "support_rubric",
+      "evaluator_type": "RubricEvaluator"
+    },
+    {
+      "input": "Two charges for the same order on my card.",
+      "actual_output": "I found the duplicate on order 66120 and refunded the later charge of $19.99.",
+      "name": "duplicate_charge",
+      "expected_output": "I found the duplicate on order 66120 and refunded the later charge of $19.99.",
+      "expected_assertion": "The reply must refund exactly one charge.",
+      "expected_trajectory": [
+        "list_charges",
+        "issue_refund"
+      ],
+      "actual_trajectory": [
+        "list_charges",
+        "list_charges",
+        "issue_refund"
+      ],
+      "metadata": {
+        "priority": "high",
+        "tags": [
+          "refunds"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "support_rubric",
+      "evaluator_type": "RubricEvaluator"
+    },
+    {
+      "input": "I need to change the shipping address on order 90210.",
+      "actual_output": "I updated the shipping address on order 90210. It has not shipped yet.",
+      "name": "address_change",
+      "expected_output": "I updated the shipping address on order 90210. It has not shipped yet.",
+      "expected_assertion": "The reply must either update the address or explain why it cannot.",
+      "expected_trajectory": [
+        "lookup_order",
+        "update_address"
+      ],
+      "actual_trajectory": [
+        "lookup_order",
+        "update_address"
+      ],
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "logistics"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "support_rubric",
+      "evaluator_type": "RubricEvaluator"
+    },
+    {
+      "input": "Is the blender still under warranty? Bought it last March.",
+      "actual_output": "The blender has a 1-year warranty and was bought in March, so it is likely still covered.",
+      "name": "warranty_question",
+      "expected_output": "The blender has a 1-year warranty and was bought in March, so it is still covered.",
+      "expected_assertion": "The reply must state whether the warranty applies and why.",
+      "expected_trajectory": [
+        "lookup_purchase",
+        "get_warranty_terms"
+      ],
+      "actual_trajectory": [
+        "lookup_purchase",
+        "get_warranty_terms"
+      ],
+      "metadata": {
+        "priority": "low",
+        "tags": [
+          "warranty"
+        ],
+        "turns": 1
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "support_rubric",
+      "evaluator_type": "RubricEvaluator"
+    },
+    {
+      "input": "I want to return the jacket. How long until I see the money? Can you expedite it?",
+      "actual_output": "I started the return and emailed a label. Refunds post 3-5 business days after we receive the item. Expediting is not available.",
+      "name": "return_then_refund",
+      "expected_output": "I started the return and emailed a label. Refunds post 3-5 business days after we receive the item, and we cannot expedite that.",
+      "expected_assertion": "The reply must not promise an expedited refund.",
+      "expected_trajectory": [
+        "start_return",
+        "get_refund_policy",
+        "create_label"
+      ],
+      "actual_trajectory": [
+        "start_return",
+        "create_label",
+        "get_refund_policy"
+      ],
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "returns"
+        ],
+        "turns": 3
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "support_rubric",
+      "evaluator_type": "RubricEvaluator"
+    },
+    {
+      "input": "This is unacceptable. I want a manager NOW. Fine, just fix it.",
+      "actual_output": "You are right to be frustrated. I applied a $15.00 credit and the order is on its way.",
+      "name": "angry_customer_deesc",
+      "expected_output": "You are right to be frustrated. I applied a $15.00 credit and the order is on its way.",
+      "expected_assertion": "The reply must not recite policy verbatim and must resolve the issue.",
+      "expected_trajectory": [
+        "lookup_order",
+        "issue_credit"
+      ],
+      "actual_trajectory": [
+        "lookup_order",
+        "issue_credit"
+      ],
+      "metadata": {
+        "priority": "high",
+        "tags": [
+          "tone"
+        ],
+        "turns": 3
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "support_rubric",
+      "evaluator_type": "RubricEvaluator"
+    },
+    {
+      "input": "...are you still there? hello?",
+      "actual_output": "I am still here. Your return on order 41900 is already started.",
+      "name": "session_timeout",
+      "expected_output": "I am still here. Your return on order 41900 is already started.",
+      "expected_assertion": "The reply must confirm the pending action rather than restarting it.",
+      "expected_trajectory": [
+        "lookup_order",
+        "get_return_status"
+      ],
+      "actual_trajectory": [],
+      "metadata": {
+        "priority": "low",
+        "tags": [
+          "reliability"
+        ],
+        "turns": 4
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "support_rubric",
+      "evaluator_type": "RubricEvaluator"
+    },
+    {
+      "input": "Two of the four items are wrong. I only want to return those two.",
+      "actual_output": "I started a return for the two incorrect items only. The other two stay on the order.",
+      "name": "multi_item_dispute",
+      "expected_output": "I started a return for the two incorrect items only. The other two stay on the order.",
+      "expected_assertion": "The reply must return exactly two items.",
+      "expected_trajectory": [
+        "lookup_order",
+        "start_return",
+        "create_label"
+      ],
+      "actual_trajectory": [
+        "lookup_order",
+        "start_return",
+        "create_label"
+      ],
+      "metadata": {
+        "priority": "normal",
+        "tags": [
+          "returns"
+        ],
+        "turns": 2
+      },
+      "actual_interactions": null,
+      "expected_interactions": null,
+      "actual_environment_state": null,
+      "expected_environment_state": null,
+      "evaluator": "support_rubric",
+      "evaluator_type": "RubricEvaluator"
+    }
+  ],
+  "test_passes": [
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    false,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+  ],
+  "reasons": [
+    "output similarity 1.00 vs expected_output (threshold 0.7)",
+    "output similarity 1.00 vs expected_output (threshold 0.7)",
+    "output similarity 0.53 vs expected_output (threshold 0.7)",
+    "output similarity 0.71 vs expected_output (threshold 0.7)",
+    "output similarity 1.00 vs expected_output (threshold 0.7)",
+    "no expected_output and no expected_assertion on the case, nothing to judge",
+    "output similarity 1.00 vs expected_output (threshold 0.7)",
+    "output similarity 1.00 vs expected_output (threshold 0.7)",
+    "output similarity 0.96 vs expected_output (threshold 0.7)",
+    "output similarity 0.86 vs expected_output (threshold 0.7)",
+    "output similarity 1.00 vs expected_output (threshold 0.7)",
+    "output similarity 1.00 vs expected_output (threshold 0.7)",
+    "output similarity 1.00 vs expected_output (threshold 0.7)",
+    "matched 2 of 2 expected calls in order",
+    "matched 2 of 2 expected calls in order",
+    "matched 3 of 4 expected calls in order; missing escalate_to_supervisor",
+    "matched 2 of 2 expected calls in order",
+    "matched 2 of 2 expected calls in order",
+    "no expected_trajectory on the case, nothing to compare",
+    "matched 2 of 2 expected calls in order",
+    "matched 2 of 2 expected calls in order",
+    "matched 2 of 2 expected calls in order",
+    "matched 2 of 3 expected calls in order",
+    "matched 2 of 2 expected calls in order",
+    "no trajectory provided",
+    "matched 3 of 3 expected calls in order",
+    "conciseness: 11 words | no_policy_recitation: no boilerplate | actionable: names a concrete action",
+    "conciseness: 19 words | no_policy_recitation: no boilerplate | actionable: names a concrete action",
+    "conciseness: 24 words | no_policy_recitation: no boilerplate | actionable: names a concrete action",
+    "conciseness: 7 words | no_policy_recitation: no boilerplate | actionable: names a concrete action",
+    "conciseness: 11 words | no_policy_recitation: no boilerplate | actionable: names a concrete action",
+    "no expected_assertion on the case, so there is no rubric to apply",
+    "conciseness: 14 words | no_policy_recitation: no boilerplate | actionable: names a concrete action",
+    "conciseness: 13 words | no_policy_recitation: no boilerplate | actionable: names a concrete action",
+    "conciseness: 17 words | no_policy_recitation: no boilerplate | actionable: names a concrete action",
+    "conciseness: 22 words | no_policy_recitation: no boilerplate | actionable: names a concrete action",
+    "conciseness: 18 words | no_policy_recitation: no boilerplate | actionable: names a concrete action",
+    "conciseness: 12 words | no_policy_recitation: no boilerplate | actionable: names a concrete action",
+    "conciseness: 17 words | no_policy_recitation: no boilerplate | actionable: names a concrete action"
+  ],
+  "detailed_results": [
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "output similarity 1.00 vs expected_output (threshold 0.7)",
+        "label": "correct",
+        "metadata": {
+          "threshold": 0.7,
+          "similarity": 1.0
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "output similarity 1.00 vs expected_output (threshold 0.7)",
+        "label": "correct",
+        "metadata": {
+          "threshold": 0.7,
+          "similarity": 1.0
+        }
+      }
+    ],
+    [
+      {
+        "score": 0.53,
+        "test_pass": false,
+        "reason": "output similarity 0.53 vs expected_output (threshold 0.7)",
+        "label": "incorrect",
+        "metadata": {
+          "threshold": 0.7,
+          "similarity": 0.53
+        }
+      }
+    ],
+    [
+      {
+        "score": 0.71,
+        "test_pass": true,
+        "reason": "output similarity 0.71 vs expected_output (threshold 0.7)",
+        "label": "partial",
+        "metadata": {
+          "threshold": 0.7,
+          "similarity": 0.71
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "output similarity 1.00 vs expected_output (threshold 0.7)",
+        "label": "correct",
+        "metadata": {
+          "threshold": 0.7,
+          "similarity": 1.0
+        }
+      }
+    ],
+    [
+      {
+        "score": 0.0,
+        "test_pass": true,
+        "reason": "no expected_output and no expected_assertion on the case, nothing to judge",
+        "label": "not_applicable",
+        "metadata": null
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "output similarity 1.00 vs expected_output (threshold 0.7)",
+        "label": "correct",
+        "metadata": {
+          "threshold": 0.7,
+          "similarity": 1.0
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "output similarity 1.00 vs expected_output (threshold 0.7)",
+        "label": "correct",
+        "metadata": {
+          "threshold": 0.7,
+          "similarity": 1.0
+        }
+      }
+    ],
+    [
+      {
+        "score": 0.96,
+        "test_pass": true,
+        "reason": "output similarity 0.96 vs expected_output (threshold 0.7)",
+        "label": "correct",
+        "metadata": {
+          "threshold": 0.7,
+          "similarity": 0.96
+        }
+      }
+    ],
+    [
+      {
+        "score": 0.86,
+        "test_pass": true,
+        "reason": "output similarity 0.86 vs expected_output (threshold 0.7)",
+        "label": "partial",
+        "metadata": {
+          "threshold": 0.7,
+          "similarity": 0.86
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "output similarity 1.00 vs expected_output (threshold 0.7)",
+        "label": "correct",
+        "metadata": {
+          "threshold": 0.7,
+          "similarity": 1.0
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "output similarity 1.00 vs expected_output (threshold 0.7)",
+        "label": "correct",
+        "metadata": {
+          "threshold": 0.7,
+          "similarity": 1.0
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "output similarity 1.00 vs expected_output (threshold 0.7)",
+        "label": "correct",
+        "metadata": {
+          "threshold": 0.7,
+          "similarity": 1.0
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "matched 2 of 2 expected calls in order",
+        "label": "match",
+        "metadata": {
+          "threshold": 0.9,
+          "expected": [
+            "lookup_order",
+            "get_tracking"
+          ],
+          "actual": [
+            "lookup_order",
+            "get_tracking"
+          ],
+          "missing": [],
+          "unexpected": []
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "matched 2 of 2 expected calls in order",
+        "label": "match",
+        "metadata": {
+          "threshold": 0.9,
+          "expected": [
+            "find_account",
+            "send_password_reset"
+          ],
+          "actual": [
+            "find_account",
+            "send_password_reset"
+          ],
+          "missing": [],
+          "unexpected": []
+        }
+      }
+    ],
+    [
+      {
+        "score": 0.75,
+        "test_pass": false,
+        "reason": "matched 3 of 4 expected calls in order; missing escalate_to_supervisor",
+        "label": "missing_call",
+        "metadata": {
+          "threshold": 0.9,
+          "expected": [
+            "lookup_order",
+            "list_charges",
+            "issue_refund",
+            "escalate_to_supervisor"
+          ],
+          "actual": [
+            "lookup_order",
+            "list_charges",
+            "issue_refund",
+            "issue_refund"
+          ],
+          "missing": [
+            "escalate_to_supervisor"
+          ],
+          "unexpected": []
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "matched 2 of 2 expected calls in order",
+        "label": "match",
+        "metadata": {
+          "threshold": 0.9,
+          "expected": [
+            "lookup_order",
+            "get_tracking"
+          ],
+          "actual": [
+            "lookup_order",
+            "get_tracking",
+            "get_tracking"
+          ],
+          "missing": [],
+          "unexpected": []
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "matched 2 of 2 expected calls in order",
+        "label": "match",
+        "metadata": {
+          "threshold": 0.9,
+          "expected": [
+            "lookup_order",
+            "cancel_order"
+          ],
+          "actual": [
+            "lookup_order",
+            "cancel_order"
+          ],
+          "missing": [],
+          "unexpected": []
+        }
+      }
+    ],
+    [
+      {
+        "score": 0.0,
+        "test_pass": true,
+        "reason": "no expected_trajectory on the case, nothing to compare",
+        "label": "not_applicable",
+        "metadata": null
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "matched 2 of 2 expected calls in order",
+        "label": "match",
+        "metadata": {
+          "threshold": 0.9,
+          "expected": [
+            "list_charges",
+            "issue_refund"
+          ],
+          "actual": [
+            "list_charges",
+            "list_charges",
+            "issue_refund"
+          ],
+          "missing": [],
+          "unexpected": []
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "matched 2 of 2 expected calls in order",
+        "label": "match",
+        "metadata": {
+          "threshold": 0.9,
+          "expected": [
+            "lookup_order",
+            "update_address"
+          ],
+          "actual": [
+            "lookup_order",
+            "update_address"
+          ],
+          "missing": [],
+          "unexpected": []
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "matched 2 of 2 expected calls in order",
+        "label": "match",
+        "metadata": {
+          "threshold": 0.9,
+          "expected": [
+            "lookup_purchase",
+            "get_warranty_terms"
+          ],
+          "actual": [
+            "lookup_purchase",
+            "get_warranty_terms"
+          ],
+          "missing": [],
+          "unexpected": []
+        }
+      }
+    ],
+    [
+      {
+        "score": 0.67,
+        "test_pass": false,
+        "reason": "matched 2 of 3 expected calls in order",
+        "label": "extra_call",
+        "metadata": {
+          "threshold": 0.9,
+          "expected": [
+            "start_return",
+            "get_refund_policy",
+            "create_label"
+          ],
+          "actual": [
+            "start_return",
+            "create_label",
+            "get_refund_policy"
+          ],
+          "missing": [],
+          "unexpected": []
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "matched 2 of 2 expected calls in order",
+        "label": "match",
+        "metadata": {
+          "threshold": 0.9,
+          "expected": [
+            "lookup_order",
+            "issue_credit"
+          ],
+          "actual": [
+            "lookup_order",
+            "issue_credit"
+          ],
+          "missing": [],
+          "unexpected": []
+        }
+      }
+    ],
+    [
+      {
+        "score": 0.0,
+        "test_pass": false,
+        "reason": "no trajectory provided",
+        "label": "not_applicable",
+        "metadata": null
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "matched 3 of 3 expected calls in order",
+        "label": "match",
+        "metadata": {
+          "threshold": 0.9,
+          "expected": [
+            "lookup_order",
+            "start_return",
+            "create_label"
+          ],
+          "actual": [
+            "lookup_order",
+            "start_return",
+            "create_label"
+          ],
+          "missing": [],
+          "unexpected": []
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "conciseness: 11 words",
+        "label": "met",
+        "metadata": {
+          "criterion": "conciseness"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "no_policy_recitation: no boilerplate",
+        "label": "met",
+        "metadata": {
+          "criterion": "no_policy_recitation"
+        }
+      },
+      {
+        "score": 0.0,
+        "test_pass": false,
+        "reason": "actionable: names a concrete action",
+        "label": "unmet",
+        "metadata": {
+          "criterion": "actionable"
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "conciseness: 19 words",
+        "label": "met",
+        "metadata": {
+          "criterion": "conciseness"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "no_policy_recitation: no boilerplate",
+        "label": "met",
+        "metadata": {
+          "criterion": "no_policy_recitation"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "actionable: names a concrete action",
+        "label": "met",
+        "metadata": {
+          "criterion": "actionable"
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "conciseness: 24 words",
+        "label": "met",
+        "metadata": {
+          "criterion": "conciseness"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "no_policy_recitation: no boilerplate",
+        "label": "met",
+        "metadata": {
+          "criterion": "no_policy_recitation"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "actionable: names a concrete action",
+        "label": "met",
+        "metadata": {
+          "criterion": "actionable"
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "conciseness: 7 words",
+        "label": "met",
+        "metadata": {
+          "criterion": "conciseness"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "no_policy_recitation: no boilerplate",
+        "label": "met",
+        "metadata": {
+          "criterion": "no_policy_recitation"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "actionable: names a concrete action",
+        "label": "met",
+        "metadata": {
+          "criterion": "actionable"
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "conciseness: 11 words",
+        "label": "met",
+        "metadata": {
+          "criterion": "conciseness"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "no_policy_recitation: no boilerplate",
+        "label": "met",
+        "metadata": {
+          "criterion": "no_policy_recitation"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "actionable: names a concrete action",
+        "label": "met",
+        "metadata": {
+          "criterion": "actionable"
+        }
+      }
+    ],
+    [
+      {
+        "score": 0.0,
+        "test_pass": true,
+        "reason": "no expected_assertion on the case, so there is no rubric to apply",
+        "label": "not_applicable",
+        "metadata": null
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "conciseness: 14 words",
+        "label": "met",
+        "metadata": {
+          "criterion": "conciseness"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "no_policy_recitation: no boilerplate",
+        "label": "met",
+        "metadata": {
+          "criterion": "no_policy_recitation"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "actionable: names a concrete action",
+        "label": "met",
+        "metadata": {
+          "criterion": "actionable"
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "conciseness: 13 words",
+        "label": "met",
+        "metadata": {
+          "criterion": "conciseness"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "no_policy_recitation: no boilerplate",
+        "label": "met",
+        "metadata": {
+          "criterion": "no_policy_recitation"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "actionable: names a concrete action",
+        "label": "met",
+        "metadata": {
+          "criterion": "actionable"
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "conciseness: 17 words",
+        "label": "met",
+        "metadata": {
+          "criterion": "conciseness"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "no_policy_recitation: no boilerplate",
+        "label": "met",
+        "metadata": {
+          "criterion": "no_policy_recitation"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "actionable: names a concrete action",
+        "label": "met",
+        "metadata": {
+          "criterion": "actionable"
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "conciseness: 22 words",
+        "label": "met",
+        "metadata": {
+          "criterion": "conciseness"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "no_policy_recitation: no boilerplate",
+        "label": "met",
+        "metadata": {
+          "criterion": "no_policy_recitation"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "actionable: names a concrete action",
+        "label": "met",
+        "metadata": {
+          "criterion": "actionable"
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "conciseness: 18 words",
+        "label": "met",
+        "metadata": {
+          "criterion": "conciseness"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "no_policy_recitation: no boilerplate",
+        "label": "met",
+        "metadata": {
+          "criterion": "no_policy_recitation"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "actionable: names a concrete action",
+        "label": "met",
+        "metadata": {
+          "criterion": "actionable"
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "conciseness: 12 words",
+        "label": "met",
+        "metadata": {
+          "criterion": "conciseness"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "no_policy_recitation: no boilerplate",
+        "label": "met",
+        "metadata": {
+          "criterion": "no_policy_recitation"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "actionable: names a concrete action",
+        "label": "met",
+        "metadata": {
+          "criterion": "actionable"
+        }
+      }
+    ],
+    [
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "conciseness: 17 words",
+        "label": "met",
+        "metadata": {
+          "criterion": "conciseness"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "no_policy_recitation: no boilerplate",
+        "label": "met",
+        "metadata": {
+          "criterion": "no_policy_recitation"
+        }
+      },
+      {
+        "score": 1.0,
+        "test_pass": true,
+        "reason": "actionable: names a concrete action",
+        "label": "met",
+        "metadata": {
+          "criterion": "actionable"
+        }
+      }
+    ]
+  ],
+  "diagnoses": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+  ],
+  "recommendations": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+  ]
+}</script>
+<script>
+/* strands-evals UI — one page, three views.
+ *
+ * Two modes, and the UI says which one it is in:
+ *
+ *   server      `strands-evals ui` is serving this page. Discovery, pairing and writes all
+ *               happen in Python; Save writes the file it loaded, in place.
+ *   standalone  the file was opened directly (no server). It carries a sample so it is not
+ *               blank, can read a folder the user points it at, and Save downloads a copy —
+ *               a page on file:// has no way to write back to disk.
+ *
+ * Rules this file keeps to, because breaking them produces a confidently wrong answer:
+ *   - What a detail panel shows is decided by what the CASE DECLARES, never by the
+ *     evaluator's class name. The report never records which field an evaluator read.
+ *   - A row leaves the average only when `is_applicable` says so: it has outputs and every
+ *     one both declined to judge AND passed. Checking the label alone turns a failure to
+ *     judge into a pass and reports the run as better than it was.
+ *   - Absent and unrenderable are different. Never print "none" for data that is present
+ *     in a shape this page did not expect.
+ */
+(function () {
+  'use strict';
+
+  const app = document.querySelector('.app');
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const fmt = n => (typeof n === 'number' && isFinite(n)) ? n.toFixed(2) : '—';
+  const KB = n => n == null ? '' : (n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB');
+  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+
+  const when = secs => {
+    if (!secs) return '—';
+    const d = new Date(secs * 1000);
+    return isNaN(d.getTime()) ? '—'
+      : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  };
+
+  /* A trajectory entry is `list[Any]`: a tool name, a recorded call, or something this page
+     has never seen. Rendering an object with `esc()` yields "[object Object]", so name the
+     parts when they are recognisable and fall back to compact JSON when they are not. */
+  function step(t) {
+    if (t == null) return '—';
+    if (typeof t === 'string') return t;
+    if (typeof t !== 'object') return String(t);
+    const name = t.name || t.tool || t.tool_name || t.toolName || t.function;
+    if (typeof name === 'string') {
+      const args = t.arguments || t.args || t.input || t.parameters;
+      if (args && typeof args === 'object') {
+        const inner = Object.keys(args).slice(0, 3).map(k => `${k}=${JSON.stringify(args[k])}`).join(', ');
+        return `${name}(${inner}${Object.keys(args).length > 3 ? ', …' : ''})`;
+      }
+      return `${name}()`;
+    }
+    return JSON.stringify(t);
+  }
+  const sameStep = (a, b) => step(a) === step(b);
+
+  const json = v => `<span class="mono">${esc(JSON.stringify(v, null, 1))}</span>`;
+  const pre = v => v == null ? '&mdash;' : json(v);
+
+  /* ══════════ transport ══════════ */
+
+  const TOKEN = new URLSearchParams(location.search).get('t') || '';
+  let MODE = 'standalone', ROOT = '', READONLY = true, DEPTH = null;
+
+  async function api(path, opts) {
+    const res = await fetch(path, Object.assign({ headers: { 'X-Evals-Token': TOKEN } }, opts || {}));
+    let body = null;
+    try { body = await res.json(); } catch { /* non-JSON error page */ }
+    if (!res.ok) {
+      const err = new Error((body && body.error) || `${res.status} ${res.statusText}`);
+      err.status = res.status;
+      throw err;
+    }
+    return body;
+  }
+
+  /* ══════════ state ══════════ */
+
+  let RUNS = [], selRun = -1, skipped = [], truncated = false, folderLabel = '';
+
+  let EXP = null, expMeta = null;              // the loaded experiment document + its file
+  let cases = [], orig = [], sel = 0;          // working copy, saved copy, selection
+  let evals = [], origEvals = '', evOpen = -1;
+
+  let REP = null, repMeta = null;
+  let ROWS = [], BY_CASE = [];
+  let filter = 'all', query = '', open = new Set(), limit = 300;
+
+  const dirtyCases = () => cases.map((c, i) => JSON.stringify(c) !== orig[i] ? i : -1).filter(i => i >= 0);
+  const evalsDirty = () => JSON.stringify(evals) !== origEvals;
+  const countDirty = () => dirtyCases().length + (evalsDirty() ? 1 : 0);
+
+  /* ══════════ chrome ══════════ */
+
+  function show(view, opts) {
+    app.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.view === view));
+    app.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.id === 'v-' + view));
+    const where = {
+      runs: ROOT || folderLabel || 'no folder opened',
+      experiment: (expMeta && expMeta.path) || 'no experiment loaded',
+      report: (repMeta && repMeta.path) || 'no report loaded',
+    }[view];
+    $('path').textContent = where;
+    if (!opts || !opts.silent) writeHash(view);
+  }
+  app.querySelectorAll('.tab').forEach(t => t.onclick = () => show(t.dataset.view));
+  const currentView = () => (app.querySelector('.tab.on') || {}).dataset?.view || 'runs';
+
+  /* Deep links. A colleague asking "look at this case" should be able to send a URL. */
+  function writeHash(view) {
+    const parts = [];
+    if (view) parts.push('tab=' + view);
+    if (selRun >= 0 && RUNS[selRun]) parts.push('run=' + encodeURIComponent(RUNS[selRun].id));
+    if (cases[sel] && cases[sel].name) parts.push('case=' + encodeURIComponent(cases[sel].name));
+    const hash = parts.length ? '#' + parts.join('&') : '';
+    if (hash === location.hash) return;
+    /* Opened straight from disk the origin is opaque, and replaceState will not verify a new
+       URL against it — a SecurityError that would otherwise escape an async caller and abort
+       rendering entirely. The hash alone still navigates there, so fall back to it. */
+    try {
+      history.replaceState(null, '', location.pathname + location.search + hash);
+    } catch {
+      if (hash) location.hash = hash;
+    }
+  }
+  function readHash() {
+    const out = {};
+    (location.hash.replace(/^#/, '').split('&')).forEach(pair => {
+      const eq = pair.indexOf('=');
+      if (eq > 0) out[pair.slice(0, eq)] = decodeURIComponent(pair.slice(eq + 1));
+    });
+    return out;
+  }
+
+  function note(msg, kind) {
+    const el = $('saved');
+    el.innerHTML = msg ? esc(msg) : '';
+    el.classList.toggle('err', kind === 'err');
+    if (kind === 'stale') {
+      const btn = document.createElement('button');
+      btn.className = 'btn reload';
+      btn.textContent = 'Reload from disk';
+      btn.onclick = () => selectRun(selRun, { force: true });
+      el.appendChild(btn);
+    }
+  }
+
+  /* ══════════ runs view ══════════ */
+
+  const blank = (title, body) => `<tr><td colspan="4"><div class="nores"><b>${title}</b>${body}</div></td></tr>`;
+
+  const LINK_TAG = {
+    verified: ['ok', 'pairing verified'],
+    partial: ['warn', 'partial match'],
+    mismatch: ['warn', 'does not match'],
+    unverified: ['', 'unverified pairing'],
+  };
+
+  function renderRuns() {
+    $('mode-tag').textContent = MODE === 'server'
+      ? (READONLY ? 'served · read-only' : 'served · saves to disk')
+      : 'standalone file · saves download';
+    $('mode-tag').className = 'mode ' + (MODE === 'server' ? (READONLY ? 'ro' : 'live') : 'ro');
+    $('root-path').textContent = ROOT || folderLabel || '';
+    $('runs-sub').textContent = MODE === 'server'
+      ? `Everything ${DEPTH != null ? DEPTH + ' levels ' : ''}under the directory the CLI was started in.`
+      : 'No server behind this page, so it is showing the sample it carries. Open a folder to read your own.';
+    app.querySelector('[data-act="rescan"]').hidden = MODE !== 'server';
+    app.querySelector('[data-act="pick"]').hidden = MODE === 'server';
+
+    $('runs-count').innerHTML = plural(RUNS.length, 'run')
+      + (truncated ? ' · <span class="tag warn">scan hit the file cap</span>' : '');
+
+    $('runs-rows').innerHTML = RUNS.length ? RUNS.map((r, i) => {
+      const e = r.experiment, p = r.report;
+      const mod = Math.max((e && e.modified) || 0, (p && p.modified) || 0);
+      const label = r.dir && r.dir !== '.' ? r.dir : (e || p).name;
+      const sub = r.dir && r.dir !== '.' ? ` <span class="dim">/ ${esc((e || p).name)}</span>` : '';
+      const link = r.link && LINK_TAG[r.link.status]
+        ? `<br><span class="tag ${LINK_TAG[r.link.status][0]}" title="${esc(r.link.detail)}">${LINK_TAG[r.link.status][1]}</span>`
+        : '';
+      return `<tr class="run${i === selRun ? ' on' : ''}" data-run="${i}">
+        <td>${esc(label)}${sub}</td>
+        <td class="ev">${e
+          ? `${plural(e.cases, 'case')} · ${plural((e.evaluators || []).length, 'evaluator')}`
+            + `<br><span class="path">${esc(e.name)} · ${KB(e.size)}</span>`
+          : '<span class="empty">none</span>'}</td>
+        <td class="ev">${p
+          ? `${fmt(p.overall_score)} · ${plural(p.rows, 'row')}`
+            + (p.failing ? ` · <span class="vb fail"><i></i>${p.failing} failing</span>` : '')
+            + `<br><span class="path">${esc(p.name)} · ${KB(p.size)}</span>${link}`
+          : '<span class="empty">not run yet</span>'}</td>
+        <td class="ev">${when(mod)}</td></tr>`;
+    }).join('') : blank(
+      'Nothing to show here',
+      MODE === 'server'
+        ? `No experiment or report JSON under ${esc(ROOT)}.`
+        : 'Open a folder to look for experiments and reports.');
+
+    $('skips').innerHTML = skipped.length
+      ? `<details class="skips"><summary>${plural(skipped.length, 'JSON file')} skipped</summary><ul>`
+        + skipped.map(s => `<li><code>${esc(s.path)}</code> — ${esc(s.why)}</li>`).join('')
+        + '</ul></details>'
+      : '';
+  }
+
+  app.querySelector('[data-act="rescan"]').onclick = () => rescan();
+
+  /* ══════════ loading a run ══════════ */
+
+  async function document_for(meta) {
+    if (!meta) return null;
+    if (meta.obj) return meta.obj;                       // standalone: already in memory
+    const res = await api('/api/file?path=' + encodeURIComponent(meta.path));
+    meta.modified = res.modified;                        // refresh the save guard's baseline
+    if (res.evaluator_notes) meta.evaluator_notes = res.evaluator_notes;
+    return res.document;
+  }
+
+  async function rescan(keepSelection) {
+    const previous = selRun >= 0 && RUNS[selRun] ? RUNS[selRun].id : null;
+    const res = await api('/api/runs');
+    ROOT = res.root; DEPTH = res.depth; READONLY = res.read_only;
+    RUNS = res.runs; skipped = res.skipped || []; truncated = !!res.truncated;
+    selRun = keepSelection && previous ? RUNS.findIndex(r => r.id === previous) : -1;
+    renderRuns();
+    return res;
+  }
+
+  async function selectRun(i, opts) {
+    const run = RUNS[i];
+    if (!run) return;
+    const dirty = countDirty();
+    if (!(opts && opts.force) && dirty && i !== selRun
+        && !confirm(`${plural(dirty, 'unsaved change')} will be lost. Switch run?`)) return;
+    selRun = i;
+    try {
+      const [expDoc, repDoc] = await Promise.all([document_for(run.experiment), document_for(run.report)]);
+      expDoc ? loadExperiment(run.experiment, expDoc) : clearExperiment();
+      repDoc ? loadReport(run.report, repDoc) : clearReport();
+    } catch (err) {
+      clearExperiment(); clearReport();
+      $('runs-rows').insertAdjacentHTML('afterbegin',
+        `<tr><td colspan="4"><span class="tag warn">could not load: ${esc(err.message)}</span></td></tr>`);
+      return;
+    }
+    renderRuns();
+    const target = (opts && opts.view) || (run.experiment ? 'experiment' : 'report');
+    show(target);
+  }
+
+  $('runs-rows').onclick = e => {
+    const tr = e.target.closest('tr.run');
+    if (tr) selectRun(+tr.dataset.run);
+  };
+
+  function loadExperiment(meta, doc) {
+    expMeta = meta; EXP = doc;
+    cases = (doc.cases || []).map(c => JSON.parse(JSON.stringify(c)));
+    orig = cases.map(c => JSON.stringify(c));
+    evals = (doc.evaluators || []).map(e => JSON.parse(JSON.stringify(e)));
+    origEvals = JSON.stringify(evals);
+    sel = 0; evOpen = -1;
+    $('case-find').value = '';
+    $('exp-sub').textContent = READONLY && MODE === 'server'
+      ? 'Read-only: the server was started with --read-only.'
+      : (MODE === 'server'
+        ? `Edits save back to ${meta.path}.`
+        : 'No server, so Save downloads a copy for you to put back yourself.');
+    renderEvaluators(); renderForm(); refreshDirty(); note('');
+  }
+
+  function clearExperiment() {
+    EXP = null; expMeta = null; cases = []; orig = []; evals = []; origEvals = '[]'; sel = 0; evOpen = -1;
+    $('evs').innerHTML = '<span class="empty">no experiment loaded</span>';
+    $('evnotes').innerHTML = '';
+    $('evform').hidden = true;
+    $('form-title').textContent = '—';
+    $('form-sid').textContent = '';
+    $('form').innerHTML = '<div class="nores"><b>No experiment in this run</b>'
+      + 'This folder had a report but no experiment file beside it.</div>';
+    $('case-list').innerHTML = '';
+    $('case-count').textContent = '';
+    $('exp-sub').textContent = '';
+    refreshDirty(); note('');
+  }
+
+  function loadReport(meta, doc) {
+    repMeta = meta; REP = doc;
+    open = new Set(); filter = 'all'; query = ''; limit = 300;
+    $('rep-find').value = '';
+    app.querySelectorAll('#rep-seg button').forEach(b => b.classList.toggle('on', b.dataset.f === 'all'));
+    buildRows(); renderHero(); renderReport();
+  }
+
+  function clearReport() {
+    REP = null; repMeta = null; ROWS = []; BY_CASE = [];
+    $('r-score').textContent = '—';
+    $('r-stats').innerHTML = '';
+    $('rep-count').textContent = '';
+    $('rep-more').hidden = true;
+    $('rep-rows').innerHTML = blank('No report in this run',
+      'This experiment has not been run yet, or its report is somewhere else.');
+  }
+
+  /* ══════════ evaluators ══════════ */
+
+  const CONFIG_KEYS = e => Object.keys(e).filter(k => k !== 'evaluator_type' && k !== 'name');
+
+  /* The server inspects each `evaluator_type` against the real registry and the real
+     constructor signature, and says whether `from_dict` would accept it. Shown because the
+     alternative is finding out later from `strands-evals run`, as a TypeError. */
+  function evalNotes(index) {
+    const notes = (expMeta && expMeta.evaluator_notes) || [];
+    return index == null ? notes : notes.filter(n => n.index === index);
+  }
+
+  function renderEvaluators() {
+    $('evs').innerHTML = evals.length ? evals.map((e, i) => {
+      const type = e.evaluator_type || 'unknown';
+      const cfg = CONFIG_KEYS(e).map(k => `${k}=${JSON.stringify(e[k])}`).join(' · ');
+      const notes = evalNotes(i);
+      const worst = notes.some(n => n.level === 'error') ? 'error' : (notes.length ? 'warning' : '');
+      return `<span class="evchip edit${i === evOpen ? ' on' : ''}${worst ? ' ' + worst : ''}"`
+        + ` data-ev="${i}" title="${worst ? esc(notes.map(n => n.message).join('; ')) : 'click to edit'}">`
+        + `<b>${esc(e.name || type)}</b>`
+        + (e.name ? `<span class="t">${esc(type)}</span>` : '')
+        + (cfg ? `<span class="c mono">${esc(cfg)}</span>` : '')
+        + (worst ? `<span class="c">${worst === 'error' ? 'will not load' : 'custom'}</span>` : '')
+        + '</span>';
+    }).join('') : '<span class="empty">this experiment declares no evaluators</span>';
+
+    const errs = evalNotes().filter(n => n.level === 'error');
+    $('evnotes').innerHTML = errs.length
+      ? `<span class="tag warn">${plural(errs.length, 'evaluator problem')}</span> `
+        + errs.map(n => `<code>${esc(n.evaluator_type)}</code> ${esc(n.message)}`).join(' · ')
+        + ' — <span class="path">the file saves, but <code>run</code> and <code>validate</code>'
+        + ' will fail to load it until this is fixed.</span>'
+      : '';
+    renderEvalForm();
+  }
+
+  /* Editing is limited to keys the file already has, and to scalars.
+     `Experiment.from_dict` passes every key except `evaluator_type` to the constructor, so a
+     key that is already there is one the constructor accepted — inventing a new one would
+     produce a file that raises TypeError on load. */
+  function renderEvalForm() {
+    const box = $('evform');
+    if (evOpen < 0 || !evals[evOpen]) { box.hidden = true; box.innerHTML = ''; return; }
+    const e = evals[evOpen];
+    const keys = ['name'].concat(CONFIG_KEYS(e));
+    const editable = keys.filter(k => e[k] == null || ['string', 'number', 'boolean'].includes(typeof e[k]));
+    const frozen = keys.filter(k => !editable.includes(k));
+    box.hidden = false;
+    box.innerHTML = `<div class="evhead"><b>${esc(e.name || e.evaluator_type)}</b>`
+      + `<span class="path mono">${esc(e.evaluator_type)}</span><span class="grow"></span>`
+      + '<button class="btn" data-evclose="1">Close</button></div>'
+      + '<div class="grid">'
+      + editable.map(k => {
+        const v = e[k];
+        const type = typeof v === 'boolean' ? 'checkbox' : (typeof v === 'number' ? 'number' : 'text');
+        const attrs = type === 'checkbox' ? (v ? 'checked' : '') : `value="${esc(v == null ? '' : v)}"`;
+        return `<label for="ev-${k}">${esc(k)}</label>`
+          + `<input class="f" id="ev-${k}" type="${type}" data-evk="${esc(k)}" ${attrs}`
+          + (k === 'name' ? ' placeholder="defaults to the class name"' : '') + '>';
+      }).join('')
+      + '</div>'
+      + (frozen.length
+        ? `<div class="hint" style="margin-top:10px">Not editable here: <code>${frozen.map(esc).join('</code>, <code>')}</code>`
+          + ' — structured values are left exactly as the file had them.</div>'
+        : '')
+      + '<div class="hint" style="margin-top:8px">Only keys already in the file are shown; a key the '
+      + 'constructor never accepted would make the experiment fail to load.</div>';
+  }
+
+  $('evs').onclick = e => {
+    const chip = e.target.closest('[data-ev]');
+    if (!chip) return;
+    const i = +chip.dataset.ev;
+    evOpen = evOpen === i ? -1 : i;
+    renderEvaluators();
+  };
+  $('evform').addEventListener('click', e => {
+    if (e.target.closest('[data-evclose]')) { evOpen = -1; renderEvaluators(); }
+  });
+  $('evform').addEventListener('input', e => {
+    const k = e.target.dataset.evk;
+    if (k == null || evOpen < 0) return;
+    const el = e.target;
+    let value;
+    if (el.type === 'checkbox') value = el.checked;
+    else if (el.type === 'number') {
+      if (el.value === '') value = null;
+      else if (!isFinite(Number(el.value))) { el.style.borderColor = 'var(--bad)'; return; }
+      else value = Number(el.value);
+    } else value = el.value === '' ? null : el.value;
+    el.style.borderColor = '';
+    if (value === null && k === 'name') delete evals[evOpen].name;
+    else evals[evOpen][k] = value;
+    refreshDirty(); note('');
+  });
+
+  /* ══════════ case editor ══════════ */
+
+  const FIELDS = [
+    { k: 'name', l: 'Name', t: 'line', hint: 'Identifies the case in the report.' },
+    { k: 'input', l: 'Input', t: 'area', rows: 2, required: true, hint: 'What the agent receives. Required.' },
+    { k: 'expected_output', l: 'Expected output', t: 'area', rows: 3,
+      hint: 'Leave empty and an output evaluator reports not_applicable.' },
+    { k: 'expected_assertion', l: 'Expected assertion', t: 'area', rows: 2,
+      hint: 'A natural-language claim a judge can check.' },
+    { k: 'expected_trajectory', l: 'Expected trajectory', t: 'steps' },
+    { k: 'expected_interactions', l: 'Expected interactions', t: 'json' },
+    { k: 'expected_environment_state', l: 'Expected env state', t: 'json' },
+    { k: 'metadata', l: 'Metadata', t: 'json' },
+  ];
+
+  function renderList() {
+    const q = $('case-find').value.trim().toLowerCase();
+    const shown = cases.map((c, i) => ({ c, i })).filter(({ c }) =>
+      !q || ((c.name || '') + ' ' + (c.input || '')).toLowerCase().includes(q));
+    $('case-list').innerHTML = shown.map(({ c, i }) => {
+      const edited = JSON.stringify(c) !== orig[i];
+      return `<li data-i="${i}" class="${i === sel ? 'on' : ''}" title="${edited ? 'unsaved changes' : esc(c.name || '(unnamed)')}">`
+        + `<span class="dot${edited ? ' edited' : ''}"></span>`
+        + `<span class="nm">${esc(c.name || '(unnamed)')}</span></li>`;
+    }).join('') || '<li class="empty" style="cursor:default">No match</li>';
+    const d = dirtyCases().length;
+    $('case-count').textContent = `${shown.length} of ${plural(cases.length, 'case')}` + (d ? ` · ${d} edited` : '');
+  }
+
+  function renderForm() {
+    renderList();
+    const c = cases[sel];
+    if (!c) {
+      $('form-title').textContent = '—';
+      $('form-sid').textContent = '';
+      $('form').innerHTML = EXP
+        ? '<div class="nores"><b>No cases</b>This experiment’s case list is empty. Use <b>+ Case</b> to add one.</div>'
+        : '<div class="nores"><b>No experiment loaded</b>Pick a run on the Runs tab.</div>';
+      return;
+    }
+    $('form-title').textContent = c.name || '(unnamed)';
+    $('form-sid').textContent = String(c.session_id || '').slice(0, 8);
+    $('form').innerHTML = FIELDS.map(f => {
+      const v = c[f.k];
+      let ctl;
+      if (f.t === 'steps') {
+        ctl = stepsControl(f.k, v);
+      } else if (f.t === 'json') {
+        ctl = v == null
+          ? `<textarea class="f mono" rows="2" data-k="${f.k}" data-json="1" spellcheck="false" placeholder="empty"></textarea>`
+          : `<textarea class="f mono" rows="${Math.min(10, JSON.stringify(v, null, 2).split('\n').length)}" data-k="${f.k}" data-json="1" spellcheck="false">${esc(JSON.stringify(v, null, 2))}</textarea>`;
+      } else if (f.t === 'line') {
+        ctl = `<input class="f" data-k="${f.k}" value="${esc(v == null ? '' : v)}" placeholder="unnamed">`;
+      } else {
+        ctl = `<textarea class="f" rows="${f.rows}" data-k="${f.k}"${f.required ? ' data-required="1"' : ''} placeholder="empty">${esc(v == null ? '' : v)}</textarea>`;
+      }
+      return `<div class="field"><label>${f.l}</label>${ctl}`
+        + (f.hint ? `<div class="hint">${f.hint}</div>` : '') + '</div>';
+    }).join('');
+  }
+
+  /* `expected_trajectory` is `list[Any]`. Chips work for the common all-strings case; a list
+     holding recorded calls gets labelled chips it cannot edit in place, and a value that is
+     not a list at all gets shown as JSON. What it must never do is claim there is nothing
+     there. */
+  function stepsControl(key, v) {
+    if (v == null) {
+      return `<div class="chips" data-chips="${key}">`
+        + '<span class="empty">none — a trajectory evaluator reports not_applicable</span>'
+        + `<button class="addchip" data-add="${key}">+ tool</button></div>`;
+    }
+    if (!Array.isArray(v)) {
+      return `<textarea class="f mono" rows="4" data-k="${key}" data-json="1" spellcheck="false">${esc(JSON.stringify(v, null, 2))}</textarea>`
+        + '<div class="hint">This trajectory is not a list, so it is shown as JSON rather than as steps.</div>';
+    }
+    const structured = v.some(t => typeof t !== 'string');
+    return `<div class="chips" data-chips="${key}">`
+      + v.map((t, j) => `<span class="chip"><span class="ord">${j + 1}</span>${esc(step(t))}`
+        + `<span class="x" data-rm="${j}" title="remove">&times;</span></span>`).join('')
+      + (structured ? '' : `<button class="addchip" data-add="${key}">+ tool</button>`)
+      + '</div>'
+      + (structured
+        ? '<div class="hint">Recorded calls, summarised. Remove still works; adding one is only '
+          + 'offered for plain tool names, since this page cannot invent a valid call shape.</div>'
+        : '');
+  }
+
+  $('case-find').oninput = renderList;
+  $('case-list').onclick = e => {
+    const li = e.target.closest('li[data-i]');
+    if (!li) return;
+    sel = +li.dataset.i;
+    renderForm(); writeHash(currentView());
+  };
+
+  $('form').addEventListener('input', e => {
+    const k = e.target.dataset.k;
+    if (k == null || !cases[sel]) return;
+    const el = e.target, raw = el.value;
+    if (el.dataset.json) {
+      if (raw.trim() === '') { cases[sel][k] = null; el.style.borderColor = ''; }
+      else {
+        try { cases[sel][k] = JSON.parse(raw); el.style.borderColor = ''; }
+        catch { el.style.borderColor = 'var(--bad)'; return; }
+      }
+    } else if (el.dataset.required) {
+      // `Case.input` has no default, so emptying it would write a file the library refuses to
+      // load. Keep the empty string instead of null and let Save's check speak up.
+      cases[sel][k] = raw;
+    } else {
+      cases[sel][k] = raw.trim() === '' ? null : raw;
+    }
+    if (k === 'name') { $('form-title').textContent = cases[sel].name || '(unnamed)'; }
+    note(''); refreshDirty();
+  });
+
+  $('form').addEventListener('click', e => {
+    const rm = e.target.closest('[data-rm]');
+    const add = e.target.closest('[data-add]');
+    if (rm) {
+      const k = rm.closest('[data-chips]').dataset.chips;
+      cases[sel][k].splice(+rm.dataset.rm, 1);
+      if (!cases[sel][k].length) cases[sel][k] = null;
+      renderForm(); note(''); refreshDirty();
+    } else if (add) {
+      const k = add.dataset.add;
+      const name = prompt('Tool name');
+      if (!name || !name.trim()) return;
+      (cases[sel][k] = cases[sel][k] || []).push(name.trim());
+      renderForm(); note(''); refreshDirty();
+    }
+  });
+
+  const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
+    : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, ch => {
+      const r = crypto.getRandomValues(new Uint8Array(1))[0] % 16;
+      return (ch === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+    }));
+
+  $('add-case').onclick = () => {
+    if (!EXP) return;
+    const names = new Set(cases.map(c => c.name));
+    let n = cases.length + 1, name = `case_${n}`;
+    while (names.has(name)) name = `case_${++n}`;
+    cases.push({ name, session_id: uuid(), input: '' });
+    orig.push('\u0000');                      // never equal to a real serialization: born dirty
+    sel = cases.length - 1;
+    renderForm(); refreshDirty();
+    note(`added ${name} — fill in its input, then save`);
+  };
+
+  $('del-case').onclick = () => {
+    const c = cases[sel];
+    if (!c) return;
+    if (!confirm(`Delete case ${c.name || '(unnamed)'}? It is removed from the file when you save.`)) return;
+    cases.splice(sel, 1); orig.splice(sel, 1);
+    sel = Math.max(0, Math.min(sel, cases.length - 1));
+    renderForm(); refreshDirty();
+    note(`removed ${c.name || '(unnamed)'} — save to write it out`);
+  };
+
+  function refreshDirty() {
+    const d = countDirty();
+    const el = $('dirty');
+    el.textContent = d ? `${plural(d, 'unsaved change')}` : 'No unsaved changes';
+    el.classList.toggle('yes', !!d);
+    const blocked = !d || !EXP || (MODE === 'server' && READONLY);
+    $('save').disabled = blocked;
+    $('save').title = (MODE === 'server' && READONLY) ? 'the server was started with --read-only' : '';
+    $('revert').disabled = !d;
+    $('add-case').disabled = !EXP;
+    $('del-case').disabled = !cases.length;
+    renderList();
+  }
+
+  /* `to_file` serializes with allow_nan=False, so a non-finite number anywhere makes the real
+     write raise. Finding it here names the field instead of failing at the file boundary. */
+  function nonFinite(v, path) {
+    if (typeof v === 'number') return isFinite(v) ? null : path;
+    if (Array.isArray(v)) {
+      for (let i = 0; i < v.length; i++) { const r = nonFinite(v[i], `${path}[${i}]`); if (r) return r; }
+      return null;
+    }
+    if (v && typeof v === 'object') {
+      for (const k of Object.keys(v)) { const r = nonFinite(v[k], `${path}.${k}`); if (r) return r; }
+      return null;
+    }
+    return null;
+  }
+
+  function preflight() {
+    for (const [i, c] of cases.entries()) {
+      const bad = nonFinite(c, `cases[${i}]`);
+      if (bad) return `${bad} is not finite — the library's writer rejects it`;
+      if (c.input == null || String(c.input).trim() === '') {
+        return `case ${c.name || i} has no input, which Case requires`;
+      }
+    }
+    const names = cases.map(c => c.name).filter(Boolean);
+    const dupe = names.find((n, i) => names.indexOf(n) !== i);
+    if (dupe) return `two cases are named ${dupe}; the report would not tell them apart`;
+    return null;
+  }
+
+  $('save').onclick = async () => {
+    const problem = preflight();
+    if (problem) return note(problem, 'err');
+    const document_ = { cases, evaluators: evals };
+
+    if (MODE === 'server') {
+      $('save').disabled = true;
+      try {
+        const res = await api('/api/experiment?path=' + encodeURIComponent(expMeta.path), {
+          method: 'PUT',
+          headers: { 'X-Evals-Token': TOKEN, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ document: document_, modified: expMeta.modified }),
+        });
+        expMeta.modified = res.modified;
+        if (res.evaluator_notes) expMeta.evaluator_notes = res.evaluator_notes;
+        orig = cases.map(c => JSON.stringify(c));
+        origEvals = JSON.stringify(evals);
+        renderEvaluators(); refreshDirty();
+        note(`saved ${res.path} · ${plural(res.cases, 'case')}`);
+        rescan(true);
+      } catch (err) {
+        refreshDirty();
+        note(err.message, err.status === 409 ? 'stale' : 'err');
+      }
+      return;
+    }
+
+    const text = JSON.stringify(document_, null, 2) + '\n';
+    const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    const a = Object.assign(document.createElement('a'), {
+      href: url, download: (expMeta && expMeta.name) || 'experiment.json',
+    });
+    a.click();
+    if (URL.revokeObjectURL) URL.revokeObjectURL(url);
+    orig = cases.map(c => JSON.stringify(c));
+    origEvals = JSON.stringify(evals);
+    refreshDirty();
+    note(`downloaded ${a.download} · ${plural(cases.length, 'case')} · ${KB(text.length)}`);
+  };
+
+  $('revert').onclick = () => {
+    const d = countDirty();
+    cases = orig.map((s, i) => s === '\u0000' ? null : JSON.parse(s)).filter(x => x !== null);
+    orig = cases.map(c => JSON.stringify(c));
+    evals = JSON.parse(origEvals);
+    sel = Math.min(sel, Math.max(0, cases.length - 1));
+    renderEvaluators(); renderForm(); refreshDirty();
+    note(`reverted ${plural(d, 'change')}`);
+  };
+
+  window.addEventListener('beforeunload', e => {
+    if (countDirty()) { e.preventDefault(); e.returnValue = ''; }
+  });
+
+  /* ══════════ report ══════════ */
+
+  function buildRows() {
+    ROWS = (REP.cases || []).map((c, i) => ({
+      i, case: c, evaluator: c.evaluator,
+      score: (REP.scores || [])[i],
+      pass: (REP.test_passes || [])[i],
+      reason: (REP.reasons || [])[i] || '',
+      // evaluate() returns a LIST of EvaluationOutput; reading only [0] would drop every
+      // criterion of a rubric judge but the first.
+      outputs: (REP.detailed_results || [])[i] || [],
+      diagnosis: (REP.diagnoses || [])[i],
+      recommendation: (REP.recommendations || [])[i],
+    }));
+
+    // Mirrors EvaluationReport.is_applicable exactly: droppable only when it has outputs and
+    // every one both declined to judge and passed. not_applicable with test_pass=false is a
+    // FAILURE to judge, and dropping it would report the run as better than it was.
+    ROWS.forEach(r => {
+      r.na = r.outputs.length > 0
+        && r.outputs.every(o => o && o.label === 'not_applicable' && o.test_pass);
+    });
+
+    BY_CASE = [];
+    const index = new Map();
+    ROWS.forEach(r => {
+      const key = r.case.name != null ? String(r.case.name) : `#${r.i}`;
+      let g = index.get(key);
+      if (!g) { g = { name: key, case: r.case, rows: [] }; index.set(key, g); BY_CASE.push(g); }
+      g.rows.push(r);
+    });
+  }
+
+  function renderHero() {
+    $('r-score').textContent = fmt(REP.overall_score);
+    const applicable = ROWS.filter(r => !r.na);
+    $('r-stats').innerHTML = [
+      [`${applicable.filter(r => r.pass).length} / ${applicable.length}`, 'Rows passing'],
+      [BY_CASE.length, 'Cases'],
+      [new Set(ROWS.map(r => r.evaluator)).size, 'Evaluators'],
+      [ROWS.filter(r => r.na).length, 'Not applicable'],
+    ].map(([v, k]) => `<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join('');
+  }
+
+  const words = s => String(s == null ? '' : s).split(/\s+/);
+  function diff(expected, actual) {
+    const a = words(expected), b = words(actual), out = [];
+    const lcs = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+    for (let x = a.length - 1; x >= 0; x--)
+      for (let y = b.length - 1; y >= 0; y--)
+        lcs[x][y] = a[x] === b[y] ? lcs[x + 1][y + 1] + 1 : Math.max(lcs[x + 1][y], lcs[x][y + 1]);
+    let i = 0, j = 0;
+    while (i < a.length && j < b.length) {
+      if (a[i] === b[j]) { out.push(esc(a[i])); i++; j++; }
+      else if (lcs[i + 1][j] >= lcs[i][j + 1]) out.push(`<span class="del"><s>${esc(a[i++])}</s></span>`);
+      else out.push(`<span class="ins">${esc(b[j++])}</span>`);
+    }
+    while (i < a.length) out.push(`<span class="del"><s>${esc(a[i++])}</s></span>`);
+    while (j < b.length) out.push(`<span class="ins">${esc(b[j++])}</span>`);
+    return out.join(' ');
+  }
+
+  /* A trajectory on a report row is `list[Any] | Session`: a Session serializes to an OBJECT,
+     so treating it as a list renders "none" for a trajectory that is right there. */
+  function trajectory(v, reference) {
+    if (v == null) return '<span class="empty">none captured</span>';
+    if (!Array.isArray(v)) {
+      return '<span class="path">recorded session, not a step list</span><br>' + json(v);
+    }
+    if (!v.length) return '<span class="empty">empty list</span>';
+    return '<span class="mono">' + v.map(t => {
+      const text = esc(step(t));
+      const novel = reference && Array.isArray(reference) && !reference.some(x => sameStep(x, t));
+      return novel ? `<span class="ins">${text}</span>` : text;
+    }).join(' → ') + '</span>';
+  }
+
+  /* Which comparison a row shows comes from what the CASE DECLARES, never from the
+     evaluator's class name: the report does not record which field an evaluator read, and
+     users bring their own evaluators. Matching on a name renders the wrong comparison for
+     every evaluator the page has not heard of. */
+  const ASPECTS = [
+    {
+      has: c => c.expected_output != null || c.actual_output != null,
+      rows: c => c.expected_output == null
+        ? [['Actual output', esc(c.actual_output == null ? '—' : c.actual_output)]]
+        : [['Expected output', esc(c.expected_output)],
+           ['Actual output · diff', diff(c.expected_output, c.actual_output == null ? '' : c.actual_output)]],
+    },
+    {
+      has: c => c.expected_trajectory != null || c.actual_trajectory != null,
+      rows: c => [['Expected trajectory', trajectory(c.expected_trajectory)],
+                  ['Actual trajectory', trajectory(c.actual_trajectory, c.expected_trajectory)]],
+    },
+    {
+      has: c => c.expected_interactions != null || c.actual_interactions != null,
+      rows: c => [['Expected interactions', pre(c.expected_interactions)],
+                  ['Actual interactions', pre(c.actual_interactions)]],
+    },
+    {
+      has: c => c.expected_environment_state != null || c.actual_environment_state != null,
+      rows: c => [['Expected env state', pre(c.expected_environment_state)],
+                  ['Actual env state', pre(c.actual_environment_state)]],
+    },
+  ];
+
+  const verdict = r => r.na
+    ? '<span class="vb na"><i></i>not applicable</span>'
+    : (r.pass ? '<span class="vb pass"><i></i>pass</span>' : '<span class="vb fail"><i></i>fail</span>');
+
+  function matches(g) {
+    if (filter === 'fail' && g.rows.every(r => r.pass || r.na)) return false;
+    if (filter === 'na' && !g.rows.some(r => r.na)) return false;
+    if (!query) return true;
+    const hay = [g.name, g.case.input, g.case.expected_output, g.case.expected_assertion, g.case.actual_output]
+      .concat(g.rows.map(r => [r.reason, r.evaluator]
+        .concat(r.outputs.map(o => `${(o && o.label) || ''} ${(o && o.reason) || ''}`)).join(' ')))
+      .join(' ').toLowerCase();
+    return hay.includes(query);
+  }
+
+  function renderReport() {
+    if (!REP) return;
+    const groups = BY_CASE.filter(matches);
+    const total = groups.reduce((n, g) => n + g.rows.length, 0);
+    const visible = groups.slice(0, limit);
+    const hidden = groups.length - visible.length;
+
+    $('rep-count').textContent = `${total} of ${plural(ROWS.length, 'row')}`;
+    $('rep-more').hidden = hidden <= 0;
+    $('rep-more').textContent = hidden > 0 ? `Show ${hidden} more case${hidden === 1 ? '' : 's'}` : '';
+
+    $('rep-rows').innerHTML = visible.map(g => g.rows.map((r, k) => {
+      const on = open.has(r.i);
+      const head = `<tr class="case" data-i="${r.i}">
+        <td>${k === 0 ? `<span class="caret${on ? ' open' : ''}"></span>${esc(g.name)}` : ''}</td>
+        <td class="ev">${esc(r.evaluator == null ? '—' : r.evaluator)}</td>
+        <td>${r.na ? '<span class="path">—</span>'
+          : `<span class="bar2"><span class="num">${fmt(r.score)}</span><span class="track">`
+            + `<span class="fill" style="width:${Math.round(Math.max(0, Math.min(1, r.score || 0)) * 100)}%"></span>`
+            + '</span></span>'}</td>
+        <td>${verdict(r)}</td></tr>`;
+      if (!on) return head;
+
+      const c = g.case;
+      const kv = [['Input', esc(c.input)]];
+      if (c.expected_assertion) kv.push(['Assertion', esc(c.expected_assertion)]);
+      ASPECTS.filter(a => a.has(c)).forEach(a => a.rows(c).forEach(row => kv.push(row)));
+      if (!r.outputs.length) {
+        kv.push(['Verdict', '<span class="empty">evaluator returned no outputs — '
+          + '_default_aggregator scores that test_pass=false</span>']);
+      }
+      r.outputs.forEach((o, n) => {
+        const tag = r.outputs.length > 1 ? ` ${n + 1}/${r.outputs.length}` : '';
+        const label = o && o.label ? `<span class="mono">${esc(o.label)}</span> · ` : '';
+        kv.push([`Verdict${tag}`, `${label}score ${fmt(o && o.score)} · `
+          + (o && o.test_pass ? '<span class="vb pass"><i></i>pass</span>'
+                              : '<span class="vb fail"><i></i>fail</span>')]);
+        if (o && o.reason) kv.push([`Reason${tag}`, esc(o.reason)]);
+        if (o && o.metadata && Object.keys(o.metadata).length) kv.push([`Metadata${tag}`, pre(o.metadata)]);
+      });
+      if (r.outputs.length > 1) kv.push(['Aggregated', `score ${fmt(r.score)} · ${esc(r.reason)}`]);
+      if (r.diagnosis) kv.push(['Diagnosis', pre(r.diagnosis)]);
+      if (r.recommendation) kv.push(['Recommendation', esc(r.recommendation)]);
+
+      return head + '<tr class="detail"><td colspan="4"><dl class="kv">'
+        + kv.map(([k2, v]) => `<dt>${k2}</dt>`
+          + `<dd${/^(Expected|Actual|Metadata|Diagnosis)/.test(k2) ? ' class="m"' : ''}>${v}</dd>`).join('')
+        + '</dl></td></tr>';
+    }).join('')).join('')
+      || '<tr><td colspan="4" class="empty" style="padding:18px 12px">No rows match</td></tr>';
+  }
+
+  $('rep-find').oninput = e => { query = e.target.value.trim().toLowerCase(); limit = 300; renderReport(); };
+  $('rep-seg').onclick = e => {
+    const b = e.target.closest('button[data-f]');
+    if (!b) return;
+    filter = b.dataset.f; limit = 300;
+    app.querySelectorAll('#rep-seg button').forEach(x => x.classList.toggle('on', x === b));
+    renderReport();
+  };
+  $('rep-more').onclick = () => { limit += 300; renderReport(); };
+  $('rep-rows').onclick = e => {
+    const tr = e.target.closest('tr.case');
+    if (!tr) return;
+    const i = +tr.dataset.i;
+    open.has(i) ? open.delete(i) : open.add(i);
+    renderReport();
+  };
+
+  /* ══════════ standalone folder reading ══════════ */
+
+  const SCAN_DEPTH = 3;
+
+  function classify(o) {
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
+    if (Array.isArray(o.cases) && Array.isArray(o.evaluators)) return 'experiment';
+    if (typeof o.overall_score === 'number' && Array.isArray(o.scores)
+        && Array.isArray(o.test_passes) && Array.isArray(o.cases)) return 'report';
+    return null;
+  }
+
+  /* `experiment.json` and `report.json` both reduce to the empty stem, which is what pairs them;
+     the token only comes off at a separator or the whole name, so `myexperiment.json` keeps its
+     name. Same rule as the server's `_stem`. */
+  const stem = n => n.replace(/\.json$/i, '').replace(/(^|[._-])(experiment|exp|report|rep)$/i, '');
+
+  function reportMeta(obj) {
+    const detailed = obj.detailed_results || [];
+    let failing = 0;
+    (obj.cases || []).forEach((_, i) => {
+      const outs = detailed[i] || [];
+      const declined = outs.length > 0 && outs.every(o => o && o.label === 'not_applicable' && o.test_pass);
+      if (!declined && (obj.test_passes || [])[i] === false) failing++;
+    });
+    return { overall_score: obj.overall_score, rows: (obj.cases || []).length, failing };
+  }
+
+  // Same pairing check the server does, so standalone is not quietly less careful.
+  function linkStatus(expObj, repObj) {
+    const keys = new Set();
+    (expObj.cases || []).forEach(c => {
+      if (c && c.session_id != null) keys.add(String(c.session_id));
+      if (c && c.name != null) keys.add(String(c.name));
+    });
+    const rows = new Set();
+    (repObj.cases || []).forEach(r => {
+      const k = r && (r.session_id || r.name);
+      if (k != null) rows.add(String(k));
+    });
+    if (!keys.size || !rows.size) return { status: 'unverified', detail: 'no case identifiers to compare' };
+    const missing = [...rows].filter(k => !keys.has(k));
+    if (!missing.length) return { status: 'verified', detail: `all ${rows.size} report case(s) exist in this experiment` };
+    if (missing.length === rows.size) return { status: 'mismatch', detail: `none of the ${rows.size} report case(s) appear in this experiment` };
+    return { status: 'partial', detail: `${missing.length} of ${rows.size} report case(s) are not in this experiment` };
+  }
+
+  async function ingest(entries) {
+    const found = [];
+    skipped = [];
+    for (const { file, path } of entries) {
+      let obj = null, why = null;
+      try { obj = JSON.parse(await file.text()); } catch (err) { why = 'invalid JSON: ' + err.message; }
+      const kind = why ? null : classify(obj);
+      if (!kind) { skipped.push({ path, why: why || 'not an experiment or a report' }); continue; }
+      const meta = {
+        path, name: file.name, size: file.size,
+        modified: file.lastModified ? file.lastModified / 1000 : 0, obj,
+      };
+      if (kind === 'experiment') Object.assign(meta, { cases: (obj.cases || []).length, evaluators: obj.evaluators || [] });
+      else Object.assign(meta, reportMeta(obj));
+      found.push({ kind, meta, dir: path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '.' });
+    }
+
+    const byDir = new Map();
+    found.forEach(f => { if (!byDir.has(f.dir)) byDir.set(f.dir, []); byDir.get(f.dir).push(f); });
+
+    const runs = [];
+    [...byDir.keys()].sort().forEach(dir => {
+      const files = byDir.get(dir);
+      const exps = files.filter(f => f.kind === 'experiment');
+      const reps = files.filter(f => f.kind === 'report');
+      const taken = new Set();
+      exps.forEach(e => {
+        let m = reps.find(r => !taken.has(r) && stem(r.meta.name) === stem(e.meta.name));
+        if (!m && exps.length === 1 && reps.length === 1) m = reps[0];
+        if (m) taken.add(m);
+        runs.push({
+          id: e.meta.path, dir, experiment: e.meta, report: m ? m.meta : null,
+          link: m ? linkStatus(e.meta.obj, m.meta.obj) : null,
+        });
+      });
+      reps.filter(r => !taken.has(r)).forEach(r =>
+        runs.push({ id: r.meta.path, dir, experiment: null, report: r.meta, link: null }));
+    });
+    runs.sort((a, b) => Math.max((b.experiment || {}).modified || 0, (b.report || {}).modified || 0)
+      - Math.max((a.experiment || {}).modified || 0, (a.report || {}).modified || 0));
+    return runs;
+  }
+
+  async function pickFolder() {
+    if (window.showDirectoryPicker) {
+      let dir;
+      try { dir = await window.showDirectoryPicker(); } catch { return; }   // cancelled
+      const entries = [];
+      const walk = async (handle, prefix, depth) => {
+        for await (const [name, h] of handle.entries()) {
+          if (h.kind === 'file') {
+            if (/\.json$/i.test(name)) entries.push({ file: await h.getFile(), path: prefix + name });
+          } else if (depth < SCAN_DEPTH && !name.startsWith('.') && name !== 'node_modules') {
+            await walk(h, prefix + name + '/', depth + 1);
+          }
+        }
+      };
+      await walk(dir, '', 1);
+      folderLabel = dir.name;
+      RUNS = await ingest(entries);
+      selRun = -1;
+      renderRuns(); show('runs');
+      return;
+    }
+    // showDirectoryPicker needs a secure context, which file:// is not. A directory <input>
+    // is the only way to read a folder there, so it is the fallback rather than an error.
+    $('dirinput').click();
+  }
+
+  app.querySelector('[data-act="pick"]').onclick = pickFolder;
+
+  $('dirinput').onchange = async e => {
+    const files = [...e.target.files].filter(f => /\.json$/i.test(f.name));
+    const first = (files[0] && files[0].webkitRelativePath) || '';
+    folderLabel = first.includes('/') ? first.slice(0, first.indexOf('/')) : 'selected folder';
+    RUNS = await ingest(files.map(f => ({ file: f, path: f.webkitRelativePath || f.name })));
+    selRun = -1;
+    renderRuns(); show('runs');
+  };
+
+  /* ══════════ boot ══════════ */
+
+  function bundled() {
+    const read = id => {
+      const el = $(id);
+      if (!el || !el.textContent.trim()) return null;
+      try { return JSON.parse(el.textContent); } catch { return null; }
+    };
+    const expObj = read('experiment-json'), repObj = read('report-json');
+    if (!expObj) return [];
+    const expMetaB = {
+      path: 'experiment.json', name: 'experiment.json', obj: expObj, modified: 0,
+      size: $('experiment-json').textContent.length,
+      cases: (expObj.cases || []).length, evaluators: expObj.evaluators || [],
+    };
+    const run = { id: 'experiment.json', dir: 'bundled sample', experiment: expMetaB, report: null, link: null };
+    if (repObj) {
+      run.report = Object.assign({
+        path: 'report.json', name: 'report.json', obj: repObj, modified: 0,
+        size: $('report-json').textContent.length,
+      }, reportMeta(repObj));
+      run.link = linkStatus(expObj, repObj);
+    }
+    return [run];
+  }
+
+  async function boot() {
+    const want = readHash();
+    try {
+      const config = await api('/api/config');
+      MODE = 'server'; ROOT = config.root; READONLY = config.read_only; DEPTH = config.depth;
+      await rescan();
+    } catch {
+      MODE = 'standalone'; READONLY = false;
+      folderLabel = 'bundled sample';
+      RUNS = bundled();
+      renderRuns();
+    }
+
+    clearExperiment(); clearReport();
+    let index = want.run ? RUNS.findIndex(r => r.id === want.run) : -1;
+    if (index < 0 && MODE !== 'server' && RUNS.length) index = 0;     // the sample is the point
+    if (index >= 0) {
+      // Loaded, but still landing on the list: which run is being looked at is the user's call,
+      // and a deep link that named a tab is the one exception.
+      await selectRun(index, { force: true, view: want.tab || 'runs' });
+      if (want.case) {
+        const at = cases.findIndex(c => c.name === want.case);
+        if (at >= 0) { sel = at; renderForm(); }
+      }
+    } else {
+      renderRuns();
+      show(want.tab || 'runs', { silent: true });
+    }
+    refreshDirty();
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>
