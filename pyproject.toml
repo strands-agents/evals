@@ -170,6 +170,7 @@ select = [
 "src/strands_evals/detectors/prompt_templates/*" = ["E501"] # line-length
 "src/strands_evals/generators/prompt_template/*" = ["E501"] # line-length
 "src/strands_evals/redteam/**/prompt_templates/**" = ["E501"] # line-length
+"tests/ui/fixtures/*" = ["T201"] # a hand-run generator script, whose output is its report
 
 [tool.mypy]
 # Disable strict checks that cause false positives with Generic classes

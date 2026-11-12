@@ -285,6 +285,8 @@
   .tick { fill: var(--ink3); font-size: 9.5px; }
   .axlab { fill: var(--ink3); font-size: 10px; }
   .best { fill: none; stroke: var(--good); stroke-width: 1.75; }
+  .metric-line { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+  .col { fill: var(--accent); opacity: .75; }
   .budget-fill { fill: var(--accent); opacity: .16; }
   .budget-line { fill: none; stroke: var(--accent); stroke-width: 1.75; }
   .cap-line { stroke: var(--bad); stroke-width: 1.25; stroke-dasharray: 4 3; }
@@ -461,6 +463,8 @@
           <div id="opt-status-chart"></div>
         </div>
       </div>
+      <div class="charts" id="opt-metric-charts"></div>
+      <div class="charts" id="opt-usage-charts"></div>
       <div class="scroll">
         <table class="rep">
           <thead><tr>
@@ -2875,6 +2879,9 @@
   const fmt = n => (typeof n === 'number' && isFinite(n)) ? n.toFixed(2) : '—';
   const KB = n => n == null ? '' : (n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB');
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  /** Big counts in a space the width of a word: 1_284_000 -> "1.28M". */
+  const compact = n => Math.abs(n) >= 1e6 ? (n / 1e6).toFixed(2) + 'M'
+    : Math.abs(n) >= 1e4 ? Math.round(n / 1e3) + 'k' : String(Math.round(n));
 
   const when = secs => {
     if (!secs) return '—';
@@ -3968,6 +3975,28 @@
       if (e && e.event === 'propose' && e.candidate_id) proposed.set(e.candidate_id, e);
     }
 
+    /* Per-metric measurements, from `label.measured` where the optimizer recorded its own mean
+       and otherwise averaged over the candidate's trials. The two can disagree — `measured` is
+       what the search acted on, so it wins — but a candidate scored and never labelled would
+       otherwise have no measurement at all. */
+    const measured = new Map();        // candidate -> {metric: mean}
+    const fromTrials = new Map();      // candidate -> {metric: {sum, n}}
+    const metricNames = [];
+    const seeMetric = name => { if (!metricNames.includes(name)) metricNames.push(name); };
+
+    /* Usage is attributed to the iteration it was spent in, by flushing what has accumulated
+       when that iteration ends. Whatever is left over at the end was spent after the last
+       iteration — the finalist and test phases — which is real cost but not search cost, so it
+       is reported on its own rather than piled onto the last iteration's bar. */
+    const blankUsage = () => ({ tokens: 0, model_calls: 0, seconds: 0, trials: 0 });
+    const addUsage = (into, usage) => {
+      into.trials += 1;
+      for (const key of ['tokens', 'model_calls', 'seconds']) {
+        if (typeof usage[key] === 'number' && isFinite(usage[key])) into[key] += usage[key];
+      }
+    };
+    let pending = blankUsage();
+
     let spent = 0;
     for (const e of events) {
       if (!e || typeof e !== 'object') continue;
@@ -3978,13 +4007,45 @@
           statuses[status] = (statuses[status] || 0) + 1;
           const split = rec.split || 'unknown';
           bySplit[split] = (bySplit[split] || 0) + 1;
+          addUsage(pending, rec.usage || {});
+
+          const cid = rec.candidate_id;
+          if (cid) {
+            if (!fromTrials.has(cid)) fromTrials.set(cid, {});
+            const totals = fromTrials.get(cid);
+            for (const [metric, value] of Object.entries(rec.evaluations || {})) {
+              const score = value && typeof value === 'object' ? value.score : value;
+              if (typeof score !== 'number' || !isFinite(score)) continue;
+              seeMetric(metric);
+              if (!totals[metric]) totals[metric] = { sum: 0, n: 0 };
+              totals[metric].sum += score;
+              totals[metric].n += 1;
+            }
+          }
+          break;
+        }
+        case 'label': {
+          const label = e.label || {};
+          if (!e.candidate_id || !label.measured || typeof label.measured !== 'object') break;
+          const means = {};
+          for (const [metric, value] of Object.entries(label.measured)) {
+            const mean = value && typeof value === 'object' ? value.mean : value;
+            if (typeof mean !== 'number' || !isFinite(mean)) continue;
+            seeMetric(metric);
+            means[metric] = mean;
+          }
+          measured.set(e.candidate_id, Object.assign(measured.get(e.candidate_id) || {}, means));
           break;
         }
         case 'iteration_end': {
           const rec = e.record || {};
           const rollouts = typeof rec.rollouts_spent === 'number' ? rec.rollouts_spent : 0;
           spent += rollouts;
-          iterations.push({ iteration: rec.iteration != null ? rec.iteration : e.iteration, rollouts, cumulative: spent });
+          iterations.push({
+            iteration: rec.iteration != null ? rec.iteration : e.iteration,
+            rollouts, cumulative: spent, usage: pending,
+          });
+          pending = blankUsage();
           if (e.best_after && typeof e.best_after === 'object') bestAfter = e.best_after;
           for (const p of (rec.proposals || [])) {
             const origin = proposed.get(p.candidate_id);
@@ -4019,6 +4080,9 @@
       }
     }
 
+    // Whatever never got flushed was spent after the last iteration ended: the end phase.
+    const endPhase = pending;
+
     /* Best so far counts only candidates labelled `feasible`. One that breaks a constraint
        cannot ship however well it scores, so calling it the best would name a candidate the
        optimizer itself refused — and the run's own champion would contradict the chart. */
@@ -4030,6 +4094,29 @@
       p.best = running;          // null until the first feasible candidate is scored
     }
 
+    for (const p of proposals) {
+      const own = measured.get(p.candidate_id) || {};
+      const averaged = fromTrials.get(p.candidate_id) || {};
+      p.measured = {};
+      for (const metric of metricNames) {
+        if (own[metric] != null) p.measured[metric] = own[metric];
+        else if (averaged[metric] && averaged[metric].n) p.measured[metric] = averaged[metric].sum / averaged[metric].n;
+      }
+    }
+
+    /* The config names the metrics the run was set up to move, so those lead and in its order.
+       Anything else the log measured still gets a chart — a metric that appears only in the
+       trials is exactly the kind of thing worth noticing. */
+    const declared = (cfg.goal_metrics || []).filter(m => metricNames.includes(m));
+    const metrics = declared.concat(metricNames.filter(m => !declared.includes(m)))
+      .filter(m => proposals.some(p => p.measured[m] != null));
+
+    const usageKeys = [
+      { key: 'tokens', label: 'Tokens' },
+      { key: 'model_calls', label: 'Model calls' },
+      { key: 'seconds', label: 'Seconds' },
+    ].filter(u => iterations.some(it => it.usage[u.key] > 0) || endPhase[u.key] > 0);
+
     const budget = cfg.budget || {};
     const scored = proposals.filter(p => p.objective != null);
     return {
@@ -4037,6 +4124,9 @@
       proposals,
       scored,
       iterations,
+      metrics,
+      usageKeys,
+      endPhase,
       statuses,
       bySplit,
       trials: Object.values(statuses).reduce((a, b) => a + b, 0),
@@ -4059,7 +4149,8 @@
   const IN_W = W - PAD.l - PAD.r, IN_H = H - PAD.t - PAD.b;
 
   const svg = inner => `<svg viewBox="0 0 ${W} ${H}" role="img">${inner}</svg>`;
-  const nice = v => Math.abs(v) >= 100 ? String(Math.round(v)) : (Math.round(v * 100) / 100).toFixed(2);
+  const nice = v => Number.isInteger(v) ? String(v)
+    : Math.abs(v) >= 100 ? String(Math.round(v)) : (Math.round(v * 100) / 100).toFixed(2);
 
   function yAxis(lo, hi, label) {
     const span = (hi - lo) || 1;
@@ -4139,6 +4230,68 @@
       + capLine + marks + xticks);
   }
 
+  /* One metric, one chart, one axis. Several metrics on shared axes would be unreadable the
+     moment a run mixes a 0-to-1 score with a token count, and normalising them to share one
+     would put a number on screen that is not the number anyone measured. */
+  function metricChart(d, metric) {
+    const values = d.proposals.map(p => p.measured[metric]).filter(v => v != null);
+    if (!values.length) return '<div class="empty">Nothing measured this metric yet.</div>';
+    let lo = Math.min(...values), hi = Math.max(...values);
+    const pad = ((hi - lo) || Math.abs(hi) || 1) * 0.15;
+    lo -= pad; hi += pad;
+
+    const n = d.proposals.length;
+    const x = i => PAD.l + (n === 1 ? IN_W / 2 : (i / (n - 1)) * IN_W);
+    const { y, out: axis } = yAxis(lo, hi, metric);
+
+    /* Joined only between consecutive measured candidates. A line drawn across a candidate that
+       was never measured would read as a value passing through it. */
+    let marks = '', xticks = '', segments = '', run = [];
+    const flush = () => {
+      if (run.length > 1) segments += `<path class="metric-line" d="${run.join(' ')}"/>`;
+      run = [];
+    };
+    d.proposals.forEach((p, i) => {
+      if (p.iteration !== (d.proposals[i - 1] || {}).iteration) {
+        xticks += `<text class="tick" x="${x(i)}" y="${H - 8}" text-anchor="middle">it ${esc(p.iteration)}</text>`;
+      }
+      const v = p.measured[metric];
+      if (v == null) { flush(); return; }
+      run.push(`${run.length ? 'L' : 'M'}${x(i)},${y(v)}`);
+      const cls = p.candidate_id === d.champion ? 'champion'
+        : p.outcome === 'infeasible' ? 'infeasible' : 'feasible';
+      marks += `<circle class="pt ${esc(cls)}" cx="${x(i)}" cy="${y(v)}" r="3.5">`
+        + `<title>${esc(`${p.candidate_id} · ${metric} ${nice(v)}`)}</title></circle>`;
+    });
+    flush();
+    return svg(axis + segments + marks + xticks);
+  }
+
+  /* Columns, not a line: each bar is what one iteration cost, and a line between them would
+     imply a rate in between that nothing measured. */
+  function usageChart(d, key, label) {
+    if (!d.iterations.length) return '<div class="empty">No iteration has finished yet.</div>';
+    const values = d.iterations.map(it => it.usage[key] || 0);
+    const hi = Math.max(...values) || 1;
+    const { y, out: axis } = yAxis(0, hi, label.toLowerCase());
+    const n = d.iterations.length;
+    const slot = IN_W / n;
+    const width = Math.min(34, slot * 0.6);
+
+    let bars = '', xticks = '';
+    d.iterations.forEach((it, i) => {
+      const centre = PAD.l + slot * (i + 0.5);
+      const value = it.usage[key] || 0;
+      const top = y(value);
+      bars += `<rect class="col" x="${centre - width / 2}" y="${top}" width="${width}" `
+        + `height="${Math.max(0, PAD.t + IN_H - top)}">`
+        + `<title>${esc(`iteration ${it.iteration}: ${nice(value)} over ${plural(it.usage.trials, 'trial')}`)}`
+        + `</title></rect>`;
+      xticks += `<text class="tick" x="${centre}" y="${H - 8}" text-anchor="middle">${esc(it.iteration)}</text>`;
+    });
+    return svg(axis + bars + xticks);
+  }
+
   function statusChart(d) {
     if (!d.trials) return '<div class="empty">No trial has been recorded yet.</div>';
     const present = STATUSES.filter(s => d.statuses[s]);
@@ -4164,6 +4317,10 @@
     return `<div class="stat"><span class="v">${esc(value)}</span><span class="k">${esc(key)}</span></div>`;
   }
 
+  /** One chart card. `title` and `caption` are already escaped; `body` is markup. */
+  const panel = (title, caption, body) =>
+    `<div class="chart"><h3>${title}</h3><p class="cap">${caption}</p>${body}</div>`;
+
   function renderOptimization() {
     const run = OPT_RUNS[optSel];
     $('tab-opt').hidden = OPT_RUNS.length === 0;
@@ -4171,7 +4328,8 @@
       $('opt-sub').textContent = OPT_RUNS.length
         ? 'Pick a run above.'
         : 'No optimizer run directory in this folder. One is a run.json with an events.jsonl beside it.';
-      ['opt-obj-chart', 'opt-budget-chart', 'opt-status-chart'].forEach(id => { $(id).innerHTML = ''; });
+      ['opt-obj-chart', 'opt-budget-chart', 'opt-status-chart', 'opt-metric-charts', 'opt-usage-charts']
+        .forEach(id => { $(id).innerHTML = ''; });
       $('opt-rows').innerHTML = '';
       $('opt-stats').innerHTML = '';
       $('opt-best').textContent = '—';
@@ -4190,12 +4348,16 @@
       : 'Best feasible objective';
 
     const champ = d.champion ? d.champion : '—';
-    $('opt-stats').innerHTML = [
+    const stats = [
       optStat(champ, 'Champion'),
       optStat(d.maxRollouts != null ? `${d.spent} / ${d.maxRollouts}` : String(d.spent), 'Rollouts'),
       optStat(String(d.scored.length), 'Scored'),
       optStat(String(d.proposals.length - d.scored.length), 'Not scored'),
-    ].join('');
+    ];
+    // Every trial's tokens, search and end phase together: what the whole run cost.
+    const tokens = d.iterations.reduce((sum, it) => sum + (it.usage.tokens || 0), 0) + (d.endPhase.tokens || 0);
+    if (tokens) stats.push(optStat(compact(tokens), 'Tokens'));
+    $('opt-stats').innerHTML = stats.join('');
 
     $('opt-obj-cap').textContent = 'One mark per proposal in search order. The line is the best feasible '
       + 'objective so far — infeasible candidates are plotted but never counted as best, and a candidate '
@@ -4213,6 +4375,25 @@
 
     $('opt-status-cap').textContent = 'Every recorded trial by how it ended. A trial is one case run once.';
     $('opt-status-chart').innerHTML = statusChart(d);
+
+    /* A panel per metric and per usage measure the log actually carries, so a run that recorded
+       neither shows neither rather than an empty frame promising a chart. */
+    $('opt-metric-charts').innerHTML = d.metrics.map(metric => panel(
+      esc(metric) + ' by candidate',
+      `The mean the run recorded for ${esc(metric)} on each candidate it measured, in search `
+      + 'order. This is the metric itself, not its contribution to the objective.',
+      metricChart(d, metric))).join('');
+
+    /* Trials recorded past the last `iteration_end` belong to no finished iteration — the end
+       phase of a stopped run, or the iteration still in flight. Either way they are named rather
+       than folded into the last column, which would overstate what that iteration cost. */
+    const usageCap = d.endPhase.trials
+      ? `, excluding the ${plural(d.endPhase.trials, 'trial')} recorded after the last finished iteration`
+      : '';
+    $('opt-usage-charts').innerHTML = d.usageKeys.map(u => panel(
+      esc(u.label) + ' per iteration',
+      `What each iteration cost${usageCap}. Summed over that iteration's trials, not cumulative.`,
+      usageChart(d, u.key, u.label))).join('');
 
     const rows = d.proposals.map(p => {
       const obj = p.objective == null
