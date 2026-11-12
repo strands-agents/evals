@@ -85,12 +85,12 @@ class Observation(BaseModel):
     equal an eligible candidate's (`objective` is that candidate's).
 
     Attributes:
-        candidate_id: None for an invalid patch.
+        candidate_id: None for an invalid patch; for a duplicate, the existing candidate's id.
         values: The candidate's complete values; None for an invalid patch.
         source_id: The candidate `objective` comes from when it isn't `candidate_id`: a `Nested` round's
             opener is told the round's best. None otherwise.
-        round_ids: With `source_id`, the round's candidates (its opener included), among which `source_id`
-            was the best; `TPE` takes the best of them again by the latest ranking. None otherwise.
+        round_candidate_ids: For a `Nested` round's opener, the round's candidates (the opener and the
+            candidates its steps saved), whichever of them was the best. None otherwise.
         objective: The candidate's `Assessment.objective` right after the step's refit (a snapshot); None if
             never measured.
         term_values: Each objective term's raw value (not oriented, unlike `Assessment.terms`: the resolved
@@ -106,7 +106,7 @@ class Observation(BaseModel):
     candidate_id: str | None
     values: dict[str, Value] | None
     source_id: str | None = None
-    round_ids: list[str] | None = None
+    round_candidate_ids: list[str] | None = None
     objective: float | None
     term_values: list[float] | None
     outcome: ObservationOutcome

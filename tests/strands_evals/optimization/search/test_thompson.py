@@ -297,6 +297,20 @@ def test_options_python_compares_equal_stay_apart():
     assert [(type(p.updates["flag"]), p.updates["flag"]) for p in patches] == [(bool, True)]
 
 
+def test_held_values_python_compares_equal_stay_apart():
+    space = Space({"option": OneOf("p", "q", default="p"), "flag": OneOf(1, True, default=1)})
+    parent = Candidate(space.complete({"flag": True}), None, "baseline", "")
+    at_one, at_true = space.complete({"option": "q", "flag": 1}), space.complete({"option": "q", "flag": True})
+
+    def options(measured):
+        listed = [summary(content_id(measured), measured)]
+        reqs = (request(space, ["option"], candidates=listed, parent=parent, iteration=i) for i in range(20))
+        return {propose(Thompson(), req)[0].updates["option"] for req in reqs}
+
+    assert options(at_one) == {"p", "q"}  # measured under flag=1, not under the parent's flag=True: still fresh
+    assert options(at_true) == {"p"}
+
+
 def test_nothing_to_propose_when_no_block_key_is_active():
     space = Space({"manager": choice(window=component(Window, pin=OneOf(0, 1)), summary=component(Summary))})
     parent = Candidate(space.complete({"manager": "summary"}), None, "baseline", "")

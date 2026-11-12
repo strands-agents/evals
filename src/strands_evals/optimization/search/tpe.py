@@ -50,7 +50,7 @@ class TPE(Proposer):
     rebuilt from that list, each trial valued at its candidate's current assessment in `request.candidates`
     (`ranking_objective`, `violations` as the trial's constraint values), so TPE's good and bad trials are
     those of the latest fit, as the parent and the final pick are. A `Nested` opener's trial is valued at the
-    best of its round (`Observation.round_ids`) by the latest ranking; a duplicate at the existing
+    best of its round (`Observation.round_candidate_ids`) by the latest ranking; a duplicate at the existing
     candidate's. A trial told with `objective=None`, or whose candidate is no longer eligible, is
     `TrialState.FAIL`; one whose candidates the request doesn't list keeps the values it was told. The
     sampler is reseeded from `f"{seed}:{iteration}:{redraw}:{context id}:{keys}:{pending}"` through sha256,
@@ -136,15 +136,15 @@ class TPE(Proposer):
         return patches
 
     def observe(self, observation: Observation) -> None:
-        """Close the patch's running trial and keep the candidate as told; an invalid patch is left out."""
+        """Close the patch's running trial and keep the candidate, re-valued at each ask; invalid ones are left out."""
         for i, pending in enumerate(self._pending):
             if pending.patch == observation.patch:
                 del self._pending[i]
                 break
         if observation.outcome == "invalid" or observation.values is None:
             return
-        if observation.round_ids is not None:
-            members = tuple(observation.round_ids)
+        if observation.round_candidate_ids is not None:
+            members = tuple(observation.round_candidate_ids)
         else:
             source = observation.source_id or observation.candidate_id
             members = () if source is None else (source,)
@@ -153,7 +153,12 @@ class TPE(Proposer):
         )
 
     def evidence(self, evidence: Evidence) -> None:
-        """Keep another block's candidate as told, so it informs the study of its context."""
+        """Keep another block's candidate, re-valued at each ask, so it informs the study of its context.
+
+        A candidate never measured (`objective=None`: ineligible or unscored) is no evidence and is left out.
+        """
+        if evidence.objective is None:
+            return
         self._told.append(
             _Told(
                 evidence.values, evidence.objective, evidence.term_values, evidence.violations, (evidence.candidate_id,)

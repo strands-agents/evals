@@ -215,10 +215,10 @@ class Nested(Schedule):
     the round ends when the room is used up; an inner step that saved nothing uses none, while an opener
     that saved nothing (every draw invalid) still uses its 1. An opener repeating a
     measured candidate opens the round on it at no cost. At the round's end the outer proposer observes the
-    round's best candidate (`Observation.source_id`, the round's candidates in `round_ids`); an opener
-    that isn't eligible is observed as None with outcome `ineligible`, and the round's inner steps are
-    skipped, as they are when the opener saved nothing (every draw invalid). A round also ends when the
-    inner schedule returns None. Rounds stop after
+    round's best candidate (`Observation.source_id` when it isn't the opener; the round's candidates in
+    `round_candidate_ids` either way); an opener that isn't eligible is observed as None with outcome
+    `ineligible`, and the round's inner steps are skipped, as they are when the opener saved nothing (every
+    draw invalid). A round also ends when the inner schedule returns None. Rounds stop after
     `ctx.redraws + 1` in a row measure nothing new (an opener that saved nothing counts as one); then
     `next()` returns None. When `outer` is not among `ctx.blocks` (an enclosing round narrowed it out), the
     inner schedule runs alone. Nested inner schedules add one entry to `Step.round` per level.

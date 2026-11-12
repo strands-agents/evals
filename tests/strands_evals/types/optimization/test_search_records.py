@@ -49,7 +49,7 @@ def test_observation_round_trips_through_json():
 
     assert restored == observation
     assert restored.source_id is None
-    assert restored.round_ids is None
+    assert restored.round_candidate_ids is None
 
 
 def test_a_round_openers_observation_round_trips_its_round():
@@ -58,7 +58,7 @@ def test_a_round_openers_observation_round_trips_its_round():
         candidate_id="opener",
         values={"manager": "window"},
         source_id="best",
-        round_ids=["opener", "best", "other"],
+        round_candidate_ids=["opener", "best", "other"],
         objective=0.8,
         term_values=[0.8],
         outcome="feasible",
@@ -69,7 +69,7 @@ def test_a_round_openers_observation_round_trips_its_round():
     restored = Observation.model_validate_json(observation.model_dump_json())
 
     assert restored == observation
-    assert restored.round_ids == ["opener", "best", "other"]
+    assert restored.round_candidate_ids == ["opener", "best", "other"]
 
 
 def test_observation_rejects_a_gate_loop_outcome():

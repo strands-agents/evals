@@ -22,7 +22,7 @@ from .proposer import ProposalRequest, Proposer
 class _Pending:
     """A patch proposed and not yet observed, with the values it held outside its block."""
 
-    held: Mapping[str, Value]
+    held: tuple[tuple[str, str, str], ...]
     combination: tuple[tuple[str, str, str], ...]
     patch: Patch
 
@@ -102,13 +102,15 @@ class Thompson(Proposer):
             picks = rng.choice(len(ids), size=self.MAX_COMBINATIONS, replace=False)
             ids = [ids[i] for i in sorted(picks)]
 
+        def agrees(values: Values, ref: Mapping[str, Value], *, partial: bool) -> bool:
+            """`values` hold `ref`'s values, typed (`1` is not `True`); `partial`: only the keys both have."""
+            shared = [k for k in ref if k in values] if partial else list(ref)
+            return _key(values, shared) == _key(ref, shared)
+
         eligible = [c for c in request.candidates if c.is_eligible]  # in ranking order
-        measured = {
-            _key(c.values, keys)
-            for c in eligible
-            if all(c.values.get(k) == v for k, v in held.items() if k in c.values)
-        }
-        proposed = {p.combination for p in self._pending if p.held == held}
+        measured = {_key(c.values, keys) for c in eligible if agrees(c.values, held, partial=True)}
+        held_key = _key(held, sorted(held))
+        proposed = {p.combination for p in self._pending if p.held == held_key}
         fit = request.fit if request.fit is not None and not request.fit.flagged else None
 
         def inherit(k: str) -> tuple[Value, str] | None:
@@ -118,9 +120,7 @@ class Thompson(Proposer):
         templates: list[Values] = []
         if fit is not None:
             for i in ids:
-                made = next(
-                    (c for c in eligible if all(c.values.get(k) == v for k, v in combinations[i].items())), None
-                )
+                made = next((c for c in eligible if agrees(c.values, combinations[i], partial=False)), None)
                 templates.append(made.values if made else space.complete({**held, **combinations[i]}, fill=inherit))
 
         objective = request.criteria.objective
@@ -152,7 +152,7 @@ class Thompson(Proposer):
                 rationale = "Thompson: best under a posterior draw"
             proposed.add(ids[j])
             patch = Patch(updates=dict(combinations[ids[j]]), rationale=rationale)
-            self._pending.append(_Pending(held, ids[j], patch))
+            self._pending.append(_Pending(held_key, ids[j], patch))
             patches.append(patch)
         return patches
 

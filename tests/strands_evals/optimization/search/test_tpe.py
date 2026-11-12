@@ -94,14 +94,14 @@ def told(
     term_values=None,
     cid="id",
     source=None,
-    round_ids=None,
+    round_candidate_ids=None,
 ):
     return Observation(
         patch=patch,
         candidate_id=None if values is None else cid,
         values=values,
         source_id=source,
-        round_ids=round_ids,
+        round_candidate_ids=round_candidate_ids,
         objective=objective,
         term_values=term_values,
         outcome=outcome,
@@ -242,6 +242,7 @@ def test_each_trial_is_valued_at_its_candidates_current_assessment():
     tpe.observe(told(c, None, None, outcome="invalid"))
     tpe.observe(told(d, space.complete(d.updates), None, outcome="ineligible", cid="d"))
     tpe.evidence(evidence(space.complete({"x": 0.9}), 0.6, violations=[-0.3], cid="e"))
+    tpe.evidence(evidence(space.complete({"x": 0.1}), None, violations=None, cid="f"))  # never measured: no evidence
     context = a.state["context"]
     as_told = tpe._study_for(context, space, ["x"], request(space, ["x"], criteria=criteria), 0)
     assert [(t.state.name, t.values, t.constraints) for t in as_told.trials] == [
@@ -254,6 +255,7 @@ def test_each_trial_is_valued_at_its_candidates_current_assessment():
         summary("a", 0.5, violations=[0.1]),  # re-estimated, now over the limit
         summary("b", 0.8, is_eligible=False),  # a re-score left a case unmeasured
         summary("d", 0.9),  # told as never measured: stays failed
+        summary("f", 0.7),  # never measured when shared: still no trial
     ]
     now = tpe._study_for(context, space, ["x"], request(space, ["x"], criteria=criteria, candidates=refitted), 0)
     assert [(t.state.name, t.values, t.constraints) for t in now.trials] == [
@@ -268,7 +270,9 @@ def test_a_round_opener_is_valued_at_its_rounds_best_by_the_latest_ranking():
     space = numbers_space()
     tpe = TPE()
     (patch,) = propose(tpe, request(space, ["x"]))
-    tpe.observe(told(patch, space.complete(patch.updates), 0.7, cid="o", source="r1", round_ids=["o", "r1", "r2"]))
+    tpe.observe(
+        told(patch, space.complete(patch.updates), 0.7, cid="o", source="r1", round_candidate_ids=["o", "r1", "r2"])
+    )
     context = patch.state["context"]
     ranked = [summary("r2", 0.75), summary("x", 0.9), summary("r1", 0.7), summary("o", 0.6)]
     study = tpe._study_for(context, space, ["x"], request(space, ["x"], candidates=ranked), 0)
@@ -276,6 +280,26 @@ def test_a_round_opener_is_valued_at_its_rounds_best_by_the_latest_ranking():
     none_eligible = [summary(m, 0.7, is_eligible=False) for m in ("o", "r1", "r2")]
     study = tpe._study_for(context, space, ["x"], request(space, ["x"], candidates=none_eligible), 0)
     assert [t.state.name for t in study.trials] == ["FAIL"]
+
+
+def test_an_opener_that_won_its_round_is_valued_at_the_rounds_best_later():
+    space = numbers_space()
+    tpe = TPE()
+    (patch,) = propose(tpe, request(space, ["x"]))
+    tpe.observe(told(patch, space.complete(patch.updates), 0.7, cid="o", round_candidate_ids=["o", "r1"]))
+    ranked = [summary("r1", 0.72), summary("o", 0.68)]  # after a refit an inner candidate ranks first
+    study = tpe._study_for(patch.state["context"], space, ["x"], request(space, ["x"], candidates=ranked), 0)
+    assert [t.values for t in study.trials] == [[0.72]]
+
+
+def test_a_source_without_its_round_is_valued_at_the_source_alone():
+    space = numbers_space()
+    tpe = TPE()
+    (patch,) = propose(tpe, request(space, ["x"]))
+    tpe.observe(told(patch, space.complete(patch.updates), 0.7, cid="o", source="r1"))
+    ranked = [summary("o", 0.9), summary("r1", 0.65)]
+    study = tpe._study_for(patch.state["context"], space, ["x"], request(space, ["x"], candidates=ranked), 0)
+    assert [t.values for t in study.trials] == [[0.65]]
 
 
 def test_a_duplicate_is_valued_at_the_existing_candidate():
@@ -347,18 +371,20 @@ def test_replaying_the_same_history_proposes_the_same_patches():
     history = []
     parent = Candidate.baseline(space)
     for i in range(8):
-        for patch in propose(first, request(space, ["x", "k", "mode"], parent=parent, n=2, iteration=i)):
-            event = told(patch, space.complete({**parent.values, **patch.updates}), rng.random())
+        for j, patch in enumerate(propose(first, request(space, ["x", "k", "mode"], parent=parent, n=2, iteration=i))):
+            event = told(patch, space.complete({**parent.values, **patch.updates}), rng.random(), cid=f"c{i}-{j}")
             first.observe(event)
             history.append(event)
-        other = evidence(space.complete({"x": rng.random()}), rng.random())
+        other = evidence(space.complete({"x": rng.random()}), rng.random(), cid=f"e{i}")
         first.evidence(other)
         history.append(other)
     resumed = TPE()
     for event in history:
         (resumed.observe if isinstance(event, Observation) else resumed.evidence)(event)
-    req = request(space, ["x", "k", "mode"], parent=parent, n=3, iteration=8)
-    assert propose(resumed, req) == propose(first, req)
+    refitted = [summary(f"c{i}-0", rng.random()) for i in range(8)]  # re-valued by a later fit
+    for candidates in ((), refitted):
+        req = request(space, ["x", "k", "mode"], parent=parent, n=3, iteration=8, candidates=candidates)
+        assert propose(resumed, req) == propose(first, req)
 
 
 def test_the_run_seed_is_used_unless_one_is_given():
