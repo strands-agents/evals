@@ -11,7 +11,9 @@
     --pop:  var(--popover, #ffffff);
     --ink1: var(--foreground, #0b0b0b);
     --ink2: var(--muted-foreground, #52514e);
-    --ink3: #898781;
+    /* 5.2:1 on the card, not the 3.6:1 it used to be. This is the ink most field labels and
+       column headers are set in, so it is read as much as it is glanced at. */
+    --ink3: #6f6d67;
     --hair: var(--border, rgba(11,11,11,.11));
     --hair2: rgba(11,11,11,.06);
     --accent: #2a78d6;
@@ -27,7 +29,7 @@
       --pop: var(--popover, #232321);
       --ink1: var(--foreground, #f7f7f5);
       --ink2: var(--muted-foreground, #b4b2a9);
-      --ink3: #8a887f;
+      --ink3: #94928a;
       --hair: var(--border, rgba(255,255,255,.12));
       --hair2: rgba(255,255,255,.07);
       --accent: #5598e7;
@@ -104,9 +106,12 @@
 
   .field { margin-bottom: 16px; }
   .field:last-child { margin-bottom: 0; }
+  /* A field's label names the property being edited, so it is read before the value and not
+     after it. Uppercase at 11.5px is already working against legibility; it does not also
+     need the faintest ink on the page. */
   .field > label {
     display: block; font-size: 11.5px; letter-spacing: .02em; text-transform: uppercase;
-    color: var(--ink3); margin-bottom: 5px; font-weight: 550;
+    color: var(--ink2); margin-bottom: 5px; font-weight: 600;
   }
   .field .hint { font-size: 12px; color: var(--ink3); margin-top: 5px; }
   input.f, textarea.f {
@@ -175,7 +180,7 @@
   table.rep { width: 100%; border-collapse: collapse; }
   table.rep th {
     text-align: left; font-size: 11.5px; text-transform: uppercase; letter-spacing: .02em;
-    color: var(--ink3); font-weight: 550; padding: 0 12px 7px; border-bottom: 1px solid var(--hair);
+    color: var(--ink2); font-weight: 600; padding: 0 12px 7px; border-bottom: 1px solid var(--hair);
   }
   table.rep th.n, table.rep td.n { text-align: right; }
   table.rep td { padding: 10px 12px; border-bottom: 1px solid var(--hair2); vertical-align: top; }
@@ -194,7 +199,9 @@
   .vb i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; display: inline-block; }
   tr.detail td { background: var(--hair2); }
   .kv { display: grid; grid-template-columns: 148px 1fr; gap: 4px 14px; font-size: 13px; }
-  .kv dt { color: var(--ink3); font-size: 12px; padding-top: 1px; }
+  /* These sit on `tr.detail`'s tinted ground, so they start a step behind the same ink
+     elsewhere — and they are the only thing saying which value you are looking at. */
+  .kv dt { color: var(--ink2); font-size: 12px; font-weight: 550; padding-top: 1px; }
   .kv dd { margin: 0; }
   .kv dd.m { font-family: var(--font-mono, ui-monospace, Menlo, monospace); font-size: 12.5px; }
   .del { color: var(--bad); }
@@ -206,11 +213,18 @@
     border: 1px solid var(--hair); border-radius: 6px; background: var(--card); font-size: 12.5px;
   }
   .evchip b { font-weight: 600; }
-  .evchip .t, .evchip .c { color: var(--ink3); }
+  .evchip .t, .evchip .c { color: var(--ink2); }
+  /* The setting's name, picked out of `name=value` so a chip can be scanned for the key
+     rather than read for it. The value stays quieter: it is the part that varies. */
+  .evchip .ck { color: var(--ink1); font-weight: 550; }
   tr.run { cursor: pointer; }
   tr.run:hover td, tr.run.on td { background: var(--hair2); }
   tr.run td:first-child { font-weight: 550; }
   tr.run .dim { color: var(--ink3); font-weight: 400; }
+  /* A cell that opens its own tab says so on hover, because the row is clickable either way
+     and nothing else would distinguish "select this run" from "go read its cases". */
+  tr.run td.goto:hover { box-shadow: inset 0 -2px 0 var(--accent); }
+  tr.run td.goto:hover .path { color: var(--accent); }
   .nores { padding: 28px 12px; text-align: center; color: var(--ink3); }
   .nores b { display: block; color: var(--ink1); font-weight: 600; margin-bottom: 3px; }
   .caret {
@@ -254,7 +268,7 @@
     padding: 14px 16px; margin: 0 0 20px;
   }
   .evform .grid { display: grid; grid-template-columns: 170px 1fr; gap: 8px 14px; align-items: center; }
-  .evform label { font-size: 12.5px; color: var(--ink2); }
+  .evform label { font-size: 12.5px; color: var(--ink2); font-weight: 550; }
   .evform input.f { font-size: 13px; max-width: 420px; }
   .evform input[type="checkbox"].f { width: auto; max-width: none; }
   .more {
@@ -3168,11 +3182,11 @@
         : '';
       return `<tr class="run${i === selRun ? ' on' : ''}" data-run="${i}">
         <td>${esc(label)}${sub}</td>
-        <td class="ev">${e
+        <td class="ev${e ? ' goto' : ''}"${e ? ' data-goto="experiment" title="open these cases in the Experiment tab"' : ''}>${e
           ? `${plural(e.cases, 'case')} · ${plural((e.evaluators || []).length, 'evaluator')}`
             + `<br><span class="path">${esc(e.name)} · ${KB(e.size)}</span>`
           : '<span class="empty">none</span>'}</td>
-        <td class="ev">${p
+        <td class="ev${p ? ' goto' : ''}"${p ? ' data-goto="report" title="open these results in the Report tab"' : ''}>${p
           ? `${fmt(p.overall_score)} · ${plural(p.rows, 'row')}`
             + (p.failing ? ` · <span class="vb fail"><i></i>${p.failing} failing</span>` : '')
             + `<br><span class="path">${esc(p.name)} · ${KB(p.size)}</span>${link}`
@@ -3243,7 +3257,17 @@
 
   $('runs-rows').onclick = e => {
     const tr = e.target.closest('tr.run');
-    if (tr) selectRun(+tr.dataset.run);
+    if (!tr) return;
+    /* Clicking the experiment or report cell goes straight to that tab. Only the half that
+       exists carries `data-goto`, so the "none" and "not run yet" cells fall back to the
+       row's own behaviour rather than opening a tab with nothing in it. */
+    const cell = e.target.closest('td[data-goto]');
+    const i = +tr.dataset.run;
+    /* Already on this run: just go. Re-selecting it would re-read both documents from disk
+       and quietly drop whatever is unsaved — the dirty prompt only fires on a *different*
+       run — and jumping to a tab is no reason to lose an edit. */
+    if (cell && i === selRun) return show(cell.dataset.goto);
+    selectRun(i, cell ? { view: cell.dataset.goto } : undefined);
   };
 
   function loadExperiment(meta, doc) {
@@ -3310,14 +3334,15 @@
   function renderEvaluators() {
     $('evs').innerHTML = evals.length ? evals.map((e, i) => {
       const type = e.evaluator_type || 'unknown';
-      const cfg = CONFIG_KEYS(e).map(k => `${k}=${JSON.stringify(e[k])}`).join(' · ');
+      const cfg = CONFIG_KEYS(e)
+        .map(k => `<span class="ck">${esc(k)}</span>=${esc(JSON.stringify(e[k]))}`).join(' · ');
       const notes = evalNotes(i);
       const worst = notes.some(n => n.level === 'error') ? 'error' : (notes.length ? 'warning' : '');
       return `<span class="evchip edit${i === evOpen ? ' on' : ''}${worst ? ' ' + worst : ''}"`
         + ` data-ev="${i}" title="${worst ? esc(notes.map(n => n.message).join('; ')) : 'click to edit'}">`
         + `<b>${esc(e.name || type)}</b>`
         + (e.name ? `<span class="t">${esc(type)}</span>` : '')
-        + (cfg ? `<span class="c mono">${esc(cfg)}</span>` : '')
+        + (cfg ? `<span class="c mono">${cfg}</span>` : '')   // already escaped, per key and value
         + (worst ? `<span class="c">${worst === 'error' ? 'will not load' : 'custom'}</span>` : '')
         + '</span>';
     }).join('') : '<span class="empty">this experiment declares no evaluators</span>';
