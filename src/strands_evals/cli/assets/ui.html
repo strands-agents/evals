@@ -266,6 +266,45 @@
   .scroll { overflow-x: auto; }
 
   /* optimization */
+  .result, .winner {
+    background: var(--card); border: 1px solid var(--hair); border-radius: 10px;
+    padding: 16px 18px; margin: 0 0 14px;
+  }
+  .result .rlabel, .winner .wlabel {
+    margin: 0 0 12px; font-size: 11.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink3);
+  }
+  table.rtab { border-collapse: collapse; font-size: 13px; }
+  table.rtab td, table.rtab th {
+    padding: 5px 14px 5px 0; text-align: left; font-weight: 400; white-space: nowrap;
+  }
+  table.rtab th { color: var(--ink2); font-weight: 600; }
+  table.rtab .num { font-family: var(--font-mono, ui-monospace, Menlo, monospace); }
+  table.rtab .arrow { color: var(--ink3); padding-right: 8px; }
+  table.rtab .ci { color: var(--ink3); font-size: 11.5px; }
+  .delta.up { color: var(--good); }
+  .delta.down { color: var(--bad); }
+  .delta.flat { color: var(--ink3); }
+  .verdict { margin: 13px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--ink2); }
+  .verdict b { color: var(--ink1); }
+  .winner .wid { font-size: 15px; font-weight: 600; color: var(--ink1); }
+  .winner .lineage { font-size: 12px; color: var(--ink3); margin-left: 9px; }
+  .setting { border-top: 1px solid var(--hair2); padding: 10px 0 2px; font-size: 12.5px; }
+  .setting:first-of-type { border-top: 0; }
+  .setting .skey {
+    font-family: var(--font-mono, ui-monospace, Menlo, monospace); font-size: 12px; color: var(--ink1);
+  }
+  .setting .tag { margin-left: 8px; }
+  .setting .inline { color: var(--ink2); margin-top: 4px; }
+  .setting .inline .was { color: var(--ink3); text-decoration: line-through; }
+  .setting pre {
+    margin: 6px 0 2px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--hair);
+    border-radius: 7px; font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+  }
+  .setting pre .del { color: var(--bad); }
+  .setting pre .ins { color: var(--good); }
+  .wacts { display: flex; gap: 10px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
+  .wacts .said { font-size: 12px; color: var(--ink3); }
+  .unchanged { font-size: 12px; color: var(--ink3); margin: 11px 0 0; }
   .optpick { display: flex; align-items: center; gap: 10px; margin: 0 0 18px; flex-wrap: wrap; }
   .optpick select {
     background: var(--card); color: var(--ink1); border: 1px solid var(--hair);
@@ -453,33 +492,39 @@
         <span class="grow"></span>
         <span class="path mono" id="opt-objective"></span>
       </div>
-      <div class="hero">
-        <div>
-          <div class="big" id="opt-best">&mdash;</div>
-          <div class="cap" id="opt-best-cap">Best feasible objective</div>
-        </div>
-        <div class="stats" id="opt-stats"></div>
-      </div>
-      <div class="charts">
-        <div class="chart wide">
-          <h3>Objective by candidate</h3>
-          <p class="cap" id="opt-obj-cap"></p>
-          <div id="opt-obj-chart"></div>
-          <div class="legend" id="opt-obj-legend"></div>
-        </div>
-      </div>
-      <div class="charts" id="opt-metric-wrap">
-        <div class="chart wide">
-          <div class="chead">
-            <h3>Metric by candidate</h3>
-            <select id="opt-metric-pick" aria-label="Metric to chart"></select>
-          </div>
-          <p class="cap" id="opt-metric-cap"></p>
-          <div id="opt-metric-chart"></div>
-        </div>
-      </div>
+      <!-- What the run is for: the result, then the thing you take away from it. -->
+      <div class="result" id="opt-result"></div>
+      <div class="winner" id="opt-winner"></div>
 
-      <!-- Diagnostics: wanted when the two charts above are surprising, not before. -->
+      <!-- How it got there, and then the diagnostics for when the result is surprising. -->
+      <details class="drawer" id="opt-search">
+        <summary>How the search got there<span class="path" id="opt-search-sum"></span></summary>
+        <div class="hero">
+          <div>
+            <div class="big" id="opt-best">&mdash;</div>
+            <div class="cap" id="opt-best-cap">Best feasible objective</div>
+          </div>
+          <div class="stats" id="opt-stats"></div>
+        </div>
+        <div class="charts">
+          <div class="chart wide">
+            <h3>Objective by candidate</h3>
+            <p class="cap" id="opt-obj-cap"></p>
+            <div id="opt-obj-chart"></div>
+            <div class="legend" id="opt-obj-legend"></div>
+          </div>
+        </div>
+        <div class="charts" id="opt-metric-wrap">
+          <div class="chart wide">
+            <div class="chead">
+              <h3>Metric by candidate</h3>
+              <select id="opt-metric-pick" aria-label="Metric to chart"></select>
+            </div>
+            <p class="cap" id="opt-metric-cap"></p>
+            <div id="opt-metric-chart"></div>
+          </div>
+        </div>
+      </details>
       <details class="drawer" id="opt-cost">
         <summary>Cost per iteration<span class="path" id="opt-cost-sum"></span></summary>
         <div class="charts">
@@ -2926,6 +2971,9 @@
   const KB = n => n == null ? '' : (n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB');
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
   /** Big counts in a space the width of a word: 1_284_000 -> "1.28M". */
+  /* Two decimals is not enough for a number the ship-or-not verdict turns on: an interval of
+     [0.004, 0.21] must not be printed as [0.00, 0.21], which reads as touching zero. */
+  const fine = v => Math.abs(v) >= 10 ? nice(v) : String(Number(v.toFixed(4)));
   const compact = n => Math.abs(n) >= 1e6 ? (n / 1e6).toFixed(2) + 'M'
     : Math.abs(n) >= 1e4 ? Math.round(n / 1e3) + 'k' : String(Math.round(n));
 
@@ -4018,7 +4066,13 @@
        the candidate id. An invalid patch never became a candidate and so has no `propose`. */
     const proposed = new Map();
     for (const e of events) {
-      if (e && e.event === 'propose' && e.candidate_id) proposed.set(e.candidate_id, e);
+      if (e && e.event === 'propose' && e.candidate_id) {
+        /* The first `propose` is the one that carries `values` — the schema calls it the only copy
+           of the candidate's typed values. A later one for the same candidate is a rescore, which
+           keeps the original number and parent and sends no values, so it must not overwrite. */
+        if (!proposed.has(e.candidate_id)) proposed.set(e.candidate_id, e);
+        else if (e.values && !proposed.get(e.candidate_id).values) proposed.set(e.candidate_id, e);
+      }
     }
 
     /* Per-metric measurements, from `label.measured` where the optimizer recorded its own mean
@@ -4163,9 +4217,87 @@
       { key: 'seconds', label: 'Seconds' },
     ].filter(u => iterations.some(it => it.usage[u.key] > 0) || endPhase[u.key] > 0);
 
+    /* The baseline is whoever the test report compared against. Failing that, the candidate the
+       run opened with — the schema gives the baseline iteration 0, and it is its own parent. */
+    const baselineId = (test && test.baseline_id)
+      || (proposals.find(p => p.candidate_id && (p.parent_id === p.candidate_id || p.number === 0)) || {}).candidate_id
+      || (proposals[0] || {}).candidate_id
+      || null;
+
+    /* What the run is for: the champion against the baseline on cases held out of the search.
+       `test` is that comparison. `picked` is the validation split, which the search chose on, so
+       it is reported as the weaker evidence it is rather than dressed up as a held-out result. */
+    const report = test || validation || null;
+    // `TestReport.means` and `ValidationReport.measured` are the same shape under different names.
+    const means = (report && (report.means || report.measured)) || {};
+    const resultMetrics = [];
+    if (champion && means[champion]) {
+      const after = means[champion], before = means[baselineId] || {};
+      const order = metrics.filter(m => after[m] != null)
+        .concat(Object.keys(after).filter(m => !metrics.includes(m)));
+      for (const metric of order) {
+        const mean = v => (v && typeof v === 'object' ? v.mean : v);
+        resultMetrics.push({
+          metric,
+          before: typeof mean(before[metric]) === 'number' ? mean(before[metric]) : null,
+          after: typeof mean(after[metric]) === 'number' ? mean(after[metric]) : null,
+          // Only `difference` carries an interval, and only for the metrics the run had a goal for.
+          diff: ((report.difference || {})[metric]) || null,
+          ratio: ((report.ratio || {})[metric]) || null,
+        });
+      }
+    }
+    const result = resultMetrics.length ? {
+      heldOut: !!test,
+      baselineId: means[baselineId] ? baselineId : null,
+      cases: (report.objective && report.objective.n_cases) || null,
+      objective: (report && report.objective) || null,
+      metrics: resultMetrics,
+      reason: (report && report.reason) || '',
+    } : null;
+
+    /* The winner's own configuration, and what it changed to get there. `propose.values` is the
+       only copy, so without it there is nothing to show and the panel says so rather than
+       inventing a diff from `changed_keys` alone. */
+    const valuesOf = id => {
+      const p = proposed.get(id);
+      return p && p.values && typeof p.values === 'object' && !Array.isArray(p.values) ? p.values : null;
+    };
+    const lineage = [];
+    for (let id = champion, guard = 0; id && guard < 100; guard++) {
+      lineage.push(id);
+      const parent = (proposed.get(id) || {}).parent_id;
+      if (!parent || parent === id || lineage.includes(parent)) break;   // the baseline is its own parent
+      id = parent;
+    }
+    const championValues = champion ? valuesOf(champion) : null;
+    const baselineValues = baselineId ? valuesOf(baselineId) : null;
+    let settings = null;
+    if (championValues) {
+      const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+      const keys = Object.keys(championValues)
+        .concat(Object.keys(baselineValues || {}).filter(k => !(k in championValues)));
+      settings = keys.map(key => ({
+        key,
+        before: baselineValues ? baselineValues[key] : undefined,
+        after: championValues[key],
+        changed: !baselineValues || !same(baselineValues[key], championValues[key]),
+      }));
+    }
+    const winner = champion ? {
+      id: champion,
+      lineage,
+      baselineId: baselineValues ? baselineId : null,
+      values: championValues,
+      settings,
+    } : null;
+
     const budget = cfg.budget || {};
     const scored = proposals.filter(p => p.objective != null);
     return {
+      result,
+      winner,
+      baselineId,
       config: cfg,
       proposals,
       scored,
@@ -4338,6 +4470,118 @@
     return svg(axis + bars + xticks);
   }
 
+  /* ── the result ──
+     The run's whole point: the champion against the baseline on cases kept out of the search.
+     The objective is the only quantity whose direction is known — it is always higher-is-better —
+     so it is the only delta coloured. A metric's direction lives in the objective expression,
+     and guessing it from the metric's name would colour "+150 tokens" green. */
+  function resultCard(d) {
+    if (!d.result) {
+      const why = d.stop
+        ? 'This run recorded no end-phase report, so there is no champion to compare.'
+        : 'No candidate has been picked yet — the comparison appears once the run reaches its end phase.';
+      const far = d.best == null ? '' : ` Best feasible objective so far: <b>${esc(fmt(d.best))}</b>`
+        + `${d.bestCandidate ? ` (${esc(d.bestCandidate.candidate_id)})` : ''}, on the training split.`;
+      return `<p class="rlabel">No result yet</p><p class="verdict">${why}${far}</p>`;
+    }
+
+    const r = d.result;
+    const label = r.heldOut
+      ? `Held out · ${plural(r.cases || 0, 'test case')} kept out of the search`
+      : 'Validation split · the search chose on these cases, so this is weaker evidence';
+    const rows = r.metrics.map(m => {
+      const delta = m.before != null && m.after != null ? m.after - m.before : null;
+      const ci = m.diff && typeof m.diff.ci_low === 'number'
+        ? `[${fine(m.diff.ci_low)}, ${fine(m.diff.ci_high)}]` : '';
+      const ratio = m.ratio && typeof m.ratio.mean_diff === 'number' ? `${fine(m.ratio.mean_diff)}×` : '';
+      return `<tr><th>${esc(m.metric)}</th>`
+        + `<td class="num">${m.before == null ? '—' : esc(fine(m.before))}</td>`
+        + `<td class="arrow">→</td><td class="num">${m.after == null ? '—' : esc(fine(m.after))}</td>`
+        + `<td class="num delta flat">${delta == null ? '' : (delta > 0 ? '+' : '') + esc(fine(delta))}</td>`
+        + `<td class="ci">${esc(ci)}</td><td class="num ci">${esc(ratio)}</td></tr>`;
+    }).join('');
+
+    /* The interval is the verdict. A run whose interval straddles zero has not shown an
+       improvement, however much the best-so-far curve climbed on the training split. */
+    const o = r.objective;
+    let verdict;
+    if (!o || typeof o.mean_diff !== 'number') {
+      verdict = 'This report records no overall comparison against the baseline — only the per-metric '
+        + 'means above — so how much of the gap is real cannot be read off it.';
+    } else if (typeof o.ci_low !== 'number' || typeof o.ci_high !== 'number') {
+      verdict = `The objective moved by <b>${esc(fine(o.mean_diff))}</b> against the baseline, but the `
+        + 'report carries no interval, so how certain that is cannot be read off it.';
+    } else if (o.ci_low > 0) {
+      verdict = `The objective improved by <b>${esc(fine(o.mean_diff))}</b>, and the 95% interval `
+        + `[${esc(fine(o.ci_low))}, ${esc(fine(o.ci_high))}] clears zero`
+        + `${r.heldOut ? ' on cases the search never saw' : ''}.`;
+    } else if (o.ci_high < 0) {
+      verdict = `The champion came out <b>${esc(fine(-o.mean_diff))}</b> worse than the baseline, interval `
+        + `[${esc(fine(o.ci_low))}, ${esc(fine(o.ci_high))}]. Shipping it would be a regression.`;
+    } else {
+      verdict = `The objective moved by ${esc(fine(o.mean_diff))}, but the 95% interval `
+        + `[${esc(fine(o.ci_low))}, ${esc(fine(o.ci_high))}] includes zero — <b>this run has not shown `
+        + 'an improvement</b>. More cases or more runs per case would narrow it.';
+    }
+    if (!r.heldOut && r.baselineId) {
+      verdict += ' These are the cases the search selected on, so the gap is likely flattering.';
+    }
+    /* A `picked` report only carries figures for the finalists, and the baseline is rarely one of
+       them. Then the column reads as dashes, and saying why beats leaving it to be puzzled over. */
+    if (!r.baselineId) {
+      verdict += ' It has no figures for the baseline, so the champion\'s numbers stand alone —'
+        + ' there is nothing here to compare them against.';
+    }
+
+    return `<p class="rlabel">${esc(label)}</p><table class="rtab"><tbody>${rows}</tbody></table>`
+      + `<p class="verdict">${verdict}</p>`;
+  }
+
+  /** `a → b` for short values, a two-line diff for anything long or multi-line. */
+  function settingDiff(s) {
+    const show = v => v === undefined ? '(unset)' : typeof v === 'string' ? v : JSON.stringify(v);
+    const before = show(s.before), after = show(s.after);
+    const long = [before, after].some(v => v.length > 60 || v.includes('\n'));
+    if (!s.changed) return `<div class="inline">${esc(after)}</div>`;
+    if (!long) {
+      return `<div class="inline">${s.before === undefined ? '' : `<span class="was">${esc(before)}</span> → `}`
+        + `${esc(after)}</div>`;
+    }
+    return `<pre>${s.before === undefined ? '' : `<span class="del">- ${esc(before)}</span>\n`}`
+      + `<span class="ins">+ ${esc(after)}</span></pre>`;
+  }
+
+  /* ── the winner ──
+     The artefact of a tuning run is the configuration that won, so it is on the page and it is
+     copyable. `changed_keys` alone would name what moved without ever showing it. */
+  function winnerCard(d) {
+    if (!d.winner) return '<p class="wlabel">Winner</p><p class="verdict">No champion has been picked yet.</p>';
+    const w = d.winner;
+    const chain = w.lineage.length > 1
+      ? `<span class="lineage">${esc(w.lineage.join(' ← '))}</span>` : '';
+    const head = `<p class="wlabel">Winner</p><div><span class="wid">${esc(w.id)}</span>${chain}</div>`;
+
+    if (!w.settings) {
+      return head + '<p class="verdict">The log records no values for this candidate, so its '
+        + 'configuration cannot be shown. Only a <code>propose</code> event carries them.</p>';
+    }
+    const changed = w.settings.filter(s => s.changed);
+    const same = w.settings.length - changed.length;
+    const body = changed.map(s =>
+      `<div class="setting"><span class="skey">${esc(s.key)}</span>`
+      + `${w.baselineId ? '' : ' <span class="tag">no baseline to compare</span>'}`
+      + settingDiff(s) + '</div>').join('')
+      || `<p class="unchanged">Nothing differs from ${esc(w.baselineId || 'the baseline')} — the run `
+        + 'ended with the configuration it started from.</p>';
+    const note = same
+      ? `<p class="unchanged">${plural(same, 'other setting')} unchanged from `
+        + `${esc(w.baselineId || 'the baseline')}.</p>` : '';
+    return head + body + note
+      + '<div class="wacts"><button class="btn" data-act="copy-winner">Copy configuration</button>'
+      + '<button class="btn" data-act="save-winner">Download champion.json</button>'
+      + '<span class="said" id="opt-copied"></span></div>';
+  }
+
   function statusChart(d) {
     if (!d.trials) return '<div class="empty">No trial has been recorded yet.</div>';
     const present = STATUSES.filter(s => d.statuses[s]);
@@ -4381,8 +4625,8 @@
       $('opt-sub').textContent = OPT_RUNS.length
         ? 'Pick a run above.'
         : 'No optimizer run directory in this folder. One is a run.json with an events.jsonl beside it.';
-      ['opt-obj-chart', 'opt-budget-chart', 'opt-status-chart', 'opt-metric-chart', 'opt-usage-chart']
-        .forEach(id => { $(id).innerHTML = ''; });
+      ['opt-obj-chart', 'opt-budget-chart', 'opt-status-chart', 'opt-metric-chart', 'opt-usage-chart',
+        'opt-result', 'opt-winner'].forEach(id => { $(id).innerHTML = ''; });
       $('opt-metric-wrap').hidden = true;
       $('opt-cost').hidden = true;
       $('opt-rows').innerHTML = '';
@@ -4414,6 +4658,12 @@
     const tokens = d.iterations.reduce((sum, it) => sum + (it.usage.tokens || 0), 0) + (d.endPhase.tokens || 0);
     if (tokens) stats.push(optStat(compact(tokens), 'Tokens'));
     $('opt-stats').innerHTML = stats.join('');
+
+    // The result and the thing you take away from it, before any account of the search.
+    $('opt-result').innerHTML = resultCard(d);
+    $('opt-winner').innerHTML = winnerCard(d);
+    $('opt-search-sum').textContent = `${plural(d.proposals.length, 'proposal')} over `
+      + plural(d.iterations.length, 'iteration');
 
     $('opt-obj-cap').textContent = 'One mark per proposal in search order. '
       + 'The line is the best feasible objective so far.';
@@ -4536,6 +4786,48 @@
     $('opt-run').value = String(Math.max(0, optSel));
   }
   $('opt-run').onchange = e => selectOptimizerRun(Number(e.target.value));
+
+  /* Copy and download the winning configuration. `navigator.clipboard` needs a secure context,
+     which `file://` is not, so there is a fallback — and if both fail the page says so instead of
+     leaving a button that silently does nothing. */
+  async function copyText(text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch { /* fall through to the selection trick */ }
+    try {
+      const ta = Object.assign(document.createElement('textarea'), { value: text });
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const done = document.execCommand && document.execCommand('copy');
+      ta.remove();
+      return !!done;
+    } catch { return false; }
+  }
+
+  $('opt-winner').onclick = async e => {
+    const act = e.target.closest('[data-act]');
+    if (!act || !OPT || !OPT.winner || !OPT.winner.values) return;
+    const text = JSON.stringify(OPT.winner.values, null, 2) + '\n';
+    const said = $('opt-copied');
+    if (act.dataset.act === 'copy-winner') {
+      said.textContent = await copyText(text)
+        ? `copied ${plural(Object.keys(OPT.winner.values).length, 'setting')}`
+        : 'could not reach the clipboard — the configuration is above to select by hand';
+      return;
+    }
+    if (act.dataset.act === 'save-winner') {
+      const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+      const a = Object.assign(document.createElement('a'), { href: url, download: 'champion.json' });
+      a.click();
+      if (URL.revokeObjectURL) URL.revokeObjectURL(url);
+      said.textContent = `downloaded champion.json · ${KB(text.length)}`;
+    }
+  };
   // Redrawing the whole view is cheap — the log is already parsed — and keeps one render path.
   $('opt-metric-pick').onchange = e => { optMetric = e.target.value; renderOptimization(); };
   $('opt-usage-pick').onchange = e => { optUsage = e.target.value; renderOptimization(); };

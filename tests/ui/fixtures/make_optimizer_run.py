@@ -156,6 +156,119 @@ PLAN = [
 # A couple of trials fail, so the status breakdown is not a single bar.
 FAILED_TRIALS = {("c2", "train_case_05"): "agent_failure", ("c5", "train_case_03"): "evaluator_invalid"}
 
+# The baseline's full configuration, and what each candidate changes about its parent's. A
+# candidate's `values` is the whole typed configuration, not a patch, so these are composed down
+# the lineage: c10's prompt is its own, but its tool descriptions are still c0's. The prompts are
+# real multi-line text because that is what an instruction optimizer actually tunes, and a diff of
+# one is a block of lines rather than a `was → now` on a single line.
+BASELINE_VALUES = {
+    "system_prompt": """You are the support assistant for Northwind Outfitters.
+
+Answer the customer's question about their order. Be polite and brief.""",
+    "temperature": 0.7,
+    "tool_descriptions": {
+        "order_lookup": "Look up an order.",
+        "refund_start": "Start a refund.",
+    },
+    "max_tokens": 1024,
+}
+
+UPDATES: dict[str, dict] = {
+    "c1": {
+        "system_prompt": """You are the support assistant for Northwind Outfitters.
+
+Answer the customer's question about their order. Be polite and brief.
+
+Refunds are available within 30 days of delivery. Say the window explicitly
+when a refund comes up, rather than leaving the customer to ask.""",
+    },
+    "c2": {
+        "system_prompt": """You are the support assistant for Northwind Outfitters.
+
+Before answering, ask one clarifying question about what the customer needs.
+Then answer it. Be polite and brief.""",
+    },
+    "c3": {
+        "system_prompt": """You are the support assistant for Northwind Outfitters.
+
+Answer the customer's question about their order. Be polite and brief.
+
+Refunds are available within 30 days of delivery. Say the window explicitly
+when a refund comes up, rather than leaving the customer to ask.
+
+Give the same answer to the same question every time. Do not improvise policy.""",
+        "temperature": 0.4,
+    },
+    "c4": {
+        "tool_descriptions": {
+            "order_lookup": "Look up an order by its id and return status, items and delivery date.",
+            "refund_start": "Start a refund for an order that is within the refund window.",
+        },
+    },
+    "c5": {
+        "tool_descriptions": {
+            "order_lookup": "Look up an order by its id, which looks like NW-000000.",
+            "refund_start": "Start a refund for an order id of the form NW-000000.",
+        },
+    },
+    "c6": {
+        "system_prompt": """You are the support assistant for Northwind Outfitters.
+
+Answer the customer's question about their order. Be polite and brief.
+
+If the message does not contain an order id, ask for it before doing anything
+else. Do not guess which order they mean.
+
+Refunds are available within 30 days of delivery. Say the window explicitly
+when a refund comes up, rather than leaving the customer to ask.
+
+Give the same answer to the same question every time. Do not improvise policy.""",
+    },
+    "c8": {
+        "system_prompt": """You are the support assistant for Northwind Outfitters.
+
+Answer the customer's question about their order. Be polite and brief.
+
+If the message does not contain an order id, ask for it before doing anything
+else. Do not guess which order they mean.
+
+Refunds are available within 30 days of delivery. Say the window explicitly
+when a refund comes up, rather than leaving the customer to ask.
+
+Worked examples.
+
+  Customer: where is my stuff
+  You: Happy to check - what is the order id? It looks like NW-000000.
+
+  Customer: NW-481902 arrived torn, I want my money back
+  You: Sorry about that. NW-481902 was delivered on 2 November, so it is inside
+  the 30-day refund window. I can start the refund now - shall I?
+
+  Customer: do you ship to Alaska
+  You: We do, and standard delivery there takes 5-7 business days.
+
+Give the same answer to the same question every time. Do not improvise policy.""",
+        "max_tokens": 2048,
+    },
+    # A re-proposal of c6's wording, byte for byte. That is what makes it a duplicate.
+    "c9": {"system_prompt": None},
+    "c10": {
+        "system_prompt": """You are the support assistant for Northwind Outfitters.
+
+Answer the customer's question about their order. Be polite and brief.
+
+If the message does not contain an order id, ask for it before doing anything
+else. Do not guess which order they mean. The id looks like NW-000000.
+
+Refunds are available within 30 days of delivery. Say the window explicitly
+when a refund comes up, rather than leaving the customer to ask.
+
+Give the same answer to the same question every time. Do not improvise policy.""",
+        "temperature": 0.2,
+    },
+}
+UPDATES["c9"]["system_prompt"] = UPDATES["c6"]["system_prompt"]
+
 
 def transcript(*parts: str) -> dict[str, str]:
     """The first 16 hex of a sha256, as `RunDirectory` names transcript files.
@@ -163,6 +276,19 @@ def transcript(*parts: str) -> dict[str, str]:
     Not `hash()`: that is salted per process, which would make this fixture differ run to run.
     """
     return {"hash": hashlib.sha256("/".join(parts).encode()).hexdigest()[:16], "format": "session"}
+
+
+def compose_values() -> dict[str, dict]:
+    """Each candidate's whole typed configuration: its parent's, with its own updates applied.
+
+    Parents always appear earlier in `PLAN`, so one pass in order is enough.
+    """
+    out: dict[str, dict] = {}
+    for cid, parent, _iteration, _origin, outcome, *_rest in PLAN:
+        if outcome == "invalid":
+            continue  # the patch never became a candidate, so it has no configuration
+        out[cid] = {**(out[parent] if parent else BASELINE_VALUES), **UPDATES.get(cid, {})}
+    return out
 
 
 def case_scores(objective: float, cases: list[str]) -> dict[str, float]:
@@ -224,6 +350,7 @@ def main() -> None:
             }
         )
 
+    values = compose_values()
     number = 0
     numbers: dict[str, int] = {}
     spent = 0
@@ -257,10 +384,7 @@ def main() -> None:
                 number=numbers[cid],
                 parent_id=p["parent"] or cid,
                 origin=p["origin"],
-                values={
-                    "system_prompt": f"<prompt for {cid}>",
-                    "temperature": 0.2 if "temperature" in p["changed_keys"] else 0.7,
-                },
+                values=values[cid],
                 changed_keys=p["changed_keys"],
                 rationale=p["rationale"],
                 inherited=[],

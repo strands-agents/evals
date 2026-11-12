@@ -37,6 +37,91 @@ ok(/11 proposals over 6 iterations/.test(text('#opt-sub')), 'counts proposals an
 ok(/Stopped: iterations/.test(text('#opt-sub')), 'reports the stop reason', text('#opt-sub'));
 ok(/WeightedSum/.test(text('#opt-objective')), 'shows the objective', text('#opt-objective'));
 
+/* ── the result, which is what the page opens on ──
+   The question a tuning run answers is whether the champion beats the baseline on cases the
+   search never saw. That lives in the `test` event, and every figure in this card has a wrong
+   neighbour in the log it could have come from instead: the training best (0.671), the validation
+   objective (0.658), or a mean over the cases the search chose on. */
+const rtab = () => $$('#opt-result .rtab tr').map(r =>
+  [...r.children].map(c => c.textContent.replace(/\s+/g, ' ').trim()));
+ok(/^Held out/.test(text('#opt-result .rlabel')), 'the headline is the held-out comparison',
+  text('#opt-result .rlabel'));
+ok(/3 test cases kept out of the search/.test(text('#opt-result .rlabel')),
+  'and says how many cases are behind it', text('#opt-result .rlabel'));
+const helpRow = rtab().find(r => r[0] === 'Helpfulness');
+ok(helpRow && helpRow.slice(1).join(' | ') === '0.521 | → | 0.664 | +0.143 | [0.061, 0.225] | 1.274×',
+  'the champion against the baseline on the test split, with its interval and ratio',
+  (helpRow || []).join(' | '));
+const toks = rtab().find(r => r[0] === 'tokens');
+ok(toks && toks.slice(1).join(' | ') === '3190 | → | 3340 | +150 |  | ',
+  'a metric the run had no interval for shows the means and the delta and stops there',
+  (toks || []).join(' | '));
+ok(rtab().length === 2, 'a row per goal metric, in the order the run declared them', rtab().length);
+/* `tokens` went UP by 150, which is worse — the objective minimises it. Direction lives in the
+   objective expression, so a green +150 would be the page inventing one from the metric's name. */
+ok($$('#opt-result .delta').every(td => /flat/.test(td.className)),
+  'no per-metric delta is coloured, because only the objective has a known direction',
+  $$('#opt-result .delta').map(td => td.className).join(' | '));
+const verdict = text('#opt-result .verdict');
+ok(/improved by 0\.143/.test(verdict), 'the verdict quotes the objective difference', verdict);
+ok(/\[0\.061, 0\.225\] clears zero/.test(verdict), 'and reads the interval as the verdict it is', verdict);
+ok(/never saw/.test(verdict), 'and says the cases were held out', verdict);
+ok(!/flattering/.test(verdict), 'a held-out result is not hedged as a flattering one', verdict);
+
+// ── the winner: the configuration the run exists to produce, not just the name of it ──
+ok(text('#opt-winner .wid') === 'c10', 'the champion is named', text('#opt-winner .wid'));
+ok(text('#opt-winner .lineage') === 'c10 ← c6 ← c3 ← c1 ← c0',
+  'with the chain of parents it was derived through, back to the baseline',
+  text('#opt-winner .lineage'));
+const changedKeys = $$('#opt-winner .setting .skey').map(s => s.textContent);
+ok(changedKeys.join() === 'system_prompt,temperature',
+  'only the settings that actually differ from the baseline are shown', changedKeys.join());
+ok(/2 other settings unchanged from c0/.test(text('#opt-winner .unchanged')),
+  'the ones that did not move are counted rather than listed', text('#opt-winner .unchanged'));
+/* A tuned system prompt is many lines. Rendered as `was → now` on one line it is unreadable, so
+   a long or multi-line value gets a block diff instead. */
+const cell = (key, sel) => {
+  const found = $$('#opt-winner .setting').find(s => new RegExp(key).test(s.textContent));
+  return (found && (sel ? found.querySelector(sel) : found)) || null;
+};
+const block = cell('system_prompt', 'pre');
+ok(!!block, 'a multi-line value is diffed as a block, not inline');
+const diff = (block || {}).textContent || '';
+ok(/^- You are the support assistant/m.test(diff) && /^\+ You are the support assistant/m.test(diff),
+  'with the baseline marked - and the champion +', diff.slice(0, 80));
+ok(/NW-000000/.test((cell('system_prompt', 'pre .ins') || {}).textContent || '')
+  && !/NW-000000/.test((cell('system_prompt', 'pre .del') || {}).textContent || ''),
+  'and the real text on each side, not a summary of it');
+ok(!cell('temperature', 'pre') && text('#opt-winner .setting .inline') === '0.7 → 0.2',
+  'a short value stays inline', ((cell('temperature') || {}).textContent || '').replace(/\s+/g, ' ').trim());
+
+/* Copy and download hand the configuration off. jsdom has no clipboard, so stub one in: the
+   point of the assertion is WHAT gets handed over, which no amount of UI review can check. */
+let copied = null;
+Object.defineProperty(p.window.navigator, 'clipboard', {
+  configurable: true, value: { writeText: async t => { copied = t; } },
+});
+await click('#opt-winner [data-act="copy-winner"]');
+ok(/copied 4 settings/.test(text('#opt-copied')), 'copying says what it put on the clipboard',
+  text('#opt-copied'));
+ok(JSON.stringify(JSON.parse(copied)) === JSON.stringify({
+  system_prompt: JSON.parse(copied).system_prompt, temperature: 0.2,
+  tool_descriptions: { order_lookup: 'Look up an order.', refund_start: 'Start a refund.' },
+  max_tokens: 1024,
+}), 'the whole configuration is copied, inherited settings included, not just what changed', copied);
+ok(/NW-000000/.test(JSON.parse(copied).system_prompt) && JSON.parse(copied).temperature === 0.2,
+  'and it is the champion\'s values, not the baseline\'s', JSON.parse(copied).temperature);
+await click('#opt-winner [data-act="save-winner"]');
+ok(p.window.__downloads.includes('champion.json'), 'download offers it as a file',
+  p.window.__downloads.join(' | '));
+ok(/downloaded champion.json/.test(text('#opt-copied')), 'and says so', text('#opt-copied'));
+
+/* With no clipboard at all the button must not look like it worked. */
+delete p.window.navigator.clipboard;
+await click('#opt-winner [data-act="copy-winner"]');
+ok(/could not reach the clipboard/.test(text('#opt-copied')),
+  'a copy that could not happen says so rather than claiming success', text('#opt-copied'));
+
 // ── the hero number: best FEASIBLE, which is not the best scored ──
 ok(text('#opt-best') === '0.67', 'best feasible objective is c10, not infeasible c8', text('#opt-best'));
 ok(/c10/.test(text('#opt-best-cap')), 'and names the candidate it came from', text('#opt-best-cap'));
@@ -50,8 +135,10 @@ ok(stats.length === 3, 'three figures in the headline, not every number the run 
 /* The rest is diagnostics, so it starts folded away — the page opens on the objective and one
    metric. What is inside each drawer is summarised on the fold, including the scored-against-
    unscored split that used to compete for space in the headline. */
-ok(['#opt-cost', '#opt-diag', '#opt-table'].every(id => $(id).open === false),
-  'the diagnostics drawers start closed');
+ok(['#opt-search', '#opt-cost', '#opt-diag', '#opt-table'].every(id => $(id).open === false),
+  'the search and diagnostics drawers start closed');
+ok(/11 proposals over 6 iterations/.test(text('#opt-search-sum')),
+  'the search drawer says how much work is folded inside it', text('#opt-search-sum'));
 ok(text('#opt-cost-sum') === '277k tokens', 'the cost drawer says what the run cost', text('#opt-cost-sum'));
 ok(text('#opt-diag-sum') === '82 trials', 'the diagnostics drawer counts the trials', text('#opt-diag-sum'));
 ok(text('#opt-table-sum') === '11 proposals, 3 never scored',
@@ -360,6 +447,109 @@ ok(!/excluding/.test(pFall.text('#opt-usage-cap')),
   'and with nothing recorded after the last iteration there is no caveat to make',
   pFall.text('#opt-usage-cap'));
 
+/* ── the verdict is the interval, not the gap ──
+   A card that only read `mean_diff` would print the same confident headline for a run that
+   proved nothing and for one that went backwards. The three logs below differ ONLY in the
+   interval on the objective, so nothing but reading it can tell them apart. */
+const resultLog = (report, events = []) => jsonl([
+  { event: 'config', iteration: 0 },
+  { event: 'propose', iteration: 0, candidate_id: 'c0', number: 0, parent_id: 'c0',
+    values: { prompt: 'be helpful', temperature: 0.7 } },
+  { event: 'propose', iteration: 1, candidate_id: 'c1', number: 1, parent_id: 'c0',
+    values: { prompt: 'be helpful and brief', temperature: 0.7 } },
+  iterationEnd(0, [{ candidate_id: 'c0', number: 0, outcome: 'feasible', objective: 0.5 }], 2),
+  iterationEnd(1, [{ candidate_id: 'c1', number: 1, outcome: 'feasible', objective: 0.6 }], 2),
+  ...events,
+  ...(report ? [{ event: 'test', iteration: 1, report }] : []),
+]);
+const testReport = (objective, means) => ({
+  champion_id: 'c1', baseline_id: 'c0', objective,
+  difference: { H: objective },
+  means: means || { c1: { H: { mean: 0.6 } }, c0: { H: { mean: 0.5 } } },
+});
+const resultPage = async log => {
+  const q = await page();
+  await q.openFolder({ 'r/run.json': { run_id: 'verdicts', objective: 'Maximize(H)' }, 'r/events.jsonl': log });
+  await q.click('#tab-opt');
+  return q;
+};
+const said = q => q.text('#opt-result .verdict');
+
+const pFlat = await resultPage(resultLog(testReport(
+  { mean_diff: 0.1, ci_low: -0.04, ci_high: 0.24, n_cases: 6 })));
+ok(/has not shown an improvement/.test(said(pFlat)),
+  'an interval that includes zero is reported as no improvement, however large the gap', said(pFlat));
+ok(/\[-0\.04, 0\.24\] includes zero/.test(said(pFlat)), 'and the interval is quoted', said(pFlat));
+ok(!/clears zero/.test(said(pFlat)), 'and never called a clear win', said(pFlat));
+
+const pWorse = await resultPage(resultLog(testReport(
+  { mean_diff: -0.08, ci_low: -0.19, ci_high: -0.02, n_cases: 6 })));
+ok(/0\.08 worse than the baseline/.test(said(pWorse)),
+  'a negative interval is a regression, stated as a positive amount worse', said(pWorse));
+ok(/would be a regression/.test(said(pWorse)), 'and named as one', said(pWorse));
+
+/* An interval tight around zero must not be rounded into one that looks like it touches it.
+   Two decimals would print [0.004, 0.21], which reads as straddling zero — the opposite verdict. */
+const pFine = await resultPage(resultLog(testReport(
+  { mean_diff: 0.1071, ci_low: 0.004, ci_high: 0.2103, n_cases: 6 })));
+ok(/\[0\.004, 0\.2103\] clears zero/.test(said(pFine)),
+  'a narrow interval keeps the digits the verdict turns on', said(pFine));
+
+const pNoCI = await resultPage(resultLog(testReport({ mean_diff: 0.1, n_cases: 6 })));
+ok(/moved by 0\.1 against the baseline/.test(said(pNoCI)) && /no interval/.test(said(pNoCI)),
+  'a report with no interval says how certain cannot be read off it', said(pNoCI));
+
+/* The validation split is what the search chose on, so it is the weaker evidence and is labelled
+   as such rather than dressed up as a held-out result. */
+const pVal = await resultPage(resultLog(null, [{
+  event: 'picked', iteration: 1,
+  report: { champion_id: 'c1', measured: { c1: { H: { mean: 0.6 } }, c0: { H: { mean: 0.5 } } },
+    reason: 'c1 ranked first.' },
+}]));
+ok(/^Validation split/.test(pVal.text('#opt-result .rlabel')),
+  'a run with no test split is not called held out', pVal.text('#opt-result .rlabel'));
+ok(/flattering/.test(said(pVal)), 'and the gap is hedged as the selected-on gap it is', said(pVal));
+ok(/no overall comparison/.test(said(pVal)),
+  'a validation report carries no objective difference, and the card says so rather than '
+  + 'leaving a half-finished sentence', said(pVal));
+ok(pVal.$$('#opt-result .rtab tr').length === 1
+  && [...pVal.$('#opt-result .rtab tr').children].map(c => c.textContent).join('|') === 'H|0.5|→|0.6|+0.1||',
+  'it still shows the means it does have — `measured`, which is what a validation report calls them',
+  pVal.text('#opt-result .rtab'));
+
+const pNoBase = await resultPage(resultLog(null, [{
+  event: 'picked', iteration: 1,
+  report: { champion_id: 'c1', measured: { c1: { H: { mean: 0.6 } } } },
+}]));
+ok(/nothing here to compare them against/.test(said(pNoBase)),
+  'a report with no baseline figures says so instead of leaving a column of dashes unexplained',
+  said(pNoBase));
+ok(!/flattering/.test(said(pNoBase)), 'and does not hedge a gap it never computed', said(pNoBase));
+
+/* `propose.values` is the only copy of a candidate's configuration. A log without it cannot show
+   one, and inventing a diff out of `changed_keys` would be making it up. */
+const pBare = await resultPage(jsonl([
+  { event: 'config', iteration: 0 },
+  iterationEnd(0, [{ candidate_id: 'c0', number: 0, outcome: 'feasible', objective: 0.5 }], 2),
+  { event: 'test', iteration: 0, report: testReport({ mean_diff: 0.1, ci_low: 0.02, ci_high: 0.2, n_cases: 4 }) },
+]));
+ok(pBare.text('#opt-winner .wid') === 'c1', 'the champion is still named', pBare.text('#opt-winner .wid'));
+ok(/records no values/.test(pBare.text('#opt-winner')),
+  'and the page says its configuration is not in the log rather than showing an empty diff',
+  pBare.text('#opt-winner'));
+ok(!pBare.$('#opt-winner .lineage'), 'with no propose event there is no lineage to draw');
+ok(!pBare.$('#opt-winner [data-act="copy-winner"]'),
+  'and no copy button, which would hand over nothing');
+
+/* Mid-run, before any end phase: there is no result to show, and the training best is not one. */
+ok(/No result yet/.test(p2.text('#opt-result')),
+  'a run still searching says it has no result yet', p2.text('#opt-result'));
+ok(/Best feasible objective so far/.test(p2.text('#opt-result'))
+  && /on the training split/.test(p2.text('#opt-result')),
+  'offering the training best, named as the training best', p2.text('#opt-result'));
+ok(/No champion has been picked yet/.test(p2.text('#opt-winner')),
+  'and no winner', p2.text('#opt-winner'));
+
 // ── two runs in one tree ──
 const p6 = await page();
 await p6.openFolder({
@@ -379,4 +569,5 @@ await new Promise(r => setTimeout(r, 20));
 ok(p6.text('#opt-sub') !== first, 'picking the other run changes the view', p6.text('#opt-sub'));
 ok(/second-run/.test(p6.text('#opt-sub')), 'and names it', p6.text('#opt-sub'));
 
-done([p, p2, p3, p4, p5, p6, pLate, pEmpty, pFall].flatMap(each => each.errs));
+done([p, p2, p3, p4, p5, p6, pLate, pEmpty, pFall, pFlat, pWorse, pFine, pNoCI, pVal, pNoBase, pBare]
+  .flatMap(each => each.errs));
