@@ -165,7 +165,7 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
             if event.get("patch") is not None:
                 state.open_rounds.append(
                     OpenRound(
-                        tuple(event["round"]), candidate_id, event["origin"], Patch.model_validate(event["patch"])
+                        tuple(event["round"]), candidate_id, event["origin"][0], Patch.model_validate(event["patch"])
                     )
                 )
         elif name == "duplicate" and event.get("patch") is not None:

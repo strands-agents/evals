@@ -14,8 +14,9 @@ StopReason = Literal["setup", "budget", "iterations", "exhausted", "proposer_err
 class ProposalOutcome(BaseModel):
     """One proposal of one iteration.
 
-    `number` is the display number (None for an invalid patch); `origin` is the proposing block's name
-    (`Candidate.origin`); `objective` is the objective it was observed with (`Observation.objective`).
+    `number` is the display number (None for an invalid patch); `origin` names the blocks whose patches the
+    candidate merges, in proposal order (`Candidate.origin`; for an invalid patch, the blocks that proposed it);
+    `objective` is the objective it was observed with (`Observation.objective`).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -23,7 +24,7 @@ class ProposalOutcome(BaseModel):
     candidate_id: str | None
     number: int | None
     parent_id: str
-    origin: str
+    origin: list[str]
     changed_keys: list[str]
     rationale: str
     outcome: ObservationOutcome

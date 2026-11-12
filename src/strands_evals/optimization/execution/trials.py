@@ -122,6 +122,13 @@ class TrialCache(Protocol):
             The saved trial, or None if it was never saved.
         """
 
+    def trial_status(self, candidate_id: str, run_index: int, case_name: str) -> TrialStatus | None:
+        """The saved trial's status without loading the record (`pending` calls it per case and run).
+
+        Returns:
+            The status of `load_trial`'s record, or None if it was never saved.
+        """
+
     def save_trial(self, record: TrialRecord) -> None:
         """Save a trial; a later save for the same (candidate, run, case) replaces it."""
 
@@ -223,7 +230,7 @@ class TrialRunner:
             1
             for name in case_names
             for run_index in range(runs)
-            if _needs_agent(self._cache.load_trial(candidate_id, run_index, name))
+            if self._cache.trial_status(candidate_id, run_index, name) in (None, TrialStatus.INFRASTRUCTURE_INVALID)
         )
 
     async def run(

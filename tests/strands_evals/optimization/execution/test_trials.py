@@ -51,6 +51,10 @@ class MemoryCache:
     def load_trial(self, candidate_id, run_index, case_name):
         return self.trials.get((candidate_id, run_index, case_name))
 
+    def trial_status(self, candidate_id, run_index, case_name):
+        record = self.trials.get((candidate_id, run_index, case_name))
+        return None if record is None else record.status
+
     def save_trial(self, record):
         self.trials[(record.candidate_id, record.run_index, record.case_name)] = record
         self.saved.append(record)
@@ -291,6 +295,10 @@ async def test_pending_counts_trials_without_a_measured_record(traces):
     await runner.run("cand", task, ["a", "b"], runs=2, allowance=0)
 
     assert runner.pending("cand", ["a", "b"], runs=2) == 2  # b's two infrastructure failures
+
+    # Statuses only: pending never loads a record (a transcript read per trial).
+    cache.load_trial = None
+    assert runner.pending("cand", ["a", "b"], runs=2) == 2
 
 
 # concurrency

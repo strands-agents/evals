@@ -93,7 +93,7 @@ def _propose(log, candidate_id, parent, origin, *, rescore=False, **fields):
         candidate_id=candidate_id,
         number=0,
         parent_id=parent,
-        origin=origin,
+        origin=[origin],
         values={"x": 1},
         rationale="",
         inherited={},
@@ -143,7 +143,7 @@ def _evidence(candidate_id):
     return {
         "candidate_id": candidate_id,
         "values": {"x": 1},
-        "origin": "structure",
+        "origin": ["structure"],
         "objective": 0.4,
         "term_values": None,
         "violations": None,

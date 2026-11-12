@@ -6,7 +6,7 @@ import difflib
 import hashlib
 import io
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -37,7 +37,8 @@ class Candidate:
 
     `values` is stored as a read-only copy (`MappingProxyType`) and `id` is computed from it in
     `__post_init__`, so the content id can't go stale. Equality and hashing use `id`.
-    `origin` is "baseline" or the proposing block's name (`Block.name`). One parent per candidate
+    `origin` is `("baseline",)` or the names of the blocks whose patches it merges, in proposal order
+    (`Block.name`; one under `Alternate`, every proposing block of a `Joint` step). One parent per candidate
     (None for the baseline); there are no merges.
 
     Attributes:
@@ -48,7 +49,7 @@ class Candidate:
 
     values: Values
     parent_id: str | None
-    origin: str
+    origin: tuple[str, ...]
     rationale: str
     inherited: Mapping[str, str] = field(default_factory=dict)
     defaulted: tuple[str, ...] = ()
@@ -59,6 +60,9 @@ class Candidate:
         object.__setattr__(self, "values", MappingProxyType(dict(self.values)))
         object.__setattr__(self, "inherited", MappingProxyType(dict(self.inherited)))
         object.__setattr__(self, "defaulted", tuple(self.defaulted))
+        if isinstance(self.origin, str):
+            raise TypeError(f"origin is a sequence of block names, not the string {self.origin!r}")
+        object.__setattr__(self, "origin", tuple(self.origin))
         object.__setattr__(self, "id", content_id(self.values))
 
     def __eq__(self, other: object) -> bool:
@@ -72,14 +76,14 @@ class Candidate:
     @classmethod
     def baseline(cls, space: Space) -> Candidate:
         """Every value at its default (`space.complete({})`)."""
-        return cls(values=space.complete({}), parent_id=None, origin="baseline", rationale="")
+        return cls(values=space.complete({}), parent_id=None, origin=("baseline",), rationale="")
 
     def child(
         self,
         space: Space,
         updates: Values,
         *,
-        origin: str,
+        origin: Sequence[str],
         rationale: str,
         fill: Callable[[str], tuple[Value, str] | None] | None = None,
     ) -> Candidate:
@@ -93,7 +97,7 @@ class Candidate:
         Args:
             space: Completes and validates the new values.
             updates: The keys to change, from `Patch.updates`.
-            origin: The proposing block's name.
+            origin: The names of the blocks whose patches `updates` merges, in proposal order.
             rationale: Why, from the patch.
             fill: Where a key the parent lacks comes from; None means its default.
 
@@ -119,7 +123,7 @@ class Candidate:
         return Candidate(
             values=completed,
             parent_id=self.id,
-            origin=origin,
+            origin=tuple(origin),
             rationale=rationale,
             inherited=inherited,
             defaulted=tuple(defaulted),

@@ -19,4 +19,4 @@ class TopRanked(Selection):
     name: ClassVar[str] = "top_ranked"
 
     def choose(self, ctx: SelectionContext) -> str:
-        raise NotImplementedError
+        return ctx.ranking[0]

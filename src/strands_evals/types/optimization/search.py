@@ -23,7 +23,7 @@ class Patch(BaseModel):
     `state` is the proposer's private memory, handed back in `observe` and on resume; it must be
     JSON-serializable (checked with `json.dumps` when the patch arrives). `usage` is the proposer's own
     model cost, reported in `search_cost` and never counted against the rollout budget. No proposer
-    name: the optimizer knows which block asked, and records it as the candidate's `origin`.
+    name: the optimizer knows which block asked, and records it in the candidate's `origin`.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -62,7 +62,7 @@ class CandidateSummary(BaseModel):
 
     candidate_id: str
     parent_id: str | None
-    origin: str
+    origin: list[str]
     values: dict[str, Value]
     number: int
     measured_objective: float | None
@@ -128,7 +128,7 @@ class Evidence(BaseModel):
 
     candidate_id: str
     values: dict[str, Value]
-    origin: str
+    origin: list[str]
     objective: float | None
     term_values: list[float] | None
     violations: list[float] | None
