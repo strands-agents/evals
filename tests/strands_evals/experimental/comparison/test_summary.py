@@ -28,17 +28,22 @@ def test_summarizes_case_deltas_by_evaluator():
 
     assert [summary.evaluator for summary in summaries] == ["correctness", "helpfulness"]
     assert summaries[0].case_count == 2
+    assert summaries[0].changed_case_count == 2
+    assert summaries[0].higher_is_better is True
+    assert summaries[0].minimum_effect == 0.0
     assert summaries[0].mean_delta == pytest.approx(0.2)
     assert summaries[0].confidence_lower == pytest.approx(0.2)
     assert summaries[0].confidence_upper == pytest.approx(0.2)
     assert summaries[0].wilcoxon_p_value == pytest.approx(0.5)
     assert summaries[0].adjusted_p_value == pytest.approx(0.5)
+    assert summaries[0].verdict == "insufficient_data"
     assert summaries[1].case_count == 1
     assert summaries[1].mean_delta == pytest.approx(-0.1)
     assert summaries[1].confidence_lower is None
     assert summaries[1].confidence_upper is None
     assert summaries[1].wilcoxon_p_value is None
     assert summaries[1].adjusted_p_value is None
+    assert summaries[1].verdict == "insufficient_data"
 
 
 def test_t_interval_reflects_case_variation():
@@ -100,6 +105,163 @@ def test_all_zero_deltas_have_p_value_one():
 
     assert summary.wilcoxon_p_value == 1.0
     assert summary.adjusted_p_value == 1.0
+    assert summary.verdict == "no_clear_change"
+
+
+@pytest.mark.parametrize(
+    ("candidate_scores", "expected_verdict"),
+    [
+        ([0.2, 0.3, 0.4, 0.5, 0.6, 0.7], "improved"),
+        ([0.0, 0.1, 0.2, 0.3, 0.4, 0.5], "regressed"),
+    ],
+)
+def test_assigns_evidence_based_verdicts(candidate_scores: list[float], expected_verdict: str):
+    baseline_scores = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+    summary = summarize_pairs(
+        [
+            _pair(
+                case_id=f"case-{index}",
+                evaluator="correctness",
+                baseline=baseline,
+                candidate=candidate,
+            )
+            for index, (baseline, candidate) in enumerate(zip(baseline_scores, candidate_scores, strict=True))
+        ]
+    )[0]
+
+    assert summary.verdict == expected_verdict
+
+
+@pytest.mark.parametrize(
+    ("delta", "lower_is_better", "expected_without_threshold"),
+    [
+        (0.1, False, "improved"),
+        (-0.1, False, "regressed"),
+        (0.1, True, "regressed"),
+        (-0.1, True, "improved"),
+    ],
+)
+def test_minimum_effect_requires_entire_interval_beyond_threshold(
+    delta: float,
+    lower_is_better: bool,
+    expected_without_threshold: str,
+):
+    pairs = [
+        _pair(
+            case_id=f"case-{index}",
+            evaluator="correctness",
+            baseline=0.5,
+            candidate=0.5 + delta,
+        )
+        for index in range(6)
+    ]
+    lower_names = {"correctness"} if lower_is_better else set()
+
+    without_threshold = summarize_pairs(pairs, minimum_effect=0.05, lower_is_better=lower_names)[0]
+    with_threshold = summarize_pairs(pairs, minimum_effect=0.11, lower_is_better=lower_names)[0]
+
+    assert without_threshold.verdict == expected_without_threshold
+    assert with_threshold.minimum_effect == 0.11
+    assert with_threshold.verdict == "no_clear_change"
+
+
+@pytest.mark.parametrize(("delta", "lower_is_better"), [(0.25, False), (-0.25, True)])
+def test_minimum_effect_boundary_is_not_directional(delta: float, lower_is_better: bool):
+    pairs = [
+        _pair(
+            case_id=f"case-{index}",
+            evaluator="correctness",
+            baseline=0.5,
+            candidate=0.5 + delta,
+        )
+        for index in range(6)
+    ]
+    lower_names = {"correctness"} if lower_is_better else set()
+
+    summary = summarize_pairs(pairs, minimum_effect=0.25, lower_is_better=lower_names)[0]
+
+    assert summary.confidence_lower == pytest.approx(delta)
+    assert summary.confidence_upper == pytest.approx(delta)
+    assert summary.verdict == "no_clear_change"
+
+
+@pytest.mark.parametrize("lower_is_better", [False, True])
+def test_interval_must_exclude_zero_for_directional_verdict(lower_is_better: bool):
+    deltas = [0.01] * 7 + [5.0]
+    pairs = [
+        _pair(
+            case_id=f"case-{index}",
+            evaluator="correctness",
+            baseline=0.0,
+            candidate=delta,
+        )
+        for index, delta in enumerate(deltas)
+    ]
+    lower_names = {"correctness"} if lower_is_better else set()
+
+    summary = summarize_pairs(pairs, lower_is_better=lower_names)[0]
+
+    assert summary.mean_delta > 0.0
+    assert summary.confidence_lower is not None
+    assert summary.confidence_lower < 0.0
+    assert summary.verdict == "no_clear_change"
+
+
+@pytest.mark.parametrize("lower_is_better", [False, True])
+def test_interval_upper_bound_prevents_directional_verdict(lower_is_better: bool):
+    deltas = [-0.01] * 7 + [-5.0]
+    pairs = [
+        _pair(
+            case_id=f"case-{index}",
+            evaluator="correctness",
+            baseline=0.0,
+            candidate=delta,
+        )
+        for index, delta in enumerate(deltas)
+    ]
+    lower_names = {"correctness"} if lower_is_better else set()
+
+    summary = summarize_pairs(pairs, lower_is_better=lower_names)[0]
+
+    assert summary.mean_delta < 0.0
+    assert summary.confidence_upper is not None
+    assert summary.confidence_upper > 0.0
+    assert summary.verdict == "no_clear_change"
+
+
+def test_significance_threshold_boundary_is_inclusive():
+    pairs = [
+        _pair(
+            case_id=f"case-{index}",
+            evaluator="correctness",
+            baseline=0.0,
+            candidate=0.1,
+        )
+        for index in range(6)
+    ]
+
+    summary = summarize_pairs(pairs, confidence_level=0.96875)[0]
+
+    assert summary.adjusted_p_value == 0.03125
+    assert 1.0 - summary.confidence_level == summary.adjusted_p_value
+    assert summary.verdict == "improved"
+
+
+def test_constant_interval_preserves_rounded_delta_exactly():
+    pairs = [
+        _pair(
+            case_id=f"case-{index}",
+            evaluator="correctness",
+            baseline=0.5,
+            candidate=0.6,
+        )
+        for index in range(6)
+    ]
+
+    summary = summarize_pairs(pairs)[0]
+
+    assert summary.confidence_lower == 0.1
+    assert summary.confidence_upper == 0.1
 
 
 @pytest.mark.parametrize(
@@ -173,6 +335,24 @@ def test_equal_magnitude_changes_use_exact_sign_test(
     )[0]
 
     assert summary.wilcoxon_p_value == pytest.approx(expected_p_value)
+
+
+def test_large_equal_magnitude_changes_use_exact_sign_test():
+    deltas = [1.0] * 13 + [-1.0] * 4
+
+    summary = summarize_pairs(
+        [
+            _pair(
+                case_id=f"case-{index}",
+                evaluator="correctness",
+                baseline=0.0,
+                candidate=delta,
+            )
+            for index, delta in enumerate(deltas)
+        ]
+    )[0]
+
+    assert summary.wilcoxon_p_value == pytest.approx(0.049041748046875)
 
 
 def test_small_tied_sample_uses_exact_distribution(monkeypatch: pytest.MonkeyPatch):
@@ -287,6 +467,193 @@ def test_large_tied_sample_uses_deterministic_approximation(monkeypatch: pytest.
     assert methods == ["approx"]
 
 
+def test_rounds_tiny_deltas_before_assigning_verdict():
+    summary = summarize_pairs(
+        [
+            _pair(
+                case_id=f"case-{index}",
+                evaluator="correctness",
+                baseline=0.8,
+                candidate=0.8 + 2.2e-16,
+            )
+            for index in range(8)
+        ]
+    )[0]
+
+    assert summary.changed_case_count == 0
+    assert summary.mean_delta == 0.0
+    assert summary.verdict == "no_clear_change"
+
+
+def test_supports_lower_is_better_evaluators():
+    pairs = [
+        _pair(
+            case_id=f"case-{index}",
+            evaluator="attack_success",
+            baseline=0.8,
+            candidate=0.2,
+        )
+        for index in range(8)
+    ]
+
+    default_summary = summarize_pairs(pairs)[0]
+    lower_is_better_summary = summarize_pairs(pairs, lower_is_better={"attack_success"})[0]
+
+    assert default_summary.higher_is_better is True
+    assert default_summary.verdict == "regressed"
+    assert lower_is_better_summary.higher_is_better is False
+    assert lower_is_better_summary.verdict == "improved"
+
+
+def test_rejects_bare_or_unknown_lower_is_better_names():
+    pairs = [
+        _pair(
+            case_id=f"case-{index}",
+            evaluator="attack_success",
+            baseline=0.8,
+            candidate=0.2,
+        )
+        for index in range(8)
+    ]
+
+    with pytest.raises(TypeError, match="not a string"):
+        summarize_pairs(pairs, lower_is_better="attack_success")
+    with pytest.raises(ValueError, match="unknown=.*attack_sucess.*known=.*attack_success"):
+        summarize_pairs(pairs, lower_is_better={"attack_sucess"})
+
+
+def test_distinguishes_insufficient_data_from_no_clear_change():
+    five_changes = [
+        _pair(
+            case_id=f"case-{index}",
+            evaluator="correctness",
+            baseline=0.0,
+            candidate=1.0,
+        )
+        for index in range(5)
+    ]
+
+    default_summary = summarize_pairs(five_changes)[0]
+    lower_confidence_summary = summarize_pairs(five_changes, confidence_level=0.9)[0]
+
+    assert default_summary.changed_case_count == 5
+    assert default_summary.verdict == "insufficient_data"
+    assert lower_confidence_summary.verdict == "improved"
+
+
+def test_changed_case_count_controls_testability():
+    pairs = [
+        _pair(
+            case_id=f"case-{index}",
+            evaluator="correctness",
+            baseline=0.0,
+            candidate=1.0 if index < 4 else 0.0,
+        )
+        for index in range(20)
+    ]
+
+    summary = summarize_pairs(pairs)[0]
+
+    assert summary.case_count == 20
+    assert summary.changed_case_count == 4
+    assert summary.verdict == "insufficient_data"
+
+
+@pytest.mark.parametrize(
+    ("delta", "standalone_verdict"),
+    [(0.1, "improved"), (-0.1, "regressed")],
+)
+def test_adjusted_p_value_controls_data_sufficiency(
+    delta: float,
+    standalone_verdict: str,
+):
+    primary = [
+        _pair(
+            case_id=f"case-{index}",
+            evaluator="correctness",
+            baseline=0.0,
+            candidate=delta,
+        )
+        for index in range(6)
+    ]
+    unchanged = [
+        _pair(
+            case_id=f"case-{index}",
+            evaluator="helpfulness",
+            baseline=0.5,
+            candidate=0.5,
+        )
+        for index in range(6)
+    ]
+
+    alone = summarize_pairs(primary)[0]
+    with_family = summarize_pairs(primary + unchanged)[0]
+
+    assert alone.adjusted_p_value == pytest.approx(0.03125)
+    assert alone.verdict == standalone_verdict
+    assert with_family.adjusted_p_value == pytest.approx(0.0625)
+    assert with_family.verdict == "insufficient_data"
+
+
+def test_adjusted_p_value_controls_directional_verdict():
+    primary_deltas = [-0.1, -0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+    noisy_deltas = [0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7, -0.8]
+    primary = [
+        _pair(
+            case_id=f"case-{index}",
+            evaluator="correctness",
+            baseline=0.0,
+            candidate=delta,
+        )
+        for index, delta in enumerate(primary_deltas)
+    ]
+    noisy = [
+        _pair(
+            case_id=f"case-{index}",
+            evaluator="helpfulness",
+            baseline=0.0,
+            candidate=delta,
+        )
+        for index, delta in enumerate(noisy_deltas)
+    ]
+
+    alone = summarize_pairs(primary)[0]
+    with_family = summarize_pairs(primary + noisy)[0]
+
+    assert alone.wilcoxon_p_value == pytest.approx(0.0390625)
+    assert alone.adjusted_p_value == pytest.approx(0.0390625)
+    assert alone.verdict == "improved"
+    assert with_family.adjusted_p_value == pytest.approx(0.078125)
+    assert with_family.verdict == "no_clear_change"
+
+
+def test_data_sufficiency_uses_each_evaluators_minimum_adjusted_p_value():
+    strong = [
+        _pair(
+            case_id=f"case-{index}",
+            evaluator="correctness",
+            baseline=0.0,
+            candidate=1.0,
+        )
+        for index in range(10)
+    ]
+    sparse = [
+        _pair(
+            case_id=f"case-{index}",
+            evaluator="helpfulness",
+            baseline=0.0,
+            candidate=1.0 if index < 3 else 0.0,
+        )
+        for index in range(10)
+    ]
+
+    summaries = summarize_pairs(strong + sparse)
+
+    assert summaries[0].verdict == "improved"
+    assert summaries[1].changed_case_count == 3
+    assert summaries[1].verdict == "insufficient_data"
+
+
 def test_rejects_duplicate_case_evaluator_rows():
     pair = _pair(case_id="case", evaluator="correctness", baseline=0.1, candidate=0.2)
 
@@ -305,3 +672,9 @@ def test_rejects_non_finite_deltas():
 
     with pytest.raises(ValueError, match="non-finite"):
         summarize_pairs([pair])
+
+
+@pytest.mark.parametrize("minimum_effect", [-0.1, float("nan"), float("inf")])
+def test_rejects_invalid_minimum_effect(minimum_effect: float):
+    with pytest.raises(ValueError, match="minimum_effect"):
+        summarize_pairs([], minimum_effect=minimum_effect)
