@@ -305,6 +305,20 @@
   .wacts { display: flex; gap: 10px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
   .wacts .said { font-size: 12px; color: var(--ink3); }
   .unchanged { font-size: 12px; color: var(--ink3); margin: 11px 0 0; }
+  /* What the run did, in a sentence, above everything it produced. */
+  .explain {
+    margin: 0 0 18px; padding: 11px 14px; background: var(--card); border: 1px solid var(--hair);
+    border-left: 2px solid var(--accent); border-radius: 0 9px 9px 0;
+    font-size: 12.5px; line-height: 1.6; color: var(--ink2);
+  }
+  .explain b { color: var(--ink1); font-weight: 600; }
+  .explain code { font-family: var(--font-mono, ui-monospace, Menlo, monospace); font-size: 11.5px; }
+  .chead2 { margin: 26px 0 3px; font-size: 14px; font-weight: 600; color: var(--ink1); }
+  .chead2 + .sub { margin-bottom: 14px; }
+  /* A candidate's own cases, nested inside its row: tighter than the table it sits in. */
+  table.trials { width: 100%; border-collapse: collapse; margin: 4px 0 2px; }
+  table.trials td { padding: 4px 10px 4px 0; border-bottom: 1px solid var(--hair2); vertical-align: top; }
+  table.trials tr:last-child td { border-bottom: 0; }
   .optpick { display: flex; align-items: center; gap: 10px; margin: 0 0 18px; flex-wrap: wrap; }
   .optpick select {
     background: var(--card); color: var(--ink1); border: 1px solid var(--hair);
@@ -492,9 +506,38 @@
         <span class="grow"></span>
         <span class="path mono" id="opt-objective"></span>
       </div>
+      <!-- What the optimizer actually did. Nothing else on the page explains the method. -->
+      <p class="explain" id="opt-explain"></p>
+
       <!-- What the run is for: the result, then the thing you take away from it. -->
       <div class="result" id="opt-result"></div>
       <div class="winner" id="opt-winner"></div>
+
+      <!-- Every config it tried, browsable like the Report tab's cases: a candidate IS an eval run. -->
+      <h3 class="chead2">Candidates tried</h3>
+      <p class="sub" id="opt-cand-sub"></p>
+      <div class="ctl">
+        <input class="find" id="opt-find" placeholder="Search candidates, settings and rationales" autocomplete="off">
+        <div class="seg" id="opt-seg">
+          <button class="on" data-f="all">All</button>
+          <button data-f="feasible">Could ship</button>
+          <button data-f="infeasible">Broke a constraint</button>
+          <button data-f="unscored">Never scored</button>
+        </div>
+        <span class="grow"></span>
+        <span class="path" id="opt-cand-count"></span>
+      </div>
+      <div class="scroll">
+        <table class="rep">
+          <thead><tr>
+            <th style="width:22%">Candidate</th><th style="width:8%">Iter</th>
+            <th style="width:22%">Objective</th><th style="width:18%">Outcome</th>
+            <!-- `changed_keys` is the diff against the PARENT. Open a row for the baseline diff. -->
+            <th>What it changed</th>
+          </tr></thead>
+          <tbody id="opt-cands"></tbody>
+        </table>
+      </div>
 
       <!-- How it got there, and then the diagnostics for when the result is surprising. -->
       <details class="drawer" id="opt-search">
@@ -551,19 +594,6 @@
             <p class="cap" id="opt-budget-cap"></p>
             <div id="opt-budget-chart"></div>
           </div>
-        </div>
-      </details>
-      <details class="drawer" id="opt-table">
-        <summary>Every proposal<span class="path" id="opt-table-sum"></span></summary>
-        <div class="scroll">
-          <table class="rep">
-            <thead><tr>
-              <th style="width:12%">Candidate</th><th style="width:8%">Iter</th>
-              <th style="width:14%">Objective</th><th style="width:16%">Outcome</th>
-              <th style="width:16%">Changed</th><th>Why it was tried</th>
-            </tr></thead>
-            <tbody id="opt-rows"></tbody>
-          </table>
         </div>
       </details>
       <p class="optnote" id="opt-note"></p>
@@ -3765,7 +3795,10 @@
       if (!on) return head;
 
       const c = g.case;
-      const kv = [['Input', esc(c.input)]];
+      /* A report whose cases carry no input — an optimizer trial record is one — must not have
+         the word "undefined" standing where the question should be. */
+      const kv = [['Input', c.input == null
+        ? '<span class="empty">not recorded in this report</span>' : esc(c.input)]];
       if (c.expected_assertion) kv.push(['Assertion', esc(c.expected_assertion)]);
       ASPECTS.filter(a => a.has(c)).forEach(a => a.rows(c).forEach(row => kv.push(row)));
       if (!r.outputs.length) {
@@ -4081,6 +4114,7 @@
        otherwise have no measurement at all. */
     const measured = new Map();        // candidate -> {metric: mean}
     const fromTrials = new Map();      // candidate -> {metric: {sum, n}}
+    const trialsBy = new Map();        // candidate -> [trial record], in log order
     const metricNames = [];
     const seeMetric = name => { if (!metricNames.includes(name)) metricNames.push(name); };
 
@@ -4111,6 +4145,11 @@
 
           const cid = rec.candidate_id;
           if (cid) {
+            /* Kept whole, not just totalled. A candidate's trials ARE an evaluation run of it —
+               `RunDirectory.reports()` rebuilds them into `EvaluationReport`s "as `Experiment`
+               would return them" — so the report renderer can show them as it shows any run. */
+            if (!trialsBy.has(cid)) trialsBy.set(cid, []);
+            trialsBy.get(cid).push(rec);
             if (!fromTrials.has(cid)) fromTrials.set(cid, {});
             const totals = fromTrials.get(cid);
             for (const [metric, value] of Object.entries(rec.evaluations || {})) {
@@ -4270,20 +4309,23 @@
       if (!parent || parent === id || lineage.includes(parent)) break;   // the baseline is its own parent
       id = parent;
     }
-    const championValues = champion ? valuesOf(champion) : null;
     const baselineValues = baselineId ? valuesOf(baselineId) : null;
-    let settings = null;
-    if (championValues) {
+    /* Against the baseline, not the parent: what you decide with is how far the candidate has
+       moved from what you already had, and a parent is itself usually several steps from that. */
+    const diffSettings = id => {
+      const own = valuesOf(id);
+      if (!own) return null;
       const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-      const keys = Object.keys(championValues)
-        .concat(Object.keys(baselineValues || {}).filter(k => !(k in championValues)));
-      settings = keys.map(key => ({
+      const keys = Object.keys(own).concat(Object.keys(baselineValues || {}).filter(k => !(k in own)));
+      return keys.map(key => ({
         key,
         before: baselineValues ? baselineValues[key] : undefined,
-        after: championValues[key],
-        changed: !baselineValues || !same(baselineValues[key], championValues[key]),
+        after: own[key],
+        changed: !baselineValues || !same(baselineValues[key], own[key]),
       }));
-    }
+    };
+    const championValues = champion ? valuesOf(champion) : null;
+    const settings = champion ? diffSettings(champion) : null;
     const winner = champion ? {
       id: champion,
       lineage,
@@ -4292,11 +4334,43 @@
       settings,
     } : null;
 
+    /* Everything a candidate row needs to be browsable like a report row: the trials it is made
+       of, grouped by split, and how its configuration differs from the baseline's. */
+    for (const p of proposals) {
+      p.trials = trialsBy.get(p.candidate_id) || [];
+      p.splits = {};
+      for (const t of p.trials) p.splits[t.split || 'unknown'] = (p.splits[t.split || 'unknown'] || 0) + 1;
+      p.settings = diffSettings(p.candidate_id);
+      p.isChampion = !!champion && p.candidate_id === champion;
+      p.isBaseline = !!baselineId && p.candidate_id === baselineId;
+    }
+
+    /* What the run did, in a sentence. The method is the part no chart explains: the search only
+       ever sees train, the pick happens once on validation, and test is measured and reported but
+       never optimized against. A reader who does not know that cannot read any of the numbers. */
+    const split = cfg.split || {};
+    const sizes = ['train', 'validation', 'test']
+      .map(name => ({ name, n: Array.isArray(split[name]) ? split[name].length : null }))
+      .filter(s => s.n);
+    const tuned = [];
+    for (const p of proposals) {
+      for (const key of p.changed_keys) if (!tuned.includes(key)) tuned.push(key);
+    }
+    const explain = {
+      sizes,
+      tuned,
+      blocks: cfg.blocks || [],
+      runs: typeof cfg.runs === 'number' ? cfg.runs : null,
+      candidates: proposals.filter(p => p.candidate_id).length,
+    };
+
     const budget = cfg.budget || {};
     const scored = proposals.filter(p => p.objective != null);
     return {
       result,
       winner,
+      explain,
+      baselineValues,
       baselineId,
       config: cfg,
       proposals,
@@ -4605,6 +4679,8 @@
   /* Which metric and which usage measure are on screen. Kept across re-renders so switching run
      or rescanning does not throw you back to the first metric. */
   let optMetric = null, optUsage = null;
+  let optQuery = '', optFilter = 'all';
+  const optOpen = new Set();
 
   function optStat(value, key) {
     return `<div class="stat"><span class="v">${esc(value)}</span><span class="k">${esc(key)}</span></div>`;
@@ -4618,6 +4694,195 @@
     return chosen;
   }
 
+  /* ── what the optimizer did ──
+     The method, in one sentence, because none of the numbers can be read without it: the search
+     only ever sees train, the champion is picked once on validation, and test is measured and
+     reported but never optimized against. */
+  function explainStrip(d) {
+    const e = d.explain;
+    const where = e.sizes.length ? e.sizes.map(s => `<b>${s.n}</b> ${s.name}`).join(' · ') : '';
+    const split = where
+      ? ` Cases were split ${where}: it searched on train, picked the champion once on validation, `
+        + 'and measured test only to report it.'
+      : '';
+    /* A log with no finished iteration has no candidates and no changed keys, and the sentence
+       above would read "built 0 versions of your agent, varying your agent". */
+    if (!e.candidates) {
+      return 'It builds versions of your agent and runs your cases against each one, searching for a '
+        + 'configuration that scores better. No iteration has finished yet, so there is nothing it '
+        + 'built to show.' + split;
+    }
+    const what = e.tuned.length
+      ? `varying ${e.tuned.map(k => `<code>${esc(k)}</code>`).join(', ')}`
+      : (e.blocks.length ? `varying its ${e.blocks.map(b => esc(b)).join(' and ')}` : 'varying your agent');
+    const runs = e.runs && e.runs > 1 ? `, each case run ${plural(e.runs, 'time')}` : '';
+    return `It built <b>${esc(e.candidates)}</b> versions of your agent, ${what}, and ran your cases `
+      + `against each one${runs}. Your experiment supplied the cases and evaluators and was never run `
+      + 'itself.' + split;
+  }
+
+  /* ── candidates ──
+     A candidate is one configuration, and its trials are an evaluation run of it — the library
+     says so itself: `RunDirectory.reports()` rebuilds them "as `Experiment` would return them".
+     So this table is the Report tab's table, over configs instead of cases, and opening a row
+     shows what changed and how each case went. */
+  function candidateReport(p) {
+    /* An `EvaluationReport`-shaped document, which is what `loadReport` wants. One row per
+       (case, metric): `evaluations` is metric -> {score, reason}, and a run with two evaluators
+       produces two rows for the same case, exactly as a real report does. */
+    const cases = [], scores = [], passes = [], reasons = [], detailed = [];
+    for (const t of p.trials) {
+      const entries = Object.entries(t.evaluations || {});
+      const rows = entries.length ? entries : [[null, null]];
+      for (const [metric, value] of rows) {
+        const score = value && typeof value === 'object' ? value.score : value;
+        const reason = (value && typeof value === 'object' && value.reason) || '';
+        const failed = t.status && t.status !== 'completed';
+        cases.push({
+          name: t.case_name,
+          evaluator: metric,
+          split: t.split,
+          actual_output: t.output == null ? null : t.output,
+          /* `transcript` is deliberately NOT passed as a trajectory. It is a `{hash, format}`
+             pointer into `transcripts/`, not a step list, and handing it to the trajectory
+             renderer would have the page label a filename as a recorded conversation. */
+          actual_trajectory: t.trajectory != null ? t.trajectory : null,
+          actual_interactions: t.interactions,
+          actual_environment_state: t.environment_state,
+        });
+        scores.push(typeof score === 'number' ? score : 0);
+        passes.push(!failed && typeof score === 'number');
+        reasons.push(failed ? `${t.status}${t.error ? `: ${t.error}` : ''}` : reason);
+        detailed.push(metric == null ? [] : [{
+          score: typeof score === 'number' ? score : 0,
+          test_pass: !failed,
+          label: failed ? String(t.status) : metric,
+          reason: failed ? `${t.status}${t.error ? `: ${t.error}` : ''}` : reason,
+          not_applicable: false,
+        }]);
+      }
+    }
+    const real = scores.filter((_, i) => passes[i]);
+    return {
+      overall_score: real.length ? real.reduce((a, b) => a + b, 0) / real.length : 0,
+      cases, scores, test_passes: passes, reasons, detailed_results: detailed,
+    };
+  }
+
+  const OUTCOME_TAG = { feasible: 'ok', infeasible: 'warn', invalid: 'warn' };
+
+  function candidateMatches(p) {
+    if (optFilter === 'feasible' && p.outcome !== 'feasible') return false;
+    if (optFilter === 'infeasible' && p.outcome !== 'infeasible') return false;
+    if (optFilter === 'unscored' && p.objective != null) return false;
+    if (!optQuery) return true;
+    const hay = [p.candidate_id, p.outcome, p.rationale, p.origin, (p.changed_keys || []).join(' ')]
+      .concat((p.settings || []).filter(s => s.changed)
+        .map(s => `${s.key} ${typeof s.after === 'string' ? s.after : JSON.stringify(s.after)}`))
+      .join(' ').toLowerCase();
+    return hay.includes(optQuery);
+  }
+
+  function candidateDetail(p, d) {
+    const kv = [];
+    if (p.rationale) kv.push(['Why it was tried', esc(p.rationale)]);
+    if (p.parent_id && p.parent_id !== p.candidate_id) kv.push(['Derived from', esc(p.parent_id)]);
+
+    /* The diff is against the baseline, not the parent: what you decide with is how far this
+       candidate has moved from what you already had. `changed_keys` in the row above is the
+       parent diff, which is a different number, so the label here has to say which one it is. */
+    const changed = (p.settings || []).filter(s => s.changed);
+    const vs = `Versus ${d.baselineId || 'baseline'}`;
+    if (p.isBaseline) {
+      kv.push(['Configuration', `<span class="empty">this is the configuration the run started `
+        + 'from, so there is nothing to diff it against</span>']);
+    } else if (!p.settings) {
+      kv.push([vs, '<span class="empty">the log records no values for this candidate — only a '
+        + '<code>propose</code> event carries them</span>']);
+    } else if (!changed.length) {
+      kv.push([vs, `<span class="empty">identical to ${esc(d.baselineId || 'the baseline')} in every `
+        + 'setting the log records</span>']);
+    } else {
+      kv.push([vs, changed.map(s => `<div class="setting"><span class="skey">${esc(s.key)}</span>`
+        + settingDiff(s) + '</div>').join('')]);
+    }
+
+    const metrics = Object.keys(p.measured || {});
+    if (metrics.length) {
+      kv.push(['Measured', metrics.map(m =>
+        `<span class="mono">${esc(m)} ${esc(nice(p.measured[m]))}</span>`).join(' · ')]);
+    }
+
+    if (!p.trials.length) {
+      kv.push(['Cases', '<span class="empty">no trial was recorded for this candidate, so there is '
+        + 'nothing to open</span>']);
+    } else {
+      /* In the order the run uses them, not alphabetically — "3 test · 8 train · 4 validation"
+         puts the held-out split first and reads as though the run started there. */
+      const order = ['train', 'validation', 'test'];
+      const splits = Object.keys(p.splits)
+        .sort((a, b) => (order.indexOf(a) + 1 || 9) - (order.indexOf(b) + 1 || 9))
+        .map(s => `${p.splits[s]} ${esc(s)}`).join(' · ');
+      kv.push(['Cases', `${plural(p.trials.length, 'trial')} · ${splits}`
+        + ` <button class="btn" data-open="${esc(p.candidate_id)}">Open as report</button>`]);
+      const rows = p.trials.map(t => {
+        const scored = Object.entries(t.evaluations || {}).map(([m, v]) => {
+          const score = v && typeof v === 'object' ? v.score : v;
+          return `${esc(m)} ${typeof score === 'number' ? esc(fmt(score)) : '—'}`;
+        }).join(' · ');
+        const bad = t.status && t.status !== 'completed';
+        return `<tr><td>${esc(t.case_name == null ? '—' : t.case_name)}</td>`
+          + `<td class="path">${esc(t.split || '')}</td>`
+          + `<td>${scored || '<span class="path">not judged</span>'}</td>`
+          + `<td>${bad ? `<span class="tag warn">${esc(t.status)}</span>` : verdict({ pass: true })}</td></tr>`;
+      }).join('');
+      kv.push(['Per case', `<table class="trials"><tbody>${rows}</tbody></table>`]);
+    }
+    /* Monospace only where the value is one — a rationale is a sentence, and setting out a
+       sentence in a code font makes it read as something that was typed into the config. */
+    return '<tr class="detail"><td colspan="5"><dl class="kv">'
+      + kv.map(([k, v]) => `<dt>${esc(k)}</dt>`
+        + `<dd${/^(Derived|Measured|Per case)/.test(k) ? ' class="m"' : ''}>${v}</dd>`).join('')
+      + '</dl></td></tr>';
+  }
+
+  function renderCandidates() {
+    const d = OPT;
+    if (!d) return;
+    const shown = d.proposals.filter(candidateMatches);
+    const unscored = d.proposals.length - d.scored.length;
+    $('opt-cand-count').textContent = `${shown.length} of ${plural(d.proposals.length, 'candidate')}`
+      + (unscored ? `, ${unscored} never scored` : '');
+
+    $('opt-cands').innerHTML = shown.map(p => {
+      const key = p.candidate_id || `invalid-${p.iteration}-${p.number}`;
+      const on = optOpen.has(key);
+      const name = p.candidate_id
+        ? `<span class="caret${on ? ' open' : ''}"></span>${esc(p.candidate_id)}`
+          + (p.number != null ? ` <span class="path">#${esc(p.number)}</span>` : '')
+        : '<span class="path">no candidate</span>';
+      const tags = (p.isChampion ? ' <span class="tag ok">champion</span>' : '')
+        + (p.isBaseline ? ' <span class="tag">baseline</span>' : '');
+      /* A never-scored candidate gets a dash, not a bar at zero: no measurement was taken, and a
+         zero-length bar reads as one that was taken and came out worst. */
+      const obj = p.objective == null
+        ? '<span class="path">not scored</span>'
+        : `<span class="bar2"><span class="num">${esc(fmt(p.objective))}</span><span class="track">`
+          + `<span class="fill" style="width:${Math.round(Math.max(0, Math.min(1, p.objective)) * 100)}%">`
+          + '</span></span></span>';
+      const outcome = p.outcome
+        ? `<span class="tag ${OUTCOME_TAG[p.outcome] || ''}">${esc(p.outcome)}</span>` : '';
+      const head = `<tr class="case" data-k="${esc(key)}"><td>${name}${tags}</td>`
+        + `<td>${esc(p.iteration)}</td><td>${obj}</td><td>${outcome}</td>`
+        + `<td class="mono">${esc((p.changed_keys || []).join(', ') || '—')}</td></tr>`;
+      return on ? head + candidateDetail(p, d) : head;
+    }).join('')
+      || `<tr><td colspan="5"><div class="nores">${d.proposals.length
+        ? '<b>No candidate matches</b>Try a different filter, or clear the search.'
+        : '<b>No candidate yet</b>Candidates appear here as each iteration finishes.'}`
+        + '</div></td></tr>';
+  }
+
   function renderOptimization() {
     const run = OPT_RUNS[optSel];
     $('tab-opt').hidden = OPT_RUNS.length === 0;
@@ -4626,10 +4891,11 @@
         ? 'Pick a run above.'
         : 'No optimizer run directory in this folder. One is a run.json with an events.jsonl beside it.';
       ['opt-obj-chart', 'opt-budget-chart', 'opt-status-chart', 'opt-metric-chart', 'opt-usage-chart',
-        'opt-result', 'opt-winner'].forEach(id => { $(id).innerHTML = ''; });
+        'opt-result', 'opt-winner', 'opt-cands', 'opt-explain'].forEach(id => { $(id).innerHTML = ''; });
       $('opt-metric-wrap').hidden = true;
       $('opt-cost').hidden = true;
-      $('opt-rows').innerHTML = '';
+      $('opt-cand-sub').textContent = '';
+      $('opt-cand-count').textContent = '';
       $('opt-stats').innerHTML = '';
       $('opt-best').textContent = '—';
       return;
@@ -4711,26 +4977,10 @@
     $('opt-status-chart').innerHTML = statusChart(d);
     $('opt-diag-sum').textContent = plural(d.trials, 'trial');
 
-    const unscored = d.proposals.length - d.scored.length;
-    $('opt-table-sum').textContent = plural(d.proposals.length, 'proposal')
-      + (unscored ? `, ${unscored} never scored` : '');
-
-    const rows = d.proposals.map(p => {
-      const obj = p.objective == null
-        ? `<span class="path">not scored</span>`
-        : `<span class="mono">${esc(fmt(p.objective))}</span>`;
-      const name = p.candidate_id
-        ? esc(p.candidate_id) + (p.number != null ? ` <span class="path">#${esc(p.number)}</span>` : '')
-        : '<span class="path">no candidate</span>';
-      const champTag = p.candidate_id && p.candidate_id === d.champion
-        ? ' <span class="tag ok">champion</span>' : '';
-      return `<tr><td>${name}${champTag}</td><td>${esc(p.iteration)}</td><td>${obj}</td>`
-        + `<td>${esc(p.outcome || '')}</td><td class="mono">${esc((p.changed_keys || []).join(', ') || '—')}</td>`
-        + `<td>${esc(p.rationale)}</td></tr>`;
-    }).join('');
-    $('opt-rows').innerHTML = rows
-      || `<tr><td colspan="6"><div class="nores"><b>No proposals recorded</b>`
-        + `The log has no finished iteration yet.</div></td></tr>`;
+    $('opt-explain').innerHTML = explainStrip(d);
+    $('opt-cand-sub').textContent = 'Each one is a configuration the optimizer built and ran your '
+      + 'cases against. Open one to see what it changed and how every case went.';
+    renderCandidates();
 
     const notes = [];
     if (run.truncated) {
@@ -4827,6 +5077,33 @@
       if (URL.revokeObjectURL) URL.revokeObjectURL(url);
       said.textContent = `downloaded champion.json · ${KB(text.length)}`;
     }
+  };
+  $('opt-find').oninput = e => { optQuery = e.target.value.trim().toLowerCase(); renderCandidates(); };
+  $('opt-seg').onclick = e => {
+    const b = e.target.closest('button[data-f]');
+    if (!b) return;
+    optFilter = b.dataset.f;
+    app.querySelectorAll('#opt-seg button').forEach(x => x.classList.toggle('on', x === b));
+    renderCandidates();
+  };
+  $('opt-cands').onclick = e => {
+    /* The jump is inside the row, so it has to be handled before the row's own toggle —
+       otherwise clicking it would collapse the detail it was sitting in. */
+    const jump = e.target.closest('[data-open]');
+    if (jump) {
+      const p = OPT && OPT.proposals.find(x => x.candidate_id === jump.dataset.open);
+      if (p && p.trials.length) {
+        const run = OPT_RUNS[optSel] || {};
+        loadReport({ path: `${run.run_id || 'run'} · ${p.candidate_id}` }, candidateReport(p));
+        show('report');
+      }
+      return;
+    }
+    const tr = e.target.closest('tr.case');
+    if (!tr) return;
+    const key = tr.dataset.k;
+    optOpen.has(key) ? optOpen.delete(key) : optOpen.add(key);
+    renderCandidates();
   };
   // Redrawing the whole view is cheap — the log is already parsed — and keeps one render path.
   $('opt-metric-pick').onchange = e => { optMetric = e.target.value; renderOptimization(); };

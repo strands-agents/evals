@@ -103,7 +103,14 @@ try {
   ok(text('#opt-best') === '0.67', 'best feasible objective derived from the fetched log', text('#opt-best'));
   ok($$('#opt-obj-chart circle').length === 8, 'one mark per scored proposal',
     $$('#opt-obj-chart circle').length);
-  ok($$('#opt-rows tr').length === 11, 'a row per proposal', $$('#opt-rows tr').length);
+  ok($$('#opt-cands tr.case').length === 11, 'a candidate row per proposal',
+    $$('#opt-cands tr.case').length);
+  /* The candidate table is built from the `trial` events, not from the iteration summaries, so
+     it is the check that the whole log came over the wire and not just its tail. */
+  await click($$('#opt-cands tr.case').find(r => /c10/.test(r.textContent)));
+  ok($$('#opt-cands tr.detail table.trials tr').length === 15,
+     'opening the champion lists every trial the fetched log recorded for it',
+     $$('#opt-cands tr.detail table.trials tr').length);
   ok($$('#opt-metric-chart circle').length === 8 && $$('#opt-usage-chart rect.col').length === 6,
     'the metric and cost charts are derived from the fetched log too',
     `${$$('#opt-metric-chart circle').length} marks, ${$$('#opt-usage-chart rect.col').length} columns`);

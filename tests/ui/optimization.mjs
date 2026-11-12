@@ -37,6 +37,24 @@ ok(/11 proposals over 6 iterations/.test(text('#opt-sub')), 'counts proposals an
 ok(/Stopped: iterations/.test(text('#opt-sub')), 'reports the stop reason', text('#opt-sub'));
 ok(/WeightedSum/.test(text('#opt-objective')), 'shows the objective', text('#opt-objective'));
 
+/* ── what the optimizer did, before anything it produced ──
+   Every number on this tab is unreadable without the method: the search only ever sees train,
+   the pick happens once on validation, and test is measured but never optimized against. The
+   `Optimizer` docstring is explicit that the experiment "is never run itself", which is the one
+   thing a reader coming from the Runs tab will assume the opposite of. */
+const why = text('#opt-explain');
+ok(/built 10 versions of your agent/.test(why),
+  'the strip counts the configurations it built, not the 11 proposals it drew', why);
+ok(/varying system_prompt, temperature, tool_descriptions, max_tokens/.test(why),
+  'and names what it actually varied, taken from the proposals rather than the configured blocks', why);
+ok(/was never run itself/.test(why),
+  'and says the experiment supplied the cases and was not itself run — the thing a reader '
+  + 'arriving from the Runs tab assumes the opposite of', why);
+ok(/split 8 train · 4 validation · 3 test/.test(why), 'with the split sizes', why);
+ok(/searched on train/.test(why) && /picked the champion once on validation/.test(why)
+  && /measured test only to report it/.test(why),
+  'and what each split was for, which is the whole method', why);
+
 /* ── the result, which is what the page opens on ──
    The question a tuning run answers is whether the champion beats the baseline on cases the
    search never saw. That lives in the `test` event, and every figure in this card has a wrong
@@ -135,14 +153,12 @@ ok(stats.length === 3, 'three figures in the headline, not every number the run 
 /* The rest is diagnostics, so it starts folded away — the page opens on the objective and one
    metric. What is inside each drawer is summarised on the fold, including the scored-against-
    unscored split that used to compete for space in the headline. */
-ok(['#opt-search', '#opt-cost', '#opt-diag', '#opt-table'].every(id => $(id).open === false),
+ok(['#opt-search', '#opt-cost', '#opt-diag'].every(id => $(id).open === false),
   'the search and diagnostics drawers start closed');
 ok(/11 proposals over 6 iterations/.test(text('#opt-search-sum')),
   'the search drawer says how much work is folded inside it', text('#opt-search-sum'));
 ok(text('#opt-cost-sum') === '277k tokens', 'the cost drawer says what the run cost', text('#opt-cost-sum'));
 ok(text('#opt-diag-sum') === '82 trials', 'the diagnostics drawer counts the trials', text('#opt-diag-sum'));
-ok(text('#opt-table-sum') === '11 proposals, 3 never scored',
-  'and the table drawer carries the scored-against-unscored split', text('#opt-table-sum'));
 
 // ── the objective chart ──
 const pts = $$('#opt-obj-chart circle');
@@ -312,16 +328,185 @@ ok(colTitles()[0] === 'iteration 0: 24 over 8 trials', 'a count of calls is a wh
 await pick('#opt-usage-pick', 'seconds');
 ok(colTitles()[0] === 'iteration 0: 33.60 over 8 trials', 'and seconds are not', colTitles()[0]);
 
-// ── the proposals table ──
-const rows = $$('#opt-rows tr').map(r => [...r.children].map(c => c.textContent.replace(/\s+/g, ' ').trim()));
+/* ── the candidates, browsable the way the Report tab's cases are ──
+   A candidate IS an evaluation run of one configuration — `RunDirectory.reports()` rebuilds its
+   trials into `EvaluationReport`s "as `Experiment` would return them". So the row opens onto what
+   it changed and how every case went, and the figures in it have to come from the trials rather
+   than from the summary the search kept. */
+const candRows = () => $$('#opt-cands tr.case')
+  .map(r => [...r.children].map(c => c.textContent.replace(/\s+/g, ' ').trim()));
+const ids = () => $$('#opt-cands tr.case').map(r => r.children[0].textContent.replace(/\s+/g, ' ').trim());
+const rows = candRows();
 ok(rows.length === 11, 'every proposal gets a row, scored or not', rows.length);
+ok(text('#opt-cand-count') === '11 of 11 candidates, 3 never scored',
+  'the count carries the scored-against-unscored split', text('#opt-cand-count'));
 const byName = name => rows.find(r => r[0].startsWith(name));
 ok(byName('c4')[2] === 'not scored', 'an unscored candidate says so rather than showing 0.00', byName('c4')[2]);
-ok(byName('c8')[2] === '0.69' && byName('c8')[3] === 'infeasible', 'c8 shows its score and its outcome', byName('c8').join(' / '));
+ok(!$$('#opt-cands tr.case').find(r => /^c4/.test(r.textContent)).querySelector('.bar2'),
+  'and draws no bar, which at zero width would read as a measurement that came out worst');
+ok(byName('c8')[2] === '0.69' && byName('c8')[3] === 'infeasible',
+  'c8 shows its score and its outcome', byName('c8').join(' / '));
 ok(/champion/.test(byName('c10')[0]), 'the champion is tagged in the table', byName('c10')[0]);
+ok(/baseline/.test(byName('c0')[0]), 'and the baseline, which is where every diff is measured from',
+  byName('c0')[0]);
+/* `changed_keys` is the diff against the PARENT, and c5 changed only its tool descriptions while
+   differing from the baseline in three settings. The column has to be the parent diff it is. */
+ok(byName('c5')[4] === 'tool_descriptions',
+  'the column is what the proposal changed about its parent', byName('c5')[4]);
 const invalid = rows.find(r => /no candidate/.test(r[0]));
-ok(!!invalid && invalid[3] === 'invalid', 'the invalid patch is shown as having no candidate', (invalid || []).join(' / '));
-ok(/not in the registry/.test(invalid[5]), 'with the reason it was rejected', invalid[5]);
+ok(!!invalid && invalid[3] === 'invalid', 'the invalid patch is shown as having no candidate',
+  (invalid || []).join(' / '));
+
+// ── opening a candidate: its configuration against the baseline, and every case it ran ──
+const openCand = async id => {
+  await click($$('#opt-cands tr.case').find(r => r.children[0].textContent.trim().startsWith(id)));
+};
+const dl = () => {
+  const row = $('#opt-cands tr.detail');
+  return !row ? {} : Object.fromEntries([...row.querySelectorAll('dt')].map(dt =>
+    [dt.textContent, dt.nextElementSibling.textContent.replace(/\s+/g, ' ').trim()]));
+};
+await openCand('c10');
+ok(!!$('#opt-cands tr.detail'), 'a candidate row opens');
+ok(/Combine c6's up-front id request/.test(dl()['Why it was tried'] || ''),
+  'the rationale the proposer gave is what it leads with', dl()['Why it was tried']);
+ok(dl()['Derived from'] === 'c6', 'with the parent it was derived from', dl()['Derived from']);
+/* The diff is against the BASELINE, not the parent — how far it has moved from what you already
+   had is what you decide with, and a parent is itself several steps from that. c10's parent c6
+   has the same temperature as c3, so a parent diff would show temperature as unchanged. */
+ok('Versus c0' in dl(), 'and the configuration diffed against the baseline, labelled as such',
+  Object.keys(dl()).join(' | '));
+const keys = () => $$('#opt-cands tr.detail .setting .skey').map(s => s.textContent);
+ok(keys().join() === 'system_prompt,temperature', 'only the settings that actually differ',
+  keys().join());
+ok(/0\.7 → 0\.2/.test(dl()['Versus c0']), 'a short value inline, baseline first',
+  dl()['Versus c0'].slice(0, 120));
+const pre = $('#opt-cands tr.detail .setting pre');
+ok(!!pre && /^- You are the support assistant/m.test(pre.textContent)
+  && /NW-000000/.test(pre.querySelector('.ins').textContent),
+  'a multi-line prompt as a block diff with the real text on each side',
+  (pre || {}).textContent ? pre.textContent.slice(0, 60) : 'no block');
+ok(dl().Measured === 'Helpfulness 0.67 · tokens 3350', 'what it measured, in the metric\'s own units',
+  dl().Measured);
+/* Trials grouped in the order the run uses the splits. Alphabetically it is "3 test · 8 train ·
+   4 validation", which puts the held-out split first and reads as where the run started. */
+ok(/^15 trials · 8 train · 4 validation · 3 test/.test(dl().Cases || ''),
+  'its trials counted and grouped by split, in run order', dl().Cases);
+const trialRows = () => $$('#opt-cands tr.detail table.trials tr')
+  .map(r => [...r.children].map(c => c.textContent.replace(/\s+/g, ' ').trim()).join('/'));
+ok(trialRows().length === 15, 'a line per trial, every split together', trialRows().length);
+ok(trialRows()[0] === 'train_case_01/train/Helpfulness 0.49/pass',
+  'naming the case, its split, what was judged and how it went', trialRows()[0]);
+
+/* c0 is the baseline, so there is nothing to diff it against — "identical to c0" would be true
+   and useless, and a key list would imply it changed something. */
+await openCand('c10');
+await openCand('c0');
+ok(/this is the configuration the run started from/.test(dl().Configuration || ''),
+  'the baseline says it is the baseline rather than being diffed against itself', dl().Configuration);
+ok(!('Versus c0' in dl()), 'and carries no diff header');
+
+/* An unscored candidate still has a configuration — it was built, the budget just could not
+   afford to run it. Its diff is the evidence for that, and it has no trials to open. */
+await openCand('c0');
+await openCand('c4');
+ok(/budget could not afford it/.test(dl()['Why it was tried'] || ''),
+  'an unscored candidate says why it was never run', dl()['Why it was tried']);
+ok(/tool_descriptions/.test(dl()['Versus c0'] || ''),
+  'and still shows the configuration it would have run', (dl()['Versus c0'] || '').slice(0, 80));
+ok(/no trial was recorded/.test(dl().Cases || ''),
+  'with nothing to open, said rather than left as an empty table', dl().Cases);
+ok(!$('#opt-cands tr.detail [data-open]'), 'and no button offering a report there is nothing behind');
+
+/* The invalid patch never became a candidate, so `propose` never carried its values. Inventing a
+   diff from `changed_keys` would be making one up. */
+await openCand('c4');
+await click($$('#opt-cands tr.case').find(r => /no candidate/.test(r.textContent)));
+ok(/not in the registry/.test(dl()['Why it was tried'] || ''),
+  'the invalid patch opens onto the reason it was rejected', dl()['Why it was tried']);
+ok(/records no values for this candidate/.test(dl()['Versus c0'] || ''),
+  'and says its configuration is not in the log rather than showing an empty diff',
+  dl()['Versus c0']);
+await click($$('#opt-cands tr.case').find(r => /no candidate/.test(r.textContent)));
+
+// ── filters, over the thing they name ──
+const seg = async f => { await click(`#opt-seg button[data-f="${f}"]`); };
+await seg('feasible');
+ok(ids().join(' ').replace(/#\d+|champion|baseline/g, '').replace(/\s+/g, ' ').trim()
+  === 'c0 c1 c2 c3 c5 c6 c10',
+  'Could ship is the feasible candidates — not c8, which scored best of all and broke a constraint',
+  ids().join(' | '));
+await seg('infeasible');
+ok(ids().length === 1 && /c8/.test(ids()[0]), 'Broke a constraint is c8 alone', ids().join(' | '));
+await seg('unscored');
+ok(ids().length === 3, 'Never scored collects the unscored, the duplicate and the invalid patch',
+  ids().join(' | '));
+ok(ids().some(s => /c4/.test(s)) && ids().some(s => /c9/.test(s)) && ids().some(s => /no candidate/.test(s)),
+  'all three of them, which differ only in why nothing was measured', ids().join(' | '));
+ok(text('#opt-cand-count') === '3 of 11 candidates, 3 never scored',
+  'the count follows the filter while the total does not', text('#opt-cand-count'));
+await seg('all');
+ok(ids().length === 11, 'and All puts them back', ids().length);
+
+/* The search box reaches the configuration values, not just the names. A candidate is found by
+   what it actually says — which is the only handle anyone has on a tuned prompt. */
+const search = async value => {
+  $('#opt-find').value = value;
+  $('#opt-find').dispatchEvent(new p.window.Event('input', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 20));
+};
+await search('NW-000000');
+ok(ids().length === 3 && ['c5', 'c8', 'c10'].every((c, i) => ids()[i].startsWith(c)),
+  'searching the order-id format finds the three candidates whose values contain it',
+  ids().join(' | '));
+await search('clarifying');
+ok(ids().length === 1 && ids()[0].startsWith('c2'),
+  'and a phrase from one prompt finds only that candidate', ids().join(' | '));
+await search('zzz');
+ok(/No candidate matches/.test(text('#opt-cands')), 'a search with no hit says so', text('#opt-cands'));
+await search('');
+
+/* ── opening a candidate as a report ──
+   The claim the whole table rests on: a candidate's trials are an evaluation run of it, so they
+   can be read in the Report tab exactly as any run is. */
+await openCand('c10');
+await click('#opt-cands [data-open]');
+ok(text('.tab.on') === 'Report', 'the jump lands on the Report tab', text('.tab.on'));
+ok(text('#path') === 'support-tuning-20261110-091500-7af3e1 · c10',
+  'and the path bar names the run and the candidate, not a file that does not exist', text('#path'));
+ok(text('#rep-count') === '15 of 15 rows', 'every trial of that candidate is a row', text('#rep-count'));
+ok(text('#r-score') === '0.67', 'the hero score is the mean over its trials', text('#r-score'));
+const repRow = $$('#rep-rows tr.case').map(r => [...r.children].map(c => c.textContent.trim()));
+ok(repRow[0].join(' | ') === 'train_case_01 | Helpfulness | 0.49 | pass',
+  'the case, the evaluator that judged it, the score and the verdict', repRow[0].join(' | '));
+await click($$('#rep-rows tr.case')[0]);
+const repDetail = () => $('#rep-rows tr.detail').textContent.replace(/\s+/g, ' ');
+ok(/<answer for train_case_01 under c10>/.test(repDetail()),
+  'opening a case shows what that candidate actually answered', repDetail().slice(0, 160));
+/* A trial record carries no case input. Printed through the report renderer unguarded that was
+   the literal word "undefined" standing where the question should be. */
+ok(/Inputnot recorded in this report/.test(repDetail()) && !/undefined/.test(repDetail()),
+  'and an input the trial never recorded is named as absent, not printed as undefined',
+  repDetail().slice(0, 120));
+/* `transcript` is a `{hash, format}` pointer into `transcripts/`, not a step list. Handed to the
+   trajectory renderer it came out labelled "recorded session", which is a filename called a
+   conversation. */
+ok(!/Actual trajectory/.test(repDetail()),
+  'and the transcript reference is left out rather than dressed up as a trajectory',
+  repDetail().slice(0, 300));
+
+/* A candidate with a failed trial carries that failure into its report rather than dropping the
+   row — a run that lost a case to a tool timeout scored lower for it, and the report must say so. */
+await click('#tab-opt');
+await openCand('c2');
+await click('#opt-cands [data-open]');
+ok(text('#rep-count') === '8 of 8 rows', 'its eight training trials', text('#rep-count'));
+ok(/7 \/ 8/.test(text('#r-stats')), 'with the agent failure counted as a failing row', text('#r-stats'));
+const failRow = $$('#rep-rows tr.case').find(r => /train_case_05/.test(r.textContent));
+await click(failRow);
+ok(/agent_failure: the refund tool timed out/.test(repDetail()),
+  'and the error named, not just the status', repDetail().slice(0, 240));
+await click('#tab-opt');
 
 ok(text('#opt-note') === '', 'no warnings for a clean log', text('#opt-note'));
 
@@ -404,7 +589,15 @@ ok(/No candidate has been scored/.test(pEmpty.text('#opt-obj-chart')), 'says why
   pEmpty.text('#opt-obj-chart'));
 ok(/No iteration has finished/.test(pEmpty.text('#opt-budget-chart')), 'and the budget chart too',
   pEmpty.text('#opt-budget-chart'));
-ok(/No proposals recorded/.test(pEmpty.text('#opt-rows')), 'and the table', pEmpty.text('#opt-rows'));
+ok(/No candidate yet/.test(pEmpty.text('#opt-cands')), 'and the candidate table', pEmpty.text('#opt-cands'));
+/* With nothing built, the sentence above would read "built 0 versions of your agent, varying
+   your agent" — the method stated as a tally of nothing. */
+ok(/No iteration has finished yet/.test(pEmpty.text('#opt-explain'))
+  && !/built 0 versions/.test(pEmpty.text('#opt-explain')),
+  'and the explainer describes the method without counting what it has not built',
+  pEmpty.text('#opt-explain'));
+ok(/searching for a configuration that scores better/.test(pEmpty.text('#opt-explain')),
+  'still saying what the run is for', pEmpty.text('#opt-explain'));
 ok(/Pareto/.test(pEmpty.text('#opt-note')), 'a Pareto run is flagged, because one best understates it',
   pEmpty.text('#opt-note'));
 ok(pEmpty.$('#opt-metric-wrap').hidden === true,
