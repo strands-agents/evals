@@ -21,12 +21,14 @@ from .proposer import ProposalRequest, Proposer
 
 @dataclass(frozen=True)
 class _Told:
-    """One candidate as TPE was told it: its values and the snapshot it was valued at, never re-valued."""
+    """One trial as TPE was told it: its values, the snapshot it was told, and the candidates whose
+    current assessment stands for it (the best of them, by the latest ranking)."""
 
     values: Values
     objective: float | None
     term_values: list[float] | None
     violations: list[float] | None
+    members: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -43,13 +45,17 @@ class TPE(Proposer):
 
     `TPESampler(multivariate=True, group=True, constant_liar=True)`: proposals not yet observed are running
     trials, so a step's n proposals keep apart before any is told, whether they come from one `propose` call
-    or several. Each candidate is valued as it was told, once, when observed (its own block) or shared as
-    evidence (other blocks): `objective` as the value, `violations` as the trial's constraint values,
-    `objective=None` as `TrialState.FAIL`; invalid patches are left out, and a later refit doesn't re-value
-    it. A duplicate is told the existing candidate's snapshot. `observe` and `evidence` append to TPE's own
-    list (replayed on resume); the study for a context is rebuilt from that list before each ask, and the
-    sampler is reseeded from `f"{seed}:{iteration}:{redraw}:{context id}:{pending}"` through sha256, where
-    `pending` counts the context's proposals not yet observed, so two asks in one step draw differently.
+    or several. `observe` (its own block) and `evidence` (other blocks) append each candidate told to TPE's
+    own list (replayed on resume); invalid patches are left out. Before each ask the study for a context is
+    rebuilt from that list, each trial valued at its candidate's current assessment in `request.candidates`
+    (`ranking_objective`, `violations` as the trial's constraint values), so TPE's good and bad trials are
+    those of the latest fit, as the parent and the final pick are. A `Nested` opener's trial is valued at the
+    best of its round (`Observation.round_ids`) by the latest ranking; a duplicate at the existing
+    candidate's. A trial told with `objective=None`, or whose candidate is no longer eligible, is
+    `TrialState.FAIL`; one whose candidates the request doesn't list keeps the values it was told. The
+    sampler is reseeded from `f"{seed}:{iteration}:{redraw}:{context id}:{keys}:{pending}"` through sha256,
+    where `keys` are the block's keys (so two TPE blocks in one step draw differently) and `pending` counts
+    the context's proposals not yet observed (so two asks in one step draw differently).
     `seed=None` uses the run seed. Under a `Pareto` objective each study is multi-objective, one direction
     per objective, told `term_values` instead of `objective`.
 
@@ -96,7 +102,7 @@ class TPE(Proposer):
         patches: list[Patch] = []
         for _ in range(request.n):
             pending = [p for p in self._pending if p.context == context]
-            key = f"{seed}:{request.iteration}:{request.redraw}:{context}:{len(pending)}"
+            key = f"{seed}:{request.iteration}:{request.redraw}:{context}:{keys}:{len(pending)}"
             # 4 bytes: Optuna seeds numpy's RandomState, which takes < 2**32
             study = self._study_for(
                 context, space, keys, request, int.from_bytes(sha256(key.encode()).digest()[:4], "big")
@@ -137,21 +143,32 @@ class TPE(Proposer):
                 break
         if observation.outcome == "invalid" or observation.values is None:
             return
+        if observation.round_ids is not None:
+            members = tuple(observation.round_ids)
+        else:
+            source = observation.source_id or observation.candidate_id
+            members = () if source is None else (source,)
         self._told.append(
-            _Told(observation.values, observation.objective, observation.term_values, observation.violations)
+            _Told(observation.values, observation.objective, observation.term_values, observation.violations, members)
         )
 
     def evidence(self, evidence: Evidence) -> None:
         """Keep another block's candidate as told, so it informs the study of its context."""
-        self._told.append(_Told(evidence.values, evidence.objective, evidence.term_values, evidence.violations))
+        self._told.append(
+            _Told(
+                evidence.values, evidence.objective, evidence.term_values, evidence.violations, (evidence.candidate_id,)
+            )
+        )
 
     def config(self) -> dict[str, Any]:
         """`seed` and `n_startup_trials`."""
         return {"seed": self.seed, "n_startup_trials": self.n_startup_trials}
 
     def _study_for(self, context: str, space: Space, keys: Sequence[str], request: ProposalRequest, seed: int) -> Any:
-        """A fresh study for `context`: every told candidate in it, then its pending proposals as running trials."""
+        """A fresh study for `context`: every told trial in it, valued now, then its pending proposals as running
+        trials."""
         criteria = request.criteria
+        listed = {c.candidate_id: c for c in request.candidates}  # in ranking order
         verbosity = optuna.logging.get_verbosity()
         optuna.logging.set_verbosity(optuna.logging.WARNING)  # "A new study created in memory" on every ask
         try:
@@ -181,14 +198,21 @@ class TPE(Proposer):
             if not params:
                 continue
             distributions = {k: _distribution(space.param(k)) for k in params}
+            objective, term_values, violations = told.objective, told.term_values, told.violations
+            members = [m for m in listed if m in told.members]
+            if objective is not None and members:
+                now = next((listed[m] for m in members if listed[m].is_eligible), None)
+                objective = None if now is None else now.ranking_objective
+                term_values = None if now is None else now.term_values
+                violations = None if now is None else now.violations
             if criteria.is_pareto:
-                values = told.term_values
+                values = term_values
             else:
-                values = None if told.objective is None else [told.objective]
+                values = None if objective is None else [objective]
             if values is None:
                 study.add_trial(create_trial(state=TrialState.FAIL, params=params, distributions=distributions))
                 continue
-            constraints = {str(i): v for i, v in enumerate(told.violations or [])} or None
+            constraints = {str(i): v for i, v in enumerate(violations or [])} or None
             study.add_trial(
                 create_trial(params=params, distributions=distributions, values=values, constraints=constraints)
             )

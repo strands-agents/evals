@@ -49,8 +49,9 @@ class Thompson(Proposer):
     ranking uses), so Thompson aims only at what the final pick values. With one objective the flag
     changes nothing.
 
-    The numpy `Generator` is seeded from `f"{seed}:{iteration}:{redraw}:thompson:{pending}"` through
-    sha256, where `pending` counts proposals not yet observed, so resume replays it. Never a default block.
+    The numpy `Generator` is seeded from `f"{seed}:{iteration}:{redraw}:thompson:{keys}:{pending}"` through
+    sha256, where `keys` are the block's keys (so two Thompson blocks in one step draw differently) and
+    `pending` counts proposals not yet observed, so resume replays it. Never a default block.
     """
 
     kinds: ClassVar[frozenset[ParamKind]] = frozenset({"one_of", "choice"})
@@ -82,7 +83,7 @@ class Thompson(Proposer):
         keys = [info.key for info in space.params() if info.key in owned]  # a choice before its sub-keys
         held = {k: v for k, v in parent.items() if k not in owned}
         seed = request.seed if self.seed is None else self.seed
-        key = f"{seed}:{request.iteration}:{request.redraw}:thompson:{len(self._pending)}"
+        key = f"{seed}:{request.iteration}:{request.redraw}:thompson:{keys}:{len(self._pending)}"
         rng = np.random.default_rng(int.from_bytes(sha256(key.encode()).digest()[:8], "big"))
 
         # Every combination, reduced to the keys active under it (the rest held), each once.

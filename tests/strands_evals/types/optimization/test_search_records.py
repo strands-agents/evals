@@ -49,6 +49,27 @@ def test_observation_round_trips_through_json():
 
     assert restored == observation
     assert restored.source_id is None
+    assert restored.round_ids is None
+
+
+def test_a_round_openers_observation_round_trips_its_round():
+    observation = Observation(
+        patch=Patch(updates={"manager": "window"}, rationale="TPE: random startup", state={}),
+        candidate_id="opener",
+        values={"manager": "window"},
+        source_id="best",
+        round_ids=["opener", "best", "other"],
+        objective=0.8,
+        term_values=[0.8],
+        outcome="feasible",
+        reason="",
+        violations=[],
+    )
+
+    restored = Observation.model_validate_json(observation.model_dump_json())
+
+    assert restored == observation
+    assert restored.round_ids == ["opener", "best", "other"]
 
 
 def test_observation_rejects_a_gate_loop_outcome():

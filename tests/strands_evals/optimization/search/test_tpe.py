@@ -21,7 +21,7 @@ from strands_evals.optimization import (
 )
 from strands_evals.optimization.candidate import Candidate
 from strands_evals.optimization.search.proposer import ProposalRequest
-from strands_evals.types.optimization import CandidateScores, Evidence, Observation
+from strands_evals.types.optimization import CandidateScores, CandidateSummary, Evidence, Observation
 
 REGISTRY = MetricRegistry({"Score": (0.0, 1.0), "Cost": (0.0, 1.0)})
 CRITERIA = Criteria(Maximize("Score"), [], REGISTRY)
@@ -50,7 +50,7 @@ def structured_space():
     )
 
 
-def request(space, keys, *, parent=None, n=1, iteration=1, redraw=0, criteria=CRITERIA, seed=0):
+def request(space, keys, *, parent=None, n=1, iteration=1, redraw=0, criteria=CRITERIA, seed=0, candidates=()):
     scores = CandidateScores(
         candidate_id="p",
         objective_by_case={},
@@ -70,7 +70,7 @@ def request(space, keys, *, parent=None, n=1, iteration=1, redraw=0, criteria=CR
         scores=scores,
         inputs={},
         fit=None,
-        candidates=[],
+        candidates=list(candidates),
         n=n,
         iteration=iteration,
         seed=seed,
@@ -84,11 +84,24 @@ def propose(tpe, req):
     return asyncio.run(tpe.propose(req))
 
 
-def told(patch, values, objective, *, outcome="feasible", violations=None, term_values=None):
+def told(
+    patch,
+    values,
+    objective,
+    *,
+    outcome="feasible",
+    violations=None,
+    term_values=None,
+    cid="id",
+    source=None,
+    round_ids=None,
+):
     return Observation(
         patch=patch,
-        candidate_id=None if values is None else "id",
+        candidate_id=None if values is None else cid,
         values=values,
+        source_id=source,
+        round_ids=round_ids,
         objective=objective,
         term_values=term_values,
         outcome=outcome,
@@ -97,15 +110,37 @@ def told(patch, values, objective, *, outcome="feasible", violations=None, term_
     )
 
 
-def evidence(values, objective, *, violations=None):
+def evidence(values, objective, *, violations=None, cid="other"):
     return Evidence(
-        candidate_id="other",
+        candidate_id=cid,
         values=values,
         origin="other",
         objective=objective,
         term_values=None,
         violations=[] if violations is None else violations,
         outcome="feasible",
+    )
+
+
+def summary(cid, objective, *, violations=(), term_values=None, is_eligible=True):
+    """A listed candidate as the latest ranking assesses it."""
+    return CandidateSummary(
+        candidate_id=cid,
+        parent_id=None,
+        origin="test",
+        values={},
+        number=0,
+        measured_objective=objective,
+        measured={},
+        trial_count=1,
+        ranking_objective=objective if is_eligible else None,
+        term_values=term_values if is_eligible else None,
+        rank=1 if is_eligible else None,
+        estimates={},
+        violations=list(violations) if is_eligible else None,
+        is_feasible=all(v <= 0 for v in violations) if is_eligible else None,
+        is_eligible=is_eligible,
+        changed_keys=[],
     )
 
 
@@ -172,6 +207,17 @@ def test_a_steps_proposals_differ_in_one_call_and_across_calls():
     assert len(set(xs)) == len(xs)
 
 
+def test_two_blocks_asked_in_one_step_draw_differently():
+    space = Space({"a": Float(0.0, 1.0, default=0.5), "b": Float(0.0, 1.0, default=0.5)})
+    a, b = TPE(), TPE()
+    for i in range(4):
+        (pa,) = propose(a, request(space, ["a"], iteration=i))
+        (pb,) = propose(b, request(space, ["b"], iteration=i))
+        assert pa.updates["a"] != pb.updates["b"]
+        a.observe(told(pa, space.complete(pa.updates), 0.5))
+        b.observe(told(pb, space.complete(pb.updates), 0.5))
+
+
 def test_pending_proposals_are_running_trials_until_observed():
     space = numbers_space()
     tpe = TPE()
@@ -186,34 +232,61 @@ def test_pending_proposals_are_running_trials_until_observed():
 
 
 # ---- what it learns -------------------------------------------------------------------------------------------------
-def test_each_candidate_is_valued_as_it_was_told():
+def test_each_trial_is_valued_at_its_candidates_current_assessment():
     space = numbers_space()
     criteria = Criteria(Maximize("Score"), [AtMost("Cost", 0.5)], REGISTRY)
     tpe = TPE()
     a, b, c, d = propose(tpe, request(space, ["x"], n=4, criteria=criteria))
-    tpe.observe(told(a, space.complete(a.updates), 0.3, violations=[-0.1]))
-    tpe.observe(told(b, space.complete(b.updates), 0.8, violations=[0.2]))
+    tpe.observe(told(a, space.complete(a.updates), 0.3, violations=[-0.1], cid="a"))
+    tpe.observe(told(b, space.complete(b.updates), 0.8, violations=[0.2], cid="b"))
     tpe.observe(told(c, None, None, outcome="invalid"))
-    tpe.observe(told(d, space.complete(d.updates), None, outcome="ineligible"))
-    tpe.evidence(evidence(space.complete({"x": 0.9}), 0.6, violations=[-0.3]))
-    study = tpe._study_for(a.state["context"], space, ["x"], request(space, ["x"], criteria=criteria), 0)
-    rows = [(t.state.name, t.values, t.constraints) for t in study.trials]
-    assert rows == [
+    tpe.observe(told(d, space.complete(d.updates), None, outcome="ineligible", cid="d"))
+    tpe.evidence(evidence(space.complete({"x": 0.9}), 0.6, violations=[-0.3], cid="e"))
+    context = a.state["context"]
+    as_told = tpe._study_for(context, space, ["x"], request(space, ["x"], criteria=criteria), 0)
+    assert [(t.state.name, t.values, t.constraints) for t in as_told.trials] == [
         ("COMPLETE", [0.3], {"0": -0.1}),
         ("COMPLETE", [0.8], {"0": 0.2}),
         ("FAIL", None, {}),
         ("COMPLETE", [0.6], {"0": -0.3}),
+    ]  # nothing listed: as told
+    refitted = [
+        summary("a", 0.5, violations=[0.1]),  # re-estimated, now over the limit
+        summary("b", 0.8, is_eligible=False),  # a re-score left a case unmeasured
+        summary("d", 0.9),  # told as never measured: stays failed
+    ]
+    now = tpe._study_for(context, space, ["x"], request(space, ["x"], criteria=criteria, candidates=refitted), 0)
+    assert [(t.state.name, t.values, t.constraints) for t in now.trials] == [
+        ("COMPLETE", [0.5], {"0": 0.1}),
+        ("FAIL", None, {}),
+        ("FAIL", None, {}),
+        ("COMPLETE", [0.6], {"0": -0.3}),  # e isn't listed: as told
     ]
 
 
-def test_a_duplicate_is_told_the_existing_candidates_snapshot():
+def test_a_round_opener_is_valued_at_its_rounds_best_by_the_latest_ranking():
+    space = numbers_space()
+    tpe = TPE()
+    (patch,) = propose(tpe, request(space, ["x"]))
+    tpe.observe(told(patch, space.complete(patch.updates), 0.7, cid="o", source="r1", round_ids=["o", "r1", "r2"]))
+    context = patch.state["context"]
+    ranked = [summary("r2", 0.75), summary("x", 0.9), summary("r1", 0.7), summary("o", 0.6)]
+    study = tpe._study_for(context, space, ["x"], request(space, ["x"], candidates=ranked), 0)
+    assert [t.values for t in study.trials] == [[0.75]]  # r2 now ranks first in the round; x isn't in it
+    none_eligible = [summary(m, 0.7, is_eligible=False) for m in ("o", "r1", "r2")]
+    study = tpe._study_for(context, space, ["x"], request(space, ["x"], candidates=none_eligible), 0)
+    assert [t.state.name for t in study.trials] == ["FAIL"]
+
+
+def test_a_duplicate_is_valued_at_the_existing_candidate():
     space = numbers_space()
     tpe = TPE()
     (patch,) = propose(tpe, request(space, ["x"]))
     existing = space.complete({"x": 0.25})
-    tpe.observe(told(patch, existing, 0.7, outcome="duplicate"))
-    study = tpe._study_for(patch.state["context"], space, ["x"], request(space, ["x"]), 0)
-    assert [(t.params["x"], t.values) for t in study.trials] == [(0.25, [0.7])]
+    tpe.observe(told(patch, existing, 0.7, outcome="duplicate", cid="existing"))
+    context = patch.state["context"]
+    study = tpe._study_for(context, space, ["x"], request(space, ["x"], candidates=[summary("existing", 0.65)]), 0)
+    assert [(t.params["x"], t.values) for t in study.trials] == [(0.25, [0.65])]
 
 
 def test_numbers_under_a_choice_are_learned_per_structure():
@@ -252,6 +325,9 @@ def test_under_pareto_the_study_is_told_each_terms_value():
     study = tpe._study_for(patch.state["context"], space, ["x"], request(space, ["x"], criteria=criteria), 0)
     assert [d.name for d in study.directions] == ["MAXIMIZE", "MINIMIZE"]
     assert [t.values for t in study.trials] == [[0.7, 0.2]]
+    refitted = request(space, ["x"], criteria=criteria, candidates=[summary("id", 0.5, term_values=[0.6, 0.3])])
+    study = tpe._study_for(patch.state["context"], space, ["x"], refitted, 0)
+    assert [t.values for t in study.trials] == [[0.6, 0.3]]
     assert len(propose(tpe, request(space, ["x"], criteria=criteria, iteration=2))) == 1
 
 

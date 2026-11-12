@@ -93,6 +93,7 @@ def summary(cid, values, *, is_eligible=True):
         measured={},
         trial_count=1,
         ranking_objective=None,
+        term_values=None,
         rank=None,
         estimates={},
         violations=None,
@@ -217,6 +218,16 @@ def test_the_same_request_proposes_the_same_patches():
     assert propose(Thompson(seed=5), req) == propose(
         Thompson(seed=5), request(SPACE, KEYS, fit=fit, candidates=summaries, n=2, iteration=3, seed=9)
     )
+
+
+def test_two_blocks_asked_in_one_step_draw_differently():
+    space = Space({"a": OneOf("p", "q", "r", "s", default="p"), "b": OneOf("p", "q", "r", "s", default="p")})
+    same = 0
+    for i in range(20):
+        (pa,) = propose(Thompson(), request(space, ["a"], iteration=i))
+        (pb,) = propose(Thompson(), request(space, ["b"], iteration=i))
+        same += pa.updates["a"] == pb.updates["b"]
+    assert same < 12  # one shared stream would match on all 20 (expected about 5 of 20 when independent)
 
 
 def test_without_a_usable_fit_it_picks_an_unmeasured_combination_at_random():
