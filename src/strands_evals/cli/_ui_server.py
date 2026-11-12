@@ -623,6 +623,22 @@ class UIConfig:
     depth: int = DEFAULT_DEPTH
     read_only: bool = False
     asset: str = ""
+    # True when `asset` came from the shipped file rather than a caller, so it can be re-read.
+    reload_asset: bool = False
+
+    def page(self) -> str:
+        """The page to serve, re-read from disk unless a caller pinned one.
+
+        Read per request rather than once at startup: the page is a single file someone is
+        usually editing, and caching it at boot means every change needs the server restarted —
+        which hands out a new token and a new URL to go with it.
+        """
+        if not self.reload_asset:
+            return self.asset
+        try:
+            return load_asset()
+        except OSError:
+            return self.asset  # the copy read at startup, which at least still works
 
 
 class UIHandler(BaseHTTPRequestHandler):
@@ -692,7 +708,7 @@ class UIHandler(BaseHTTPRequestHandler):
                     "text/html; charset=utf-8",
                 )
                 return
-            self._send(HTTPStatus.OK, self.config.asset.encode("utf-8"), "text/html; charset=utf-8")
+            self._send(HTTPStatus.OK, self.config.page().encode("utf-8"), "text/html; charset=utf-8")
             return
 
         if not self._authorized(query):
@@ -899,6 +915,7 @@ def build_server(
         depth=depth,
         read_only=read_only,
         asset=asset if asset is not None else load_asset(),
+        reload_asset=asset is None,
     )
     try:
         return _Server((host, port), UIHandler, config)

@@ -25,6 +25,7 @@ from strands_evals.cli._ui_server import (
     link_status,
     read_event_log,
     resolve_within,
+    server_url,
     validate_experiment_payload,
     write_json_atomic,
 )
@@ -652,7 +653,68 @@ def test_shipped_asset_is_the_real_page():
     assert 'id="runs-rows"' in page
 
 
+def test_the_page_is_re_read_per_request(tmp_path: Path, monkeypatch):
+    """Else every edit to ui.html needs a restart, which hands out a new token and new URL."""
+    from strands_evals.cli import _ui_server
+
+    server = build_server(tmp_path, port=0)
+    assert server.config.reload_asset is True
+
+    monkeypatch.setattr(_ui_server, "load_asset", lambda: "<html>edited</html>")
+    assert server.config.page() == "<html>edited</html>"
+    server.server_close()
+
+
+def test_a_pinned_asset_is_not_re_read(tmp_path: Path, monkeypatch):
+    """The test harness injects a page; re-reading would serve the real one instead."""
+    from strands_evals.cli import _ui_server
+
+    server = build_server(tmp_path, port=0, asset="<html>pinned</html>")
+    monkeypatch.setattr(_ui_server, "load_asset", lambda: "<html>other</html>")
+
+    assert server.config.reload_asset is False
+    assert server.config.page() == "<html>pinned</html>"
+    server.server_close()
+
+
+def test_an_unreadable_page_falls_back_to_the_one_read_at_startup(tmp_path: Path, monkeypatch):
+    """A half-written ui.html must not turn the whole server into a 500."""
+    from strands_evals.cli import _ui_server
+
+    server = build_server(tmp_path, port=0)
+    startup = server.config.asset
+
+    def boom() -> str:
+        raise OSError("vanished mid-save")
+
+    monkeypatch.setattr(_ui_server, "load_asset", boom)
+    assert server.config.page() == startup
+    server.server_close()
+
+
 # ── the command ──
+
+
+def test_ui_token_defaults_to_a_fresh_random_one(tmp_path: Path):
+    """Two servers over the same tree must not share a token."""
+    first = build_server(tmp_path, port=0)
+    second = build_server(tmp_path, port=0)
+    try:
+        assert first.config.token != second.config.token
+        assert len(first.config.token) >= 32
+    finally:
+        first.server_close()
+        second.server_close()
+
+
+def test_ui_accepts_a_supplied_token(tmp_path: Path):
+    """What makes the URL bookmarkable: it is the same after a restart."""
+    server = build_server(tmp_path, port=0, token="chosen-token")
+    try:
+        assert server.config.token == "chosen-token"
+        assert server_url(server).endswith("/?t=chosen-token")
+    finally:
+        server.server_close()
 
 
 def test_ui_list_prints_the_discovered_runs(tmp_path: Path, capsys):
@@ -665,6 +727,85 @@ def test_ui_list_prints_the_discovered_runs(tmp_path: Path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["runs"][0]["experiment"]["path"] == "experiment.json"
     assert payload["runs"][0]["link"]["status"] == "verified"
+
+
+@pytest.fixture
+def launched(monkeypatch):
+    """Run `strands-evals ui` without serving: capture what it asked `build_server` for."""
+    from strands_evals.cli.commands import ui as ui_command
+
+    seen: dict = {}
+
+    class _Fake:
+        config = type("C", (), {"token": "fake-token"})()
+        server_address = ("127.0.0.1", 9999)
+
+        def serve_forever(self) -> None:
+            return None
+
+        def shutdown(self) -> None:
+            return None
+
+        def server_close(self) -> None:
+            return None
+
+    def fake_build(root, **kwargs):
+        seen.update(kwargs)
+        seen["root"] = root
+        return _Fake()
+
+    monkeypatch.setattr(ui_command, "build_server", fake_build)
+    monkeypatch.delenv(ui_command.TOKEN_ENV, raising=False)
+    return seen
+
+
+def test_ui_passes_no_token_by_default(tmp_path: Path, launched):
+    assert main(["ui", str(tmp_path), "--no-browser"]) == 0
+    assert launched["token"] is None, "a default run must let the server generate its own"
+
+
+def test_ui_passes_the_token_flag_through(tmp_path: Path, launched):
+    assert main(["ui", str(tmp_path), "--no-browser", "--token", "bookmarkable"]) == 0
+    assert launched["token"] == "bookmarkable"
+
+
+def test_ui_reads_the_token_from_the_environment(tmp_path: Path, launched, monkeypatch):
+    """So it can be set once in a shell profile and never typed again."""
+    from strands_evals.cli.commands import ui as ui_command
+
+    monkeypatch.setenv(ui_command.TOKEN_ENV, "from-the-env")
+    assert main(["ui", str(tmp_path), "--no-browser"]) == 0
+    assert launched["token"] == "from-the-env"
+
+
+def test_the_token_flag_beats_the_environment(tmp_path: Path, launched, monkeypatch):
+    from strands_evals.cli.commands import ui as ui_command
+
+    monkeypatch.setenv(ui_command.TOKEN_ENV, "from-the-env")
+    assert main(["ui", str(tmp_path), "--no-browser", "--token", "explicit"]) == 0
+    assert launched["token"] == "explicit"
+
+
+def test_an_empty_token_is_not_a_token(tmp_path: Path, launched, monkeypatch):
+    """`STRANDS_EVALS_UI_TOKEN=` unset in a profile must not authorize everything."""
+    from strands_evals.cli.commands import ui as ui_command
+
+    monkeypatch.setenv(ui_command.TOKEN_ENV, "")
+    assert main(["ui", str(tmp_path), "--no-browser"]) == 0
+    assert launched["token"] is None
+
+
+def test_a_supplied_token_is_called_out_as_guessable(tmp_path: Path, launched, capsys):
+    assert main(["ui", str(tmp_path), "--no-browser", "--token", "short"]) == 0
+    err = capsys.readouterr().err
+    assert "supplied, not generated" in err
+    assert "read and write files" in err
+
+
+def test_a_supplied_token_read_only_says_only_read(tmp_path: Path, launched, capsys):
+    assert main(["ui", str(tmp_path), "--no-browser", "--read-only", "--token", "short"]) == 0
+    err = capsys.readouterr().err
+    assert "can read files" in err and "read and write" not in err
 
 
 def test_ui_rejects_a_path_that_is_not_a_directory(tmp_path: Path, capsys):
