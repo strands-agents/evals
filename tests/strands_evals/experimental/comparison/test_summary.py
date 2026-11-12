@@ -28,10 +28,14 @@ def test_summarizes_case_deltas_by_evaluator():
     assert summaries[0].mean_delta == pytest.approx(0.2)
     assert summaries[0].confidence_lower == pytest.approx(0.2)
     assert summaries[0].confidence_upper == pytest.approx(0.2)
+    assert summaries[0].wilcoxon_p_value == pytest.approx(0.5)
+    assert summaries[0].adjusted_p_value == pytest.approx(0.5)
     assert summaries[1].case_count == 1
     assert summaries[1].mean_delta == pytest.approx(-0.1)
     assert summaries[1].confidence_lower is None
     assert summaries[1].confidence_upper is None
+    assert summaries[1].wilcoxon_p_value is None
+    assert summaries[1].adjusted_p_value is None
 
 
 def test_t_interval_reflects_case_variation():
@@ -68,6 +72,104 @@ def test_confidence_level_controls_interval_width():
 
 def test_returns_empty_list_when_there_are_no_pairs():
     assert summarize_pairs([]) == []
+
+
+def test_adjusts_wilcoxon_p_values_across_evaluators():
+    pairs = [
+        _pair(case_id=f"case-{index}", evaluator="consistent", baseline=0.1, candidate=candidate)
+        for index, candidate in enumerate([0.2, 0.3, 0.4, 0.5])
+    ]
+    pairs.extend(
+        _pair(case_id=f"case-{index}", evaluator="mixed", baseline=0.5, candidate=candidate)
+        for index, candidate in enumerate([0.6, 0.7, 0.2, 0.9])
+    )
+
+    summaries = summarize_pairs(pairs)
+
+    assert [summary.wilcoxon_p_value for summary in summaries] == pytest.approx([0.125, 0.625])
+    assert [summary.adjusted_p_value for summary in summaries] == pytest.approx([0.25, 0.625])
+
+
+def test_all_zero_deltas_have_p_value_one():
+    summary = summarize_pairs(
+        [_pair(case_id=f"case-{index}", evaluator="correctness", baseline=0.2, candidate=0.2) for index in range(20)]
+    )[0]
+
+    assert summary.wilcoxon_p_value == 1.0
+    assert summary.adjusted_p_value == 1.0
+
+
+@pytest.mark.parametrize(
+    ("baseline_scores", "candidate_scores"),
+    [
+        ([2 / 3] * 6 + [1 / 3] * 2, [1.0] * 6 + [0.0] * 2),
+        ([1 / 3] * 6 + [2 / 3] * 2, [2 / 3] * 6 + [1 / 3] * 2),
+        ([0.0] * 6 + [1.0] * 2, [1 / 3] * 6 + [2 / 3] * 2),
+    ],
+)
+def test_rounds_equivalent_deltas_before_wilcoxon(
+    baseline_scores: list[float],
+    candidate_scores: list[float],
+):
+    summary = summarize_pairs(
+        [
+            _pair(
+                case_id=f"case-{index}",
+                evaluator="correctness",
+                baseline=baseline,
+                candidate=candidate,
+            )
+            for index, (baseline, candidate) in enumerate(zip(baseline_scores, candidate_scores, strict=True))
+        ]
+    )[0]
+
+    assert summary.mean_delta == pytest.approx(1 / 6)
+    assert summary.wilcoxon_p_value == pytest.approx(0.2890625)
+
+
+@pytest.mark.parametrize("case_count", [13, 14, 50])
+def test_unchanged_cases_do_not_change_wilcoxon_method(case_count: int):
+    summary = summarize_pairs(
+        [
+            _pair(
+                case_id=f"case-{index}",
+                evaluator="correctness",
+                baseline=0.0 if index < 4 else 1.0,
+                candidate=1.0,
+            )
+            for index in range(case_count)
+        ]
+    )[0]
+
+    assert summary.wilcoxon_p_value == pytest.approx(0.125)
+
+
+@pytest.mark.parametrize(
+    ("improved_count", "regressed_count", "expected_p_value"),
+    [
+        (11, 3, 0.057373046875),
+        (12, 4, 0.076812744140625),
+    ],
+)
+def test_equal_magnitude_changes_use_exact_sign_test(
+    improved_count: int,
+    regressed_count: int,
+    expected_p_value: float,
+):
+    deltas = [1.0] * improved_count + [-1.0] * regressed_count
+    summary = summarize_pairs(
+        [
+            _pair(
+                case_id=f"case-{index}",
+                evaluator="correctness",
+                baseline=0.0,
+                candidate=delta,
+            )
+            for index, delta in enumerate(deltas)
+        ]
+    )[0]
+
+    assert summary.wilcoxon_p_value == pytest.approx(expected_p_value)
 
 
 def test_rejects_duplicate_case_evaluator_rows():
