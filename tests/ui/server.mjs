@@ -43,6 +43,9 @@ fs.mkdirSync(path.join(root, 'nested'));
 fs.writeFileSync(path.join(root, 'nested/experiment.json'), JSON.stringify({ cases: [], evaluators: [] }));
 fs.writeFileSync(path.join(root, 'notes.json'), '{"just": "notes"}');
 fs.writeFileSync(path.join(root, 'half-written.json'), '{"cases": [');
+// An optimizer run, so the Optimization tab is fed by the real server rather than a picked folder.
+fs.cpSync(new URL('./fixtures/optimizer-run/', import.meta.url).pathname, path.join(root, 'tuning'),
+  { recursive: true });
 
 // ── boot it on a port the OS says is free ──
 const port = await new Promise(resolve => {
@@ -67,6 +70,9 @@ try {
   const p = await page({ fetchImpl: forward, url: `${base}/?t=${TOKEN}` });
   const { $, $$, text, click, type, window, errs } = p;
   await waitFor(() => $$('#runs-rows tr.run').length > 0, 'the run list');
+  /* Boot is async and ends by rendering the list and choosing a tab, so anything captured or
+     clicked before it finishes can be undone — a stale <tr> clicks on nothing. */
+  await waitFor(() => $('.app').dataset.ready, 'boot to finish');
 
   // ── mode and provenance ──
   ok(/served · saves to disk/.test(text('#mode-tag')), 'mode tag says it saves to disk', text('#mode-tag'));
@@ -84,9 +90,22 @@ try {
 
   // ── files it could not use are named, with the reason ──
   const skips = text('#skips');
-  ok(/2 JSON files skipped/.test(skips), 'skipped files counted', skips);
+  ok(/2 files skipped/.test(skips), 'skipped files counted', skips);
   ok(/notes.json/.test(skips) && /not an experiment or a report/.test(skips), 'names the unrelated file', skips);
   ok(/half-written.json/.test(skips) && /invalid JSON/.test(skips), 'names the broken file with a reason', skips);
+  ok(!/tuning\/run\.json/.test(skips), 'the optimizer run config is not reported as unusable', skips);
+
+  // ── the optimizer run the server found, with its log fetched over HTTP ──
+  ok($('#tab-opt').hidden === false, 'Optimization tab offered');
+  await click('#tab-opt');
+  await waitFor(() => $$('#opt-obj-chart circle').length > 0, 'the objective chart');
+  ok(/support-tuning-20261110-091500-7af3e1/.test(text('#opt-sub')), 'names the run', text('#opt-sub'));
+  ok(text('#opt-best') === '0.67', 'best feasible objective derived from the fetched log', text('#opt-best'));
+  ok($$('#opt-obj-chart circle').length === 8, 'one mark per scored proposal',
+    $$('#opt-obj-chart circle').length);
+  ok($$('#opt-rows tr').length === 11, 'a row per proposal', $$('#opt-rows tr').length);
+  ok(text('#path') === 'tuning/events.jsonl', 'the path bar names the log it read', text('#path'));
+  await click('.tab[data-view="runs"]');
 
   // ── selecting a run fetches both documents ──
   await click(paired);

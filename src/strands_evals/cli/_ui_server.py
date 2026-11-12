@@ -43,8 +43,16 @@ MAX_UPLOAD_BYTES = 32 * 1024 * 1024
 MAX_SCAN_FILES = 2000
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]", "::1"})
 
+# One optimizer trial is one event, so a long run's log is mostly trials. The cap is on lines
+# rather than bytes because a half-read log has to be reported as partial, and lines are what the
+# page counts.
+MAX_EVENT_LINES = 50_000
+
 EXPERIMENT = "experiment"
 REPORT = "report"
+
+EVENT_LOG_NAME = "events.jsonl"
+RUN_CONFIG_NAME = "run.json"
 
 
 @dataclass
@@ -71,6 +79,16 @@ class Discovery:
     runs: list[dict] = field(default_factory=list)
     skipped: list[dict] = field(default_factory=list)
     truncated: bool = False
+    optimizer_runs: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class EventLog:
+    """A parsed `events.jsonl`: the events, the lines that would not parse, and whether it was cut."""
+
+    events: list[dict] = field(default_factory=list)
+    bad_lines: list[dict] = field(default_factory=list)
+    truncated: bool = False
 
 
 def classify(obj: Any) -> str | None:
@@ -93,6 +111,11 @@ def classify(obj: Any) -> str | None:
     ):
         return REPORT
     return None
+
+
+def _dirname(path: str) -> str:
+    """The directory part of a root-relative path, `.` at the root; mirrors `ScannedFile.directory`."""
+    return path.rsplit("/", 1)[0] if "/" in path else "."
 
 
 _STEM_SUFFIX = re.compile(r"(^|[._-])(experiment|exp|report|rep)$", re.IGNORECASE)
@@ -308,7 +331,152 @@ def discover(root: Path, depth: int = DEFAULT_DEPTH) -> Discovery:
             )
         )
     )
-    return Discovery(runs=runs, skipped=skipped, truncated=truncated)
+
+    optimizer_runs = discover_optimizer_runs(root, depth)
+
+    # An optimizer run's `run.json` is not an experiment or a report, so the scan files it under
+    # "did not classify". Once it has been recognised as a run config, saying so again as a
+    # problem would send someone looking for a fault that isn't there.
+    optimizer_dirs = {r["dir"] for r in optimizer_runs}
+    skipped = [
+        s
+        for s in skipped
+        if not (s["path"].rsplit("/", 1)[-1] == RUN_CONFIG_NAME and _dirname(s["path"]) in optimizer_dirs)
+    ]
+
+    return Discovery(runs=runs, skipped=skipped, truncated=truncated, optimizer_runs=optimizer_runs)
+
+
+def read_event_log(path: Path, max_lines: int = MAX_EVENT_LINES) -> EventLog:
+    """Read an optimizer `events.jsonl`.
+
+    A truncated last line is dropped rather than reported: the optimizer appends with one write
+    per event, so the only way to see a partial line is to read the log while a run is still
+    writing, and that is normal rather than a problem worth showing. Any *earlier* line that
+    fails to parse is real corruption, so it is reported with its line number.
+    """
+    log = EventLog()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        log.bad_lines.append({"line": 0, "why": f"could not read: {exc.__class__.__name__}"})
+        return log
+
+    lines = text.split("\n")
+    # Every line but the last is known complete, because a complete line is one with a newline
+    # after it. That holds either way the file ends: with a newline the split leaves a trailing
+    # empty string (skipped as blank below), and without one the last element is the partial line.
+    complete = len(lines) - 1
+    for number, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        if len(log.events) >= max_lines:
+            log.truncated = True
+            break
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            # The last line of a log being written is expected to be partial; drop it quietly.
+            if number > complete:
+                continue
+            log.bad_lines.append({"line": number, "why": f"invalid JSON: {exc.msg}"})
+            continue
+        if isinstance(event, dict):
+            log.events.append(event)
+        else:
+            log.bad_lines.append({"line": number, "why": "not a JSON object"})
+
+    return log
+
+
+def _optimizer_run_summary(
+    directory: str,
+    config: dict,
+    events_stat: os.stat_result,
+    config_stat: os.stat_result,
+    log: EventLog,
+) -> dict:
+    """What the runs list shows for one optimizer run.
+
+    Only things that can be *read* out of the log, never derived: counts, the last stop reason,
+    the champion the end phase recorded. Every derived series — best-so-far, the budget curve —
+    is computed in the page from the same event log, so the rule for it lives in exactly one
+    place instead of being reimplemented here and drifting.
+    """
+    # Distinct iteration numbers rather than a count of `iteration_end` events, so the same
+    # iteration recorded twice reads as one iteration rather than as progress.
+    iterations = {e.get("iteration") for e in log.events if e.get("event") == "iteration_end"}
+    champion = None
+    stop_reason = None
+    for event in log.events:
+        name = event.get("event")
+        if name in ("picked", "test"):
+            report = event.get("report")
+            if isinstance(report, dict) and report.get("champion_id"):
+                champion = report["champion_id"]
+        elif name == "stop":
+            stop_reason = event.get("reason")
+
+    return {
+        "id": directory,
+        "dir": directory,
+        "run_id": config.get("run_id") or directory.rsplit("/", 1)[-1],
+        "name": config.get("name"),
+        "objective": config.get("objective"),
+        "constraints": config.get("constraints") or [],
+        "is_pareto": bool(config.get("is_pareto")),
+        "budget": config.get("budget") or {},
+        "config": config,
+        "events_path": f"{directory}/{EVENT_LOG_NAME}" if directory != "." else EVENT_LOG_NAME,
+        "events": len(log.events),
+        "events_size": events_stat.st_size,
+        "modified": max(events_stat.st_mtime, config_stat.st_mtime),
+        "iterations": len(iterations),
+        "candidates": sum(1 for e in log.events if e.get("event") == "propose"),
+        "trials": sum(1 for e in log.events if e.get("event") == "trial"),
+        "champion_id": champion,
+        "stop_reason": stop_reason,
+        "bad_lines": log.bad_lines,
+        "truncated": log.truncated,
+    }
+
+
+def discover_optimizer_runs(root: Path, depth: int = DEFAULT_DEPTH) -> list[dict]:
+    """Find optimizer run directories: a `run.json` with an `events.jsonl` beside it.
+
+    Both are required. `run.json` alone is far too common a filename to treat as evidence of an
+    optimizer run, and an event log with no config cannot be read (the objective and the budget
+    live in the config).
+    """
+    found: list[dict] = []
+    root = root.resolve()
+
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        here = Path(dirpath)
+        level = len(here.relative_to(root).parts)
+        if level >= depth:
+            dirnames[:] = []
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d not in {"node_modules", "__pycache__"})
+
+        names = set(filenames)
+        if RUN_CONFIG_NAME not in names or EVENT_LOG_NAME not in names:
+            continue
+
+        config_path, events_path = here / RUN_CONFIG_NAME, here / EVENT_LOG_NAME
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config_stat, events_stat = config_path.stat(), events_path.stat()
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(config, dict):
+            continue
+
+        relative = here.relative_to(root).as_posix() or "."
+        log = read_event_log(events_path)
+        found.append(_optimizer_run_summary(relative, config, events_stat, config_stat, log))
+
+    found.sort(key=lambda r: -r["modified"])
+    return found
 
 
 class PathOutsideRoot(ValueError):
@@ -553,6 +721,30 @@ class UIHandler(BaseHTTPRequestHandler):
                     "runs": result.runs,
                     "skipped": result.skipped,
                     "truncated": result.truncated,
+                    "optimizer_runs": result.optimizer_runs,
+                },
+            )
+            return
+
+        if parsed.path == "/api/events":
+            rel = query.get("path", [""])[0]
+            try:
+                target = resolve_within(self.config.root, rel)
+            except PathOutsideRoot as exc:
+                self._error(HTTPStatus.FORBIDDEN, str(exc))
+                return
+            if not target.is_file():
+                self._error(HTTPStatus.NOT_FOUND, f"{rel} is not a file")
+                return
+            log = read_event_log(target)
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "path": rel,
+                    "modified": target.stat().st_mtime,
+                    "events": log.events,
+                    "bad_lines": log.bad_lines,
+                    "truncated": log.truncated,
                 },
             )
             return

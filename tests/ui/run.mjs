@@ -1,7 +1,7 @@
 /* Runs every suite in one process-per-suite, so one crash cannot hide the others. */
 import { spawnSync } from 'node:child_process';
 
-const suites = ['standalone.mjs', 'fileorigin.mjs', 'extras.mjs', 'server.mjs'];
+const suites = ['standalone.mjs', 'fileorigin.mjs', 'extras.mjs', 'optimization.mjs', 'server.mjs'];
 let failed = 0;
 
 for (const suite of suites) {

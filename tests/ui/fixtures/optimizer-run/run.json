@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "run_id": "support-tuning-20261110-091500-7af3e1",
+  "name": "support-tuning",
+  "workdir": "/home/liz/support-agent",
+  "objective": "WeightedSum(Maximize(Helpfulness), Minimize(tokens, scale=1000))",
+  "constraints": [
+    "tokens <= 4000"
+  ],
+  "is_pareto": false,
+  "goal_metrics": [
+    "Helpfulness",
+    "tokens"
+  ],
+  "budget": {
+    "max_rollouts": 240,
+    "max_iterations": 6
+  },
+  "split": {
+    "train": [
+      "train_case_01",
+      "train_case_02",
+      "train_case_03",
+      "train_case_04",
+      "train_case_05",
+      "train_case_06",
+      "train_case_07",
+      "train_case_08"
+    ],
+    "validation": [
+      "val_case_01",
+      "val_case_02",
+      "val_case_03",
+      "val_case_04"
+    ],
+    "test": [
+      "test_case_01",
+      "test_case_02",
+      "test_case_03"
+    ],
+    "seed": 20261110
+  },
+  "runs": 1,
+  "blocks": [
+    "instructions",
+    "tools"
+  ],
+  "final_pick": {
+    "n_finalists": 3,
+    "rule": {
+      "kind": "top_ranked"
+    }
+  },
+  "score_model": {
+    "kind": "bayesbench",
+    "settings": {}
+  },
+  "agent_failure_score": "worst",
+  "feasibility_threshold": 0.9
+}

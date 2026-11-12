@@ -12,7 +12,7 @@ Not wired into CI, because CI has no Node toolchain. Run them by hand when the a
 ```bash
 cd tests/ui
 npm install          # jsdom only
-npm test             # all four suites
+npm test             # every suite
 node standalone.mjs  # or one at a time
 ```
 
@@ -26,4 +26,10 @@ different build of the page with `UI_HTML=path/to/ui.html`.
 | `standalone.mjs` | the file opened with no server: bundled sample, folder picker, download-save, add/delete case, evaluator config editing, trajectories that are dicts or a `Session` |
 | `fileorigin.mjs` | the file opened from disk over `file://`, which `standalone.mjs` does not cover — it boots at an http URL, so it never reaches the APIs an opaque origin restricts. `history.replaceState` refuses a URL it cannot verify against one, and that rejection used to abort rendering entirely |
 | `extras.mjs` | the row cap, deep links, reports missing their optional arrays, a mismatched experiment↔report pair, runs with only one half |
-| `server.mjs` | served mode end to end: discovery over HTTP, saving back to disk, the mtime conflict guard, evaluator edits round-tripping, token enforcement |
+| `optimization.mjs` | the Optimization tab, over `fixtures/optimizer-run`: the derived series, which are the numbers that can be plausibly wrong — best-so-far counts only *feasible* candidates and steps rather than slopes, an unscored candidate is absent from the chart rather than plotted at zero, the budget curve is cumulative. Also a log still being appended to, one with a corrupt line, and a directory missing either half of the pair |
+| `server.mjs` | served mode end to end: discovery over HTTP, saving back to disk, the mtime conflict guard, evaluator edits round-tripping, token enforcement, an optimizer log fetched over `/api/events` |
+
+`fixtures/optimizer-run` is synthetic, written by `fixtures/make_optimizer_run.py`. Nothing in the
+library writes an `events.jsonl` yet — the optimizer's record layer still raises
+`NotImplementedError` — so the page's reader is coded against the schema documented in
+`optimization/record/events.py` and this fixture stands in for a real run until that lands.

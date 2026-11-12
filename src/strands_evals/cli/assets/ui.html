@@ -264,7 +264,49 @@
   .more:hover { border-color: var(--ink3); }
   .reload { margin-left: 8px; }
   .scroll { overflow-x: auto; }
+
+  /* optimization */
+  .optpick { display: flex; align-items: center; gap: 10px; margin: 0 0 18px; flex-wrap: wrap; }
+  .optpick select {
+    background: var(--card); color: var(--ink1); border: 1px solid var(--hair);
+    border-radius: 7px; padding: 7px 9px; font: inherit; font-size: 13px; max-width: 460px;
+  }
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 4px 0 20px; }
+  .charts .wide { grid-column: 1 / -1; }
+  .chart {
+    background: var(--card); border: 1px solid var(--hair); border-radius: 10px; padding: 14px 16px 10px;
+  }
+  .chart h3 { margin: 0 0 2px; font-size: 13px; font-weight: 600; color: var(--ink1); }
+  .chart .cap { margin: 0 0 10px; font-size: 11.5px; color: var(--ink3); line-height: 1.45; }
+  .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .chart .empty { font-size: 12px; color: var(--ink3); padding: 18px 0 22px; }
+  .ax { stroke: var(--hair); stroke-width: 1; }
+  .grid-l { stroke: var(--hair2); stroke-width: 1; }
+  .tick { fill: var(--ink3); font-size: 9.5px; }
+  .axlab { fill: var(--ink3); font-size: 10px; }
+  .best { fill: none; stroke: var(--good); stroke-width: 1.75; }
+  .budget-fill { fill: var(--accent); opacity: .16; }
+  .budget-line { fill: none; stroke: var(--accent); stroke-width: 1.75; }
+  .cap-line { stroke: var(--bad); stroke-width: 1.25; stroke-dasharray: 4 3; }
+  .pt { stroke: var(--bg); stroke-width: 1; }
+  .pt.feasible { fill: var(--good); }
+  .pt.infeasible { fill: var(--bad); }
+  .pt.ineligible { fill: var(--ink3); }
+  .pt.champion { fill: var(--accent); }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 8px 0 2px; font-size: 11px; color: var(--ink2); }
+  .legend i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+  .legend .ln { width: 14px; height: 0; border-top: 2px solid var(--good); border-radius: 0; margin-bottom: 3px; }
+  .bars { display: flex; height: 26px; border-radius: 6px; overflow: hidden; border: 1px solid var(--hair); }
+  .bars span { display: block; height: 100%; }
+  .bars .completed { background: var(--good); }
+  .bars .agent_failure { background: var(--bad); }
+  .bars .evaluator_invalid { background: #d9a13b; }
+  .bars .infrastructure_invalid { background: var(--ink3); }
+  .optnote { font-size: 12px; color: var(--ink2); margin: 10px 0 0; line-height: 1.5; }
+  .optnote.warn { color: #d9a13b; }
+
   @media (max-width: 880px) {
+    .charts { grid-template-columns: 1fr; }
     .cols { grid-template-columns: 1fr; gap: 16px; }
     .list { max-height: 220px; overflow-y: auto; }
     .hero { flex-wrap: wrap; gap: 16px; }
@@ -287,6 +329,7 @@
       <button class="tab on" data-view="runs">Runs</button>
       <button class="tab" data-view="experiment">Experiment</button>
       <button class="tab" data-view="report">Report</button>
+      <button class="tab" data-view="optimization" id="tab-opt" hidden>Optimization</button>
     </nav>
     <div class="grow"></div>
     <div class="path mono" id="path"></div>
@@ -382,6 +425,53 @@
         </table>
       </div>
       <button class="more" id="rep-more" hidden></button>
+    </section>
+
+    <section class="view" id="v-optimization">
+      <h2>Optimization run</h2>
+      <p class="sub" id="opt-sub"></p>
+      <div class="optpick">
+        <label for="opt-run" class="path">Run</label>
+        <select id="opt-run"></select>
+        <span class="grow"></span>
+        <span class="path mono" id="opt-objective"></span>
+      </div>
+      <div class="hero">
+        <div>
+          <div class="big" id="opt-best">&mdash;</div>
+          <div class="cap" id="opt-best-cap">Best feasible objective</div>
+        </div>
+        <div class="stats" id="opt-stats"></div>
+      </div>
+      <div class="charts">
+        <div class="chart wide">
+          <h3>Objective by candidate</h3>
+          <p class="cap" id="opt-obj-cap"></p>
+          <div id="opt-obj-chart"></div>
+          <div class="legend" id="opt-obj-legend"></div>
+        </div>
+        <div class="chart">
+          <h3>Rollouts spent</h3>
+          <p class="cap" id="opt-budget-cap"></p>
+          <div id="opt-budget-chart"></div>
+        </div>
+        <div class="chart">
+          <h3>Trial outcomes</h3>
+          <p class="cap" id="opt-status-cap"></p>
+          <div id="opt-status-chart"></div>
+        </div>
+      </div>
+      <div class="scroll">
+        <table class="rep">
+          <thead><tr>
+            <th style="width:12%">Candidate</th><th style="width:8%">Iter</th>
+            <th style="width:14%">Objective</th><th style="width:16%">Outcome</th>
+            <th style="width:16%">Changed</th><th>Why it was tried</th>
+          </tr></thead>
+          <tbody id="opt-rows"></tbody>
+        </table>
+      </div>
+      <p class="optnote" id="opt-note"></p>
     </section>
   </main>
 </div>
@@ -2862,6 +2952,7 @@
       runs: ROOT || folderLabel || 'no folder opened',
       experiment: (expMeta && expMeta.path) || 'no experiment loaded',
       report: (repMeta && repMeta.path) || 'no report loaded',
+      optimization: (OPT_RUNS[optSel] && OPT_RUNS[optSel].events_path) || 'no optimizer run loaded',
     }[view];
     $('path').textContent = where;
     if (!opts || !opts.silent) writeHash(view);
@@ -2963,7 +3054,7 @@
         : 'Open a folder to look for experiments and reports.');
 
     $('skips').innerHTML = skipped.length
-      ? `<details class="skips"><summary>${plural(skipped.length, 'JSON file')} skipped</summary><ul>`
+      ? `<details class="skips"><summary>${plural(skipped.length, 'file')} skipped</summary><ul>`
         + skipped.map(s => `<li><code>${esc(s.path)}</code> — ${esc(s.why)}</li>`).join('')
         + '</ul></details>'
       : '';
@@ -2989,6 +3080,11 @@
     RUNS = res.runs; skipped = res.skipped || []; truncated = !!res.truncated;
     selRun = keepSelection && previous ? RUNS.findIndex(r => r.id === previous) : -1;
     renderRuns();
+
+    /* Optimizer runs are discovered in the same pass but are a different kind of thing: a run
+       directory, not an experiment/report pair. They get their own tab, hidden when there are
+       none, so a folder with no optimizer runs looks exactly as it did before. */
+    await loadOptimizerRuns(res.optimizer_runs || []);
     return res;
   }
 
@@ -3660,22 +3756,119 @@
     return { status: 'partial', detail: `${missing.length} of ${rows.size} report case(s) are not in this experiment` };
   }
 
+  /* `events.jsonl` is JSON Lines, not JSON: one event per line. A last line without a newline
+     after it is a log being appended to right now, which is normal, so it is dropped quietly;
+     an earlier line that will not parse is corruption and is reported with its number. Kept in
+     step with `read_event_log` in `_ui_server.py`, which does the same for served mode. */
+  function readEventLines(text) {
+    const lines = String(text).split('\n');
+    const complete = lines.length - 1;
+    const events = [], bad = [];
+    lines.forEach((line, i) => {
+      const number = i + 1;
+      if (!line.trim()) return;
+      let event;
+      try {
+        event = JSON.parse(line);
+      } catch (err) {
+        if (number > complete) return;        // partial final line of a live log
+        bad.push({ line: number, why: 'invalid JSON: ' + err.message });
+        return;
+      }
+      if (event && typeof event === 'object' && !Array.isArray(event)) events.push(event);
+      else bad.push({ line: number, why: 'not a JSON object' });
+    });
+    return { events, bad };
+  }
+
+  const dirOf = path => path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '.';
+
+  /* An optimizer run is a directory holding both a run.json and an events.jsonl. Either alone is
+     not enough: run.json is far too ordinary a filename to take as evidence, and the objective
+     and the budget a chart needs live in it rather than in the log. */
+  function optimizerRunsFrom(configs, logs) {
+    const runs = [];
+    [...configs.keys()].sort().forEach(dir => {
+      if (!logs.has(dir)) return;
+      const config = configs.get(dir), log = logs.get(dir);
+      runs.push({
+        id: dir,
+        dir,
+        run_id: config.obj.run_id || (dir === '.' ? 'this folder' : dir.slice(dir.lastIndexOf('/') + 1)),
+        name: config.obj.name || null,
+        objective: config.obj.objective || null,
+        constraints: config.obj.constraints || [],
+        is_pareto: !!config.obj.is_pareto,
+        budget: config.obj.budget || {},
+        config: config.obj,
+        events_path: log.path,
+        events: log.events.length,
+        events_size: log.size,
+        modified: Math.max(config.modified, log.modified),
+        bad_lines: log.bad,
+        truncated: false,
+        eventsCache: log.events,
+      });
+    });
+    runs.sort((a, b) => b.modified - a.modified);
+    return runs;
+  }
+
   async function ingest(entries) {
     const found = [];
     skipped = [];
+    const logs = new Map(), configs = new Map();
+
     for (const { file, path } of entries) {
+      if (/\.jsonl$/i.test(file.name)) {
+        if (file.name.toLowerCase() !== 'events.jsonl') {
+          skipped.push({ path, why: 'not an optimizer event log' });
+          continue;
+        }
+        const { events, bad } = readEventLines(await file.text());
+        logs.set(dirOf(path), {
+          path, events, bad, size: file.size,
+          modified: file.lastModified ? file.lastModified / 1000 : 0,
+        });
+        continue;
+      }
+
       let obj = null, why = null;
       try { obj = JSON.parse(await file.text()); } catch (err) { why = 'invalid JSON: ' + err.message; }
       const kind = why ? null : classify(obj);
-      if (!kind) { skipped.push({ path, why: why || 'not an experiment or a report' }); continue; }
+      if (!kind) {
+        /* Hold a run.json aside rather than skipping it: whether it is an optimizer run config
+           depends on a sibling that may not have been read yet. */
+        if (!why && obj && typeof obj === 'object' && file.name.toLowerCase() === 'run.json') {
+          configs.set(dirOf(path), {
+            path, obj, size: file.size,
+            modified: file.lastModified ? file.lastModified / 1000 : 0,
+          });
+          continue;
+        }
+        skipped.push({ path, why: why || 'not an experiment or a report' });
+        continue;
+      }
       const meta = {
         path, name: file.name, size: file.size,
         modified: file.lastModified ? file.lastModified / 1000 : 0, obj,
       };
       if (kind === 'experiment') Object.assign(meta, { cases: (obj.cases || []).length, evaluators: obj.evaluators || [] });
       else Object.assign(meta, reportMeta(obj));
-      found.push({ kind, meta, dir: path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '.' });
+      found.push({ kind, meta, dir: dirOf(path) });
     }
+
+    const optimizerRuns = optimizerRunsFrom(configs, logs);
+    /* A run.json with no events.jsonl beside it was held aside for nothing, so report it now
+       rather than letting it vanish from the skipped list. The ones that did pair up stay out,
+       the way the server leaves a recognised run.json out of its own skipped list. */
+    const paired = new Set(optimizerRuns.map(r => r.dir));
+    configs.forEach((config, dir) => {
+      if (!paired.has(dir)) skipped.push({ path: config.path, why: 'not an experiment or a report' });
+    });
+    logs.forEach((log, dir) => {
+      if (!paired.has(dir)) skipped.push({ path: log.path, why: 'no run.json beside it' });
+    });
 
     const byDir = new Map();
     found.forEach(f => { if (!byDir.has(f.dir)) byDir.set(f.dir, []); byDir.get(f.dir).push(f); });
@@ -3700,7 +3893,7 @@
     });
     runs.sort((a, b) => Math.max((b.experiment || {}).modified || 0, (b.report || {}).modified || 0)
       - Math.max((a.experiment || {}).modified || 0, (a.report || {}).modified || 0));
-    return runs;
+    return { runs, optimizerRuns };
   }
 
   async function pickFolder() {
@@ -3711,7 +3904,7 @@
       const walk = async (handle, prefix, depth) => {
         for await (const [name, h] of handle.entries()) {
           if (h.kind === 'file') {
-            if (/\.json$/i.test(name)) entries.push({ file: await h.getFile(), path: prefix + name });
+            if (/\.jsonl?$/i.test(name)) entries.push({ file: await h.getFile(), path: prefix + name });
           } else if (depth < SCAN_DEPTH && !name.startsWith('.') && name !== 'node_modules') {
             await walk(h, prefix + name + '/', depth + 1);
           }
@@ -3720,9 +3913,12 @@
       await walk(dir, '', 1);
       folderLabel = dir.name;
       showingSample = false;
-      RUNS = await ingest(entries);
+      const found = await ingest(entries);
+      RUNS = found.runs;
       selRun = -1;
-      renderRuns(); show('runs');
+      renderRuns();
+      await loadOptimizerRuns(found.optimizerRuns);
+      show('runs');
       return;
     }
     // showDirectoryPicker needs a secure context, which file:// is not. A directory <input>
@@ -3733,14 +3929,361 @@
   app.querySelector('[data-act="pick"]').onclick = pickFolder;
 
   $('dirinput').onchange = async e => {
-    const files = [...e.target.files].filter(f => /\.json$/i.test(f.name));
+    const files = [...e.target.files].filter(f => /\.jsonl?$/i.test(f.name));
     const first = (files[0] && files[0].webkitRelativePath) || '';
     folderLabel = first.includes('/') ? first.slice(0, first.indexOf('/')) : 'selected folder';
     showingSample = false;
-    RUNS = await ingest(files.map(f => ({ file: f, path: f.webkitRelativePath || f.name })));
+    const found = await ingest(files.map(f => ({ file: f, path: f.webkitRelativePath || f.name })));
+    RUNS = found.runs;
     selRun = -1;
-    renderRuns(); show('runs');
+    renderRuns();
+    await loadOptimizerRuns(found.optimizerRuns);
+    show('runs');
   };
+
+  /* ══════════ optimization ══════════ */
+
+  /* The optimizer records what happened as an append-only `events.jsonl`, one JSON object per
+     line, described in `optimization/record/events.py`. Nothing in that log is a chart: the
+     series a reader wants are derived from it here, and this is the only place they are derived,
+     so the rule for "best so far" exists once rather than once per surface. */
+
+  const OUTCOMES = ['feasible', 'infeasible', 'ineligible', 'invalid', 'unscored', 'duplicate'];
+  const STATUSES = ['completed', 'agent_failure', 'evaluator_invalid', 'infrastructure_invalid'];
+
+  function deriveOptimization(events, config) {
+    const cfg = config || {};
+    const proposals = [];      // one row per proposal, in the order the search made them
+    const statuses = {};       // trial status -> count
+    const bySplit = {};        // split -> trial count
+    const iterations = [];     // {iteration, rollouts, cumulative}
+    let champion = null, finalists = [], validation = null, test = null, stop = null;
+    let bestAfter = null;
+
+    /* `propose` carries the rationale and the parent; `iteration_end` carries the outcome and the
+       objective the candidate was observed with. Neither alone is enough, so they are joined on
+       the candidate id. An invalid patch never became a candidate and so has no `propose`. */
+    const proposed = new Map();
+    for (const e of events) {
+      if (e && e.event === 'propose' && e.candidate_id) proposed.set(e.candidate_id, e);
+    }
+
+    let spent = 0;
+    for (const e of events) {
+      if (!e || typeof e !== 'object') continue;
+      switch (e.event) {
+        case 'trial': {
+          const rec = e.record || {};
+          const status = rec.status || 'unknown';
+          statuses[status] = (statuses[status] || 0) + 1;
+          const split = rec.split || 'unknown';
+          bySplit[split] = (bySplit[split] || 0) + 1;
+          break;
+        }
+        case 'iteration_end': {
+          const rec = e.record || {};
+          const rollouts = typeof rec.rollouts_spent === 'number' ? rec.rollouts_spent : 0;
+          spent += rollouts;
+          iterations.push({ iteration: rec.iteration != null ? rec.iteration : e.iteration, rollouts, cumulative: spent });
+          if (e.best_after && typeof e.best_after === 'object') bestAfter = e.best_after;
+          for (const p of (rec.proposals || [])) {
+            const origin = proposed.get(p.candidate_id);
+            proposals.push({
+              candidate_id: p.candidate_id,
+              number: p.number,
+              iteration: rec.iteration != null ? rec.iteration : e.iteration,
+              parent_id: p.parent_id,
+              origin: p.origin,
+              outcome: p.outcome,
+              objective: typeof p.objective === 'number' ? p.objective : null,
+              changed_keys: p.changed_keys || [],
+              rationale: p.rationale || (origin ? origin.rationale : '') || '',
+            });
+          }
+          break;
+        }
+        case 'finalists':
+          finalists = e.candidate_ids || [];
+          break;
+        case 'picked':
+          validation = e.report || null;
+          if (validation && validation.champion_id) champion = validation.champion_id;
+          break;
+        case 'test':
+          test = e.report || null;
+          if (test && test.champion_id) champion = test.champion_id;
+          break;
+        case 'stop':
+          stop = { reason: e.reason, message: e.message };
+          break;
+      }
+    }
+
+    /* Best so far counts only candidates labelled `feasible`. One that breaks a constraint
+       cannot ship however well it scores, so calling it the best would name a candidate the
+       optimizer itself refused — and the run's own champion would contradict the chart. */
+    let running = null;
+    for (const p of proposals) {
+      if (p.outcome === 'feasible' && p.objective != null) {
+        running = running == null ? p.objective : Math.max(running, p.objective);
+      }
+      p.best = running;          // null until the first feasible candidate is scored
+    }
+
+    const budget = cfg.budget || {};
+    const scored = proposals.filter(p => p.objective != null);
+    return {
+      config: cfg,
+      proposals,
+      scored,
+      iterations,
+      statuses,
+      bySplit,
+      trials: Object.values(statuses).reduce((a, b) => a + b, 0),
+      best: running,
+      bestCandidate: (proposals.filter(p => p.outcome === 'feasible' && p.objective === running).pop() || null),
+      bestAfter,
+      spent,
+      maxRollouts: typeof budget.max_rollouts === 'number' ? budget.max_rollouts : null,
+      maxIterations: typeof budget.max_iterations === 'number' ? budget.max_iterations : null,
+      champion, finalists, validation, test, stop,
+      isPareto: !!cfg.is_pareto,
+    };
+  }
+
+  /* ── charts ──
+     Hand-rolled SVG on purpose: the page is one file a reader can be handed with no server and
+     no network, and a charting library would be larger than everything else in it combined. */
+
+  const W = 640, H = 220, PAD = { t: 10, r: 14, b: 26, l: 40 };
+  const IN_W = W - PAD.l - PAD.r, IN_H = H - PAD.t - PAD.b;
+
+  const svg = inner => `<svg viewBox="0 0 ${W} ${H}" role="img">${inner}</svg>`;
+  const nice = v => Math.abs(v) >= 100 ? String(Math.round(v)) : (Math.round(v * 100) / 100).toFixed(2);
+
+  function yAxis(lo, hi, label) {
+    const span = (hi - lo) || 1;
+    const y = v => PAD.t + IN_H - ((v - lo) / span) * IN_H;
+    let out = `<line class="ax" x1="${PAD.l}" y1="${PAD.t}" x2="${PAD.l}" y2="${PAD.t + IN_H}"/>`;
+    for (let i = 0; i <= 4; i++) {
+      const v = lo + (span * i) / 4, yy = y(v);
+      out += `<line class="grid-l" x1="${PAD.l}" y1="${yy}" x2="${PAD.l + IN_W}" y2="${yy}"/>`
+        + `<text class="tick" x="${PAD.l - 6}" y="${yy + 3}" text-anchor="end">${esc(nice(v))}</text>`;
+    }
+    if (label) out += `<text class="axlab" x="${PAD.l}" y="${PAD.t - 1}">${esc(label)}</text>`;
+    return { y, out };
+  }
+
+  function objectiveChart(d) {
+    if (!d.scored.length) {
+      return '<div class="empty">No candidate has been scored yet, so there is no objective to plot.</div>';
+    }
+    const values = d.scored.map(p => p.objective);
+    let lo = Math.min(...values), hi = Math.max(...values);
+    const pad = ((hi - lo) || Math.abs(hi) || 1) * 0.15;
+    lo -= pad; hi += pad;
+
+    const n = d.proposals.length;
+    const x = i => PAD.l + (n === 1 ? IN_W / 2 : (i / (n - 1)) * IN_W);
+    const { y, out: axis } = yAxis(lo, hi, 'objective');
+
+    let marks = '', xticks = '';
+    d.proposals.forEach((p, i) => {
+      if (p.iteration !== (d.proposals[i - 1] || {}).iteration) {
+        xticks += `<text class="tick" x="${x(i)}" y="${H - 8}" text-anchor="middle">it ${esc(p.iteration)}</text>`;
+      }
+      if (p.objective == null) return;    // never plotted as zero: it was not measured
+      const cls = p.candidate_id === d.champion ? 'champion'
+        : (OUTCOMES.includes(p.outcome) && p.outcome !== 'feasible' && p.outcome !== 'infeasible')
+          ? 'ineligible' : p.outcome;
+      marks += `<circle class="pt ${esc(cls)}" cx="${x(i)}" cy="${y(p.objective)}" r="4">`
+        + `<title>${esc(`${p.candidate_id} · ${p.outcome} · ${nice(p.objective)}`)}</title></circle>`;
+    });
+
+    /* The best-so-far line is a step, not a slope: nothing improved between two candidates, so
+       drawing a diagonal would claim measurements that were never taken. */
+    const steps = [];
+    d.proposals.forEach((p, i) => {
+      if (p.best == null) return;
+      const px = x(i), py = y(p.best);
+      if (steps.length) steps.push(`L${px},${steps[steps.length - 1].split(',')[1]}`);
+      steps.push(`${steps.length ? 'L' : 'M'}${px},${py}`);
+    });
+    const line = steps.length > 1 ? `<path class="best" d="${steps.join(' ')}"/>` : '';
+
+    return svg(axis + line + marks + xticks);
+  }
+
+  function budgetChart(d) {
+    if (!d.iterations.length) return '<div class="empty">No iteration has finished yet.</div>';
+    const cap = d.maxRollouts;
+    const hi = Math.max(d.spent, cap || 0) || 1;
+    const { y, out: axis } = yAxis(0, hi, 'rollouts');
+    const pts = [{ iteration: '', cumulative: 0 }].concat(d.iterations);
+    const n = pts.length;
+    const x = i => PAD.l + (n === 1 ? 0 : (i / (n - 1)) * IN_W);
+
+    const path = pts.map((p, i) => `${i ? 'L' : 'M'}${x(i)},${y(p.cumulative)}`).join(' ');
+    const area = `${path} L${x(n - 1)},${y(0)} L${x(0)},${y(0)} Z`;
+    let marks = '', xticks = '';
+    d.iterations.forEach((p, i) => {
+      marks += `<circle class="pt champion" cx="${x(i + 1)}" cy="${y(p.cumulative)}" r="3">`
+        + `<title>${esc(`iteration ${p.iteration}: +${p.rollouts}, ${p.cumulative} total`)}</title></circle>`;
+      xticks += `<text class="tick" x="${x(i + 1)}" y="${H - 8}" text-anchor="middle">${esc(p.iteration)}</text>`;
+    });
+    const capLine = cap != null
+      ? `<line class="cap-line" x1="${PAD.l}" y1="${y(cap)}" x2="${PAD.l + IN_W}" y2="${y(cap)}"/>`
+        + `<text class="tick" x="${PAD.l + IN_W}" y="${y(cap) - 4}" text-anchor="end">budget ${esc(cap)}</text>`
+      : '';
+    return svg(axis + `<path class="budget-fill" d="${area}"/><path class="budget-line" d="${path}"/>`
+      + capLine + marks + xticks);
+  }
+
+  function statusChart(d) {
+    if (!d.trials) return '<div class="empty">No trial has been recorded yet.</div>';
+    const present = STATUSES.filter(s => d.statuses[s]);
+    const other = Object.keys(d.statuses).filter(s => !STATUSES.includes(s));
+    const bars = present.concat(other).map(s => {
+      const pctWidth = (d.statuses[s] / d.trials) * 100;
+      return `<span class="${esc(s)}" style="width:${pctWidth.toFixed(2)}%" title="${esc(s)}: ${d.statuses[s]}"></span>`;
+    }).join('');
+    const legend = present.concat(other).map(s =>
+      `<span><i class="${esc(s)}" style="background:var(--${s === 'completed' ? 'good' : 'bad'})"></i>`
+      + `${esc(s.replace(/_/g, ' '))} ${d.statuses[s]}</span>`).join('');
+    const splits = Object.keys(d.bySplit).sort()
+      .map(s => `${esc(s)} ${d.bySplit[s]}`).join(' · ');
+    return `<div class="bars">${bars}</div><div class="legend">${legend}</div>`
+      + (splits ? `<div class="legend"><span>${splits}</span></div>` : '');
+  }
+
+  /* ── view ── */
+
+  let OPT_RUNS = [], optSel = -1, OPT = null;
+
+  function optStat(value, key) {
+    return `<div class="stat"><span class="v">${esc(value)}</span><span class="k">${esc(key)}</span></div>`;
+  }
+
+  function renderOptimization() {
+    const run = OPT_RUNS[optSel];
+    $('tab-opt').hidden = OPT_RUNS.length === 0;
+    if (!run || !OPT) {
+      $('opt-sub').textContent = OPT_RUNS.length
+        ? 'Pick a run above.'
+        : 'No optimizer run directory in this folder. One is a run.json with an events.jsonl beside it.';
+      ['opt-obj-chart', 'opt-budget-chart', 'opt-status-chart'].forEach(id => { $(id).innerHTML = ''; });
+      $('opt-rows').innerHTML = '';
+      $('opt-stats').innerHTML = '';
+      $('opt-best').textContent = '—';
+      return;
+    }
+
+    const d = OPT;
+    $('opt-objective').textContent = d.config.objective || '';
+    $('opt-sub').textContent = `${run.run_id} · ${plural(d.proposals.length, 'proposal')} over `
+      + `${plural(d.iterations.length, 'iteration')}, ${plural(d.trials, 'trial')}.`
+      + (d.stop ? ` Stopped: ${d.stop.reason}${d.stop.message ? ` (${d.stop.message})` : ''}.` : ' Still running.');
+
+    $('opt-best').textContent = d.best == null ? '—' : fmt(d.best);
+    $('opt-best-cap').textContent = d.bestCandidate
+      ? `Best feasible objective · ${d.bestCandidate.candidate_id}`
+      : 'Best feasible objective';
+
+    const champ = d.champion ? d.champion : '—';
+    $('opt-stats').innerHTML = [
+      optStat(champ, 'Champion'),
+      optStat(d.maxRollouts != null ? `${d.spent} / ${d.maxRollouts}` : String(d.spent), 'Rollouts'),
+      optStat(String(d.scored.length), 'Scored'),
+      optStat(String(d.proposals.length - d.scored.length), 'Not scored'),
+    ].join('');
+
+    $('opt-obj-cap').textContent = 'One mark per proposal in search order. The line is the best feasible '
+      + 'objective so far — infeasible candidates are plotted but never counted as best, and a candidate '
+      + 'that was never scored is left off the line rather than drawn as zero.';
+    $('opt-obj-chart').innerHTML = objectiveChart(d);
+    $('opt-obj-legend').innerHTML = ['feasible', 'infeasible', 'ineligible'].map(o =>
+      `<span><i class="pt ${o}" style="background:var(--${o === 'feasible' ? 'good' : o === 'infeasible' ? 'bad' : 'ink3'})"></i>${o}</span>`
+    ).join('') + (d.champion ? '<span><i style="background:var(--accent)"></i>champion</span>' : '')
+      + '<span><i class="ln"></i>best feasible so far</span>';
+
+    $('opt-budget-cap').textContent = d.maxRollouts != null
+      ? `Cumulative rollouts after each iteration, against the ${d.maxRollouts}-rollout budget.`
+      : 'Cumulative rollouts after each iteration. The run config names no budget.';
+    $('opt-budget-chart').innerHTML = budgetChart(d);
+
+    $('opt-status-cap').textContent = 'Every recorded trial by how it ended. A trial is one case run once.';
+    $('opt-status-chart').innerHTML = statusChart(d);
+
+    const rows = d.proposals.map(p => {
+      const obj = p.objective == null
+        ? `<span class="path">not scored</span>`
+        : `<span class="mono">${esc(fmt(p.objective))}</span>`;
+      const name = p.candidate_id
+        ? esc(p.candidate_id) + (p.number != null ? ` <span class="path">#${esc(p.number)}</span>` : '')
+        : '<span class="path">no candidate</span>';
+      const champTag = p.candidate_id && p.candidate_id === d.champion
+        ? ' <span class="tag ok">champion</span>' : '';
+      return `<tr><td>${name}${champTag}</td><td>${esc(p.iteration)}</td><td>${obj}</td>`
+        + `<td>${esc(p.outcome || '')}</td><td class="mono">${esc((p.changed_keys || []).join(', ') || '—')}</td>`
+        + `<td>${esc(p.rationale)}</td></tr>`;
+    }).join('');
+    $('opt-rows').innerHTML = rows
+      || `<tr><td colspan="6"><div class="nores"><b>No proposals recorded</b>`
+        + `The log has no finished iteration yet.</div></td></tr>`;
+
+    const notes = [];
+    if (run.truncated) {
+      notes.push(`Only the first ${run.events} events were read, so these numbers cover part of the run.`);
+    }
+    if (run.bad_lines && run.bad_lines.length) {
+      notes.push(`${plural(run.bad_lines.length, 'line')} in the log could not be parsed `
+        + `(${run.bad_lines.map(b => 'line ' + b.line).join(', ')}).`);
+    }
+    if (d.isPareto) {
+      notes.push('This run uses a Pareto objective, so a single best value understates it — the front is in '
+        + 'the end-phase reports rather than on this chart.');
+    }
+    $('opt-note').textContent = notes.join(' ');
+    $('opt-note').className = 'optnote' + (notes.length ? ' warn' : '');
+  }
+
+  /* Both origins land here — the server's discovery pass and a folder picked in standalone mode —
+     so the tab appears and the selection survives a rescan the same way either way. */
+  async function loadOptimizerRuns(runs) {
+    const previous = optSel >= 0 && OPT_RUNS[optSel] ? OPT_RUNS[optSel].id : null;
+    OPT_RUNS = runs;
+    optSel = previous ? OPT_RUNS.findIndex(r => r.id === previous) : -1;
+    if (optSel < 0 && OPT_RUNS.length) optSel = 0;
+    renderOptimizerPicker();
+    if (OPT_RUNS.length) await selectOptimizerRun(optSel);
+    else { OPT = null; renderOptimization(); }
+  }
+
+  async function selectOptimizerRun(index) {
+    optSel = index;
+    const run = OPT_RUNS[index];
+    OPT = null;
+    if (!run) { renderOptimization(); return; }
+    try {
+      const events = run.eventsCache || (await api('/api/events?path=' + encodeURIComponent(run.events_path))).events;
+      run.eventsCache = events;
+      OPT = deriveOptimization(events, run.config);
+    } catch (err) {
+      OPT = null;
+      $('opt-sub').textContent = `Could not read ${run.events_path}: ${err.message}`;
+    }
+    renderOptimization();
+  }
+
+  function renderOptimizerPicker() {
+    $('tab-opt').hidden = OPT_RUNS.length === 0;
+    $('opt-run').innerHTML = OPT_RUNS.map((r, i) =>
+      `<option value="${i}">${esc(r.run_id)}${r.name && r.name !== r.run_id ? ` — ${esc(r.name)}` : ''}</option>`
+    ).join('');
+    $('opt-run').hidden = OPT_RUNS.length < 2;
+    $('opt-run').value = String(Math.max(0, optSel));
+  }
+  $('opt-run').onchange = e => selectOptimizerRun(Number(e.target.value));
 
   /* ══════════ boot ══════════ */
 
@@ -3798,6 +4341,10 @@
       show(want.tab || 'runs', { silent: true });
     }
     refreshDirty();
+    /* Boot is async — against a server it fetches the run list and then an event log — and it
+       ends by choosing which tab to land on. Anything that drives the page before this is set
+       may be undone by that last step. */
+    app.dataset.ready = '1';
   }
 
   boot();

@@ -21,7 +21,9 @@ from strands_evals.cli._ui_server import (
     build_server,
     classify,
     discover,
+    discover_optimizer_runs,
     link_status,
+    read_event_log,
     resolve_within,
     validate_experiment_payload,
     write_json_atomic,
@@ -209,6 +211,151 @@ def test_discover_reports_a_mismatched_pair_rather_than_hiding_it(tmp_path: Path
     assert run["link"]["status"] == "mismatch"
 
 
+# ── optimizer runs ──
+
+
+def _event_log(path: Path, *events: dict, trailing_newline: bool = True) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = "".join(json.dumps(e) + "\n" for e in events)
+    path.write_text(text if trailing_newline else text.rstrip("\n"))
+    return path
+
+
+def _optimizer_run(directory: Path, *events: dict, config: dict | None = None) -> Path:
+    _write(directory / "run.json", config or {"run_id": "r-1", "objective": "Maximize(Helpfulness)"})
+    _event_log(directory / "events.jsonl", *events)
+    return directory
+
+
+def test_read_event_log_reads_one_event_per_line(tmp_path: Path):
+    log = read_event_log(_event_log(tmp_path / "events.jsonl", {"event": "config"}, {"event": "stop"}))
+
+    assert [e["event"] for e in log.events] == ["config", "stop"]
+    assert (log.bad_lines, log.truncated) == ([], False)
+
+
+def test_read_event_log_drops_a_half_written_last_line(tmp_path: Path):
+    """A run still appending: the tail is expected to be partial, so it is not an error."""
+    path = _event_log(tmp_path / "events.jsonl", {"event": "config"})
+    path.write_text(path.read_text() + '{"event": "tri')
+
+    log = read_event_log(path)
+
+    assert [e["event"] for e in log.events] == ["config"]
+    assert log.bad_lines == []
+
+
+def test_read_event_log_reports_a_broken_line_in_the_middle(tmp_path: Path):
+    """Same text, but with a complete line after it, so it cannot be a log being written."""
+    path = tmp_path / "events.jsonl"
+    path.write_text('{"event": "config"}\n{"event": "tri\n{"event": "stop"}\n')
+
+    log = read_event_log(path)
+
+    assert [e["event"] for e in log.events] == ["config", "stop"]
+    assert [b["line"] for b in log.bad_lines] == [2]
+
+
+def test_read_event_log_reports_a_line_that_is_not_an_object(tmp_path: Path):
+    path = tmp_path / "events.jsonl"
+    path.write_text('{"event": "config"}\n[1, 2, 3]\n')
+
+    log = read_event_log(path)
+
+    assert len(log.events) == 1
+    assert log.bad_lines == [{"line": 2, "why": "not a JSON object"}]
+
+
+def test_read_event_log_stops_at_the_line_cap_and_says_so(tmp_path: Path):
+    path = _event_log(tmp_path / "events.jsonl", *({"event": "trial", "n": i} for i in range(10)))
+
+    log = read_event_log(path, max_lines=4)
+
+    assert len(log.events) == 4
+    assert log.truncated is True
+
+
+def test_read_event_log_survives_an_unreadable_file(tmp_path: Path):
+    log = read_event_log(tmp_path / "missing.jsonl")
+
+    assert log.events == []
+    assert log.bad_lines[0]["line"] == 0
+
+
+def test_discover_optimizer_runs_summarises_what_the_log_records(tmp_path: Path):
+    _optimizer_run(
+        tmp_path / "run-a",
+        {"event": "config"},
+        {"event": "propose", "candidate_id": "c0", "iteration": 0},
+        {"event": "trial", "iteration": 0, "record": {"status": "completed"}},
+        {"event": "iteration_end", "iteration": 0, "record": {"iteration": 0}},
+        {"event": "picked", "iteration": 1, "report": {"champion_id": "c0"}},
+        {"event": "stop", "iteration": 1, "reason": "iterations"},
+        config={"run_id": "r-7", "name": "tuning", "objective": "Maximize(H)", "budget": {"max_rollouts": 20}},
+    )
+
+    runs = discover_optimizer_runs(tmp_path)
+
+    assert len(runs) == 1
+    run = runs[0]
+    assert (run["dir"], run["run_id"], run["name"]) == ("run-a", "r-7", "tuning")
+    assert (run["candidates"], run["trials"], run["iterations"]) == (1, 1, 1)
+    assert (run["champion_id"], run["stop_reason"]) == ("c0", "iterations")
+    assert run["budget"] == {"max_rollouts": 20}
+    assert run["events_path"] == "run-a/events.jsonl"
+
+
+def test_discover_optimizer_runs_needs_both_files(tmp_path: Path):
+    """`run.json` is far too ordinary a name to take as evidence on its own."""
+    _write(tmp_path / "config-only" / "run.json", {"run_id": "r-1"})
+    _event_log(tmp_path / "log-only" / "events.jsonl", {"event": "config"})
+
+    assert discover_optimizer_runs(tmp_path) == []
+
+
+def test_discover_optimizer_runs_ignores_a_run_json_that_is_not_an_object(tmp_path: Path):
+    (tmp_path / "odd").mkdir()
+    (tmp_path / "odd" / "run.json").write_text("[1, 2, 3]")
+    _event_log(tmp_path / "odd" / "events.jsonl", {"event": "config"})
+
+    assert discover_optimizer_runs(tmp_path) == []
+
+
+def test_discover_keeps_a_recognised_run_json_out_of_skipped(tmp_path: Path):
+    """It is reported as an optimizer run, so reporting it again as unusable would contradict that."""
+    _optimizer_run(tmp_path / "opt", {"event": "config"})
+    _write(tmp_path / "elsewhere" / "run.json", {"not": "an optimizer run"})
+
+    result = discover(tmp_path)
+
+    assert [r["dir"] for r in result.optimizer_runs] == ["opt"]
+    assert [s["path"] for s in result.skipped] == ["elsewhere/run.json"]
+
+
+def test_discover_optimizer_runs_respects_depth(tmp_path: Path):
+    _optimizer_run(tmp_path / "a" / "b" / "deep", {"event": "config"})
+
+    assert discover_optimizer_runs(tmp_path, depth=2) == []
+    assert len(discover_optimizer_runs(tmp_path, depth=3)) == 1
+
+
+def test_fixture_run_is_readable():
+    """The synthetic run the browser tests draw their charts from, read by the real reader."""
+    fixture = Path(__file__).parents[2] / "ui" / "fixtures" / "optimizer-run"
+    if not fixture.is_dir():  # pragma: no cover - the fixture is committed, this is a clearer failure
+        pytest.skip(f"missing fixture {fixture}")
+
+    log = read_event_log(fixture / "events.jsonl")
+
+    assert log.bad_lines == []
+    assert log.truncated is False
+    assert log.events[0]["event"] == "config"
+    # 11 proposals in the plan, but the invalid patch never became a candidate and so never
+    # reached `propose` — the page has to get its row from `iteration_end` instead.
+    assert sum(1 for e in log.events if e["event"] == "propose") == 10
+    assert sum(len(e["record"]["proposals"]) for e in log.events if e["event"] == "iteration_end") == 11
+
+
 # ── paths ──
 
 
@@ -366,6 +513,43 @@ def test_runs_endpoint_describes_the_tree(served):
     assert run["experiment"]["cases"] == 2
     assert run["report"]["failing"] == 1
     assert run["link"]["status"] == "verified"
+
+
+def test_runs_endpoint_reports_optimizer_runs_alongside_experiments(served):
+    root, request, _ = served
+    _optimizer_run(root / "opt", {"event": "config"}, {"event": "stop", "reason": "budget"})
+
+    status, body = request("GET", "/api/runs")
+
+    assert status == HTTPStatus.OK
+    assert len(body["runs"]) == 1  # the optimizer run is a different kind of thing, not an extra run
+    assert [r["dir"] for r in body["optimizer_runs"]] == ["opt"]
+    assert body["optimizer_runs"][0]["stop_reason"] == "budget"
+
+
+def test_events_endpoint_returns_the_log(served):
+    root, request, _ = served
+    _optimizer_run(root / "opt", {"event": "config"}, {"event": "trial", "record": {"status": "completed"}})
+
+    status, body = request("GET", "/api/events?path=opt/events.jsonl")
+
+    assert status == HTTPStatus.OK
+    assert [e["event"] for e in body["events"]] == ["config", "trial"]
+    assert (body["bad_lines"], body["truncated"]) == ([], False)
+
+
+def test_events_endpoint_refuses_to_leave_the_root(served):
+    _, request, _ = served
+    status, body = request("GET", "/api/events?path=../../etc/passwd")
+    assert status == HTTPStatus.FORBIDDEN
+    assert "outside" in body["error"]
+
+
+def test_events_endpoint_reports_a_missing_log(served):
+    _, request, _ = served
+    status, body = request("GET", "/api/events?path=nowhere/events.jsonl")
+    assert status == HTTPStatus.NOT_FOUND
+    assert "not a file" in body["error"]
 
 
 def test_file_endpoint_refuses_to_leave_the_root(served):
