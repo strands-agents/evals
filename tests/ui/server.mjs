@@ -104,9 +104,9 @@ try {
   ok($$('#opt-obj-chart circle').length === 8, 'one mark per scored proposal',
     $$('#opt-obj-chart circle').length);
   ok($$('#opt-rows tr').length === 11, 'a row per proposal', $$('#opt-rows tr').length);
-  ok($$('#opt-metric-charts .chart').length === 2 && $$('#opt-usage-charts .chart').length === 3,
-    'the per-metric and per-iteration cost panels are derived from the fetched log too',
-    `${$$('#opt-metric-charts .chart').length} metric, ${$$('#opt-usage-charts .chart').length} usage`);
+  ok($$('#opt-metric-chart circle').length === 8 && $$('#opt-usage-chart rect.col').length === 6,
+    'the metric and cost charts are derived from the fetched log too',
+    `${$$('#opt-metric-chart circle').length} marks, ${$$('#opt-usage-chart rect.col').length} columns`);
   ok(text('#path') === 'tuning/events.jsonl', 'the path bar names the log it read', text('#path'));
   await click('.tab[data-view="runs"]');
 

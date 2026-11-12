@@ -277,6 +277,21 @@
     background: var(--card); border: 1px solid var(--hair); border-radius: 10px; padding: 14px 16px 10px;
   }
   .chart h3 { margin: 0 0 2px; font-size: 13px; font-weight: 600; color: var(--ink1); }
+  .chead { display: flex; align-items: center; gap: 12px; }
+  .chead h3 { flex: 1; }
+  .chead select {
+    background: var(--bg); color: var(--ink1); border: 1px solid var(--hair);
+    border-radius: 6px; padding: 3px 6px; font: inherit; font-size: 11.5px; max-width: 220px;
+  }
+  /* Everything past the two charts above is diagnostics, so it opens on request. */
+  details.drawer { border-top: 1px solid var(--hair); margin: 0; }
+  details.drawer > summary {
+    cursor: pointer; padding: 11px 2px; font-size: 12.5px; font-weight: 600; color: var(--ink1);
+  }
+  details.drawer > summary .path { font-weight: 400; margin-left: 9px; }
+  details.drawer[open] > summary { color: var(--ink2); }
+  details.drawer .charts { margin: 2px 0 16px; }
+  details.drawer .scroll { margin-bottom: 14px; }
   .chart .cap { margin: 0 0 10px; font-size: 11.5px; color: var(--ink3); line-height: 1.45; }
   .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
   .chart .empty { font-size: 12px; color: var(--ink3); padding: 18px 0 22px; }
@@ -433,7 +448,7 @@
       <h2>Optimization run</h2>
       <p class="sub" id="opt-sub"></p>
       <div class="optpick">
-        <label for="opt-run" class="path">Run</label>
+        <label for="opt-run" class="path" id="opt-run-label">Run</label>
         <select id="opt-run"></select>
         <span class="grow"></span>
         <span class="path mono" id="opt-objective"></span>
@@ -452,29 +467,60 @@
           <div id="opt-obj-chart"></div>
           <div class="legend" id="opt-obj-legend"></div>
         </div>
-        <div class="chart">
-          <h3>Rollouts spent</h3>
-          <p class="cap" id="opt-budget-cap"></p>
-          <div id="opt-budget-chart"></div>
-        </div>
-        <div class="chart">
-          <h3>Trial outcomes</h3>
-          <p class="cap" id="opt-status-cap"></p>
-          <div id="opt-status-chart"></div>
+      </div>
+      <div class="charts" id="opt-metric-wrap">
+        <div class="chart wide">
+          <div class="chead">
+            <h3>Metric by candidate</h3>
+            <select id="opt-metric-pick" aria-label="Metric to chart"></select>
+          </div>
+          <p class="cap" id="opt-metric-cap"></p>
+          <div id="opt-metric-chart"></div>
         </div>
       </div>
-      <div class="charts" id="opt-metric-charts"></div>
-      <div class="charts" id="opt-usage-charts"></div>
-      <div class="scroll">
-        <table class="rep">
-          <thead><tr>
-            <th style="width:12%">Candidate</th><th style="width:8%">Iter</th>
-            <th style="width:14%">Objective</th><th style="width:16%">Outcome</th>
-            <th style="width:16%">Changed</th><th>Why it was tried</th>
-          </tr></thead>
-          <tbody id="opt-rows"></tbody>
-        </table>
-      </div>
+
+      <!-- Diagnostics: wanted when the two charts above are surprising, not before. -->
+      <details class="drawer" id="opt-cost">
+        <summary>Cost per iteration<span class="path" id="opt-cost-sum"></span></summary>
+        <div class="charts">
+          <div class="chart wide">
+            <div class="chead">
+              <h3>Spend by iteration</h3>
+              <select id="opt-usage-pick" aria-label="Usage measure to chart"></select>
+            </div>
+            <p class="cap" id="opt-usage-cap"></p>
+            <div id="opt-usage-chart"></div>
+          </div>
+        </div>
+      </details>
+      <details class="drawer" id="opt-diag">
+        <summary>Trial outcomes and rollouts<span class="path" id="opt-diag-sum"></span></summary>
+        <div class="charts">
+          <div class="chart">
+            <h3>Trial outcomes</h3>
+            <p class="cap" id="opt-status-cap"></p>
+            <div id="opt-status-chart"></div>
+          </div>
+          <div class="chart">
+            <h3>Rollouts spent</h3>
+            <p class="cap" id="opt-budget-cap"></p>
+            <div id="opt-budget-chart"></div>
+          </div>
+        </div>
+      </details>
+      <details class="drawer" id="opt-table">
+        <summary>Every proposal<span class="path" id="opt-table-sum"></span></summary>
+        <div class="scroll">
+          <table class="rep">
+            <thead><tr>
+              <th style="width:12%">Candidate</th><th style="width:8%">Iter</th>
+              <th style="width:14%">Objective</th><th style="width:16%">Outcome</th>
+              <th style="width:16%">Changed</th><th>Why it was tried</th>
+            </tr></thead>
+            <tbody id="opt-rows"></tbody>
+          </table>
+        </div>
+      </details>
       <p class="optnote" id="opt-note"></p>
     </section>
   </main>
@@ -4312,14 +4358,21 @@
   /* ── view ── */
 
   let OPT_RUNS = [], optSel = -1, OPT = null;
+  /* Which metric and which usage measure are on screen. Kept across re-renders so switching run
+     or rescanning does not throw you back to the first metric. */
+  let optMetric = null, optUsage = null;
 
   function optStat(value, key) {
     return `<div class="stat"><span class="v">${esc(value)}</span><span class="k">${esc(key)}</span></div>`;
   }
 
-  /** One chart card. `title` and `caption` are already escaped; `body` is markup. */
-  const panel = (title, caption, body) =>
-    `<div class="chart"><h3>${title}</h3><p class="cap">${caption}</p>${body}</div>`;
+  /** Fill a picker, keeping `want` selected if it is still on offer. Returns what ended up chosen. */
+  function fillPick(id, options, want) {
+    const chosen = options.some(o => o.value === want) ? want : (options[0] || {}).value;
+    $(id).innerHTML = options.map(o =>
+      `<option value="${esc(o.value)}"${o.value === chosen ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+    return chosen;
+  }
 
   function renderOptimization() {
     const run = OPT_RUNS[optSel];
@@ -4328,8 +4381,10 @@
       $('opt-sub').textContent = OPT_RUNS.length
         ? 'Pick a run above.'
         : 'No optimizer run directory in this folder. One is a run.json with an events.jsonl beside it.';
-      ['opt-obj-chart', 'opt-budget-chart', 'opt-status-chart', 'opt-metric-charts', 'opt-usage-charts']
+      ['opt-obj-chart', 'opt-budget-chart', 'opt-status-chart', 'opt-metric-chart', 'opt-usage-chart']
         .forEach(id => { $(id).innerHTML = ''; });
+      $('opt-metric-wrap').hidden = true;
+      $('opt-cost').hidden = true;
       $('opt-rows').innerHTML = '';
       $('opt-stats').innerHTML = '';
       $('opt-best').textContent = '—';
@@ -4347,53 +4402,68 @@
       ? `Best feasible objective · ${d.bestCandidate.candidate_id}`
       : 'Best feasible objective';
 
+    /* Three figures, because the page answers one question first: did it get better, and what
+       won. Scored-against-not-scored and the trial tally are diagnostics, so they label the
+       drawers they live in instead of competing up here. */
     const champ = d.champion ? d.champion : '—';
     const stats = [
       optStat(champ, 'Champion'),
       optStat(d.maxRollouts != null ? `${d.spent} / ${d.maxRollouts}` : String(d.spent), 'Rollouts'),
-      optStat(String(d.scored.length), 'Scored'),
-      optStat(String(d.proposals.length - d.scored.length), 'Not scored'),
     ];
     // Every trial's tokens, search and end phase together: what the whole run cost.
     const tokens = d.iterations.reduce((sum, it) => sum + (it.usage.tokens || 0), 0) + (d.endPhase.tokens || 0);
     if (tokens) stats.push(optStat(compact(tokens), 'Tokens'));
     $('opt-stats').innerHTML = stats.join('');
 
-    $('opt-obj-cap').textContent = 'One mark per proposal in search order. The line is the best feasible '
-      + 'objective so far — infeasible candidates are plotted but never counted as best, and a candidate '
-      + 'that was never scored is left off the line rather than drawn as zero.';
+    $('opt-obj-cap').textContent = 'One mark per proposal in search order. '
+      + 'The line is the best feasible objective so far.';
     $('opt-obj-chart').innerHTML = objectiveChart(d);
     $('opt-obj-legend').innerHTML = ['feasible', 'infeasible', 'ineligible'].map(o =>
       `<span><i class="pt ${o}" style="background:var(--${o === 'feasible' ? 'good' : o === 'infeasible' ? 'bad' : 'ink3'})"></i>${o}</span>`
     ).join('') + (d.champion ? '<span><i style="background:var(--accent)"></i>champion</span>' : '')
       + '<span><i class="ln"></i>best feasible so far</span>';
 
+    /* One metric at a time, picked. A panel per metric put a wall of charts on screen, and they
+       are read one at a time anyway — nobody compares Helpfulness against a token count. */
+    $('opt-metric-wrap').hidden = d.metrics.length === 0;
+    if (d.metrics.length) {
+      optMetric = fillPick('opt-metric-pick', d.metrics.map(m => ({ value: m, label: m })), optMetric);
+      $('opt-metric-pick').hidden = d.metrics.length < 2;
+      $('opt-metric-cap').textContent = `The mean recorded for ${optMetric} on each candidate it was `
+        + 'measured on — the metric itself, not its contribution to the objective.';
+      $('opt-metric-chart').innerHTML = metricChart(d, optMetric);
+    }
+
+    /* Tokens, model calls and seconds are the same shape in almost every run, so they share one
+       chart and a unit picker rather than taking three panels to say it three times. */
+    $('opt-cost').hidden = d.usageKeys.length === 0;
+    if (d.usageKeys.length) {
+      optUsage = fillPick('opt-usage-pick', d.usageKeys.map(u => ({ value: u.key, label: u.label })), optUsage);
+      const unit = d.usageKeys.find(u => u.key === optUsage);
+      $('opt-usage-pick').hidden = d.usageKeys.length < 2;
+      /* Trials recorded past the last `iteration_end` belong to no finished iteration — the end
+         phase of a stopped run, or the iteration still in flight. Either way they are named rather
+         than folded into the last column, which would overstate what that iteration cost. */
+      $('opt-usage-cap').textContent = `Summed over that iteration's own trials, not cumulative`
+        + (d.endPhase.trials
+          ? `, excluding the ${plural(d.endPhase.trials, 'trial')} recorded after the last finished iteration.`
+          : '.');
+      $('opt-usage-chart').innerHTML = usageChart(d, unit.key, unit.label);
+      $('opt-cost-sum').textContent = tokens ? `${compact(tokens)} tokens` : '';
+    }
+
     $('opt-budget-cap').textContent = d.maxRollouts != null
-      ? `Cumulative rollouts after each iteration, against the ${d.maxRollouts}-rollout budget.`
-      : 'Cumulative rollouts after each iteration. The run config names no budget.';
+      ? `Cumulative, against the ${d.maxRollouts}-rollout budget.`
+      : 'Cumulative. The run config names no budget.';
     $('opt-budget-chart').innerHTML = budgetChart(d);
 
     $('opt-status-cap').textContent = 'Every recorded trial by how it ended. A trial is one case run once.';
     $('opt-status-chart').innerHTML = statusChart(d);
+    $('opt-diag-sum').textContent = plural(d.trials, 'trial');
 
-    /* A panel per metric and per usage measure the log actually carries, so a run that recorded
-       neither shows neither rather than an empty frame promising a chart. */
-    $('opt-metric-charts').innerHTML = d.metrics.map(metric => panel(
-      esc(metric) + ' by candidate',
-      `The mean the run recorded for ${esc(metric)} on each candidate it measured, in search `
-      + 'order. This is the metric itself, not its contribution to the objective.',
-      metricChart(d, metric))).join('');
-
-    /* Trials recorded past the last `iteration_end` belong to no finished iteration — the end
-       phase of a stopped run, or the iteration still in flight. Either way they are named rather
-       than folded into the last column, which would overstate what that iteration cost. */
-    const usageCap = d.endPhase.trials
-      ? `, excluding the ${plural(d.endPhase.trials, 'trial')} recorded after the last finished iteration`
-      : '';
-    $('opt-usage-charts').innerHTML = d.usageKeys.map(u => panel(
-      esc(u.label) + ' per iteration',
-      `What each iteration cost${usageCap}. Summed over that iteration's trials, not cumulative.`,
-      usageChart(d, u.key, u.label))).join('');
+    const unscored = d.proposals.length - d.scored.length;
+    $('opt-table-sum').textContent = plural(d.proposals.length, 'proposal')
+      + (unscored ? `, ${unscored} never scored` : '');
 
     const rows = d.proposals.map(p => {
       const obj = p.objective == null
@@ -4461,10 +4531,14 @@
     $('opt-run').innerHTML = OPT_RUNS.map((r, i) =>
       `<option value="${i}">${esc(r.run_id)}${r.name && r.name !== r.run_id ? ` — ${esc(r.name)}` : ''}</option>`
     ).join('');
-    $('opt-run').hidden = OPT_RUNS.length < 2;
+    // Its label goes with it, or a lone "Run" sits there labelling nothing.
+    $('opt-run').hidden = $('opt-run-label').hidden = OPT_RUNS.length < 2;
     $('opt-run').value = String(Math.max(0, optSel));
   }
   $('opt-run').onchange = e => selectOptimizerRun(Number(e.target.value));
+  // Redrawing the whole view is cheap — the log is already parsed — and keeps one render path.
+  $('opt-metric-pick').onchange = e => { optMetric = e.target.value; renderOptimization(); };
+  $('opt-usage-pick').onchange = e => { optUsage = e.target.value; renderOptimization(); };
 
   /* ══════════ boot ══════════ */
 
