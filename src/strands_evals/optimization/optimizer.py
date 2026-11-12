@@ -92,7 +92,8 @@ class Optimizer:
             feasibility_threshold: The P(met) threshold a constraint needs to count as met (not a fraction of cases);
                 held by `Criteria`.
             environment: Per-attempt resources passed to the factory by name.
-            proposals_per_iteration: Patches each proposing block returns per iteration.
+            proposals_per_iteration: Candidates per step, its full width (a step's candidates merge one
+                patch of each of its blocks). The schedule may give a step fewer (`Step.n_candidates`).
             max_workers: Parallel trials, shared by the candidates scored at once.
             rerun_passes: Max infrastructure re-run passes per candidate and phase.
             seed: Seeds the split (unless `Split(seed=)` is set), selection, TPE, and Thompson.

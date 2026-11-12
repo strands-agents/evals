@@ -80,6 +80,7 @@ def _iteration_end(log, iteration, parent, blocks, *, exhausted=(), round=None, 
         "round": round,
         "role": role,
         "blocks": blocks,
+        "n_candidates": 1,
         "proposals": [],
         "rollouts_spent": 0,
     }

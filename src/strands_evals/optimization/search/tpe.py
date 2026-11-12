@@ -32,8 +32,17 @@ class TPE(Proposer):
             seed: None uses the run seed.
             n_startup_trials: Random trials before TPE models the results; the default structure block
                 uses 2.
+
+        Raises:
+            TypeError: `seed` is not an int or None.
+            ValueError: `n_startup_trials` is not an int >= 0.
         """
-        raise NotImplementedError
+        if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool)):
+            raise TypeError(f"TPE(seed=...) must be an int or None, not {seed!r}")
+        if not isinstance(n_startup_trials, int) or isinstance(n_startup_trials, bool) or n_startup_trials < 0:
+            raise ValueError(f"TPE(n_startup_trials=...) must be an int >= 0, not {n_startup_trials!r}")
+        self.seed = seed
+        self.n_startup_trials = n_startup_trials
 
     async def propose(self, request: ProposalRequest) -> list[Patch]:
         raise NotImplementedError
@@ -46,4 +55,4 @@ class TPE(Proposer):
 
     def config(self) -> dict[str, Any]:
         """`seed` and `n_startup_trials`."""
-        raise NotImplementedError
+        return {"seed": self.seed, "n_startup_trials": self.n_startup_trials}
