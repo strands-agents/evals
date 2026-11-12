@@ -3,7 +3,8 @@ from types import SimpleNamespace
 import pytest
 
 import strands_evals.experimental.comparison.summary as summary_module
-from strands_evals.experimental.comparison import PairedScore, summarize_pairs
+from strands_evals.experimental.comparison.pairing import PairedScore
+from strands_evals.experimental.comparison.summary import summarize_pairs
 
 
 def _pair(*, case_id: str, evaluator: str, baseline: float, candidate: float) -> PairedScore:

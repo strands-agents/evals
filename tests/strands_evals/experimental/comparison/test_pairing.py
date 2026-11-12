@@ -5,14 +5,14 @@ from pydantic import ValidationError
 
 from strands_evals import Case, Experiment
 from strands_evals.evaluators import Equals, SkillSelectionAccuracyEvaluator
-from strands_evals.experimental.comparison import (
+from strands_evals.experimental.comparison.pairing import (
     PairedScore,
     PairedTrialScore,
     aggregate_trial_pairs,
     pair_report_trials,
     pair_reports,
-    summarize_pairs,
 )
+from strands_evals.experimental.comparison.summary import summarize_pairs
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
 from strands_evals.types.evaluation_report import EvaluationReport
 from strands_evals.types.trace import AgentInvocationSpan, Session, SpanInfo, Trace
