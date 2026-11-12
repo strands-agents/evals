@@ -95,7 +95,7 @@ def test_submit_reads_files_in_the_work_folder(folders):
     with open(os.path.join(folders.work, "prompt.txt"), "w") as f:
         f.write("  New prompt.\n")
     submitted = {}
-    submit = _submit_tool(folders.work, submitted, {})
+    submit = _submit_tool(folders.work, submitted, {}, [])
     out = submit(file_path_dict={"system_prompt": "prompt.txt"})
     assert out == "Parameters submitted successfully: system_prompt (11 chars)"
     assert submitted == {"system_prompt": "New prompt."}
@@ -114,7 +114,7 @@ def test_submit_takes_the_parents_trailing_whitespace(folders, parent, written, 
     with open(os.path.join(folders.work, "value.txt"), "w") as f:
         f.write(written)
     submitted = {}
-    _submit_tool(folders.work, submitted, {"prompt": parent})(file_path_dict={"prompt": "value.txt"})
+    _submit_tool(folders.work, submitted, {"prompt": parent}, [])(file_path_dict={"prompt": "value.txt"})
     assert submitted == {"prompt": expected}
 
 
@@ -127,7 +127,7 @@ def test_submit_rejects_a_file_outside_the_work_folder(folders, where):
     if where == "symlink":
         os.symlink(outside_file, os.path.join(folders.work, "link.txt"))
     submitted = {}
-    out = _submit_tool(folders.work, submitted, {})(file_path_dict={"system_prompt": path})
+    out = _submit_tool(folders.work, submitted, {}, [])(file_path_dict={"system_prompt": path})
     assert out.startswith(f"Errors:\nsystem_prompt: {path} is not in your working folder")
     assert submitted == {}
 
@@ -136,9 +136,41 @@ def test_submit_is_all_or_nothing(folders):
     with open(os.path.join(folders.work, "a.txt"), "w") as f:
         f.write("a")
     submitted = {"earlier": "kept"}
-    out = _submit_tool(folders.work, submitted, {})(file_path_dict={"a": "a.txt", "b": "missing.txt"})
+    out = _submit_tool(folders.work, submitted, {}, [])(file_path_dict={"a": "a.txt", "b": "missing.txt"})
     assert out.startswith("Errors:\nb: file not found:")
     assert submitted == {"earlier": "kept"}
+
+
+@pytest.mark.parametrize(
+    "header",
+    ["# Version 26\nrank: 1\n", "# Version 0 (the baseline)\r\nbuilt from: nothing (the start)\n"],
+)
+def test_submit_refuses_a_value_with_a_versions_header(folders, header):
+    with open(os.path.join(folders.work, "a.txt"), "w") as f:
+        f.write(f"{header}conversations: 8\n\nBe helpful.")
+    with open(os.path.join(folders.work, "b.txt"), "w") as f:
+        f.write("Searches.")
+    submitted, rejected = {"earlier": "kept"}, []
+    out = _submit_tool(folders.work, submitted, {}, rejected)(file_path_dict={"a": "a.txt", "b": "b.txt"})
+    first = header.splitlines()[0]
+    reason = (
+        f"it holds a version's header from the versions folder (`{first}` and the results below it), which is not "
+        "part of the text. Write the text alone to the file (a version's text is alone in its `.txt` file, never in "
+        "version.md) and submit it again"
+    )
+    assert out == f"Refused, nothing was submitted:\na: {reason}"
+    assert submitted == {"earlier": "kept"}
+    assert rejected == [{"a": reason}]
+
+
+@pytest.mark.parametrize("text", ["# Version 2 of the prompt\nBe brief.", "Intro.\n# Version 3\nmore", "rank: 1"])
+def test_submit_takes_a_value_that_only_looks_like_a_header(folders, text):
+    with open(os.path.join(folders.work, "a.txt"), "w") as f:
+        f.write(text)
+    submitted, rejected = {}, []
+    _submit_tool(folders.work, submitted, {}, rejected)(file_path_dict={"a": "a.txt"})
+    assert submitted == {"a": text}
+    assert rejected == []
 
 
 def test_cap_tool_output_cuts_long_text(monkeypatch):

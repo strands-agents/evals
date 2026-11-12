@@ -124,7 +124,7 @@ def test_parameter_sections():
 
 def test_folders_are_filled_in_and_braces_kept():
     message = _message()
-    assert "ls /v | head -40\ndiff /v/rank-001-version-*.md /v/rank-002-version-*.md\n" in message
+    assert "ls /v | head -40\ndiff -r /v/rank-001-version-* /v/rank-002-version-*\n" in message
     assert "cat > /w/optimized_<name>.txt << 'PARAM_EOF'\n" in message
     assert 'submit_optimized_params(file_path_dict={"<name>": "/w/optimized_<name>.txt", ...})' in message
     assert message.endswith("no multi-step task workflow, no unsupported guarantees.")
@@ -136,6 +136,19 @@ def test_a_value_is_shown_as_is():
         variables=[TextVariable(name="p", value="Use {name} and {{x}}.", edit_instructions=None, size_cap=None)]
     )
     assert '<parameter name="p">\nUse {name} and {{x}}.\n</parameter>' in message
+
+
+def test_versions_folder_layout_and_copying_a_text():
+    message = _message()
+    assert "one folder per version, named by its rank, with its results in `version.md`" in message
+    assert "to start from a version's text, copy its `<name>.txt`" in message
+
+
+def test_refused_message():
+    assert T.REFUSED.format(refusal="Refused, nothing was submitted:\na: why") == (
+        "Refused, nothing was submitted:\na: why\n\nYour turn ended with nothing submitted. Fix the file(s) in your "
+        "working folder and submit again with submit_optimized_params."
+    )
 
 
 def test_over_limit_message():

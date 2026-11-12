@@ -33,6 +33,12 @@ _MAX_TOOL_OUTPUT = 100_000
 _PRIVATE_DIRS = ("/tmp", "/private", "/home", "/Users", "/root", "/var", "/mnt", "/opt", "/srv", "/data", "/run/user")
 _PATH = re.compile(r"(?<![\w.:/~-])(/[^\s'\"|;&<>()`*?\[\]{},]*|\.\.(?=/|$|[\s'\"]))")
 
+# A version's results and other values, in its folder of the versions folder; its texts are files beside it.
+_VERSION_FILE = "version.md"
+# A version's header as the versions folder writes it, a line `# Version N` and the line below it: a submitted text
+# carrying it was copied from `version.md`, and is refused.
+_VERSION_HEADER = re.compile(r"^# Version \d+(?: \(the baseline\))?[ \t]*\r?\n(?:rank|built from): ", re.M)
+
 
 class Reflection(Proposer):
     """An agentic, contrastive proposer: complete new text values for its block.
@@ -199,9 +205,12 @@ def _confined_shell(work: str, roots: Sequence[str], refused: list[dict[str, Any
     return shell
 
 
-def _submit_tool(work: str, submitted: dict[str, str], parent: Mapping[str, Any]) -> AgentTool:
+def _submit_tool(
+    work: str, submitted: dict[str, str], parent: Mapping[str, Any], rejected: list[dict[str, str]]
+) -> AgentTool:
     """A tool that reads each submitted value from a file in `work` (real path checked) into `submitted`; all or
-    nothing: one bad file and nothing is submitted.
+    nothing: one bad file, or one value carrying a version's header (`_VERSION_HEADER`), and nothing is submitted.
+    Each refused submission is appended to `rejected` (value name -> why), and the agent is told why.
 
     Each value is stripped, then given the trailing whitespace of the parent's value under that key, so a file's
     final newline survives: an unchanged rewrite equals the parent's value, and the diff doesn't show a changed last
@@ -236,6 +245,19 @@ def _submit_tool(work: str, submitted: dict[str, str], parent: Mapping[str, Any]
                 errors.append(f"{key}: error reading {full}: {e}")
         if errors:
             return "Errors:\n" + "\n".join(errors)
+        reasons = {}
+        for key, value in values.items():
+            found = _VERSION_HEADER.search(value)
+            if found is not None:
+                first = found.group(0).splitlines()[0].strip()
+                reasons[key] = (
+                    f"it holds a version's header from the versions folder (`{first}` and the results below it), "
+                    f"which is not part of the text. Write the text alone to the file (a version's text is alone in "
+                    f"its `.txt` file, never in {_VERSION_FILE}) and submit it again"
+                )
+        if reasons:
+            rejected.append(reasons)
+            return "Refused, nothing was submitted:\n" + "\n".join(f"{k}: {r}" for k, r in reasons.items())
         submitted.clear()
         submitted.update(values)
         summary = ", ".join(f"{k} ({len(v)} chars)" for k, v in values.items())

@@ -1,5 +1,5 @@
-"""Reflection prompt template v0: the system prompt, the submit instructions, the task message, and the message for
-values over their limits.
+"""Reflection prompt template v0: the system prompt, the submit instructions, the task message, and the messages for
+values over their limits and for a refused submission.
 
 Uses `str.format` and plain Python for the parts that vary.
 """
@@ -72,6 +72,13 @@ OVER_LIMIT = (
     "folder again, and submit with submit_optimized_params."
 )
 
+# Sent in the same conversation when the agent's turn ended with nothing accepted and its last submission refused
+# (a value carrying a version's header): `refusal` is what the submit tool answered.
+REFUSED = (
+    "{refusal}\n\nYour turn ended with nothing submitted. Fix the file(s) in your working folder and submit again with "
+    "submit_optimized_params."
+)
+
 _TASK_OPENING = """\
 Write a new version of the parameters below, so that the agent does better on this study's goal. You have two kinds \
 of evidence: the versions measured so far, and the current version's conversations.
@@ -98,7 +105,7 @@ Read the table above. Compare the texts of higher-ranked versions with lower-ran
 it was built from: what do the versions that did well say, or leave out?
 ```bash
 ls {versions_folder} | head -40
-diff {versions_folder}/rank-001-version-*.md {versions_folder}/rank-002-version-*.md
+diff -r {versions_folder}/rank-001-version-* {versions_folder}/rank-002-version-*
 ```
 
 **Step 2: Check the traces' sizes**
@@ -151,7 +158,8 @@ whole task belongs in the text that governs the whole task.
 
 Write each parameter you change in full: you may add, rewrite, reorder, shorten or remove anything. Change only what \
 the evidence gives you a reason to change, and at least one parameter. Write each changed parameter's complete new \
-value to its own file in your working folder:
+value, and nothing else, to its own file in your working folder (to start from a version's text, copy its \
+`<name>.txt`; a value that carries a version's header from `version.md` is refused):
 ```bash
 cat > {work_folder}/optimized_<name>.txt << 'PARAM_EOF'
 [the complete new value]
@@ -282,8 +290,9 @@ def task_message(
     parts.append(
         f"{len(versions)} versions, best first for this study's goal{limits_note}. Each version's results are its "
         "means over all of its conversations. The current version (marked ←) is the one whose conversations are in "
-        f"the trajectory folder. Each version's parameters, in full, are in `{versions_folder}`: one file per "
-        "version, named by its rank.\n\n"
+        f"the trajectory folder. Each version's parameters, in full, are in `{versions_folder}`: one folder per "
+        "version, named by its rank, with its results in `version.md` and each parameter alone in a file of its own "
+        "(`<name>.txt`, listed in `version.md`).\n\n"
     )
     limits_column = "Meets the limits | " if limits else ""
     parts.append(
