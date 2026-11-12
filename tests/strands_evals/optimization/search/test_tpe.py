@@ -330,6 +330,40 @@ def test_a_structure_block_has_one_study_whatever_the_other_choices():
     assert len([t for t in study.trials if t.state.name == "COMPLETE"]) == 2
 
 
+def test_the_rationale_counts_only_the_trials_the_sampler_models_on():
+    space = numbers_space()
+    tpe = TPE(n_startup_trials=1)
+    (patch,) = propose(tpe, request(space, ["x"]))
+    tpe.observe(told(patch, space.complete(patch.updates), None, outcome="ineligible"))  # a FAIL trial
+    (patch,) = propose(tpe, request(space, ["x"], iteration=2))
+    assert patch.rationale == "TPE: random startup"
+    tpe.observe(told(patch, space.complete(patch.updates), 0.5))
+    (patch,) = propose(tpe, request(space, ["x"], iteration=3))
+    assert patch.rationale == "TPE: modeled on 1 told trials"
+
+
+def test_a_told_value_outside_the_options_names_the_key():
+    space = numbers_space()
+    tpe = TPE()
+    tpe.evidence(evidence({**space.complete({}), "mode": "gone"}, 0.5))
+    with pytest.raises(ValueError, match="'gone' for 'mode'"):
+        propose(tpe, request(space, ["mode"]))
+
+
+def test_each_told_trials_context_is_computed_once(monkeypatch):
+    from strands_evals.optimization.search import tpe as tpe_module
+
+    space = structured_space()
+    tpe = TPE()
+    tpe.evidence(evidence(space.complete({"manager": "window"}), 0.9))
+    tpe.evidence(evidence(space.complete({"manager": "summary"}), 0.2))
+    calls = []
+    context_of = tpe_module._context_of
+    monkeypatch.setattr(tpe_module, "_context_of", lambda *args: calls.append(args[2]) or context_of(*args))
+    propose(tpe, request(space, ["temperature"], n=3))
+    assert len(calls) == 1 + 2  # the parent's, then each told trial's once across the three asks
+
+
 def test_under_pareto_the_study_is_told_each_terms_value():
     space = numbers_space()
     criteria = Criteria(Pareto(Maximize("Score"), Minimize("Cost")), [], REGISTRY)

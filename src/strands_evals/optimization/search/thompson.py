@@ -102,13 +102,8 @@ class Thompson(Proposer):
             picks = rng.choice(len(ids), size=self.MAX_COMBINATIONS, replace=False)
             ids = [ids[i] for i in sorted(picks)]
 
-        def agrees(values: Values, ref: Mapping[str, Value], *, partial: bool) -> bool:
-            """`values` hold `ref`'s values, typed (`1` is not `True`); `partial`: only the keys both have."""
-            shared = [k for k in ref if k in values] if partial else list(ref)
-            return _key(values, shared) == _key(ref, shared)
-
         eligible = [c for c in request.candidates if c.is_eligible]  # in ranking order
-        measured = {_key(c.values, keys) for c in eligible if agrees(c.values, held, partial=True)}
+        measured = {_key(c.values, keys) for c in eligible if _agrees(c.values, held, partial=True)}
         held_key = _key(held, sorted(held))
         proposed = {p.combination for p in self._pending if p.held == held_key}
         fit = request.fit if request.fit is not None and not request.fit.flagged else None
@@ -120,7 +115,7 @@ class Thompson(Proposer):
         templates: list[Values] = []
         if fit is not None:
             for i in ids:
-                made = next((c for c in eligible if agrees(c.values, combinations[i], partial=False)), None)
+                made = next((c for c in eligible if _agrees(c.values, combinations[i], partial=False)), None)
                 templates.append(made.values if made else space.complete({**held, **combinations[i]}, fill=inherit))
 
         objective = request.criteria.objective
@@ -171,6 +166,12 @@ class Thompson(Proposer):
 def _key(values: Values, keys: Sequence[str]) -> tuple[tuple[str, str, str], ...]:
     """The block's active keys and values in `values`, typed, so `1` and `True` stay apart."""
     return tuple((k, type(values[k]).__name__, repr(values[k])) for k in keys if k in values)
+
+
+def _agrees(values: Values, ref: Mapping[str, Value], *, partial: bool) -> bool:
+    """`values` hold `ref`'s values, typed (`1` is not `True`); `partial`: only the keys both have."""
+    shared = [k for k in ref if k in values] if partial else list(ref)
+    return _key(values, shared) == _key(ref, shared)
 
 
 def _score(

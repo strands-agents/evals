@@ -87,6 +87,8 @@ class TPE(Proposer):
         self.seed = seed
         self.n_startup_trials = n_startup_trials
         self._told: list[_Told] = []
+        # each told trial's context, computed once (a block's space and keys never change)
+        self._contexts: list[str] = []
         self._pending: list[_Pending] = []
 
     async def propose(self, request: ProposalRequest) -> list[Patch]:
@@ -128,7 +130,7 @@ class TPE(Proposer):
                 current[k] = updates[k]
             if not updates:
                 return []
-            told = sum(1 for t in study.trials if t.state != TrialState.RUNNING)
+            told = sum(1 for t in study.trials if t.state == TrialState.COMPLETE)  # what the sampler counts
             phase = "random startup" if told < self.n_startup_trials else f"modeled on {told} told trials"
             patch = Patch(updates=updates, rationale=f"TPE: {phase}", state={"context": context})
             self._pending.append(_Pending(context, params, patch))
@@ -195,8 +197,9 @@ class TPE(Proposer):
                 study = optuna.create_study(direction="maximize", sampler=sampler)
         finally:
             optuna.logging.set_verbosity(verbosity)
-        for told in self._told:
-            if _context_of(space, keys, told.values) != context:
+        self._contexts.extend(_context_of(space, keys, t.values) for t in self._told[len(self._contexts) :])
+        for told, told_context in zip(self._told, self._contexts, strict=True):
+            if told_context != context:
                 continue
             params = {k: _internal(space.param(k), told.values[k]) for k in keys if k in told.values}
             if not params:
@@ -258,8 +261,15 @@ def _distribution(info: ParamInfo) -> Any:
 
 
 def _internal(info: ParamInfo, value: Value) -> Any:
-    """`value` as the trial holds it: a number as is, an option by its position (type and value must match)."""
+    """`value` as the trial holds it: a number as is, an option by its position (type and value must match).
+
+    Raises:
+        ValueError: `value` is none of the key's options.
+    """
     if info.kind in ("int", "float"):
         return value
     assert info.options is not None
-    return next(i for i, o in enumerate(info.options) if type(o) is type(value) and o == value)
+    position = next((i for i, o in enumerate(info.options) if type(o) is type(value) and o == value), None)
+    if position is None:
+        raise ValueError(f"TPE was told {value!r} for {info.key!r}, which is none of its options {info.options!r}")
+    return position
