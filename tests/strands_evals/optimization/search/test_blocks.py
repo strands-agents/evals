@@ -1,6 +1,7 @@
 import copy
 import random
 import warnings
+from types import SimpleNamespace
 
 import pytest
 from strands import tool
@@ -191,8 +192,7 @@ async def test_reflection_warns_once_when_it_first_proposes():
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         for _ in range(2):
-            with pytest.raises(NotImplementedError):
-                await reflection.propose(None)
+            assert await reflection.propose(SimpleNamespace(n=0)) == []  # a request asking for nothing
     assert len([w for w in caught if "not a sandbox" in str(w.message)]) == 1
 
 

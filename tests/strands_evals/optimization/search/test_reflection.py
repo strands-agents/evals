@@ -1,6 +1,7 @@
-"""Tests for `Reflection`'s tools: the confined shell, the submit tool, and the tool output cap."""
+"""Tests for `Reflection`'s tools (the confined shell, the submit tool, the output cap) and its case-name screen."""
 
 import os
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,7 @@ from strands_evals.optimization.search.reflection import (
     Reflection,
     _cap_tool_output,
     _confined_shell,
+    _leak,
     _outside,
     _submit_tool,
 )
@@ -91,6 +93,29 @@ def test_shell_stops_a_command_at_its_timeout(folders):
     assert shell(command="sleep 5", timeout=1) == "Stopped after 1 seconds."
 
 
+def test_shell_kills_what_a_timed_out_command_started(folders):
+    """A child of `bash` (not exec'd: `cd . &&`) dies with it, so its file is never written."""
+    shell = _confined_shell(folders.work, folders.roots, [])
+    assert shell(command="cd . && (sleep 2; touch late.txt)", timeout=1) == "Stopped after 1 seconds."
+    time.sleep(2.5)
+    assert not os.path.exists(os.path.join(folders.work, "late.txt"))
+
+
+def test_shell_returns_when_bash_exits_and_kills_a_background_process(folders):
+    shell = _confined_shell(folders.work, folders.roots, [])
+    started = time.monotonic()
+    out = shell(command="(sleep 2; touch late.txt) & echo started", timeout=30)
+    assert time.monotonic() - started < 1.5
+    assert out == "started\n\n[exit code 0]"
+    time.sleep(2.5)
+    assert not os.path.exists(os.path.join(folders.work, "late.txt"))
+
+
+def test_shell_replaces_output_that_is_not_utf8(folders):
+    shell = _confined_shell(folders.work, folders.roots, [])
+    assert shell(command=r"printf 'ok \xe2\x82'; printf '\xff' >&2") == "ok �\n[stderr]\n�\n[exit code 0]"
+
+
 def test_submit_reads_files_in_the_work_folder(folders):
     with open(os.path.join(folders.work, "prompt.txt"), "w") as f:
         f.write("  New prompt.\n")
@@ -108,6 +133,11 @@ def test_submit_reads_files_in_the_work_folder(folders):
         ("Old.\n\n", "  New.  \n", "New.\n\n"),  # the parent's trailing whitespace, whatever it is
         ("Old.", "New.\n", "New."),  # no trailing whitespace in the parent: none added
         ("Same text.\n", "Same text.\n", "Same text.\n"),  # an unchanged rewrite equals the parent's value
+        ("\n  Indented.\n", "Indented, again.", "\n  Indented, again.\n"),  # leading whitespace too
+        ("\n  Indented.\n", "\n  Indented.\n", "\n  Indented.\n"),  # unchanged, whatever its edges
+        ("\n", "", "\n"),  # a parent of whitespace alone: an empty rewrite is unchanged
+        ("\n", "Text.", "Text.\n"),
+        ("Old.\n", "", "\n"),  # an empty value is kept (validation decides)
     ],
 )
 def test_submit_takes_the_parents_trailing_whitespace(folders, parent, written, expected):
@@ -219,3 +249,13 @@ def test_observe_keeps_nothing():
     proposer = Reflection()
     assert proposer.observe(SimpleNamespace()) is None
     assert proposer.refused == []
+
+
+@pytest.mark.parametrize("name", ["order-123", "case_7", "RefundFlow", "getUser", "HTTPServer"])
+def test_leak_screens_an_identifier_like_case_name(name):
+    assert _leak(f"Handle {name} first.", "", [name], []) == f"adds the name of a shown case, {name!r}"
+
+
+@pytest.mark.parametrize("name", ["refund", "Refund", "API", "FAQ", "OK"])
+def test_leak_skips_plain_words_and_acronyms(name):
+    assert _leak(f"Handle {name} first.", "", [name], []) is None

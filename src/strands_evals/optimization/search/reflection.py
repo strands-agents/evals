@@ -8,21 +8,36 @@ import logging
 import math
 import os
 import re
+import signal
 import subprocess
+import tempfile
+import time
 import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
-from strands import tool
+from botocore.config import Config as BotocoreConfig
+from strands import Agent, tool
+from strands.agent.conversation_manager import SlidingWindowConversationManager
 from strands.hooks.events import AfterToolCallEvent
-from strands.models.model import Model
+from strands.models.bedrock import BedrockModel
+from strands.models.model import CacheConfig, Model
 from strands.types.tools import AgentTool
 
-from ...types.optimization import CandidateSummary, Observation, Patch, TrialRecord, TrialStatus
+from ...types.optimization import CandidateSummary, Observation, Patch, TrialRecord, TrialStatus, Usage, Value
 from ...types.trace import AgentInvocationSpan, InferenceSpan, Session, ToolCallContent, ToolResultContent
 from ..declaration.space import ParamKind
-from ..prompt_templates.reflection.reflection_v0 import VersionRow
+from ..execution.status import classify
+from ..prompt_templates.reflection.reflection_v0 import (
+    REFUSED,
+    SUBMIT_INSTRUCTIONS,
+    TextVariable,
+    VersionRow,
+    over_limit_message,
+    system_prompt,
+    task_message,
+)
 from ..scoring.objectives import AtLeast, AtMost, Maximize, Pareto, WeightedSum
 from .proposer import ProposalRequest, Proposer
 
@@ -48,6 +63,11 @@ _VERSION_HEADER = re.compile(r"^# Version \d+(?: \(the baseline\))?[ \t]*\r?\n(?
 # each one went.
 _DIGEST_CHARS = 20_000
 _DIGEST_FILE = "DIGEST.md"
+
+_ATTEMPTS = 4  # the agent's first try, then 3 retries
+_RATIONALE_CHARS = 2_000
+_FALLBACK_RATIONALE = "rewritten by Reflection"  # when the agent's first call ends with no text
+_VERBATIM_CHARS = 40  # a run this long copied from a shown trial is a leak
 
 
 class Reflection(Proposer):
@@ -91,7 +111,8 @@ class Reflection(Proposer):
         Args:
             model: The proposer's model; None means Claude Sonnet 5.5 on Bedrock
                 (`global.anthropic.claude-sonnet-5-5`) at temperature 1.0.
-            system_prompt: Replaces the default prompt.
+            system_prompt: Replaces the default prompt; each literal `{work_folder}` in it becomes the agent's
+                working folder (the only folder it may write in). The submit instructions are appended either way.
             success_threshold: Reward a trial needs to count as a success; None splits by rank.
             over_limit_retries: How many times a submission with a value over its `size_cap` is sent back to be
                 shortened; 0 drops it at once.
@@ -125,7 +146,12 @@ class Reflection(Proposer):
         self._warned = False
 
     async def propose(self, request: ProposalRequest) -> list[Patch]:
-        """Warns once per instance, on the first call, that the shell is not a sandbox."""
+        """Up to `request.n` patches, one agent each, one after another (the optimizer calls a concurrent proposer
+        with n=1, several at once). Warns once per instance, on the first call, that the shell is not a sandbox.
+
+        Raises:
+            Exception: The agent failed `_ATTEMPTS` times and the last error is infrastructure (`classify`).
+        """
         if not self._warned:
             self._warned = True
             warnings.warn(
@@ -136,7 +162,161 @@ class Reflection(Proposer):
                 UserWarning,
                 stacklevel=2,
             )
-        raise NotImplementedError
+        patches = []
+        for _ in range(request.n):
+            patch = await self._propose_one(request)
+            if patch is not None:
+                patches.append(patch)
+        return patches
+
+    async def _propose_one(self, request: ProposalRequest) -> Patch | None:
+        """One agent over fresh folders: the evidence, the conversation (with its send-backs), then the guardrails.
+        None when there is nothing to learn from, nothing usable was submitted, or every value was dropped."""
+        keys = list(request.keys)
+        parent = dict(request.parent.values)
+        with (
+            tempfile.TemporaryDirectory(prefix="reflection_traces_") as traces,
+            tempfile.TemporaryDirectory(prefix="reflection_versions_") as versions,
+            tempfile.TemporaryDirectory(prefix="reflection_work_") as work,
+        ):
+            evidence = _build_evidence(request, self.success_threshold, traces, versions)
+            if evidence is None:
+                return None
+            prompt = (
+                system_prompt(work) if self.system_prompt is None else self.system_prompt.replace("{work_folder}", work)
+            )
+            message = task_message(
+                versions=evidence.versions,
+                versions_folder=versions,
+                goal_metrics=evidence.goal_metrics,
+                limits=evidence.limits,
+                traces_folder=traces,
+                digest_file=evidence.digest_file,
+                label_metrics=evidence.label_metrics,
+                label_ranked=evidence.label_ranked,
+                judged_by_version=evidence.judged_by_version,
+                variables=[
+                    TextVariable(
+                        name=k,
+                        value=str(parent.get(k, "")),
+                        edit_instructions=request.space.param(k).edit_instructions,
+                        size_cap=request.space.param(k).size_cap,
+                    )
+                    for k in keys
+                ],
+                work_folder=work,
+            )
+            caps = {k: request.space.param(k).size_cap for k in keys}
+            usage = Usage.zero()
+            refused: list[dict[str, Any]] = []
+            rejected: list[dict[str, str]] = []
+            for attempt in range(_ATTEMPTS):
+                submitted: dict[str, str] = {}
+                agent = Agent(
+                    model=self._model(),
+                    system_prompt=prompt + SUBMIT_INSTRUCTIONS,
+                    tools=[
+                        _confined_shell(work, [traces, versions, work], refused),
+                        _submit_tool(work, submitted, parent, rejected),
+                    ],
+                    # Strands' 40-message window, trimmed at the end of each call and on overflow, with the task
+                    # message pinned: a send-back after a long first turn would otherwise go without it.
+                    conversation_manager=SlidingWindowConversationManager(pin_first=1),
+                    callback_handler=None,
+                )
+                agent.add_hook(_cap_tool_output, AfterToolCallEvent)
+                started = time.monotonic()
+                try:
+                    params, rationale, revised = await self._converse(agent, message, submitted, caps, rejected)
+                    break
+                except Exception as error:  # noqa: BLE001 - any failure of the agent is retried, then judged
+                    if attempt == _ATTEMPTS - 1:
+                        self.refused.extend(refused)
+                        if classify(error) is TrialStatus.INFRASTRUCTURE_INVALID:
+                            raise
+                        logger.warning("Reflection gave up after %d attempts: %s", _ATTEMPTS, error)
+                        return None
+                    request.log("proposer_retry", error_type=type(error).__name__, error=str(error)[:2000])
+                finally:
+                    usage = usage + _agent_usage(agent, time.monotonic() - started, self._model_id())
+            self.refused.extend(refused)
+            updates, dropped = _guard(request, params or {}, keys, parent)
+        if not updates:
+            return None
+        state = {
+            "trials": evidence.trials,
+            "versions": len(evidence.versions),
+            "revised": revised,
+            "dropped": dropped,
+            "rejected": [{"name": k, "reason": r[:300]} for reasons in rejected for k, r in reasons.items()][:10],
+            "refused": refused[:10],
+            "digest": {
+                "sha256": hashlib.sha256(evidence.digest_text.encode()).hexdigest(),
+                "chars": len(evidence.digest_text),
+                "failing_cases": evidence.failing_cases,
+            },
+        }
+        return Patch(updates=dict[str, Value](updates), rationale=rationale, state=state, usage=usage)
+
+    async def _converse(
+        self,
+        agent: Agent,
+        message: str,
+        submitted: dict[str, str],
+        caps: Mapping[str, int | None],
+        rejected: list[dict[str, str]],
+    ) -> tuple[dict[str, str] | None, str, list[dict[str, int]]]:
+        """Send the task message, then send back, in the same conversation and up to `over_limit_retries` times, a
+        submission with values over their `size_cap` (`over_limit_message`) or a turn that ended with nothing
+        accepted on a refused submission (`REFUSED`); each new submission replaces the values it gives.
+
+        Returns:
+            What was submitted (None for nothing), the rationale (the first call's final text, capped at
+            `_RATIONALE_CHARS`; `_FALLBACK_RATIONALE` when it has none), and the lengths sent back to be shortened.
+        """
+        before = len(rejected)
+        result = await agent.invoke_async(message)
+        rationale = (str(result).strip() or _FALLBACK_RATIONALE)[:_RATIONALE_CHARS]
+        params: dict[str, str] | None = dict(submitted) or None
+        submitted.clear()
+        revised: list[dict[str, int]] = []
+        for _ in range(self.over_limit_retries):
+            over = {
+                k: (len(v), cap) for k, v in (params or {}).items() if (cap := caps.get(k)) is not None and len(v) > cap
+            }
+            if params and over:
+                revised.append({k: n for k, (n, _) in over.items()})
+                text = over_limit_message(over)
+            elif not params and len(rejected) > before:
+                refusal = "Refused, nothing was submitted:\n" + "\n".join(f"{k}: {r}" for k, r in rejected[-1].items())
+                text = REFUSED.format(refusal=refusal)
+            else:
+                break
+            before = len(rejected)
+            await agent.invoke_async(text)
+            if submitted:
+                params = {**(params or {}), **submitted}
+                submitted.clear()
+        return params, rationale, revised
+
+    def _model(self) -> Model:
+        """The proposer's model: the given `Model`, else Bedrock at temperature 1.0, streaming, with prompt caching
+        (the agent rereads its whole conversation every turn; a cache point covers everything before it, the tool
+        definitions included) and adaptive retries."""
+        if isinstance(self.model, Model):
+            return self.model
+        return BedrockModel(
+            model_id=self.model if isinstance(self.model, str) else _DEFAULT_MODEL_ID,
+            temperature=1.0,
+            streaming=True,
+            cache_config=CacheConfig(strategy="auto"),
+            boto_client_config=BotocoreConfig(
+                retries={"max_attempts": 3, "mode": "adaptive"}, connect_timeout=256, read_timeout=256
+            ),
+        )
+
+    def _model_id(self) -> str | None:
+        return self.config()["model"]
 
     def observe(self, observation: Observation) -> None:
         """Nothing to keep: the versions table in each request is the history."""
@@ -183,7 +363,11 @@ def _outside(command: str, roots: Sequence[str], cwd: str) -> list[str]:
 def _confined_shell(work: str, roots: Sequence[str], refused: list[dict[str, Any]]) -> AgentTool:
     """A shell tool that runs each command with `bash -c` in `work` (also `HOME` and `TMPDIR`), with this process's
     environment otherwise, and refuses a command naming a path outside `roots` (`_outside`), appending it to
-    `refused`."""
+    `refused`.
+
+    Each command runs in its own process group, killed when `bash` exits or its timeout passes, so a process it left
+    in the background neither holds the call open until the timeout nor outlives it. Output that isn't valid UTF-8
+    (a `head -c` cutting a character) is decoded with replacement characters."""
 
     @tool
     def shell(command: str, timeout: int = 300) -> str:
@@ -203,14 +387,27 @@ def _confined_shell(work: str, roots: Sequence[str], refused: list[dict[str, Any
                 f"folders and write only in your working folder, {work}."
             )
         env = {**os.environ, "HOME": work, "TMPDIR": work}
-        try:
-            done = subprocess.run(
-                ["bash", "-c", command], cwd=work, env=env, capture_output=True, text=True, timeout=timeout
+        # Files, not pipes: a background process holding a pipe open would keep the call waiting until it exits.
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            process = subprocess.Popen(
+                ["bash", "-c", command], cwd=work, env=env, stdout=out, stderr=err, start_new_session=True
             )
-        except subprocess.TimeoutExpired:
-            return f"Stopped after {timeout} seconds."
-        err = f"\n[stderr]\n{done.stderr}" if done.stderr else ""
-        return f"{done.stdout}{err}\n[exit code {done.returncode}]"
+            try:
+                code = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                return f"Stopped after {timeout} seconds."
+            finally:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except OSError:  # the group already exited
+                    pass
+                process.wait()
+            out.seek(0)
+            err.seek(0)
+            stdout = out.read().decode("utf-8", errors="replace")
+            stderr = err.read().decode("utf-8", errors="replace")
+        tail = f"\n[stderr]\n{stderr}" if stderr else ""
+        return f"{stdout}{tail}\n[exit code {code}]"
 
     return shell
 
@@ -222,9 +419,9 @@ def _submit_tool(
     nothing: one bad file, or one value carrying a version's header (`_VERSION_HEADER`), and nothing is submitted.
     Each refused submission is appended to `rejected` (value name -> why), and the agent is told why.
 
-    Each value is stripped, then given the trailing whitespace of the parent's value under that key, so a file's
-    final newline survives: an unchanged rewrite equals the parent's value, and the diff doesn't show a changed last
-    line.
+    Each value is stripped (a shell's `echo` and heredocs add a newline the agent didn't mean), then given the leading
+    and trailing whitespace of the parent's value under that key, so a file's final newline survives: an unchanged
+    rewrite equals the parent's value, and the diff doesn't show a changed first or last line.
     """
 
     @tool
@@ -245,10 +442,14 @@ def _submit_tool(
                 errors.append(f"{key}: {path} is not in your working folder; write it in {work} and submit that")
                 continue
             try:
-                with open(full) as f:
+                with open(full, encoding="utf-8") as f:
                     value = f.read().strip()
                 held = parent.get(key)
-                values[key] = value + held[len(held.rstrip()) :] if isinstance(held, str) else value
+                if isinstance(held, str) and held.strip():
+                    value = held[: len(held) - len(held.lstrip())] + value + held[len(held.rstrip()) :]
+                elif isinstance(held, str):
+                    value += held  # a parent of whitespace alone: kept after the new text, so "" stays unchanged
+                values[key] = value
             except FileNotFoundError:
                 errors.append(f"{key}: file not found: {full}")
             except Exception as e:
@@ -306,6 +507,7 @@ class _Evidence:
         label_ranked: Whether the reward is a rank among the parent's trials.
         judged_by_version: Goal metrics left out of the reward, judged on whole versions.
         trials: How many trace files were written.
+        failing_cases: How many cases the digest lists as not succeeding.
     """
 
     versions: list[VersionRow]
@@ -317,6 +519,7 @@ class _Evidence:
     label_ranked: bool
     judged_by_version: list[str]
     trials: int
+    failing_cases: int
 
 
 def _build_evidence(
@@ -332,8 +535,9 @@ def _build_evidence(
         return None
     rows = _write_traces(traces_folder, request, rewards)
     digest_file = os.path.join(traces_folder, _DIGEST_FILE)
-    text = _digest_text(rows, 0.5 if success_threshold is None else success_threshold, _DIGEST_CHARS)
-    with open(digest_file, "w") as f:
+    threshold = 0.5 if success_threshold is None else success_threshold
+    text = _digest_text(rows, threshold, _DIGEST_CHARS)
+    with open(digest_file, "w", encoding="utf-8") as f:
         f.write(text)
     goal = list(request.criteria.goal_metrics)
     return _Evidence(
@@ -346,6 +550,7 @@ def _build_evidence(
         label_ranked=label_ranked,
         judged_by_version=[m for m in goal if m not in label_metrics],
         trials=len(rewards),
+        failing_cases=len({r["case"] for r in rows if r["reward"] < threshold}),
     )
 
 
@@ -484,7 +689,7 @@ def _write_traces(
             },
             "metrics": {"reward": reward, "metadata": metadata},
         }
-        with open(os.path.join(folder, f"{name}.json"), "w") as f:
+        with open(os.path.join(folder, f"{name}.json"), "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, default=str)
         calls = sum(
             1
@@ -698,9 +903,9 @@ def _write_versions(folder: str, request: ProposalRequest, goal_metrics: Sequenc
             text = c.values.get(k)
             value = "" if text is None else str(text)
             lines.append(f"- {k}: `{files[k]}` ({len(value):,} characters)")
-            with open(os.path.join(path, files[k]), "w") as f:
+            with open(os.path.join(path, files[k]), "w", encoding="utf-8") as f:
                 f.write(value)
-        with open(os.path.join(path, _VERSION_FILE), "w") as f:
+        with open(os.path.join(path, _VERSION_FILE), "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
     return rows
 
@@ -734,3 +939,89 @@ def _text_files(names: Sequence[str]) -> dict[str, str]:
             file, i = f"{stem}-{i}.txt", i + 1
         out[name] = file
     return out
+
+
+def _guard(
+    request: ProposalRequest, params: Mapping[str, str], keys: Sequence[str], parent: Mapping[str, Any]
+) -> tuple[dict[str, str], dict[str, str]]:
+    """The submitted values that become the patch, and why each other one was dropped (the parent's value kept).
+
+    In order: a key outside the block is dropped; a value equal to the parent's is left out (nothing to change); a
+    value `space.validate` refuses (over its `size_cap`, a `SKILL.md` that changes its `name`, invalid JSON) is
+    dropped; a value that leaks a shown trial (`_leak`) is dropped and logged as `screened`.
+    """
+    shown = [t for t in request.trials if t.status in (TrialStatus.COMPLETED, TrialStatus.AGENT_FAILURE)]
+    names = sorted({t.case_name for t in shown})
+    sources = [str(request.inputs.get(name, "")) for name in names]
+    for t in shown:
+        sources.append("" if t.output is None else str(t.output))
+        sources += [e.reason for e in t.evaluations.values() if e.reason]
+    updates: dict[str, str] = {}
+    dropped: dict[str, str] = {}
+    for key, value in params.items():
+        if key not in keys:
+            dropped[key] = "not one of this block's keys"
+            continue
+        if value == parent.get(key):
+            continue
+        try:
+            request.space.validate({**parent, key: value})
+        except ValueError as error:
+            dropped[key] = str(error)
+            continue
+        leak = _leak(value, parent.get(key), names, sources)
+        if leak is not None:
+            dropped[key] = leak
+            request.log("screened", key=key, reason=leak)
+            continue
+        updates[key] = value
+    return updates, dropped
+
+
+def _leak(value: str, held: Any, names: Sequence[str], sources: Sequence[str]) -> str | None:
+    """Why `value` leaks a shown trial, or None: it adds an identifier-like case name (one with a digit, `_`, `-`, or
+    `/`, or CamelCase such as "RefundFlow"; plain words such as "refund" and acronyms such as "API" are skipped) as a
+    whole word, or a run of `_VERBATIM_CHARS` characters (whitespace-normalized, case-insensitive) from a shown
+    trial's input, output, or evaluator reasons, that the parent's value `held` didn't already contain."""
+    held = held if isinstance(held, str) else ""
+    for name in names:
+        camel = re.fullmatch(r"(?=.*[a-z])[A-Za-z][a-z0-9]*(?:[A-Z][a-z0-9]*)+", name)
+        if not re.search(r"[\d_/-]", name) and not camel:
+            continue
+        word = re.compile(rf"(?<![\w-]){re.escape(name)}(?![\w-])")
+        if word.search(value) and not word.search(held):
+            return f"adds the name of a shown case, {name!r}"
+
+    def normal(text: str) -> str:
+        return " ".join(text.split()).lower()
+
+    n = _VERBATIM_CHARS
+    new, old = normal(value), normal(held)
+    runs = {new[i : i + n] for i in range(len(new) - n + 1)} - {old[i : i + n] for i in range(len(old) - n + 1)}
+    if runs:
+        for source in sources:
+            text = normal(source)
+            for i in range(len(text) - n + 1):
+                if text[i : i + n] in runs:
+                    return f"copies {n} characters from a shown trial verbatim: {text[i : i + n]!r}"
+    return None
+
+
+def _agent_usage(agent: Agent, seconds: float, model_id: str | None) -> Usage:
+    """The proposer agent's spend, from `event_loop_metrics` (its own spans are dropped at export): `tokens`
+    includes cache, `input_tokens` is `tokens - output_tokens`, cache tokens None when never reported, model calls
+    counted as event-loop cycles."""
+    metrics = agent.event_loop_metrics
+    used: Mapping[str, Any] = metrics.accumulated_usage
+    total, output = int(used.get("totalTokens", 0)), int(used.get("outputTokens", 0))
+    read, write = used.get("cacheReadInputTokens"), used.get("cacheWriteInputTokens")
+    return Usage(
+        tokens=total,
+        input_tokens=total - output,
+        output_tokens=output,
+        cache_read_tokens=None if read is None else int(read),
+        cache_write_tokens=None if write is None else int(write),
+        model_calls=int(metrics.cycle_count),
+        seconds=seconds,
+        models=[model_id] if model_id else [],
+    )
