@@ -292,16 +292,6 @@ def test_an_opener_that_won_its_round_is_valued_at_the_rounds_best_later():
     assert [t.values for t in study.trials] == [[0.72]]
 
 
-def test_a_source_without_its_round_is_valued_at_the_source_alone():
-    space = numbers_space()
-    tpe = TPE()
-    (patch,) = propose(tpe, request(space, ["x"]))
-    tpe.observe(told(patch, space.complete(patch.updates), 0.7, cid="o", source="r1"))
-    ranked = [summary("o", 0.9), summary("r1", 0.65)]
-    study = tpe._study_for(patch.state["context"], space, ["x"], request(space, ["x"], candidates=ranked), 0)
-    assert [t.values for t in study.trials] == [[0.65]]
-
-
 def test_a_duplicate_is_valued_at_the_existing_candidate():
     space = numbers_space()
     tpe = TPE()

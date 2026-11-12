@@ -146,8 +146,7 @@ class TPE(Proposer):
         if observation.round_candidate_ids is not None:
             members = tuple(observation.round_candidate_ids)
         else:
-            source = observation.source_id or observation.candidate_id
-            members = () if source is None else (source,)
+            members = () if observation.candidate_id is None else (observation.candidate_id,)
         self._told.append(
             _Told(observation.values, observation.objective, observation.term_values, observation.violations, members)
         )
