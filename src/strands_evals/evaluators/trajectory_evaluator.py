@@ -77,6 +77,7 @@ class TrajectoryEvaluator(Evaluator[InputT, OutputT]):
             rubric=self.rubric,
             include_inputs=self.include_inputs,
             uses_trajectory=True,
+            trajectory_description=self.trajectory_description,
         )
         result = evaluator_agent(evaluation_prompt, structured_output_model=EvaluationOutput)
         return [cast(EvaluationOutput, result.structured_output)]
@@ -99,6 +100,7 @@ class TrajectoryEvaluator(Evaluator[InputT, OutputT]):
             rubric=self.rubric,
             include_inputs=self.include_inputs,
             uses_trajectory=True,
+            trajectory_description=self.trajectory_description,
         )
         result = await evaluator_agent.invoke_async(evaluation_prompt, structured_output_model=EvaluationOutput)
         return [cast(EvaluationOutput, result.structured_output)]
