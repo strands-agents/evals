@@ -1,10 +1,10 @@
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 from pydantic import ValidationError
 
 from strands_evals import Case, Experiment
-from strands_evals.evaluators import Equals
+from strands_evals.evaluators import Equals, SkillSelectionAccuracyEvaluator
 from strands_evals.experimental.comparison import (
     PairedScore,
     PairedTrialScore,
@@ -15,6 +15,7 @@ from strands_evals.experimental.comparison import (
 )
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
 from strands_evals.types.evaluation_report import EvaluationReport
+from strands_evals.types.trace import AgentInvocationSpan, Session, SpanInfo, Trace
 
 
 def _report(rows: list[dict]) -> EvaluationReport:
@@ -48,6 +49,27 @@ def _row(
         },
         "details": details or [],
     }
+
+
+def _session() -> Session:
+    now = datetime.now(timezone.utc)
+    span_info = SpanInfo(
+        trace_id="trace",
+        span_id="span",
+        session_id="session",
+        start_time=now,
+        end_time=now,
+    )
+    span = AgentInvocationSpan(
+        span_info=span_info,
+        user_prompt="question",
+        agent_response="answer",
+        available_tools=[],
+    )
+    return Session(
+        traces=[Trace(spans=[span], trace_id="trace", session_id="session")],
+        session_id="session",
+    )
 
 
 def test_pairs_rows_by_case_and_evaluator_regardless_of_order():
@@ -515,3 +537,54 @@ def test_orders_multiple_evaluators_and_omits_always_not_applicable_rows():
         ("correctness", "case"),
         ("helpfulness", "case"),
     ]
+
+
+def test_removes_explicitly_corrupted_trials_before_pairing():
+    cases = [
+        Case(name="case-a", input="input-a", expected_output="answer-a"),
+        Case(name="case-b", input="input-b", expected_output="answer-b"),
+    ]
+
+    def run(crash_on: str | None = None) -> EvaluationReport:
+        def task(case: Case[str, str]) -> dict[str, object]:
+            if case.name == crash_on:
+                raise ConnectionError("runtime unreachable")
+            return {"output": case.expected_output, "trajectory": _session()}
+
+        experiment = Experiment(
+            cases=cases,
+            evaluators=[
+                Equals(name="equals"),
+                SkillSelectionAccuracyEvaluator(name="skill"),
+            ],
+        )
+        return experiment.run_evaluations(task)
+
+    baseline_reports = [run(), run(), run()]
+    candidate_reports = [run(), run(crash_on="case-a"), run()]
+    candidate_reports[1].cases[0].pop("input")
+
+    with pytest.raises(ValueError, match="trial 1"):
+        pair_report_trials(baseline_reports=baseline_reports, candidate_reports=candidate_reports)
+
+    pairs = pair_report_trials(
+        baseline_reports=baseline_reports,
+        candidate_reports=candidate_reports,
+        corrupted_trial_indices={1},
+    )
+    aggregated = aggregate_trial_pairs(pairs)
+
+    assert {pair.trial_index for pair in pairs} == {0, 2}
+    assert [(pair.evaluator, pair.case_id) for pair in aggregated] == [
+        ("equals", "case-a"),
+        ("equals", "case-b"),
+    ]
+
+
+def test_rejects_unknown_or_all_corrupted_trials():
+    report = _report([_row(name="case", score=0.1)])
+
+    with pytest.raises(ValueError, match="unknown trials"):
+        pair_report_trials(baseline_reports=[report], candidate_reports=[report], corrupted_trial_indices={1})
+    with pytest.raises(ValueError, match="no usable trials"):
+        pair_report_trials(baseline_reports=[report], candidate_reports=[report], corrupted_trial_indices={0})

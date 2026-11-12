@@ -3,7 +3,7 @@
 import hashlib
 import json
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from statistics import fmean
 from typing import Any
 
@@ -163,25 +163,30 @@ def pair_report_trials(
     *,
     baseline_reports: Sequence[EvaluationReport],
     candidate_reports: Sequence[EvaluationReport],
+    corrupted_trial_indices: Collection[int] = (),
 ) -> list[PairedTrialScore]:
     """Align baseline and candidate report observations across trials.
 
     Every trial must contain the same case/evaluator rows. Applicability may
     vary independently between baseline and candidate trials because repeated
     agent runs are not paired by seed or state. Each side is averaged over its
-    own applicable trials during aggregation. Returned rows retain their trial
-    and source indices.
+    own applicable trials during aggregation. Explicitly corrupted trials are
+    skipped before their reports are validated. Returned rows retain their
+    original trial and source indices.
 
     Args:
         baseline_reports: Baseline reports ordered by trial.
         candidate_reports: Candidate reports ordered by trial.
+        corrupted_trial_indices: Trial indices to remove from both report
+            sequences before validation and pairing.
 
     Returns:
         Aligned evaluator observations from every trial.
 
     Raises:
-        ValueError: If no trials are supplied, the trial counts differ, or the
-            reports are not comparable across trials.
+        ValueError: If no trials are supplied, the trial counts differ, a
+            corrupted index is unknown, no usable trials remain, or the
+            remaining reports are not comparable across trials.
     """
 
     if not baseline_reports or not candidate_reports:
@@ -192,9 +197,23 @@ def pair_report_trials(
             f"baseline={len(baseline_reports)}, candidate={len(candidate_reports)}"
         )
 
+    trial_indices = set(range(len(baseline_reports)))
+    corrupted = set(corrupted_trial_indices)
+    unknown_corrupted = corrupted - trial_indices
+    if unknown_corrupted:
+        raise ValueError(
+            "corrupted_trial_indices contain unknown trials: "
+            f"unknown={sorted(unknown_corrupted)}, valid={sorted(trial_indices)}"
+        )
+    if corrupted == trial_indices:
+        raise ValueError("no usable trials remain after removing corrupted trials")
+
     reference_row_keys: set[tuple[str, str]] | None = None
     trial_pairs: list[PairedTrialScore] = []
     for trial_index, (baseline, candidate) in enumerate(zip(baseline_reports, candidate_reports, strict=True)):
+        if trial_index in corrupted:
+            continue
+
         try:
             baseline_rows = _index_report(baseline, f"baseline trial {trial_index}")
             candidate_rows = _index_report(candidate, f"candidate trial {trial_index}")
