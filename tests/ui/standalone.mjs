@@ -12,6 +12,8 @@ ok(/standalone file/.test(text('#mode-tag')), 'mode tag names standalone', text(
 ok(/saves download/.test(text('#mode-tag')), 'mode tag says saves download', text('#mode-tag'));
 ok($('[data-act="rescan"]').hidden === true, 'Rescan hidden without a server');
 ok($('[data-act="pick"]').hidden === false, 'Open folder offered');
+ok(/showing the sample it carries/.test(text('#runs-sub')), 'says the data is the sample', text('#runs-sub'));
+ok(/Open a folder/.test(text('#runs-sub')), 'and names the way out of it', text('#runs-sub'));
 
 // ── the bundled sample is one run, and its pairing is checked not assumed ──
 const runs = $$('#runs-rows tr.run');
@@ -88,6 +90,11 @@ await openFolder({
   },
 });
 ok($$('#runs-rows tr.run').length === 1, 'opened folder lists its run', $$('#runs-rows tr.run').length);
+/* Having opened a folder, the page is reading real files. Still calling that the bundled
+   sample is the only signal a reader has that the click did anything, so it has to flip. */
+ok(!/showing the sample it carries/.test(text('#runs-sub')), 'stops claiming the sample', text('#runs-sub'));
+ok(/Reading the folder you opened/.test(text('#runs-sub')), 'confirms the folder', text('#runs-sub'));
+ok(/save as a download/.test(text('#runs-sub')), 'says where edits go', text('#runs-sub'));
 await click('#runs-rows tr.run');
 ok($$('#case-list li[data-i]').length === 3, 'three cases from the folder', $$('#case-list li[data-i]').length);
 

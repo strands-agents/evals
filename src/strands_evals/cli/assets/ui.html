@@ -2836,6 +2836,10 @@
   /* ══════════ state ══════════ */
 
   let RUNS = [], selRun = -1, skipped = [], truncated = false, folderLabel = '';
+  /* Standalone starts on the sample it carries, so the page must not keep claiming that
+     after a folder has been opened — the list is real by then, and saying otherwise is the
+     one cue a reader has that opening the folder worked. */
+  let showingSample = false;
 
   let EXP = null, expMeta = null;              // the loaded experiment document + its file
   let cases = [], orig = [], sel = 0;          // working copy, saved copy, selection
@@ -2923,7 +2927,9 @@
     $('root-path').textContent = ROOT || folderLabel || '';
     $('runs-sub').textContent = MODE === 'server'
       ? `Everything ${DEPTH != null ? DEPTH + ' levels ' : ''}under the directory the CLI was started in.`
-      : 'No server behind this page, so it is showing the sample it carries. Open a folder to read your own.';
+      : showingSample
+        ? 'No server behind this page, so it is showing the sample it carries. Open a folder to read your own.'
+        : `Reading the folder you opened${folderLabel ? ` (${folderLabel})` : ''}. Edits save as a download, not back to these files.`;
     app.querySelector('[data-act="rescan"]').hidden = MODE !== 'server';
     app.querySelector('[data-act="pick"]').hidden = MODE === 'server';
 
@@ -3713,6 +3719,7 @@
       };
       await walk(dir, '', 1);
       folderLabel = dir.name;
+      showingSample = false;
       RUNS = await ingest(entries);
       selRun = -1;
       renderRuns(); show('runs');
@@ -3729,6 +3736,7 @@
     const files = [...e.target.files].filter(f => /\.json$/i.test(f.name));
     const first = (files[0] && files[0].webkitRelativePath) || '';
     folderLabel = first.includes('/') ? first.slice(0, first.indexOf('/')) : 'selected folder';
+    showingSample = false;
     RUNS = await ingest(files.map(f => ({ file: f, path: f.webkitRelativePath || f.name })));
     selRun = -1;
     renderRuns(); show('runs');
@@ -3769,6 +3777,7 @@
     } catch {
       MODE = 'standalone'; READONLY = false;
       folderLabel = 'bundled sample';
+      showingSample = true;
       RUNS = bundled();
       renderRuns();
     }
