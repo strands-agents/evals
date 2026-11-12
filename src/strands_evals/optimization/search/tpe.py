@@ -1,4 +1,4 @@
-"""TPE over numbers and choices, one study per context (optional extra: optimization)."""
+"""TPE over numbers and choices, one study per context."""
 
 from __future__ import annotations
 
@@ -7,6 +7,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, ClassVar, Literal
+
+import optuna
+from optuna.distributions import CategoricalDistribution, FloatDistribution, IntDistribution
+from optuna.trial import TrialState, create_trial
 
 from ...types.optimization import Evidence, Observation, Patch, Value, Values
 from ..candidate import content_id
@@ -84,8 +88,6 @@ class TPE(Proposer):
 
         Returns `[]` when no block key is active under the parent's choices.
         """
-        import optuna  # optional extra: optimization
-
         space = request.space
         owned = set(request.keys)
         keys = [info.key for info in space.params() if info.key in owned]  # a choice before its sub-keys
@@ -120,7 +122,7 @@ class TPE(Proposer):
                 current[k] = updates[k]
             if not updates:
                 return []
-            told = sum(1 for t in study.trials if t.state != optuna.trial.TrialState.RUNNING)
+            told = sum(1 for t in study.trials if t.state != TrialState.RUNNING)
             phase = "random startup" if told < self.n_startup_trials else f"modeled on {told} told trials"
             patch = Patch(updates=updates, rationale=f"TPE: {phase}", state={"context": context})
             self._pending.append(_Pending(context, params, patch))
@@ -149,9 +151,6 @@ class TPE(Proposer):
 
     def _study_for(self, context: str, space: Space, keys: Sequence[str], request: ProposalRequest, seed: int) -> Any:
         """A fresh study for `context`: every told candidate in it, then its pending proposals as running trials."""
-        import optuna  # optional extra: optimization
-        from optuna.trial import TrialState, create_trial  # optional extra: optimization
-
         criteria = request.criteria
         verbosity = optuna.logging.get_verbosity()
         optuna.logging.set_verbosity(optuna.logging.WARNING)  # "A new study created in memory" on every ask
@@ -222,12 +221,6 @@ def _context_of(space: Space, keys: Sequence[str], values: Values) -> str:
 
 def _distribution(info: ParamInfo) -> Any:
     """The Optuna distribution of one key; a choice or `OneOf` is a category per option position."""
-    from optuna.distributions import (  # optional extra: optimization
-        CategoricalDistribution,
-        FloatDistribution,
-        IntDistribution,
-    )
-
     if info.kind == "int":
         return IntDistribution(int(info.min_value), int(info.max_value), log=info.log)  # type: ignore[arg-type]
     if info.kind == "float":
