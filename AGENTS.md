@@ -222,6 +222,7 @@ strands-evals/
 │   │       ├── run.py
 │   │       ├── validate.py
 │   │       ├── report.py
+│   │       ├── compare.py
 │   │       ├── diagnose.py
 │   │       ├── generate.py
 │   │       └── fetch.py                      # pull Session JSON from a TraceProvider
@@ -265,6 +266,7 @@ strands-evals/
 │   ├── telemetry/
 │   ├── tools/
 │   ├── cli/
+│   │   ├── test_compare.py
 │   │   └── fixtures/                         # local agent / task / evaluator fixtures
 │   └── types/
 │       ├── optimization/
@@ -283,7 +285,7 @@ strands-evals/
 
 - **`.agents/skills/`**: Agent skills, one directory per skill containing a `SKILL.md`; the folder name must match the skill's `name` frontmatter
 - **`src/strands_evals/`**: All production code
-- **`src/strands_evals/cli/`**: `strands-evals` console script — six subcommands (`run`, `validate`, `report`, `diagnose`, `generate`, `fetch`) plus the `module:attr` resolver and synthesized task wrapper used by `--agent`. `fetch` has per-provider sub-subcommands (`cloudwatch`, `langfuse`, `opensearch`); langfuse / opensearch are imported lazily so they only fail when invoked without their extra installed.
+- **`src/strands_evals/cli/`**: `strands-evals` console script — seven subcommands (`run`, `validate`, `report`, `compare`, `diagnose`, `generate`, `fetch`) plus the `module:attr` resolver and synthesized task wrapper used by `--agent`. `fetch` has per-provider sub-subcommands (`cloudwatch`, `langfuse`, `opensearch`); langfuse / opensearch are imported lazily so they only fail when invoked without their extra installed.
 - **`tests/strands_evals/`**: Unit tests mirroring src/ structure
 - **`tests/strands_evals/cli/`**: CLI tests; fixtures live under `cli/fixtures/` and are referenced by tests via `tests.strands_evals.cli.fixtures.*:attr` specs
 - **`tests_integ/`**: Integration tests using real trace providers and model endpoints
