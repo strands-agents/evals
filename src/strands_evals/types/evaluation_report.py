@@ -44,9 +44,17 @@ class EvaluationReport(BaseModel):
         average and report the run as better than it was. Both evaluators emit the second shape for
         a missing trajectory.
 
+        The one failing exception is a case whose every row is `could_not_evaluate`: the evaluator
+        never ran, so there is no score to average, but the row still fails so gates catch it.
+
         No rows at all is applicable for the same reason. An evaluator that returned nothing failed
         to judge rather than declining to, and `_default_aggregator` scores that `test_pass=False`.
         """
+        if outputs and all(output.could_not_evaluate for output in outputs):
+            # The evaluator never ran (e.g. the judge's context window overflowed), so its 0.0 is not
+            # a judgment of the agent and stays out of averages. Its `test_pass` is False, so
+            # pass/fail gates still count the case as not passed.
+            return False
         return not outputs or any(not output.not_applicable or not output.test_pass for output in outputs)
 
     @classmethod
