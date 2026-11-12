@@ -311,6 +311,29 @@ def test_held_values_python_compares_equal_stay_apart():
     assert options(at_true) == {"p"}
 
 
+def test_a_combination_is_scored_at_the_parents_values_outside_the_block():
+    # level 4 adds about 0.4 and other="y" nothing. q is measured only at level 4 (0.82, so about 0.42 at the
+    # parent's level 1) and r only at other="y" (0.60, so about 0.60 at the parent's other="x"). Both are fresh at
+    # the parent's (x, 1); scored at their measured candidates instead, q (0.82) would beat r (0.60).
+    space = Space(
+        {
+            "option": OneOf("p", "q", "r", "s", default="p"),
+            "other": OneOf("x", "y", default="x"),
+            "level": OneOf(1, 4, default=1),
+        }
+    )
+    truths = [
+        ({"option": o, "other": other, "level": level}, {"A": base + (0.4 if level == 4 else 0.0)})
+        for o, base in (("p", 0.40), ("s", 0.30))
+        for other, level in (("x", 1), ("x", 4), ("y", 1))
+    ]
+    truths += [({"option": "q", "level": 4}, {"A": 0.82}), ({"option": "r", "other": "y"}, {"A": 0.60})]
+    fit, summaries = world(space, truths)
+    reqs = (request(space, ["option"], fit=fit, candidates=summaries, iteration=i) for i in range(10))
+    counts = Counter(propose(Thompson(), req)[0].updates["option"] for req in reqs)
+    assert counts["r"] >= 8
+
+
 def test_nothing_to_propose_when_no_block_key_is_active():
     space = Space({"manager": choice(window=component(Window, pin=OneOf(0, 1)), summary=component(Summary))})
     parent = Candidate(space.complete({"manager": "summary"}), None, "baseline", "")

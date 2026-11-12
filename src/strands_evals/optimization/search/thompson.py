@@ -31,10 +31,11 @@ class Thompson(Proposer):
     """Proposes the combination of its block's choices that a posterior draw likes best, unmeasured first.
 
     Each proposal draws one set of effects per goal metric (`sample_effects(1, rng)` and `value_under`) and
-    scores every combination of the block's choices (sampled down to `MAX_COMBINATIONS` if more), each at a
-    template: the best-ranked eligible candidate with those choices, else the parent with them (keys a
-    combination makes active filled from the best-ranked eligible candidate that has them, else their
-    defaults, as `Candidate.child` does). It proposes the best fresh combination (not measured with the
+    scores every combination of the block's choices (sampled down to `MAX_COMBINATIONS` if more) with the
+    parent's other values held, each at a template: the best-ranked eligible candidate with those choices and
+    the parent's values outside the block, else the parent with them (keys a combination makes active filled
+    from the best-ranked eligible candidate that has them, else their defaults, as `Candidate.child` does),
+    so a draw scores the candidate the patch would create. It proposes the best fresh combination (not measured with the
     parent's other values, nor proposed and not yet observed, so a step's proposals differ) that meets the
     drawn constraints, else the one that misses them least (each miss over its metric model's `unit`).
     With no fit or any metric flagged, a fresh combination at random. With
@@ -115,7 +116,14 @@ class Thompson(Proposer):
         templates: list[Values] = []
         if fit is not None:
             for i in ids:
-                made = next((c for c in eligible if _agrees(c.values, combinations[i], partial=False)), None)
+                made = next(
+                    (
+                        c
+                        for c in eligible
+                        if _agrees(c.values, combinations[i], partial=False) and _agrees(c.values, held, partial=True)
+                    ),
+                    None,
+                )
                 templates.append(made.values if made else space.complete({**held, **combinations[i]}, fill=inherit))
 
         objective = request.criteria.objective
