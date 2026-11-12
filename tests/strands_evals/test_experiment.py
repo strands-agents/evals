@@ -1319,6 +1319,25 @@ def test_experiment_run_evaluations_wrapped_context_overflow_is_detected():
     assert report.test_passes[0] is False
 
 
+def test_experiment_run_evaluations_error_after_a_handled_overflow_is_still_a_failure():
+    """An overflow that was caught and handled sits only in `__context__`; a later real error is not an overflow."""
+
+    class RetryingEvaluator(Evaluator[str, str]):
+        def evaluate(self, evaluation_case: EvaluationData[str, str]) -> list[EvaluationOutput]:
+            try:
+                raise ContextWindowOverflowException("Input is too long for requested model")
+            except ContextWindowOverflowException:
+                raise ValueError("retry with a shorter prompt failed: bad rubric")  # noqa: B904
+
+    experiment = Experiment(cases=[Case(name="t", input="x")], evaluators=[RetryingEvaluator()])
+
+    report = experiment.run_evaluations(lambda c: c.input)
+
+    assert report.detailed_results[0] == []
+    assert report.test_passes[0] is False
+    assert "Evaluator error" in report.reasons[0]
+
+
 @pytest.mark.parametrize(
     "message",
     ["expected_output too long for comparison", "context window", "max_tokens reached", "input too large"],

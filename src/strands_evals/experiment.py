@@ -72,7 +72,7 @@ _MAX_RETRY_DELAY = 240  # 4 minutes
 
 
 def _is_context_overflow(exception: BaseException) -> bool:
-    """Whether `exception` is, or was raised from, a judge context-window overflow.
+    """Whether `exception` is, or was explicitly raised from, a judge context-window overflow.
 
     Type-only on purpose. `detectors.utils._is_context_exceeded` also matches message substrings
     such as "too long", which is fine where a false positive only triggers chunking. Here a false
@@ -85,7 +85,9 @@ def _is_context_overflow(exception: BaseException) -> bool:
         if isinstance(current, ContextWindowOverflowException):
             return True
         seen.add(id(current))
-        current = current.__cause__ or current.__context__
+        # Only an explicit `raise ... from` chain. Following `__context__` would misread a real
+        # error raised after an overflow was caught and handled (e.g. a retry) as an overflow.
+        current = current.__cause__
     return False
 
 

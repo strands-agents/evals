@@ -7,18 +7,22 @@ from rich.tree import Tree
 console = Console()
 
 
-def _case_is_applicable(case: dict) -> bool:
-    """Whether a displayed case's rows carry a verdict, so it belongs in the pass rate.
+def _pass_rate_text(items: dict) -> str:
+    """The panel's pass rate, counted the same way as the CLI summary and `--fail-on`.
 
-    Mirrors `EvaluationReport.is_applicable` (it can't be imported here without a cycle): a case is
-    dropped when every row was never judged (`could_not_evaluate`), or when it has rows and every
-    row both declined to judge (not_applicable) and passed. A case with no detailed rows, or any
-    row that judged or failed for another reason, stays in the rate.
+    Every case counts, and a case the evaluator could not judge (e.g. its judge's context window
+    overflowed) counts as not passed. Those cases are also named next to the rate, so a low rate
+    from unjudged cases does not read as the agent failing.
     """
-    outputs = case.get("detailed_results") or []
-    if outputs and all(output.could_not_evaluate for output in outputs):
-        return False
-    return not outputs or any(not output.not_applicable or not output.test_pass for output in outputs)
+    cases = list(items.values())
+    passed = sum(1 for case in cases if case["details"]["test_pass"])
+    rate = passed / len(cases) if cases else 0.0
+    unjudged = sum(
+        1
+        for case in cases
+        if (outputs := case.get("detailed_results") or []) and all(output.could_not_evaluate for output in outputs)
+    )
+    return f"Pass Rate: {rate}" + (f" ({unjudged} could not evaluate)" if unjudged else "")
 
 
 class CollapsibleTableReportDisplay:
@@ -69,13 +73,7 @@ class CollapsibleTableReportDisplay:
         Expanded rows show full details, while collapsed rows show minimal information.
         """
         overall_score_string = f"[bold blue]Overall Score: {self.overall_score:.2f}[/bold blue]"
-        # Exclude not-applicable cases (e.g. a judge that couldn't evaluate because its prompt
-        # overflowed the context window) from the pass rate, mirroring EvaluationReport.is_applicable
-        # so an unscored case can't deflate the rate the same way it's kept out of the overall score.
-        applicable = [case for case in self.items.values() if _case_is_applicable(case)]
-        pass_count = sum(1 for case in applicable if case["details"]["test_pass"])
-        pass_rate = pass_count / len(applicable) if applicable else 0.0
-        overall_pass_rate = f"[bold blue]Pass Rate: {pass_rate}[/bold blue]"
+        overall_pass_rate = f"[bold blue]{_pass_rate_text(self.items)}[/bold blue]"
         spacing = "           "
         console.print(Panel(f"{overall_score_string}{spacing}{overall_pass_rate}", title="📊 Evaluation Report"))
 

@@ -1,34 +1,32 @@
-from strands_evals.display.display_console import _case_is_applicable
+from strands_evals.display.display_console import _pass_rate_text
 from strands_evals.types.evaluation import COULD_NOT_EVALUATE, NOT_APPLICABLE, EvaluationOutput
 
 
-def _case(test_pass, detailed_results):
-    return {"details": {"test_pass": test_pass}, "detailed_results": detailed_results}
+def _case(test_pass: bool, rows: list[EvaluationOutput]) -> dict:
+    return {"details": {"test_pass": test_pass}, "detailed_results": rows}
 
 
-def test_case_with_no_detailed_rows_is_applicable():
-    # An empty detailed_results is a genuine (failed) evaluation, so it stays in the rate.
-    assert _case_is_applicable(_case(False, [])) is True
-
-
-def test_case_all_rows_not_applicable_and_passing_is_dropped():
-    rows = [EvaluationOutput(score=0.0, test_pass=True, label=NOT_APPLICABLE)]
-    assert _case_is_applicable(_case(True, rows)) is False
-
-
-def test_not_applicable_row_that_failed_is_kept():
-    # not_applicable but test_pass=False means a real failure (e.g. missing trajectory).
-    rows = [EvaluationOutput(score=0.0, test_pass=False, label=NOT_APPLICABLE)]
-    assert _case_is_applicable(_case(False, rows)) is True
-
-
-def test_case_with_a_judged_row_is_applicable():
-    rows = [EvaluationOutput(score=1.0, test_pass=True, reason="judged")]
-    assert _case_is_applicable(_case(True, rows)) is True
-
-
-def test_case_the_evaluator_could_not_judge_is_dropped_from_the_rate():
-    row = EvaluationOutput(
+def _unjudged() -> EvaluationOutput:
+    return EvaluationOutput(
         score=0.0, test_pass=False, label=NOT_APPLICABLE, metadata={COULD_NOT_EVALUATE: "judge_context_window_exceeded"}
     )
-    assert _case_is_applicable({"detailed_results": [row]}) is False
+
+
+def test_pass_rate_counts_every_case():
+    items = {0: _case(True, [EvaluationOutput(score=1.0, test_pass=True)]), 1: _case(False, [])}
+    assert _pass_rate_text(items) == "Pass Rate: 0.5"
+
+
+def test_unjudged_case_counts_as_not_passed_and_is_named():
+    """Matches the CLI summary ("1/2 passed, 1 could not evaluate") and `--fail-on=any`."""
+    items = {0: _case(True, [EvaluationOutput(score=1.0, test_pass=True)]), 1: _case(False, [_unjudged()])}
+    assert _pass_rate_text(items) == "Pass Rate: 0.5 (1 could not evaluate)"
+
+
+def test_case_with_nothing_to_judge_still_counts_as_passed():
+    declined = EvaluationOutput(score=0.0, test_pass=True, reason="no skill invoked", label=NOT_APPLICABLE)
+    assert _pass_rate_text({0: _case(True, [declined])}) == "Pass Rate: 1.0"
+
+
+def test_empty_report_has_zero_pass_rate():
+    assert _pass_rate_text({}) == "Pass Rate: 0.0"
