@@ -87,7 +87,8 @@ class TPE(Proposer):
         self.seed = seed
         self.n_startup_trials = n_startup_trials
         self._told: list[_Told] = []
-        # each told trial's context, computed once (a block's space and keys never change)
+        # each told trial's context, computed once: an instance serves one block (`Search` rejects a shared one),
+        # whose space and keys never change
         self._contexts: list[str] = []
         self._pending: list[_Pending] = []
 

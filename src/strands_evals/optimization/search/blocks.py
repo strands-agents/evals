@@ -414,7 +414,8 @@ class Search:
         within: Schedule | None = None,
         redraws: int = 3,
     ):
-        """Two blocks given the same name raise `ValueError`; unnamed blocks are named by `resolve`.
+        """Two blocks given the same name, or the same proposer instance, raise `ValueError`; unnamed blocks
+        are named by `resolve`.
 
         Args:
             blocks: The user's blocks, in order.
@@ -427,7 +428,8 @@ class Search:
         Raises:
             TypeError: A block is not a `Block`, `schedule` or `within` is not a `Schedule`, or `redraws`
                 is not an int.
-            ValueError: Two named blocks share a name, `redraws` is negative, or both `schedule` and
+            ValueError: Two named blocks share a name, two blocks share a proposer instance (a block listed
+                twice included), `redraws` is negative, or both `schedule` and
                 `within` are given (`within` shapes only the default schedule).
         """
         blocks = tuple(blocks)
@@ -441,6 +443,15 @@ class Search:
             if block.name in seen:
                 raise ValueError(f"two blocks are named {block.name!r}; give one of them Block(..., name=...)")
             seen.add(block.name)
+        by_proposer: dict[int, Block] = {}
+        for block in blocks:
+            other = by_proposer.get(id(block.proposer))
+            if other is not None:
+                raise ValueError(
+                    f"{other!r} and {block!r} share one proposer; a proposer keeps its block's history, so give "
+                    f"each block its own (e.g. {type(block.proposer).__name__}() in each)"
+                )
+            by_proposer[id(block.proposer)] = block
         if schedule is not None and not isinstance(schedule, Schedule):
             raise TypeError(f"Search(schedule=...) takes a Schedule, not {schedule!r}")
         if within is not None and not isinstance(within, Schedule):

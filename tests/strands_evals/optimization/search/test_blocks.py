@@ -120,6 +120,16 @@ def test_search_rejects_two_blocks_with_one_name():
         Search([Block(TPE(), "temperature", name="TPE"), Block(TPE(), "effort", name="TPE")])
 
 
+def test_search_rejects_two_blocks_sharing_one_proposer():
+    tpe = TPE()
+    with pytest.raises(ValueError, match="share one proposer"):
+        Search([Block(tpe, "temperature"), Block(tpe, "effort")])
+    block = Block(TPE(), "temperature")
+    with pytest.raises(ValueError, match="share one proposer"):
+        Search([block, block])
+    Search([Block(TPE(), "temperature"), Block(TPE(), "effort")])  # one instance each
+
+
 def test_search_rejects_negative_redraws_and_non_blocks():
     with pytest.raises(ValueError, match="redraws"):
         Search(redraws=-1)
