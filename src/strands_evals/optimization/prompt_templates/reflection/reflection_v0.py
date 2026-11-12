@@ -218,8 +218,9 @@ class VersionRow:
         is_current: Whether its conversations are the ones in the trajectory folder.
         is_baseline: Whether it is the baseline.
         changed: What it changed from the version it was built from.
-        cells: Each goal metric's mean, formatted, in the table's column order.
-        meets_limits: Whether it meets the constraints; None when unknown.
+        cells: Each goal metric, formatted, in the table's column order: the fit's estimate and the measured mean
+            (`0.84 (measured 0.9)`), or the measured mean alone.
+        meets_limits: Whether it meets the constraints, as the ranking assessed it; None when unknown.
         conversations: How many of its conversations completed.
     """
 
@@ -288,8 +289,10 @@ def task_message(
     parts = [_TASK_OPENING]
     limits_note = f" (its limits: {'; '.join(limits)})" if limits else ""
     parts.append(
-        f"{len(versions)} versions, best first for this study's goal{limits_note}. Each version's results are its "
-        "means over all of its conversations. The current version (marked ←) is the one whose conversations are in "
+        f"{len(versions)} versions, best first for this study's goal{limits_note}. Each version's results are, for "
+        "each metric, the study's estimate of its mean over all of its conversations, which also draws on the "
+        "versions like it, then its measured mean (a version with no estimate shows its measured mean alone). The "
+        "current version (marked ←) is the one whose conversations are in "
         f"the trajectory folder. Each version's parameters, in full, are in `{versions_folder}`: one folder per "
         "version, named by its rank, with its results in `version.md` and each parameter alone in a file of its own "
         "(`<name>.txt`, listed in `version.md`).\n\n"
