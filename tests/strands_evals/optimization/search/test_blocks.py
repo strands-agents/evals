@@ -19,6 +19,7 @@ from strands_evals.optimization import (
     Search,
     Space,
     TextValue,
+    Thompson,
     choice,
     component,
     tool_descriptions,
@@ -117,6 +118,16 @@ def test_block_rejects_bad_arguments(make, error):
 def test_search_rejects_two_blocks_with_one_name():
     with pytest.raises(ValueError, match="two blocks are named 'TPE'"):
         Search([Block(TPE(), "temperature", name="TPE"), Block(TPE(), "effort", name="TPE")])
+
+
+def test_search_rejects_two_blocks_sharing_one_proposer():
+    tpe = TPE()
+    with pytest.raises(ValueError, match="share one proposer"):
+        Search([Block(tpe, "temperature"), Block(tpe, "effort")])
+    block = Block(TPE(), "temperature")
+    with pytest.raises(ValueError, match="share one proposer"):
+        Search([block, block])
+    Search([Block(TPE(), "temperature"), Block(TPE(), "effort")])  # one instance each
 
 
 def test_search_rejects_negative_redraws_and_non_blocks():
@@ -251,6 +262,20 @@ def test_only_structural_blocks_and_one_of_them_is_joint():
 
     assert names(resolved) == [("structure", "TPE", ["manager"])]
     assert shape(schedule) == "joint"
+
+
+def test_a_declared_name_takes_only_the_keys_its_proposer_can_propose():
+    resolved, _ = Search([Block(Thompson(), "manager")]).resolve(full_space())
+
+    assert names(resolved) == [
+        ("structure", "Thompson", ["manager"]),
+        ("numbers", "TPE", ["manager.Window.size", "manager.Summary.ratio", "temperature", "effort"]),
+        ("text", "Reflection", ["prompt"]),
+    ]
+    with pytest.raises(ValueError, match=r"'b' holds no variable TPE can propose \(tools.lookup \(text\)\)"):
+        Search([Block(TPE(), "tools", name="b")]).resolve(Space({"tools": tool_descriptions(lookup)}))
+    with pytest.raises(ValueError, match=r"manager.Window.size \(int\), which Thompson can't propose"):
+        Search([Block(Thompson(), "manager", "manager.Window.size")]).resolve(full_space())
 
 
 def test_a_key_named_directly_wins_over_a_declared_name():

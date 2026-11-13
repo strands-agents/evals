@@ -4,7 +4,7 @@ import sys
 import pytest
 
 
-@pytest.mark.parametrize("missing", ["numpy", "scipy"])
+@pytest.mark.parametrize("missing", ["numpy", "scipy", "optuna"])
 def test_importing_the_package_without_the_extra_names_the_install_command(monkeypatch, missing):
     for name in [
         m for m in sys.modules if m == "strands_evals.optimization" or m.startswith("strands_evals.optimization.")
