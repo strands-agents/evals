@@ -512,6 +512,33 @@ def test_digest_is_cut_to_its_limit():
     assert "more lines left out at the digest's limit of 2,000 characters" in text
 
 
+def test_digest_keeps_each_conversation_with_its_fields_cut_to_40_before_one_line_per_case():
+    """Too long with fields cut to 75 characters, it fits with them cut to 40: every conversation keeps its own line
+    (its reward and reasons) instead of the short form's one line per case."""
+    rows = [
+        {
+            "file": f"rollout_{i:04d}.json",
+            "case": f"case-{i}",
+            "repetition": 0,
+            "reward": 0.0,
+            "status": "completed",
+            "error": None,
+            "reasons": {"Score": "x" * 500},
+            "objectives": {},
+            "ended": "y" * 500,
+            "messages": 1,
+            "calls": 0,
+        }
+        for i in range(6)
+    ]
+    assert len(_digest_text(rows, 0.5, 10**6)) > 1_600  # the fields' first cut doesn't fit
+    text = _digest_text(rows, 0.5, 1_600)
+    assert len(text) <= 1_600
+    for i in range(6):
+        assert f"### case-{i}: 0 of 1 succeeded\n- rollout_{i:04d}.json: reward 0;" in text
+    assert "reasons: Score: " + "x" * 30 in text and "x" * 70 not in text
+
+
 def test_digest_that_fits_at_the_shortest_fields_keeps_every_line():
     """A digest too long with fields cut to 75 characters but whole with them cut to 40 is returned as it is: it never
     takes the line-dropping path, which would say lines were left out while dropping none."""

@@ -1021,15 +1021,10 @@ def _digest_text(rows: Sequence[dict[str, Any]], threshold: float, limit: int) -
         return "\n".join(out) + "\n"
 
     for detailed in (True, False):
-        cap = 300
-        while cap >= 40:
+        for cap in (300, 150, 75, 40):
             text = build(cap, detailed)
             if len(text) <= limit:
                 return text
-            cap //= 2
-    text = build(40, False)
-    if len(text) <= limit:
-        return text
     lines, kept = text.splitlines(), list[str]()
     for line in lines:  # still over: keep what fits, and say what was left out
         if sum(len(x) + 1 for x in kept) + len(line) + 1 > limit - 120:
