@@ -42,8 +42,9 @@ class CandidateSummary(BaseModel):
         measured_objective: The objective from the raw train scores (`CandidateScores.objective`), no model.
         measured: Every metric measured on train, usage included, next to the fit's estimates.
         trial_count: Train trials that count (completed, or `agent_failure` scored by `agent_failure_score`).
-        failures: Of those, the `agent_failure` trials (`CandidateScores.failures`), so `trial_count - failures`
-            completed: how a proposer tells a version that crashed from one that scored low.
+        failures: Of `trial_count`, the `agent_failure` trials (those `agent_failure_score` scores; 0 under
+            `agent_failure_score=None`, which doesn't count them), so `trial_count - failures` completed: how a
+            proposer tells a version that crashed from one that scored low.
         ranking_objective: What the ranking used when the request was built (`Assessment.objective`): the
             fit's resolved estimate, or `measured_objective` without a usable fit.
         rank: Position in that ranking, 1 = best; None for an ineligible candidate.

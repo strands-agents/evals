@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -15,7 +17,7 @@ import time
 import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from botocore.config import Config as BotocoreConfig
 from strands import Agent, tool
@@ -28,7 +30,6 @@ from strands.types.tools import AgentTool
 from ...types.optimization import CandidateSummary, Observation, Patch, TrialRecord, TrialStatus, Usage, Value
 from ...types.trace import AgentInvocationSpan, InferenceSpan, Session, ToolCallContent, ToolResultContent
 from ..declaration.space import ParamKind
-from ..execution.status import classify
 from ..prompt_templates.reflection.reflection_v0 import (
     REFUSED,
     SUBMIT_INSTRUCTIONS,
@@ -51,7 +52,14 @@ _MAX_TOOL_OUTPUT = 100_000
 # Directories where other work on the machine keeps its files: a command that names a path in one of them, outside
 # the agent's own folders, is refused.
 _PRIVATE_DIRS = ("/tmp", "/private", "/home", "/Users", "/root", "/var", "/mnt", "/opt", "/srv", "/data", "/run/user")
-_PATH = re.compile(r"(?<![\w.:/~-])(/[^\s'\"|;&<>()`*?\[\]{},]*|\.\.(?=/|$|[\s'\"])(?:/[^\s'\"|;&<>()`*?\[\]{},]*)?)")
+_SEGMENT = r"[^\s'\"|;&<>()`*?\[\]{},]"  # a character a path is read with, up to shell punctuation
+_PATH = re.compile(
+    rf"(?<![\w.:/~-])("
+    rf"/{_SEGMENT}*"  # absolute
+    rf"|~(?![\w.-])(?:/{_SEGMENT}*)?"  # the shell's HOME (the work folder)
+    rf"|(?:[\w.-]+/)*\.\.(?![\w.-])(?:/{_SEGMENT}*)?"  # relative, with a `..` segment
+    rf")"
+)
 
 # A version's results and other values, in its folder of the versions folder; its texts are files beside it.
 _VERSION_FILE = "version.md"
@@ -85,11 +93,11 @@ class Reflection(Proposer):
     a case is failing when any of its trials isn't. `success_threshold=None` ranks trials by objective
     instead (a median split), as does a goal with no bounded metric.
 
-    Each `propose` call (n=1) runs one agent (`concurrent = True`). The model call is retried 3 times,
-    each logged as `proposer_retry`; if the last error is infrastructure it raises, otherwise unparseable
-    output or every proposal dropped returns `[]`. Guardrails run in code after the agent returns,
+    Each `propose` call (n=1) runs one agent (`concurrent = True`). The agent is retried 3 times, each
+    failure logged as `proposer_retry`, then the last error is raised; nothing submitted, or every value
+    dropped, returns `[]`. Guardrails run in code after the agent returns,
     including the leakage screen (drop a value that adds a shown case's identifier-like name, or a
-    verbatim run of >= 40 characters from a shown trial's input, output, or feedback, that the parent's
+    verbatim run of >= 40 characters from a shown trial's input or output, that the parent's
     value didn't contain), logged as `screened`. A submitted value over its `size_cap` is sent back, in the
     same conversation, to be shortened, up to `over_limit_retries` times; one still over is dropped and the
     parent's value kept.
@@ -150,7 +158,8 @@ class Reflection(Proposer):
         with n=1, several at once). Warns once per instance, on the first call, that the shell is not a sandbox.
 
         Raises:
-            Exception: The agent failed `_ATTEMPTS` times and the last error is infrastructure (`classify`).
+            Exception: The agent failed `_ATTEMPTS` times in a row: the last error, whatever it is (a wrong model id
+                or no access to the model fails every attempt, and proposing nothing would hide it).
         """
         if not self._warned:
             self._warned = True
@@ -175,14 +184,23 @@ class Reflection(Proposer):
 
         The call's three folders (`traces`, `versions`, `work`) are made inside one temp folder of its own, which the
         shell lets the agent name: a model that `cd`s to the folder holding them, or reads `../versions/...` from
-        `work`, is not refused."""
+        `work`, is not refused. Writing the evidence and the guardrails run in a worker thread, so concurrent calls
+        keep streaming; a shell command still running when the call ends (cancelled) is killed before its folders are
+        removed."""
         keys = list(request.keys)
         parent = dict(request.parent.values)
-        with tempfile.TemporaryDirectory(prefix="reflection_") as root:
+        running: set[subprocess.Popen[bytes]] = set()
+        with tempfile.TemporaryDirectory(prefix="reflection_") as root, contextlib.ExitStack() as cleanup:
+
+            def kill_running() -> None:
+                for process in list(running):
+                    _kill_group(process)
+
+            cleanup.callback(kill_running)
             traces, versions, work = (os.path.join(root, name) for name in ("traces", "versions", "work"))
             for folder in (traces, versions, work):
                 os.mkdir(folder)
-            evidence = _build_evidence(request, self.success_threshold, traces, versions)
+            evidence = await asyncio.to_thread(_build_evidence, request, self.success_threshold, traces, versions)
             if evidence is None:
                 return None
             prompt = (
@@ -219,8 +237,8 @@ class Reflection(Proposer):
                     model=self._model(),
                     system_prompt=prompt + SUBMIT_INSTRUCTIONS,
                     tools=[
-                        _confined_shell(work, [traces, versions, work], refused, root),
-                        _submit_tool(work, submitted, parent, rejected),
+                        _confined_shell(work, [traces, versions, work], refused, root, running),
+                        _submit_tool(work, submitted, parent, rejected, caps),
                     ],
                     # Strands' 40-message window, trimmed at the end of each call and on overflow, with the task
                     # message pinned: a send-back after a long first turn would otherwise go without it.
@@ -232,18 +250,17 @@ class Reflection(Proposer):
                 try:
                     params, rationale, revised = await self._converse(agent, message, submitted, caps, rejected)
                     break
-                except Exception as error:  # noqa: BLE001 - any failure of the agent is retried, then judged
+                except Exception as error:  # noqa: BLE001 - any failure of the agent is retried, then raised
                     if attempt == _ATTEMPTS - 1:
                         self.refused.extend(refused)
-                        if classify(error) is TrialStatus.INFRASTRUCTURE_INVALID:
-                            raise
-                        logger.warning("Reflection gave up after %d attempts: %s", _ATTEMPTS, error)
-                        return None
+                        raise
                     request.log("proposer_retry", error_type=type(error).__name__, error=str(error)[:2000])
                 finally:
                     usage = usage + _agent_usage(agent, time.monotonic() - started, self._model_id())
             self.refused.extend(refused)
-            updates, dropped = _guard(request, params or {}, keys, parent)
+            updates, dropped, screened = await asyncio.to_thread(_guard, request, params or {}, keys, parent)
+            for key in screened:
+                request.log("screened", key=key, reason=dropped[key])
         if not updates:
             return None
         state = {
@@ -343,45 +360,61 @@ class Reflection(Proposer):
 
 
 def _outside(command: str, roots: Sequence[str], cwd: str, home: str | None = None) -> list[str]:
-    """The paths `command` names that lie outside `roots`, in a directory where other work keeps its files
-    (`_PRIVATE_DIRS`), or that start with `..` (resolved from `cwd`), sorted.
+    """The paths `command` names that the agent may not use, sorted: an absolute path (or one under `~`, the shell's
+    HOME, which is `cwd`) outside `roots` and `home` in a directory where other work keeps its files
+    (`_PRIVATE_DIRS`), and a relative path with a `..` segment that doesn't land inside a root.
 
     A path is inside a root when it is, as written or with symlinks resolved, so a root's real path counts too: on
     macOS a temp folder is `/var/folders/...` while `pwd` in it prints `/private/var/folders/...`.
 
-    `home`, the folder holding the roots, may be named by an absolute path (`cd` to it, then use short names). A path
-    starting with `..` must land inside a root, never just in `home`: the text doesn't say where earlier `cd`s left
-    the shell, so a `..` allowed to reach `home` could be repeated to climb above it.
+    `home`, the folder holding the roots, may be named by an absolute path (`cd` to it, then use short names). A
+    relative `..` path is resolved from `cwd`, since the text doesn't say where earlier `cd`s left the shell: it must
+    land inside a root, never just in `home` (else `..` repeated would climb above it), and in a command that also
+    names `home` it is refused (there `..` starts from `home`, not from `cwd`).
 
     A guard against a cooperative model's mistakes, such as reading or writing a fixed name in a shared `/tmp`; not a
-    sandbox: a program can still build a path, and paths elsewhere (`/etc`) are not checked.
+    sandbox: a program can still build a path (`$HOME/..`), and paths elsewhere (`/etc`) are not checked.
     """
 
     def real(folders: Sequence[str]) -> set[str]:
         return {r.rstrip(os.sep) for f in folders for r in (os.path.normpath(f), os.path.realpath(f))}
 
+    def within(path: str, folders: set[str]) -> bool:
+        return any(p == r or p.startswith(r + os.sep) for p in (path, os.path.realpath(path)) for r in folders)
+
     inside, named = real(roots), real(roots) | real([home] if home else [])
-    found = []
+    paths = []  # (token, its path, whether it is a relative `..` path)
     for token in _PATH.findall(command):
-        path = os.path.normpath(os.path.join(cwd, token))
-        allowed = inside if token.startswith("..") else named
-        if any(p == r or p.startswith(r + os.sep) for p in (path, os.path.realpath(path)) for r in allowed):
-            continue
-        if token.startswith("..") or any(path == d or path.startswith(d + "/") for d in _PRIVATE_DIRS):
+        anchored = token.startswith(("/", "~"))
+        rest = token[1:].lstrip("/") if token.startswith("~") else token
+        paths.append((token, os.path.normpath(os.path.join(cwd, rest)), not anchored))
+    names_home = any(not relative and within(path, named) and not within(path, inside) for _, path, relative in paths)
+    found = []
+    for token, path, relative in paths:
+        if relative:
+            if names_home or not within(path, inside):
+                found.append(token)
+        elif not within(path, named) and any(path == d or path.startswith(d + "/") for d in _PRIVATE_DIRS):
             found.append(token)
     return sorted(set(found))
 
 
 def _confined_shell(
-    work: str, roots: Sequence[str], refused: list[dict[str, Any]], home: str | None = None
+    work: str,
+    roots: Sequence[str],
+    refused: list[dict[str, Any]],
+    home: str | None = None,
+    running: set[subprocess.Popen[bytes]] | None = None,
 ) -> AgentTool:
     """A shell tool that runs each command with `bash -c` in `work` (also `HOME` and `TMPDIR`), with this process's
-    environment otherwise, and refuses a command naming a path outside `roots` and `home` (`_outside`), appending it
-    to `refused`.
+    environment otherwise and no standard input, and refuses a command naming a path outside `roots` and `home`
+    (`_outside`), appending it to `refused`.
 
     Each command runs in its own process group, killed when `bash` exits or its timeout passes, so a process it left
-    in the background neither holds the call open until the timeout nor outlives it. Output that isn't valid UTF-8
-    (a `head -c` cutting a character) is decoded with replacement characters."""
+    in the background neither holds the call open until the timeout nor outlives it; `bash` is reaped only after, so
+    its process id (the group's) can't be reused first. While it runs it is in `running`, for the caller to kill when
+    the call ends early (cancelled). Output that isn't valid UTF-8 (a `head -c` cutting a character) is decoded with
+    replacement characters."""
 
     @tool
     def shell(command: str, timeout: int = 300) -> str:
@@ -404,18 +437,28 @@ def _confined_shell(
         # Files, not pipes: a background process holding a pipe open would keep the call waiting until it exits.
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
             process = subprocess.Popen(
-                ["bash", "-c", command], cwd=work, env=env, stdout=out, stderr=err, start_new_session=True
+                ["bash", "-c", command],
+                cwd=work,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                stderr=err,
+                start_new_session=True,
             )
+            if running is not None:
+                running.add(process)
             try:
-                code = process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                return f"Stopped after {timeout} seconds."
+                deadline = time.monotonic() + timeout
+                # Wait for bash to exit without reaping it (WNOWAIT).
+                while os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+                    if time.monotonic() >= deadline:
+                        return f"Stopped after {timeout} seconds."
+                    time.sleep(0.02)
             finally:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except OSError:  # the group already exited
-                    pass
-                process.wait()
+                _kill_group(process)
+                code = process.wait()
+                if running is not None:
+                    running.discard(process)
             out.seek(0)
             err.seek(0)
             stdout = out.read().decode("utf-8", errors="replace")
@@ -426,16 +469,30 @@ def _confined_shell(
     return shell
 
 
+def _kill_group(process: subprocess.Popen[bytes]) -> None:
+    """Kill the process group a shell command runs in (its id is `bash`'s); nothing if it already exited."""
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
 def _submit_tool(
-    work: str, submitted: dict[str, str], parent: Mapping[str, Any], rejected: list[dict[str, str]]
+    work: str,
+    submitted: dict[str, str],
+    parent: Mapping[str, Any],
+    rejected: list[dict[str, str]],
+    caps: Mapping[str, int | None] | None = None,
 ) -> AgentTool:
-    """A tool that reads each submitted value from a file in `work` (real path checked) into `submitted`; all or
-    nothing: one bad file, or one value carrying a version's header (`_VERSION_HEADER`), and nothing is submitted.
+    """A tool that reads each submitted value from a file in `work` (real path checked) into `submitted`, replacing
+    only the values it names (an earlier submission's others are kept); all or nothing: one bad file, or one value
+    carrying a version's header (`_VERSION_HEADER`), and nothing from this submission is taken.
     Each refused submission is appended to `rejected` (value name -> why), and the agent is told why.
 
     Each value is stripped (a shell's `echo` and heredocs add a newline the agent didn't mean), then given the leading
     and trailing whitespace of the parent's value under that key, so a file's final newline survives: an unchanged
-    rewrite equals the parent's value, and the diff doesn't show a changed first or last line.
+    rewrite equals the parent's value, and the diff doesn't show a changed first or last line. The whitespace is
+    restored only when the value still fits its `size_cap` (`caps`), so it never pushes a value over.
     """
 
     @tool
@@ -459,11 +516,13 @@ def _submit_tool(
                 with open(full, encoding="utf-8") as f:
                     value = f.read().strip()
                 held = parent.get(key)
+                restored = value
                 if isinstance(held, str) and held.strip():
-                    value = held[: len(held) - len(held.lstrip())] + value + held[len(held.rstrip()) :]
+                    restored = held[: len(held) - len(held.lstrip())] + value + held[len(held.rstrip()) :]
                 elif isinstance(held, str):
-                    value += held  # a parent of whitespace alone: kept after the new text, so "" stays unchanged
-                values[key] = value
+                    restored = value + held  # a parent of whitespace alone: kept after the new text
+                cap = (caps or {}).get(key)
+                values[key] = restored if cap is None or len(restored) <= cap else value
             except FileNotFoundError:
                 errors.append(f"{key}: file not found: {full}")
             except Exception as e:
@@ -483,7 +542,6 @@ def _submit_tool(
         if reasons:
             rejected.append(reasons)
             return "Refused, nothing was submitted:\n" + "\n".join(f"{k}: {r}" for k, r in reasons.items())
-        submitted.clear()
         submitted.update(values)
         summary = ", ".join(f"{k} ({len(v)} chars)" for k, v in values.items())
         return f"Parameters submitted successfully: {summary}"
@@ -597,7 +655,11 @@ def _rewards(
     for c in criteria.constraints:
         if bounded(c.metric):
             goal.setdefault(c.metric, isinstance(c, AtLeast))
-    trials = [t for t in request.trials if t.status in (TrialStatus.COMPLETED, TrialStatus.AGENT_FAILURE)]
+    trials = [
+        t
+        for t in request.trials
+        if t.split == "train" and t.status in (TrialStatus.COMPLETED, TrialStatus.AGENT_FAILURE)
+    ]
     runs = request.scores.metrics_by_run
 
     def value(trial: TrialRecord, metric: str) -> float | None:
@@ -732,34 +794,49 @@ def _write_traces(
 
 def _messages(trajectory: Any) -> list[Any]:
     """The trial's conversation as Strands messages (`{"role", "content": [{"text"} | {"toolUse"} | {"toolResult"}]}`):
-    for each agent in the trial, in the order they started, the messages of its last model call (what it sent, then
-    what it answered). A trajectory that isn't a `Session` (a rollout's own list) is kept as is.
+    for each agent invocation in the trial, in the order they started, the messages of its last model call (what it
+    sent, then what it answered). A trajectory that isn't a `Session` (a rollout's own list) is kept as is.
+
+    A model call belongs to the agent invocation its parent spans lead to; without parent ids, to the innermost
+    invocation whose time contains it. An invocation whose conversation is the start of a later one's (the same agent
+    invoked again, its history carried over) is left out, so a multi-turn rollout's messages appear once.
 
     Messages are read by `role`, never by class: a reloaded assistant message can come back as a `UserMessage` with
     role "assistant".
     """
     if not isinstance(trajectory, Session):
         return list(trajectory) if isinstance(trajectory, list) else []
-    out: list[Any] = []
+    conversations: list[list[dict[str, Any]]] = []
     for trace in trajectory.traces:
         agents = sorted(
             (s for s in trace.spans if isinstance(s, AgentInvocationSpan)), key=lambda s: s.span_info.start_time
         )
+        index = {id(a): i for i, a in enumerate(agents)}
+        by_id = {s.span_info.span_id: s for s in trace.spans if s.span_info.span_id}
         last: dict[int, InferenceSpan] = {}  # agent's index -> its last model call
         for span in trace.spans:
             if not isinstance(span, InferenceSpan):
                 continue
-            inside = [
-                i
-                for i, a in enumerate(agents)
-                if a.span_info.start_time <= span.span_info.start_time
-                and span.span_info.end_time <= a.span_info.end_time
-            ]
-            owner = max(inside, key=lambda i: agents[i].span_info.start_time) if inside else -1  # the innermost
+            owner, current, seen = None, cast(Any, span), set()
+            while (parent := current.span_info.parent_span_id) in by_id and parent not in seen:
+                seen.add(parent)
+                current = by_id[parent]
+                if isinstance(current, AgentInvocationSpan):
+                    owner = index[id(current)]
+                    break
+            if owner is None:
+                inside = [
+                    i
+                    for i, a in enumerate(agents)
+                    if a.span_info.start_time <= span.span_info.start_time
+                    and span.span_info.end_time <= a.span_info.end_time
+                ]
+                owner = max(inside, key=lambda i: agents[i].span_info.start_time) if inside else -1  # the innermost
             held = last.get(owner)
             if held is None or span.span_info.end_time >= held.span_info.end_time:
                 last[owner] = span
         for owner in sorted(last, key=lambda i: (i >= 0, agents[i].span_info.start_time if i >= 0 else None)):
+            conversation = []
             for message in last[owner].messages:
                 content: list[dict[str, Any]] = []
                 for item in message.content:
@@ -780,8 +857,14 @@ def _messages(trajectory: Any) -> list[Any]:
                     else:
                         content.append({"text": item.text})
                 role = getattr(message.role, "value", message.role)
-                out.append({"role": role, "content": content})
-    return out
+                conversation.append({"role": role, "content": content})
+            conversations.append(conversation)
+    return [
+        message
+        for i, conversation in enumerate(conversations)
+        if not any(later[: len(conversation)] == conversation for later in conversations[i + 1 :])
+        for message in conversation
+    ]
 
 
 def _short(text: Any, limit: int) -> str:
@@ -944,12 +1027,13 @@ def _shown(c: CandidateSummary, metric: str) -> str:
 
 def _text_files(names: Sequence[str]) -> dict[str, str]:
     """Each text's file name in a version's folder: its name, with anything but letters, digits, `.`, `_` and `-`
-    made `_` and leading dots dropped, then `.txt` (numbered when two names would share one, or `version.md`)."""
+    made `_` and leading dots dropped, then `.txt` (numbered when two names would share one, or `version.md`,
+    compared ignoring case: on a case-insensitive disk `Prompt.txt` and `prompt.txt` are one file)."""
     out: dict[str, str] = {}
     for name in names:
         stem = re.sub(r"[^A-Za-z0-9._-]", "_", name).lstrip(".") or "text"
         file, i = f"{stem}.txt", 2
-        while file in out.values() or file == _VERSION_FILE:
+        while file.casefold() in {f.casefold() for f in out.values()} or file.casefold() == _VERSION_FILE:
             file, i = f"{stem}-{i}.txt", i + 1
         out[name] = file
     return out
@@ -957,21 +1041,26 @@ def _text_files(names: Sequence[str]) -> dict[str, str]:
 
 def _guard(
     request: ProposalRequest, params: Mapping[str, str], keys: Sequence[str], parent: Mapping[str, Any]
-) -> tuple[dict[str, str], dict[str, str]]:
-    """The submitted values that become the patch, and why each other one was dropped (the parent's value kept).
+) -> tuple[dict[str, str], dict[str, str], list[str]]:
+    """The submitted values that become the patch, why each other one was dropped (the parent's value kept), and the
+    keys the leakage screen dropped (for the caller to log as `screened`; this runs in a worker thread).
 
     In order: a key outside the block is dropped; a value equal to the parent's is left out (nothing to change); a
     value `space.validate` refuses (over its `size_cap`, a `SKILL.md` that changes its `name`, invalid JSON) is
-    dropped; a value that leaks a shown trial (`_leak`) is dropped and logged as `screened`.
+    dropped; a value that leaks a shown train trial (`_leak`) is dropped.
     """
-    shown = [t for t in request.trials if t.status in (TrialStatus.COMPLETED, TrialStatus.AGENT_FAILURE)]
+    shown = [
+        t
+        for t in request.trials
+        if t.split == "train" and t.status in (TrialStatus.COMPLETED, TrialStatus.AGENT_FAILURE)
+    ]
     names = sorted({t.case_name for t in shown})
     sources = [str(request.inputs.get(name, "")) for name in names]
     for t in shown:
         sources.append("" if t.output is None else str(t.output))
-        sources += [e.reason for e in t.evaluations.values() if e.reason]
     updates: dict[str, str] = {}
     dropped: dict[str, str] = {}
+    screened: list[str] = []
     for key, value in params.items():
         if key not in keys:
             dropped[key] = "not one of this block's keys"
@@ -986,21 +1075,23 @@ def _guard(
         leak = _leak(value, parent.get(key), names, sources)
         if leak is not None:
             dropped[key] = leak
-            request.log("screened", key=key, reason=leak)
+            screened.append(key)
             continue
         updates[key] = value
-    return updates, dropped
+    return updates, dropped, screened
 
 
 def _leak(value: str, held: Any, names: Sequence[str], sources: Sequence[str]) -> str | None:
-    """Why `value` leaks a shown trial, or None: it adds an identifier-like case name (one with a digit, `_`, `-`, or
-    `/`, or CamelCase such as "RefundFlow"; plain words such as "refund" and acronyms such as "API" are skipped) as a
+    """Why `value` leaks a shown trial, or None: it adds an identifier-like case name (4 or more characters with a
+    letter, and a digit, `_`, `-`, or `/`, or CamelCase such as "RefundFlow"; plain words such as "refund", acronyms
+    such as "API", and short names such as "3" or "v2" are skipped: a rewrite says those for its own reasons) as a
     whole word, or a run of `_VERBATIM_CHARS` characters (whitespace-normalized, case-insensitive) from a shown
-    trial's input, output, or evaluator reasons, that the parent's value `held` didn't already contain."""
+    trial's input or output, that the parent's value `held` didn't already contain. Evaluator reasons are not
+    checked for copied runs: they are advice about the agent's behavior, which a rewrite is meant to adopt."""
     held = held if isinstance(held, str) else ""
     for name in names:
         camel = re.fullmatch(r"(?=.*[a-z])[A-Za-z][a-z0-9]*(?:[A-Z][a-z0-9]*)+", name)
-        if not re.search(r"[\d_/-]", name) and not camel:
+        if len(name) < 4 or not re.search(r"[A-Za-z]", name) or not (re.search(r"[\d_/-]", name) or camel):
             continue
         word = re.compile(rf"(?<![\w-]){re.escape(name)}(?![\w-])")
         if word.search(value) and not word.search(held):

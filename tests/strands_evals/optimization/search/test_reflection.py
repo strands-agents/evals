@@ -14,6 +14,7 @@ from strands_evals.optimization.search.reflection import (
     _leak,
     _outside,
     _submit_tool,
+    _text_files,
 )
 
 
@@ -270,3 +271,96 @@ def test_leak_screens_an_identifier_like_case_name(name):
 @pytest.mark.parametrize("name", ["refund", "Refund", "API", "FAQ", "OK"])
 def test_leak_skips_plain_words_and_acronyms(name):
     assert _leak(f"Handle {name} first.", "", [name], []) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["cd ..;ls", "ls ..|head", "echo $(ls ..)", "cd ..;cd ..;ls", "ls ~/../..", "cat a/../../x", "cd .. &&ls"],
+)
+def test_outside_sees_dots_before_shell_punctuation_and_under_home(folders, tmp_path, command):
+    assert _outside(command, folders.roots, folders.work, str(tmp_path)) != []
+
+
+def test_outside_refuses_dots_in_a_command_that_names_the_shared_folder(folders, tmp_path):
+    """After `cd <shared folder>`, `../traces` starts from above it, not from the work folder."""
+    home = str(tmp_path)
+    assert _outside(f"cd {home} && cat ../traces/a.json", folders.roots, folders.work, home) == ["../traces/a.json"]
+    assert _outside(f"cd {folders.traces} && cat ../traces/a.json", folders.roots, folders.work, home) == []
+
+
+def test_outside_allows_home_and_an_assignment_into_a_root(folders):
+    assert _outside("cat ~/notes.txt; T=../traces/a.json; cat $T", folders.roots, folders.work) == []
+
+
+def test_shell_gives_a_command_no_standard_input(folders):
+    """With the optimizer's stdin an open pipe, a bare `cat` still ends at once instead of reading it or waiting for
+    its timeout."""
+    read, write = os.pipe()
+    saved = os.dup(0)
+    os.dup2(read, 0)
+    try:
+        os.write(write, b"the optimizer's input\n")
+        shell = _confined_shell(folders.work, folders.roots, [])
+        started = time.monotonic()
+        assert shell(command="cat; echo done", timeout=5) == "done\n\n[exit code 0]"
+        assert time.monotonic() - started < 2
+    finally:
+        os.dup2(saved, 0)
+        for fd in (saved, read, write):
+            os.close(fd)
+
+
+def test_a_running_command_is_in_running_until_it_ends_and_can_be_killed(folders):
+    """The caller kills what `running` holds when its call ends early (cancelled)."""
+    import threading
+
+    running = set()
+    shell = _confined_shell(folders.work, folders.roots, [], running=running)
+    out = []
+    thread = threading.Thread(target=lambda: out.append(shell(command="sleep 30", timeout=60)))
+    thread.start()
+    while not running:
+        time.sleep(0.01)
+    started = time.monotonic()
+    for process in list(running):
+        reflection._kill_group(process)
+    thread.join(5)
+    assert time.monotonic() - started < 2 and out == ["\n[exit code -9]"] and running == set()
+
+
+def test_submit_merges_a_second_submission_in_the_same_turn(folders):
+    """A submission replaces only the values it names; the turn's earlier ones are kept."""
+    for name, text in {"p.txt": "New prompt.", "t1.txt": "warm", "t2.txt": "warmer"}.items():
+        with open(os.path.join(folders.work, name), "w") as f:
+            f.write(text)
+    submitted = {}
+    submit = _submit_tool(folders.work, submitted, {}, [])
+    submit(file_path_dict={"prompt": "p.txt", "tone": "t1.txt"})
+    submit(file_path_dict={"tone": "t2.txt"})
+    assert submitted == {"prompt": "New prompt.", "tone": "warmer"}
+
+
+def test_submit_restores_the_parents_whitespace_only_when_it_fits(folders):
+    with open(os.path.join(folders.work, "p.txt"), "w") as f:
+        f.write("x" * 10)
+    submitted = {}
+    _submit_tool(folders.work, submitted, {"p": "old\n"}, [], {"p": 10})(file_path_dict={"p": "p.txt"})
+    assert submitted == {"p": "x" * 10}  # "x" * 10 + "\n" would be 11, over the cap of 10
+    _submit_tool(folders.work, submitted, {"p": "old\n"}, [], {"p": 11})(file_path_dict={"p": "p.txt"})
+    assert submitted == {"p": "x" * 10 + "\n"}
+
+
+@pytest.mark.parametrize("name", ["order-1042", "case_7", "RefundFlow", "q12a"])
+def test_leak_screens_a_long_identifier_like_name(name):
+    assert _leak(f"Handle {name} first.", "", [name], []) is not None
+
+
+@pytest.mark.parametrize("name", ["3", "v2", "a_1", "1234"])
+def test_leak_skips_short_or_letterless_names(name):
+    assert _leak(f"Answer in at most {name} sentences.", "", [name], []) is None
+
+
+def test_text_files_never_differ_only_by_case():
+    files = _text_files(["Prompt", "prompt", "VERSION.md"])
+    assert len({f.casefold() for f in files.values()}) == 3
+    assert files["prompt"] == "prompt-2.txt"

@@ -110,7 +110,7 @@ async def test_a_value_over_its_size_cap_is_sent_back_and_the_shorter_one_merged
     ]
     (patch,), _, _ = await propose(turns)
     assert patch.updates == {"prompt": "Ask for the order number.\n", "tone": "warm"}
-    assert patch.state["revised"] == [{"prompt": len(long) + 1}]
+    assert patch.state["revised"] == [{"prompt": len(long)}]  # over the cap: the parent's newline isn't restored
     assert patch.rationale == "Done."  # the first call's final text, not the shortening turn's
 
 
@@ -153,9 +153,13 @@ async def test_an_infrastructure_failure_on_every_attempt_raises():
         await propose([InfrastructureError("bedrock is down")])
 
 
-async def test_another_failure_on_every_attempt_proposes_nothing():
-    patches, events, _ = await propose([ValueError("bad stream")])
-    assert patches == []
+async def test_any_failure_on_every_attempt_raises_after_three_retries():
+    """A wrong model id or no access fails every attempt the same way: raised, never hidden as `[]`."""
+    reflection = Reflection(ScriptedModel([ValueError("The provided model identifier is invalid.")]))
+    reflection._warned = True
+    events = []
+    with pytest.raises(ValueError, match="model identifier"):
+        await reflection.propose(request(events=events))
     assert [e for e, _ in events] == ["proposer_retry"] * 3
 
 
@@ -261,3 +265,14 @@ async def test_the_three_folders_share_one_folder_of_the_call():
     (patch,), _, reflection = await propose(turns)
     assert patch.updates == {"tone": "2"}  # the two trace files, read through ../traces
     assert [r["command"] for r in reflection.refused] == ["ls ..", "ls ../.."]
+
+
+async def test_a_value_adopting_a_judges_advice_word_for_word_is_kept():
+    """Reasons are advice to act on, not case content: copying one is no leak (an output copied still is)."""
+    advice = "The agent should always confirm the order number before giving a refund."
+    trials = [trial("order-123", score=0.2, reason=advice), trial("b", score=0.9)]
+    turns = [write("p.txt", "Always confirm the order number before giving a refund."), submit(prompt="p.txt"), "Ok."]
+    reflection = Reflection(ScriptedModel(turns))
+    reflection._warned = True
+    (patch,) = await reflection.propose(request(trials=trials))
+    assert patch.updates == {"prompt": "Always confirm the order number before giving a refund.\n"}

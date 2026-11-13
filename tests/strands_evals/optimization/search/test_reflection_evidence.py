@@ -327,6 +327,56 @@ def test_messages_take_each_agents_last_call_innermost_agent_owning_its_calls():
     assert [m["content"][0]["text"] for m in _messages(trajectory)] == ["outer 2", "inner 2"]
 
 
+def _span(cls, start, end, span_id=None, parent=None, **fields):
+    info = SpanInfo(
+        session_id="s",
+        start_time=T0 + timedelta(seconds=start),
+        end_time=T0 + timedelta(seconds=end),
+        span_id=span_id,
+        parent_span_id=parent,
+    )
+    if cls is AgentInvocationSpan:
+        fields = {"user_prompt": "q", "agent_response": "a", "available_tools": [], **fields}
+    return cls(span_info=info, **fields)
+
+
+def _says(*texts):
+    return [UserMessage(content=[TextContent(text=t)]) for t in texts]
+
+
+def test_messages_of_an_agent_invoked_twice_appear_once():
+    """The second invocation's last call holds the first's history: only the longer conversation is kept."""
+    spans = [
+        _span(AgentInvocationSpan, 0, 10),
+        _span(InferenceSpan, 1, 2, messages=_says("hi", "hello")),
+        _span(AgentInvocationSpan, 20, 30),
+        _span(InferenceSpan, 21, 22, messages=_says("hi", "hello", "order?", "which one")),
+    ]
+    trajectory = Session(traces=[Trace(spans=spans, trace_id="t", session_id="s")], session_id="s")
+    assert [m["content"][0]["text"] for m in _messages(trajectory)] == ["hi", "hello", "order?", "which one"]
+
+
+def test_messages_of_parallel_agents_follow_their_parent_spans():
+    """A runs 0-10 s and B 1-9 s: by time alone A's call (in B's window) would be B's; parent ids say A's."""
+    spans = [
+        _span(AgentInvocationSpan, 0, 10, span_id="a"),
+        _span(AgentInvocationSpan, 1, 9, span_id="b"),
+        _span(InferenceSpan, 2, 3, span_id="ca", parent="a", messages=_says("A's call")),
+        _span(InferenceSpan, 4, 5, span_id="cb", parent="b", messages=_says("B's call")),
+    ]
+    trajectory = Session(traces=[Trace(spans=spans, trace_id="t", session_id="s")], session_id="s")
+    assert [m["content"][0]["text"] for m in _messages(trajectory)] == ["A's call", "B's call"]
+
+
+def test_reflection_reads_only_train_trials(folders):
+    """A trial of another split never reaches the evidence (invariant 2), even if handed over by mistake."""
+    held_out = trial("v", score=0.1).model_copy(update={"split": "validation"})
+    evidence = _build_evidence(request([trial("a", score=0.8), held_out]), 0.5, *folders)
+    assert evidence.trials == 1
+    assert '"v"' not in json.dumps(os.listdir(folders[0]))
+    assert "v:" not in evidence.digest_text
+
+
 def test_messages_keep_a_rollouts_own_list_and_read_none_as_empty():
     assert _messages([{"role": "user", "content": []}]) == [{"role": "user", "content": []}]
     assert _messages(None) == []
