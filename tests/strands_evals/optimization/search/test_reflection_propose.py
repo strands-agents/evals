@@ -86,8 +86,9 @@ async def test_a_rewrite_becomes_a_patch_and_its_folders_are_removed(temp_root):
 
 
 async def test_the_first_proposal_warns_that_the_shell_is_not_a_sandbox():
-    with pytest.warns(UserWarning, match="not a sandbox"):
+    with pytest.warns(UserWarning, match="not a sandbox") as caught:
         await propose(["Nothing to change."], warn=True)
+    assert caught[0].filename.endswith("reflection.py")  # not asyncio's: the coroutine's caller is the event loop
 
 
 async def test_nothing_submitted_or_nothing_changed_proposes_nothing():
@@ -246,3 +247,17 @@ async def test_a_send_back_after_a_long_first_turn_still_has_the_task_message():
     task = model.first_messages[0]
     assert "Write a new version of the parameters" in task["content"][0]["text"]
     assert model.first_messages[-1] == task  # the send-back's call starts from the task message too
+
+
+async def test_the_three_folders_share_one_folder_of_the_call():
+    """`../traces` from the work folder is the agent's own; `..` alone (the shared folder) and above are refused."""
+    turns = [
+        ToolUse("shell", {"command": "ls ../traces ../versions | grep -c json > seen.txt"}),
+        ToolUse("shell", {"command": "ls .."}),
+        ToolUse("shell", {"command": "ls ../.."}),
+        submit(tone="seen.txt"),
+        "Done.",
+    ]
+    (patch,), _, reflection = await propose(turns)
+    assert patch.updates == {"tone": "2"}  # the two trace files, read through ../traces
+    assert [r["command"] for r in reflection.refused] == ["ls ..", "ls ../.."]

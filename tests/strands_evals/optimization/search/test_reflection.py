@@ -33,8 +33,19 @@ def test_outside_lists_private_paths_outside_the_roots(folders):
 
 
 def test_outside_lists_parent_references_and_allows_relative_paths(folders):
-    assert _outside("cat ../traces/a.json", folders.roots, folders.work) == [".."]
+    assert _outside("cat ../other/a.json && ls ..", folders.roots, folders.work) == ["..", "../other/a.json"]
+    assert _outside("cat ../traces/a.json", folders.roots, folders.work) == []  # lands in a root
     assert _outside("cat notes.txt && grep -r x .", folders.roots, folders.work) == []
+
+
+def test_outside_lets_the_folder_holding_the_roots_be_named_but_never_reached_by_dots(folders, tmp_path):
+    """`home` may be named by its absolute path; a `..` path must land in a root, so `..` can't climb from it."""
+    home = str(tmp_path)
+    roots, work = folders.roots, folders.work
+    assert _outside(f"cd {home} && cat traces/a.json && ls {home}/work", roots, work, home) == []
+    assert _outside("cat ../traces/a.json; ls ../work", roots, work, home) == []
+    assert _outside("ls .. && cd ../.. && cat ../../x", roots, work, home) == ["..", "../..", "../../x"]
+    assert _outside(f"ls {home}/..", roots, work, home) == [f"{home}/.."]
 
 
 def test_outside_accepts_a_roots_real_path(tmp_path):

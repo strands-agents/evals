@@ -51,7 +51,7 @@ _MAX_TOOL_OUTPUT = 100_000
 # Directories where other work on the machine keeps its files: a command that names a path in one of them, outside
 # the agent's own folders, is refused.
 _PRIVATE_DIRS = ("/tmp", "/private", "/home", "/Users", "/root", "/var", "/mnt", "/opt", "/srv", "/data", "/run/user")
-_PATH = re.compile(r"(?<![\w.:/~-])(/[^\s'\"|;&<>()`*?\[\]{},]*|\.\.(?=/|$|[\s'\"]))")
+_PATH = re.compile(r"(?<![\w.:/~-])(/[^\s'\"|;&<>()`*?\[\]{},]*|\.\.(?=/|$|[\s'\"])(?:/[^\s'\"|;&<>()`*?\[\]{},]*)?)")
 
 # A version's results and other values, in its folder of the versions folder; its texts are files beside it.
 _VERSION_FILE = "version.md"
@@ -160,7 +160,7 @@ class Reflection(Proposer):
                 "not a sandbox, and trace text can carry prompt injection. Run the optimizer in a container or VM "
                 "without credentials it doesn't need.",
                 UserWarning,
-                stacklevel=2,
+                stacklevel=1,  # here: `propose` is a coroutine, so the frame above it is the event loop's
             )
         patches = []
         for _ in range(request.n):
@@ -171,14 +171,17 @@ class Reflection(Proposer):
 
     async def _propose_one(self, request: ProposalRequest) -> Patch | None:
         """One agent over fresh folders: the evidence, the conversation (with its send-backs), then the guardrails.
-        None when there is nothing to learn from, nothing usable was submitted, or every value was dropped."""
+        None when there is nothing to learn from, nothing usable was submitted, or every value was dropped.
+
+        The call's three folders (`traces`, `versions`, `work`) are made inside one temp folder of its own, which the
+        shell lets the agent name: a model that `cd`s to the folder holding them, or reads `../versions/...` from
+        `work`, is not refused."""
         keys = list(request.keys)
         parent = dict(request.parent.values)
-        with (
-            tempfile.TemporaryDirectory(prefix="reflection_traces_") as traces,
-            tempfile.TemporaryDirectory(prefix="reflection_versions_") as versions,
-            tempfile.TemporaryDirectory(prefix="reflection_work_") as work,
-        ):
+        with tempfile.TemporaryDirectory(prefix="reflection_") as root:
+            traces, versions, work = (os.path.join(root, name) for name in ("traces", "versions", "work"))
+            for folder in (traces, versions, work):
+                os.mkdir(folder)
             evidence = _build_evidence(request, self.success_threshold, traces, versions)
             if evidence is None:
                 return None
@@ -216,7 +219,7 @@ class Reflection(Proposer):
                     model=self._model(),
                     system_prompt=prompt + SUBMIT_INSTRUCTIONS,
                     tools=[
-                        _confined_shell(work, [traces, versions, work], refused),
+                        _confined_shell(work, [traces, versions, work], refused, root),
                         _submit_tool(work, submitted, parent, rejected),
                     ],
                     # Strands' 40-message window, trimmed at the end of each call and on overflow, with the task
@@ -339,31 +342,42 @@ class Reflection(Proposer):
         }
 
 
-def _outside(command: str, roots: Sequence[str], cwd: str) -> list[str]:
+def _outside(command: str, roots: Sequence[str], cwd: str, home: str | None = None) -> list[str]:
     """The paths `command` names that lie outside `roots`, in a directory where other work keeps its files
-    (`_PRIVATE_DIRS`), or above `cwd` (`..`), sorted.
+    (`_PRIVATE_DIRS`), or that start with `..` (resolved from `cwd`), sorted.
 
     A path is inside a root when it is, as written or with symlinks resolved, so a root's real path counts too: on
     macOS a temp folder is `/var/folders/...` while `pwd` in it prints `/private/var/folders/...`.
 
+    `home`, the folder holding the roots, may be named by an absolute path (`cd` to it, then use short names). A path
+    starting with `..` must land inside a root, never just in `home`: the text doesn't say where earlier `cd`s left
+    the shell, so a `..` allowed to reach `home` could be repeated to climb above it.
+
     A guard against a cooperative model's mistakes, such as reading or writing a fixed name in a shared `/tmp`; not a
     sandbox: a program can still build a path, and paths elsewhere (`/etc`) are not checked.
     """
-    prefixes = {r.rstrip(os.sep) for root in roots for r in (os.path.normpath(root), os.path.realpath(root))}
+
+    def real(folders: Sequence[str]) -> set[str]:
+        return {r.rstrip(os.sep) for f in folders for r in (os.path.normpath(f), os.path.realpath(f))}
+
+    inside, named = real(roots), real(roots) | real([home] if home else [])
     found = []
     for token in _PATH.findall(command):
         path = os.path.normpath(os.path.join(cwd, token))
-        if any(p == r or p.startswith(r + os.sep) for p in (path, os.path.realpath(path)) for r in prefixes):
+        allowed = inside if token.startswith("..") else named
+        if any(p == r or p.startswith(r + os.sep) for p in (path, os.path.realpath(path)) for r in allowed):
             continue
         if token.startswith("..") or any(path == d or path.startswith(d + "/") for d in _PRIVATE_DIRS):
             found.append(token)
     return sorted(set(found))
 
 
-def _confined_shell(work: str, roots: Sequence[str], refused: list[dict[str, Any]]) -> AgentTool:
+def _confined_shell(
+    work: str, roots: Sequence[str], refused: list[dict[str, Any]], home: str | None = None
+) -> AgentTool:
     """A shell tool that runs each command with `bash -c` in `work` (also `HOME` and `TMPDIR`), with this process's
-    environment otherwise, and refuses a command naming a path outside `roots` (`_outside`), appending it to
-    `refused`.
+    environment otherwise, and refuses a command naming a path outside `roots` and `home` (`_outside`), appending it
+    to `refused`.
 
     Each command runs in its own process group, killed when `bash` exits or its timeout passes, so a process it left
     in the background neither holds the call open until the timeout nor outlives it. Output that isn't valid UTF-8
@@ -379,7 +393,7 @@ def _confined_shell(work: str, roots: Sequence[str], refused: list[dict[str, Any
             command: The bash command to run.
             timeout: Seconds before the command is stopped.
         """
-        named = _outside(command, roots, work)
+        named = _outside(command, roots, work, home)
         if named:
             refused.append({"command": command[:500], "paths": named})
             return (
