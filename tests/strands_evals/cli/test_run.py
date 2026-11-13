@@ -681,6 +681,24 @@ def test_run_ad_hoc_tool_level_evaluator_with_task_errors(capsys):
     assert "ToolSelectionAccuracyEvaluator" in captured.err
 
 
+def test_run_ad_hoc_context_utilization_with_task_errors(capsys):
+    """Context utilization reads the agent's tool outputs from a Session — fail fast under --task."""
+    exit_code = main(
+        [
+            "run",
+            "--task",
+            "tests.strands_evals.cli.fixtures.tasks:answer_string",
+            "--input",
+            "hi",
+            "--evaluator",
+            "context-utilization",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "ContextUtilizationEvaluator" in captured.err
+
+
 def test_run_ad_hoc_equals_without_expected_output_errors(capsys):
     """`--evaluator equals` without `--expected-output` would compare against None — reject up front."""
     exit_code = main(

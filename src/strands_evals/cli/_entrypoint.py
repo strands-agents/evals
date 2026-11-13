@@ -20,6 +20,7 @@ from typing import Any, Literal
 from ..evaluators import (
     CoherenceEvaluator,
     ConcisenessEvaluator,
+    ContextUtilizationEvaluator,
     CorrectnessEvaluator,
     Equals,
     FaithfulnessEvaluator,
@@ -46,6 +47,7 @@ from ..evaluators.evaluator import Evaluator
 BUILTIN_EVALUATOR_SHORTNAMES: dict[str, type[Evaluator]] = {
     "coherence": CoherenceEvaluator,
     "conciseness": ConcisenessEvaluator,
+    "context-utilization": ContextUtilizationEvaluator,
     "correctness": CorrectnessEvaluator,
     "equals": Equals,
     "faithfulness": FaithfulnessEvaluator,

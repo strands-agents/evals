@@ -71,6 +71,7 @@ strands-evals/
 │   │   ├── evaluator.py                      # Base Evaluator[InputT, OutputT]
 │   │   ├── coherence_evaluator.py
 │   │   ├── conciseness_evaluator.py
+│   │   ├── context_utilization_evaluator.py  # Useful / gathered tokens over a Session
 │   │   ├── correctness_evaluator.py
 │   │   ├── faithfulness_evaluator.py
 │   │   ├── goal_success_rate_evaluator.py

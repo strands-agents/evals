@@ -14,7 +14,11 @@ from strands_evals.cli._entrypoint import (
     import_attr,
     resolve_evaluator_spec,
 )
-from strands_evals.evaluators import SkillInstructionFollowingEvaluator, SkillSelectionAccuracyEvaluator
+from strands_evals.evaluators import (
+    ContextUtilizationEvaluator,
+    SkillInstructionFollowingEvaluator,
+    SkillSelectionAccuracyEvaluator,
+)
 
 
 def test_import_attr_resolves_module_function():
@@ -243,3 +247,11 @@ def test_resolve_evaluator_spec_skill_shortnames():
     """The skill judges are reachable from `--evaluator` like the other zero-arg built-ins."""
     assert isinstance(resolve_evaluator_spec("skill-selection-accuracy"), SkillSelectionAccuracyEvaluator)
     assert isinstance(resolve_evaluator_spec("skill-instruction-following"), SkillInstructionFollowingEvaluator)
+
+
+def test_resolve_evaluator_spec_context_utilization_shortname():
+    """`--evaluator context-utilization` builds the evaluator with every tool measured."""
+    evaluator = resolve_evaluator_spec("context-utilization")
+
+    assert isinstance(evaluator, ContextUtilizationEvaluator)
+    assert evaluator.measured_tools is None
