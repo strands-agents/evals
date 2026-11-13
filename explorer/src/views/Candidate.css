@@ -1,0 +1,98 @@
+.candidate .count { color: var(--muted); font-weight: 500; margin-left: 4px; font-size: 12px; }
+.candidate .group-head, .trial .group-head { font-size: 11.5px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); margin: 12px 2px 6px; }
+.candidate .group-head:first-of-type { margin-top: 2px; }
+.nowrap { white-space: nowrap; }
+.k { color: var(--muted); font-size: 12px; margin-right: 4px; }
+.sub-head { font-size: 12px; font-weight: 600; color: var(--ink-2); margin: 8px 0 4px; }
+summary.sub-head { cursor: pointer; }
+.none-box { border: 1px dashed var(--axis); border-radius: 8px; padding: 10px; text-align: center; color: var(--muted); font-size: 12.5px; }
+
+/* ---- header ---- */
+.candidate-head { margin-bottom: 14px; }
+.candidate-nav { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px; }
+.candidate-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.candidate-title h2 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
+.candidate-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin-top: 6px; font-size: 13px; color: var(--ink-2); }
+.candidate-reason { margin-top: 8px; padding: 8px 12px; border-radius: 8px; background: #fdf3dc; color: #5c3f00; font-size: 13px; overflow-wrap: anywhere; }
+
+/* ---- top row: goals and schedule ---- */
+.candidate-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: 16px; align-items: start; }
+.candidate-top > .card { margin-bottom: 16px; }
+@media (max-width: 1250px) { .candidate-top { grid-template-columns: minmax(0, 1fr); } }
+.goal-table .goal-name { font-weight: 600; overflow-wrap: anywhere; }
+.goal-table .check { width: 22px; text-align: center; }
+.goal-table td, .goal-table th { padding: 5px 8px; }
+.facts { display: flex; gap: 18px; margin-top: 10px; font-size: 13px; }
+.facts-dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 14px; margin: 12px 0 0; font-size: 13px; }
+.facts-dl dt { color: var(--muted); font-size: 12px; }
+.facts-dl dd { margin: 0; overflow-wrap: anywhere; }
+.path-table td { vertical-align: middle; }
+.path-table tr.here td { background: #f6f5f1; }
+.path-table td, .path-table th { padding: 5px 8px; }
+
+/* ---- proposal ---- */
+.pblock { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.pblock-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.pblock-error { margin-top: 8px; padding: 6px 10px; border-radius: 6px; background: #fdf3dc; color: #5c3f00; font-size: 12.5px; overflow-wrap: anywhere; }
+.pblock-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 4px 24px; margin-top: 6px; align-items: start; }
+.pblock-body > :only-child { grid-column: 1 / -1; }
+.kv-table td, .var-table td { padding: 4px 8px; }
+.kv-table td:first-child, .var-table td:first-child { width: 1%; white-space: nowrap; color: var(--ink-2); }
+.kv-inline { display: inline-flex; flex-direction: column; gap: 1px; }
+.pvars { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 4px 24px; }
+
+/* ---- changes ---- */
+.change-table td { vertical-align: middle; }
+.text-change { margin-top: 12px; }
+
+/* ---- cases ---- */
+.failures { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.failure { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 2px 10px; padding: 7px 10px; border-radius: 8px; background: var(--surface-2); font-size: 13px; }
+.fail-count { font-weight: 650; text-align: right; }
+.fail-what { overflow-wrap: anywhere; }
+.fail-what .tag { margin-left: 6px; }
+.fail-where { grid-column: 2; color: var(--ink-2); }
+.cases-scroll { overflow-x: auto; }
+.case-table { width: auto; min-width: 60%; }
+.case-table th, .case-table td { padding: 5px 12px; vertical-align: middle; }
+.case-table .gstart { border-left: 1px solid var(--grid); }
+.case-groups th { font-size: 11px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-2); border-bottom: 0; padding-bottom: 0; }
+.case-table tfoot td { border-top: 1px solid var(--axis); border-bottom: 0; }
+.case-name { overflow-wrap: anywhere; }
+.cell { display: inline-flex; align-items: center; gap: 10px; justify-content: flex-end; }
+.reps { display: inline-flex; gap: 6px; font-size: 11.5px; }
+.rep { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.rep.x, .rep.na { color: var(--muted); }
+.rep.flagged { text-decoration: underline dotted; }
+.mean { font-weight: 650; color: var(--ink); min-width: 44px; text-align: right; }
+.rep-link { display: inline-block; min-width: 22px; padding: 0 4px; margin-right: 3px; border-radius: 4px; border: 1px solid var(--border); text-align: center; font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.rep-link:hover { background: var(--surface-2); text-decoration: none; }
+.rep-link.x { color: var(--muted); border-style: dashed; }
+.rep-link.flagged { border: 1px dashed var(--ink-2); }
+.strip { display: block; }
+
+/* ---- every metric ---- */
+details.card > summary { cursor: pointer; list-style-position: inside; }
+details.card > summary h2 { display: inline; }
+details.card[open] > summary { margin-bottom: 10px; }
+.nowrap-chips { flex-wrap: nowrap; }
+.change-table td:first-child, .change-table th:first-child { width: 1%; white-space: nowrap; }
+.change-table td:nth-child(2) { width: 40%; }
+.pvars { align-items: start; }
+.path-list { display: flex; flex-direction: column; gap: 6px; }
+.scope-row { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; display: flex; flex-direction: column; gap: 3px; }
+.scope-row.here { border-color: var(--axis); background: #f8f7f4; }
+.scope-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; overflow-wrap: anywhere; }
+.scope-line .k { min-width: 0; }
+.scope-name { flex: 1 1 auto; }
+.scope-candidates { white-space: nowrap; }
+.case-table .case-name { white-space: nowrap; }
+.case-table tfoot td { white-space: nowrap; }
+.var-table, .kv-table { width: auto; min-width: 60%; }
+.text-value summary { cursor: pointer; }
+.text-value .textbox { margin-top: 4px; font-family: inherit; }
+.goal-table td.num, .goal-table th.num, .at-metrics td.num { white-space: nowrap; }
+.goal-table .goal-name { overflow-wrap: normal; }
+.case-head { max-width: 190px; margin-left: auto; white-space: normal; }
+.at-metrics .mono { overflow-wrap: anywhere; }
+.fail-error { margin-top: 2px; color: var(--ink); }

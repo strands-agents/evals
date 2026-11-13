@@ -1,0 +1,37 @@
+.tradeoff .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 22px; margin: 0 0 12px; font-size: 12.5px; color: var(--ink-2); }
+.tradeoff .ctl { display: inline-flex; align-items: center; gap: 6px; }
+.tradeoff .ctl-k { color: var(--muted); }
+.tradeoff .ctl select, .tradeoff .ctl input[type="number"] { font: inherit; font-size: 12.5px; color: var(--ink); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; max-width: 340px; }
+.tradeoff .ctl select.idle { color: var(--ink-2); }
+.tradeoff .ctl input[type="number"] { width: 92px; font-variant-numeric: tabular-nums; }
+.tradeoff .ctl.check { gap: 5px; cursor: pointer; }
+.tradeoff .ctl-count { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.tradeoff .ctl-clear { border: 0; background: none; color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer; padding: 0 2px; }
+.tradeoff .ctl-clear:hover { color: var(--ink); }
+.tradeoff .to-layout { display: flex; flex-direction: column; gap: 18px; }
+.tradeoff .to-layout.beside { flex-direction: row; align-items: flex-start; gap: 20px; }
+.tradeoff .to-layout.beside .pair-matrix { position: sticky; top: 12px; }
+.tradeoff .pair-matrix { flex: none; }
+.tradeoff .pair-grid { display: grid; gap: 6px; }
+.tradeoff .pair-grid svg { display: block; }
+.tradeoff .pair-name { box-sizing: border-box; display: flex; align-items: flex-end; font-size: 12.5px; font-weight: 600; color: var(--ink); overflow-wrap: anywhere; line-height: 1.25; overflow: hidden; }
+.tradeoff .pair-name.top { padding-top: 2px; }
+.tradeoff .pair-name.last { align-items: center; }
+.tradeoff svg.pair-cell .cell-frame { fill: var(--surface); stroke: var(--border); stroke-width: 1; }
+.tradeoff svg.pair-cell:hover .cell-frame { stroke: var(--axis); }
+.tradeoff svg.pair-cell.on .cell-frame { stroke: var(--ink); stroke-width: 1.5; }
+.tradeoff .to-detail { flex: 1 1 auto; min-width: 0; margin-bottom: 0; }
+.tradeoff .to-detail .panel-head { flex-wrap: wrap; }
+.tradeoff .panel-head h3 .vs { color: var(--muted); font-weight: 500; margin: 0 3px; }
+.tradeoff svg .axis-title { fill: var(--ink-2); font-size: 12px; font-weight: 600; }
+.tradeoff svg .axis-title tspan { font-weight: 500; }
+/* the panel pieces (as in Progress), scoped so this view does not depend on another view's styles */
+.tradeoff .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding-top: 10px; overflow: hidden; }
+.tradeoff .panel svg { display: block; }
+.tradeoff .panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px 16px; padding: 0 16px; }
+.tradeoff .panel-head h3 { margin: 0; font-size: 14px; font-weight: 650; }
+.tradeoff .panel-stats { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.tradeoff .panel-stats .k { color: var(--muted); }
+.tradeoff .panel-stats b { color: var(--ink); font-weight: 650; }
+.tradeoff .group-head { font-size: 11.5px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); margin: 0 2px 8px; }
+.tradeoff .group-head .count { color: var(--muted); font-weight: 500; margin-left: 4px; }

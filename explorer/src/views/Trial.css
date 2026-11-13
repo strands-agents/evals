@@ -1,0 +1,20 @@
+.trial .candidate-title h2 { font-size: 18px; }
+.trial .candidate-title h2 a { color: var(--ink); }
+.trial .candidate-title h2 a:hover { color: var(--link); }
+.trial .sep { color: var(--muted); font-weight: 400; }
+.at-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 16px; align-items: start; }
+@media (max-width: 1250px) { .at-top { grid-template-columns: minmax(0, 1fr); } }
+.at-metrics td { padding: 4px 8px; }
+.at-metrics .goal-name { font-weight: 600; overflow-wrap: anywhere; }
+.at-reasons td:first-child { width: 1%; white-space: nowrap; color: var(--ink-2); }
+.at-error .textbox { max-height: 300px; }
+
+/* the transcript, in the explorer's grammar: roles by a neutral rule, never a hue (hue is for blocks) */
+.at-transcript .controls { display: flex; gap: 16px; align-items: center; font-size: 12.5px; color: var(--ink-2); margin-bottom: 10px; }
+.at-transcript .msg.user { border-left: 3px solid var(--axis); }
+.at-transcript .msg.assistant, .at-transcript .msg.agent { border-left: 3px solid var(--ink-2); }
+.at-transcript .msg.tool { border-left: 3px solid var(--grid); background: var(--surface-2); }
+.at-transcript .msg.system { border-left: 3px solid var(--grid); background: var(--surface-2); }
+.at-transcript .msg.error { border-left: 3px solid var(--warning); background: #fdf8ec; }
+.at-transcript .msg .call pre { font-size: 12px; }
+.trial b.unscored { color: var(--ink-2); font-weight: 500; }

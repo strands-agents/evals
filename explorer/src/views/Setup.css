@@ -1,0 +1,60 @@
+.setup { max-width: 1480px; }
+.su-section { margin-bottom: 24px; }
+.su-head { font-size: 11.5px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); margin: 0 2px 8px; }
+.su-head .count { color: var(--muted); font-weight: 500; margin-left: 6px; }
+.su-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 0; overflow-x: auto; }
+.su-card.su-pad { padding: 12px 16px; }
+.su-empty { border: 1px dashed var(--axis); border-radius: var(--radius); padding: 16px; text-align: center; color: var(--muted); font-size: 13px; }
+.su-foot { padding: 7px 16px 5px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--grid); }
+.su-wrap { overflow-wrap: break-word; }
+
+/* tables */
+.su-table td, .su-table th { padding-left: 16px; }
+.su-table td:last-child, .su-table th:last-child { padding-right: 16px; }
+.su-table tbody tr:last-child td { border-bottom: 0; }
+.su-table th.num { text-align: right; }
+
+/* recorded settings: key = value */
+.su-kind { font-weight: 650; color: var(--ink); }
+.su-settings { display: inline-flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; }
+.su-setting { display: inline-flex; align-items: center; gap: 5px; }
+.su-sk { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--ink-2); }
+.su-eq { color: var(--muted); }
+.su-sv { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--ink); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.su-method { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
+
+/* the schedule tree */
+.su-node-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; min-height: 26px; }
+.su-child { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
+.su-child::after { content: ":"; }
+.su-stats { margin-left: auto; font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.su-children { margin: 4px 0 0 7px; padding-left: 18px; border-left: 1px solid var(--axis); }
+.su-children > .su-node { position: relative; padding: 3px 0; }
+.su-children > .su-node::before { content: ""; position: absolute; left: -18px; top: 16px; width: 12px; border-top: 1px solid var(--axis); }
+
+/* the space */
+.su-space td { vertical-align: top; }
+.su-space .su-key { min-width: 220px; }
+.su-space tr.su-selector td { background: var(--surface-2); }
+.su-space tr.su-selector td.su-key { font-weight: 600; color: var(--ink); }
+.su-space tr.su-opt-row td { color: var(--ink-2); font-size: 12.5px; padding-top: 5px; padding-bottom: 5px; }
+.su-space tr.su-opt-row b { color: var(--ink); font-weight: 600; }
+.su-branch { display: inline-block; width: 8px; height: 8px; margin-right: 7px; border-left: 1px solid var(--axis); border-bottom: 1px solid var(--axis); transform: translateY(-2px); }
+.su-type { color: var(--ink-2); font-size: 12.5px; white-space: nowrap; }
+.su-flag { margin-left: 7px; font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px; background: var(--surface-2); color: var(--ink-2); }
+.su-options, .su-cases, .su-goals { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.su-option { font-size: 12px; padding: 0 7px; border-radius: 5px; border: 1px solid var(--border); background: var(--surface); color: var(--ink); white-space: nowrap; }
+.su-default { max-width: 420px; font-size: 12.5px; }
+.su-default details summary { cursor: pointer; color: var(--ink-2); }
+.su-default > .text { font-size: 12.5px; color: var(--ink); }
+.su-default details .text { margin-top: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--code-bg); max-height: 320px; overflow: auto; font-size: 12px; }
+
+/* the experiment */
+.su-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 22px; margin: 0 0 14px; font-size: 13px; }
+.su-kv dt { color: var(--muted); }
+.su-kv dd { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.su-metrics { margin: 0 -16px -12px; width: calc(100% + 32px); border-top: 1px solid var(--grid); }
+.su-goal { font-size: 12px; padding: 0 7px; border-radius: 5px; border: 1px solid var(--border); white-space: nowrap; }
+
+.su-goals-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(480px, 1fr)); gap: 0 16px; align-items: start; }
+.su-table .su-n { width: 1%; padding-right: 2px; }

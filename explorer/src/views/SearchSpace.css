@@ -1,0 +1,55 @@
+.space .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 22px; margin: 0 0 12px; font-size: 12.5px; color: var(--ink-2); }
+.space .ctl { display: inline-flex; align-items: center; gap: 6px; }
+.space .ctl-k { color: var(--muted); }
+.space .ctl select { font: inherit; font-size: 12.5px; color: var(--ink); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; max-width: 340px; }
+.space .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; background: var(--surface); }
+.space .seg button { font: inherit; font-size: 12.5px; border: 0; background: none; color: var(--ink-2); padding: 4px 12px; cursor: pointer; }
+.space .seg button + button { border-left: 1px solid var(--border); }
+.space .seg button.on { background: var(--ink); color: #fff; }
+.space .track-card { position: sticky; top: 0; z-index: 5; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 0 2px; margin-bottom: 18px; box-shadow: 0 1px 0 rgba(11, 11, 11, 0.03), 0 6px 12px -10px rgba(11, 11, 11, 0.2); }
+.space .track-card svg { display: block; }
+
+.space .block-section { margin-bottom: 26px; }
+.space .block-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; margin: 0 2px 10px; padding-bottom: 6px; border-bottom: 1px solid var(--grid); }
+.space .block-head .block-chip { font-size: 13px; font-weight: 600; padding: 2px 9px 2px 8px; }
+.space .block-head .method { font-size: 13px; font-weight: 600; color: var(--ink-2); }
+
+.space .level { display: flex; flex-direction: column; gap: 10px; }
+.space .slice-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 10px; }
+.space .var-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 0 4px; min-width: 0; }
+.space .plot-wrap svg, .space .trace-wrap svg { display: block; }
+.space .var-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 14px; padding: 0 14px 6px; }
+.space .var-head h3 { margin: 0; font-size: 12.5px; font-weight: 650; color: var(--ink); overflow-wrap: anywhere; }
+.space .var-facts { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.space .var-facts .k { color: var(--muted); }
+.space .var-facts b { color: var(--ink); font-weight: 600; }
+.space .plot-wrap { padding: 0 4px; }
+
+.space .branch { margin-left: 14px; padding-left: 14px; border-left: 2px solid var(--grid); display: flex; flex-direction: column; gap: 10px; }
+.space .cond-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; margin-top: 4px; }
+.space .cond-head .nowrap { white-space: nowrap; }
+.space .cond-head .choices { font-size: 13px; }
+.space .never { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; padding: 6px 14px; border: 1px dashed var(--axis); border-radius: 8px; font-size: 12.5px; }
+
+.space svg .lane-label { fill: var(--ink-2); font-size: 11px; }
+.space svg .lane-label.none { fill: var(--muted); }
+.space svg .axisline { stroke: var(--axis); stroke-width: 1; }
+
+.space .lineage { padding: 0 6px 6px; }
+.space .lineage .grid-table td, .space .lineage .grid-table th { padding: 5px 8px; }
+.space .lineage tbody tr { cursor: pointer; }
+.space .lineage tbody tr:focus-visible { outline: 2px solid var(--link); outline-offset: -2px; }
+.space .lineage tbody tr.on td { background: #f1f4fa; }
+.space .lineage .ver { white-space: nowrap; }
+.space .lineage .ver .caret { display: inline-block; width: 12px; color: var(--muted); font-size: 10px; }
+.space .lineage .in-best svg { vertical-align: -5px; margin-left: 2px; }
+.space .lineage .n-add, .space .lineage .n-del { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.space .lineage .candidate-list { font-variant-numeric: tabular-nums; }
+.space .version-diff { margin: 10px 4px 4px; }
+.space .version-diff .diff-head { font-size: 12.5px; margin-bottom: 6px; }
+.space .trace-wrap { margin-bottom: 4px; }
+.space.trace .branch { margin-left: 0; padding-left: 0; border-left: 0; }
+.space.trace .cond-head { border-left: 2px solid var(--grid); padding-left: 10px; margin-left: 0; }
+.space .branch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 10px 14px; margin-left: 14px; }
+.space .branch-grid > .branch { margin-left: 0; }
+.space.slice .controls { position: sticky; top: 0; z-index: 6; background: var(--page); padding: 8px 0; margin: -8px 0 4px; }

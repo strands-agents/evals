@@ -1,0 +1,4 @@
+/* The embedded explorer's root, in its shadow root (styles.css's page and body are this element in the embed build). It
+   fills the element it is mounted in and scrolls inside it, inherits nothing from the page around it, and is the
+   viewport its views are sized to: 100vh is its height and width media queries are its width. */
+.embed { all: initial; display: block; height: 100%; overflow: auto; container-type: size; }
