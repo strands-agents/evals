@@ -1,0 +1,12 @@
+{
+  "conversation_manager": {
+    "old": "window",
+    "new": "summary"
+  },
+  "conversation_manager.window.window_size": {
+    "old": 10
+  },
+  "conversation_manager.summary.summary_ratio": {
+    "new": 0.3
+  }
+}

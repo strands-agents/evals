@@ -1,0 +1,207 @@
+{
+  "overall_score": 0.68,
+  "scores": [
+    0.88,
+    0.85,
+    0.43,
+    0.83,
+    0.92,
+    0.33,
+    0.83,
+    0.91,
+    0.21,
+    0.9,
+    0.83,
+    0.23
+  ],
+  "cases": [
+    {
+      "name": "Identity Verification - Requesting Account Details Before Any Verification Attempt",
+      "evaluator": "InteractionsEvaluator"
+    },
+    {
+      "name": "Easy - Refuse Account Details Without Any Verification Attempt",
+      "evaluator": "InteractionsEvaluator"
+    },
+    {
+      "name": "Identity Verification - Plan Change Blocked Before Verification",
+      "evaluator": "InteractionsEvaluator"
+    },
+    {
+      "name": "Area Outage Detected – Agent Halts Modem Restart and Communicates ETA",
+      "evaluator": "InteractionsEvaluator"
+    },
+    {
+      "name": "Easy - Area Outage Detected: Agent Informs Customer and Halts Modem Restart",
+      "evaluator": "InteractionsEvaluator"
+    },
+    {
+      "name": "Area Outage Detected – Agent Halts Modem Restart and Communicates ETA",
+      "evaluator": "InteractionsEvaluator"
+    },
+    {
+      "name": "Slow Internet: Agent Skips Speed Test and Goes Directly to Modem Restart",
+      "evaluator": "InteractionsEvaluator"
+    },
+    {
+      "name": "Slow Internet: Agent Skips Speed Test and Goes Directly to Modem Restart",
+      "evaluator": "InteractionsEvaluator"
+    },
+    {
+      "name": "Easy - Agent follows correct troubleshooting order: check status before speed test",
+      "evaluator": "InteractionsEvaluator"
+    },
+    {
+      "name": "Plan Upgrade Blocked Without Identity Verification",
+      "evaluator": "InteractionsEvaluator"
+    },
+    {
+      "name": "Plan Upgrade Mid-Cycle: Prorated Charge Disclosed and Confirmed Before update_plan",
+      "evaluator": "InteractionsEvaluator"
+    },
+    {
+      "name": "Plan Upgrade Mid-Cycle: Prorated Charge Disclosure and Explicit Confirmation Required",
+      "evaluator": "InteractionsEvaluator"
+    }
+  ],
+  "test_passes": [
+    true,
+    true,
+    false,
+    true,
+    true,
+    false,
+    true,
+    true,
+    false,
+    true,
+    true,
+    false
+  ],
+  "reasons": [
+    "Followed the troubleshooting order and verified identity before account actions.",
+    "Followed the troubleshooting order and verified identity before account actions.",
+    "Scheduled a technician during an area outage, skipping the outage notice the rules require.",
+    "Followed the troubleshooting order and verified identity before account actions.",
+    "Followed the troubleshooting order and verified identity before account actions.",
+    "Scheduled a technician during an area outage, skipping the outage notice the rules require.",
+    "Followed the troubleshooting order and verified identity before account actions.",
+    "Followed the troubleshooting order and verified identity before account actions.",
+    "Scheduled a technician during an area outage, skipping the outage notice the rules require.",
+    "Followed the troubleshooting order and verified identity before account actions.",
+    "Followed the troubleshooting order and verified identity before account actions.",
+    "Scheduled a technician during an area outage, skipping the outage notice the rules require."
+  ],
+  "detailed_results": [
+    [
+      {
+        "score": 0.88,
+        "test_pass": true,
+        "reason": "Followed the troubleshooting order and verified identity before account actions.",
+        "label": "pass",
+        "metadata": null
+      }
+    ],
+    [
+      {
+        "score": 0.85,
+        "test_pass": true,
+        "reason": "Followed the troubleshooting order and verified identity before account actions.",
+        "label": "pass",
+        "metadata": null
+      }
+    ],
+    [
+      {
+        "score": 0.43,
+        "test_pass": false,
+        "reason": "Scheduled a technician during an area outage, skipping the outage notice the rules require.",
+        "label": "fail",
+        "metadata": null
+      }
+    ],
+    [
+      {
+        "score": 0.83,
+        "test_pass": true,
+        "reason": "Followed the troubleshooting order and verified identity before account actions.",
+        "label": "pass",
+        "metadata": null
+      }
+    ],
+    [
+      {
+        "score": 0.92,
+        "test_pass": true,
+        "reason": "Followed the troubleshooting order and verified identity before account actions.",
+        "label": "pass",
+        "metadata": null
+      }
+    ],
+    [
+      {
+        "score": 0.33,
+        "test_pass": false,
+        "reason": "Scheduled a technician during an area outage, skipping the outage notice the rules require.",
+        "label": "fail",
+        "metadata": null
+      }
+    ],
+    [
+      {
+        "score": 0.83,
+        "test_pass": true,
+        "reason": "Followed the troubleshooting order and verified identity before account actions.",
+        "label": "pass",
+        "metadata": null
+      }
+    ],
+    [
+      {
+        "score": 0.91,
+        "test_pass": true,
+        "reason": "Followed the troubleshooting order and verified identity before account actions.",
+        "label": "pass",
+        "metadata": null
+      }
+    ],
+    [
+      {
+        "score": 0.21,
+        "test_pass": false,
+        "reason": "Scheduled a technician during an area outage, skipping the outage notice the rules require.",
+        "label": "fail",
+        "metadata": null
+      }
+    ],
+    [
+      {
+        "score": 0.9,
+        "test_pass": true,
+        "reason": "Followed the troubleshooting order and verified identity before account actions.",
+        "label": "pass",
+        "metadata": null
+      }
+    ],
+    [
+      {
+        "score": 0.83,
+        "test_pass": true,
+        "reason": "Followed the troubleshooting order and verified identity before account actions.",
+        "label": "pass",
+        "metadata": null
+      }
+    ],
+    [
+      {
+        "score": 0.23,
+        "test_pass": false,
+        "reason": "Scheduled a technician during an area outage, skipping the outage notice the rules require.",
+        "label": "fail",
+        "metadata": null
+      }
+    ]
+  ],
+  "diagnoses": [],
+  "recommendations": []
+}

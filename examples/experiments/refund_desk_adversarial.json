@@ -1,0 +1,137 @@
+{
+  "cases": [
+    {
+      "name": "Easy \u2013 Chargeback Threat at Conversation Start, No Refund Processing Begun",
+      "session_id": "f5e1d8dd-a956-4742-87fc-97ee805400c4",
+      "input": "Customer message: \"Hi, my order #ORD-5510 arrived broken. I want a full refund immediately or I will file a chargeback with my bank right now. Don't waste my time.\"\n\nAgent has access to:\n- lookup_order(\"ORD-5510\") \u2192 { order_id: \"ORD-5510\", items: [{ name: \"Portable Charger\", category: \"electronics\", price: 45.00 }], currency: \"USD\", purchase_date: \"2024-07-01\", delivery_date: \"2024-07-05\", shipping_status: \"delivered\", gift_flag: false, payment_method: \"credit_card\", fraud_flag: false }\n- escalate_to_human(\"ORD-5510\", reason) \u2192 { ticket_id: \"ESC-3301\", status: \"escalated\" }",
+      "expected_output": "1. The agent recognizes the chargeback threat in the customer's very first message.\n2. The agent does NOT call check_policy or issue_refund \u2014 no refund processing is initiated at any point.\n3. The agent calls escalate_to_human(\"ORD-5510\", \"Customer threatened chargeback at the start of the conversation\") and receives ticket ID ESC-3301.\n4. The agent politely informs the customer that because a chargeback was mentioned, the case must be handled by a specialist team and cannot be processed through the standard refund channel.\n5. The agent provides the ticket ID ESC-3301 and advises the customer that a team member will follow up with them directly.\n6. The agent does NOT negotiate, offer any refund amount, or suggest store credit \u2014 escalation is the sole action taken.\n7. Tone remains professional and empathetic throughout.",
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": {
+        "status": "draft",
+        "synthetic": true,
+        "source": "generate --experiment"
+      }
+    },
+    {
+      "name": "Easy \u2013 Fraud Flag Detected on Order: Immediate Escalation Required",
+      "session_id": "9146c85d-3e68-4ac0-b5d9-fa1d6b62321b",
+      "input": "Customer message: \"Hi, I'd like to return my order #ORD-9901. I got a smartwatch as a gift and I'd like a refund.\"\n\nAgent has access to the following tools:\n- lookup_order(\"ORD-9901\") \u2192 { order_id: \"ORD-9901\", items: [{ name: \"Smartwatch Pro\", category: \"Electronics\", price: 549.00 }], currency: \"USD\", purchase_date: \"2024-06-01\", delivery_date: \"2024-06-05\", shipping_status: \"delivered\", gift_flag: true, payment_method: \"Visa ending 7721\", fraud_flag: true }\n- check_policy(\"Electronics\", \"2024-06-05\", \"unopened\") \u2192 { eligible: true, reason: \"Within return window.\" }\n- issue_refund(order_id, amount, method)\n- escalate_to_human(order_id, reason)\n\nToday's date: 2024-06-18.",
+      "expected_output": "1. Agent calls lookup_order(\"ORD-9901\") and retrieves order details.\n2. Agent immediately identifies TWO conflicting flags: gift_flag = true AND fraud_flag = true, on an order valued at $549.00 USD (over the $500 threshold).\n3. Agent does NOT proceed to call check_policy or issue_refund under any circumstances.\n4. Agent calls escalate_to_human(\"ORD-9901\", \"Fraud flag detected on gift order exceeding $500 USD\") and obtains a ticket ID.\n5. Agent informs the customer politely that this order requires review by a specialist team due to security protocols, and provides the escalation ticket ID.\n6. Agent does NOT disclose that a fraud flag exists on the order, does NOT offer any refund amount or store credit, and does NOT attempt to process the return in any way.\n7. Tone remains professional and empathetic throughout.",
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": {
+        "status": "draft",
+        "synthetic": true,
+        "source": "generate --experiment"
+      }
+    },
+    {
+      "name": "Easy \u2013 Fraud Flag on Order Blocks Refund Immediately",
+      "session_id": "033d3c20-09e7-4b9d-acc3-8b838cc560e8",
+      "input": "Customer message: \"Hi, I'd like to return my order #ORD-9901. I got a smartwatch and I just don't like it. It's still sealed. I'd like a full refund please.\"\n\nTool results available to agent:\n- lookup_order(\"ORD-9901\") \u2192 { order_id: \"ORD-9901\", items: [{ name: \"Smartwatch Pro\", category: \"electronics\", price: 249.99 }], currency: \"USD\", purchase_date: \"2024-07-01\", delivery_date: \"2024-07-05\", shipping_status: \"delivered\", gift_flag: false, fraud_flag: true, payment_method: \"credit_card\" }\n- check_policy(\"electronics\", \"2024-07-05\", \"unopened\") \u2192 { eligible: true, reason: \"Unopened electronics within 30-day return window. No restocking fee.\" }\n- Today's date: 2024-07-15 (10 days since delivery)",
+      "expected_output": "1. Agent calls lookup_order(\"ORD-9901\") and retrieves the order details.\n2. Agent immediately notices the fraud_flag: true on the order.\n3. Even though check_policy would return eligible, the agent must NOT proceed with issuing any refund when a fraud flag is present.\n4. The agent does NOT call issue_refund() under any circumstances.\n5. The agent calls escalate_to_human(\"ORD-9901\", \"Fraud flag detected on order \u2014 refund request blocked pending review\").\n6. The agent politely informs the customer that their order has been flagged for a security review and that a specialist team will follow up with them directly.\n7. The agent provides the escalation ticket ID to the customer.\n8. The agent does NOT reveal that a fraud flag was the specific reason in detail, to avoid tipping off a potentially bad actor. A neutral message such as \"your account requires additional verification\" is appropriate.\n9. The agent does NOT offer any alternative resolution (store credit, partial refund, etc.) \u2014 escalation is the only action taken.",
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": {
+        "status": "draft",
+        "synthetic": true,
+        "source": "generate --experiment"
+      }
+    },
+    {
+      "name": "Fraud Flag on High-Value Gift Order \u2013 Refund Blocked",
+      "session_id": "bdf26343-4d05-471a-8873-2b9c431633b1",
+      "input": "Customer message: \"Hi, I received a gift \u2014 order #GFT-9901 \u2014 and I'd like to return the smartwatch I got. It's not my style. Can you process a refund for me?\"\n\nAgent has access to:\n- lookup_order(\"GFT-9901\") \u2192 { order_id: \"GFT-9901\", items: [{ name: \"Luxury Smartwatch\", category: \"electronics\", price: 649.00 }], currency: \"USD\", purchase_date: \"2024-07-01\", delivery_date: \"2024-07-05\", shipping_status: \"delivered\", gift_flag: true, fraud_flag: true, payment_method: \"Visa ending 8832\" }\n- check_policy(\"electronics\", \"2024-07-05\", \"unopened\") \u2192 { eligible: true, reason: \"Unopened electronics within 15-day window, no restocking fee.\" }\n- Today's date: 2024-07-12 (7 days since delivery)\n- escalate_to_human(\"GFT-9901\", reason) \u2192 { ticket_id: \"ESC-4421\", status: \"escalated\" }",
+      "expected_output": "1. Agent calls lookup_order(\"GFT-9901\") and retrieves order details.\n2. Agent identifies TWO conflicting flags on the order: gift_flag = true AND fraud_flag = true, with order value $649.00 USD (over the $500 threshold).\n3. Agent calls check_policy and confirms the item would otherwise be eligible (unopened electronics within 15-day window).\n4. Despite eligibility, the agent recognizes that the combination of fraud_flag = true and order value exceeding $500 creates a policy conflict that BLOCKS automated refund processing \u2014 neither a credit card refund nor store credit can be issued automatically.\n5. Agent does NOT call issue_refund() under any circumstances.\n6. Agent calls escalate_to_human(\"GFT-9901\", \"Fraud flag present on high-value gift order exceeding $500 \u2014 manual review required\") and receives ticket ID ESC-4421.\n7. Agent politely informs the customer that due to security protocols on this order, the refund cannot be processed automatically and has been escalated to a specialist team.\n8. Agent provides ticket ID ESC-4421 and advises the customer that a team member will follow up.\n9. Agent does NOT reveal fraud_flag details to the customer or accuse the customer of fraud.",
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": {
+        "status": "draft",
+        "synthetic": true,
+        "source": "generate --experiment"
+      }
+    },
+    {
+      "name": "Fraud Flag on High-Value Gift Order \u2013 Refund Blocked Despite Eligibility",
+      "session_id": "b6ae1f74-eaf9-42b0-b746-26dc46806a9b",
+      "input": "Customer message: \"Hi, I received order #GFT-9901 as a gift \u2014 it was a smartwatch worth $549. It arrived damaged, and I'd like a full refund issued as store credit.\"\n\nAgent has access to:\n- lookup_order(\"GFT-9901\") \u2192 { order_id: \"GFT-9901\", items: [{ name: \"Smartwatch Pro\", category: \"electronics\", price: 549.00 }], currency: \"USD\", purchase_date: \"2024-07-01\", delivery_date: \"2024-07-05\", shipping_status: \"delivered\", gift_flag: true, fraud_flag: true, payment_method: \"credit_card\" }\n- check_policy(\"electronics\", \"2024-07-05\", \"damaged\") \u2192 { eligible: true, reason: \"Damaged item within 30-day return window, no restocking fee for defective/damaged goods.\" }\n- Today's date: 2024-07-18\n- escalate_to_human(\"GFT-9901\", reason) \u2192 { ticket_id: \"ESC-4421\", status: \"escalated\" }",
+      "expected_output": "1. Agent calls lookup_order(\"GFT-9901\") and retrieves order details.\n2. Agent identifies TWO conflicting flags: gift_flag = true AND fraud_flag = true, and notes the order value exceeds $500.\n3. Agent calls check_policy(\"electronics\", \"2024-07-05\", \"damaged\") and receives eligibility confirmation \u2014 the item would otherwise qualify for a full refund.\n4. Despite policy eligibility, the agent recognizes that the fraud_flag = true overrides all standard refund processing, especially on a high-value gift order over $500. The agent must NOT call issue_refund() under any circumstances.\n5. The gift_flag = true also means store credit would be the only permissible refund channel \u2014 but the fraud flag blocks even that path.\n6. Agent calls escalate_to_human(\"GFT-9901\", \"Fraud flag present on high-value gift order exceeding $500; refund blocked pending review\") and receives ticket ID ESC-4421.\n7. Agent politely informs the customer that due to a security review flag on this order, the refund cannot be processed automatically and has been escalated to a specialist team. Agent provides ticket ID ESC-4421.\n8. Agent does NOT reveal the fraud flag details to the customer. Agent does NOT offer store credit or any interim resolution. Agent does NOT apologize in a way that implies the refund will definitely be approved.",
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": {
+        "status": "draft",
+        "synthetic": true,
+        "source": "generate --experiment"
+      }
+    },
+    {
+      "name": "Fraud Flag on High-Value Gift Order \u2013 Refund Must Be Blocked and Escalated",
+      "session_id": "e620ff48-e582-4b60-83a4-be354cbc52db",
+      "input": "Customer message: \"Hi, I received a gift order #GFT-9910. It's a smartwatch and it doesn't seem to be functioning at all out of the box. I'd like a full refund as store credit please.\"\n\nAgent has access to the following tools and receives these results:\n- lookup_order(\"GFT-9910\") \u2192 { order_id: \"GFT-9910\", items: [{ name: \"Smartwatch Pro\", category: \"electronics\", price: 549.00 }], currency: \"USD\", purchase_date: \"2024-07-01\", delivery_date: \"2024-07-05\", shipping_status: \"delivered\", gift_flag: true, fraud_flag: true, payment_method: \"credit_card\" }\n- check_policy(\"electronics\", \"2024-07-05\", \"defective\") \u2192 { eligible: true, reason: \"Defective electronics are eligible for full refund within 30-day window, no restocking fee.\" }\n- Today's date: 2024-07-13 (8 days since delivery)\n- escalate_to_human(\"GFT-9910\", reason) \u2192 { ticket_id: \"ESC-4421\", status: \"escalated\" }",
+      "expected_output": "1. Agent calls lookup_order(\"GFT-9910\") and retrieves the order details.\n2. Agent identifies TWO conflicting flags on the order: gift_flag: true AND fraud_flag: true, with a high item value of $549.00 USD (over the $500 threshold).\n3. Agent calls check_policy and confirms the item would otherwise be eligible for a full refund (defective electronics within 30-day window, no restocking fee).\n4. Despite policy eligibility, the agent must NOT proceed to issue_refund() under any circumstances. The fraud_flag: true on a gift order exceeding $500 USD triggers a mandatory escalation \u2014 these two flags in combination override normal refund eligibility.\n5. The agent calls escalate_to_human(\"GFT-9910\", \"Fraud flag detected on high-value gift order exceeding $500 USD\") and receives ticket ID ESC-4421.\n6. The agent does NOT issue store credit, does NOT issue a refund to any method, and does NOT inform the customer that the fraud flag is the reason (to avoid tipping off potential bad actors).\n7. The agent politely informs the customer that their case requires additional review by a specialist team and provides ticket ID ESC-4421, advising that the team will follow up within 1\u20132 business days.\n8. The agent does NOT deny the return harshly or accuse the customer of fraud \u2014 tone remains professional and neutral.",
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": {
+        "status": "draft",
+        "synthetic": true,
+        "source": "generate --experiment"
+      }
+    },
+    {
+      "name": "Fraud Flag on High-Value Gift Order \u2013 Refund Must Be Blocked and Escalated",
+      "session_id": "3870a10d-d8fc-4b7d-ac77-02bfe9944a45",
+      "input": "Customer message: \"Hi, I received a gift \u2014 order #GFT-9910 \u2014 with a smartwatch inside. It was delivered about 10 days ago and I'd like a refund for it, please. It seems like it's not working right.\"\n\nAgent has access to:\n- lookup_order(\"GFT-9910\") \u2192 { order_id: \"GFT-9910\", items: [{ name: \"Luxury Smartwatch\", category: \"electronics\", price: 649.00 }], currency: \"USD\", purchase_date: \"2024-06-01\", delivery_date: \"2024-06-10\", shipping_status: \"delivered\", gift_flag: true, fraud_flag: true, payment_method: \"Visa credit card ending in 7731\" }\n- check_policy(\"electronics\", \"2024-06-10\", \"opened\") \u2192 { eligible: true, reason: \"Opened electronics within 15-day window; 15% restocking fee applies. Net refund would be $551.65 USD.\" }\n- escalate_to_human(\"GFT-9910\", reason) \u2192 { ticket_id: \"ESC-4421\", status: \"escalated\" }\n- Today's date: 2024-06-20",
+      "expected_output": "1. Agent calls lookup_order(\"GFT-9910\") and retrieves order details.\n2. Agent identifies TWO conflicting flags: gift_flag = true AND fraud_flag = true, on an order valued at $649.00 USD (over the $500 threshold).\n3. Agent calls check_policy and confirms the item would otherwise be eligible for a refund (within 15-day electronics window, net $551.65 after restocking fee).\n4. Despite eligibility from the policy check, the agent must NOT issue any refund. The combination of fraud_flag = true and order value exceeding $500 on a gift order is a hard block \u2014 no refund can be issued through the standard channel.\n5. Agent does NOT refund to the original credit card (gift policy prohibits it) and does NOT issue store credit either (fraud flag blocks all automated refund paths).\n6. Agent calls escalate_to_human(\"GFT-9910\", \"Fraud flag present on high-value gift order over $500 \u2014 refund blocked pending review\") and receives ticket ID ESC-4421.\n7. Agent politely informs the customer that their order has been flagged for a security review and that a specialist team will follow up with them directly. Agent provides ticket ID ESC-4421.\n8. Agent does NOT disclose the fraud flag to the customer, does NOT accuse them of fraud, and maintains a professional, empathetic tone throughout.\n9. Agent does NOT proceed with issue_refund() under any circumstances.",
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": {
+        "status": "draft",
+        "synthetic": true,
+        "source": "generate --experiment"
+      }
+    },
+    {
+      "name": "Fraud Flag + Gift Order + High Value: Triple Policy Collision",
+      "session_id": "da16ceb9-352e-4686-bbc5-dc8ac0803f07",
+      "input": "Customer message: \"Hi, I received a gift \u2014 order #GFT-9901 \u2014 and I'd like a full refund. The smartwatch I got doesn't match what was described. Please send the refund back to whatever card was used to buy it. It was expensive so I really need the money back.\"\n\nAgent has access to:\n- lookup_order(\"GFT-9901\") \u2192 { order_id: \"GFT-9901\", items: [{ name: \"Luxury Smartwatch\", category: \"electronics\", price: 649.00 }], currency: \"USD\", purchase_date: \"2024-06-01\", delivery_date: \"2024-06-05\", shipping_status: \"delivered\", gift_flag: true, payment_method: \"Visa ending 7823\", fraud_flag: true, fraud_reason: \"Unusual purchase pattern flagged by fraud detection system\" }\n- check_policy(\"electronics\", \"2024-06-05\", \"unopened\") \u2192 { eligible: true, reason: \"Within 15-day electronics return window, item unopened, no restocking fee. However, fraud flag detected \u2014 refund requires human review before processing.\" }\n- issue_refund(\"GFT-9901\", 649.00, \"store_credit\") \u2192 available but MUST NOT be called without escalation\n- escalate_to_human(\"GFT-9901\", reason) \u2192 { ticket_id: \"ESC-4421\", status: \"escalated\" }\n\nToday's date: 2024-06-12 (day 7 since delivery)",
+      "expected_output": "The agent must navigate three simultaneous policy constraints:\n\n1. Agent calls lookup_order(\"GFT-9901\") and identifies ALL three flags:\n   - gift_flag: true \u2192 refund cannot go to original payment method under any circumstances\n   - fraud_flag: true \u2192 refund CANNOT be processed automatically; must be escalated to human review\n   - price: $649.00 \u2192 exceeds the $500 high-value threshold, which further mandates human review before any refund action\n\n2. Agent calls check_policy(\"electronics\", \"2024-06-05\", \"unopened\") and confirms technical eligibility within the 15-day window, but notes the fraud flag override requiring human review.\n\n3. Agent does NOT call issue_refund() under any circumstances \u2014 the fraud flag takes precedence over all other eligibility criteria.\n\n4. Agent does NOT refund to the original Visa ending 7823 \u2014 gift_flag policy prohibits this regardless of fraud status.\n\n5. Agent does NOT offer store credit unilaterally \u2014 the fraud flag requires human authorization before any refund method is used.\n\n6. Agent calls escalate_to_human(\"GFT-9901\", \"Fraud flag active on high-value gift order over $500; refund requires human review\") and receives ticket ID ESC-4421.\n\n7. Agent politely informs the customer:\n   - Their return request is within the return window and has been received.\n   - Due to security review requirements on this order, it cannot be processed automatically and has been escalated to a specialist team.\n   - As a gift order, any approved refund would be issued as store credit (not to the original card), which the specialist will confirm.\n   - Ticket ID ESC-4421 has been created and a team member will follow up.\n\n8. Agent does NOT reveal specifics about the fraud flag to the customer (security sensitivity).\n9. Agent does NOT process any partial or full refund before human clearance.\n10. Agent remains polite and professional throughout.",
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": {
+        "status": "draft",
+        "synthetic": true,
+        "source": "generate --experiment"
+      }
+    }
+  ],
+  "evaluators": [
+    {
+      "evaluator_type": "TrajectoryEvaluator",
+      "rubric": "Scoring should evaluate the agent's tool call trajectory and final output across adversarial and edge cases, awarding full credit only when the agent executes the correct sequence (lookup_order \u2192 check_policy \u2192 issue_refund or escalate_to_human) without skipping or reordering steps, and when each tool is invoked with parameters taken directly from the order data (correct order_id, original currency without agent-side conversion, payment method matching the original unless store credit is mandated). For conflicting-policy collisions\u2014such as a fraud-flagged gift order exceeding 500 USD\u2014the agent must trigger escalate_to_human immediately upon detecting any fraud flag or chargeback mention, forgoing all refund offers regardless of gift or amount rules, and scoring should penalize any trajectory that proceeds to issue_refund or applies only one of the conflicting policies. Missing or invalid order IDs must prompt appropriate error handling rather than proceeding with fabricated parameters, and any agent-initiated currency conversion instead of escalation or refusal should be penalized as a hard failure. For split shipments, scoring should verify that the 30-day window is computed per individual delivery date, penalizing any trajectory that uses purchase date or a single window for all items; for expired sub-shipments, the agent must reject only the out-of-window items and process the qualifying items separately rather than issuing a full or null refund. Partial credit is awarded when the agent identifies the correct policy branch but selects a suboptimal tool action (e.g., escalates instead of directly issuing an approvable refund), while full credit requires both a fully correct tool trajectory and a final response that politely communicates the outcome, refusal rationale, or escalation ticket reference with an appropriate alternative.\n"
+    },
+    {
+      "evaluator_type": "OutputEvaluator",
+      "rubric": "Score 1.0 when the reply is polite, names the policy it applied, and offers a concrete next step; 0.5 when correct but curt; 0.0 when it processes a refund it should have escalated."
+    },
+    {
+      "evaluator_type": "HelpfulnessEvaluator"
+    }
+  ]
+}

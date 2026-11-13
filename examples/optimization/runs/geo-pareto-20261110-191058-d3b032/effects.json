@@ -1,0 +1,138 @@
+{
+  "effects": [
+    {
+      "metric": "ExactAnswer",
+      "key": "rewritten:text",
+      "level": "rewritten",
+      "reference": "default",
+      "mean": 0.18,
+      "ci90": [
+        0.09999999999999999,
+        0.26
+      ],
+      "p_positive": 0.97
+    },
+    {
+      "metric": "tokens",
+      "key": "rewritten:text",
+      "level": "rewritten",
+      "reference": "default",
+      "mean": 21.599999999999998,
+      "ci90": [
+        11.999999999999998,
+        31.199999999999996
+      ],
+      "p_positive": 0.97
+    }
+  ],
+  "factors": [
+    {
+      "key": "rewritten:text",
+      "kind": "text",
+      "levels": [
+        "default",
+        "rewritten"
+      ],
+      "reference": "default"
+    }
+  ],
+  "omitted": [
+    {
+      "key": "conversation_manager.window.window_size",
+      "why": "one value"
+    }
+  ],
+  "goals": [
+    {
+      "role": "objective",
+      "index": 0,
+      "metric": "ExactAnswer",
+      "better": "higher"
+    },
+    {
+      "role": "objective",
+      "index": 1,
+      "metric": "tokens",
+      "better": "lower"
+    }
+  ],
+  "metrics": {
+    "ExactAnswer": {
+      "prior_scales": {
+        "main": 0.08,
+        "pair": 0.01,
+        "candidate": 0.02
+      },
+      "prior_scale_weights": [
+        {
+          "scales": {
+            "main": 0.08,
+            "pair": 0.01,
+            "candidate": 0.02
+          },
+          "weight": 0.41
+        },
+        {
+          "scales": {
+            "main": 0.15,
+            "pair": 0.003,
+            "candidate": 0.01
+          },
+          "weight": 0.22
+        }
+      ],
+      "scale": {
+        "unit": 1.0,
+        "offset": 0.0
+      },
+      "noise": 0.004,
+      "observations": 18,
+      "diagnostics": {
+        "n_holdout": 4,
+        "z_mean": 0.12,
+        "z_sq_sum": 1.4,
+        "flagged": false,
+        "messages": []
+      }
+    },
+    "tokens": {
+      "prior_scales": {
+        "main": 0.08,
+        "pair": 0.01,
+        "candidate": 0.02
+      },
+      "prior_scale_weights": [
+        {
+          "scales": {
+            "main": 0.08,
+            "pair": 0.01,
+            "candidate": 0.02
+          },
+          "weight": 0.41
+        },
+        {
+          "scales": {
+            "main": 0.15,
+            "pair": 0.003,
+            "candidate": 0.01
+          },
+          "weight": 0.22
+        }
+      ],
+      "scale": {
+        "unit": 800.0,
+        "offset": 0.0
+      },
+      "noise": 0.0001,
+      "observations": 18,
+      "diagnostics": {
+        "n_holdout": 4,
+        "z_mean": 0.12,
+        "z_sq_sum": 1.4,
+        "flagged": false,
+        "messages": []
+      }
+    }
+  },
+  "reason": null
+}

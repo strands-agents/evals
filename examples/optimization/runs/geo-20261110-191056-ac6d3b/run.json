@@ -1,0 +1,251 @@
+{
+  "cases": [
+    "capital_france",
+    "capital_australia",
+    "capital_canada",
+    "capital_brazil",
+    "capital_turkey",
+    "capital_switzerland",
+    "capital_nigeria"
+  ],
+  "split": {
+    "settings": {
+      "train": 0.4,
+      "validation": 0.3,
+      "test": 0.3
+    },
+    "seed": 7,
+    "train": [
+      "capital_france",
+      "capital_australia",
+      "capital_canada"
+    ],
+    "validation": [
+      "capital_brazil",
+      "capital_turkey"
+    ],
+    "test": [
+      "capital_switzerland",
+      "capital_nigeria"
+    ]
+  },
+  "runs_per_candidate": 1,
+  "agent_failure_score": "worst",
+  "feasibility_threshold": 0.9,
+  "space": [
+    {
+      "key": "system_prompt",
+      "name": "system_prompt",
+      "kind": "text",
+      "default": {
+        "sha256": "c99af3aef7ab217d43cffbdeb47a0b2133a815db17089ef120ef153b3049aceb",
+        "length": 64
+      },
+      "min_value": null,
+      "max_value": null,
+      "log": false,
+      "options": null,
+      "size_cap": 2000,
+      "edit_instructions": null,
+      "active_when": null,
+      "source": null
+    },
+    {
+      "key": "rules",
+      "name": "rules",
+      "kind": "text",
+      "default": {
+        "sha256": "fc8cff901a3f1afcf43cd7b866df6fe1a31c77df85b7ff6e863c546e941e7775",
+        "length": 53
+      },
+      "min_value": null,
+      "max_value": null,
+      "log": false,
+      "options": null,
+      "size_cap": 2000,
+      "edit_instructions": null,
+      "active_when": null,
+      "source": {
+        "path": "/Users/nhungvan/Desktop/evals_optimizer/real_examples/24_example_run/agent_files/answer_rules.md",
+        "pointer": null,
+        "as_path": true
+      }
+    },
+    {
+      "key": "conversation_manager",
+      "name": "conversation_manager",
+      "kind": "choice",
+      "default": "window",
+      "min_value": null,
+      "max_value": null,
+      "log": false,
+      "options": [
+        "window",
+        "summary"
+      ],
+      "size_cap": null,
+      "edit_instructions": null,
+      "active_when": null,
+      "source": null
+    },
+    {
+      "key": "conversation_manager.window.window_size",
+      "name": "conversation_manager",
+      "kind": "int",
+      "default": 10,
+      "min_value": 4,
+      "max_value": 40,
+      "log": false,
+      "options": null,
+      "size_cap": null,
+      "edit_instructions": null,
+      "active_when": [
+        "conversation_manager",
+        "window"
+      ],
+      "source": null
+    },
+    {
+      "key": "conversation_manager.summary.summary_ratio",
+      "name": "conversation_manager",
+      "kind": "float",
+      "default": 0.3,
+      "min_value": 0.1,
+      "max_value": 0.8,
+      "log": false,
+      "options": null,
+      "size_cap": null,
+      "edit_instructions": null,
+      "active_when": [
+        "conversation_manager",
+        "summary"
+      ],
+      "source": null
+    }
+  ],
+  "seed": 7,
+  "selection": {
+    "name": "top_ranked",
+    "config": {}
+  },
+  "score_model": {
+    "name": "BayesBenchModel",
+    "config": {}
+  },
+  "final_pick": {
+    "n_finalists": 3,
+    "rule": {
+      "name": "Mean",
+      "config": {}
+    }
+  },
+  "search": {
+    "blocks": [
+      {
+        "name": "structure",
+        "keys": [
+          "conversation_manager"
+        ],
+        "proposer": "TPE",
+        "config": {
+          "n_startup_trials": 2
+        }
+      },
+      {
+        "name": "text",
+        "keys": [
+          "system_prompt",
+          "rules"
+        ],
+        "proposer": "Reflection",
+        "config": {
+          "success_threshold": 0.5
+        }
+      },
+      {
+        "name": "numbers",
+        "keys": [
+          "conversation_manager.window.window_size",
+          "conversation_manager.summary.summary_ratio"
+        ],
+        "proposer": "TPE",
+        "config": {
+          "n_startup_trials": 4
+        }
+      }
+    ],
+    "schedule": {
+      "name": "nested",
+      "config": {
+        "outer": "structure",
+        "inner": {
+          "name": "alternate",
+          "config": {}
+        },
+        "inner_iterations": 4
+      }
+    },
+    "redraws": 3
+  },
+  "objective": "WeightedSum(Maximize(ExactAnswer), Maximize(Helpfulness))",
+  "constraints": [
+    "tokens <= 600"
+  ],
+  "proposals_per_iteration": 2,
+  "rerun_passes": 1,
+  "budget": {
+    "max_rollouts": 70,
+    "max_iterations": null
+  },
+  "max_workers": 4,
+  "metrics": {
+    "ExactAnswer": {
+      "kind": "evaluator",
+      "roles": [
+        "objective"
+      ],
+      "range": [
+        0.0,
+        1.0
+      ],
+      "weight": 1.0,
+      "scale": 1.0
+    },
+    "Helpfulness": {
+      "kind": "evaluator",
+      "roles": [
+        "objective"
+      ],
+      "range": [
+        0.0,
+        1.0
+      ],
+      "weight": 1.0,
+      "scale": 1.0
+    },
+    "tokens": {
+      "kind": "usage",
+      "roles": [
+        "constraint"
+      ],
+      "range": [
+        0,
+        null
+      ],
+      "weight": null,
+      "scale": null
+    }
+  },
+  "agent": {
+    "factory": "__main__:build_agent",
+    "rollout_fn": "__main__:faulty_rollout.<locals>.rollout"
+  },
+  "name": "geo",
+  "workdir": "/Users/nhungvan/Desktop/evals_optimizer/evals-candidate/../real_examples",
+  "schema_version": 1,
+  "code": {
+    "version": "0.1.dev253+gb41fde52e.d20261103",
+    "commit": "6ce3c5e7ddfde5f33fe02dc9009e9433bb24c596",
+    "dirty": true
+  }
+}
