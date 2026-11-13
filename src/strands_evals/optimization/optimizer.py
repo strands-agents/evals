@@ -1044,6 +1044,7 @@ class Optimizer:
             proposals=outcomes,
             rollouts_spent=self._budget.spent - spent_before,
         )
+        # The best so far, the baseline included when it ranks there (the finalists would exclude it).
         finalists = self._final_pick.n_finalists
         if self._criteria.is_pareto:
             best_after = pareto_front(assessments, ranking)[: max(finalists, PARETO_MIN_FINALISTS)]
