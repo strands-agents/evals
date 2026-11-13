@@ -635,8 +635,8 @@ def _with_names(schedule: Schedule, names: Mapping[int, str]) -> Schedule:
 def _saved(record: IterationRecord) -> bool:
     """Whether a step saved a new candidate (a duplicate or an invalid patch saves none).
 
-    An `ineligible` or `unscored` candidate counts: it is new and spent rollouts, so the budget bounds a run
-    of them, and an outage that makes every candidate ineligible doesn't end the search as "exhausted".
+    An `ineligible` candidate counts: it is new and spent rollouts, so the budget bounds a run of them, and
+    an outage that makes every candidate ineligible doesn't end the search as "exhausted".
     """
     return any(p.outcome not in ("invalid", "duplicate") for p in record.proposals)
 

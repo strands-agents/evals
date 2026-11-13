@@ -24,7 +24,6 @@ EventName = Literal[
     "label",
     "invalid",
     "duplicate",
-    "unscored",
     "proposer_retry",
     "proposer_usage",
     "proposer_error",
@@ -63,7 +62,6 @@ class EventLog:
     - `invalid`: `block`, `redraw`, `updates`, `reason` (no candidate).
     - `duplicate`: `block`, `redraw`, `candidate_id` (the existing one); `patch` and `round` for a round's
       opener.
-    - `unscored`: `candidate_id`, `pending`, `remaining`, `reserve`.
     - `proposer_retry`, `proposer_error`: `block`, `redraw`, `error_type`, `error`.
     - `proposer_usage`: `block`, `redraw`, `usage` (`Usage`: a `propose` call's spend no returned patch carries).
     - `screened`: `block`, `key`, `reason`.

@@ -19,6 +19,7 @@ from .._async import run_async as _run_in_thread
 from ..evaluators.evaluator import Evaluator
 from ..experiment import Experiment
 from ..types.optimization import (
+    SPLIT_NAMES,
     CandidateScores,
     CandidateSummary,
     Evidence,
@@ -477,7 +478,7 @@ class Optimizer:
         self._last_fit: Fit | None = None  # the last successful fit, the next refit's `previous`
         self._fit_errors: set[str] = set()
         self._fit_error: str | None = None  # the last refit's error while no refit has succeeded since
-        self._saved: dict[str, Candidate] = {baseline.id: baseline}  # every saved candidate, unscored ones too
+        self._saved: dict[str, Candidate] = {baseline.id: baseline}  # every saved candidate, by id
         self._open_rounds: list[OpenRound] = []
         self._search_cost = Usage.zero()
         self._iteration = 0
@@ -495,7 +496,7 @@ class Optimizer:
             # As the closed iterations left them, not as a killed iteration may have replaced them.
             records = {
                 (case, index): run.record_from(saved_trial)
-                for split in ("train", "validation", "test")
+                for split in SPLIT_NAMES
                 for case in getattr(self._case_split, split)
                 for index in range(self._runs_per_candidate)
                 if (saved_trial := state.trials.get((candidate_id, index, case))) is not None
@@ -683,7 +684,7 @@ class Optimizer:
         run.save_diff("best", champion.diff(), champion.changed_values())
         for c in report.front if criteria.is_pareto else []:
             run.save_diff(f"front/{views[c].number}-{c}", views[c].diff(), views[c].changed_values())
-        agent_cost: dict[SplitName, Usage] = {split: Usage.zero() for split in ("train", "validation", "test")}
+        agent_cost: dict[SplitName, Usage] = {split: Usage.zero() for split in SPLIT_NAMES}
         judge_cost = retry_cost = Usage.zero()
         # Every saved trial, as `spent` counts them: after a resume, a killed iteration's trials too.
         for saved in run._trials.values():
@@ -1050,7 +1051,6 @@ class Optimizer:
         # Save, then score every new candidate of the step at once (a same-step twin is scored once).
         runner = self._runner(self._max_workers)
         to_score: list[tuple[Candidate, bool, int]] = []  # (candidate, rescore, pending trials)
-        unscored: set[str] = set()
         first_of: dict[str, _Draw] = {}
         budgeted = 0
         for draw in accepted:
@@ -1069,19 +1069,9 @@ class Optimizer:
                 patch=opener_patch,
             )
             self._saved.setdefault(candidate.id, candidate)
+            # The step's n was cut to what the search allowance covers and `pending` is at most one full pass,
+            # so every candidate of the step is affordable.
             pending = runner.pending(candidate.id, list(self._case_split.train), runs=self._runs_per_candidate)
-            if not self._budget.can_afford(budgeted + pending, phase="train"):
-                remaining = self._budget.remaining
-                self._run.events.append(
-                    "unscored",
-                    iteration=iteration,
-                    candidate_id=candidate.id,
-                    pending=pending,
-                    remaining=remaining,
-                    reserve=self._budget.validation_reserve + self._budget.test_reserve,
-                )
-                unscored.add(candidate.id)
-                continue
             budgeted += pending
             to_score.append((candidate, rescore, pending))
             if opener_patch is not None:
@@ -1109,18 +1099,16 @@ class Optimizer:
             assert candidate is not None
             twin = candidate.id in told
             a = assessments.get(candidate.id)
-            if candidate.id in unscored:
-                outcome: ObservationOutcome = "unscored"
-                reason = "the budget couldn't cover it"
-            elif twin:
+            outcome: ObservationOutcome
+            if twin:
                 outcome, reason = "duplicate", "repeats a candidate of the same step"
             else:
                 outcome, reason = labels[candidate.id].outcome, labels[candidate.id].reason
             for block, patch in draw.patches.items():
-                if block in deferred and candidate.id not in unscored and not twin:
+                if block in deferred and not twin:
                     continue  # told the round's best at the round's end
                 self._tell(block, patch, candidate.id, candidate.values, outcome, reason, a)
-            if not twin and candidate.id not in unscored:
+            if not twin:
                 for other, _ in self._blocks:
                     name = _block_name(other)
                     if name in draw.patches or name in deferred or name in listening:
@@ -1184,6 +1172,13 @@ class Optimizer:
         keys = dict((_block_name(b), k) for b, k in self._blocks)
 
         async def slot() -> _Draw | None:
+            """One candidate of the step: each block's patch on the values the blocks before it chose.
+
+            Blocks are asked in `order` (structural first) for 1 patch each, so a later block proposes under the
+            structure this slot chose; a block with no key active under those values is skipped, as is one that
+            returns nothing. A structural patch is merged at once, so `current` carries it to the next block. An
+            invalid merge returns straight away, leaving the rest of the blocks unasked; no patch at all -> None.
+            """
             current = parent
             patches: dict[str, Patch] = {}
             for block in order:
@@ -1457,7 +1452,6 @@ class Optimizer:
                 continue
             self._open_rounds.remove(open_round)
             opener = open_round.opener_id
-            assert opener is not None
             # The opener, then what the round's steps saved, in proposal order (saved in the observe event).
             members = list(
                 dict.fromkeys(
@@ -1467,7 +1461,7 @@ class Optimizer:
                         for record in self._iterations
                         if record.round is not None and tuple(record.round[: len(path)]) == path
                         for p in record.proposals
-                        if p.candidate_id is not None and p.outcome not in ("invalid", "duplicate", "unscored")
+                        if p.candidate_id is not None and p.outcome not in ("invalid", "duplicate")
                     ]
                 )
             )
@@ -1516,9 +1510,7 @@ class Optimizer:
         if self._run is None:
             self._run = RunDirectory.create(self._base_dir, self._config(), name=self._name)
         self._split_of: dict[str, SplitName] = {
-            name: role
-            for role in ("train", "validation", "test")
-            for name in getattr(self._case_split, role)  # type: ignore[misc]
+            name: role for role in SPLIT_NAMES for name in getattr(self._case_split, role)
         }
         need = self._proposals_per_iteration * len(self._case_split.train) * self._runs_per_candidate
         if self._proposals_per_iteration > 1 and need > self._max_workers:
@@ -1905,5 +1897,5 @@ def _outcome(
         changed_keys=updates if draw.candidate is None else [k for k in draw.candidate.values if k in updates],
         rationale="\n".join(p.rationale for p in draw.patches.values() if p.rationale),
         outcome=outcome,
-        objective=None if assessment is None or outcome in ("ineligible", "unscored") else assessment.objective,
+        objective=None if assessment is None or outcome == "ineligible" else assessment.objective,
     )

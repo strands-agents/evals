@@ -14,8 +14,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from ...types.optimization import CandidateLabel, CandidateScores, Estimate, Values
-from ..scoring.objectives import AtMost, Constraint, Criteria, Maximize, Minimize, measured_metrics, near
+from ...types.optimization import CandidateLabel, CandidateScores, Estimate, Values, near
+from ..scoring.objectives import AtMost, Constraint, Criteria, Maximize, Minimize, measured_metrics
 from .protocols import Fit
 
 

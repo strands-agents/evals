@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any
 
 from ...types.optimization import (
@@ -41,10 +41,10 @@ class FitReplay:
 
 @dataclass(frozen=True)
 class OpenRound:
-    """A `Nested` round started but not finished; `opener_id` None when the opener was unscored."""
+    """A `Nested` round started but not finished."""
 
     round: tuple[int, ...]
-    opener_id: str | None
+    opener_id: str
     block: str
     patch: Patch
 
@@ -193,10 +193,6 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
                     tuple(event["round"]), event["candidate_id"], event["block"], Patch.model_validate(event["patch"])
                 )
             )
-        elif name == "unscored":
-            state.open_rounds = [
-                replace(r, opener_id=None) if r.opener_id == event["candidate_id"] else r for r in state.open_rounds
-            ]
         elif name == "observe":
             observation = Observation.model_validate(event["observation"])
             state.feedback.setdefault(event["block"], []).append(observation)

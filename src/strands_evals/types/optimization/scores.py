@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Literal
+import math
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict
 
@@ -10,7 +11,14 @@ from .estimates import Estimate
 
 Range = tuple[float | None, float | None]  # (low, high); None = unbounded on that side
 
+
+def near(value: float, end: float) -> bool:
+    """Equal up to float noise: the tolerance every range check, constraint bound, and score range uses."""
+    return math.isclose(value, end, rel_tol=1e-9, abs_tol=1e-12)
+
+
 LabelOutcome = Literal["feasible", "infeasible", "ineligible"]  # also the first three ObservationOutcomes
+LABEL_OUTCOMES: tuple[LabelOutcome, ...] = get_args(LabelOutcome)  # the same outcomes, to iterate over
 
 
 class CaseSplit(BaseModel):

@@ -493,6 +493,43 @@ async def test_one_iteration_writes_its_events_in_order(tmp_path):
     assert request.candidates[0].term_values == [0.0]  # the baseline's temperature, by measured means
 
 
+async def test_two_slots_of_one_step_with_equal_values_are_scored_once(tmp_path):
+    proposer = Scripted({"temperature": 0.5}, {"temperature": 0.5})
+    optimizer = _searching(
+        Block(proposer, "temperature"),
+        schedule=Joint(),
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=2,
+    )
+    await _search(optimizer)
+    # Both slots are accepted (neither repeats a measured candidate), but the twin is scored once.
+    assert [o.outcome for o in proposer.observed] == ["feasible", "duplicate"]
+    assert proposer.observed[1].reason == "repeats a candidate of the same step"
+    assert optimizer._budget.spent == 16  # the baseline and one candidate, not two
+    proposals = optimizer._iterations[0].proposals
+    assert len({p.candidate_id for p in proposals}) == 1 and len(proposals) == 2
+
+
+async def test_a_step_is_cut_to_what_the_budget_can_score(tmp_path):
+    # 44 needed (baseline 8 + reserves 36), so 52 leaves room for one candidate of 8 rollouts, not two.
+    proposer = Scripted({"temperature": 0.5}, {"temperature": 1.0})
+    optimizer = _searching(
+        Block(proposer, "temperature"),
+        schedule=Joint(),
+        base_dir=tmp_path,
+        budget=Budget(max_rollouts=52, max_iterations=1),
+        proposals_per_iteration=2,
+    )
+    _, events = await _search(optimizer)
+    # One slot, so the step never proposes a candidate it couldn't score: no `unscored` event.
+    assert optimizer._iterations[0].n_candidates == 1
+    assert [o.outcome for o in proposer.observed] == ["feasible"]
+    assert not any(e["event"] == "unscored" for e in events)
+    assert proposer.updates == [{"temperature": 1.0}]  # never asked for
+    assert optimizer._budget.spent == 16
+
+
 async def test_a_duplicate_or_invalid_patch_is_told_and_redrawn(tmp_path):
     proposer = Scripted({"temperature": 0.0}, {"temperature": 0.7}, {"manager": "Summary"}, {"temperature": 1.0})
     optimizer = _searching(

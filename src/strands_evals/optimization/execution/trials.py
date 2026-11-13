@@ -20,7 +20,7 @@ from ...case import Case
 from ...evaluators.evaluator import Evaluator
 from ...experiment import Experiment
 from ...types.evaluation import EvaluationData, EvaluationOutput
-from ...types.optimization import AttemptRecord, SplitName, TrialRecord, TrialStatus, Usage
+from ...types.optimization import AttemptRecord, SplitName, TrialRecord, TrialStatus, Usage, near
 from ...types.trace import Session
 from .rollout import _THREAD_POOL, TaskFn, TrialLog, TrialLogEntry, instrument
 from .traces import EvaluatorView, TraceCapture
@@ -72,35 +72,28 @@ class _EvaluatorProxy:
         name = self._evaluator.get_name()
         try:
             outputs = await self._evaluator.evaluate_async(evaluation_case)
-            score = next((o.score for o in outputs if not math.isfinite(o.score)), None)
-            if score is not None:
-                raise ValueError(f"evaluator {name} returned a score that isn't finite: {score!r}")
-            # The range scoring uses (`score_range`, else (0, 1); a None end is unbounded), up to float noise at an end.
+            # The range scoring uses: `score_range`, else (0, 1); a None end is unbounded.
             low, high = getattr(self._evaluator, "score_range", None) or (0.0, 1.0)
-            score = next(
-                (
-                    o.score
-                    for o in outputs
-                    if not o.not_applicable
-                    and not (
-                        (low is None or o.score >= low or math.isclose(o.score, low, rel_tol=1e-9, abs_tol=1e-12))
-                        and (
-                            high is None or o.score <= high or math.isclose(o.score, high, rel_tol=1e-9, abs_tol=1e-12)
-                        )
+            for output in outputs:
+                score = output.score
+                if not math.isfinite(score):
+                    raise ValueError(f"evaluator {name} returned a score that isn't finite: {score!r}")
+                if output.not_applicable:
+                    continue  # nothing to judge, so the score is not a verdict and no range applies
+                # Float noise at an end is in range, as scoring's own range check treats it.
+                below = low is not None and score < low and not near(score, low)
+                above = high is not None and score > high and not near(score, high)
+                if below or above:
+                    logger.warning(
+                        "evaluator=<%s>, score=<%r>, range=<[%s, %s]> | score outside the evaluator's range, judged "
+                        "again by the re-run passes; give the evaluator a score_range = (low, high) (None for "
+                        "unbounded)",
+                        name,
+                        score,
+                        low,
+                        high,
                     )
-                ),
-                None,
-            )
-            if score is not None:
-                logger.warning(
-                    "evaluator=<%s>, score=<%r>, range=<[%s, %s]> | score outside the evaluator's range, judged again "
-                    "by the re-run passes; give the evaluator a score_range = (low, high) (None for unbounded)",
-                    name,
-                    score,
-                    low,
-                    high,
-                )
-                raise ValueError(f"evaluator {name} returned {score!r}, outside its range [{low}, {high}]")
+                    raise ValueError(f"evaluator {name} returned {score!r}, outside its range [{low}, {high}]")
         except Exception as error:
             self._state.errors[name] = type(error).__name__
             raise

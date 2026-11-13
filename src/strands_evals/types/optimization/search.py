@@ -14,7 +14,7 @@ from .trials import Usage
 Value = str | int | float | bool | None
 Values = Mapping[str, Value]  # flat typed mapping, dotted keys
 
-ObservationOutcome = Literal[LabelOutcome, "invalid", "unscored", "duplicate"]
+ObservationOutcome = Literal[LabelOutcome, "invalid", "duplicate"]
 
 
 class Patch(BaseModel):
@@ -85,8 +85,8 @@ class Observation(BaseModel):
     Outcomes are labels, not filters: `feasible` = eligible and meeting every constraint as the ranking
     assesses it; `infeasible` = a constraint not met (still a possible parent, ranked lower);
     `ineligible` = some train case unmeasured; `invalid` = the patch failed validation or touched keys
-    outside its block (no candidate); `unscored` = the budget couldn't cover it; `duplicate` = its values
-    equal an eligible candidate's (`objective` is that candidate's).
+    outside its block (no candidate); `duplicate` = its values equal an eligible candidate's (`objective`
+    is that candidate's).
 
     Attributes:
         candidate_id: None for an invalid patch; for a duplicate, the existing candidate's id.

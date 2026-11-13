@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict
 
@@ -11,6 +11,7 @@ from ..evaluation import EnvironmentState, EvaluationOutput, Interaction
 from ..trace import Session
 
 SplitName = Literal["train", "validation", "test"]
+SPLIT_NAMES: tuple[SplitName, ...] = get_args(SplitName)  # the same names, to iterate over
 
 
 class TrialStatus(str, Enum):

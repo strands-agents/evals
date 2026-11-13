@@ -15,6 +15,8 @@ from ..evaluators.evaluator import Evaluator
 from ..types.evaluation import EvaluationData
 from ..types.evaluation_report import EvaluationReport
 from ..types.optimization import (
+    LABEL_OUTCOMES,
+    SPLIT_NAMES,
     CandidateLabel,
     CaseSplit,
     IterationRecord,
@@ -32,21 +34,9 @@ from .candidate import Candidate, changed_values, diff
 from .declaration.files import _write_text_atomically
 from .declaration.space import Space
 from .end_phase import TEST_LEVEL
+from .scoring.metrics import USAGE_METRICS
 
 Grain = Literal["iteration", "proposal", "case"]
-
-_SPLITS: tuple[SplitName, ...] = ("train", "validation", "test")
-_LABELED = ("feasible", "infeasible", "ineligible")
-_USAGE_FIELDS = (
-    "tokens",
-    "input_tokens",
-    "output_tokens",
-    "cache_read_tokens",
-    "cache_write_tokens",
-    "model_calls",
-    "seconds",
-    "models",
-)
 
 
 class CandidateView(BaseModel):
@@ -141,7 +131,7 @@ class OptimizationResult(BaseModel):
         run_id: The run folder's name.
         run_dir: The run folder; it may not exist on another machine, and nothing here reads it.
         baseline_id: The baseline's id.
-        candidates: Every saved candidate by id, in display-number order (unscored ones too).
+        candidates: Every saved candidate by id, in display-number order.
         validation: How the champion was picked on validation: every finalist's objective and estimates, and
             why any was infeasible.
         test: The champion against the baseline on test, report only: a negative `mean_diff` is possible
@@ -403,7 +393,6 @@ def _proposal_rows(
     proposed: dict[tuple[int, str], Mapping[str, Any]] = {}
     labels: dict[tuple[int, str], CandidateLabel] = {}
     rollouts: Counter[tuple[int, str]] = Counter()
-    unscored: dict[tuple[int, str], Mapping[str, Any]] = {}
     repeated: set[tuple[int, str]] = set()
     invalid: dict[int, list[Mapping[str, Any]]] = {}
     for event in events:
@@ -414,8 +403,6 @@ def _proposal_rows(
             labels[(iteration, event["candidate_id"])] = CandidateLabel.model_validate(event["label"])
         elif name == "score" and event["split"] == "train":
             rollouts[(iteration, event["candidate_id"])] += event["rollouts"]
-        elif name == "unscored":
-            unscored[(iteration, event["candidate_id"])] = event
         elif name == "duplicate":
             repeated.add((iteration, event["candidate_id"]))
         elif name == "invalid":
@@ -429,7 +416,9 @@ def _proposal_rows(
         reason: str | None,
         proposal: Mapping[str, Any],
     ) -> dict[str, Any]:
-        label = labels.get((iteration, candidate_id)) if outcome in _LABELED and candidate_id is not None else None
+        label = (
+            labels.get((iteration, candidate_id)) if outcome in LABEL_OUTCOMES and candidate_id is not None else None
+        )
         scored = label is not None
         view = None if candidate_id is None else candidates.get(candidate_id)
         out: dict[str, Any] = {
@@ -506,15 +495,6 @@ def _proposal_rows(
                 reason = taken[0]["reason"] if taken else None
             elif p.outcome == "duplicate":
                 reason = f"repeats candidate {p.number}" if key in repeated else "repeats a candidate of the same step"
-            elif p.outcome == "unscored":
-                event = unscored.get(key, {})
-                reason = (
-                    f"the budget couldn't cover it: {event.get('pending')} rollouts needed, "
-                    f"{event.get('remaining')} left, {event.get('reserve')} reserved for the end phase"
-                )
-                fields.update(
-                    {k: v for k, v in proposed.get(key, {}).items() if k in ("rescore", "inherited", "defaulted")}
-                )
             else:
                 label = labels.get(key)
                 reason = None if label is None else label.reason
@@ -582,7 +562,7 @@ def _iteration_rows(
             "blocks": list(record.blocks),
             "proposals": len(record.proposals),
         }
-        row.update({outcome: outcomes[outcome] for outcome in (*_LABELED, "invalid", "duplicate", "unscored")})
+        row.update({outcome: outcomes[outcome] for outcome in (*LABEL_OUTCOMES, "invalid", "duplicate")})
         row.update(
             rollouts=record.rollouts_spent,
             rollouts_total=total,
@@ -629,7 +609,7 @@ def _case_rows(
     rows = []
     for candidate_id, view in candidates.items():
         trials = records.get(candidate_id, {})
-        for split_name in _SPLITS:
+        for split_name in SPLIT_NAMES:
             score = scores.get((candidate_id, split_name), {})
             for case_name in getattr(split, split_name):
                 runs = sorted(index for case, index in trials if case == case_name)
@@ -664,7 +644,7 @@ def _case_rows(
                     row.update(
                         evaluator_errors=dict(record.evaluator_errors),
                         unavailable=dict(unavailable.get(str(index), {})),  # JSON keys: the run index as text
-                        **{field: getattr(usage, field) for field in _USAGE_FIELDS},
+                        **{metric: getattr(usage, metric) for metric in USAGE_METRICS},
                         judge_tokens=sum(u.tokens for u in record.judge_usage.values()),
                         output=record.output,
                         transcript=transcripts.get((candidate_id, index, case_name)),
@@ -699,7 +679,7 @@ def _reports(
     by_name = {case.name: case for case in cases}
     out: dict[str, dict[SplitName, EvaluationReport]] = {}
     for candidate_id, trials in records.items():
-        for split_name in _SPLITS:
+        for split_name in SPLIT_NAMES:
             ordered = [
                 trials[(case_name, index)]
                 for case_name in getattr(split, split_name)

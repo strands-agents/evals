@@ -23,6 +23,7 @@ from ...types.optimization import (
     TrialRecord,
     TrialStatus,
     Usage,
+    near,
 )
 from .metrics import USAGE_METRICS, MetricRegistry
 
@@ -698,11 +699,6 @@ def _in_range(value: float, range_: Range) -> bool:
     """
     low, high = range_
     return (low is None or value >= low or near(value, low)) and (high is None or value <= high or near(value, high))
-
-
-def near(value: float, end: float) -> bool:
-    """Equal up to float noise: the tolerance range checks, `unmet_constraints`, and the ranking use."""
-    return math.isclose(value, end, rel_tol=1e-9, abs_tol=1e-12)
 
 
 def _width(range_: Range) -> float | None:
