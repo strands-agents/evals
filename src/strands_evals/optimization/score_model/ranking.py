@@ -14,8 +14,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from ...types.optimization import CandidateLabel, CandidateScores, Estimate, Values
-from ..scoring.objectives import AtMost, Constraint, Criteria, Maximize, Minimize, near
+from ...types.optimization import CandidateLabel, CandidateScores, Estimate, Values, near
+from ..scoring.objectives import AtMost, Constraint, Criteria, Maximize, Minimize, measured_metrics
 from .protocols import Fit
 
 
@@ -285,4 +285,36 @@ def label_candidate(
         assessment: Its `Assessment` from the step's ranking right after the refit; None when ineligible.
         criteria: Names the constraints in the reasons; holds the feasibility threshold.
     """
-    raise NotImplementedError
+    measured = measured_metrics(candidate, criteria.registry)
+    if assessment is None or not candidate.is_eligible:
+        unmeasured = sorted(c for c, runs in candidate.objective_by_run.items() if all(v is None for v in runs))
+        reason = "a train case has no counted run for every goal metric"
+        if unmeasured:
+            reason += f": {', '.join(unmeasured)}"
+        return CandidateLabel(
+            outcome="ineligible",
+            reason=reason,
+            unmet_constraints=[],
+            estimates={},
+            p_met={},
+            is_from_fit=False,
+            measured=measured,
+        )
+    if assessment.is_from_fit:
+        threshold = criteria.feasibility_threshold
+        unmet = [
+            f"{c}: P(met) {assessment.p_met[str(c)]:.2g} < {threshold:g}"
+            for c, v in zip(criteria.constraints, assessment.violations, strict=True)
+            if v > 0
+        ]
+    else:
+        unmet = criteria.unmet_constraints(candidate.metrics_by_case)
+    return CandidateLabel(
+        outcome="infeasible" if unmet else "feasible",
+        reason="; ".join(unmet) if unmet else "meets every constraint",
+        unmet_constraints=unmet,
+        estimates=dict(assessment.estimates),
+        p_met=dict(assessment.p_met),
+        is_from_fit=assessment.is_from_fit,
+        measured=measured,
+    )

@@ -20,7 +20,7 @@ from ...case import Case
 from ...evaluators.evaluator import Evaluator
 from ...experiment import Experiment
 from ...types.evaluation import EvaluationData, EvaluationOutput
-from ...types.optimization import AttemptRecord, SplitName, TrialRecord, TrialStatus, Usage
+from ...types.optimization import AttemptRecord, SplitName, TrialRecord, TrialStatus, Usage, near
 from ...types.trace import Session
 from .rollout import _THREAD_POOL, TaskFn, TrialLog, TrialLogEntry, instrument
 from .traces import EvaluatorView, TraceCapture
@@ -46,7 +46,9 @@ class _EvaluatorProxy:
     `evaluate_async` registers the current trace, so a judge-only re-run (no attempt span) keeps its
     judge spans, and records the type of any exception before re-raising it. A non-finite score (NaN or
     infinity), in a row or from the aggregator, raises `ValueError`, so it is a failed evaluator like any
-    other (re-judged by the re-run passes) and the record never holds a score the save can't write. Not a
+    other (re-judged by the re-run passes) and the record never holds a score the save can't write. So does a
+    row's score outside the evaluator's range (its `score_range`, else (0, 1); N/A rows aside), which scoring
+    would otherwise take out with no repair. Not a
     subclass: `get_type_name` is a classmethod and would name the proxy.
     """
 
@@ -70,9 +72,28 @@ class _EvaluatorProxy:
         name = self._evaluator.get_name()
         try:
             outputs = await self._evaluator.evaluate_async(evaluation_case)
-            score = next((o.score for o in outputs if not math.isfinite(o.score)), None)
-            if score is not None:
-                raise ValueError(f"evaluator {name} returned a score that isn't finite: {score!r}")
+            # The range scoring uses: `score_range`, else (0, 1); a None end is unbounded.
+            low, high = getattr(self._evaluator, "score_range", None) or (0.0, 1.0)
+            for output in outputs:
+                score = output.score
+                if not math.isfinite(score):
+                    raise ValueError(f"evaluator {name} returned a score that isn't finite: {score!r}")
+                if output.not_applicable:
+                    continue  # nothing to judge, so the score is not a verdict and no range applies
+                # Float noise at an end is in range, as scoring's own range check treats it.
+                below = low is not None and score < low and not near(score, low)
+                above = high is not None and score > high and not near(score, high)
+                if below or above:
+                    logger.warning(
+                        "evaluator=<%s>, score=<%r>, range=<[%s, %s]> | score outside the evaluator's range, judged "
+                        "again by the re-run passes; give the evaluator a score_range = (low, high) (None for "
+                        "unbounded)",
+                        name,
+                        score,
+                        low,
+                        high,
+                    )
+                    raise ValueError(f"evaluator {name} returned {score!r}, outside its range [{low}, {high}]")
         except Exception as error:
             self._state.errors[name] = type(error).__name__
             raise
@@ -120,6 +141,13 @@ class TrialCache(Protocol):
 
         Returns:
             The saved trial, or None if it was never saved.
+        """
+
+    def trial_status(self, candidate_id: str, run_index: int, case_name: str) -> TrialStatus | None:
+        """The saved trial's status without loading the record (`pending` calls it per case and run).
+
+        Returns:
+            The status of `load_trial`'s record, or None if it was never saved.
         """
 
     def save_trial(self, record: TrialRecord) -> None:
@@ -223,7 +251,7 @@ class TrialRunner:
             1
             for name in case_names
             for run_index in range(runs)
-            if _needs_agent(self._cache.load_trial(candidate_id, run_index, name))
+            if self._cache.trial_status(candidate_id, run_index, name) in (None, TrialStatus.INFRASTRUCTURE_INVALID)
         )
 
     async def run(
@@ -235,6 +263,7 @@ class TrialRunner:
         runs: int,
         allowance: int,
         rejudge: bool = False,
+        limiter: asyncio.Semaphore | None = None,
     ) -> tuple[list[TrialRecord], int]:
         """Score every run, then re-run failures; returns (records, rollouts spent).
 
@@ -245,9 +274,10 @@ class TrialRunner:
         Each trial is its own `Experiment` call over one case, so it is saved as soon as that call
         returns. Every trial of the call, all runs included, runs at once under one `max_workers` cap,
         case-major (each case's runs, then the next case's); sync tasks run in the call's own pool of
-        `max_workers` threads, so the cap holds for them too. Each call gets a private in-memory
-        `EvaluationDataStore`: it captures the task's live output (`Session` included) and replays it on
-        a judge-only re-run, which runs only the evaluators that failed.
+        `max_workers` threads, so the cap holds for them too. With `limiter`, that semaphore caps the
+        trials instead, so candidates scored at once share one cap rather than one each. Each call gets a
+        private in-memory `EvaluationDataStore`: it captures the task's live output (`Session` included) and
+        replays it on a judge-only re-run, which runs only the evaluators that failed.
 
         `task` is not yet instrumented (`make_task(...)` or the `build_task` path's task); each run wraps
         it with `instrument(task, TrialLog(), traces)`. After every run's first pass, up to `rerun_passes`
@@ -281,6 +311,8 @@ class TrialRunner:
             allowance: Rollouts the whole call may spend, first pass included.
             rejudge: Re-judge saved trials' failed evaluators; set only when an ineligible candidate is
                 scored again.
+            limiter: A semaphore the trials of several concurrent calls share, so `max_workers` caps them
+                together; None gives this call its own cap.
 
         Returns:
             One record per requested (case, run), cached ones included, and the rollouts spent.
@@ -300,7 +332,11 @@ class TrialRunner:
         if duplicates:
             raise ValueError(f"case names listed more than once: {duplicates}")
         keys = [(name, run_index) for name in case_names for run_index in range(runs)]  # case-major
-        call = _Call(candidate_id=candidate_id, task=task, semaphore=asyncio.Semaphore(self._max_workers))
+        call = _Call(
+            candidate_id=candidate_id,
+            task=task,
+            semaphore=limiter if limiter is not None else asyncio.Semaphore(self._max_workers),
+        )
         jobs: list[tuple[_Key, bool]] = []  # (key, judge only), case-major
         for key in keys:
             saved = self._cache.load_trial(candidate_id, key[1], key[0])

@@ -977,7 +977,7 @@ def test_a_skill_edit_diffs_on_its_real_file(library):
     space = Space({"skills": SkillLibrary(library)})
     base = Candidate.baseline(space)
     edited = skill_text("triage", "Sort incoming tickets.", "Check the level first.\n")
-    other = base.child(space, {"skills/triage/SKILL.md": edited}, origin="text", rationale="")
+    other = base.child(space, {"skills/triage/SKILL.md": edited}, origin=["text"], rationale="")
     text = diff(space, base, other, root=library.parent)
     assert text.startswith("--- a/skills/triage/SKILL.md\n+++ b/skills/triage/SKILL.md\n")
     assert "-Do the thing.\n+Check the level first.\n" in text

@@ -90,7 +90,7 @@ def test_evidence_round_trips_through_json():
     evidence = Evidence(
         candidate_id="abc123def456",
         values={"temperature": 0.2, "use_cache": True},
-        origin="numbers",
+        origin=["numbers"],
         objective=None,
         term_values=None,
         violations=None,

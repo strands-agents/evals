@@ -35,7 +35,7 @@ def effects(fit: Fit) -> list[dict[str, Any]]:
                     "metric": metric,
                     "key": factor.key,
                     "level": level,
-                    "reference": factor.levels[0],
+                    "reference": factor.display(factor.levels[0]),
                     "mean": estimate.mean,
                     "ci90": list(estimate.ci90),
                     "p_positive": contrast.p_positive,

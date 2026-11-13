@@ -31,7 +31,7 @@ class ProposalRequest:
             (`expected_output`, `expected_trajectory`, ...) and no `metadata` is ever passed.
         fit: Read-only; None before 2 candidates are eligible.
         candidates: Every scored candidate so far: eligible ones in ranking order, then the ineligible in
-            scoring order. Invalid, duplicate, and unscored proposals never appear.
+            scoring order. Invalid and duplicate proposals never appear.
         n: How many patches to return: the step's `Step.n_candidates` (at most `proposals_per_iteration`),
             or fewer when the budget can't score them all, on a redraw (only the shortfall), or for a
             concurrent proposer (1 per call).

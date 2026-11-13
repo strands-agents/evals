@@ -437,6 +437,44 @@ def test_the_design_lists_factors_inactive_levels_and_omitted_keys():
     assert {row["level"] for row in effects(fit)} == {"off", "rewritten", *factors["cm.window.size"]["levels"][1:-1]}
 
 
+class Moded:
+    def __init__(self, mode: str = "active"):
+        self.mode = mode
+
+
+def test_options_that_print_alike_and_an_option_named_inactive_are_levels_apart():
+    space = Space(
+        {
+            "n": OneOf(1, "1", default=1),
+            "b": OneOf(True, "True", default=True),
+            "z": OneOf(None, "None", default=None),
+            "cm": choice(moded=component(Moded, mode=OneOf("active", "inactive")), off=None),
+        }
+    )
+    base = {"n": 1, "b": True, "z": None, "cm": "moded", "cm.moded.mode": "active"}
+    candidates = {
+        "c0": base,
+        "c1": {"n": "1", "b": "True", "z": "None", "cm": "moded", "cm.moded.mode": "inactive"},
+        "c2": {"n": 1, "b": True, "z": None, "cm": "off"},
+    }
+    observations = {cid: {"x": [0.5], "y": [0.6]} for cid in candidates}
+    fit = _fit(candidates, observations, ["x", "y"], space=space, text_blocks={}, ranges={"score": (0, 1)})
+    layout = fit.design
+    by_key = {f.key: f for f in layout.factors}
+    for key in ("n", "b", "z"):
+        assert len(by_key[key].levels) == 2
+    assert len(by_key["cm.moded.mode"].levels) == 3  # "active", the option "inactive", and the key inactive
+    for key, other in (("n", "1"), ("b", "True"), ("z", "None")):
+        assert not np.array_equal(layout.row(base), layout.row({**base, key: other}))
+    named = {**base, "cm.moded.mode": "inactive"}
+    off = {k: v for k, v in base.items() if k != "cm.moded.mode"} | {"cm": "off"}
+    assert not np.array_equal(layout.row(named), layout.row(off))
+    factors = {f["key"]: f for f in design(fit)["factors"]}
+    assert factors["n"]["levels"] == ["1", "1"]  # display only
+    assert factors["cm.moded.mode"]["levels"] == ["active", "inactive", "inactive"]
+    assert {row["level"] for row in effects(fit) if row["key"] == "n"} == {"1"}
+
+
 def test_another_models_fit_has_no_design_or_effects():
     class Other:
         metrics, candidates, flagged, diagnostics = {}, frozenset(), [], {}

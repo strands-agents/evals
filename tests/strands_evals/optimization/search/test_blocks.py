@@ -460,7 +460,7 @@ class History:
                     candidate_id=candidate_id,
                     number=None,
                     parent_id=parent,
-                    origin=step.blocks[0].name,
+                    origin=[step.blocks[0].name],
                     changed_keys=[],
                     rationale="",
                     outcome=outcome,

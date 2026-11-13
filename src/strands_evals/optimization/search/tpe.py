@@ -157,7 +157,7 @@ class TPE(Proposer):
     def evidence(self, evidence: Evidence) -> None:
         """Keep another block's candidate, re-valued at each ask, so it informs the study of its context.
 
-        A candidate never measured (`objective=None`: ineligible or unscored) is no evidence and is left out.
+        A candidate never measured (`objective=None`: ineligible) is no evidence and is left out.
         """
         if evidence.objective is None:
             return

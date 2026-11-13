@@ -129,7 +129,7 @@ def summary(
     return CandidateSummary(
         candidate_id=candidate.id,
         parent_id=candidate.parent_id,
-        origin="baseline" if candidate.parent_id is None else "text",
+        origin=["baseline"] if candidate.parent_id is None else ["text"],
         values=dict(candidate.values),
         number=number,
         measured_objective=score,
@@ -544,8 +544,8 @@ def test_digest_that_fits_at_the_shortest_fields_keeps_every_line():
 
 def test_versions_folder_has_one_folder_per_version_with_each_text_alone(folders):
     baseline = Candidate.baseline(SPACE)
-    child = baseline.child(SPACE, {"prompt": "Be brief.\n", "tone": "warm"}, origin="text", rationale="")
-    unscored = baseline.child(SPACE, {"prompt": "Lost.\n"}, origin="text", rationale="")
+    child = baseline.child(SPACE, {"prompt": "Be brief.\n", "tone": "warm"}, origin=["text"], rationale="")
+    unscored = baseline.child(SPACE, {"prompt": "Lost.\n"}, origin=["text"], rationale="")
     criteria = Criteria(Maximize("Score"), [AtMost("tokens", 150)], REGISTRY)
     candidates = [
         summary(child, number=1, rank=1, score=0.9, tokens=120.0, estimates={"Score": Estimate(mean=0.84, sd=0.03)}),

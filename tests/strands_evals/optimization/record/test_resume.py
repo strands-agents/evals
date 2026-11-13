@@ -93,7 +93,7 @@ def _propose(log, candidate_id, parent, origin, *, rescore=False, **fields):
         candidate_id=candidate_id,
         number=0,
         parent_id=parent,
-        origin=origin,
+        origin=[origin],
         values={"x": 1},
         rationale="",
         inherited={},
@@ -143,7 +143,7 @@ def _evidence(candidate_id):
     return {
         "candidate_id": candidate_id,
         "values": {"x": 1},
-        "origin": "structure",
+        "origin": ["structure"],
         "objective": 0.4,
         "term_values": None,
         "violations": None,
@@ -212,17 +212,6 @@ def test_an_openers_observe_closes_its_round(run):
     assert [r.round for r in state.open_rounds] == [(0, 0)]
     assert state.candidates == ["base", "c1", "c3"]
     assert state.feedback["structure"][0].source_id == "c1"
-
-
-def test_an_unscored_opener_has_no_opener_id(tmp_path):
-    run = RunDirectory.create(tmp_path, CONFIG)
-    _propose(run.events, "c1", "base", "structure", round=[0], role="opener", patch=_patch("outer"))
-    run.events.append("unscored", candidate_id="c1", pending=2, remaining=1, reserve=0)
-    _iteration_end(run.events, 1, "base", ["structure"])
-
-    state = load_state(RunDirectory.open(run.root), config=CONFIG)
-
-    assert [(r.round, r.opener_id) for r in state.open_rounds] == [((0,), None)]
 
 
 def test_a_second_resume_does_not_replay_the_first_kills_iteration(run):

@@ -30,7 +30,13 @@ from ..bayesbench import Encoder, FactorSpace
 from ..declaration.space import Space
 from .protocols import Fit
 
-INACTIVE = "inactive"
+# A level is keyed internally by its option's type and value, so options that print alike (`1` and `"1"`) and an
+# option named "inactive" stay apart from each other and from the key being inactive; `str()` is for display only.
+_INACTIVE = "\x00inactive"
+
+
+def _choice_level(value: Any) -> str:
+    return f"{type(value).__qualname__}:{value!r}"
 
 
 def design(fit: Fit) -> dict[str, Any]:
@@ -61,15 +67,16 @@ class _Factor:
     text_keys: tuple[str, ...] = ()
     bins: list[float] = field(default_factory=list)  # a range's upper bin edges
     defaults: dict[str, Value] = field(default_factory=dict)  # a text block's baseline texts
+    names: dict[str, str] = field(default_factory=dict)  # a choice's internal level -> its display name
 
     def level(self, values: Values) -> str:
         if self.kind == "text":
             return "default" if all(values.get(k) == self.defaults.get(k) for k in self.text_keys) else "rewritten"
         if self.key not in values:
-            return INACTIVE
+            return _INACTIVE
         value = values[self.key]
         if self.kind == "choice":
-            return str(value)
+            return _choice_level(value)
         for i, edge in enumerate(self.bins):
             if float(cast(float, value)) <= edge:  # a range factor's key is an Int / Float
                 return self.bin_name(i)
@@ -78,6 +85,10 @@ class _Factor:
     def bin_name(self, i: int) -> str:
         low = "-inf" if i == 0 else f"{self.bins[i - 1]:.6g}"
         return f"({low}, {self.bins[i]:.6g}]"
+
+    def display(self, level: str) -> str:
+        """A level as `describe()` and `effects.json` show it."""
+        return "inactive" if level == _INACTIVE else self.names.get(level, level)
 
 
 class _Design:
@@ -122,21 +133,24 @@ class _Design:
             if key in in_texts or info.kind == "text" or (info.kind == "choice" and len(info.options or ()) < 2):
                 continue
             present = [v[key] for v in fitted if key in v]
-            absent = [INACTIVE] if any(key not in v for v in fitted) else []
+            absent = [_INACTIVE] if any(key not in v for v in fitted) else []
             if not present:
                 self.omitted.append({"key": key, "why": "never active"})
                 continue
             if info.kind in ("one_of", "choice"):
                 # Every option the space offers, measured or not: one never measured stays at its prior.
-                options = list(dict.fromkeys([*(str(o) for o in info.options or ()), *(str(v) for v in present)]))
-                reference = str(info.default) if str(info.default) in options else options[0]
-                factor = _Factor(key, "choice", [reference, *[o for o in options if o != reference], *absent])
+                shown = {_choice_level(o): str(o) for o in [*(info.options or ()), *present]}
+                options = list(shown)
+                default = _choice_level(info.default)
+                reference = default if default in shown else options[0]
+                levels = [reference, *[o for o in options if o != reference], *absent]
+                factor = _Factor(key, "choice", levels, names=shown)
             else:
                 factor = _Factor(key, "range", [], bins=_bins([float(cast(float, v)) for v in present]))
                 names = list(dict.fromkeys(factor.bin_name(i) for i in range(len(factor.bins))))
                 reference = factor.level({key: info.default})
                 factor.levels = [reference, *[n for n in names if n != reference], *absent]
-            if len([lv for lv in factor.levels if lv != INACTIVE]) < 2 and not absent:
+            if len([lv for lv in factor.levels if lv != _INACTIVE]) < 2 and not absent:
                 self.omitted.append({"key": key, "why": "one value"})
                 continue
             self.factors.append(factor)
@@ -236,7 +250,8 @@ class _Design:
         return x
 
     def contrasts(self) -> Iterator[tuple[_Factor, str, Any]]:
-        """Each factor level's contrast row against its reference, every other factor at its reference.
+        """Each factor level's contrast row against its reference, every other factor at its reference; the level
+        as `_Factor.display` shows it.
 
         A binned number's contrast includes its trend between the two bins' centers. The inactive level has none.
         """
@@ -244,7 +259,7 @@ class _Design:
         for factor in self.factors:
             assert self.encoder is not None  # there are factors
             for level in factor.levels[1:]:
-                if level == INACTIVE:
+                if level == _INACTIVE:
                     continue
                 a = np.zeros(self.p)
                 key = tuple(level if f is factor else f.levels[0] for f in self.factors)
@@ -254,7 +269,7 @@ class _Design:
                 for j, (trend_key, _log, _center, spread) in enumerate(self.trends):
                     if trend_key == factor.key and here is not None and there is not None:
                         a[self.trend_start + j] = (here - there) / spread
-                yield factor, level, a
+                yield factor, factor.display(level), a
         for j, text in enumerate(self.texts):
             a = np.zeros(self.p)
             a[self.n_design + j] = 1.0
@@ -262,7 +277,12 @@ class _Design:
 
     def describe(self) -> list[dict[str, Any]]:
         return [
-            {"key": f.key, "kind": f.kind, "levels": list(f.levels), "reference": f.levels[0]}
+            {
+                "key": f.key,
+                "kind": f.kind,
+                "levels": [f.display(lv) for lv in f.levels],
+                "reference": f.display(f.levels[0]),
+            }
             for f in [*self.factors, *self.texts]
         ]
 

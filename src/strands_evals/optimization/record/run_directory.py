@@ -14,7 +14,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any
 
-from ...types.optimization import TrialRecord
+from ...types.optimization import TrialRecord, TrialStatus
 from ...types.trace import Session
 from ..candidate import Candidate
 from ..declaration.files import _write_text_atomically
@@ -63,8 +63,8 @@ class RunDirectory:
     def create(cls, base_dir: Path, config: Mapping[str, Any], *, name: str | None = None) -> RunDirectory:
         """Make `<base_dir>/<run_id>/` and write `config` as the first event and as `run.json`.
 
-        `schema_version` and `code` (the strands-evals version, git commit, and dirty flag writing it;
-        each None where it can't be found) are added to `config`.
+        `schema_version` and `code` (`code_version()`: the strands-evals version, git commit, and dirty flag
+        writing it, and the numpy and optuna versions; each None where it can't be found) are added to `config`.
 
         Args:
             base_dir: The parent of all run directories.
@@ -157,7 +157,7 @@ class RunDirectory:
                 candidate_id=candidate.id,
                 number=first["number"],
                 parent_id=first["parent_id"],
-                origin=candidate.origin,
+                origin=list(candidate.origin),
                 rationale=candidate.rationale,
                 rescore=True,
                 **fields,
@@ -169,7 +169,7 @@ class RunDirectory:
             "candidate_id": candidate.id,
             "number": number,
             "parent_id": candidate.parent_id,
-            "origin": candidate.origin,
+            "origin": list(candidate.origin),
             "values": dict(candidate.values),
             "rationale": candidate.rationale,
             "inherited": dict(candidate.inherited),
@@ -212,8 +212,10 @@ class RunDirectory:
     def load_trial(self, candidate_id: str, run_index: int, case_name: str) -> TrialRecord | None:
         """The last trial event for the key, its transcript read back as trajectory."""
         saved = self._trials.get((candidate_id, run_index, case_name))
-        if saved is None:
-            return None
+        return None if saved is None else self.record_from(saved)
+
+    def record_from(self, saved: Mapping[str, Any]) -> TrialRecord:
+        """A `trial` event's record, its transcript read back as trajectory."""
         record = dict(saved)
         transcript = record.pop("transcript")
         trajectory: Any = None
@@ -221,6 +223,11 @@ class RunDirectory:
             data = json.loads((self.root / "transcripts" / f"{transcript['hash']}.json").read_text(encoding="utf-8"))
             trajectory = Session.model_validate(data) if transcript["format"] == "session" else data
         return TrialRecord.model_validate({**record, "trajectory": trajectory})
+
+    def trial_status(self, candidate_id: str, run_index: int, case_name: str) -> TrialStatus | None:
+        """The last trial event's status for the key, from the index (no transcript read)."""
+        saved = self._trials.get((candidate_id, run_index, case_name))
+        return None if saved is None else TrialStatus(saved["status"])
 
     def save_trial(self, record: TrialRecord) -> None:
         """Write the transcript (if new), then append the trial event and update the index."""
@@ -269,12 +276,12 @@ class RunDirectory:
 
 
 def code_version() -> dict[str, Any]:
-    """Which strands-evals is running: `{"version", "commit", "dirty"}`, each None where it can't be found.
+    """Which code is running: `{"version", "commit", "dirty", "numpy", "optuna"}`, each None where it can't be found.
 
     `version` is the installed distribution's, only when the running code is that installation (installed,
     or installed editable from this checkout). `commit` and `dirty` come from git, only when this file is
     tracked in the checkout git finds (so a virtual environment inside another repository isn't read as
-    it). Not the user's agent code.
+    it). `numpy` and `optuna` are the installed versions. Not the user's agent code.
     """
     here = Path(__file__).resolve()
     out: dict[str, Any] = {"version": None, "commit": None, "dirty": None}
@@ -301,4 +308,10 @@ def code_version() -> dict[str, Any]:
                 out["dirty"] = bool(changes.stdout.strip()) if changes.returncode == 0 else None
     except (OSError, subprocess.SubprocessError):
         pass
+    # A release can change TPE's, Thompson's, or the fit's draws for one seed.
+    for package in ("numpy", "optuna"):
+        try:
+            out[package] = metadata.version(package)
+        except metadata.PackageNotFoundError:
+            out[package] = None
     return out

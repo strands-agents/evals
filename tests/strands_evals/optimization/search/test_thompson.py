@@ -86,7 +86,7 @@ def summary(cid, values, *, is_eligible=True):
     return CandidateSummary(
         candidate_id=cid,
         parent_id=None,
-        origin="test",
+        origin=["test"],
         values=dict(values),
         number=0,
         measured_objective=None,
@@ -300,7 +300,7 @@ def test_options_python_compares_equal_stay_apart():
 
 def test_held_values_python_compares_equal_stay_apart():
     space = Space({"option": OneOf("p", "q", default="p"), "flag": OneOf(1, True, default=1)})
-    parent = Candidate(space.complete({"flag": True}), None, "baseline", "")
+    parent = Candidate(space.complete({"flag": True}), None, ("baseline",), "")
     at_one, at_true = space.complete({"option": "q", "flag": 1}), space.complete({"option": "q", "flag": True})
 
     def options(measured):
@@ -337,7 +337,7 @@ def test_a_combination_is_scored_at_the_parents_values_outside_the_block():
 
 def test_nothing_to_propose_when_no_block_key_is_active():
     space = Space({"manager": choice(window=component(Window, pin=OneOf(0, 1)), summary=component(Summary))})
-    parent = Candidate(space.complete({"manager": "summary"}), None, "baseline", "")
+    parent = Candidate(space.complete({"manager": "summary"}), None, ("baseline",), "")
     assert propose(Thompson(), request(space, ["manager.window.pin"], parent=parent)) == []
 
 

@@ -23,6 +23,7 @@ from ...types.optimization import (
     TrialRecord,
     TrialStatus,
     Usage,
+    near,
 )
 from .metrics import USAGE_METRICS, MetricRegistry
 
@@ -241,7 +242,9 @@ class Criteria:
 
         Raises:
             ValueError: A metric name is unknown or ambiguous; inside a `WeightedSum` or `Pareto`, the same
-                metric twice after resolution, or a metric with an unbounded range and no `scale=`; a lone
+                metric twice after resolution, a metric with an unbounded range and no `scale=`, or an
+                evaluator with no end on its worse side (a low end under `Maximize`, a high end under
+                `Minimize`), since dropping its term on an N/A case would score the case above a perfect one; a lone
                 `Maximize` / `Minimize` with a non-default `weight` or `scale` (read only inside a
                 `WeightedSum` or `Pareto`, so it would be silently ignored); `feasibility_threshold` outside (0, 1);
                 no objective and no evaluators to default to; `agent_failure_score` that isn't "worst", a finite
@@ -420,6 +423,16 @@ class Criteria:
                         f"{o.metric} has no bounded range: give it a scale= (the size of a meaningful "
                         f"change) so it can be combined in the {name}"
                     )
+                low, high = self.registry.range(o.metric)
+                worst, side = (low, "low") if isinstance(o, Maximize) else (high, "high")
+                if worst is None and not self.registry.is_usage(o.metric):
+                    # A term is measured from its worst end; with none, dropping it on a case where the evaluator
+                    # is N/A would score that case as if the evaluator had done better than its best.
+                    raise ValueError(
+                        f"{o}: the evaluator {o.metric} has no {side} end in its score_range ({low}, {high}), so "
+                        f"it can't be combined in the {name} (a case it finds N/A would score above a perfect "
+                        f"one); give the evaluator a score_range with a {side} end"
+                    )
             return combined
         raise TypeError(f"objective must be Maximize, Minimize, WeightedSum, or Pareto, got {type(objective).__name__}")
 
@@ -446,7 +459,8 @@ class Criteria:
             scale = o.scale if o.scale is not None else _width((low, high))
             assert scale is not None  # an unbounded metric without scale= was rejected when resolved
             maximize = isinstance(o, Maximize)
-            # Anchored at the worst end, so dropping an N/A term and rescaling the others keeps the level.
+            # Anchored at the worst end, so dropping an N/A term and rescaling the others keeps the level; only a
+            # usage metric (never N/A) may lack that end.
             worst = low if maximize else (None if high is None else -high)
             offset = 0.0 if worst is None else worst
             terms.append(_Term(o.metric, maximize, o.weight, scale, self.registry.is_usage(o.metric), offset))
@@ -685,11 +699,6 @@ def _in_range(value: float, range_: Range) -> bool:
     """
     low, high = range_
     return (low is None or value >= low or near(value, low)) and (high is None or value <= high or near(value, high))
-
-
-def near(value: float, end: float) -> bool:
-    """Equal up to float noise: the tolerance range checks, `unmet_constraints`, and the ranking use."""
-    return math.isclose(value, end, rel_tol=1e-9, abs_tol=1e-12)
 
 
 def _width(range_: Range) -> float | None:

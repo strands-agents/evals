@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any
 
 from ...types.optimization import (
@@ -41,10 +41,10 @@ class FitReplay:
 
 @dataclass(frozen=True)
 class OpenRound:
-    """A `Nested` round started but not finished; `opener_id` None when the opener was unscored."""
+    """A `Nested` round started but not finished."""
 
     round: tuple[int, ...]
-    opener_id: str | None
+    opener_id: str
     block: str
     patch: Patch
 
@@ -78,6 +78,10 @@ class ResumeState:
         test_reason: Why it was skipped (the `test` event's reason); None otherwise.
         front_test: The `test` event's front reports (`{}` unless the objective is a `Pareto`).
         stop_reason: The last `stop` event's reason.
+        trials: (candidate id, run index, case name) -> the last `trial` event's saved record by the end of the
+            closed iterations (every trial once the search stopped), so scores are rebuilt as the uninterrupted run
+            had them (`RunDirectory.record_from` makes it a `TrialRecord`); a trial a killed iteration replaced is
+            still a cache hit when that iteration runs again.
     """
 
     parents: dict[str, str | None]
@@ -98,6 +102,7 @@ class ResumeState:
     test_reason: str | None
     front_test: dict[str, TestReport]
     stop_reason: StopReason | None
+    trials: dict[tuple[str, int, str], Mapping[str, Any]]
 
 
 def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
@@ -154,8 +159,22 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
         test_reason=None,
         front_test={},
         stop_reason=None,
+        trials={},
     )
-    for event in closed_events(events):
+    closed = closed_events(events)
+    kept = {id(event) for event in closed}
+    if any(event["event"] == "stop" for event in closed):
+        last = len(events) - 1  # the search is over: every trial counts
+    else:
+        last = max(
+            (i for i, e in enumerate(events) if id(e) in kept and e["event"] not in ("config", "trial", "resume")),
+            default=-1,
+        )
+    for event in events[: last + 1]:
+        if event["event"] == "trial":
+            record = event["record"]
+            state.trials[(record["candidate_id"], record["run_index"], record["case_name"])] = record
+    for event in closed:
         name = event["event"]
         if name == "propose":
             candidate_id = event["candidate_id"]
@@ -165,7 +184,7 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
             if event.get("patch") is not None:
                 state.open_rounds.append(
                     OpenRound(
-                        tuple(event["round"]), candidate_id, event["origin"], Patch.model_validate(event["patch"])
+                        tuple(event["round"]), candidate_id, event["origin"][0], Patch.model_validate(event["patch"])
                     )
                 )
         elif name == "duplicate" and event.get("patch") is not None:
@@ -174,10 +193,6 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
                     tuple(event["round"]), event["candidate_id"], event["block"], Patch.model_validate(event["patch"])
                 )
             )
-        elif name == "unscored":
-            state.open_rounds = [
-                replace(r, opener_id=None) if r.opener_id == event["candidate_id"] else r for r in state.open_rounds
-            ]
         elif name == "observe":
             observation = Observation.model_validate(event["observation"])
             state.feedback.setdefault(event["block"], []).append(observation)

@@ -14,7 +14,7 @@ from .trials import Usage
 Value = str | int | float | bool | None
 Values = Mapping[str, Value]  # flat typed mapping, dotted keys
 
-ObservationOutcome = Literal[LabelOutcome, "invalid", "unscored", "duplicate"]
+ObservationOutcome = Literal[LabelOutcome, "invalid", "duplicate"]
 
 
 class Patch(BaseModel):
@@ -23,7 +23,7 @@ class Patch(BaseModel):
     `state` is the proposer's private memory, handed back in `observe` and on resume; it must be
     JSON-serializable (checked with `json.dumps` when the patch arrives). `usage` is the proposer's own
     model cost, reported in `search_cost` and never counted against the rollout budget. No proposer
-    name: the optimizer knows which block asked, and records it as the candidate's `origin`.
+    name: the optimizer knows which block asked, and records it in the candidate's `origin`.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -62,7 +62,7 @@ class CandidateSummary(BaseModel):
 
     candidate_id: str
     parent_id: str | None
-    origin: str
+    origin: list[str]
     values: dict[str, Value]
     number: int
     measured_objective: float | None
@@ -85,8 +85,8 @@ class Observation(BaseModel):
     Outcomes are labels, not filters: `feasible` = eligible and meeting every constraint as the ranking
     assesses it; `infeasible` = a constraint not met (still a possible parent, ranked lower);
     `ineligible` = some train case unmeasured; `invalid` = the patch failed validation or touched keys
-    outside its block (no candidate); `unscored` = the budget couldn't cover it; `duplicate` = its values
-    equal an eligible candidate's (`objective` is that candidate's).
+    outside its block (no candidate); `duplicate` = its values equal an eligible candidate's (`objective`
+    is that candidate's).
 
     Attributes:
         candidate_id: None for an invalid patch; for a duplicate, the existing candidate's id.
@@ -95,8 +95,9 @@ class Observation(BaseModel):
             opener is told the round's best. None otherwise.
         round_candidate_ids: For a `Nested` round's opener, the round's candidates (the opener and the
             candidates its steps saved), whichever of them was the best. None otherwise.
-        objective: The candidate's `Assessment.objective` right after the step's refit (a snapshot); None if
-            never measured.
+        objective: The candidate's `Assessment.objective` right after the step's refit (a snapshot); for a
+            duplicate, told as soon as it is found (before the redraw), the existing candidate's from the step's
+            start. None if never measured.
         term_values: Each objective term's raw value (not oriented, unlike `Assessment.terms`: the resolved
             estimate, else the measured mean), in objective order, taken with `objective`; what `TPE` is told
             under `Pareto`. None when `objective` is None.
@@ -128,7 +129,7 @@ class Evidence(BaseModel):
 
     candidate_id: str
     values: dict[str, Value]
-    origin: str
+    origin: list[str]
     objective: float | None
     term_values: list[float] | None
     violations: list[float] | None

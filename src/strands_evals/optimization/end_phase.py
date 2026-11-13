@@ -15,8 +15,8 @@ from scipy import stats
 
 from ..types.optimization import CandidateScores, PairedComparison, ValidationReport, Values
 from .score_model.protocols import Fit
-from .score_model.ranking import Mean, PickRule
-from .scoring.objectives import Criteria
+from .score_model.ranking import LowerBound, Mean, PickRule, assess, label_candidate, pareto_front, rank
+from .scoring.objectives import Criteria, measured_metrics
 
 TEST_LEVEL = 0.90  # the test report's interval level (report only), matching the 90% effects
 PARETO_MIN_FINALISTS = 5  # under Pareto, max(n_finalists, this) front members go to validation; the reserves use it too
@@ -37,11 +37,14 @@ class FinalPick:
 
     def __post_init__(self) -> None:
         """`n_finalists` >= 1, else `ValueError`."""
-        raise NotImplementedError
+        if isinstance(self.n_finalists, bool) or not isinstance(self.n_finalists, int) or self.n_finalists < 1:
+            raise ValueError(f"FinalPick(n_finalists=) must be an int >= 1, got {self.n_finalists!r}")
+        if not isinstance(self.rule, (Mean, LowerBound)):
+            raise TypeError(f"FinalPick(rule=) must be Mean() or LowerBound(q), got {type(self.rule).__name__}")
 
     def config(self) -> dict[str, Any]:
         """`{"n_finalists": n, "rule": rule.config()}`; stored in `run.json`."""
-        raise NotImplementedError
+        return {"n_finalists": self.n_finalists, "rule": self.rule.config()}
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> FinalPick:
@@ -50,7 +53,12 @@ class FinalPick:
         Raises:
             ValueError: An unknown rule name.
         """
-        raise NotImplementedError
+        rule = config["rule"]
+        if rule["kind"] == "Mean":
+            return cls(n_finalists=config["n_finalists"], rule=Mean())
+        if rule["kind"] == "LowerBound":
+            return cls(n_finalists=config["n_finalists"], rule=LowerBound(q=rule["q"]))
+        raise ValueError(f"unknown FinalPick rule {rule['kind']!r} in run.json")
 
 
 def choose_finalists(
@@ -68,7 +76,8 @@ def choose_finalists(
         n: `FinalPick.n_finalists`, or `max(n_finalists, PARETO_MIN_FINALISTS)` under `Pareto`.
         front: Under `Pareto`, `pareto_front` over the search assessments, in ranking order; None otherwise.
     """
-    raise NotImplementedError
+    pool = ranking if front is None else front
+    return [c for c in pool if c != baseline_id][:n]
 
 
 def pick(
@@ -103,7 +112,53 @@ def pick(
         rule: `FinalPick.rule`, passed to `assess`.
         problem: Why `fit` is None, copied to `ValidationReport.problem`.
     """
-    raise NotImplementedError
+    ids = list(dict.fromkeys([baseline_id, *finalist_ids]))
+    eligible = [c for c in ids if c in validation and validation[c].is_eligible]
+    assessments = assess(eligible, fit=fit, criteria=criteria, values=values, measured=validation, rule=rule)
+    # The baseline comes first in `ids`, so with equal objectives and trial counts it wins the tie.
+    ranked = rank(assessments, ids, trial_counts=trial_counts)
+    feasible = [c for c in ranked if assessments[c].is_feasible]
+    champion = feasible[0] if feasible else baseline_id
+    infeasible: dict[str, str] = {}
+    for c in ids:
+        if c not in assessments:
+            infeasible[c] = "not eligible on validation: a case has no counted run for every goal metric"
+        elif not assessments[c].is_feasible:
+            infeasible[c] = label_candidate(validation[c], assessments[c], criteria=criteria).reason
+    objectives = {c: assessments[c].objective if c in assessments else None for c in ids}
+    return ValidationReport(
+        champion_id=champion,
+        front=pareto_front(assessments, ranked) if criteria.is_pareto else [],
+        objectives=objectives,
+        estimates={c: dict(assessments[c].estimates) for c in ids if c in assessments},
+        infeasible=infeasible,
+        measured={c: measured_metrics(validation[c], criteria.registry) for c in ids if c in validation},
+        problem=problem,
+        reason=_pick_reason(champion, baseline_id, finalist_ids, objectives, feasible),
+    )
+
+
+def _pick_reason(
+    champion: str,
+    baseline_id: str,
+    finalist_ids: Sequence[str],
+    objectives: Mapping[str, float | None],
+    feasible: Sequence[str],
+) -> str:
+    """One sentence on why `champion` ships."""
+
+    def shown(c: str) -> str:
+        value = objectives.get(c)
+        return "unmeasured" if value is None else f"{value:.4g}"
+
+    if not finalist_ids:
+        return "no finalist from the search; the baseline ships"
+    if champion != baseline_id:
+        return f"{champion} highest on validation: {shown(champion)} vs baseline {shown(baseline_id)}"
+    others = [c for c in feasible if c != baseline_id]
+    if not others:
+        return "no finalist meets every constraint on validation; the baseline ships"
+    return f"the baseline is highest on validation: {shown(baseline_id)} vs best finalist {shown(others[0])}"
 
 
 def paired_interval(
