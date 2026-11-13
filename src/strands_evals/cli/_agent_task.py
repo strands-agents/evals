@@ -28,6 +28,7 @@ from opentelemetry import baggage, context
 from opentelemetry.context import Context
 from strands import Agent
 from strands.agent.agent_result import AgentResult
+from strands.types.exceptions import StructuredOutputException
 
 from ..case import Case
 from ..mappers.strands_in_memory_session_mapper import StrandsInMemorySessionMapper
@@ -68,16 +69,20 @@ def _run_simulated_conversation(agent: Agent, case: Case) -> AgentResult:
     """Converse with the agent using a simulated user and return the agent's last result."""
     simulator = ActorSimulator.from_case_for_user_simulator(case=case)
     message = case.input
+    turn = 0
     while simulator.has_next():
+        turn += 1
         result = agent(message)
         # Empty context keeps the simulator's spans out of the case's trajectory.
         token = context.attach(Context())
         try:
             actor_result = simulator.act(str(result))
+        except StructuredOutputException as e:
+            raise StructuredOutputException(f"case <{case.name}>, turn {turn}: simulated user failed: {e}") from e
         finally:
             context.detach(token)
         reply = cast(ActorResponse, actor_result.structured_output).message
-        if reply is None:
+        if not reply:
             break
         message = str(reply)
     return result

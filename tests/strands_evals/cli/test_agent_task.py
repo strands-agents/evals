@@ -8,6 +8,7 @@ import pytest
 from opentelemetry import baggage, context
 from strands import Agent
 from strands.models.model import Model
+from strands.types.exceptions import StructuredOutputException
 
 from strands_evals.case import Case
 from strands_evals.cli import _agent_task as agent_task_module
@@ -184,7 +185,7 @@ class _TextModel(Model):
         yield {"messageStop": {"stopReason": "end_turn"}}
 
 
-@pytest.mark.parametrize("last_reply", [None, "bye"], ids=["no-message", "stop"])
+@pytest.mark.parametrize("last_reply", [None, "", "bye"], ids=["no-message", "empty-message", "stop"])
 def test_synth_runs_simulated_conversation_when_case_has_actor_profile(monkeypatch, last_reply):
     """An actor profile drives a multi-turn loop and the trajectory holds only the agent's turns."""
     simulator_agent = Agent(model=_TextModel(), callback_handler=None)
@@ -213,3 +214,23 @@ def test_synth_runs_simulated_conversation_when_case_has_actor_profile(monkeypat
         "hi",
         "follow-up 1",
     ]
+
+
+def test_synth_simulated_conversation_error_names_case_and_turn(monkeypatch):
+    simulator = MagicMock(
+        has_next=MagicMock(return_value=True),
+        act=MagicMock(
+            side_effect=[MagicMock(structured_output=MagicMock(message="more")), StructuredOutputException("bad")]
+        ),
+    )
+    monkeypatch.setattr(
+        agent_task_module.ActorSimulator, "from_case_for_user_simulator", MagicMock(return_value=simulator)
+    )
+    entry = ResolvedEntryPoint(
+        kind="callable_no_arg", obj=lambda: Agent(model=_TextModel(), callback_handler=None), spec="x:y"
+    )
+    profile = {"traits": {"style": "terse"}, "context": "a developer", "actor_goal": "fix the bug"}
+    case = Case[str, str](name="c1", input="hi", metadata={"actor_profile": profile})
+
+    with pytest.raises(StructuredOutputException, match=r"case <c1>, turn 2: simulated user failed: bad"):
+        synthesize_task_function(entry)(case)

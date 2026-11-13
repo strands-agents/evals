@@ -185,4 +185,4 @@ Read each case's `input` and `expected_assertion`. Group cases whose users share
 
 Add the group's profile to each of its cases' `metadata` as `"actor_profile": {"traits": {...}, "context": "<context>", "actor_goal": "<actor_goal>"}` and `{"evaluator_type": "GoalSuccessRateEvaluator"}` to `evaluators` if it isn't there. Run `strands-evals validate <experiment_file>` again. Fix any issues that occur.
 
-List each group's label, case count, and traits, and say whether you added GoalSuccessRateEvaluator.
+List each group's label, case count, and traits, and say whether you added GoalSuccessRateEvaluator. Tell the user the experiment cases now run as multi-turn conversations.
