@@ -95,8 +95,9 @@ class Observation(BaseModel):
             opener is told the round's best. None otherwise.
         round_candidate_ids: For a `Nested` round's opener, the round's candidates (the opener and the
             candidates its steps saved), whichever of them was the best. None otherwise.
-        objective: The candidate's `Assessment.objective` right after the step's refit (a snapshot); None if
-            never measured.
+        objective: The candidate's `Assessment.objective` right after the step's refit (a snapshot); for a
+            duplicate, told as soon as it is found (before the redraw), the existing candidate's from the step's
+            start. None if never measured.
         term_values: Each objective term's raw value (not oriented, unlike `Assessment.terms`: the resolved
             estimate, else the measured mean), in objective order, taken with `objective`; what `TPE` is told
             under `Pareto`. None when `objective` is None.
