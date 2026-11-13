@@ -215,9 +215,10 @@ class Nested(Schedule):
     the round ends when the room is used up; an inner step that saved nothing uses none, while an opener
     that saved nothing (every draw invalid) still uses its 1. An opener repeating a
     measured candidate opens the round on it at no cost. At the round's end the outer proposer observes the
-    round's best candidate (`Observation.source_id`); an opener that isn't eligible is observed as None with
-    outcome `ineligible`, and the round's inner steps are skipped, as they are when the opener saved nothing
-    (every draw invalid). A round also ends when the inner schedule returns None. Rounds stop after
+    round's best candidate (`Observation.source_id` when it isn't the opener; the round's candidates in
+    `round_candidate_ids` either way); an opener that isn't eligible is observed as None with outcome
+    `ineligible`, and the round's inner steps are skipped, as they are when the opener saved nothing (every
+    draw invalid). A round also ends when the inner schedule returns None. Rounds stop after
     `ctx.redraws + 1` in a row measure nothing new (an opener that saved nothing counts as one); then
     `next()` returns None. When `outer` is not among `ctx.blocks` (an enclosing round narrowed it out), the
     inner schedule runs alone. Nested inner schedules add one entry to `Step.round` per level.
@@ -413,7 +414,8 @@ class Search:
         within: Schedule | None = None,
         redraws: int = 3,
     ):
-        """Two blocks with the same name (e.g. two unnamed TPE blocks) raise `ValueError`.
+        """Two blocks given the same name, or the same proposer instance, raise `ValueError`; unnamed blocks
+        are named by `resolve`.
 
         Args:
             blocks: The user's blocks, in order.
@@ -426,7 +428,8 @@ class Search:
         Raises:
             TypeError: A block is not a `Block`, `schedule` or `within` is not a `Schedule`, or `redraws`
                 is not an int.
-            ValueError: Two named blocks share a name, `redraws` is negative, or both `schedule` and
+            ValueError: Two named blocks share a name, two blocks share a proposer instance (a block listed
+                twice included), `redraws` is negative, or both `schedule` and
                 `within` are given (`within` shapes only the default schedule).
         """
         blocks = tuple(blocks)
@@ -440,6 +443,15 @@ class Search:
             if block.name in seen:
                 raise ValueError(f"two blocks are named {block.name!r}; give one of them Block(..., name=...)")
             seen.add(block.name)
+        by_proposer: dict[int, Block] = {}
+        for block in blocks:
+            other = by_proposer.get(id(block.proposer))
+            if other is not None:
+                raise ValueError(
+                    f"{other!r} and {block!r} share one proposer; a proposer keeps its block's history, so give "
+                    f"each block its own (e.g. {type(block.proposer).__name__}() in each)"
+                )
+            by_proposer[id(block.proposer)] = block
         if schedule is not None and not isinstance(schedule, Schedule):
             raise TypeError(f"Search(schedule=...) takes a Schedule, not {schedule!r}")
         if within is not None and not isinstance(within, Schedule):
@@ -461,10 +473,13 @@ class Search:
     def resolve(self, space: Space) -> tuple[list[tuple[Block, list[str]]], Schedule]:
         """Each block with its expanded keys, and the schedule to run them with.
 
-        A variable that is a declared name expands to every key under it; otherwise it must be a flat key.
-        A key named directly (the declared name of a plain marker, or a flat key) goes to that block even
-        when another block's declared name reaches it, so `Block(TPE(), "manager")` next to
-        `Block(TPE(), "manager.window.window_size")` gives the first block the rest of `manager`.
+        A variable that is a declared name expands to every key under it that the block's proposer can
+        propose; the others are left to other blocks or their kind's default block, so
+        `Block(Thompson(), "manager")` takes the choice and leaves `manager.window.window_size` to "numbers".
+        Otherwise it must be a flat key. A key named directly (the declared name of a plain marker, or a
+        flat key) goes to that block even when another block's declared name reaches it, so
+        `Block(TPE(), "manager")` next to `Block(TPE(), "manager.window.window_size")` gives the first
+        block the rest of `manager`.
         Keys in no block go to their kind's default block, key by key: text/file keys ->
         `Reflection()` ("text"); a `choice()`'s selector key -> `TPE(n_startup_trials=2)` ("structure");
         `int`, `float`, and `one_of` keys, those under a choice's alternatives included -> `TPE()`
@@ -489,9 +504,10 @@ class Search:
 
         Raises:
             ValueError: A variable that is neither a declared name nor a key; a key two blocks name the
-                same way (both directly, or both through a declared name); a block left with no key; a
-                variable whose kind the block's proposer can't propose (not in `proposer.kinds`, e.g. text
-                given to `TPE`), naming the key and the block; or a `Nested` (given, or in `within`) whose
+                same way (both directly, or both through a declared name); a block left with no key (or
+                whose declared names reach only keys its proposer can't propose); a key named directly whose
+                kind the block's proposer can't propose (not in `proposer.kinds`, e.g. a text key given to
+                `TPE`), naming the key and the block; or a `Nested` (given, or in `within`) whose
                 outer block is an unnamed `Block` not in this search, is outside its scope, or has keys that
                 exist only under a choice in one of its inner blocks.
         """
@@ -502,6 +518,7 @@ class Search:
             by_name.setdefault(info.name, []).append(info.key)
         label = [block.name or f"block {i + 1}" for i, block in enumerate(self.blocks)]
         claims: dict[str, tuple[int, bool]] = {}  # key -> (block index, named directly)
+        skipped: dict[int, list[str]] = {}  # block index -> keys its declared names reach that it can't propose
         for i, block in enumerate(self.blocks):
             for variable in block.variables:
                 expanded = by_name.get(variable) or ([variable] if variable in order else None)
@@ -512,6 +529,9 @@ class Search:
                     )
                 for key in expanded:
                     direct = key == variable
+                    if not direct and space.param(key).kind not in block.proposer.kinds:
+                        skipped.setdefault(i, []).append(key)  # left to another block or its kind's default
+                        continue
                     held = claims.get(key)
                     if held is None or (direct and not held[1]):
                         claims[key] = (i, direct)
@@ -530,6 +550,11 @@ class Search:
         names: dict[int, str] = {}  # id of the user's block -> its resolved name
         for i, block in enumerate(self.blocks):
             ordered = [info.key for info in params if claims.get(info.key, (None,))[0] == i]
+            if not ordered and i in skipped:
+                raise ValueError(
+                    f"{label[i]!r} holds no variable {type(block.proposer).__name__} can propose "
+                    f"({', '.join(f'{k} ({space.param(k).kind})' for k in skipped[i])}); put them in another block"
+                )
             if not ordered:
                 raise ValueError(f"{label[i]!r} holds no variable of its own (other blocks name all of them)")
             for key in ordered:
