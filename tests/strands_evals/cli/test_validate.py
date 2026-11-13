@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from strands_evals.cli.main import main
 
 
@@ -50,6 +52,37 @@ def test_validate_malformed_json_exits_2(tmp_path: Path, capsys):
 
     assert exit_code == 2
     assert "error" in captured.err.lower()
+
+
+@pytest.mark.parametrize(
+    ("profile", "expected_error", "reject_dangling_separator"),
+    [
+        ({"traits": {}, "context": "a developer"}, "actor_profile.actor_goal: Field required", False),
+        (None, "actor_profile:", True),
+    ],
+    ids=["missing-fields", "root-error"],
+)
+def test_validate_invalid_actor_profile_exits_2(
+    tmp_path: Path, capsys, profile, expected_error, reject_dangling_separator
+):
+    invalid_profile = tmp_path / "invalid-profile.json"
+    invalid_profile.write_text(
+        json.dumps(
+            {
+                "cases": [{"name": "c1", "input": "x", "metadata": {"actor_profile": profile}}],
+                "evaluators": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(["validate", str(invalid_profile)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert f"case <c1>: {expected_error}" in captured.err
+    if reject_dangling_separator:
+        assert "actor_profile.:" not in captured.err
 
 
 def test_validate_custom_evaluator(tmp_path: Path, capsys):

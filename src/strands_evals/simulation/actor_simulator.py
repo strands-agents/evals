@@ -2,7 +2,7 @@ import logging
 import random
 from typing import Any, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from strands import Agent
 from strands.agent.agent_result import AgentResult
 from strands.types.agent import AgentInput
@@ -69,12 +69,13 @@ class ActorSimulator:
     ) -> "ActorSimulator":
         """Create an ActorSimulator configured as a user simulator from a test case.
 
-        Generates a realistic user profile and goal from case.input and optionally
-        case.metadata["task_description"], then configures the simulator with
-        user-specific defaults. If you already have a profile, use __init__() directly.
+        Uses a supplied case.metadata["actor_profile"], or generates a realistic user profile and goal
+        from case.input and optionally case.metadata["task_description"] when it is absent.
+        Then configures the simulator with user-specific defaults.
 
         Args:
-            case: Test case containing input (initial query) and optional metadata with "task_description".
+            case: Test case containing input (initial query) and optional metadata with
+                "actor_profile" or "task_description".
             system_prompt_template: Custom system prompt template. Uses DEFAULT_USER_SIMULATOR_PROMPT_TEMPLATE if None.
             tools: Additional tools available to the user. Defaults to goal completion tool only.
             model: Model identifier for the underlying agent. Uses Strands default if None.
@@ -104,7 +105,7 @@ class ActorSimulator:
             ```
         """
         _require_str_initial_query(case.input)
-        actor_profile = cls._generate_profile_from_case(case)
+        actor_profile = cls._profile_from_metadata(case) or cls._generate_profile_from_case(case)
 
         return cls(
             actor_profile=actor_profile,
@@ -114,6 +115,21 @@ class ActorSimulator:
             model=model,
             max_turns=max_turns,
         )
+
+    @staticmethod
+    def _profile_from_metadata(case: Case) -> ActorProfile | None:
+        """Return the case's `metadata["actor_profile"]`, or None when it is absent."""
+        metadata = case.metadata or {}
+        if "actor_profile" not in metadata:
+            return None
+        try:
+            return ActorProfile.model_validate(metadata["actor_profile"])
+        except ValidationError as e:
+            errors = "; ".join(
+                f"{'actor_profile.' if err['loc'] else 'actor_profile'}{'.'.join(map(str, err['loc']))}: {err['msg']}"
+                for err in e.errors()
+            )
+            raise ValueError(f"case <{case.name}> has invalid actor_profile: {errors}") from e
 
     @staticmethod
     def _generate_profile_from_case(case: Case) -> ActorProfile:

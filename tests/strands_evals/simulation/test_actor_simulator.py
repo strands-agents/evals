@@ -91,6 +91,40 @@ def test_from_case_for_user_simulator(mock_agent_class, sample_case):
 
 
 @patch("strands_evals.simulation.actor_simulator.Agent")
+def test_from_case_for_user_simulator_uses_case_actor_profile(mock_agent_class, sample_actor_profile):
+    """Test factory method uses metadata["actor_profile"] instead of generating one."""
+    case = Case(input="I want to plan a trip to Tokyo", metadata={"actor_profile": sample_actor_profile.model_dump()})
+
+    simulator = ActorSimulator.from_case_for_user_simulator(case=case)
+
+    assert simulator.actor_profile == sample_actor_profile
+    assert mock_agent_class.call_count == 1  # Simulator only, no profile generation
+
+
+@pytest.mark.parametrize(
+    ("profile", "expected_error", "reject_dangling_separator"),
+    [
+        ({"traits": {}}, r"case <c1> has invalid actor_profile: actor_profile.context", False),
+        (None, r"case <c1> has invalid actor_profile: actor_profile:", True),
+    ],
+    ids=["missing-fields", "root-error"],
+)
+@patch("strands_evals.simulation.actor_simulator.Agent")
+def test_from_case_for_user_simulator_rejects_invalid_case_actor_profile(
+    mock_agent_class, profile, expected_error, reject_dangling_separator
+):
+    """An invalid provided profile must not silently be replaced."""
+    case = Case(name="c1", input="I want to plan a trip to Tokyo", metadata={"actor_profile": profile})
+
+    with pytest.raises(ValueError, match=expected_error) as error:
+        ActorSimulator.from_case_for_user_simulator(case=case)
+
+    if reject_dangling_separator:
+        assert "actor_profile.:" not in str(error.value)
+    mock_agent_class.assert_not_called()
+
+
+@patch("strands_evals.simulation.actor_simulator.Agent")
 def test_generate_profile_from_case(mock_agent_class, sample_case):
     """Test profile generation from case."""
     mock_agent = MagicMock()

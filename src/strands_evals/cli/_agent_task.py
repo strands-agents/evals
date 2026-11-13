@@ -1,10 +1,12 @@
 """Synthesize a `Callable[[Case], dict]` from a resolved `--agent` target.
 
-The synthesized wrapper covers the single-agent, single-turn evaluation case:
-attach a per-case OTel context (carrying `session.id` and any user-supplied
+The synthesized wrapper covers the single-agent evaluation case: attach a
+per-case OTel context (carrying `session.id` and any user-supplied
 `--trace-attributes` as W3C Baggage), build a fresh agent via the resolved
 factory callable, invoke it, capture finished spans, map them to a
-:class:`Session`, and return `{"output", "trajectory"}`.
+:class:`Session`, and return `{"output", "trajectory"}`. Cases with
+`metadata["actor_profile"]` run multi-turn against an :class:`ActorSimulator`, and
+`output` is the agent's last reply.
 
 Trace-based evaluators (:class:`Helpfulness`, :class:`Faithfulness`,
 :class:`GoalSuccessRate`, etc.) read the returned `trajectory` directly.
@@ -20,14 +22,19 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextvars import Token
-from typing import Any
+from typing import Any, cast
 
 from opentelemetry import baggage, context
 from opentelemetry.context import Context
+from strands import Agent
+from strands.agent.agent_result import AgentResult
+from strands.types.exceptions import StructuredOutputException
 
 from ..case import Case
 from ..mappers.strands_in_memory_session_mapper import StrandsInMemorySessionMapper
+from ..simulation import ActorSimulator
 from ..telemetry import StrandsEvalsTelemetry
+from ..types.simulation import ActorResponse
 from ._entrypoint import ResolvedEntryPoint
 
 
@@ -56,6 +63,34 @@ def _attach_baggage(case: Case, extra: dict[str, Any]) -> Token[Context]:
     for key, value in extra.items():
         ctx = baggage.set_baggage(key, str(value), ctx)
     return context.attach(ctx)
+
+
+def _run_simulated_conversation(agent: Agent, case: Case) -> AgentResult:
+    """Converse with the agent using a simulated user and return the agent's last result."""
+    # Empty context keeps the actor simulator's fallback LLM call out of the case's trajectory
+    token = context.attach(Context())
+    try:
+        simulator = ActorSimulator.from_case_for_user_simulator(case=case)
+    finally:
+        context.detach(token)
+    message = case.input
+    turn = 0
+    while simulator.has_next():
+        turn += 1
+        result = agent(message)
+        # Empty context keeps the simulator's spans out of the case's trajectory.
+        token = context.attach(Context())
+        try:
+            actor_result = simulator.act(str(result))
+        except StructuredOutputException as e:
+            raise StructuredOutputException(f"case <{case.name}>, turn {turn}: simulated user failed: {e}") from e
+        finally:
+            context.detach(token)
+        reply = cast(ActorResponse, actor_result.structured_output).message
+        if not reply:
+            break
+        message = str(reply)
+    return result
 
 
 def synthesize_task_function(
@@ -99,7 +134,10 @@ def synthesize_task_function(
         token = _attach_baggage(case, extra)
         try:
             agent = _build_agent(entry, case)
-            result = agent(case.input)
+            if "actor_profile" in (case.metadata or {}):
+                result = _run_simulated_conversation(agent, case)
+            else:
+                result = agent(case.input)
         finally:
             context.detach(token)
 
