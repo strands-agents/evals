@@ -18,13 +18,13 @@ CORE PRINCIPLES:
 - Generate realistic, practical test cases that reflect real-world usage patterns for the given task
 - Ensure comprehensive coverage of the task requirements and potential challenges
 - Create test cases that are specific, unambiguous, and measurable within the task context
-- Balance difficulty levels to assess different capability thresholds for the task
 - Include edge cases, corner scenarios, and potential failure modes relevant to the task
 
 TEST CASE DESIGN:
-- Easy Level (30%): Basic task functionality, straightforward scenarios, common use cases
-- Medium Level (50%): Multi-step reasoning, moderate complexity, realistic task challenges
-- Hard Level (20%): Complex task scenarios, edge cases, advanced reasoning, error handling
+- Easy: Basic task functionality, straightforward scenarios, common use cases
+- Medium: Multi-step reasoning, moderate complexity, realistic task challenges
+- Hard: Complex task scenarios, edge cases, advanced reasoning, error handling
+- Any other level: Interpret it from its name, and design the test case to match it
 
 QUALITY STANDARDS:
 - Each test case should have a clear, well-defined input relevant to the task
