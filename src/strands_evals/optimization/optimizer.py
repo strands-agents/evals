@@ -520,8 +520,11 @@ class Optimizer:
         keys = {_block_name(block): list(block_keys) for block, block_keys in self._blocks}
         while True:
             budget = self._budget.budget
-            if budget.max_iterations is not None and self._iteration >= budget.max_iterations:
-                return "iterations"
+            room = None  # candidate slots the iteration cap leaves: max_iterations steps' worth
+            if budget.max_iterations is not None:
+                room = budget.max_iterations * self._proposals_per_iteration - _slots_used(self._iterations)
+                if room <= 0:
+                    return "iterations"
             if self._budget.allowance(phase="train") < per_candidate:
                 return "budget"
             self._iteration += 1
@@ -544,6 +547,8 @@ class Optimizer:
             if step is None:
                 return "exhausted"
             n = min(step.n_candidates, self._budget.allowance(phase="train") // per_candidate)
+            if room is not None:
+                n = min(n, room)  # a last step narrower than the rest
             if step.parents is not None and not step.parents:
                 raise ValueError(f"{type(self._schedule).__name__}.next returned a step with no possible parents")
             parent_id = self._select(list(step.parents) if step.parents is not None else ranking, assessments)
@@ -560,9 +565,10 @@ class Optimizer:
         assert self._run is not None
         ranking, assessments = self._rank()
         self._close_rounds(None, ranking, assessments)
+        cap = self._budget.budget.max_iterations
         messages = {
             "budget": "the rollout budget left after the end phase's reserve can't score another candidate",
-            "iterations": f"reached Budget(max_iterations={self._budget.budget.max_iterations})",
+            "iterations": f"used Budget(max_iterations={cap})'s candidate slots ({cap} steps' worth)",
             "exhausted": "the schedule has nothing left to try",
             "proposer_error": "a proposer raised; see the proposer_error event",
         }
@@ -1040,7 +1046,7 @@ class Optimizer:
             round=step.round,
             role=step.role,
             blocks=[_block_name(b) for b in step.blocks],
-            n_candidates=step.n_candidates,
+            n_candidates=n,
             proposals=outcomes,
             rollouts_spent=self._budget.spent - spent_before,
         )
@@ -1713,6 +1719,19 @@ class Optimizer:
         )
         optimizer._run, optimizer._resumed = run, state
         return optimizer
+
+
+def _slots_used(records: Sequence[IterationRecord]) -> int:
+    """The candidate slots a run's steps used against `Budget.max_iterations`, charged as a `Nested` round charges
+    its own: a step that saved a candidate, the `n_candidates` it was given; a round's opener, its 1 unless it repeated
+    a measured candidate (that costs only its own round); a step that saved nothing, none."""
+    used = 0
+    for record in records:
+        if record.role == "opener":
+            used += record.n_candidates if record.proposals and record.proposals[-1].outcome != "duplicate" else 0
+        elif any(p.outcome not in ("invalid", "duplicate") for p in record.proposals):
+            used += record.n_candidates
+    return used
 
 
 async def _gather_or_cancel(awaitables: Sequence[Any]) -> list[Any]:

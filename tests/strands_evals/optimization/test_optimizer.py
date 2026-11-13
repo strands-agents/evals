@@ -39,8 +39,10 @@ from strands_evals.optimization import (
     component,
     tunable,
 )
+from strands_evals.optimization.optimizer import _slots_used
 from strands_evals.optimization.record.resume import load_state
 from strands_evals.optimization.record.run_directory import RunDirectory
+from strands_evals.optimization.search.blocks import _saved
 from strands_evals.optimization.selection.top_ranked import TopRanked
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
 
@@ -802,7 +804,9 @@ async def test_the_default_search_runs_end_to_end_and_observes_every_patch_once(
     )
     result = await optimizer.run_async()
     assert [b.name for b, _ in optimizer._blocks] == ["structure", "numbers"]
-    assert result.stop_reason == "iterations" and len(result.iterations) == 6
+    # max_iterations=6 is 6 x 2 candidate slots; a step that saved nothing (all duplicates) costs none.
+    assert result.stop_reason == "iterations" and _slots_used(result.iterations) == 12
+    assert len(result.iterations) > 6 and any(not _saved(r) for r in result.iterations)
     observed = [e for e in _events(optimizer) if e["event"] == "observe"]
     # One observe per patch, invalid and duplicate ones included, each round's opener at its round's end.
     assert len(observed) == sum(len(p.origin) for r in result.iterations for p in r.proposals) > 0
@@ -1119,3 +1123,16 @@ async def test_resume_rebuilds_scores_as_the_closed_iterations_left_them(tmp_pat
     )
     await resumed_optimizer._start()
     assert not resumed_optimizer._train[rescored.candidate_id].is_eligible  # as step 1 left it
+
+
+async def test_max_iterations_counts_candidate_slots_not_steps(tmp_path):
+    # temperature has 3 options: once each is measured, every numbers step is all duplicates and costs no slot.
+    proposer = Scripted({"temperature": 0.5}, {"temperature": 0.0}, {"temperature": 1.0}, *[{"temperature": 0.5}] * 30)
+    optimizer = _searching(
+        Block(proposer, "temperature"), schedule=Alternate(), base_dir=tmp_path, budget=Budget(max_iterations=2)
+    )
+    reason, _ = await _search(optimizer)
+    # The first step saves 0.5 and 1.0 (4 slots of the 8); every later step repeats a measured value and costs no
+    # slot, so the cap doesn't stop the run after 2 steps: Alternate does, after a full cycle that saved nothing.
+    assert _slots_used(optimizer._iterations) == 4 and len(optimizer._iterations) > 2
+    assert reason == "exhausted"

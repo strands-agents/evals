@@ -35,9 +35,10 @@ class IterationRecord(BaseModel):
     """One iteration. `round`, `role`, and `blocks` let `Schedule.next` rebuild where a `Nested` run is.
 
     `round` is the round path, outermost `Nested` first (`Step.round`); None outside any `Nested`.
-    `n_candidates` is how many candidates the schedule gave the step (`Step.n_candidates`, already cut to
-    the room of every round around it), which each enclosing `Nested` round charges when the step saved a
-    candidate, or, for an opener, unless it repeated a measured candidate.
+    `n_candidates` is how many candidates the step was given: `Step.n_candidates` (already cut to the room of
+    every round around it), cut again to what the budget can score and the slots `Budget.max_iterations` leaves.
+    Each enclosing `Nested` round, and `max_iterations`, charge it when the step saved a candidate, or, for an
+    opener, unless it repeated a measured candidate.
     """
 
     model_config = ConfigDict(frozen=True)
