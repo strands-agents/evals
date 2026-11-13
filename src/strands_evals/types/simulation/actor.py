@@ -32,7 +32,7 @@ class ActorResponse(BaseModel):
     Attributes:
         reasoning: Internal reasoning process for the response.
         stop: `True` when the actor signals the conversation should end.
-        message: The actual message content from the actor.
+        message: The actual message content from the actor. `None` when `stop=True`.
         stop_reason: Why the conversation ended. One of `"goal_completed"`,
             `"max_turns"`, or `None` while ongoing. Populated by the simulator
             after the LLM call.

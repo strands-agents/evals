@@ -101,19 +101,27 @@ def test_from_case_for_user_simulator_uses_case_actor_profile(mock_agent_class, 
     assert mock_agent_class.call_count == 1  # Simulator only, no profile generation
 
 
+@pytest.mark.parametrize(
+    ("profile", "expected_error", "reject_dangling_separator"),
+    [
+        ({"traits": {}}, r"case <c1> has invalid actor_profile: actor_profile.context", False),
+        (None, r"case <c1> has invalid actor_profile: actor_profile:", True),
+    ],
+    ids=["missing-fields", "root-error"],
+)
 @patch("strands_evals.simulation.actor_simulator.Agent")
-def test_from_case_for_user_simulator_generates_profile_when_case_actor_profile_invalid(
-    mock_agent_class, sample_actor_profile, caplog
+def test_from_case_for_user_simulator_rejects_invalid_case_actor_profile(
+    mock_agent_class, profile, expected_error, reject_dangling_separator
 ):
-    """Test factory method warns and generates a profile when metadata["actor_profile"] is invalid."""
-    mock_agent_class.return_value.return_value.structured_output = sample_actor_profile
-    case = Case(name="c1", input="I want to plan a trip to Tokyo", metadata={"actor_profile": {"traits": {}}})
+    """An invalid provided profile must not silently be replaced."""
+    case = Case(name="c1", input="I want to plan a trip to Tokyo", metadata={"actor_profile": profile})
 
-    simulator = ActorSimulator.from_case_for_user_simulator(case=case)
+    with pytest.raises(ValueError, match=expected_error) as error:
+        ActorSimulator.from_case_for_user_simulator(case=case)
 
-    assert simulator.actor_profile == sample_actor_profile
-    assert mock_agent_class.call_count == 2  # Once for profile gen, once for simulator
-    assert "case=<c1>, errors=<context: Field required; actor_goal: Field required>" in caplog.text
+    if reject_dangling_separator:
+        assert "actor_profile.:" not in str(error.value)
+    mock_agent_class.assert_not_called()
 
 
 @patch("strands_evals.simulation.actor_simulator.Agent")

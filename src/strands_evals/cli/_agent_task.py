@@ -67,7 +67,12 @@ def _attach_baggage(case: Case, extra: dict[str, Any]) -> Token[Context]:
 
 def _run_simulated_conversation(agent: Agent, case: Case) -> AgentResult:
     """Converse with the agent using a simulated user and return the agent's last result."""
-    simulator = ActorSimulator.from_case_for_user_simulator(case=case)
+    # Empty context keeps the actor simulator's fallback LLM call out of the case's trajectory
+    token = context.attach(Context())
+    try:
+        simulator = ActorSimulator.from_case_for_user_simulator(case=case)
+    finally:
+        context.detach(token)
     message = case.input
     turn = 0
     while simulator.has_next():
@@ -129,7 +134,7 @@ def synthesize_task_function(
         token = _attach_baggage(case, extra)
         try:
             agent = _build_agent(entry, case)
-            if case.metadata and case.metadata.get("actor_profile"):
+            if "actor_profile" in (case.metadata or {}):
                 result = _run_simulated_conversation(agent, case)
             else:
                 result = agent(case.input)

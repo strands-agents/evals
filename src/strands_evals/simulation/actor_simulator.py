@@ -69,8 +69,8 @@ class ActorSimulator:
     ) -> "ActorSimulator":
         """Create an ActorSimulator configured as a user simulator from a test case.
 
-        Uses case.metadata["actor_profile"] when set and valid; otherwise generates a realistic user
-        profile and goal from case.input and optionally case.metadata["task_description"].
+        Uses a supplied case.metadata["actor_profile"], or generates a realistic user profile and goal
+        from case.input and optionally case.metadata["task_description"] when it is absent.
         Then configures the simulator with user-specific defaults.
 
         Args:
@@ -118,22 +118,18 @@ class ActorSimulator:
 
     @staticmethod
     def _profile_from_metadata(case: Case) -> ActorProfile | None:
-        """Return the case's `metadata["actor_profile"]` as an `ActorProfile`, or None if absent or invalid."""
-        profile_data = (case.metadata or {}).get("actor_profile")
-        if not profile_data:
+        """Return the case's `metadata["actor_profile"]`, or None when it is absent."""
+        metadata = case.metadata or {}
+        if "actor_profile" not in metadata:
             return None
         try:
-            return ActorProfile.model_validate(profile_data)
+            return ActorProfile.model_validate(metadata["actor_profile"])
         except ValidationError as e:
             errors = "; ".join(
-                f"{'.'.join(map(str, err['loc'])) or 'actor_profile'}: {err['msg']}" for err in e.errors()
+                f"{'actor_profile.' if err['loc'] else 'actor_profile'}{'.'.join(map(str, err['loc']))}: {err['msg']}"
+                for err in e.errors()
             )
-            logger.warning(
-                "case=<%s>, errors=<%s> | invalid actor_profile, generating one from the case instead",
-                case.name,
-                errors,
-            )
-            return None
+            raise ValueError(f"case <{case.name}> has invalid actor_profile: {errors}") from e
 
     @staticmethod
     def _generate_profile_from_case(case: Case) -> ActorProfile:

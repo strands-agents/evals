@@ -196,7 +196,13 @@ def test_synth_runs_simulated_conversation_when_case_has_actor_profile(monkeypat
         return MagicMock(structured_output=MagicMock(message=next(replies)))
 
     simulator = MagicMock(has_next=MagicMock(side_effect=[True, True, False]), act=MagicMock(side_effect=act))
-    from_case = MagicMock(return_value=simulator)
+    captured_baggage = {}
+
+    def from_case_for_user_simulator(**kwargs):
+        captured_baggage["session.id"] = baggage.get_baggage("session.id")
+        return simulator
+
+    from_case = MagicMock(side_effect=from_case_for_user_simulator)
     monkeypatch.setattr(agent_task_module.ActorSimulator, "from_case_for_user_simulator", from_case)
 
     entry = ResolvedEntryPoint(
@@ -207,6 +213,7 @@ def test_synth_runs_simulated_conversation_when_case_has_actor_profile(monkeypat
     result = synthesize_task_function(entry)(case)
 
     from_case.assert_called_once_with(case=case)
+    assert captured_baggage["session.id"] is None
     assert [call.args[0].strip() for call in simulator.act.call_args_list] == ["reply 1", "reply 2"]
     assert result["output"].strip() == "reply 2"
     traces = result["trajectory"].traces
@@ -234,3 +241,19 @@ def test_synth_simulated_conversation_error_names_case_and_turn(monkeypatch):
 
     with pytest.raises(StructuredOutputException, match=r"case <c1>, turn 2: simulated user failed: bad"):
         synthesize_task_function(entry)(case)
+
+
+@pytest.mark.parametrize("profile", [None, {}, "", []], ids=["none", "empty-dict", "empty-string", "empty-list"])
+def test_synth_runs_simulator_when_actor_profile_is_present_but_falsy(monkeypatch, profile):
+    """A supplied profile must not silently switch the case back to single-turn mode."""
+    from_case = MagicMock(side_effect=ValueError("invalid actor profile"))
+    monkeypatch.setattr(agent_task_module.ActorSimulator, "from_case_for_user_simulator", from_case)
+    entry = ResolvedEntryPoint(
+        kind="callable_no_arg", obj=lambda: Agent(model=_TextModel(), callback_handler=None), spec="x:y"
+    )
+    case = Case[str, str](name="c1", input="hi", metadata={"actor_profile": profile})
+
+    with pytest.raises(ValueError, match="invalid actor profile"):
+        synthesize_task_function(entry)(case)
+
+    from_case.assert_called_once_with(case=case)

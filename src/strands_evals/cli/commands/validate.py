@@ -6,14 +6,38 @@ import argparse
 import json
 import sys
 
+from pydantic import ValidationError
+
 from ...experiment import Experiment
-from .._common import EXIT_OK, resolve_format
+from ...types.simulation import ActorProfile
+from .._common import EXIT_BAD_INPUT, EXIT_OK, emit_error, resolve_format
 from .._entrypoint import resolve_custom_evaluators
+
+
+def _validate_actor_profiles(experiment: Experiment) -> list[str]:
+    """Return validation errors for supplied per-case actor profiles."""
+    errors = []
+    for case in experiment.cases:
+        metadata = case.metadata or {}
+        if "actor_profile" not in metadata:
+            continue
+        try:
+            ActorProfile.model_validate(metadata["actor_profile"])
+        except ValidationError as e:
+            for error in e.errors():
+                field = ".".join(map(str, error["loc"]))
+                profile_field = f"actor_profile.{field}" if field else "actor_profile"
+                errors.append(f"case <{case.name}>: {profile_field}: {error['msg']}")
+    return errors
 
 
 def _run(args: argparse.Namespace) -> int:
     custom_evaluators = resolve_custom_evaluators(args.custom_evaluator or [])
     experiment: Experiment = Experiment.from_file(args.experiment_file, custom_evaluators=custom_evaluators)
+    actor_profile_errors = _validate_actor_profiles(experiment)
+    if actor_profile_errors:
+        emit_error("\n".join(actor_profile_errors))
+        return EXIT_BAD_INPUT
 
     case_count = len(experiment.cases)
     evaluator_names = [evaluator.get_name() for evaluator in experiment.evaluators]
