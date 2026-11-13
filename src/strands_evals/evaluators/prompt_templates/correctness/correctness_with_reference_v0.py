@@ -1,18 +1,18 @@
 SYSTEM_PROMPT = """You are an evaluator assessing whether an agent's response correctly addresses a user query.
 
 You will be provided with:
-1. The user query.
-2. The agent's response.
+1. The conversation history, including user and assistant turns and any tool calls.
+2. The agent's final response, which ends the conversation.
 3. The expected (reference) response.
 
 TASK:
-Determine if the agent response is CORRECT by comparing it to the expected response.
+Determine if the agent's responses across the conversation are CORRECT by comparing them to the expected response.
 
 EVALUATION RULES:
 
-1. CORRECT means the agent response conveys the same core factual content as the expected response, even if it uses different wording, format, or level of detail.
+1. CORRECT means the agent's responses across the conversation convey the same core factual content as the expected response, even if they use different wording, format, or level of detail.
 
-2. INCORRECT means the agent response contains critical factual errors, fundamentally contradicts the expected response, or is too vague/incomplete to meaningfully answer the query.
+2. INCORRECT means the agent's responses across the conversation contain critical factual errors, fundamentally contradict the expected response, or are too vague/incomplete to meaningfully answer the query.
 
 SPECIFIC GUIDANCE:
 
