@@ -148,7 +148,7 @@ Treat cases as duplicates when their inputs make the same request about the same
 
 Report the experiment file path. List each suggested evaluator with its failure mode's episode count out of the cases in the file and one `evidence` quote (redact any secrets in it) and name any modes that appeared but fell below 10%. Say how many secrets you redacted and in which cases, without repeating the values. List each removed duplicate by `name` with the case it duplicated. List each inactionable case by `name` with its reason, and recommend dropping it. Tell the user to run it with `strands-evals run <file> --agent <module>:<factory>`. Then delete the episode files from step 3 and the download directory from step 2.
 
-Ask the user to review the experiment file and whether they want any of the post-generation actions below (drop cases, smoke-test the experiment). Wait for their response. If you can't wait for a reply, keep every case and say which ones you'd drop.
+Ask the user to review the experiment file and whether they want any of the post-generation actions below (drop cases, smoke-test the experiment, synthesize additional cases). Wait for their response. If you can't wait for a reply, keep every case and say which ones you'd drop.
 
 ## Post-generation
 
@@ -156,7 +156,7 @@ Run these only if the user asks for them after step 7.
 
 ### Drop cases
 
-Remove the cases the user names (ex. the inactionable cases from step 6) from the experiment file. Update the `evaluators` using the methodology in step 4 with the cases' `failure_modes` instead of episode files. Then run `strands-evals validate <experiment_file>` again and fix any issues that occur. Report any evaluator that was added or removed, with its new count.
+Remove the cases the user names (ex. the inactionable cases from step 6) from the experiment file. Update the `evaluators` using the methodology in step 4 with the cases' `failure_modes` instead of episode files, excluding synthetic cases (`metadata.synthetic`) from the counts and total. Then run `strands-evals validate <experiment_file>` again and fix any issues that occur. Report any evaluator that was added or removed, with its new count.
 
 ### Smoke-test
 
@@ -173,3 +173,18 @@ strands-evals run <experiment_file> --case 0 --agent "$d/default_agent.py:build_
 ```
 
 Report whether the run completed and each evaluator's result. A failing score is fine here; this tests the file, not the agent. The run errored if the exit code is non-zero (ex. an invalid file) or a `reason` starts with `An error occurred` (ex. missing model credentials) or `Evaluator error` (ex. the judge model is unavailable); report the error. Then delete the temp directory.
+
+### Synthesize additional cases
+
+Ask the user how many cases to add. Write a one-sentence task description of what the agent under test does, based on the experiment's cases. Then append the new cases to the experiment file with [scripts/synthesize_cases.py](scripts/synthesize_cases.py), where `<num_cases>` is the requested number minus the synthetic cases kept so far:
+
+```bash
+python3 <skill_dir>/scripts/synthesize_cases.py <experiment_file> --task-description "<task_description>" --num-cases <num_cases>
+```
+
+If it errors (ex. missing model credentials, `ModuleNotFoundError`), report the error and stop. Then, for each case it appended (named with a UUID, with `metadata` set to `{"synthetic": true}`):
+
+- Rename `name` to a short kebab-case phrase, unique within the file.
+- Write `expected_assertion` from its `input`, in the same style as the existing cases' assertions.
+
+Run step 6 over the new cases, but skip its `evaluators` update after removing duplicates. Remove each new case that duplicates a real case or an earlier synthetic case, or that the actionability check flags. Exclude synthetic cases from the failure mode counts. Repeat from the script run until the kept synthetic cases reach the requested number, stopping early after 3 runs or after a run that keeps no cases. Report how many synthetic cases were kept out of the number requested, how many runs it took, and how many were removed as duplicates and as inactionable.
