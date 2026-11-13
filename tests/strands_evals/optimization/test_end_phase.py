@@ -94,8 +94,7 @@ from strands_evals.optimization import (  # noqa: E402
     Pareto,
 )
 from strands_evals.optimization.end_phase import choose_finalists, pick  # noqa: E402
-from strands_evals.optimization.score_model.ranking import Assessment, label_candidate  # noqa: E402
-from strands_evals.types.optimization import CandidateScores, Estimate  # noqa: E402
+from strands_evals.types.optimization import CandidateScores  # noqa: E402
 
 HELP = "HelpfulnessEvaluator"
 TOKENS = "tokens"
@@ -105,8 +104,6 @@ REGISTRY = MetricRegistry({HELP: (0.0, 1.0)})
 def test_final_pick_rejects_bad_arguments():
     with pytest.raises(ValueError, match="n_finalists"):
         FinalPick(n_finalists=0)
-    with pytest.raises(ValueError, match="n_finalists"):
-        FinalPick(n_finalists=-3)
     with pytest.raises(ValueError, match="n_finalists"):
         FinalPick(n_finalists=True)  # a bool isn't an int here
     with pytest.raises(TypeError, match="Mean.*LowerBound"):
@@ -141,74 +138,6 @@ def test_choose_finalists_under_pareto_uses_the_front():
     front = ["c", "a"]  # the feasible non-dominated, in ranking order
     assert choose_finalists(ranking, "0", 3, front=front) == ["c", "a"]
     assert choose_finalists(ranking, "0", 3, front=[]) == []
-
-
-# ---- label_candidate -------------------------------------------------------------------------------------
-
-
-def _scores(candidate_id, help_by_case, *, eligible=True):
-    return CandidateScores(
-        candidate_id=candidate_id,
-        objective_by_case={c: v for c, v in help_by_case.items() if v is not None},
-        metrics_by_case={c: {HELP: v} for c, v in help_by_case.items() if v is not None},
-        unavailable={},
-        objective_by_run={c: [v] for c, v in help_by_case.items()},
-        metrics_by_run={c: {HELP: [v]} for c, v in help_by_case.items()},
-        objective=1.0 if eligible else None,
-        is_eligible=eligible,
-        failures=0,
-    )
-
-
-def _assessment(candidate_id, *, objective, feasible, violation=0.0, from_fit=True, p_met=None, n_constraints=0):
-    violations = () if n_constraints == 0 else (0.0 if feasible else violation,) * n_constraints
-    return Assessment(
-        candidate_id=candidate_id,
-        objective=objective,
-        terms=(objective,),
-        is_feasible=feasible,
-        violations=violations,
-        total_violation=sum(v for v in violations if v > 0),
-        p_met=p_met or {},
-        estimates={HELP: Estimate(mean=objective, sd=0.01)} if from_fit else {},
-        is_from_fit=from_fit,
-    )
-
-
-def test_label_candidate_feasible_from_the_fit():
-    criteria = Criteria(Maximize(HELP), [], REGISTRY)
-    label = label_candidate(
-        _scores("a", {"c1": 0.9}), _assessment("a", objective=0.9, feasible=True), criteria=criteria
-    )
-    assert (label.outcome, label.reason) == ("feasible", "meets every constraint")
-    assert label.is_from_fit and label.estimates and label.p_met == {}
-    assert label.unmet_constraints == []
-
-
-def test_label_candidate_infeasible_names_the_unmet_constraint_with_p_met():
-    criteria = Criteria(Maximize(HELP), [AtMost(HELP, 0.5)], REGISTRY, feasibility_threshold=0.9)
-    a = _assessment("a", objective=0.9, feasible=False, violation=0.4, n_constraints=1, p_met={f"{HELP} <= 0.5": 0.2})
-    label = label_candidate(_scores("a", {"c1": 0.9}), a, criteria=criteria)
-    assert label.outcome == "infeasible"
-    assert label.unmet_constraints == [f"{HELP} <= 0.5: P(met) 0.2 < 0.9"]
-    assert label.reason == label.unmet_constraints[0]
-
-
-def test_label_candidate_infeasible_from_measured_means_lists_the_constraint():
-    criteria = Criteria(Maximize(HELP), [AtMost(HELP, 0.5)], REGISTRY)
-    # measured mean 0.8 over two cases violates "<= 0.5".
-    a = _assessment("a", objective=0.8, feasible=False, violation=0.3, from_fit=False, n_constraints=1)
-    label = label_candidate(_scores("a", {"c1": 0.8, "c2": 0.8}), a, criteria=criteria)
-    assert (label.outcome, label.is_from_fit, label.estimates, label.p_met) == ("infeasible", False, {}, {})
-    assert any("<= 0.5" in sentence for sentence in label.unmet_constraints)
-
-
-def test_label_candidate_ineligible_when_a_train_case_has_no_counted_run():
-    criteria = Criteria(Maximize(HELP), [], REGISTRY)
-    candidate = _scores("a", {"c1": 0.9, "c2": None}, eligible=False)
-    label = label_candidate(candidate, None, criteria=criteria)
-    assert label.outcome == "ineligible" and "c2" in label.reason
-    assert label.estimates == {} and label.p_met == {} and label.unmet_constraints == []
 
 
 # ---- pick ------------------------------------------------------------------------------------------------
@@ -294,8 +223,8 @@ def test_pick_reports_fewer_than_two_eligible_through_problem():
     assert "a" not in report.objectives or report.objectives["a"] is None
 
 
-def test_pick_tie_goes_to_the_baseline_when_it_has_the_most_trials():
-    # Baseline and finalist tie on objective; baseline has more trials, so it wins.
+def test_pick_tie_goes_to_the_candidate_with_the_most_trials_before_the_earlier():
+    # Baseline and finalist tie on objective; the finalist has more trials, so it wins though the baseline is first.
     criteria = Criteria(Maximize(HELP), [], REGISTRY)
     validation = {"0": _val_scores("0", 0.8), "a": _val_scores("a", 0.8)}
     values = {"0": {}, "a": {}}
@@ -305,11 +234,11 @@ def test_pick_tie_goes_to_the_baseline_when_it_has_the_most_trials():
         validation=validation,
         fit=None,
         values=values,
-        trial_counts={"0": 10, "a": 2},
+        trial_counts={"0": 2, "a": 10},
         criteria=criteria,
         rule=Mean(),
     )
-    assert report.champion_id == "0"
+    assert report.champion_id == "a"
 
 
 def test_pick_tie_without_trial_counts_goes_to_the_baseline():

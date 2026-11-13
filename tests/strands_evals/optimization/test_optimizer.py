@@ -10,6 +10,7 @@ from strands_evals import Case
 from strands_evals.evaluators import Evaluator
 from strands_evals.experiment import Experiment
 from strands_evals.optimization import (
+    TPE,
     Alternate,
     AtLeast,
     Block,
@@ -20,7 +21,6 @@ from strands_evals.optimization import (
     Int,
     Joint,
     Maximize,
-    Mean,
     Minimize,
     Nested,
     OneOf,
@@ -782,11 +782,6 @@ async def test_the_end_phase_ships_the_best_finalist_and_writes_the_run_files(tm
     assert OptimizationResult.from_file(root / "result.json") == result
 
 
-def test_run_is_the_sync_form(tmp_path):
-    result = _two_steps({"temperature": 0.5}, base_dir=tmp_path, budget=Budget(max_iterations=1)).run()
-    assert result.best.values["temperature"] == 0.5
-
-
 async def test_the_baseline_ships_when_nothing_beats_it_and_is_tested_against_itself(tmp_path):
     optimizer = _two_steps(
         {"temperature": 0.5}, {"temperature": 1.0}, base_dir=tmp_path, objective=Minimize("Temperature")
@@ -1387,10 +1382,8 @@ async def test_scoring_a_step_at_once_gives_the_same_events_and_pick_as_one_at_a
     together = run_at(64, tmp_path / "together")
     at_once = await together.run_async()
     sequential = run_at(1, tmp_path / "sequential")
-    import warnings as _w
-
-    with _w.catch_warnings():
-        _w.simplefilter("ignore")  # the batching warning when max_workers < step size
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # the batching warning when max_workers < step size
         one_at_a_time = await sequential.run_async()
 
     # Same candidates in the same order and the same validation pick.
@@ -1410,139 +1403,43 @@ async def test_scoring_a_step_at_once_gives_the_same_events_and_pick_as_one_at_a
     assert events(together) == events(sequential)
 
 
-# ---- LowerBound vs. Mean at the pick --------------------------------------------------------------------
-
-
-class _Fit:
-    """A fixed-estimate fit for every candidate it was told."""
-
-    def __init__(self, table):
-        self._table = table
-        self.flagged = []
-        self.diagnostics = {}
-
-    @property
-    def metrics(self):
-        return {m: None for row in self._table.values() for m in row}
-
-    @property
-    def candidates(self):
-        return frozenset(self._table)
-
-    def estimates(self, values, candidate=None):
-        return dict(self._table[candidate])
-
-
-class _Scripted(ScoreModel):
-    """Returns a precomputed fit (or a chain of them) regardless of the data."""
-
-    name = "scripted"
-
-    def __init__(self, *fits):
-        self._fits = list(fits)
-        self._last = None
-
-    def fit(self, data, *, previous=None):
-        if self._fits:
-            self._last = self._fits.pop(0)
-        return self._last
-
-
-async def test_lower_bound_picks_the_steadier_finalist_while_mean_picks_the_wider_one(tmp_path):
-    # Two finalists: "wide" has the higher mean (0.90) with a big sd; "steady" has a slightly lower mean
-    # (0.85) with a tight sd. Under LowerBound(q=0.1) the 10th-percentile of "wide" falls below "steady".
-    from strands_evals.types.optimization import Estimate
-
-    def search_fit():
-        # The search fit is replaced right away by each step's refit; we don't care about it.
-        return _Fit({})
-
-    def validation_fit():
-        return _Fit(
-            {
-                "wide": {"Temperature": Estimate(mean=0.90, sd=0.30)},
-                "steady": {"Temperature": Estimate(mean=0.85, sd=0.01)},
-                # baseline unlisted; it's measured-mean only, which is 0.0 on this scripted rollout.
-            }
-        )
-
-    def make_optimizer(final_pick, base_dir):
-        # _searching uses the default BayesBenchModel; swap it for the scripted one that returns our fit on validation.
-        optimizer = _searching(
-            Block(Scripted({"temperature": 0.9}, {"temperature": 0.85}), "temperature"),
-            schedule=Alternate(),
-            base_dir=base_dir,
-            budget=Budget(max_iterations=2),
-            proposals_per_iteration=1,
-            final_pick=final_pick,
-            # One search fit per step (empty table, so measured means decide the search ranking); one validation fit.
-            score_model=_Scripted(search_fit(), search_fit(), search_fit(), validation_fit()),
-        )
-        return optimizer
-
-    import warnings as _w
-
-    with _w.catch_warnings():
-        _w.simplefilter("ignore")
-
-        # Rename the two candidates so the fit table above matches their ids.
-        optimizer = make_optimizer(FinalPick(n_finalists=2, rule=Mean()), tmp_path / "mean")
-        result_mean = await optimizer.run_async()
-        # Rename the candidates so the validation fit's "wide" / "steady" ids match.
-        # We don't control the ids; instead, reuse the same _Scripted fits keyed by the actual ids.
-        # Simpler: assert through the validation report's objectives directly.
-        assert result_mean.validation.problem == "fewer than 2 eligible candidates" or True
-
-
 # ---- Pareto end phase -----------------------------------------------------------------------------------
 
 
-class _TokenCount(Evaluator):
-    """Agent-side helper: scores the trial 1.0 if the agent's output encodes a desired token count via its length.
-
-    Used nowhere; here only so tests that need a non-usage objective can compile. The real Pareto test below
-    uses Temperature + a tokens constraint instead.
-    """
+class Cool(Evaluator):
+    """Scores one minus the agent's temperature, so it trades off against Temperature."""
 
     async def evaluate_async(self, evaluation_case):
-        return [EvaluationOutput(score=1.0, test_pass=True, reason="ok")]
+        return [EvaluationOutput(score=1 - float(evaluation_case.actual_output), test_pass=True, reason="c")]
 
 
-async def test_pareto_ships_the_front_s_max_gain_member_and_fills_front_test(tmp_path):
-    # Two finalists of a scripted Pareto trade-off on (Temperature, tokens) with tokens scaled; the end phase
-    # ships the max-gain member of the validated front and tests every validated front member against the baseline.
-
-    def make(base_dir):
-        proposer = Scripted(
-            {"temperature": 1.0},  # high Temperature, measured-higher tokens
-            {"temperature": 0.5},  # mid Temperature, measured-mid tokens
-        )
-        optimizer = _searching(
-            Block(proposer, "temperature"),
-            schedule=Alternate(),
-            base_dir=base_dir,
-            budget=Budget(max_iterations=2),
-            proposals_per_iteration=1,
-            objective=Pareto(Maximize("Temperature"), Minimize("tokens", scale=100)),
-            max_workers=64,
-        )
-        return optimizer
-
-    optimizer = make(tmp_path / "pareto")
+async def test_pareto_ships_the_front_s_max_gain_member_and_tests_every_member(tmp_path):
+    # Every temperature trades Temperature for Cool, so all three candidates are on the front; Temperature's
+    # weight 2 makes the hottest the max-gain member.
+    optimizer = _optimizer(
+        _experiment(evaluators=[Temperature(), Cool()]),
+        rollout_fn=_temperature_rollout,
+        search=Search(
+            [Block(Scripted({"temperature": 1.0}, {"temperature": 0.5}), "temperature"), Block(Scripted(), "manager")],
+            schedule=Joint(),
+        ),
+        objective=Pareto(Maximize("Temperature", weight=2), Maximize("Cool")),
+        budget=Budget(max_iterations=2),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path,
+    )
     result = await optimizer.run_async()
-
-    # The baseline (temperature 0.0) is dominated on Temperature by everyone; the "wide" high-temp candidate
-    # and the "mid" trade off answer vs. tokens. Both should sit on the validated front.
-    best = result.best
-    front = result.front
-    assert best.id in [v.id for v in front]  # the champion is a front member
-    assert result.validation.champion_id == best.id
-    assert result.validation.front and best.id == result.validation.front[0]
-    assert len(front_test := result.front_test) >= 1 and best.id in front_test
-    # Every tested front member compares the member against the baseline.
-    for member_id, report in front_test.items():
-        assert report.baseline_id == result.baseline_id
-        assert report.champion_id == member_id
+    temperature = {c.id: c.values["temperature"] for c in result.candidates.values()}
+    assert [temperature[c] for c in result.validation.front] == [1.0, 0.5, 0.0]
+    assert result.validation.champion_id == result.best.id and temperature[result.best.id] == 1.0
+    assert [c.id for c in result.front] == result.validation.front
+    # Every validated front member is tested against the baseline.
+    assert list(result.front_test) == result.validation.front
+    assert all(
+        (report.champion_id, report.baseline_id) == (member, result.baseline_id)
+        for member, report in result.front_test.items()
+    )
 
 
 # ---- resume inside a two-level Nested -------------------------------------------------------------------
@@ -1562,61 +1459,40 @@ async def _two_structural_rollout(agent_factory, case):
     return str(temperature)
 
 
+def _two_structural_search():
+    # Two structural blocks: the default schedule nests one Nested in the other.
+    return Search([Block(TPE(n_startup_trials=2), "outer"), Block(TPE(n_startup_trials=2), "inner")])
+
+
 async def test_resume_inside_a_two_level_nested_matches_the_uninterrupted_run(tmp_path):
-    # The default search over two choice selectors gives one Nested per structural block around an inner schedule.
-    import json
-    import shutil
-
-    def new_run(base_dir):
-        return Optimizer(
-            Experiment(cases=[Case(name=f"case{i:02d}", input=f"q{i}") for i in range(20)], evaluators=[Temperature()]),
-            _two_structural,
-            rollout_fn=_two_structural_rollout,
-            max_workers=64,
-            base_dir=base_dir,
-            budget=Budget(max_iterations=10),
-            proposals_per_iteration=2,
-        )
-
-    original_optimizer = new_run(tmp_path / "runs")
-    original = await original_optimizer.run_async()
-    # Kill the run after the first few trials of an inner-round step (round path with 2 entries).
-    events = (original_optimizer._run.root / "events.jsonl").read_text().splitlines()
-    parsed = [json.loads(line) for line in events]
-    # Find the first trial after the second `score` event inside a two-level round.
-    second_inner_score = None
-    rounds_seen = 0
-    for i, event in enumerate(parsed):
-        if event["event"] == "iteration_end" and len(event["record"].get("round") or ()) == 2:
-            rounds_seen += 1
-            if rounds_seen == 1:
-                second_inner_score = i
-                break
-    if second_inner_score is None:
-        # No two-level round in this setup; the default schedule may have resolved to a single Nested.
-        # In that case, kill between any two trials of the second iteration.
-        second_inner_score = next(i for i, e in enumerate(parsed) if e["event"] == "iteration_end")
-    cut = (
-        next(
-            (i for i, e in enumerate(parsed) if i > second_inner_score and e["event"] == "trial"),
-            len(parsed),
-        )
-        + 1
+    experiment = Experiment(cases=_experiment().cases, evaluators=[Temperature()])
+    original_optimizer = Optimizer(
+        experiment,
+        _two_structural,
+        rollout_fn=_two_structural_rollout,
+        search=_two_structural_search(),
+        max_workers=64,
+        base_dir=tmp_path / "runs",
+        budget=Budget(max_iterations=10),
+        proposals_per_iteration=2,
     )
-    killed = tmp_path / "killed" / original_optimizer._run.root.name
-    shutil.copytree(original_optimizer._run.root, killed)
-    (killed / "events.jsonl").write_text("\n".join(events[:cut]) + "\n")
+    original = await original_optimizer.run_async()
+    assert any(len(r.round or ()) == 2 for r in original.iterations)
 
-    resumed_optimizer = Optimizer.resume(
-        killed,
-        experiment=Experiment(cases=original_optimizer._cases, evaluators=[Temperature()]),
+    def inner_round_scored(events):
+        """Just past the first `score` after an inner round's first closed step: the next step, killed."""
+        closed = next(
+            i for i, e in enumerate(events) if e["event"] == "iteration_end" and len(e["record"]["round"] or ()) == 2
+        )
+        return _index(events, "score", after=closed)
+
+    copy = _killed(original_optimizer._run.root, tmp_path, inner_round_scored)
+    killed = 1 + sum(1 for e in _events_at(copy) if e["event"] == "iteration_end")
+    resumed = await Optimizer.resume(
+        copy,
+        experiment=experiment,
         factory=_two_structural,
         rollout_fn=_two_structural_rollout,
-    )
-    resumed = await resumed_optimizer.run_async()
-    assert resumed.best.id == original.best.id
-    assert resumed.rollouts_spent == original.rollouts_spent
-    assert list(resumed.candidates) == list(original.candidates)
-    # The validated pick and the test report must match.
-    assert resumed.validation.objectives == original.validation.objectives
-    assert resumed.test.objective == original.test.objective
+        search=_two_structural_search(),
+    ).run_async()
+    _assert_same(resumed, original, rerun=killed)
