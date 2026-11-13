@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import random
 import statistics
@@ -38,7 +39,7 @@ from ..types.optimization import (
 )
 from .candidate import Candidate, changed_keys
 from .declaration.space import Marker, Space
-from .declaration.tunable import BuildContext, TunableFactory
+from .declaration.tunable import BuildContext, TunableFactory, _FactoryArgumentError
 from .end_phase import (
     PARETO_MIN_FINALISTS,
     TEST_LEVEL,
@@ -427,7 +428,8 @@ class Optimizer:
 
         Raises:
             RuntimeError: The baseline isn't eligible after its re-run passes (some train case has no
-                counted run), or a goal metric has no value on any train case. A `stop` event with
+                counted run), no train trial of it completed (every one an `agent_failure`), or a goal
+                metric has no value on any train case. A `stop` event with
                 reason `"setup"` is written first, and the message names the unmeasured cases or the
                 metric, the trial status counts, and the first error.
         """
@@ -683,13 +685,15 @@ class Optimizer:
             run.save_diff(f"front/{views[c].number}-{c}", views[c].diff(), views[c].changed_values())
         agent_cost: dict[SplitName, Usage] = {split: Usage.zero() for split in ("train", "validation", "test")}
         judge_cost = retry_cost = Usage.zero()
-        for records in self._records.values():
-            for record in records.values():
-                agent_cost[record.split] = agent_cost[record.split] + record.usage
-                for usage in record.judge_usage.values():
-                    judge_cost = judge_cost + usage
-                for attempt in record.previous_attempts:
-                    retry_cost = retry_cost + attempt.usage + attempt.judge_usage
+        # Every saved trial, as `spent` counts them: after a resume, a killed iteration's trials too.
+        for saved in run._trials.values():
+            agent_cost[saved["split"]] = agent_cost[saved["split"]] + Usage.model_validate(saved["usage"])
+            for usage in saved["judge_usage"].values():
+                judge_cost = judge_cost + Usage.model_validate(usage)
+            for attempt in saved["previous_attempts"]:
+                retry_cost = (
+                    retry_cost + Usage.model_validate(attempt["usage"]) + Usage.model_validate(attempt["judge_usage"])
+                )
         result = OptimizationResult(
             run_id=run.root.name,
             run_dir=run.root,
@@ -761,7 +765,8 @@ class Optimizer:
         """E4: the champion and the baseline on test (and under `Pareto` every validated front member), report only.
 
         Returns:
-            The champion's report (None when skipped), why it or some front members were skipped, and under
+            The champion's report (None when skipped: no test cases, the budget, or no completed test trial
+            of the champion or the baseline), why it or some front members were skipped, and under
             `Pareto` each tested front member's report.
         """
         cases = list(self._case_split.test)
@@ -795,12 +800,30 @@ class Optimizer:
                 strict=True,
             )
         )
-        reports = {c: self._test_report(c, scores) for c in dict.fromkeys([champion, *front]) if c in scores}
-        reason = None
+        assert self._run is not None
+        # An arm with no completed test trial measured nothing: its scores would be the failure value alone.
+        failed = [
+            c
+            for c in chosen
+            if not any(r.split == "test" and r.status is TrialStatus.COMPLETED for r in self._records[c].values())
+        ]
+        if champion in failed or baseline in failed:
+            arm = "the baseline" if baseline in failed else "the champion"
+            return None, f"every test trial of {arm} failed, so there is nothing to compare", {}
+        reports = {
+            c: self._test_report(c, scores)
+            for c in dict.fromkeys([champion, *front])
+            if c in scores and c not in failed
+        }
+        reasons = []
         if skipped:
-            numbers = ", ".join(str(self._run.number(c)) for c in skipped)  # type: ignore[union-attr]
-            reason = f"the budget couldn't test front members {numbers}"
-        return reports[champion], reason, {c: reports[c] for c in front if c in reports}
+            reasons.append(
+                f"the budget couldn't test front members {', '.join(str(self._run.number(c)) for c in skipped)}"
+            )
+        if failed:
+            numbers = ", ".join(str(self._run.number(c)) for c in failed)
+            reasons.append(f"every test trial of front members {numbers} failed")
+        return reports[champion], "; ".join(reasons) or None, {c: reports[c] for c in front if c in reports}
 
     def _test_report(self, candidate_id: str, scores: Mapping[str, CandidateScores]) -> TestReport:
         """`candidate_id` against the baseline per test case (paired t-interval at `TEST_LEVEL`); the baseline
@@ -965,6 +988,15 @@ class Optimizer:
                 break
             for draw in await self._draw(step, parent, need, redraw, ranking, assessments, summaries):
                 candidate = draw.candidate
+                if (
+                    candidate is not None
+                    and candidate.id not in self._train
+                    and all(d.candidate is None or d.candidate.id != candidate.id for d in accepted)
+                ):
+                    error = await self._build_error(candidate)
+                    if error is not None:
+                        draw = _Draw(draw.patches, None, error)
+                        candidate = None
                 if candidate is None:
                     for block, patch in draw.patches.items():
                         self._run.events.append(
@@ -1498,6 +1530,27 @@ class Optimizer:
                 stacklevel=3,
             )
 
+    async def _build_error(self, candidate: Candidate) -> str | None:
+        """Why the candidate's agent can't be built, else None: the factory is called once, before any rollout.
+
+        A candidate whose factory raises (a constructor rejecting a combination of values) is invalid, redrawn
+        at no cost, instead of every trial being an `agent_failure` scored at the worst end. Built with no
+        resources and no call kwargs, so a factory that needs a resource from `environment` or a kwarg only the
+        rollout passes can't be built here and isn't checked (its trials run as usual). On the `build_task` path
+        the agent is built inside the task, so nothing is checked.
+        """
+        if self._factory is None:
+            return None
+        try:
+            built = self._factory.bind(candidate.values)()
+            if inspect.isawaitable(built):
+                await built
+        except _FactoryArgumentError:
+            return None
+        except Exception as error:  # noqa: BLE001 - any failure to build makes the candidate invalid
+            return f"the agent can't be built: {type(error).__name__}: {error}"
+        return None
+
     def _task_for(self, candidate: Candidate) -> TaskFn:
         """The candidate's task, not yet instrumented; file-backed values copied into its workspace first."""
         assert self._run is not None
@@ -1599,7 +1652,8 @@ class Optimizer:
         """Save and score the baseline on train; stop the run at setup when it can't be a parent.
 
         Raises:
-            RuntimeError: The baseline isn't eligible, or a goal metric has no value on any train case.
+            RuntimeError: The baseline isn't eligible, no train trial of it completed, or a goal metric has no
+                value on any train case.
         """
         assert self._run is not None
         baseline = self._baseline = Candidate.baseline(self._space)
@@ -1624,6 +1678,9 @@ class Optimizer:
             problem = f"{len(unmeasured)}/{len(scores.objective_by_run)} train cases unmeasured for the baseline" + (
                 f" ({', '.join(unmeasured)})" if unmeasured else ""
             )
+        elif not any(r.status is TrialStatus.COMPLETED for r in records):
+            # Eligible only through agent_failure_score: its scores would be the failure value alone.
+            problem = "every train trial of the baseline failed, so nothing was measured"
         else:
             return scores
         statuses = Counter(r.status.value for r in records)
@@ -1672,7 +1729,10 @@ class Optimizer:
 
         Resume continues a run that was killed; it never extends a finished one. Every stop runs the end
         phase, so a finished run only finishes or returns its end phase. To search more, start a new run.
-        A killed search may get a larger `Budget`, which only moves where it stops. If you changed cases,
+        A killed search may get a larger `Budget`, which only moves where it stops. The resumed run proposes what
+        an uninterrupted one would, except near the rollout cap: what the killed iteration spent counts from the
+        start, while its trials are reused at no cost, so a step can be cut narrower or the search stop a step
+        earlier than without the kill. If you changed cases,
         evaluators, judge settings, or agent code, start a new run instead: resuming would mix results from
         the old and new setups.
 

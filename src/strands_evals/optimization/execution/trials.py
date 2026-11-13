@@ -46,7 +46,9 @@ class _EvaluatorProxy:
     `evaluate_async` registers the current trace, so a judge-only re-run (no attempt span) keeps its
     judge spans, and records the type of any exception before re-raising it. A non-finite score (NaN or
     infinity), in a row or from the aggregator, raises `ValueError`, so it is a failed evaluator like any
-    other (re-judged by the re-run passes) and the record never holds a score the save can't write. Not a
+    other (re-judged by the re-run passes) and the record never holds a score the save can't write. So does a
+    row's score outside the evaluator's range (its `score_range`, else (0, 1); N/A rows aside), which scoring
+    would otherwise take out with no repair. Not a
     subclass: `get_type_name` is a classmethod and would name the proxy.
     """
 
@@ -73,6 +75,32 @@ class _EvaluatorProxy:
             score = next((o.score for o in outputs if not math.isfinite(o.score)), None)
             if score is not None:
                 raise ValueError(f"evaluator {name} returned a score that isn't finite: {score!r}")
+            # The range scoring uses (`score_range`, else (0, 1); a None end is unbounded), up to float noise at an end.
+            low, high = getattr(self._evaluator, "score_range", None) or (0.0, 1.0)
+            score = next(
+                (
+                    o.score
+                    for o in outputs
+                    if not o.not_applicable
+                    and not (
+                        (low is None or o.score >= low or math.isclose(o.score, low, rel_tol=1e-9, abs_tol=1e-12))
+                        and (
+                            high is None or o.score <= high or math.isclose(o.score, high, rel_tol=1e-9, abs_tol=1e-12)
+                        )
+                    )
+                ),
+                None,
+            )
+            if score is not None:
+                logger.warning(
+                    "evaluator=<%s>, score=<%r>, range=<[%s, %s]> | score outside the evaluator's range, judged again "
+                    "by the re-run passes; give the evaluator a score_range = (low, high) (None for unbounded)",
+                    name,
+                    score,
+                    low,
+                    high,
+                )
+                raise ValueError(f"evaluator {name} returned {score!r}, outside its range [{low}, {high}]")
         except Exception as error:
             self._state.errors[name] = type(error).__name__
             raise

@@ -323,10 +323,26 @@ async def test_a_baseline_with_unmeasured_cases_stops_at_setup(tmp_path):
 
 
 async def test_a_crashing_baseline_scores_worst_and_is_eligible(tmp_path):
-    optimizer = _quiet(base_dir=tmp_path, rollout_fn=_rollout(ValueError("agent bug")))
+    async def rollout(agent_factory, case):
+        if case.name != optimizer._case_split.train[0]:
+            raise ValueError("agent bug")
+        return "answer"
+
+    optimizer = _quiet(base_dir=tmp_path, rollout_fn=rollout)
     optimizer._setup()
     scores = await optimizer._score_baseline()
-    assert scores.is_eligible and scores.objective == 0.0 and scores.failures == 8
+    assert scores.is_eligible and scores.objective == 1 / 8 and scores.failures == 7
+
+
+async def test_a_baseline_with_no_completed_trial_stops_at_setup(tmp_path):
+    optimizer = _quiet(base_dir=tmp_path, rollout_fn=_rollout(ValueError("agent bug")))
+    optimizer._setup()
+    with pytest.raises(
+        RuntimeError, match=r"^every train trial of the baseline failed.*: trials 8 agent_failure; first error"
+    ):
+        await optimizer._score_baseline()
+    stop = _events(optimizer)[-1]
+    assert stop["event"] == "stop" and stop["reason"] == "setup" and "agent bug" in stop["message"]
 
 
 async def test_a_goal_metric_never_measured_stops_at_setup(tmp_path):
@@ -491,6 +507,54 @@ async def test_a_duplicate_or_invalid_patch_is_told_and_redrawn(tmp_path):
     assert "outside" in proposer.observed[2].reason
     assert [r.redraw for r in proposer.requests] == [0, 1, 2, 3]
     assert [p.outcome for p in optimizer._iterations[0].proposals] == ["duplicate", "invalid", "invalid", "feasible"]
+
+
+async def test_a_candidate_whose_agent_cant_be_built_is_invalid_and_costs_nothing(tmp_path):
+    @tunable(
+        manager=choice(component(Window, size=Int(1, 100)), component(Summary)),
+        temperature=OneOf(0.0, 0.5, 1.0),
+    )
+    def picky(manager, temperature):
+        if temperature == 1.0:
+            raise ValueError("temperature 1.0 is not supported")
+        return (manager, temperature)
+
+    proposer = Scripted({"temperature": 1.0}, {"temperature": 0.5})
+    optimizer = Optimizer(
+        _experiment(evaluators=[Temperature()]),
+        picky,
+        rollout_fn=_temperature_rollout,
+        search=Search([Block(proposer, "temperature"), Block(Scripted(), "manager")], schedule=Joint()),
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path,
+    )
+    await _search(optimizer)
+    assert [o.outcome for o in proposer.observed] == ["invalid", "feasible"]
+    assert proposer.observed[0].reason == "the agent can't be built: ValueError: temperature 1.0 is not supported"
+    assert optimizer._budget.spent == 16  # the baseline and the 0.5 candidate, nothing for the one that can't build
+
+
+async def test_a_factory_needing_a_resource_is_not_build_checked(tmp_path):
+    @tunable(temperature=OneOf(0.0, 0.5, 1.0))
+    def sandboxed(temperature, sandbox):
+        return (sandbox, temperature)
+
+    proposer = Scripted({"temperature": 0.5})
+    optimizer = Optimizer(
+        _experiment(evaluators=[Temperature()]),
+        sandboxed,
+        rollout_fn=_temperature_rollout,
+        environment=lambda case: {"sandbox": "box"},
+        search=Search([Block(proposer, "temperature")], schedule=Joint()),
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path,
+    )
+    await _search(optimizer)
+    assert [o.outcome for o in proposer.observed] == ["feasible"]
 
 
 async def test_a_proposer_that_raises_stops_the_run(tmp_path):
@@ -737,6 +801,23 @@ async def test_the_baseline_ships_when_nothing_beats_it_and_is_tested_against_it
     assert optimizer._budget.spent == 8 * 3 + 6 * 3 + 6
 
 
+async def test_a_test_arm_with_no_completed_trial_skips_the_report(tmp_path):
+    optimizer = _two_steps({"temperature": 0.5}, {"temperature": 1.0}, base_dir=tmp_path)
+    test_cases = set(optimizer._case_split.test)
+
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        if temperature == 1.0 and case.name in test_cases:
+            raise ValueError("crashes on test")
+        return str(temperature)
+
+    optimizer._rollout_fn = rollout
+    result = await optimizer.run_async()
+    assert result.best.values["temperature"] == 1.0  # picked on validation, where it ran
+    assert result.test is None
+    assert result.test_reason == "every test trial of the champion failed, so there is nothing to compare"
+
+
 async def test_a_finalist_failing_a_constraint_on_validation_cannot_ship(tmp_path):
     experiment = _experiment(n=14, evaluators=[Temperature()])
     split = Split(train=experiment.cases[:8], validation=experiment.cases[8:14])
@@ -912,6 +993,26 @@ async def test_a_killed_run_resumes_to_the_same_result_spending_nothing_twice(tm
 
 def _events_at(root):
     return [json.loads(line) for line in (root / "events.jsonl").read_text().splitlines()]
+
+
+async def test_costs_after_resume_count_a_killed_iterations_trials(tmp_path):
+    original = _two_steps({"temperature": 0.5}, {"temperature": 1.0}, base_dir=tmp_path / "runs")
+    await original.run_async()
+    # Killed once iteration 2's candidate (temperature 1.0) is scored; the resumed proposer proposes only repeats.
+    copy = _killed(
+        original._run.root, tmp_path, lambda events: _index(events, "score", after=_index(events, "iteration_end"))
+    )
+    search = Search(
+        [Block(Scripted({"temperature": 0.0}), "temperature"), Block(Scripted(), "manager")], schedule=Joint()
+    )
+    resumed = _resume(copy, search=search)
+    result = await resumed.run_async()
+    assert all(c.values["temperature"] != 1.0 for c in result.candidates.values())
+    trials = [e["record"] for e in _events_at(copy) if e["event"] == "trial"]
+    for split in ("train", "validation", "test"):
+        seconds = sum(r["usage"]["seconds"] for r in trials if r["split"] == split)
+        assert result.agent_cost[split].seconds == pytest.approx(seconds)
+    assert result.rollouts_spent == len(trials)
 
 
 async def test_resuming_a_finished_run_returns_its_result_and_spends_nothing(tmp_path):
@@ -1456,6 +1557,11 @@ def _two_structural(outer, inner, temperature):
     return (outer, inner, temperature)
 
 
+async def _two_structural_rollout(agent_factory, case):
+    *_, temperature = agent_factory()
+    return str(temperature)
+
+
 async def test_resume_inside_a_two_level_nested_matches_the_uninterrupted_run(tmp_path):
     # The default search over two choice selectors gives one Nested per structural block around an inner schedule.
     import json
@@ -1465,7 +1571,7 @@ async def test_resume_inside_a_two_level_nested_matches_the_uninterrupted_run(tm
         return Optimizer(
             Experiment(cases=[Case(name=f"case{i:02d}", input=f"q{i}") for i in range(20)], evaluators=[Temperature()]),
             _two_structural,
-            rollout_fn=_temperature_rollout,
+            rollout_fn=_two_structural_rollout,
             max_workers=64,
             base_dir=base_dir,
             budget=Budget(max_iterations=10),
@@ -1505,7 +1611,7 @@ async def test_resume_inside_a_two_level_nested_matches_the_uninterrupted_run(tm
         killed,
         experiment=Experiment(cases=original_optimizer._cases, evaluators=[Temperature()]),
         factory=_two_structural,
-        rollout_fn=_temperature_rollout,
+        rollout_fn=_two_structural_rollout,
     )
     resumed = await resumed_optimizer.run_async()
     assert resumed.best.id == original.best.id

@@ -25,7 +25,7 @@ from strands_evals.optimization.execution.trials import TrialRunner, _EvaluatorP
 from strands_evals.optimization.record.run_directory import RunDirectory
 from strands_evals.optimization.setup.budget import BudgetTracker
 from strands_evals.types import EvaluationOutput
-from strands_evals.types.evaluation import EnvironmentState
+from strands_evals.types.evaluation import NOT_APPLICABLE, EnvironmentState
 from strands_evals.types.optimization import TrialRecord, TrialStatus
 from strands_evals.types.trace import Session
 from tests.strands_evals.optimization.scripted_model import ScriptedModel
@@ -521,6 +521,35 @@ async def test_a_score_that_isnt_finite_is_re_judged(traces):
     assert records[0].status is TrialStatus.COMPLETED
     assert records[0].evaluations["Scores"].score == 0.5
     assert [a.status for a in records[0].previous_attempts] == [TrialStatus.EVALUATOR_INVALID]
+
+
+async def test_a_score_outside_the_range_is_a_failed_evaluator_and_re_judged(traces):
+    runner = _runner(traces, MemoryCache(), _cases("a"), [Scores(4.0, 0.5)], rerun_passes=1)
+
+    records, _ = await runner.run("cand", _plain, ["a"], runs=1, allowance=0)
+
+    assert records[0].evaluations["Scores"].score == 0.5
+    assert [a.status for a in records[0].previous_attempts] == [TrialStatus.EVALUATOR_INVALID]
+
+
+async def test_the_range_check_uses_score_range_and_float_noise_and_skips_not_applicable(traces):
+    stars = Scores(5.0, name="Stars")
+    stars.score_range = (1.0, 5.0)
+    edge = Scores(1 + 1e-15, name="Edge")
+    unbounded = Scores(1e6, name="Unbounded")
+    unbounded.score_range = (0.0, None)
+
+    class NotApplicable(Evaluator):
+        async def evaluate_async(self, evaluation_case):
+            return [EvaluationOutput(score=-1.0, test_pass=True, label=NOT_APPLICABLE)]
+
+    evaluators = [stars, edge, unbounded, NotApplicable(name="NA")]
+    runner = _runner(traces, MemoryCache(), _cases("a"), evaluators, rerun_passes=0)
+
+    records, _ = await runner.run("cand", _plain, ["a"], runs=1, allowance=0)
+
+    assert records[0].evaluator_errors == {}
+    assert set(records[0].evaluations) == {"Stars", "Edge", "Unbounded", "NA"}
 
 
 async def test_a_score_that_isnt_finite_doesnt_fail_the_save(traces, tmp_path):
