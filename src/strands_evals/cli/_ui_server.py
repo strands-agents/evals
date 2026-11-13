@@ -479,6 +479,11 @@ def discover_optimizer_runs(root: Path, depth: int = DEFAULT_DEPTH) -> list[dict
     return found
 
 
+# The only suffixes the explorer's build emits. Anything else is served as bytes rather than
+# guessed at, since a wrong type on a script is worse than no type at all.
+ASSET_TYPES = {".js": "text/javascript", ".css": "text/css", ".map": "application/json"}
+
+
 class PathOutsideRoot(ValueError):
     """A client-supplied path resolved outside the served directory."""
 
@@ -625,6 +630,10 @@ class UIConfig:
     asset: str = ""
     # True when `asset` came from the shipped file rather than a caller, so it can be re-read.
     reload_asset: bool = False
+    # The explorer: a directory of optimizer run folders to read, and the built app that reads
+    # them. Both None means the page is not served and its routes answer 404.
+    opt_root: Path | None = None
+    opt_app: Path | None = None
 
     def page(self) -> str:
         """The page to serve, re-read from disk unless a caller pinned one.
@@ -711,6 +720,31 @@ class UIHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.OK, self.config.page().encode("utf-8"), "text/html; charset=utf-8")
             return
 
+        if parsed.path in ("/optimization", "/optimization/"):
+            if self.config.opt_app is None or not (self.config.opt_app / "index.html").is_file():
+                self._error(HTTPStatus.NOT_FOUND, "no optimization app is installed")
+                return
+            if not self._authorized(query):
+                self._error(HTTPStatus.UNAUTHORIZED, "missing or wrong token")
+                return
+            self._send(HTTPStatus.OK, (self.config.opt_app / "index.html").read_bytes(), "text/html; charset=utf-8")
+            return
+
+        # The bundle is code, never data, so script and style requests work without the token.
+        if parsed.path.startswith("/optimization/assets/") and self.config.opt_app is not None:
+            rel = parsed.path[len("/optimization/assets/") :]
+            try:
+                target = resolve_within(self.config.opt_app / "assets", rel)
+            except PathOutsideRoot as exc:
+                self._error(HTTPStatus.FORBIDDEN, str(exc))
+                return
+            if not target.is_file():
+                self._error(HTTPStatus.NOT_FOUND, "no such asset")
+                return
+            kind = ASSET_TYPES.get(target.suffix, "application/octet-stream")
+            self._send(HTTPStatus.OK, target.read_bytes(), f"{kind}; charset=utf-8")
+            return
+
         if not self._authorized(query):
             self._error(HTTPStatus.UNAUTHORIZED, "missing or wrong token")
             return
@@ -722,6 +756,7 @@ class UIHandler(BaseHTTPRequestHandler):
                     "root": str(self.config.root),
                     "depth": self.config.depth,
                     "read_only": self.config.read_only,
+                    "optimization": self.config.opt_root is not None,
                 },
             )
             return
@@ -789,6 +824,36 @@ class UIHandler(BaseHTTPRequestHandler):
                     "evaluator_notes": check_evaluators(obj.get("evaluators") if isinstance(obj, dict) else None),
                 },
             )
+            return
+
+        if parsed.path == "/api/optimization/runs":
+            if self.config.opt_root is None:
+                self._error(HTTPStatus.NOT_FOUND, "no optimization runs directory was configured (--runs-dir)")
+                return
+            runs = []
+            if self.config.opt_root.is_dir():
+                for entry in sorted(self.config.opt_root.iterdir()):
+                    record = entry / "events.jsonl"
+                    if entry.is_dir() and record.is_file():
+                        runs.append({"id": entry.name, "modified": record.stat().st_mtime})
+            self._json(HTTPStatus.OK, {"root": str(self.config.opt_root), "runs": runs})
+            return
+
+        if parsed.path == "/api/optimization/file":
+            if self.config.opt_root is None:
+                self._error(HTTPStatus.NOT_FOUND, "no optimization runs directory was configured (--runs-dir)")
+                return
+            run = query.get("run", [""])[0]
+            rel = query.get("path", [""])[0]
+            try:
+                target = resolve_within(resolve_within(self.config.opt_root, run), rel)
+            except PathOutsideRoot as exc:
+                self._error(HTTPStatus.FORBIDDEN, str(exc))
+                return
+            if not target.is_file():
+                self._error(HTTPStatus.NOT_FOUND, f"{run}/{rel} is not a file")
+                return
+            self._send(HTTPStatus.OK, target.read_bytes(), "text/plain; charset=utf-8")
             return
 
         self._error(HTTPStatus.NOT_FOUND, f"no route for {parsed.path}")
@@ -898,6 +963,12 @@ def load_asset() -> str:
     return resources.files(__package__).joinpath("assets/ui.html").read_text(encoding="utf-8")
 
 
+def _default_opt_app() -> Path | None:
+    """The explorer bundle shipped beside this module, if one was built into the package."""
+    candidate = Path(__file__).parent / "assets" / "optimization"
+    return candidate if (candidate / "index.html").is_file() else None
+
+
 def build_server(
     root: Path,
     *,
@@ -907,6 +978,8 @@ def build_server(
     read_only: bool = False,
     token: str | None = None,
     asset: str | None = None,
+    opt_root: Path | None = None,
+    opt_app: Path | None = None,
 ) -> _Server:
     """Bind a server for `root`. Port 0 picks a free one, which the tests rely on."""
     config = UIConfig(
@@ -916,6 +989,8 @@ def build_server(
         read_only=read_only,
         asset=asset if asset is not None else load_asset(),
         reload_asset=asset is None,
+        opt_root=opt_root.resolve() if opt_root else None,
+        opt_app=opt_app.resolve() if opt_app else _default_opt_app(),
     )
     try:
         return _Server((host, port), UIHandler, config)

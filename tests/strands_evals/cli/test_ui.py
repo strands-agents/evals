@@ -692,6 +692,225 @@ def test_an_unreadable_page_falls_back_to_the_one_read_at_startup(tmp_path: Path
     server.server_close()
 
 
+# ── the run explorer ──
+
+
+@pytest.fixture
+def explorer(tmp_path: Path):
+    """A server with a runs directory and a stand-in bundle, plus a client helper.
+
+    The bundle is faked rather than the shipped one so the assertions are about the routes and
+    not about whatever the last `npm run build` happened to emit.
+    """
+    runs = tmp_path / "runs"
+    _optimizer_run(runs / "tuning", {"event": "propose", "candidate": 0})
+    (runs / "tuning" / "transcripts").mkdir()
+    (runs / "tuning" / "transcripts" / "abc.json").write_text('{"turns": []}', encoding="utf-8")
+    (runs / "not-a-run").mkdir()  # no events.jsonl, so not a run
+    (runs / "stray.txt").write_text("not a directory either", encoding="utf-8")
+
+    app = tmp_path / "app"
+    (app / "assets").mkdir(parents=True)
+    (app / "index.html").write_text("<html>explorer</html>", encoding="utf-8")
+    (app / "assets" / "index.js").write_text("console.log(1)", encoding="utf-8")
+    (app / "assets" / "index.css").write_text("body{}", encoding="utf-8")
+    (app / "assets" / "index.js.map").write_text("{}", encoding="utf-8")
+    (app / "secret.txt").write_text("above the assets directory", encoding="utf-8")
+
+    served_root = tmp_path / "tree"
+    served_root.mkdir()
+    server = build_server(served_root, port=0, asset="<html>page</html>", opt_root=runs, opt_app=app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    token = server.config.token
+
+    def request(method: str, path: str, *, token_header: str | None = token):
+        conn = HTTPConnection(host, port, timeout=5)
+        headers = {"Host": f"127.0.0.1:{port}"}
+        if token_header is not None:
+            headers["X-Evals-Token"] = token_header
+        conn.request(method, path, headers=headers)
+        response = conn.getresponse()
+        raw = response.read()
+        kind = response.getheader("Content-Type")
+        conn.close()
+        return response.status, raw, kind
+
+    try:
+        yield runs, request, server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_config_reports_no_optimization_without_a_runs_directory(served):
+    _, request, _ = served
+    _, body = request("GET", "/api/config")
+    assert body["optimization"] is False
+
+
+def test_config_reports_optimization_when_a_runs_directory_is_served(explorer):
+    _, request, _ = explorer
+    conn_status, raw, _ = request("GET", "/api/config")
+    assert conn_status == HTTPStatus.OK
+    assert json.loads(raw)["optimization"] is True
+
+
+@pytest.mark.parametrize("path", ["/optimization", "/optimization/"])
+def test_explorer_page_is_served_with_and_without_the_slash(explorer, path: str):
+    _, request, _ = explorer
+    status, raw, kind = request("GET", path)
+    assert (status, raw) == (HTTPStatus.OK, b"<html>explorer</html>")
+    assert kind == "text/html; charset=utf-8"
+
+
+def test_explorer_page_needs_the_token(explorer):
+    """It reads run records through the same API, so it is gated like the main page."""
+    _, request, _ = explorer
+    status, raw, _ = request("GET", "/optimization/", token_header=None)
+    assert status == HTTPStatus.UNAUTHORIZED
+    assert b"explorer" not in raw
+
+
+def test_explorer_page_404s_when_no_bundle_is_installed(tmp_path: Path):
+    """A source checkout with no `npm run build` must say so rather than serve an empty page."""
+    server = build_server(tmp_path, port=0, asset="x", opt_root=tmp_path, opt_app=tmp_path / "never-built")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    try:
+        conn = HTTPConnection(host, port, timeout=5)
+        conn.request("GET", "/optimization/", headers={"Host": f"127.0.0.1:{port}"})
+        response = conn.getresponse()
+        raw = response.read()
+        conn.close()
+        # 404 before the token check: whether a bundle exists is not a secret, and a 401 here
+        # would send someone hunting for the right token to a route that has nothing to serve.
+        assert response.status == HTTPStatus.NOT_FOUND
+        assert b"no optimization app is installed" in raw
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+@pytest.mark.parametrize(
+    ("name", "kind"),
+    [("index.js", "text/javascript"), ("index.css", "text/css"), ("index.js.map", "application/json")],
+)
+def test_bundle_assets_are_served_untokened(explorer, name: str, kind: str):
+    """A <script src> carries no header, and the bundle is code rather than anyone's data."""
+    _, request, _ = explorer
+    status, raw, served_kind = request("GET", f"/optimization/assets/{name}", token_header=None)
+    assert status == HTTPStatus.OK
+    assert raw
+    assert served_kind == f"{kind}; charset=utf-8"
+
+
+def test_an_unknown_asset_suffix_is_served_as_bytes(explorer):
+    """Guessing a type is worse than declining to: a wrong one on a script makes it not run."""
+    runs, request, server = explorer
+    assert server.config.opt_app is not None
+    (server.config.opt_app / "assets" / "font.woff2").write_bytes(b"\x00\x01")
+    status, raw, kind = request("GET", "/optimization/assets/font.woff2")
+    assert (status, raw) == (HTTPStatus.OK, b"\x00\x01")
+    assert kind is not None and kind.startswith("application/octet-stream")
+
+
+def test_a_missing_asset_404s(explorer):
+    _, request, _ = explorer
+    status, raw, _ = request("GET", "/optimization/assets/nope.js")
+    assert status == HTTPStatus.NOT_FOUND
+    assert b"no such asset" in raw
+
+
+def test_the_asset_route_cannot_leave_the_assets_directory(explorer):
+    """Untokened, so this is the one route a stranger on loopback can reach at all."""
+    _, request, _ = explorer
+    status, raw, _ = request("GET", "/optimization/assets/../secret.txt", token_header=None)
+    assert status == HTTPStatus.FORBIDDEN
+    assert b"above the assets directory" not in raw
+
+
+def test_optimization_runs_lists_only_directories_holding_a_log(explorer):
+    _, request, _ = explorer
+    status, raw, _ = request("GET", "/api/optimization/runs")
+    assert status == HTTPStatus.OK
+    body = json.loads(raw)
+    assert [run["id"] for run in body["runs"]] == ["tuning"]
+    assert body["runs"][0]["modified"] > 0
+
+
+def test_optimization_runs_404s_when_none_was_configured(served):
+    _, request, _ = served
+    status, body = request("GET", "/api/optimization/runs")
+    assert status == HTTPStatus.NOT_FOUND
+    assert "--runs-dir" in body["error"]
+
+
+def test_optimization_file_returns_the_bytes_on_disk(explorer):
+    """The explorer parses the record itself, so the route hands it over unchanged."""
+    _, request, _ = explorer
+    status, raw, kind = request("GET", "/api/optimization/file?run=tuning&path=events.jsonl")
+    assert status == HTTPStatus.OK
+    assert json.loads(raw.splitlines()[0])["event"] == "propose"
+    assert kind == "text/plain; charset=utf-8"
+
+
+def test_optimization_file_reads_below_the_run(explorer):
+    _, request, _ = explorer
+    status, raw, _ = request("GET", "/api/optimization/file?run=tuning&path=transcripts/abc.json")
+    assert (status, raw) == (HTTPStatus.OK, b'{"turns": []}')
+
+
+def test_optimization_file_404s_when_not_configured(served):
+    _, request, _ = served
+    status, body = request("GET", "/api/optimization/file?run=x&path=y")
+    assert status == HTTPStatus.NOT_FOUND
+    assert "--runs-dir" in body["error"]
+
+
+def test_optimization_file_404s_on_a_missing_file(explorer):
+    _, request, _ = explorer
+    status, raw, _ = request("GET", "/api/optimization/file?run=tuning&path=best.diff")
+    assert status == HTTPStatus.NOT_FOUND
+    assert b"tuning/best.diff" in raw
+
+
+@pytest.mark.parametrize(
+    ("run", "rel"),
+    [
+        ("tuning", "../../outside.json"),
+        ("..", "outside.json"),
+        ("tuning", "/etc/passwd"),
+        ("", "events.jsonl"),
+        ("tuning", ""),
+    ],
+)
+def test_optimization_file_refuses_to_leave_the_run(explorer, run: str, rel: str):
+    runs, request, _ = explorer
+    (runs.parent / "outside.json").write_text('{"secret": true}', encoding="utf-8")
+    status, raw, _ = request("GET", f"/api/optimization/file?run={run}&path={rel}")
+    assert status in (HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND)
+    assert b"secret" not in raw
+
+
+def test_the_shipped_bundle_is_found_by_default(tmp_path: Path):
+    """`--runs-dir` alone has to be enough; nobody should have to point at the build output."""
+    from strands_evals.cli._ui_server import _default_opt_app
+
+    app = _default_opt_app()
+    if app is None:  # pragma: no cover - the bundle is committed, this is a clearer failure
+        pytest.skip("no optimization bundle is built into the package")
+    assert (app / "index.html").is_file()
+
+    server = build_server(tmp_path, port=0, asset="x")
+    assert server.config.opt_app == app
+    server.server_close()
+
+
 # ── the command ──
 
 
@@ -806,6 +1025,37 @@ def test_a_supplied_token_read_only_says_only_read(tmp_path: Path, launched, cap
     assert main(["ui", str(tmp_path), "--no-browser", "--read-only", "--token", "short"]) == 0
     err = capsys.readouterr().err
     assert "can read files" in err and "read and write" not in err
+
+
+def test_ui_serves_no_runs_directory_by_default(tmp_path: Path, launched):
+    assert main(["ui", str(tmp_path), "--no-browser"]) == 0
+    assert launched["opt_root"] is None
+
+
+def test_ui_passes_the_runs_directory_through(tmp_path: Path, launched):
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    assert main(["ui", str(tmp_path), "--no-browser", "--runs-dir", str(runs)]) == 0
+    assert launched["opt_root"] == runs
+
+
+def test_ui_prints_the_explorer_url(tmp_path: Path, launched, capsys):
+    """The route is not guessable from the printed link, so it is printed too."""
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    assert main(["ui", str(tmp_path), "--no-browser", "--runs-dir", str(runs)]) == 0
+    err = capsys.readouterr().err
+    assert "/optimization/?t=fake-token" in err
+    assert str(runs.resolve()) in err
+
+
+def test_ui_rejects_a_runs_directory_that_is_not_one(tmp_path: Path, launched, capsys):
+    """Caught before binding: a server that is up with a dead tab is the confusing outcome."""
+    stray = tmp_path / "events.jsonl"
+    stray.write_text("{}", encoding="utf-8")
+    assert main(["ui", str(tmp_path), "--no-browser", "--runs-dir", str(stray)]) == 2
+    assert "not a directory" in capsys.readouterr().err
+    assert not launched, "it must not have reached build_server"
 
 
 def test_ui_rejects_a_path_that_is_not_a_directory(tmp_path: Path, capsys):

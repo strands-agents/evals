@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Study directories as the embedded explorer takes them (EmbeddedStudy, src/source.ts), for a page that inlines its
-// studies: study.jsonl and each transcript gzipped and base64-encoded, effects.json parsed (null without one).
+// studies: events.jsonl and each transcript gzipped and base64-encoded, effects.json parsed (null without one).
 //
 //   node scripts/embed-data.mjs [-o FILE] [--var NAME] STUDY_DIR...
 //
@@ -17,7 +17,7 @@ const gz = (bytes) => gzipSync(bytes, { level: 9 }).toString("base64");
 
 /** One study directory as an EmbeddedStudy, and its sizes (bytes on disk, and as embedded). */
 export function embedStudy(dir) {
-  const record = readFileSync(join(dir, "study.jsonl"));
+  const record = readFileSync(join(dir, "events.jsonl"));
   const effects = join(dir, "effects.json");
   const transcripts = join(dir, "transcripts");
   const study = {
@@ -68,10 +68,10 @@ function main(args) {
     else if (args[i] === "--var") name = args[++i];
     else dirs.push(args[i]);
   }
-  const bad = dirs.filter((d) => !existsSync(join(d, "study.jsonl")));
+  const bad = dirs.filter((d) => !existsSync(join(d, "events.jsonl")));
   if (!dirs.length || bad.length || out === undefined || name === undefined || (name && !/^[A-Za-z_$][\w$]*$/.test(name))) {
     console.error("usage: node scripts/embed-data.mjs [-o FILE] [--var NAME] STUDY_DIR...");
-    for (const d of bad) console.error(`not a study (no study.jsonl): ${d}`);
+    for (const d of bad) console.error(`not a run (no events.jsonl): ${d}`);
     process.exit(2);
   }
   const text = embedStudies(dirs, name);

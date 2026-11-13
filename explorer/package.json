@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:cli": "tsc --noEmit && vite build --base=/optimization/ --outDir ../src/strands_evals/cli/assets/optimization --emptyOutDir",
     "build:embed": "tsc --noEmit && vite build --config vite.embed.config.ts",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit"
