@@ -1,6 +1,7 @@
 // Reading an events.jsonl strictly: a strands_evals.optimization run record (run.json schema_version 1), every
-// line one event; only a final line still being written may be incomplete. A resume discards the events of the
-// killed iteration, exactly as the optimizer's own reader does, so a resumed run parses to the same state.
+// line one event; only a final line still being written may be incomplete. A resume discards the search events of
+// the killed iteration, exactly as the optimizer's own reader does, so a resumed run parses to the same state —
+// but keeps its trial events, which that reader keeps too (they are the cache the re-run reads from).
 
 import type {
   Config,
@@ -90,7 +91,7 @@ const CORE: Record<string, string[]> = {
 
 export function parseRecord(text: string): RunRecord {
   const lines = text.split("\n");
-  let events: { e: Event; line: number }[] = [];
+  const events: { e: Event; line: number; killed?: boolean }[] = [];
   const resumes: ResumeEvent[] = [];
   let lastClosed = -1; // index into `events` of the last iteration_end (or stop)
 
@@ -113,9 +114,16 @@ export function parseRecord(text: string): RunRecord {
     const missing = (CORE[e.event] ?? []).filter((k) => !(k in e));
     if (missing.length) throw new RecordError(`${e.event} event without ${missing.join(", ")}`, i + 1);
     if (e.event === "resume") {
-      // the killed iteration's events are dropped, as the optimizer's own reader drops them
+      /* The killed iteration is re-run, so its search events are dropped, as the optimizer's own reader
+         drops them. Its trial events are not: those are the cache the re-run reads instead of paying for
+         the rollouts again, so dropping one shows a trial the run did record as never run. They stay where
+         they are in the file, which is what decides precedence when the re-run records the same trial too.
+         The config event is kept whatever happens: a run killed inside its first iteration has no
+         iteration_end to truncate to, and slicing it away leaves a record that starts with a propose. */
       resumes.push(e as ResumeEvent);
-      events = events.slice(0, lastClosed + 1);
+      const kept = events.splice(Math.max(lastClosed, 0) + 1).filter((k) => k.e.event === "trial");
+      for (const k of kept) k.killed = true;
+      events.push(...kept);
       return;
     }
     events.push({ e, line: i + 1 });
@@ -149,7 +157,24 @@ export function parseRecord(text: string): RunRecord {
     return t;
   };
 
-  for (const { e, line } of events.slice(1)) {
+  const addTrial = (t: Candidate, r: TrialRecord) => {
+    if (r.transcript && typeof r.transcript === "object") r.transcript = r.transcript.hash;
+    // a re-run or a resume replaces the trial with the same key
+    const at = t.trials.findIndex((x) => x.case_name === r.case_name && x.run_index === r.run_index && x.split === r.split);
+    if (at >= 0) t.trials[at] = r;
+    else t.trials.push(r);
+  };
+
+  /* Trials kept from a killed iteration whose propose went with the rest of it. The re-run proposes the
+     same candidate again — same values, so the same id — and reads these from the cache rather than
+     running them, so they are held until that propose arrives. */
+  const held = new Map<string, TrialRecord[]>();
+  const flushHeld = (t: Candidate) => {
+    for (const r of held.get(t.id) ?? []) addTrial(t, r);
+    held.delete(t.id);
+  };
+
+  for (const { e, line, killed } of events.slice(1)) {
     switch (e.event) {
       case "config":
         throw new RecordError("a second config event: one record holds one run", line);
@@ -158,6 +183,7 @@ export function parseRecord(text: string): RunRecord {
         const seen = record.byId.get(p.candidate_id);
         if (seen) {
           seen.rescored = seen.rescored || p.rescore;
+          flushHeld(seen);
           break; // a rescore repeats the id; the first propose holds the only copy of the values
         }
         const t: Candidate = {
@@ -181,16 +207,20 @@ export function parseRecord(text: string): RunRecord {
         };
         record.byId.set(t.id, t);
         record.candidates.push(t);
+        flushHeld(t);
         break;
       }
       case "trial": {
         const r = (e as { record: TrialRecord }).record;
-        if (r.transcript && typeof r.transcript === "object") r.transcript = r.transcript.hash;
-        const t = candidate(r.candidate_id, line);
-        // a re-run or a resume replaces the trial with the same key
-        const at = t.trials.findIndex((x) => x.case_name === r.case_name && x.run_index === r.run_index && x.split === r.split);
-        if (at >= 0) t.trials[at] = r;
-        else t.trials.push(r);
+        /* Only a trial kept from a killed iteration may name a candidate not proposed yet; anywhere else
+           that is a record out of order. One whose candidate the re-run never proposes again is left
+           held, and goes unshown with the rest of the iteration it belongs to. */
+        if (killed && !record.byId.has(r.candidate_id)) {
+          if (r.transcript && typeof r.transcript === "object") r.transcript = r.transcript.hash;
+          held.set(r.candidate_id, [...(held.get(r.candidate_id) ?? []), r]);
+          break;
+        }
+        addTrial(candidate(r.candidate_id, line), r);
         break;
       }
       case "score": {
