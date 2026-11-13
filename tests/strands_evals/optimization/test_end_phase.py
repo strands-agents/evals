@@ -77,3 +77,269 @@ def test_the_comparison_is_deterministic():
     assert paired_interval(CANDIDATE, REFERENCE, level=TEST_LEVEL) == paired_interval(
         dict(reversed(CANDIDATE.items())), REFERENCE, level=TEST_LEVEL
     )
+
+
+# ---- FinalPick: construction and from_config -------------------------------------------------------------
+
+
+from strands_evals.optimization import (  # noqa: E402
+    AtMost,
+    Criteria,
+    FinalPick,
+    LowerBound,
+    Maximize,
+    Mean,
+    MetricRegistry,
+)
+from strands_evals.optimization.end_phase import choose_finalists, pick  # noqa: E402
+from strands_evals.optimization.score_model.ranking import Assessment, label_candidate  # noqa: E402
+from strands_evals.types.optimization import CandidateScores, Estimate  # noqa: E402
+
+HELP = "HelpfulnessEvaluator"
+TOKENS = "tokens"
+REGISTRY = MetricRegistry({HELP: (0.0, 1.0)})
+
+
+def test_final_pick_rejects_bad_arguments():
+    with pytest.raises(ValueError, match="n_finalists"):
+        FinalPick(n_finalists=0)
+    with pytest.raises(ValueError, match="n_finalists"):
+        FinalPick(n_finalists=-3)
+    with pytest.raises(ValueError, match="n_finalists"):
+        FinalPick(n_finalists=True)  # a bool isn't an int here
+    with pytest.raises(TypeError, match="Mean.*LowerBound"):
+        FinalPick(rule="mean")
+
+
+def test_final_pick_round_trips_through_config():
+    for rule in (FinalPick(), FinalPick(n_finalists=5, rule=LowerBound(q=0.2))):
+        assert FinalPick.from_config(rule.config()) == rule
+
+
+def test_final_pick_from_config_rejects_an_unknown_rule():
+    with pytest.raises(ValueError, match="unknown FinalPick rule 'Median'"):
+        FinalPick.from_config({"n_finalists": 3, "rule": {"kind": "Median"}})
+
+
+# ---- choose_finalists ------------------------------------------------------------------------------------
+
+
+def test_choose_finalists_takes_the_first_n_excluding_the_baseline():
+    assert choose_finalists(["0", "a", "b", "c", "d"], "0", 3) == ["a", "b", "c"]
+
+
+def test_choose_finalists_returns_whatever_the_ranking_holds_when_short():
+    assert choose_finalists(["0", "a"], "0", 3) == ["a"]
+    assert choose_finalists(["0"], "0", 3) == []  # no finalist, the baseline ships
+
+
+def test_choose_finalists_under_pareto_uses_the_front():
+    # ranking lists ineligible candidates too, but a Pareto run picks finalists from the front.
+    ranking = ["0", "a", "b", "c"]
+    front = ["c", "a"]  # the feasible non-dominated, in ranking order
+    assert choose_finalists(ranking, "0", 3, front=front) == ["c", "a"]
+    assert choose_finalists(ranking, "0", 3, front=[]) == []
+
+
+# ---- label_candidate -------------------------------------------------------------------------------------
+
+
+def _scores(candidate_id, help_by_case, *, eligible=True):
+    return CandidateScores(
+        candidate_id=candidate_id,
+        objective_by_case={c: v for c, v in help_by_case.items() if v is not None},
+        metrics_by_case={c: {HELP: v} for c, v in help_by_case.items() if v is not None},
+        unavailable={},
+        objective_by_run={c: [v] for c, v in help_by_case.items()},
+        metrics_by_run={c: {HELP: [v]} for c, v in help_by_case.items()},
+        objective=1.0 if eligible else None,
+        is_eligible=eligible,
+        failures=0,
+    )
+
+
+def _assessment(candidate_id, *, objective, feasible, violation=0.0, from_fit=True, p_met=None, n_constraints=0):
+    violations = () if n_constraints == 0 else (0.0 if feasible else violation,) * n_constraints
+    return Assessment(
+        candidate_id=candidate_id,
+        objective=objective,
+        terms=(objective,),
+        is_feasible=feasible,
+        violations=violations,
+        total_violation=sum(v for v in violations if v > 0),
+        p_met=p_met or {},
+        estimates={HELP: Estimate(mean=objective, sd=0.01)} if from_fit else {},
+        is_from_fit=from_fit,
+    )
+
+
+def test_label_candidate_feasible_from_the_fit():
+    criteria = Criteria(Maximize(HELP), [], REGISTRY)
+    label = label_candidate(
+        _scores("a", {"c1": 0.9}), _assessment("a", objective=0.9, feasible=True), criteria=criteria
+    )
+    assert (label.outcome, label.reason) == ("feasible", "meets every constraint")
+    assert label.is_from_fit and label.estimates and label.p_met == {}
+    assert label.unmet_constraints == []
+
+
+def test_label_candidate_infeasible_names_the_unmet_constraint_with_p_met():
+    criteria = Criteria(Maximize(HELP), [AtMost(HELP, 0.5)], REGISTRY, feasibility_threshold=0.9)
+    a = _assessment("a", objective=0.9, feasible=False, violation=0.4, n_constraints=1, p_met={f"{HELP} <= 0.5": 0.2})
+    label = label_candidate(_scores("a", {"c1": 0.9}), a, criteria=criteria)
+    assert label.outcome == "infeasible"
+    assert label.unmet_constraints == [f"{HELP} <= 0.5: P(met) 0.2 < 0.9"]
+    assert label.reason == label.unmet_constraints[0]
+
+
+def test_label_candidate_infeasible_from_measured_means_lists_the_constraint():
+    criteria = Criteria(Maximize(HELP), [AtMost(HELP, 0.5)], REGISTRY)
+    # measured mean 0.8 over two cases violates "<= 0.5".
+    a = _assessment("a", objective=0.8, feasible=False, violation=0.3, from_fit=False, n_constraints=1)
+    label = label_candidate(_scores("a", {"c1": 0.8, "c2": 0.8}), a, criteria=criteria)
+    assert (label.outcome, label.is_from_fit, label.estimates, label.p_met) == ("infeasible", False, {}, {})
+    assert any("<= 0.5" in sentence for sentence in label.unmet_constraints)
+
+
+def test_label_candidate_ineligible_when_a_train_case_has_no_counted_run():
+    criteria = Criteria(Maximize(HELP), [], REGISTRY)
+    candidate = _scores("a", {"c1": 0.9, "c2": None}, eligible=False)
+    label = label_candidate(candidate, None, criteria=criteria)
+    assert label.outcome == "ineligible" and "c2" in label.reason
+    assert label.estimates == {} and label.p_met == {} and label.unmet_constraints == []
+
+
+# ---- pick ------------------------------------------------------------------------------------------------
+
+
+def _val_scores(candidate_id, value, *, cases=("v1", "v2"), eligible=True):
+    return CandidateScores(
+        candidate_id=candidate_id,
+        objective_by_case={c: value for c in cases} if eligible else {},
+        metrics_by_case={c: {HELP: value} for c in cases} if eligible else {},
+        unavailable={},
+        objective_by_run={c: [value] for c in cases},
+        metrics_by_run={c: {HELP: [value]} for c in cases} if eligible else {},
+        objective=value if eligible else None,
+        is_eligible=eligible,
+        failures=0,
+    )
+
+
+def test_pick_ships_the_feasible_finalist_with_the_highest_objective():
+    criteria = Criteria(Maximize(HELP), [], REGISTRY)
+    validation = {
+        "0": _val_scores("0", 0.6),
+        "a": _val_scores("a", 0.9),
+        "b": _val_scores("b", 0.7),
+    }
+    values = {c: {} for c in validation}
+    report = pick(
+        baseline_id="0",
+        finalist_ids=["a", "b"],
+        validation=validation,
+        fit=None,
+        values=values,
+        trial_counts={c: 2 for c in validation},
+        criteria=criteria,
+        rule=Mean(),
+    )
+    assert report.champion_id == "a"
+    assert report.objectives["a"] == 0.9 and report.objectives["0"] == 0.6
+    assert report.problem is None
+    assert "a highest on validation" in report.reason
+    assert report.front == []  # not Pareto
+
+
+def test_pick_ships_the_baseline_when_no_finalist_meets_the_constraint():
+    criteria = Criteria(Maximize(HELP), [AtMost(HELP, 0.5)], REGISTRY, feasibility_threshold=0.9)
+    # baseline measured at 0.5 (feasible on validation: mean at the bound counts as met);
+    # the finalist measured at 0.9 (infeasible).
+    validation = {"0": _val_scores("0", 0.5), "a": _val_scores("a", 0.9)}
+    values = {"0": {}, "a": {}}
+    report = pick(
+        baseline_id="0",
+        finalist_ids=["a"],
+        validation=validation,
+        fit=None,
+        values=values,
+        trial_counts={"0": 2, "a": 2},
+        criteria=criteria,
+        rule=Mean(),
+    )
+    assert report.champion_id == "0" and "<= 0.5" in report.infeasible["a"]
+    assert "baseline" in report.reason
+
+
+def test_pick_reports_fewer_than_two_eligible_through_problem():
+    criteria = Criteria(Maximize(HELP), [], REGISTRY)
+    validation = {"0": _val_scores("0", 0.5), "a": _val_scores("a", 0.0, eligible=False)}
+    values = {"0": {}, "a": {}}
+    report = pick(
+        baseline_id="0",
+        finalist_ids=["a"],
+        validation=validation,
+        fit=None,
+        values=values,
+        trial_counts={"0": 2, "a": 0},
+        criteria=criteria,
+        rule=Mean(),
+        problem="fewer than 2 eligible candidates",
+    )
+    assert report.champion_id == "0" and report.problem.startswith("fewer than 2")
+    assert "not eligible on validation" in report.infeasible["a"]
+    # no finalist from the search isn't the message here: a finalist was chosen, it just can't be picked.
+    assert "a" not in report.objectives or report.objectives["a"] is None
+
+
+def test_pick_tie_goes_to_the_baseline_when_it_has_the_most_trials():
+    # Baseline and finalist tie on objective; baseline has more trials, so it wins.
+    criteria = Criteria(Maximize(HELP), [], REGISTRY)
+    validation = {"0": _val_scores("0", 0.8), "a": _val_scores("a", 0.8)}
+    values = {"0": {}, "a": {}}
+    report = pick(
+        baseline_id="0",
+        finalist_ids=["a"],
+        validation=validation,
+        fit=None,
+        values=values,
+        trial_counts={"0": 10, "a": 2},
+        criteria=criteria,
+        rule=Mean(),
+    )
+    assert report.champion_id == "0"
+
+
+def test_pick_tie_without_trial_counts_goes_to_the_baseline():
+    # Equal objective and equal trial counts: the baseline wins by appearing first in the ranked ids.
+    criteria = Criteria(Maximize(HELP), [], REGISTRY)
+    validation = {"0": _val_scores("0", 0.8), "a": _val_scores("a", 0.8)}
+    values = {"0": {}, "a": {}}
+    report = pick(
+        baseline_id="0",
+        finalist_ids=["a"],
+        validation=validation,
+        fit=None,
+        values=values,
+        trial_counts={"0": 2, "a": 2},
+        criteria=criteria,
+        rule=Mean(),
+    )
+    assert report.champion_id == "0"
+
+
+def test_pick_with_no_finalist_ships_the_baseline():
+    criteria = Criteria(Maximize(HELP), [], REGISTRY)
+    validation = {"0": _val_scores("0", 0.5)}
+    report = pick(
+        baseline_id="0",
+        finalist_ids=[],
+        validation=validation,
+        fit=None,
+        values={"0": {}},
+        trial_counts={"0": 2},
+        criteria=criteria,
+        rule=Mean(),
+    )
+    assert report.champion_id == "0"
+    assert report.reason.startswith("no finalist from the search")
