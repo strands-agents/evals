@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..case import Case
 from ..evaluators.evaluator import Evaluator
@@ -177,8 +177,9 @@ class OptimizationResult(BaseModel):
     search_cost: Usage
     judge_cost: Usage
     retry_cost: Usage
-    reports: dict[str, dict[SplitName, EvaluationReport]]
-    rows: dict[Grain, list[dict[str, Any]]]
+    # Left out of the repr: every trial's rows and evaluation data, hundreds of kilobytes on a real run.
+    reports: dict[str, dict[SplitName, EvaluationReport]] = Field(repr=False)
+    rows: dict[Grain, list[dict[str, Any]]] = Field(repr=False)
 
     @property
     def baseline(self) -> CandidateView:

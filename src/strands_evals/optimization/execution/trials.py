@@ -263,6 +263,7 @@ class TrialRunner:
         runs: int,
         allowance: int,
         rejudge: bool = False,
+        limiter: asyncio.Semaphore | None = None,
     ) -> tuple[list[TrialRecord], int]:
         """Score every run, then re-run failures; returns (records, rollouts spent).
 
@@ -273,9 +274,10 @@ class TrialRunner:
         Each trial is its own `Experiment` call over one case, so it is saved as soon as that call
         returns. Every trial of the call, all runs included, runs at once under one `max_workers` cap,
         case-major (each case's runs, then the next case's); sync tasks run in the call's own pool of
-        `max_workers` threads, so the cap holds for them too. Each call gets a private in-memory
-        `EvaluationDataStore`: it captures the task's live output (`Session` included) and replays it on
-        a judge-only re-run, which runs only the evaluators that failed.
+        `max_workers` threads, so the cap holds for them too. With `limiter`, that semaphore caps the
+        trials instead, so candidates scored at once share one cap rather than one each. Each call gets a
+        private in-memory `EvaluationDataStore`: it captures the task's live output (`Session` included) and
+        replays it on a judge-only re-run, which runs only the evaluators that failed.
 
         `task` is not yet instrumented (`make_task(...)` or the `build_task` path's task); each run wraps
         it with `instrument(task, TrialLog(), traces)`. After every run's first pass, up to `rerun_passes`
@@ -309,6 +311,8 @@ class TrialRunner:
             allowance: Rollouts the whole call may spend, first pass included.
             rejudge: Re-judge saved trials' failed evaluators; set only when an ineligible candidate is
                 scored again.
+            limiter: A semaphore the trials of several concurrent calls share, so `max_workers` caps them
+                together; None gives this call its own cap.
 
         Returns:
             One record per requested (case, run), cached ones included, and the rollouts spent.
@@ -328,7 +332,11 @@ class TrialRunner:
         if duplicates:
             raise ValueError(f"case names listed more than once: {duplicates}")
         keys = [(name, run_index) for name in case_names for run_index in range(runs)]  # case-major
-        call = _Call(candidate_id=candidate_id, task=task, semaphore=asyncio.Semaphore(self._max_workers))
+        call = _Call(
+            candidate_id=candidate_id,
+            task=task,
+            semaphore=limiter if limiter is not None else asyncio.Semaphore(self._max_workers),
+        )
         jobs: list[tuple[_Key, bool]] = []  # (key, judge only), case-major
         for key in keys:
             saved = self._cache.load_trial(candidate_id, key[1], key[0])

@@ -755,7 +755,7 @@ class Optimizer:
 
     async def _score_split(self, ids: Sequence[str], split: SplitName) -> list[CandidateScores]:
         """Score already-measured candidates on an end-phase split at once (the reserves cover the first passes)."""
-        runner = self._runner(self._max_workers)
+        runner = self._runner()
         cases = list(getattr(self._case_split, split))
         return await self._score_together(
             [(self._candidates[c], False, runner.pending(c, cases, runs=self._runs_per_candidate)) for c in ids],
@@ -775,7 +775,7 @@ class Optimizer:
             return None, "no test cases", {}
         baseline, champion = self._baseline.id, report.champion_id
         front = report.front if self._criteria.is_pareto else []
-        runner = self._runner(self._max_workers)
+        runner = self._runner()
         pending = {
             c: runner.pending(c, cases, runs=self._runs_per_candidate)
             for c in dict.fromkeys([champion, baseline, *front])
@@ -1049,7 +1049,7 @@ class Optimizer:
                 accepted.append(draw)
                 need -= 1
         # Save, then score every new candidate of the step at once (a same-step twin is scored once).
-        runner = self._runner(self._max_workers)
+        runner = self._runner()
         to_score: list[tuple[Candidate, bool, int]] = []  # (candidate, rescore, pending trials)
         first_of: dict[str, _Draw] = {}
         budgeted = 0
@@ -1491,7 +1491,7 @@ class Optimizer:
                 round_candidate_ids=members,
             )
 
-    def _runner(self, max_workers: int) -> TrialRunner:
+    def _runner(self) -> TrialRunner:
         assert self._run is not None
         return TrialRunner(
             self._cases,
@@ -1499,7 +1499,7 @@ class Optimizer:
             self._traces,
             self._run,
             split_of=self._split_of,
-            max_workers=max_workers,
+            max_workers=self._max_workers,
             rerun_passes=self._rerun_passes,
         )
 
@@ -1565,9 +1565,9 @@ class Optimizer:
         candidate: Candidate,
         split: SplitName,
         *,
-        max_workers: int,
         allowance: int,
         rejudge: bool = False,
+        limiter: asyncio.Semaphore | None = None,
     ) -> CandidateScores:
         """Score one candidate on one split's cases and count the rollouts; `_score_event` writes its event.
 
@@ -1577,13 +1577,14 @@ class Optimizer:
         """
         assert self._run is not None
         case_names = list(getattr(self._case_split, split))
-        records, rollouts = await self._runner(max_workers).run(
+        records, rollouts = await self._runner().run(
             candidate.id,
             self._task_for(candidate),
             case_names,
             runs=self._runs_per_candidate,
             allowance=allowance,
             rejudge=rejudge,
+            limiter=limiter,
         )
         self._budget.spend(rollouts)
         scores = getattr(score(candidate.id, records, self._criteria, self._case_split), split)
@@ -1598,23 +1599,24 @@ class Optimizer:
         """Score `(candidate, rejudge, pending trials)` entries on `split` at once and write their `score` events
         in entry order.
 
-        Each call gets `max_workers // count` (at least 1) of the concurrency, and its pending trials plus an even
-        share of what the phase's allowance leaves for re-runs (earlier entries get the remainder), so the run is
-        the same whatever finishes first. The caller has checked the first passes fit.
+        The calls share one `max_workers` semaphore, so that many trials run at once however many candidates
+        the step has, and each gets its pending trials plus an even share of what the phase's allowance leaves
+        for re-runs (earlier entries get the remainder), so the run is the same whatever finishes first. The
+        caller has checked the first passes fit.
         """
         if not entries:
             return []
         count = len(entries)
         spare = max(0, self._budget.allowance(phase=split) - sum(pending for _, _, pending in entries))
-        workers = max(1, self._max_workers // count)
+        limiter = asyncio.Semaphore(self._max_workers)
         results = await _gather_or_cancel(
             [
                 self._score(
                     candidate,
                     split,
-                    max_workers=workers,
                     allowance=pending + spare // count + (1 if i < spare % count else 0),
                     rejudge=rejudge,
+                    limiter=limiter,
                 )
                 for i, (candidate, rejudge, pending) in enumerate(entries)
             ]
@@ -1650,9 +1652,7 @@ class Optimizer:
         assert self._run is not None
         baseline = self._baseline = Candidate.baseline(self._space)
         self._run.save_candidate(baseline, changed_keys=[], round=None, role=None)
-        scores = await self._score(
-            baseline, "train", max_workers=self._max_workers, allowance=self._budget.allowance(phase="train")
-        )
+        scores = await self._score(baseline, "train", allowance=self._budget.allowance(phase="train"))
         self._score_event(baseline, "train", scores)
         records = list(self._records[baseline.id].values())
         measured = {metric for metrics in scores.metrics_by_case.values() for metric in metrics}

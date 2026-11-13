@@ -1402,6 +1402,39 @@ async def test_the_result_reloads_whole_without_the_run_folder_and_summarizes(tm
 # ---- concurrent vs. one-at-a-time scoring ---------------------------------------------------------------
 
 
+async def test_max_workers_caps_the_trials_of_a_whole_step(tmp_path):
+    # More candidates than workers: the step's calls share one cap, so one trial runs at a time.
+    peak = 0
+    in_flight = 0
+
+    async def rollout(agent_factory, case):
+        nonlocal peak, in_flight
+        in_flight += 1
+        peak = max(peak, in_flight)
+        try:
+            await asyncio.sleep(0.02)  # long enough that any trial allowed to start would overlap
+            _, temperature = agent_factory()
+            return str(temperature)
+        finally:
+            in_flight -= 1
+
+    optimizer = _searching(
+        Block(Scripted({"temperature": 0.5}, {"temperature": 1.0}), "temperature"),
+        schedule=Joint(),
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=2,
+        max_workers=1,
+    )
+    optimizer._rollout_fn = rollout
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # the batching warning when max_workers < step size
+        await _search(optimizer)
+
+    assert len(optimizer._iterations[0].proposals) == 2  # two candidates, scored at once
+    assert peak == 1
+
+
 async def test_scoring_a_step_at_once_gives_the_same_events_and_pick_as_one_at_a_time(tmp_path):
     # Same seed, same scripted proposals; max_workers alone changes whether the step's candidates run concurrently.
     updates = [{"temperature": 0.0}, {"temperature": 0.5}, {"temperature": 1.0}, {"temperature": 0.5}]
