@@ -19,6 +19,7 @@ from typing_extensions import Any, Generic
 from .case import Case
 from .detectors.diagnosis import diagnose_session
 from .evaluation_data_store import EvaluationDataStore
+from .evaluators.cascade import Cascade
 from .evaluators.coherence_evaluator import CoherenceEvaluator
 from .evaluators.conciseness_evaluator import ConcisenessEvaluator
 from .evaluators.correctness_evaluator import CorrectnessEvaluator
@@ -823,29 +824,35 @@ class Experiment(Generic[InputT, OutputT, ReportT]):
             "ToolCalled": ToolCalled,
             "SkillInvoked": SkillInvoked,
             "TypedRubricEvaluator": TypedRubricEvaluator,
+            "Cascade": Cascade,
         }
         all_evaluators: dict[str, type[Evaluator]] = {
             **default_evaluators,
             **{v.get_type_name(): v for v in custom_evaluators},
         }
 
-        evaluators = []
-        for evaluator_dict in data["evaluators"]:
+        def build(evaluator_dict: dict) -> Evaluator:
             evaluator_type = evaluator_dict["evaluator_type"]
-            evaluator_args = {k: v for k, v in evaluator_dict.items() if k != "evaluator_type"}
-
-            if "model_id" in evaluator_args:
-                evaluator_args["model"] = evaluator_args.pop("model_id")
-
-            if evaluator_type in all_evaluators:
-                evaluator = all_evaluators[evaluator_type](**evaluator_args)
-                evaluators.append(evaluator)
-            else:
+            if evaluator_type not in all_evaluators:
                 raise Exception(
                     f"Cannot find {evaluator_type}. Make sure the evaluator type is spelled correctly and "
                     f"all relevant custom evaluators are passed in."
                 )
+            evaluator_class = all_evaluators[evaluator_type]
+            # Only the arguments the class declares as evaluators, such as a `Cascade`'s `fast` and
+            # `fallback`, are rebuilt; every other argument is passed through unchanged.
+            evaluator_args: dict[str, Any] = {
+                k: build(v) if k in evaluator_class._evaluator_args else v
+                for k, v in evaluator_dict.items()
+                if k != "evaluator_type"
+            }
 
+            if "model_id" in evaluator_args:
+                evaluator_args["model"] = evaluator_args.pop("model_id")
+
+            return evaluator_class(**evaluator_args)
+
+        evaluators = [build(evaluator_dict) for evaluator_dict in data["evaluators"]]
         return cls(cases=cases, evaluators=evaluators)
 
     @classmethod

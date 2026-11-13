@@ -1,4 +1,6 @@
+from ..types.cascade import Band
 from ..types.typed_rubric import Choice, Noul, Scale
+from .cascade import Cascade
 from .coherence_evaluator import CoherenceEvaluator
 from .conciseness_evaluator import ConcisenessEvaluator
 from .correctness_evaluator import CorrectnessEvaluator
@@ -72,4 +74,6 @@ __all__ = [
     "Noul",
     "Scale",
     "Choice",
+    "Cascade",
+    "Band",
 ]
