@@ -1,3 +1,4 @@
+from .cascade import Band
 from .detector import (
     DiagnosisConfig,
     FailureDetectionStructuredOutput,
@@ -49,4 +50,5 @@ __all__ = [
     "Scale",
     "Choice",
     "RubricQuestion",
+    "Band",
 ]

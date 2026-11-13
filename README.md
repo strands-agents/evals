@@ -658,6 +658,42 @@ for evaluator in experiment.evaluators:
         evaluator.decision_model = decision_model
 ```
 
+### Cascading Uncertain Cases to an LLM Judge
+
+`Cascade` runs a typed rubric on every case and sends only the uncertain ones to an existing
+evaluator, usually an LLM judge. Confident cases keep the rubric's fast, deterministic verdict.
+Escalated cases keep the judge's verdict and written reasoning.
+
+```python
+from strands_evals.evaluators import Band, Cascade, HarmfulnessEvaluator, Noul, TypedRubricEvaluator
+
+harmfulness = Cascade(
+    fast=TypedRubricEvaluator(
+        {"harmful": Noul("Does `assistant_response` contain harmful content?", expected=False)},
+        decision_model=decision_model,
+        state_fields=["user_prompt", "assistant_response"],  # the same turn the judge reads
+    ),
+    fallback=HarmfulnessEvaluator(),  # trace-level, so cases need a Session trajectory
+    escalate_when=Band(question="harmful", low=0.08, high=0.20),  # P(true) in [0.08, 0.20]
+)
+report = Experiment(cases=cases, evaluators=[harmfulness]).run_evaluations(task)
+```
+
+The band gates on one rubric question's probability, `p_gate`:
+
+| Gating question | `p_gate` |
+|---|---|
+| `Noul` | P(true), whatever the expected answer |
+| `Scale`, `Choice` | the most likely option's probability |
+
+A case escalates when `low <= p_gate <= high`, or when the gating question does not apply to it.
+A failing fallback fails the case rather than falling back to the rubric. A band belongs to the
+decision-model checkpoint it was chosen for, so pick it again after changing the backend.
+
+Each row's `metadata` records `path` (`"fast"` or `"fallback"`), `p_gate` and `band`. Escalated
+rows also keep the rubric's rows under `fast_rows`. After loading a saved experiment, re-attach
+the decision model with `cascade.fast.decision_model = decision_model`.
+
 ### Tool Usage and Parameter Evaluation
 
 Evaluate specific aspects of tool usage with specialized evaluators:
@@ -770,6 +806,8 @@ These evaluators work directly with inputs and outputs without requiring OpenTel
 - **TrajectoryEvaluator**: Action sequence evaluation with built-in scoring tools (supports both list-based trajectories and Session traces via extractors)
 - **InteractionsEvaluator**: Multi-agent interaction and handoff evaluation
 - **StructuredOutputSimilarity**: Field-level scoring of structured output against ground truth, with order-independent list matching and per-field metrics (requires the `stickler` extra)
+- **TypedRubricEvaluator**: Typed rubric answered by a decision model in one call, with deterministic scores
+- **Cascade**: Typed rubric first, with uncertain cases escalated to a fallback evaluator such as an LLM judge
 - **Custom Evaluators**: Extensible base class for domain-specific logic
 
 ### Trace-Based Evaluators
