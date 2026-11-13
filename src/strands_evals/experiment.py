@@ -833,10 +833,16 @@ class Experiment(Generic[InputT, OutputT, ReportT]):
 
         def build(evaluator_dict: dict) -> Evaluator:
             evaluator_type = evaluator_dict["evaluator_type"]
-            # An argument that is itself a serialized evaluator, such as a `Cascade`'s `fast` and
-            # `fallback`, is rebuilt first.
+            if evaluator_type not in all_evaluators:
+                raise Exception(
+                    f"Cannot find {evaluator_type}. Make sure the evaluator type is spelled correctly and "
+                    f"all relevant custom evaluators are passed in."
+                )
+            evaluator_class = all_evaluators[evaluator_type]
+            # Only the arguments the class declares as evaluators, such as a `Cascade`'s `fast` and
+            # `fallback`, are rebuilt; every other argument is passed through unchanged.
             evaluator_args: dict[str, Any] = {
-                k: build(v) if isinstance(v, dict) and "evaluator_type" in v else v
+                k: build(v) if k in evaluator_class._evaluator_args else v
                 for k, v in evaluator_dict.items()
                 if k != "evaluator_type"
             }
@@ -844,12 +850,7 @@ class Experiment(Generic[InputT, OutputT, ReportT]):
             if "model_id" in evaluator_args:
                 evaluator_args["model"] = evaluator_args.pop("model_id")
 
-            if evaluator_type not in all_evaluators:
-                raise Exception(
-                    f"Cannot find {evaluator_type}. Make sure the evaluator type is spelled correctly and "
-                    f"all relevant custom evaluators are passed in."
-                )
-            return all_evaluators[evaluator_type](**evaluator_args)
+            return evaluator_class(**evaluator_args)
 
         evaluators = [build(evaluator_dict) for evaluator_dict in data["evaluators"]]
         return cls(cases=cases, evaluators=evaluators)

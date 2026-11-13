@@ -3,7 +3,7 @@ import inspect
 import logging
 
 from strands.models.model import Model
-from typing_extensions import Any, Generic, TypeGuard
+from typing_extensions import Any, ClassVar, Generic, TypeGuard
 
 from ..extractors import TraceExtractor
 from ..types.evaluation import NOT_APPLICABLE, EvaluationData, EvaluationOutput, InputT, OutputT
@@ -36,6 +36,9 @@ class Evaluator(Generic[InputT, OutputT]):
     # Optional: subclasses can set this to enable trace parsing
     evaluation_level: EvaluationLevel | None = None
     _trace_extractor: TraceExtractor | None = None
+    # Constructor arguments that take an evaluator. `Experiment.from_dict` rebuilds these from
+    # their serialized dicts and passes every other argument through unchanged.
+    _evaluator_args: ClassVar[tuple[str, ...]] = ()
 
     def __init__(self, trace_extractor: TraceExtractor | None = None, name: str | None = None):
         """Initialize evaluator with optional custom trace extractor.

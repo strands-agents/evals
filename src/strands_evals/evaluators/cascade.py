@@ -11,12 +11,29 @@ from typing import Any, Literal
 from .._async import run_async
 from ..types.cascade import _BAND_ADAPTER, Band
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
-from ..types.typed_rubric import Noul
+from ..types.typed_rubric import Noul, RubricQuestion, Scale
 from .evaluator import Evaluator
 from .typed_rubric_evaluator import TypedRubricEvaluator
 
 Path = Literal["fast", "fallback"]
 """Which evaluator resolved a case, as written to each row's `metadata["path"]`."""
+
+
+def _check_band_is_reachable(band: Band, question: RubricQuestion) -> None:
+    """Reject a band that no `p_gate` can fall into, since it would never escalate a case.
+
+    For a `Scale` or `Choice`, `p_gate` is the most likely option's probability, which is never
+    below 1 / (number of options). A `Noul`'s P(true) can take any value in [0, 1].
+    """
+    if isinstance(question, Noul):
+        return
+    option_count = len(question.levels) if isinstance(question, Scale) else len(question.options)
+    floor = 1 / option_count
+    if band.high < floor:
+        raise ValueError(
+            f"escalate_when.high ({band.high}) is below {floor:.4g}, the lowest possible p_gate for "
+            f"question <{band.question}> with {option_count} options, so no case would ever escalate"
+        )
 
 
 class Cascade(Evaluator[InputT, OutputT]):
@@ -54,6 +71,8 @@ class Cascade(Evaluator[InputT, OutputT]):
         ```
     """
 
+    _evaluator_args = ("fast", "fallback")
+
     def __init__(
         self,
         fast: TypedRubricEvaluator[InputT, OutputT],
@@ -66,25 +85,33 @@ class Cascade(Evaluator[InputT, OutputT]):
 
         Args:
             fast: The typed rubric that answers every case first.
-            fallback: The evaluator that answers escalated cases, usually an LLM judge.
+            fallback: The evaluator that answers escalated cases, usually an LLM judge. It may not
+                be another `Cascade`: nesting cascades is not supported yet.
             escalate_when: The band of the gating probability that escalates a case. Also accepts
                 the dict that `to_dict` writes for it.
             name: Instance name for reports and telemetry. Defaults to the class name.
 
         Raises:
-            TypeError: If `fast` is not a `TypedRubricEvaluator` or `fallback` is not an `Evaluator`.
-            ValueError: If the band is invalid or names a question that is not in the rubric.
+            TypeError: If `fast` is not a `TypedRubricEvaluator`, or `fallback` is not an
+                `Evaluator` or is a `Cascade`.
+            ValueError: If the band is invalid, names a question that is not in the rubric, or can
+                never contain `p_gate` for that question.
         """
         if not isinstance(fast, TypedRubricEvaluator):
             raise TypeError(f"fast must be a TypedRubricEvaluator, got {type(fast).__name__}")
         if not isinstance(fallback, Evaluator):
             raise TypeError(f"fallback must be an Evaluator, got {type(fallback).__name__}")
+        if isinstance(fallback, Cascade):
+            # Each cascade tags rows with its own `path`, so an outer cascade would overwrite the
+            # inner one's and score its rows with the wrong aggregator.
+            raise TypeError("fallback must not be a Cascade; nesting cascades is not supported yet")
         band = _BAND_ADAPTER.validate_python(escalate_when)
         if band.question not in fast.questions:
             raise ValueError(
                 f"escalate_when.question {band.question!r} is not in the fast rubric; "
                 f"its question ids are {list(fast.questions)}"
             )
+        _check_band_is_reachable(band, fast.questions[band.question])
 
         super().__init__(name=name)
         self._fast = fast

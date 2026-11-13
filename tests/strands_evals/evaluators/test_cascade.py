@@ -5,7 +5,7 @@ import pytest
 from strands.decisions import DecisionMetadata, DecisionModel, DecisionResult
 
 from strands_evals import Case, Experiment
-from strands_evals.evaluators import Band, Cascade, Choice, Evaluator, Noul, Scale, TypedRubricEvaluator
+from strands_evals.evaluators import Band, Cascade, Choice, Equals, Evaluator, Noul, Scale, TypedRubricEvaluator
 from strands_evals.types import EvaluationData
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
 
@@ -136,6 +136,39 @@ def test_invalid_band_dict_is_rejected():
     rubric = TypedRubricEvaluator([Noul("q")], decision_model=None)
     with pytest.raises(ValueError, match="must not be greater than high"):
         Cascade(fast=rubric, fallback=StubJudge(), escalate_when={"question": "q1", "low": 0.3, "high": 0.2})
+
+
+def test_fallback_may_not_be_a_cascade():
+    inner = _cascade(_noul(0.5))
+    rubric = TypedRubricEvaluator({"harmful": Noul("q")}, decision_model=None)
+    with pytest.raises(TypeError, match="nesting cascades is not supported"):
+        Cascade(fast=rubric, fallback=inner, escalate_when=Band(question="harmful", low=0, high=1))
+
+
+def test_fallback_may_be_another_typed_rubric():
+    rubric = TypedRubricEvaluator({"harmful": Noul("q")}, decision_model=None)
+    other = TypedRubricEvaluator({"other": Noul("q")}, decision_model=None)
+    assert Cascade(fast=rubric, fallback=other, escalate_when=Band(question="harmful", low=0, high=1)).fallback is other
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        Scale("q", levels=["poor", "ok", "good"]),
+        Choice("q", options={"a": 1.0, "b": 0.5, "n/a": None}),
+    ],
+)
+def test_band_below_the_lowest_possible_p_gate_is_rejected(question):
+    rubric = TypedRubricEvaluator({"gate": question}, decision_model=None)
+    with pytest.raises(ValueError, match=r"below 0\.3333, the lowest possible p_gate .* 3 options"):
+        Cascade(fast=rubric, fallback=StubJudge(), escalate_when=Band(question="gate", low=0, high=0.3))
+    # A band that reaches 1/3 can contain a p_gate, so it is accepted.
+    Cascade(fast=rubric, fallback=StubJudge(), escalate_when=Band(question="gate", low=0, high=1 / 3))
+
+
+def test_any_band_is_reachable_for_a_noul():
+    rubric = TypedRubricEvaluator({"gate": Noul("q")}, decision_model=None)
+    Cascade(fast=rubric, fallback=StubJudge(), escalate_when=Band(question="gate", low=0, high=0.01))
 
 
 def test_evaluation_level_follows_the_fallback():
@@ -331,6 +364,18 @@ def test_to_dict_round_trips_through_experiment():
     assert loaded.fast.to_dict() == cascade.fast.to_dict()
     assert isinstance(loaded.fallback, StubJudge) and loaded.fallback.name == "judge"
     assert loaded.fast.decision_model is None
+
+
+def test_from_dict_rebuilds_only_declared_evaluator_args():
+    # Values shaped like a serialized evaluator stay plain data everywhere else.
+    rubric = TypedRubricEvaluator({"evaluator_type": Noul("q")}, decision_model=None)
+    equals = Equals(value={"evaluator_type": "Equals", "value": 1})
+    experiment = Experiment(cases=[Case(input="hi")], evaluators=[rubric, equals])
+
+    loaded = Experiment.from_dict(experiment.to_dict()).evaluators
+
+    assert list(loaded[0].questions) == ["evaluator_type"]
+    assert loaded[1].value == {"evaluator_type": "Equals", "value": 1}
 
 
 def test_to_dict_omits_name_when_unset():
