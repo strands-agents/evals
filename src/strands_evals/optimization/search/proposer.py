@@ -27,8 +27,8 @@ class ProposalRequest:
         trials: The parent's train trial records (Reflection builds its evidence from them); the parent
             always has them, since every candidate is scored on train.
         scores: The parent's train scores (`SplitScores.train`).
-        inputs: Train case name -> `case.input`, for the cases in `trials`. Inputs only: `expected_output`
-            is never passed.
+        inputs: Train case name -> `case.input`, for the cases in `trials`. Inputs only: no expected field
+            (`expected_output`, `expected_trajectory`, ...) and no `metadata` is ever passed.
         fit: Read-only; None before 2 candidates are eligible.
         candidates: Every scored candidate so far: eligible ones in ranking order, then the ineligible in
             scoring order. Invalid, duplicate, and unscored proposals never appear.
@@ -40,8 +40,10 @@ class ProposalRequest:
         redraw: The redraw number within this iteration and block (0 = first ask; `Search.redraws` caps it).
         criteria: Combines per-metric estimates or sampled values into the objective and checks constraints
             (`criteria.feasibility_threshold` is the P(met) threshold the ranking uses).
-        log: `log(event, **fields)` writes an event; a proposer may write only `screened` and
-            `proposer_retry` (any other name raises `ValueError`).
+        log: `log(event, **fields)` writes an event; a proposer may write only `screened`, `proposer_retry`,
+            and `proposer_usage` (any other name raises `ValueError`). `proposer_usage` (`usage=` a `Usage`) is
+            a `propose` call's model spend that isn't on any patch it returns (in one event or several): each
+            token is reported once, on a returned patch's `usage` or in such an event, never both.
     """
 
     space: Space

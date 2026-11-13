@@ -42,6 +42,9 @@ class CandidateSummary(BaseModel):
         measured_objective: The objective from the raw train scores (`CandidateScores.objective`), no model.
         measured: Every metric measured on train, usage included, next to the fit's estimates.
         trial_count: Train trials that count (completed, or `agent_failure` scored by `agent_failure_score`).
+        failures: Of `trial_count`, the `agent_failure` trials (those `agent_failure_score` scores; 0 under
+            `agent_failure_score=None`, which doesn't count them), so `trial_count - failures` completed: how a
+            proposer tells a version that crashed from one that scored low.
         ranking_objective: What the ranking used when the request was built (`Assessment.objective`): the
             fit's resolved estimate, or `measured_objective` without a usable fit.
         term_values: Each objective term's raw value under that ranking, as `Observation.term_values`;
@@ -65,6 +68,7 @@ class CandidateSummary(BaseModel):
     measured_objective: float | None
     measured: dict[str, Measured]
     trial_count: int
+    failures: int
     ranking_objective: float | None
     term_values: list[float] | None
     rank: int | None

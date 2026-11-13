@@ -127,6 +127,7 @@ def run(tmp_path):
     log.append("duplicate", block="numbers", redraw=0, candidate_id="base", patch=inner, round=[0, 0])
     _propose(log, "base", "base", "numbers", rescore=True)
     log.append("observe", block="numbers", candidate_id=None, observation=_observation(None, _patch(9, tokens=7)))
+    log.append("proposer_usage", block="numbers", redraw=0, usage=_usage(3))  # a call that returned no patch
     log.append("fit", candidates=["base", "c1"], is_fitted=True, error=None, flagged=[], diagnostics={})
     _iteration_end(log, 2, "c1", ["numbers"], exhausted=["numbers"], round=(0, 0), role="opener")
     # Iteration 3, killed: its search events are dropped, its trials stay.
@@ -134,6 +135,7 @@ def run(tmp_path):
     _propose(log, "c3", "c1", "numbers")
     log.append("observe", block="structure", candidate_id="c1", observation=_observation("c1", outer, source_id="c1"))
     log.append("trial", record=_trial("c3", "a"))
+    log.append("proposer_usage", block="numbers", redraw=0, usage=_usage(100))
     return run
 
 
@@ -165,7 +167,7 @@ def test_load_state_rebuilds_the_search_up_to_the_last_closed_iteration(run):
     ]
     assert [type(f).__name__ for f in state.feedback["numbers"]] == ["Evidence", "Observation"]
     assert "structure" not in state.feedback  # the outer opener's observe was in the killed iteration
-    assert state.search_cost.tokens == 7
+    assert state.search_cost.tokens == 10  # the closed iterations' observe (7) and proposer_usage (3) events
     assert state.stop_reason is None
     assert state.finalists is None
     assert state.is_test_done is False

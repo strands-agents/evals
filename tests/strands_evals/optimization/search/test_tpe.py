@@ -133,6 +133,7 @@ def summary(cid, objective, *, violations=(), term_values=None, is_eligible=True
         measured_objective=objective,
         measured={},
         trial_count=1,
+        failures=0,
         ranking_objective=objective if is_eligible else None,
         term_values=term_values if is_eligible else None,
         rank=1 if is_eligible else None,
