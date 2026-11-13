@@ -17,6 +17,8 @@ from strands_evals.optimization.search.reflection import (
     _text_files,
 )
 
+posix_only = pytest.mark.skipif(os.name == "nt", reason="Reflection needs Linux or macOS")
+
 
 @pytest.fixture
 def folders(tmp_path):
@@ -27,18 +29,27 @@ def folders(tmp_path):
     return SimpleNamespace(work=str(work), traces=str(traces), other=str(other), roots=[str(traces), str(work)])
 
 
+async def test_propose_raises_on_windows(monkeypatch):
+    monkeypatch.setattr(os, "name", "nt")
+    with pytest.raises(RuntimeError, match="needs Linux or macOS.*WSL"):
+        await Reflection().propose(SimpleNamespace(n=1))
+
+
+@posix_only
 def test_outside_lists_private_paths_outside_the_roots(folders):
     secret = os.path.join(folders.other, "secret.txt")
     command = f"cat {folders.traces}/a.json {secret} && ls /tmp/shared"
     assert _outside(command, folders.roots, folders.work) == sorted([secret, "/tmp/shared"])
 
 
+@posix_only
 def test_outside_lists_parent_references_and_allows_relative_paths(folders):
     assert _outside("cat ../other/a.json && ls ..", folders.roots, folders.work) == ["..", "../other/a.json"]
     assert _outside("cat ../traces/a.json", folders.roots, folders.work) == []  # lands in a root
     assert _outside("cat notes.txt && grep -r x .", folders.roots, folders.work) == []
 
 
+@posix_only
 def test_outside_lets_the_folder_holding_the_roots_be_named_but_never_reached_by_dots(folders, tmp_path):
     """`home` may be named by its absolute path; a `..` path must land in a root, so `..` can't climb from it."""
     home = str(tmp_path)
@@ -49,6 +60,7 @@ def test_outside_lets_the_folder_holding_the_roots_be_named_but_never_reached_by
     assert _outside(f"ls {home}/..", roots, work, home) == [f"{home}/.."]
 
 
+@posix_only
 def test_outside_accepts_a_roots_real_path(tmp_path):
     """A root reached through a symlink (macOS: `/var` -> `/private/var`) is inside by either path, as `pwd` prints
     the real one."""
@@ -61,12 +73,14 @@ def test_outside_accepts_a_roots_real_path(tmp_path):
         assert _outside(f"cat {real}/work/a.txt {linked}/work/b.txt", [root], work) == []
 
 
+@posix_only
 def test_outside_is_not_a_sandbox(folders):
     """Paths outside the private directories are not checked, and a built path is not seen."""
     assert _outside("cat /etc/hosts", folders.roots, folders.work) == []
     assert _outside('cat "$(printf /tm)p/x"', folders.roots, folders.work) == []
 
 
+@posix_only
 def test_shell_runs_in_the_work_folder(folders):
     shell = _confined_shell(folders.work, folders.roots, [])
     out = shell(command='pwd; echo "$HOME" "$TMPDIR"; echo oops >&2; exit 3')
@@ -77,12 +91,14 @@ def test_shell_runs_in_the_work_folder(folders):
     assert out.endswith("[exit code 3]")
 
 
+@posix_only
 def test_shell_keeps_the_process_environment(folders, monkeypatch):
     monkeypatch.setenv("REFLECTION_TEST_VAR", "kept")
     shell = _confined_shell(folders.work, folders.roots, [])
     assert shell(command="echo $REFLECTION_TEST_VAR").startswith("kept\n")
 
 
+@posix_only
 def test_shell_refuses_and_records_a_command_outside_its_folders(folders):
     refused = []
     shell = _confined_shell(folders.work, folders.roots, refused)
@@ -93,6 +109,7 @@ def test_shell_refuses_and_records_a_command_outside_its_folders(folders):
     assert refused == [{"command": f"echo x > {target}", "paths": [target]}]
 
 
+@posix_only
 def test_shell_reads_its_roots(folders):
     with open(os.path.join(folders.traces, "a.json"), "w") as f:
         f.write("trace")
@@ -100,11 +117,13 @@ def test_shell_reads_its_roots(folders):
     assert shell(command=f"cat {folders.traces}/a.json").startswith("trace")
 
 
+@posix_only
 def test_shell_stops_a_command_at_its_timeout(folders):
     shell = _confined_shell(folders.work, folders.roots, [])
     assert shell(command="sleep 5", timeout=1) == "Stopped after 1 seconds."
 
 
+@posix_only
 def test_shell_kills_what_a_timed_out_command_started(folders):
     """A child of `bash` (not exec'd: `cd . &&`) dies with it, so its file is never written."""
     shell = _confined_shell(folders.work, folders.roots, [])
@@ -113,6 +132,7 @@ def test_shell_kills_what_a_timed_out_command_started(folders):
     assert not os.path.exists(os.path.join(folders.work, "late.txt"))
 
 
+@posix_only
 def test_shell_returns_when_bash_exits_and_kills_a_background_process(folders):
     shell = _confined_shell(folders.work, folders.roots, [])
     started = time.monotonic()
@@ -123,6 +143,7 @@ def test_shell_returns_when_bash_exits_and_kills_a_background_process(folders):
     assert not os.path.exists(os.path.join(folders.work, "late.txt"))
 
 
+@posix_only
 def test_shell_replaces_output_that_is_not_utf8(folders):
     shell = _confined_shell(folders.work, folders.roots, [])
     assert shell(command=r"printf 'ok \xe2\x82'; printf '\xff' >&2") == "ok �\n[stderr]\n�\n[exit code 0]"
@@ -188,7 +209,7 @@ def test_submit_is_all_or_nothing(folders):
     ["# Version 26\nrank: 1\n", "# Version 0 (the baseline)\r\nbuilt from: nothing (the start)\n"],
 )
 def test_submit_refuses_a_value_with_a_versions_header(folders, header):
-    with open(os.path.join(folders.work, "a.txt"), "w") as f:
+    with open(os.path.join(folders.work, "a.txt"), "w", newline="") as f:  # the header's own line endings, as written
         f.write(f"{header}conversations: 8\n\nBe helpful.")
     with open(os.path.join(folders.work, "b.txt"), "w") as f:
         f.write("Searches.")
@@ -273,6 +294,7 @@ def test_leak_skips_plain_words_and_acronyms(name):
     assert _leak(f"Handle {name} first.", "", [name], []) is None
 
 
+@posix_only
 @pytest.mark.parametrize(
     "command",
     ["cd ..;ls", "ls ..|head", "echo $(ls ..)", "cd ..;cd ..;ls", "ls ~/../..", "cat a/../../x", "cd .. &&ls"],
@@ -281,6 +303,7 @@ def test_outside_sees_dots_before_shell_punctuation_and_under_home(folders, tmp_
     assert _outside(command, folders.roots, folders.work, str(tmp_path)) != []
 
 
+@posix_only
 def test_outside_refuses_dots_in_a_command_that_names_the_shared_folder(folders, tmp_path):
     """After `cd <shared folder>`, `../traces` starts from above it, not from the work folder."""
     home = str(tmp_path)
@@ -288,10 +311,12 @@ def test_outside_refuses_dots_in_a_command_that_names_the_shared_folder(folders,
     assert _outside(f"cd {folders.traces} && cat ../traces/a.json", folders.roots, folders.work, home) == []
 
 
+@posix_only
 def test_outside_allows_home_and_an_assignment_into_a_root(folders):
     assert _outside("cat ~/notes.txt; T=../traces/a.json; cat $T", folders.roots, folders.work) == []
 
 
+@posix_only
 def test_shell_gives_a_command_no_standard_input(folders):
     """With the optimizer's stdin an open pipe, a bare `cat` still ends at once instead of reading it or waiting for
     its timeout."""
@@ -310,6 +335,7 @@ def test_shell_gives_a_command_no_standard_input(folders):
             os.close(fd)
 
 
+@posix_only
 def test_a_running_command_is_in_running_until_it_ends_and_can_be_killed(folders):
     """The caller kills what `running` holds when its call ends early (cancelled)."""
     import threading

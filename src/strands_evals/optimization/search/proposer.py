@@ -27,8 +27,8 @@ class ProposalRequest:
         trials: The parent's train trial records (Reflection builds its evidence from them); the parent
             always has them, since every candidate is scored on train.
         scores: The parent's train scores (`SplitScores.train`).
-        inputs: Train case name -> `case.input`, for the cases in `trials`. Inputs only: `expected_output`
-            is never passed.
+        inputs: Train case name -> `case.input`, for the cases in `trials`. Inputs only: no expected field
+            (`expected_output`, `expected_trajectory`, ...) and no `metadata` is ever passed.
         fit: Read-only; None before 2 candidates are eligible.
         candidates: Every scored candidate so far: eligible ones in ranking order, then the ineligible in
             scoring order. Invalid, duplicate, and unscored proposals never appear.

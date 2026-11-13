@@ -82,11 +82,12 @@ class Reflection(Proposer):
     """An agentic, contrastive proposer: complete new text values for its block.
 
     An agent reads the parent's train conversations (built from `request.trials`: a traces folder with
-    `DIGEST.md`, `expected_output` left out) and every measured version (`request.candidates`: a versions
-    folder plus a ranked table, re-ranked by the latest refit on every request), then rewrites the block's
-    texts in full. The versions table is its only history; it keeps no record of its own attempts. Its
-    tools are a shell confined by a path check to its own folders (not a sandbox: it runs with this
-    process's environment and network) and a submit tool; tool output is cut at 100,000 characters.
+    `DIGEST.md`; of each case only its input, no expected field or metadata) and every measured version
+    (`request.candidates`: a versions folder plus a ranked table, re-ranked by the latest refit on every
+    request), then rewrites the block's texts in full. The versions table is its only history; it keeps no
+    record of its own attempts. Its tools are a shell confined by a path check to its own folders (not a
+    sandbox: it runs with this process's environment and network) and a submit tool; tool output is cut at
+    100,000 characters.
 
     Which of the parent's train trials went well: each trial gets a reward in [0, 1] from the goal's
     bounded metrics (an `agent_failure` gets 0), and a trial succeeds when reward >= `success_threshold`;
@@ -101,6 +102,8 @@ class Reflection(Proposer):
     value didn't contain), logged as `screened`. A submitted value over its `size_cap` is sent back, in the
     same conversation, to be shortened, up to `over_limit_retries` times; one still over is dropped and the
     parent's value kept.
+
+    Runs on Linux and macOS only (`propose` raises `RuntimeError` on Windows; use WSL or a Linux container there).
     """
 
     kinds: ClassVar[frozenset[ParamKind]] = frozenset({"text"})
@@ -158,9 +161,16 @@ class Reflection(Proposer):
         with n=1, several at once). Warns once per instance, on the first call, that the shell is not a sandbox.
 
         Raises:
+            RuntimeError: Running on Windows: the agent's shell needs Linux or macOS.
             Exception: The agent failed `_ATTEMPTS` times in a row: the last error, whatever it is (a wrong model id
                 or no access to the model fails every attempt, and proposing nothing would hide it).
         """
+        if os.name == "nt":
+            raise RuntimeError(
+                "Reflection needs Linux or macOS: its agent works through a bash shell whose commands run in their "
+                "own process group, which Windows doesn't have (installing Git Bash is not enough). On Windows, run "
+                "the optimizer inside WSL or a Linux container, or give the text keys another proposer."
+            )
         if not self._warned:
             self._warned = True
             warnings.warn(
@@ -600,7 +610,8 @@ def _build_evidence(
     """Write the parent's train trials (one file each, plus `DIGEST.md`) into `traces_folder` and every measured
     version into `versions_folder`; None when the parent has no trial to learn from (none completed or failed).
 
-    Train data only: each trace holds the case's input from `request.inputs`, never its expected output.
+    Train data only: each trace holds the case's input from `request.inputs`, never its expected output,
+    trajectory, interactions, environment state, assertion, or metadata.
     """
     rewards, label_metrics, label_ranked = _rewards(request, success_threshold)
     if not rewards:
@@ -746,7 +757,7 @@ def _write_traces(
     folder: str, request: ProposalRequest, rewards: Sequence[tuple[TrialRecord, float, dict[str, Any]]]
 ) -> list[dict[str, Any]]:
     """One JSON file per trial (`rollout_0000.json`, ...): its reward, how it ended (`output`), its messages once
-    (`response.messages`), and its task (case name, run, and input: never the expected output). Returns each trial's
+    (`response.messages`), and its task (case name, run, and input: no expected field or metadata). Returns each trial's
     row for the digest."""
     rows = []
     for i, (trial, reward, metadata) in enumerate(rewards):

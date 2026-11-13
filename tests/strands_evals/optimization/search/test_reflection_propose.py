@@ -11,6 +11,8 @@ from strands_evals.optimization.search.proposer import ProposalRequest
 from tests.strands_evals.optimization.scripted_model import ScriptedModel, ToolUse
 from tests.strands_evals.optimization.search.test_reflection_evidence import REGISTRY, scores_of, summary, trial
 
+pytestmark = pytest.mark.skipif(os.name == "nt", reason="Reflection needs Linux or macOS")
+
 SPACE = Space(
     {
         "prompt": TextValue(default="Be helpful.\n", size_cap=60),

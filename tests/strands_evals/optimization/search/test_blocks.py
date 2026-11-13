@@ -1,4 +1,5 @@
 import copy
+import os
 import random
 import warnings
 from types import SimpleNamespace
@@ -184,6 +185,7 @@ def test_resolve_rejects_bad_blocks(blocks, message):
         Search(blocks).resolve(full_space())
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Reflection needs Linux or macOS")
 async def test_reflection_warns_once_when_it_first_proposes():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
