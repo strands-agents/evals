@@ -40,8 +40,10 @@ class ProposalRequest:
         redraw: The redraw number within this iteration and block (0 = first ask; `Search.redraws` caps it).
         criteria: Combines per-metric estimates or sampled values into the objective and checks constraints
             (`criteria.feasibility_threshold` is the P(met) threshold the ranking uses).
-        log: `log(event, **fields)` writes an event; a proposer may write only `screened` and
-            `proposer_retry` (any other name raises `ValueError`).
+        log: `log(event, **fields)` writes an event; a proposer may write only `screened`, `proposer_retry`,
+            and `proposer_usage` (any other name raises `ValueError`). `proposer_usage` (`usage=` a `Usage`) is
+            a `propose` call's model spend that isn't on any patch it returns (in one event or several): each
+            token is reported once, on a returned patch's `usage` or in such an event, never both.
     """
 
     space: Space

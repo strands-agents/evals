@@ -99,7 +99,9 @@ class Reflection(Proposer):
 
     Each `propose` call (n=1) runs one agent (`concurrent = True`). The agent is retried 3 times, each
     failure logged as `proposer_retry`, then the last error is raised; nothing submitted, or every value
-    dropped, returns `[]`. Guardrails run in code after the agent returns,
+    dropped, returns `[]`. A returned patch's `usage` holds its call's model spend, every attempt and send-back
+    included; a call that returns nothing after its agent ran, or raises, logs that spend as `proposer_usage`
+    instead (nothing when cancelled). Guardrails run in code after the agent returns,
     including the leakage screen (drop a value that adds a shown case's identifier-like name, or a
     verbatim run of >= 40 characters from a shown trial's input or output, that the parent's
     value didn't contain), logged as `screened`. A submitted value over its `size_cap` is sent back, in the
@@ -187,9 +189,14 @@ class Reflection(Proposer):
                 UserWarning,
                 stacklevel=1,  # here: `propose` is a coroutine, so the frame above it is the event loop's
             )
-        patches = []
+        patches: list[Patch] = []
         for _ in range(request.n):
-            patch = await self._propose_one(request)
+            try:
+                patch = await self._propose_one(request)
+            except Exception:
+                for built in patches:  # never returned, so no patch carries their spend
+                    request.log("proposer_usage", usage=built.usage)
+                raise
             if patch is not None:
                 patches.append(patch)
         return patches
@@ -263,21 +270,27 @@ class Reflection(Proposer):
                 )
                 agent.add_hook(_cap_tool_output, AfterToolCallEvent)
                 started = time.monotonic()
+                failure: Exception | None = None
                 try:
                     params, rationale, revised = await self._converse(agent, message, submitted, caps, rejected)
-                    break
                 except Exception as error:  # noqa: BLE001 - any failure of the agent is retried, then raised
-                    if attempt == _ATTEMPTS - 1:
-                        self.refused.extend(refused)
-                        raise
-                    request.log("proposer_retry", error_type=type(error).__name__, error=str(error)[:2000])
-                finally:
+                    failure = error
+                finally:  # a cancellation (not an `Exception`) propagates from here, with no event
                     usage = usage + _agent_usage(agent, time.monotonic() - started, self._model_id())
+                if failure is None:
+                    break
+                if attempt == _ATTEMPTS - 1:
+                    self.refused.extend(refused)
+                    # The agent ran (`usage` is never zero here), and no patch will carry its spend.
+                    request.log("proposer_usage", usage=usage)
+                    raise failure
+                request.log("proposer_retry", error_type=type(failure).__name__, error=str(failure)[:2000])
             self.refused.extend(refused)
             updates, dropped, screened = await asyncio.to_thread(_guard, request, params or {}, keys, parent)
             for key in screened:
                 request.log("screened", key=key, reason=dropped[key])
         if not updates:
+            request.log("proposer_usage", usage=usage)  # as above: the agent ran, and no patch carries its spend
             return None
         state = {
             "trials": evidence.trials,

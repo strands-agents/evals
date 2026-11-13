@@ -1,9 +1,11 @@
 """Tests for `Reflection.propose`: a scripted model drives the real agent, shell, and submit tool."""
 
+import asyncio
 import os
 import tempfile
 
 import pytest
+from strands.types.exceptions import EventLoopException
 
 from strands_evals.optimization import Criteria, InfrastructureError, Maximize, Reflection, Space, TextValue
 from strands_evals.optimization.candidate import Candidate
@@ -162,14 +164,16 @@ async def test_any_failure_on_every_attempt_raises_after_three_retries():
     events = []
     with pytest.raises(ValueError, match="model identifier"):
         await reflection.propose(request(events=events))
-    assert [e for e, _ in events] == ["proposer_retry"] * 3
+    assert [e for e, _ in events] == ["proposer_retry"] * 3 + ["proposer_usage"]
 
 
 async def test_a_value_naming_a_shown_case_is_screened():
     turns = [write("p.txt", "If the order is order-123, apologize."), submit(prompt="p.txt"), "Done."]
     patches, events, _ = await propose(turns)
     assert patches == []
-    assert events == [("screened", {"key": "prompt", "reason": "adds the name of a shown case, 'order-123'"})]
+    assert events[0] == ("screened", {"key": "prompt", "reason": "adds the name of a shown case, 'order-123'"})
+    assert [e for e, _ in events] == ["screened", "proposer_usage"]
+    assert events[1][1]["usage"].tokens == 45  # the call's three model calls: no patch carries them
 
 
 async def test_a_value_copying_a_shown_output_is_screened():
@@ -278,3 +282,89 @@ async def test_a_value_adopting_a_judges_advice_word_for_word_is_kept():
     reflection._warned = True
     (patch,) = await reflection.propose(request(trials=trials))
     assert patch.updates == {"prompt": "Always confirm the order number before giving a refund.\n"}
+
+
+# ---- the spend no patch carries: `proposer_usage` ------------------------------------------------------------------
+
+
+def usage_events(events):
+    return [fields["usage"] for event, fields in events if event == "proposer_usage"]
+
+
+async def test_nothing_submitted_logs_the_calls_spend():
+    patches, events, _ = await propose(["I see nothing to change."])
+    assert patches == []
+    (usage,) = usage_events(events)
+    assert events == [("proposer_usage", {"usage": usage})]
+    assert (usage.tokens, usage.model_calls, usage.models) == (15, 1, ["scripted-model"])
+
+
+async def test_a_value_still_over_its_cap_after_the_send_backs_logs_the_total_spend():
+    turns = [write("p.txt", "x" * 80), submit(prompt="p.txt"), "Done."]
+    turns += [write("p.txt", "y" * 80), submit(prompt="p.txt"), "Again."]
+    patches, events, _ = await propose(turns, over_limit_retries=1)
+    assert patches == []
+    (usage,) = usage_events(events)
+    assert usage.tokens == 6 * 15  # the first call and its send-back
+
+
+async def test_every_attempt_failing_logs_all_their_spend_then_raises():
+    turns = [ToolUse("shell", {"command": "ls"}), ValueError("stream broke")] * 4
+    reflection = Reflection(ScriptedModel(turns))
+    reflection._warned = True
+    events = []
+    with pytest.raises(EventLoopException, match="stream broke"):  # Strands wraps an error after a tool call
+        await reflection.propose(request(events=events))
+    assert [e for e, _ in events] == ["proposer_retry"] * 3 + ["proposer_usage"]
+    assert usage_events(events)[0].tokens == 4 * 15  # each attempt's one model call that answered
+
+
+async def test_a_patch_carries_its_calls_spend_and_logs_none():
+    turns = [ToolUse("shell", {"command": "ls"}), ValueError("stream broke")]
+    turns += [write("p.txt", "Be brief."), submit(prompt="p.txt"), "Done."]
+    (patch,), events, _ = await propose(turns)
+    assert [e for e, _ in events] == ["proposer_retry"]
+    assert patch.usage.tokens == 4 * 15  # the failed attempt's call and the successful attempt's three
+
+
+async def test_nothing_to_learn_from_logs_no_spend():
+    reflection = Reflection(ScriptedModel(["unused"]))
+    reflection._warned = True
+    events = []
+    assert await reflection.propose(request(trials=[trial("a", status="infrastructure_invalid")], events=events)) == []
+    assert events == []
+
+
+async def test_a_cancelled_call_logs_nothing_and_the_cancellation_propagates():
+    class Hanging(ScriptedModel):
+        def __init__(self):
+            super().__init__(["unused"])
+            self.started = asyncio.Event()
+
+        async def stream(self, *args, **kwargs):
+            self.started.set()
+            await asyncio.Event().wait()
+            yield {}  # pragma: no cover
+
+    model = Hanging()
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    task = asyncio.create_task(reflection.propose(request(events=events)))
+    await asyncio.wait_for(model.started.wait(), timeout=10)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert events == []
+
+
+async def test_a_later_slot_raising_logs_the_spend_of_the_patches_never_returned():
+    turns = [write("p.txt", "Be brief."), submit(prompt="p.txt"), "Done.", ValueError("model gone")]
+    reflection = Reflection(ScriptedModel(turns))
+    reflection._warned = True
+    events = []
+    with pytest.raises(ValueError, match="model gone"):
+        await reflection.propose(request(n=2, events=events))
+    assert [e for e, _ in events] == ["proposer_retry"] * 3 + ["proposer_usage"] * 2
+    failed, first = usage_events(events)
+    assert (failed.tokens, first.tokens) == (0, 45)  # the failing slot's attempts answered nothing; slot 0's patch
