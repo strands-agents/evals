@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import shutil
@@ -26,10 +27,13 @@ from strands_evals.optimization import (
     Pareto,
     Patch,
     Proposer,
+    Schedule,
     ScoreModel,
     Search,
     Split,
+    Step,
     TextValue,
+    Usage,
     WeightedSum,
     choice,
     component,
@@ -961,3 +965,157 @@ def test_resume_warns_when_numpy_or_optuna_changed(tmp_path):
     log.write_text("".join(json.dumps(e) + "\n" for e in events))
     with pytest.warns(UserWarning, match=r"optuna 0\.0\.1 -> "):
         _resume(optimizer._run.root)
+
+
+# fixes from the gap review and #532
+
+
+class _OneStep(Schedule):
+    """A custom schedule: one step of the first block, as given, then None."""
+
+    name = "one_step"
+
+    def __init__(self, **step):
+        self.step = step
+
+    def next(self, ctx):
+        if ctx.past:
+            return None
+        block = ctx.blocks[0]
+        fields = {"n_candidates": 1, "parents": None, "round": None, "role": "inner", "observe_at_round_end": ()}
+        return Step(blocks=(block,), **{**fields, **self.step})
+
+
+async def test_a_proposers_spend_on_no_patch_is_counted_and_survives_resume(tmp_path):
+    spend = Usage(
+        input_tokens=90,
+        output_tokens=10,
+        tokens=100,
+        cache_read_tokens=None,
+        cache_write_tokens=None,
+        model_calls=1,
+        seconds=1.0,
+        models=["m"],
+    )
+
+    class Spender(Scripted):
+        async def propose(self, request):
+            request.log("proposer_usage", usage=spend)  # the agent ran, nothing usable came out
+            return []
+
+    optimizer = _searching(Block(Spender(), "temperature"), schedule=Alternate(), base_dir=tmp_path)
+    await _search(optimizer)
+    logged = [e for e in _events(optimizer) if e["event"] == "proposer_usage"]
+    assert logged and optimizer._search_cost.tokens == 100 * len(logged)
+    state = load_state(RunDirectory.open(optimizer._run.root), config=optimizer._config())
+    assert state.search_cost == optimizer._search_cost
+
+
+async def test_a_concurrent_proposer_that_raises_cancels_its_sibling_calls(tmp_path):
+    started, finished = [], []
+
+    class Racing(Scripted):
+        concurrent = True
+
+        async def propose(self, request):
+            started.append(request.n)
+            if len(started) == 1:
+                raise RuntimeError("model gone")
+            await asyncio.sleep(0.5)
+            request.log("screened", key="temperature", reason="too late")  # must never happen
+            finished.append(request.n)
+            return []
+
+    optimizer = _searching(
+        Block(Racing(), "temperature"), schedule=Alternate(), base_dir=tmp_path, proposals_per_iteration=3
+    )
+    reason, events = await _search(optimizer)
+    assert reason == "proposer_error" and len(started) == 3 and finished == []
+    assert "screened" not in _names(events) and events[-1]["event"] == "stop"
+
+
+async def test_an_openers_duplicate_doesnt_drop_the_rest_of_its_batch(tmp_path):
+    proposer = Scripted({"temperature": 0.0}, {"temperature": 0.5})  # the first repeats the baseline
+    optimizer = _searching(
+        Block(proposer, "temperature"),
+        schedule=_OneStep(n_candidates=2, round=(0,), role="opener", observe_at_round_end=("numbers",)),
+        base_dir=tmp_path,
+    )
+    await _search(optimizer)
+    # Both patches recorded and each observed exactly once (an opener step's patches are told at the round's end).
+    assert [p.outcome for p in optimizer._iterations[0].proposals] == ["duplicate", "feasible"]
+    assert sorted(o.values["temperature"] for o in proposer.observed) == [0.0, 0.5]
+
+
+async def test_a_step_with_no_possible_parents_raises(tmp_path):
+    optimizer = _searching(
+        Block(Scripted({"temperature": 0.5}), "temperature"), schedule=_OneStep(parents=()), base_dir=tmp_path
+    )
+    await optimizer._start()
+    with pytest.raises(ValueError, match="_OneStep.next returned a step with no possible parents"):
+        await optimizer._run_search()
+
+
+async def test_a_run_killed_during_validation_resumes_with_its_own_budget(tmp_path):
+    # Stops on the budget, so the search leaves only the reserve: 8 baseline + 36 reserve + 3 steps of 16.
+    original_optimizer = _default_search(tmp_path / "runs", budget=Budget(max_rollouts=92))
+    original = await original_optimizer.run_async()
+    assert original.stop_reason == "budget"
+    copy = _killed(
+        original_optimizer._run.root,
+        tmp_path,
+        lambda events: _index(events, "trial", nth=3, after=_index(events, "finalists")),
+    )
+    resumed_optimizer = _resume(copy)  # no budget given: the saved one still covers what is left
+    resumed = await resumed_optimizer.run_async()
+    _assert_same(resumed, original)
+    assert resumed_optimizer._budget.spent == original_optimizer._budget.spent <= 92
+
+
+async def test_resume_rebuilds_scores_as_the_closed_iterations_left_them(tmp_path):
+    # temperature 0.5's trials hit infrastructure the first time, so it is ineligible until step 2 re-scores it.
+    failing = {"left": 8}
+
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        if temperature == 0.5 and failing["left"] > 0:
+            failing["left"] -= 1
+            raise InfrastructureError("sandbox down")
+        return str(temperature)
+
+    def build(base_dir, proposer):
+        return _optimizer(
+            _experiment(evaluators=[Temperature()]),
+            rollout_fn=rollout,
+            search=Search([Block(proposer, "temperature"), Block(Scripted(), "manager")], schedule=Joint()),
+            max_workers=64,
+            rerun_passes=0,
+            proposals_per_iteration=1,
+            base_dir=base_dir,
+            budget=Budget(max_iterations=3),
+        )
+
+    original_optimizer = build(
+        tmp_path / "runs", Scripted({"temperature": 0.5}, {"temperature": 0.5}, {"temperature": 1.0})
+    )
+    original = await original_optimizer.run_async()
+    rescored = original.iterations[1].proposals[0]
+    assert rescored.outcome == "feasible" and original.iterations[0].proposals[0].outcome == "ineligible"
+    # Killed right after step 2 re-scored it, before the step closed.
+    copy = _killed(
+        original_optimizer._run.root,
+        tmp_path,
+        lambda events: _index(events, "score", after=_index(events, "iteration_end", nth=1)),
+    )
+    resumed_optimizer = Optimizer.resume(
+        copy,
+        experiment=_experiment(evaluators=[Temperature()]),
+        factory=create_agent,
+        rollout_fn=rollout,
+        search=Search(
+            [Block(Scripted({"temperature": 0.5}, {"temperature": 1.0}), "temperature"), Block(Scripted(), "manager")],
+            schedule=Joint(),
+        ),
+    )
+    await resumed_optimizer._start()
+    assert not resumed_optimizer._train[rescored.candidate_id].is_eligible  # as step 1 left it

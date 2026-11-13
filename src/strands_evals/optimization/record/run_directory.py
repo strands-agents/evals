@@ -212,8 +212,10 @@ class RunDirectory:
     def load_trial(self, candidate_id: str, run_index: int, case_name: str) -> TrialRecord | None:
         """The last trial event for the key, its transcript read back as trajectory."""
         saved = self._trials.get((candidate_id, run_index, case_name))
-        if saved is None:
-            return None
+        return None if saved is None else self.record_from(saved)
+
+    def record_from(self, saved: Mapping[str, Any]) -> TrialRecord:
+        """A `trial` event's record, its transcript read back as trajectory."""
         record = dict(saved)
         transcript = record.pop("transcript")
         trajectory: Any = None

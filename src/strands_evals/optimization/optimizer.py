@@ -473,12 +473,13 @@ class Optimizer:
         for candidate_id in state.candidates:
             candidate = run.load_candidate(candidate_id)
             self._saved[candidate_id] = candidate
+            # As the closed iterations left them, not as a killed iteration may have replaced them.
             records = {
-                (case, index): record
+                (case, index): run.record_from(saved_trial)
                 for split in ("train", "validation", "test")
                 for case in getattr(self._case_split, split)
                 for index in range(self._runs_per_candidate)
-                if (record := run.load_trial(candidate_id, index, case)) is not None
+                if (saved_trial := state.trials.get((candidate_id, index, case))) is not None
             }
             if not records:
                 continue  # saved but never scored (the budget couldn't cover it)
@@ -543,6 +544,8 @@ class Optimizer:
             if step is None:
                 return "exhausted"
             n = min(step.n_candidates, self._budget.allowance(phase="train") // per_candidate)
+            if step.parents is not None and not step.parents:
+                raise ValueError(f"{type(self._schedule).__name__}.next returned a step with no possible parents")
             parent_id = self._select(list(step.parents) if step.parents is not None else ranking, assessments)
             try:
                 record = await self._step(step, n, self._candidates[parent_id], ranking, assessments)
@@ -943,8 +946,6 @@ class Optimizer:
                     outcomes.append(
                         _outcome(draw, candidate.id, self._run.number(candidate.id), parent.id, "duplicate", a)
                     )
-                    if opened is not None:
-                        break
                     continue
                 accepted.append(draw)
                 need -= 1
@@ -1100,7 +1101,7 @@ class Optimizer:
             return self._merge(parent, patches, fill) if patches else None
 
         if any(block.proposer.concurrent for block in step.blocks):
-            drawn = await asyncio.gather(*(slot() for _ in range(need)))
+            drawn = await _gather_or_cancel([slot() for _ in range(need)])
         else:
             drawn = [await slot() for _ in range(need)]
         return [d for d in drawn if d is not None]
@@ -1129,8 +1130,12 @@ class Optimizer:
         run = self._run
 
         def log(event: str, **fields: Any) -> None:
-            if event not in ("screened", "proposer_retry"):
-                raise ValueError(f"a proposer may log only 'screened' and 'proposer_retry' events, not {event!r}")
+            if event not in ("screened", "proposer_retry", "proposer_usage"):
+                raise ValueError(
+                    f"a proposer may log only 'screened', 'proposer_retry', and 'proposer_usage' events, not {event!r}"
+                )
+            if event == "proposer_usage":  # spend on no returned patch: counted here, once
+                self._search_cost = self._search_cost + fields["usage"]
             run.events.append(event, iteration=iteration, block=name, redraw=redraw, **fields)  # type: ignore[arg-type]
 
         train = list(self._case_split.train)
@@ -1158,7 +1163,7 @@ class Optimizer:
         try:
             if block.proposer.concurrent:
                 batches = [
-                    list(b) for b in await asyncio.gather(*(block.proposer.propose(request(1)) for _ in range(n)))
+                    list(b) for b in await _gather_or_cancel([block.proposer.propose(request(1)) for _ in range(n)])
                 ]
                 asked = 1
             else:
@@ -1253,6 +1258,13 @@ class Optimizer:
                     measured_objective=scores.objective,
                     measured=measured_metrics(scores, self._criteria.registry),
                     trial_count=self._trial_count(c),
+                    failures=0
+                    if self._criteria.agent_failure_score is None
+                    else sum(
+                        1
+                        for r in self._records.get(c, {}).values()
+                        if r.split == "train" and r.status is TrialStatus.AGENT_FAILURE
+                    ),
                     ranking_objective=None if a is None else a.objective,
                     term_values=None if a is None or a.objective is None else self._term_values(c, a),
                     rank=position.get(c),
@@ -1482,8 +1494,8 @@ class Optimizer:
         count = len(entries)
         spare = max(0, self._budget.allowance(phase=split) - sum(pending for _, _, pending in entries))
         workers = max(1, self._max_workers // count)
-        results = await asyncio.gather(
-            *(
+        results = await _gather_or_cancel(
+            [
                 self._score(
                     candidate,
                     split,
@@ -1492,7 +1504,7 @@ class Optimizer:
                     rejudge=rejudge,
                 )
                 for i, (candidate, rejudge, pending) in enumerate(entries)
-            )
+            ]
         )
         for (candidate, _, _), scores in zip(entries, results, strict=True):
             self._score_event(candidate, split, scores)
@@ -1658,11 +1670,25 @@ class Optimizer:
             raise RuntimeError(f"run {run.run_id} stopped at setup, so there is nothing to resume; start a new run")
         tracker = optimizer._budget
         budget = Budget(**saved["budget"]) if budget is None else budget
-        needed = state.spent + (tracker.validation_reserve if state.validation is None else 0)
+        # What the pick still needs: the whole reserve before the finalists exist, else their unrun validation trials.
+        if state.validation is not None:
+            left = 0
+        elif state.finalists is None:
+            left = tracker.validation_reserve
+        else:
+            ids = [state.candidates[0], *state.finalists]
+            left = sum(
+                1
+                for c in ids
+                for case in optimizer._case_split.validation
+                for index in range(optimizer._runs_per_candidate)
+                if run.trial_status(c, index, case) in (None, TrialStatus.INFRASTRUCTURE_INVALID)
+            )
+        needed = state.spent + left
         if budget.max_rollouts < needed:
             raise ValueError(
                 f"Budget(max_rollouts={budget.max_rollouts}) can't cover the {state.spent} rollouts already spent "
-                f"plus the validation reserve ({tracker.validation_reserve}): give max_rollouts >= {needed}"
+                f"plus the {left} the validation pick still needs: give max_rollouts >= {needed}"
             )
         optimizer._budget = BudgetTracker(
             budget, state.spent, validation_reserve=tracker.validation_reserve, test_reserve=tracker.test_reserve
@@ -1686,6 +1712,19 @@ class Optimizer:
         )
         optimizer._run, optimizer._resumed = run, state
         return optimizer
+
+
+async def _gather_or_cancel(awaitables: Sequence[Any]) -> list[Any]:
+    """`asyncio.gather`, but the first exception cancels the others and waits for them before it propagates, so
+    nothing they would still do (model calls, events) happens after the caller has stopped."""
+    tasks = [asyncio.ensure_future(a) for a in awaitables]
+    try:
+        return list(await asyncio.gather(*tasks))
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 class _ProposerFailed(Exception):
