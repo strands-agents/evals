@@ -268,9 +268,9 @@ const errs = [];
  * says it is there, since a link to a 404 is worse than no link. */
 {
   const reply = body => ({ ok: true, status: 200, statusText: 'OK', json: async () => body });
-  const stub = optimization => async url => {
+  const stub = explorer => async url => {
     if (url.startsWith('/api/config')) {
-      return reply({ root: '/srv/runs', depth: 3, read_only: false, optimization });
+      return reply({ root: '/srv/runs', depth: 3, read_only: false, explorer });
     }
     if (url.startsWith('/api/runs')) {
       return reply({ root: '/srv/runs', runs: [], skipped: [], truncated: false, optimizer_runs: [] });
@@ -283,7 +283,7 @@ const errs = [];
 
   const on = await page({ fetchImpl: stub(true), url: 'http://127.0.0.1:9999/?t=abc%2Fdef' });
   ok(on.$('#opt-link').hidden === false, 'a served runs directory offers one');
-  ok(on.$('#opt-link').getAttribute('href') === '/optimization/?t=abc%2Fdef',
+  ok(on.$('#opt-link').getAttribute('href') === '/explorer/?t=abc%2Fdef',
     'carrying the token, encoded', on.$('#opt-link').getAttribute('href'));
   /* It leaves the page rather than swapping the panel below, so it must not be wired as a tab:
      the tab handler would call show(undefined) and blank the view on the way out. */

@@ -719,7 +719,7 @@ def explorer(tmp_path: Path):
 
     served_root = tmp_path / "tree"
     served_root.mkdir()
-    server = build_server(served_root, port=0, asset="<html>page</html>", opt_root=runs, opt_app=app)
+    server = build_server(served_root, port=0, asset="<html>page</html>", explorer_root=runs, explorer_app=app)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     host, port = server.server_address[:2]
@@ -745,20 +745,20 @@ def explorer(tmp_path: Path):
         thread.join(timeout=5)
 
 
-def test_config_reports_no_optimization_without_a_runs_directory(served):
+def test_config_reports_no_explorer_without_a_runs_directory(served):
     _, request, _ = served
     _, body = request("GET", "/api/config")
-    assert body["optimization"] is False
+    assert body["explorer"] is False
 
 
-def test_config_reports_optimization_when_a_runs_directory_is_served(explorer):
+def test_config_reports_the_explorer_when_a_runs_directory_is_served(explorer):
     _, request, _ = explorer
     conn_status, raw, _ = request("GET", "/api/config")
     assert conn_status == HTTPStatus.OK
-    assert json.loads(raw)["optimization"] is True
+    assert json.loads(raw)["explorer"] is True
 
 
-@pytest.mark.parametrize("path", ["/optimization", "/optimization/"])
+@pytest.mark.parametrize("path", ["/explorer", "/explorer/"])
 def test_explorer_page_is_served_with_and_without_the_slash(explorer, path: str):
     _, request, _ = explorer
     status, raw, kind = request("GET", path)
@@ -769,27 +769,27 @@ def test_explorer_page_is_served_with_and_without_the_slash(explorer, path: str)
 def test_explorer_page_needs_the_token(explorer):
     """It reads run records through the same API, so it is gated like the main page."""
     _, request, _ = explorer
-    status, raw, _ = request("GET", "/optimization/", token_header=None)
+    status, raw, _ = request("GET", "/explorer/", token_header=None)
     assert status == HTTPStatus.UNAUTHORIZED
     assert b"explorer" not in raw
 
 
 def test_explorer_page_404s_when_no_bundle_is_installed(tmp_path: Path):
     """A source checkout with no `npm run build` must say so rather than serve an empty page."""
-    server = build_server(tmp_path, port=0, asset="x", opt_root=tmp_path, opt_app=tmp_path / "never-built")
+    server = build_server(tmp_path, port=0, asset="x", explorer_root=tmp_path, explorer_app=tmp_path / "never-built")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     host, port = server.server_address[:2]
     try:
         conn = HTTPConnection(host, port, timeout=5)
-        conn.request("GET", "/optimization/", headers={"Host": f"127.0.0.1:{port}"})
+        conn.request("GET", "/explorer/", headers={"Host": f"127.0.0.1:{port}"})
         response = conn.getresponse()
         raw = response.read()
         conn.close()
         # 404 before the token check: whether a bundle exists is not a secret, and a 401 here
         # would send someone hunting for the right token to a route that has nothing to serve.
         assert response.status == HTTPStatus.NOT_FOUND
-        assert b"no optimization app is installed" in raw
+        assert b"no run explorer is installed" in raw
     finally:
         server.shutdown()
         server.server_close()
@@ -803,7 +803,7 @@ def test_explorer_page_404s_when_no_bundle_is_installed(tmp_path: Path):
 def test_bundle_assets_are_served_untokened(explorer, name: str, kind: str):
     """A <script src> carries no header, and the bundle is code rather than anyone's data."""
     _, request, _ = explorer
-    status, raw, served_kind = request("GET", f"/optimization/assets/{name}", token_header=None)
+    status, raw, served_kind = request("GET", f"/explorer/assets/{name}", token_header=None)
     assert status == HTTPStatus.OK
     assert raw
     assert served_kind == f"{kind}; charset=utf-8"
@@ -812,16 +812,16 @@ def test_bundle_assets_are_served_untokened(explorer, name: str, kind: str):
 def test_an_unknown_asset_suffix_is_served_as_bytes(explorer):
     """Guessing a type is worse than declining to: a wrong one on a script makes it not run."""
     runs, request, server = explorer
-    assert server.config.opt_app is not None
-    (server.config.opt_app / "assets" / "font.woff2").write_bytes(b"\x00\x01")
-    status, raw, kind = request("GET", "/optimization/assets/font.woff2")
+    assert server.config.explorer_app is not None
+    (server.config.explorer_app / "assets" / "font.woff2").write_bytes(b"\x00\x01")
+    status, raw, kind = request("GET", "/explorer/assets/font.woff2")
     assert (status, raw) == (HTTPStatus.OK, b"\x00\x01")
     assert kind is not None and kind.startswith("application/octet-stream")
 
 
 def test_a_missing_asset_404s(explorer):
     _, request, _ = explorer
-    status, raw, _ = request("GET", "/optimization/assets/nope.js")
+    status, raw, _ = request("GET", "/explorer/assets/nope.js")
     assert status == HTTPStatus.NOT_FOUND
     assert b"no such asset" in raw
 
@@ -829,52 +829,52 @@ def test_a_missing_asset_404s(explorer):
 def test_the_asset_route_cannot_leave_the_assets_directory(explorer):
     """Untokened, so this is the one route a stranger on loopback can reach at all."""
     _, request, _ = explorer
-    status, raw, _ = request("GET", "/optimization/assets/../secret.txt", token_header=None)
+    status, raw, _ = request("GET", "/explorer/assets/../secret.txt", token_header=None)
     assert status == HTTPStatus.FORBIDDEN
     assert b"above the assets directory" not in raw
 
 
-def test_optimization_runs_lists_only_directories_holding_a_log(explorer):
+def test_explorer_runs_lists_only_directories_holding_a_log(explorer):
     _, request, _ = explorer
-    status, raw, _ = request("GET", "/api/optimization/runs")
+    status, raw, _ = request("GET", "/api/explorer/runs")
     assert status == HTTPStatus.OK
     body = json.loads(raw)
     assert [run["id"] for run in body["runs"]] == ["tuning"]
     assert body["runs"][0]["modified"] > 0
 
 
-def test_optimization_runs_404s_when_none_was_configured(served):
+def test_explorer_runs_404s_when_none_was_configured(served):
     _, request, _ = served
-    status, body = request("GET", "/api/optimization/runs")
+    status, body = request("GET", "/api/explorer/runs")
     assert status == HTTPStatus.NOT_FOUND
     assert "--runs-dir" in body["error"]
 
 
-def test_optimization_file_returns_the_bytes_on_disk(explorer):
+def test_explorer_file_returns_the_bytes_on_disk(explorer):
     """The explorer parses the record itself, so the route hands it over unchanged."""
     _, request, _ = explorer
-    status, raw, kind = request("GET", "/api/optimization/file?run=tuning&path=events.jsonl")
+    status, raw, kind = request("GET", "/api/explorer/file?run=tuning&path=events.jsonl")
     assert status == HTTPStatus.OK
     assert json.loads(raw.splitlines()[0])["event"] == "propose"
     assert kind == "text/plain; charset=utf-8"
 
 
-def test_optimization_file_reads_below_the_run(explorer):
+def test_explorer_file_reads_below_the_run(explorer):
     _, request, _ = explorer
-    status, raw, _ = request("GET", "/api/optimization/file?run=tuning&path=transcripts/abc.json")
+    status, raw, _ = request("GET", "/api/explorer/file?run=tuning&path=transcripts/abc.json")
     assert (status, raw) == (HTTPStatus.OK, b'{"turns": []}')
 
 
-def test_optimization_file_404s_when_not_configured(served):
+def test_explorer_file_404s_when_not_configured(served):
     _, request, _ = served
-    status, body = request("GET", "/api/optimization/file?run=x&path=y")
+    status, body = request("GET", "/api/explorer/file?run=x&path=y")
     assert status == HTTPStatus.NOT_FOUND
     assert "--runs-dir" in body["error"]
 
 
-def test_optimization_file_404s_on_a_missing_file(explorer):
+def test_explorer_file_404s_on_a_missing_file(explorer):
     _, request, _ = explorer
-    status, raw, _ = request("GET", "/api/optimization/file?run=tuning&path=best.diff")
+    status, raw, _ = request("GET", "/api/explorer/file?run=tuning&path=best.diff")
     assert status == HTTPStatus.NOT_FOUND
     assert b"tuning/best.diff" in raw
 
@@ -889,25 +889,25 @@ def test_optimization_file_404s_on_a_missing_file(explorer):
         ("tuning", ""),
     ],
 )
-def test_optimization_file_refuses_to_leave_the_run(explorer, run: str, rel: str):
+def test_explorer_file_refuses_to_leave_the_run(explorer, run: str, rel: str):
     runs, request, _ = explorer
     (runs.parent / "outside.json").write_text('{"secret": true}', encoding="utf-8")
-    status, raw, _ = request("GET", f"/api/optimization/file?run={run}&path={rel}")
+    status, raw, _ = request("GET", f"/api/explorer/file?run={run}&path={rel}")
     assert status in (HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND)
     assert b"secret" not in raw
 
 
 def test_the_shipped_bundle_is_found_by_default(tmp_path: Path):
     """`--runs-dir` alone has to be enough; nobody should have to point at the build output."""
-    from strands_evals.cli._ui_server import _default_opt_app
+    from strands_evals.cli._ui_server import _default_explorer_app
 
-    app = _default_opt_app()
+    app = _default_explorer_app()
     if app is None:  # pragma: no cover - the bundle is committed, this is a clearer failure
-        pytest.skip("no optimization bundle is built into the package")
+        pytest.skip("no explorer bundle is built into the package")
     assert (app / "index.html").is_file()
 
     server = build_server(tmp_path, port=0, asset="x")
-    assert server.config.opt_app == app
+    assert server.config.explorer_app == app
     server.server_close()
 
 
@@ -1029,14 +1029,14 @@ def test_a_supplied_token_read_only_says_only_read(tmp_path: Path, launched, cap
 
 def test_ui_serves_no_runs_directory_by_default(tmp_path: Path, launched):
     assert main(["ui", str(tmp_path), "--no-browser"]) == 0
-    assert launched["opt_root"] is None
+    assert launched["explorer_root"] is None
 
 
 def test_ui_passes_the_runs_directory_through(tmp_path: Path, launched):
     runs = tmp_path / "runs"
     runs.mkdir()
     assert main(["ui", str(tmp_path), "--no-browser", "--runs-dir", str(runs)]) == 0
-    assert launched["opt_root"] == runs
+    assert launched["explorer_root"] == runs
 
 
 def test_ui_prints_the_explorer_url(tmp_path: Path, launched, capsys):
@@ -1045,7 +1045,7 @@ def test_ui_prints_the_explorer_url(tmp_path: Path, launched, capsys):
     runs.mkdir()
     assert main(["ui", str(tmp_path), "--no-browser", "--runs-dir", str(runs)]) == 0
     err = capsys.readouterr().err
-    assert "/optimization/?t=fake-token" in err
+    assert "/explorer/?t=fake-token" in err
     assert str(runs.resolve()) in err
 
 

@@ -62,11 +62,16 @@ function App() {
           <a className="brand" href={`/?t=${encodeURIComponent(TOKEN)}`}>
             <b>strands</b>-evals
           </a>
+          {/* The same four tabs the main page has, so leaving here lands where it looks like it
+              will — Optimization included, since that tab is a different view of these runs and
+              not this page under another name. This page is Explorer, which is what the link
+              that reaches it says. */}
           <span className="tabs">
             <a href={`/?t=${encodeURIComponent(TOKEN)}`}>Runs</a>
             <a href={`/?t=${encodeURIComponent(TOKEN)}#tab=experiment`}>Experiment</a>
             <a href={`/?t=${encodeURIComponent(TOKEN)}#tab=report`}>Report</a>
-            <span className="on">Optimization</span>
+            <a href={`/?t=${encodeURIComponent(TOKEN)}#tab=optimization`}>Optimization</a>
+            <span className="on">Explorer</span>
           </span>
         </nav>
       )}

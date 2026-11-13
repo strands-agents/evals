@@ -5379,9 +5379,9 @@
       MODE = 'server'; ROOT = config.root; READONLY = config.read_only; DEPTH = config.depth;
       /* Only offered when the server was started with --runs-dir: the explorer is a separate
          app at its own route, and a link to a 404 is worse than no link. */
-      if (config.optimization) {
+      if (config.explorer) {
         const link = $('opt-link');
-        link.href = '/optimization/' + (TOKEN ? '?t=' + encodeURIComponent(TOKEN) : '');
+        link.href = '/explorer/' + (TOKEN ? '?t=' + encodeURIComponent(TOKEN) : '');
         link.hidden = false;
       }
       await rescan();

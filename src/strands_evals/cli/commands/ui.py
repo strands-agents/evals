@@ -54,7 +54,7 @@ def _run(args: argparse.Namespace) -> int:
         depth=args.depth,
         read_only=args.read_only,
         token=token,
-        opt_root=runs_dir,
+        explorer_root=runs_dir,
     )
     url = server_url(server)
 
@@ -62,8 +62,8 @@ def _run(args: argparse.Namespace) -> int:
     print(f"strands-evals ui{mode}: serving {root.resolve()}", file=sys.stderr)  # noqa: T201
     print(f"  {url}", file=sys.stderr)  # noqa: T201
     if runs_dir is not None:
-        explorer = url.replace("/?t=", "/optimization/?t=")
-        print(f"  optimization runs from {runs_dir.resolve()} at {explorer}", file=sys.stderr)  # noqa: T201
+        explorer = url.replace("/?t=", "/explorer/?t=")
+        print(f"  run explorer over {runs_dir.resolve()} at {explorer}", file=sys.stderr)  # noqa: T201
     if token:
         # Said plainly, because a token you chose is one someone else can guess, and anything
         # that reaches loopback on this machine can then read and write files under DIRECTORY.
@@ -133,10 +133,7 @@ def add_subparser(
     parser.add_argument(
         "--runs-dir",
         default=None,
-        help=(
-            "directory of optimizer run folders (each holding an events.jsonl); serves the "
-            "run explorer at /optimization"
-        ),
+        help="directory of optimizer run folders (each holding an events.jsonl); serves the run explorer at /explorer",
     )
     parser.add_argument(
         "--read-only",

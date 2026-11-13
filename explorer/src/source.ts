@@ -154,10 +154,10 @@ export function fromEmbedded(data: EmbeddedStudy): StudyRef {
   };
 }
 
-// ---- runs served by `strands-evals ui` (the page lives at /optimization/ on the same origin) ------------------------
+// ---- runs served by `strands-evals ui` (the page lives at /explorer/ on the same origin) ---------------------------
 export async function fromUiServer(token: string): Promise<Folder> {
   const q = `?t=${encodeURIComponent(token)}`;
-  const listed = await fetch(`/api/optimization/runs${q}`, { cache: "no-store" });
+  const listed = await fetch(`/api/explorer/runs${q}`, { cache: "no-store" });
   if (!listed.ok) throw new Error(`the server refused the runs list (${listed.status})`);
   const { root, runs } = (await listed.json()) as { root: string; runs: { id: string }[] };
   const studies: StudyRef[] = runs.map(({ id }) => ({
@@ -165,7 +165,7 @@ export async function fromUiServer(token: string): Promise<Folder> {
     name: id,
     live: true,
     read: async (file) => {
-      const r = await fetch(`/api/optimization/file${q}&run=${encodeURIComponent(id)}&path=${encodeURIComponent(file)}`, { cache: "no-store" });
+      const r = await fetch(`/api/explorer/file${q}&run=${encodeURIComponent(id)}&path=${encodeURIComponent(file)}`, { cache: "no-store" });
       return r.ok ? r.text() : null;
     },
     modified: async () => Date.now(),

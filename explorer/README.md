@@ -16,17 +16,21 @@ Served beside the main page, which is how it is normally reached:
 
     strands-evals ui RUNS_PARENT --runs-dir RUNS_DIR
 
-`--runs-dir` is a directory of run folders, each holding an `events.jsonl`. The CLI prints a `/optimization/?t=<token>`
+`--runs-dir` is a directory of run folders, each holding an `events.jsonl`. The CLI prints an `/explorer/?t=<token>`
 link next to the usual one, and the top bar of the main page gains an **Explorer** link to the same place. The app reads
-the records over `/api/optimization/runs` and `/api/optimization/file`, under the same token and the same
-path-traversal checks as everything else the server reads.
+the records over `/api/explorer/runs` and `/api/explorer/file`, under the same token and the same path-traversal checks
+as everything else the server reads.
 
-That link serves the bundle committed at `src/strands_evals/cli/assets/optimization/`. Rebuild it from this source
+One name throughout: the link says Explorer, the route is `/explorer`, the title is "Run explorer", and the top bar here
+marks **Explorer** as the page you are on. The main page's **Optimization** tab is a different, shallower view over the
+same runs — method, result, winner, candidates — and this bar links to it rather than claiming to be it.
+
+That link serves the bundle committed at `src/strands_evals/cli/assets/explorer/`. Rebuild it from this source
 after changing anything here, or the served app is still the old one:
 
     cd explorer
     npm install
-    npm run build:cli   # typecheck, then build into src/strands_evals/cli/assets/optimization/
+    npm run build:cli   # typecheck, then build into src/strands_evals/cli/assets/explorer/
 
 The output is deterministic, so an unchanged source rebuilds to the same bytes and `git status` stays clean.
 

@@ -632,8 +632,8 @@ class UIConfig:
     reload_asset: bool = False
     # The explorer: a directory of optimizer run folders to read, and the built app that reads
     # them. Both None means the page is not served and its routes answer 404.
-    opt_root: Path | None = None
-    opt_app: Path | None = None
+    explorer_root: Path | None = None
+    explorer_app: Path | None = None
 
     def page(self) -> str:
         """The page to serve, re-read from disk unless a caller pinned one.
@@ -720,21 +720,22 @@ class UIHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.OK, self.config.page().encode("utf-8"), "text/html; charset=utf-8")
             return
 
-        if parsed.path in ("/optimization", "/optimization/"):
-            if self.config.opt_app is None or not (self.config.opt_app / "index.html").is_file():
-                self._error(HTTPStatus.NOT_FOUND, "no optimization app is installed")
+        if parsed.path in ("/explorer", "/explorer/"):
+            if self.config.explorer_app is None or not (self.config.explorer_app / "index.html").is_file():
+                self._error(HTTPStatus.NOT_FOUND, "no run explorer is installed")
                 return
             if not self._authorized(query):
                 self._error(HTTPStatus.UNAUTHORIZED, "missing or wrong token")
                 return
-            self._send(HTTPStatus.OK, (self.config.opt_app / "index.html").read_bytes(), "text/html; charset=utf-8")
+            page = (self.config.explorer_app / "index.html").read_bytes()
+            self._send(HTTPStatus.OK, page, "text/html; charset=utf-8")
             return
 
         # The bundle is code, never data, so script and style requests work without the token.
-        if parsed.path.startswith("/optimization/assets/") and self.config.opt_app is not None:
-            rel = parsed.path[len("/optimization/assets/") :]
+        if parsed.path.startswith("/explorer/assets/") and self.config.explorer_app is not None:
+            rel = parsed.path[len("/explorer/assets/") :]
             try:
-                target = resolve_within(self.config.opt_app / "assets", rel)
+                target = resolve_within(self.config.explorer_app / "assets", rel)
             except PathOutsideRoot as exc:
                 self._error(HTTPStatus.FORBIDDEN, str(exc))
                 return
@@ -756,7 +757,7 @@ class UIHandler(BaseHTTPRequestHandler):
                     "root": str(self.config.root),
                     "depth": self.config.depth,
                     "read_only": self.config.read_only,
-                    "optimization": self.config.opt_root is not None,
+                    "explorer": self.config.explorer_root is not None,
                 },
             )
             return
@@ -826,27 +827,27 @@ class UIHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if parsed.path == "/api/optimization/runs":
-            if self.config.opt_root is None:
-                self._error(HTTPStatus.NOT_FOUND, "no optimization runs directory was configured (--runs-dir)")
+        if parsed.path == "/api/explorer/runs":
+            if self.config.explorer_root is None:
+                self._error(HTTPStatus.NOT_FOUND, "no runs directory was configured (--runs-dir)")
                 return
             runs = []
-            if self.config.opt_root.is_dir():
-                for entry in sorted(self.config.opt_root.iterdir()):
+            if self.config.explorer_root.is_dir():
+                for entry in sorted(self.config.explorer_root.iterdir()):
                     record = entry / "events.jsonl"
                     if entry.is_dir() and record.is_file():
                         runs.append({"id": entry.name, "modified": record.stat().st_mtime})
-            self._json(HTTPStatus.OK, {"root": str(self.config.opt_root), "runs": runs})
+            self._json(HTTPStatus.OK, {"root": str(self.config.explorer_root), "runs": runs})
             return
 
-        if parsed.path == "/api/optimization/file":
-            if self.config.opt_root is None:
-                self._error(HTTPStatus.NOT_FOUND, "no optimization runs directory was configured (--runs-dir)")
+        if parsed.path == "/api/explorer/file":
+            if self.config.explorer_root is None:
+                self._error(HTTPStatus.NOT_FOUND, "no runs directory was configured (--runs-dir)")
                 return
             run = query.get("run", [""])[0]
             rel = query.get("path", [""])[0]
             try:
-                target = resolve_within(resolve_within(self.config.opt_root, run), rel)
+                target = resolve_within(resolve_within(self.config.explorer_root, run), rel)
             except PathOutsideRoot as exc:
                 self._error(HTTPStatus.FORBIDDEN, str(exc))
                 return
@@ -963,9 +964,9 @@ def load_asset() -> str:
     return resources.files(__package__).joinpath("assets/ui.html").read_text(encoding="utf-8")
 
 
-def _default_opt_app() -> Path | None:
+def _default_explorer_app() -> Path | None:
     """The explorer bundle shipped beside this module, if one was built into the package."""
-    candidate = Path(__file__).parent / "assets" / "optimization"
+    candidate = Path(__file__).parent / "assets" / "explorer"
     return candidate if (candidate / "index.html").is_file() else None
 
 
@@ -978,8 +979,8 @@ def build_server(
     read_only: bool = False,
     token: str | None = None,
     asset: str | None = None,
-    opt_root: Path | None = None,
-    opt_app: Path | None = None,
+    explorer_root: Path | None = None,
+    explorer_app: Path | None = None,
 ) -> _Server:
     """Bind a server for `root`. Port 0 picks a free one, which the tests rely on."""
     config = UIConfig(
@@ -989,8 +990,8 @@ def build_server(
         read_only=read_only,
         asset=asset if asset is not None else load_asset(),
         reload_asset=asset is None,
-        opt_root=opt_root.resolve() if opt_root else None,
-        opt_app=opt_app.resolve() if opt_app else _default_opt_app(),
+        explorer_root=explorer_root.resolve() if explorer_root else None,
+        explorer_app=explorer_app.resolve() if explorer_app else _default_explorer_app(),
     )
     try:
         return _Server((host, port), UIHandler, config)
