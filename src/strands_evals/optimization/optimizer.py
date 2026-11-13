@@ -51,14 +51,23 @@ from .end_phase import (
 from .execution.rollout import EnvironmentFn, RolloutFn, TaskFn, default_rollout, make_task
 from .execution.traces import TraceCapture
 from .execution.trials import TrialRunner
+from .record.events import closed_events
 from .record.resume import OpenRound, ResumeState, load_state
 from .record.run_directory import _NAME, RunDirectory, code_version
-from .result import CandidateView, OptimizationResult
+from .result import (
+    CandidateView,
+    Grain,
+    OptimizationResult,
+    _case_rows,
+    _iteration_rows,
+    _proposal_rows,
+    _reports,
+)
 from .score_model.bayesbench import BayesBenchModel
 from .score_model.effects import effects_json
 from .score_model.protocols import Fit, FitData, ScoreModel
 from .score_model.ranking import Assessment, Mean, assess, label_candidate, pareto_front, rank, round_to_sd
-from .scoring.metrics import MetricRegistry
+from .scoring.metrics import USAGE_METRICS, MetricRegistry
 from .scoring.objectives import Constraint, Criteria, Objective, Pareto, WeightedSum, measured_metrics, score
 from .search.blocks import Block, ScheduleContext, Search, Step
 from .search.proposer import ProposalRequest, Proposer
@@ -447,6 +456,14 @@ class Optimizer:
         self._candidates[self._baseline.id] = self._baseline
         self._train[self._baseline.id] = scores
         self._refit(scored=True)
+        assert self._run is not None
+        _, assessments = self._rank()
+        self._run.events.append(
+            "label",
+            iteration=0,
+            candidate_id=self._baseline.id,
+            label=label_candidate(scores, assessments.get(self._baseline.id), criteria=self._criteria),
+        )
 
     def _init_state(self, baseline: Candidate) -> None:
         """The search's state before anything is scored."""
@@ -603,7 +620,7 @@ class Optimizer:
         else:
             test, test_reason, front_test = await self._test(report)
             run.events.append("test", iteration=self._iteration, report=test, reason=test_reason, front=front_test)
-        return self._finish(stop_reason, report, test, test_reason, front_test)
+        return self._finish(stop_reason, finalists, report, test, test_reason, front_test)
 
     async def _pick(self, finalists: Sequence[str]) -> ValidationReport:
         """E2 and E3: the finalists and the baseline on validation, then the pick on a fresh validation fit."""
@@ -638,12 +655,18 @@ class Optimizer:
     def _finish(
         self,
         stop_reason: StopReason,
+        finalists: Sequence[str],
         report: ValidationReport,
         test: TestReport | None,
         test_reason: str | None,
         front_test: dict[str, TestReport],
     ) -> OptimizationResult:
-        """`effects.json`, the diffs, and `result.json`, from the end phase's reports; returns the result."""
+        """`effects.json`, the diffs, and `result.json`, from the end phase's reports; returns the result, as
+        `result.json` reloads it (so the returned result and a reloaded one are equal).
+
+        The rows are built from the closed events, so a resumed run's rows cover the whole run and a killed
+        iteration that resume re-ran shows once.
+        """
         assert self._run is not None
         run, criteria, baseline = self._run, self._criteria, self._baseline.id
         effects = effects_json(self._fit, criteria, error=self._fit_error)
@@ -684,9 +707,46 @@ class Optimizer:
             search_cost=self._search_cost,
             judge_cost=judge_cost,
             retry_cost=retry_cost,
+            reports=_reports(self._records, cases=self._cases, evaluators=self._evaluators, split=self._case_split),
+            rows=self._rows(views, finalists, report),
         )
-        run.save_result(result.to_dict())
-        return result
+        data = result.to_dict()
+        run.save_result(data)
+        return OptimizationResult.from_dict(data)
+
+    def _rows(
+        self, views: Mapping[str, CandidateView], finalists: Sequence[str], report: ValidationReport
+    ) -> dict[Grain, list[dict[str, Any]]]:
+        """Every grain's result rows, from the closed events and the trial records."""
+        assert self._run is not None
+        events = closed_events(self._run.events.read())
+        ranking, assessments = self._rank()
+        criteria = self._criteria
+        return {
+            "proposal": _proposal_rows(
+                events,
+                iterations=self._iterations,
+                candidates=views,
+                baseline_id=self._baseline.id,
+                final={c: (assessments[c].objective, i + 1) for i, c in enumerate(ranking)},
+                trial_counts={c: self._trial_count(c) for c in self._candidates},
+                failures={c: s.failures for c, s in self._train.items()},
+                metrics=[*criteria.registry.evaluators, *USAGE_METRICS],
+                goal_metrics=list(criteria.goal_metrics),
+                constraints=[str(c) for c in criteria.constraints],
+                validation=report,
+                finalists=finalists,
+                is_pareto=criteria.is_pareto,
+            ),
+            "iteration": _iteration_rows(events, iterations=self._iterations, candidates=views),
+            "case": _case_rows(
+                events,
+                self._records,
+                candidates=views,
+                split=self._case_split,
+                evaluators=[e.get_name() for e in self._evaluators],
+            ),
+        }
 
     async def _score_split(self, ids: Sequence[str], split: SplitName) -> list[CandidateScores]:
         """Score already-measured candidates on an end-phase split at once (the reserves cover the first passes)."""
@@ -1062,6 +1122,7 @@ class Optimizer:
             record=record,
             exhausted=[_block_name(b) for b in step.blocks if _block_name(b) not in produced],
             best_after=best_after,
+            best_objective=assessments[best_after[0]].objective if best_after else None,
         )
         return record
 

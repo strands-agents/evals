@@ -1136,3 +1136,129 @@ async def test_max_iterations_counts_candidate_slots_not_steps(tmp_path):
     # slot, so the cap doesn't stop the run after 2 steps: Alternate does, after a full cycle that saved nothing.
     assert _slots_used(optimizer._iterations) == 4 and len(optimizer._iterations) > 2
     assert reason == "exhausted"
+
+
+# the results
+
+
+class Flaky(Evaluator):
+    """Raises on the case named `fails_on`, so it is in that trial's evaluator_errors (not a goal metric)."""
+
+    fails_on = ""
+
+    async def evaluate_async(self, evaluation_case):
+        if evaluation_case.name == self.fails_on:
+            raise ValueError("flaky judge")
+        return [EvaluationOutput(score=1.0, test_pass=True, reason="fine")]
+
+
+def _crashing_temperature_rollout(crashes_on):
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        if case.name == crashes_on:
+            raise ValueError("boom")
+        return str(temperature)
+
+    return rollout
+
+
+def _uniform(rows):
+    return all(list(row) == list(rows[0]) for row in rows)
+
+
+async def test_rows_cover_every_proposal_iteration_and_trial(tmp_path):
+    optimizer = _two_steps({"temperature": 0.5}, {"temperature": 7.0}, {"temperature": 1.0}, base_dir=tmp_path)
+    result = await optimizer.run_async()
+
+    proposals = result.to_rows("proposal")
+    assert _uniform(proposals)
+    assert [(r["iteration"], r["outcome"], r["number"]) for r in proposals] == [
+        (0, "feasible", 0),
+        (1, "feasible", 1),
+        (2, "invalid", None),
+        (2, "feasible", 2),
+    ]
+    baseline, first, invalid, second = proposals
+    assert baseline["block"] is None and baseline["parent_id"] is None and baseline["rollouts"] == 8
+    assert baseline["reason"] is not None and baseline["train.Temperature"] == 0.0
+    assert invalid["reason"] and invalid["candidate_id"] is None and invalid["values"] is None
+    assert invalid["is_from_fit"] is None and invalid["rollouts"] == 0
+    assert second["champion"] and second["finalist"] and second["rank"] == 1
+    assert second["changed_keys"] == ["temperature"] and second["values"]["temperature"] == 1.0
+    assert first["finalist"] and not first["champion"] and first["validation_objective"] == pytest.approx(0.5)
+    assert first["trials"] == 8 and first["failures"] == 0 and first["on_front"] is None
+    assert "estimate.Temperature" in first and "train_ci95.tokens" in first
+
+    iterations = result.to_rows("iteration")
+    assert _uniform(iterations) and [r["iteration"] for r in iterations] == [1, 2]
+    assert [r["rollouts_total"] for r in iterations] == [16, 24]
+    assert iterations[1]["invalid"] == 1 and iterations[1]["feasible"] == 1
+    assert iterations[1]["best_after"][0] == result.best.id and iterations[1]["best_objective"] is not None
+
+    cases = result.to_rows("case")
+    assert _uniform(cases)
+    trials = sum(len(records) for records in optimizer._records.values())
+    assert len(cases) == trials == 8 * 3 + 6 * 3 + 6 * 2
+    assert [r["number"] for r in cases] == sorted(r["number"] for r in cases)
+    champion = [r for r in cases if r["candidate_id"] == result.best.id]
+    assert [r["split"] for r in champion] == ["train"] * 8 + ["validation"] * 6 + ["test"] * 6
+    assert all(
+        r["objective"] == 1.0 and r["score.Temperature"] == 1.0 and r["applicable.Temperature"] for r in champion
+    )
+
+
+async def test_reports_match_what_experiment_returns_for_the_same_trials(tmp_path):
+    train = list(_optimizer()._case_split.train)  # the same seed and cases give the same split
+    crashes_on, Flaky.fails_on = train[1], train[3]  # one crashed task, one failed evaluator
+    optimizer = _optimizer(
+        _experiment(evaluators=[Temperature(), Flaky(name="Flaky")]),
+        rollout_fn=_crashing_temperature_rollout(crashes_on),
+        objective=Maximize("Temperature"),
+        search=Search(
+            [Block(Scripted({"temperature": 0.5}), "temperature"), Block(Scripted(), "manager")], schedule=Joint()
+        ),
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path,
+    )
+    result = await optimizer.run_async()
+    assert list(optimizer._case_split.train) == train
+
+    def task(case):
+        if case.name == crashes_on:
+            raise ValueError("boom")
+        return "0.0"
+
+    cases = {case.name: case for case in optimizer._cases}
+    expected = await Experiment(
+        cases=[cases[name] for name in train], evaluators=[Temperature(), Flaky(name="Flaky")]
+    ).run_evaluations_async(task)
+    expected = json.loads(expected.model_dump_json())
+    report = result.reports[result.baseline_id]["train"]
+    assert report.overall_score == pytest.approx(expected["overall_score"])
+    assert report.scores == expected["scores"] and report.test_passes == expected["test_passes"]
+    assert [{k: v for k, v in row.items() if k != "run_index"} for row in report.cases] == expected["cases"]
+    # Experiment keeps the evaluator's message; the trial record keeps only its type.
+    reasons = [r.replace("flaky judge", "ValueError") for r in expected["reasons"]]
+    assert report.reasons == reasons
+    assert set(result.reports[result.best.id]) == {"train", "validation", "test"}
+
+
+async def test_the_result_reloads_whole_without_the_run_folder_and_summarizes(tmp_path):
+    optimizer = _two_steps({"temperature": 0.5}, {"temperature": 1.0}, base_dir=tmp_path / "runs")
+    result = await optimizer.run_async()
+    root = optimizer._run.root
+    assert json.loads((root / "result.json").read_text()) == result.to_dict()
+    path = result.to_file(tmp_path / "copy.json")
+    shutil.rmtree(root)
+    reloaded = OptimizationResult.from_file(path)
+    assert reloaded == result and reloaded.to_rows("case") == result.to_rows("case")
+    assert reloaded.reports[result.best.id]["test"] == result.reports[result.best.id]["test"]
+
+    text = result.summary()
+    assert f"Ships candidate {result.best.number} ({result.best.id})" in text
+    assert "Validation:" in text and "Test, the champion vs the baseline" in text
+    assert "temperature: 0.0 -> 1.0" in text
+    with pytest.raises(ValueError, match="unknown grain"):
+        result.to_rows("trial")
