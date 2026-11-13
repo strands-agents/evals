@@ -59,6 +59,8 @@ def main() -> None:
     cases = experiment["cases"]
     # Exclude synthetic cases from references.
     references = [Case(input=c["input"]) for c in cases if not (c.get("metadata") or {}).get("synthetic")]
+    if not references:
+        sys.exit(f"error: {args.experiment_file} has no non-synthetic cases to use as references")
     generated = asyncio.run(_generate(references, args.task_description, args.num_cases))
     if not generated:
         sys.exit(f"error: generated 0 of {args.num_cases} cases, see the errors above")
