@@ -36,8 +36,9 @@ class Evaluator(Generic[InputT, OutputT]):
     # Optional: subclasses can set this to enable trace parsing
     evaluation_level: EvaluationLevel | None = None
     _trace_extractor: TraceExtractor | None = None
-    # Constructor arguments that take an evaluator. `Experiment.from_dict` rebuilds these from
-    # their serialized dicts and passes every other argument through unchanged.
+    # Constructor arguments that take a single evaluator. `Experiment.from_dict` rebuilds these
+    # from their serialized dicts and passes every other argument through unchanged. Internal for
+    # now: a class that sets it must also write those arguments in its own `to_dict`.
     _evaluator_args: ClassVar[tuple[str, ...]] = ()
 
     def __init__(self, trace_extractor: TraceExtractor | None = None, name: str | None = None):

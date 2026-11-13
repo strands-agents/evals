@@ -21,8 +21,13 @@ class Band:
     `question` falls inside the band, ends included. `p_gate` is P(true) for a `Noul`, and the
     most likely option's probability for a `Scale` or `Choice`.
 
-    A band belongs to the decision-model checkpoint it was chosen for. Pick it again after
-    changing or upgrading the backend.
+    "Uncertain" means near the rubric's pass line, not near 0.5: the band must contain the gating
+    question's pass line in `p_gate` terms, or the cases where the verdict flips never escalate.
+    A rubric of one `Noul` with `expected=False` and `pass_threshold=0.86` passes a case when
+    P(true) <= 0.14, so a band of [0.08, 0.20] contains its line.
+
+    A band and its pass line belong to the decision-model checkpoint they were chosen for. Pick
+    them again after changing or upgrading the backend.
 
     Attributes:
         question: The id of the rubric question that gates escalation.

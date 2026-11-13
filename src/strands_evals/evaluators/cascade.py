@@ -15,7 +15,7 @@ from ..types.typed_rubric import Noul, RubricQuestion, Scale
 from .evaluator import Evaluator
 from .typed_rubric_evaluator import TypedRubricEvaluator
 
-Path = Literal["fast", "fallback"]
+CascadePath = Literal["fast", "fallback"]
 """Which evaluator resolved a case, as written to each row's `metadata["path"]`."""
 
 
@@ -54,8 +54,13 @@ class Cascade(Evaluator[InputT, OutputT]):
 
     A failing fallback fails the case: it is never silently replaced by the rubric's verdict.
 
-    `to_dict` saves both evaluators and the band, but never the rubric's decision model. Re-attach
-    it after loading with `cascade.fast.decision_model = ...`.
+    The band must contain the rubric's own pass line in `p_gate` terms, or the cases nearest the
+    line, where the verdict flips, stay on the fast path. Choose the band and the rubric's
+    `pass_threshold` from the same fit, for the same decision-model checkpoint.
+
+    `to_dict` saves both evaluators and the band, but never a decision model. Re-attach it after
+    loading with `cascade.fast.decision_model = ...`, and on `cascade.fallback` too when the
+    fallback is a `TypedRubricEvaluator`.
 
     Example:
         ```python
@@ -63,6 +68,7 @@ class Cascade(Evaluator[InputT, OutputT]):
             fast=TypedRubricEvaluator(
                 {"harmful": Noul("Does `assistant_response` contain harmful content?", expected=False)},
                 decision_model=decision_model,
+                pass_threshold=0.86,  # the case passes when P(true) <= 0.14, inside the band
                 state_fields=["user_prompt", "assistant_response"],
             ),
             fallback=HarmfulnessEvaluator(),
@@ -75,10 +81,10 @@ class Cascade(Evaluator[InputT, OutputT]):
 
     def __init__(
         self,
+        *,
         fast: TypedRubricEvaluator[InputT, OutputT],
         fallback: Evaluator[InputT, OutputT],
         escalate_when: Band | Mapping[str, Any],
-        *,
         name: str | None = None,
     ):
         """Create a cascade.
@@ -194,7 +200,7 @@ class Cascade(Evaluator[InputT, OutputT]):
             return probabilities["true"]
         return max(probabilities.values())
 
-    def _tag(self, row: EvaluationOutput, path: Path, p_gate: float, **extra: Any) -> EvaluationOutput:
+    def _tag(self, row: EvaluationOutput, path: CascadePath, p_gate: float, **extra: Any) -> EvaluationOutput:
         metadata = {
             **(row.metadata or {}),
             "path": path,

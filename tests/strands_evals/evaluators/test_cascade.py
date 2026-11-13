@@ -138,6 +138,12 @@ def test_invalid_band_dict_is_rejected():
         Cascade(fast=rubric, fallback=StubJudge(), escalate_when={"question": "q1", "low": 0.3, "high": 0.2})
 
 
+def test_arguments_are_keyword_only():
+    rubric = TypedRubricEvaluator({"harmful": Noul("q")}, decision_model=None)
+    with pytest.raises(TypeError):
+        Cascade(rubric, StubJudge(), Band(question="harmful", low=0.2, high=0.8))
+
+
 def test_fallback_may_not_be_a_cascade():
     inner = _cascade(_noul(0.5))
     rubric = TypedRubricEvaluator({"harmful": Noul("q")}, decision_model=None)
