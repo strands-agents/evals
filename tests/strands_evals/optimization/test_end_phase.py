@@ -90,6 +90,8 @@ from strands_evals.optimization import (  # noqa: E402
     Maximize,
     Mean,
     MetricRegistry,
+    Minimize,
+    Pareto,
 )
 from strands_evals.optimization.end_phase import choose_finalists, pick  # noqa: E402
 from strands_evals.optimization.score_model.ranking import Assessment, label_candidate  # noqa: E402
@@ -325,6 +327,41 @@ def test_pick_tie_without_trial_counts_goes_to_the_baseline():
         criteria=criteria,
         rule=Mean(),
     )
+    assert report.champion_id == "0"
+
+
+def test_pick_under_pareto_a_gain_tie_with_another_trade_off_ships_the_baseline():
+    # The baseline (help 0.5, 250 tokens) and "a" (help 0.75, 500 tokens) are both on the front with the same
+    # weighted gain, (0.5 - 0.25) / 2 == (0.75 - 0.5) / 2: at the final pick the tie goes to the baseline.
+    criteria = Criteria(Pareto(Maximize(HELP), Minimize(TOKENS, scale=1000)), [], REGISTRY)
+
+    def scores(candidate_id, help_value, tokens):
+        cases = ("v1", "v2")
+        return CandidateScores(
+            candidate_id=candidate_id,
+            objective_by_case={c: 0.25 for c in cases},
+            metrics_by_case={c: {HELP: help_value, TOKENS: tokens} for c in cases},
+            unavailable={},
+            objective_by_run={c: [0.25] for c in cases},
+            metrics_by_run={c: {HELP: [help_value], TOKENS: [tokens]} for c in cases},
+            objective=0.25,
+            is_eligible=True,
+            failures=0,
+        )
+
+    validation = {"0": scores("0", 0.5, 250.0), "a": scores("a", 0.75, 500.0)}
+    report = pick(
+        baseline_id="0",
+        finalist_ids=["a"],
+        validation=validation,
+        fit=None,
+        values={"0": {}, "a": {}},
+        trial_counts={"0": 2, "a": 2},
+        criteria=criteria,
+        rule=Mean(),
+    )
+    assert report.objectives["0"] == report.objectives["a"]
+    assert set(report.front) == {"0", "a"}
     assert report.champion_id == "0"
 
 
