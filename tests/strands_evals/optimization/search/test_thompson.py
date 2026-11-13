@@ -92,6 +92,7 @@ def summary(cid, values, *, is_eligible=True):
         measured_objective=None,
         measured={},
         trial_count=1,
+        failures=0,
         ranking_objective=None,
         term_values=None,
         rank=None,
