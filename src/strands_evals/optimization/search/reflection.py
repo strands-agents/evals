@@ -62,7 +62,8 @@ _MAX_TOOL_OUTPUT = 100_000
 _PRIVATE_DIRS = ("/tmp", "/private", "/home", "/Users", "/root", "/var", "/mnt", "/opt", "/srv", "/data", "/run/user")
 _SEGMENT = r"[^\s'\"|;&<>()`*?\[\]{},]"  # a character a path is read with, up to shell punctuation
 _PATH = re.compile(
-    rf"(?:(?<![\w.:/~-])|(?<=[\s;|&(]-[A-Za-z]))("  # also a path joined to a short option (`tar -C/tmp`)
+    # also a path joined to one or more short options (`tar -C/tmp`, `tar -xf/tmp/x`)
+    rf"(?:(?<=[\s;|&(])-[A-Za-z]+|(?<![\w.:/~-]))("
     rf"/{_SEGMENT}*"  # absolute
     rf"|~[\w.+-]*(?:/{_SEGMENT}*)?"  # `~` (the shell's HOME, the work folder), `~user`, `~+`, `~-`
     rf"|(?:[\w.-]+/)*\.\.(?![\w.-])(?:/{_SEGMENT}*)?"  # relative, with a `..` segment
@@ -111,8 +112,8 @@ class Reflection(Proposer):
     included; a call that returns nothing after its agent ran, or raises, logs that spend as `proposer_usage`
     instead (nothing when cancelled). Guardrails run in code after the agent returns,
     including the leakage screen (drop a value that adds a shown case's identifier-like name, or a
-    verbatim run of >= 40 characters from a shown trial's input or output, that the parent's
-    value didn't contain), logged as `screened`. A submitted value over its `size_cap` is sent back, in the
+    verbatim run of >= 40 characters from a shown trial's input, output, or conversation, that the
+    parent's value didn't contain), logged as `screened`. A submitted value over its `size_cap` is sent back, in the
     same conversation, to be shortened, up to `over_limit_retries` times; one still over is dropped and the
     parent's value kept.
 
@@ -889,7 +890,8 @@ def _messages(trajectory: Any) -> list[Any]:
     conversations: list[list[dict[str, Any]]] = []
     for trace in trajectory.traces:
         agents = sorted(
-            (s for s in trace.spans if isinstance(s, AgentInvocationSpan)), key=lambda s: s.span_info.start_time
+            (s for s in trace.spans if isinstance(s, AgentInvocationSpan)),
+            key=lambda s: _to_aware_utc(s.span_info.start_time),
         )
         index = {id(a): i for i, a in enumerate(agents)}
         by_id = {s.span_info.span_id: s for s in trace.spans if s.span_info.span_id}
@@ -1026,6 +1028,8 @@ def _digest_text(rows: Sequence[dict[str, Any]], threshold: float, limit: int) -
                 return text
             cap //= 2
     text = build(40, False)
+    if len(text) <= limit:
+        return text
     lines, kept = text.splitlines(), list[str]()
     for line in lines:  # still over: keep what fits, and say what was left out
         if sum(len(x) + 1 for x in kept) + len(line) + 1 > limit - 120:
@@ -1141,6 +1145,7 @@ def _guard(
     sources = [str(request.inputs.get(name, "")) for name in names]
     for t in shown:
         sources.append("" if t.output is None else str(t.output))
+        sources += _message_text(t.trajectory)
     updates: dict[str, str] = {}
     dropped: dict[str, str] = {}
     screened: list[str] = []
@@ -1164,13 +1169,35 @@ def _guard(
     return updates, dropped, screened
 
 
+def _message_text(trajectory: Any) -> list[str]:
+    """Every string in a trial's conversation (`_messages`): each text block, each tool call's arguments, each tool
+    result. The leakage screen reads them because the trace files show the agent the whole conversation, not only the
+    case input and the final output, so a tool result is as copyable as either."""
+    out: list[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, str):
+            out.append(value)
+        elif isinstance(value, Mapping):
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                walk(item)
+
+    for message in _messages(trajectory):
+        walk(message)
+    return out
+
+
 def _leak(value: str, held: Any, names: Sequence[str], sources: Sequence[str]) -> str | None:
     """Why `value` leaks a shown trial, or None: it adds an identifier-like case name (4 or more characters with a
     letter, and a digit, `_`, `-`, or `/`, or CamelCase such as "RefundFlow"; plain words such as "refund", acronyms
     such as "API", and short names such as "3" or "v2" are skipped: a rewrite says those for its own reasons) as a
     whole word, or a run of `_VERBATIM_CHARS` characters (whitespace-normalized, case-insensitive) from a shown
-    trial's input or output, that the parent's value `held` didn't already contain. Evaluator reasons are not
-    checked for copied runs: they are advice about the agent's behavior, which a rewrite is meant to adopt."""
+    trial's input, output, or any message of its conversation, that the parent's value `held` didn't already contain.
+    Evaluator reasons are not checked for copied runs: they are advice about the agent's behavior, which a rewrite is
+    meant to adopt."""
     held = held if isinstance(held, str) else ""
     for name in names:
         camel = re.fullmatch(r"(?=.*[a-z])[A-Za-z][a-z0-9]*(?:[A-Z][a-z0-9]*)+", name)

@@ -415,6 +415,30 @@ def test_messages_compare_naive_and_aware_span_times():
     assert [m["content"][0]["text"] for m in _messages(trajectory)] == ["last"]
 
 
+def test_messages_order_agents_whose_span_times_mix_naive_and_aware():
+    """Two agents, one with naive times and one with aware ones: ordering them compares UTC, no `TypeError`."""
+    utc = T0.replace(tzinfo=timezone.utc)
+    second = AgentInvocationSpan(
+        span_info=SpanInfo(
+            session_id="s",
+            start_time=utc + timedelta(seconds=20),
+            end_time=utc + timedelta(seconds=30),
+            span_id="b",
+        ),
+        user_prompt="q",
+        agent_response="a",
+        available_tools=[],
+    )
+    spans = [
+        second,
+        _span(AgentInvocationSpan, 0, 10, span_id="a"),
+        _span(InferenceSpan, 1, 2, parent="a", messages=_says("first agent")),
+        _span(InferenceSpan, 21, 22, parent="b", messages=_says("second agent")),
+    ]
+    trajectory = Session(traces=[Trace(spans=spans, trace_id="t", session_id="s")], session_id="s")
+    assert [m["content"][0]["text"] for m in _messages(trajectory)] == ["first agent", "second agent"]
+
+
 def test_reflection_reads_only_train_trials(folders):
     """A trial of another split never reaches the evidence (invariant 2), even if handed over by mistake."""
     held_out = trial("v", score=0.1).model_copy(update={"split": "validation"})
@@ -486,6 +510,33 @@ def test_digest_is_cut_to_its_limit():
     text = _digest_text(rows, 0.5, 2_000)
     assert len(text) <= 2_000
     assert "more lines left out at the digest's limit of 2,000 characters" in text
+
+
+def test_digest_that_fits_at_the_shortest_fields_keeps_every_line():
+    """A digest too long with fields cut to 75 characters but whole with them cut to 40 is returned as it is: it never
+    takes the line-dropping path, which would say lines were left out while dropping none."""
+    rows = [
+        {
+            "file": f"rollout_{i:04d}.json",
+            "case": f"case-{i}",
+            "repetition": 0,
+            "reward": 0.0,
+            "status": "completed",
+            "error": None,
+            "reasons": {"Score": "x" * 500},
+            "objectives": {},
+            "ended": "y" * 500,
+            "messages": 1,
+            "calls": 0,
+        }
+        for i in range(6)
+    ]
+    text = _digest_text(rows, 0.5, 998)
+    assert len(text) <= 998
+    assert "left out" not in text
+    assert text.endswith("## Cases where every conversation succeeded (0)\n(none)\n")
+    for i in range(6):
+        assert f"case-{i}" in text
 
 
 # ---- versions ------------------------------------------------------------------------------------------------------

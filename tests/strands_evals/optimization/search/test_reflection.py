@@ -2,6 +2,7 @@
 
 import os
 import select
+import threading
 import time
 from types import SimpleNamespace
 
@@ -355,6 +356,15 @@ def test_outside_sees_a_path_joined_to_a_short_option(folders):
 
 
 @posix_only
+def test_outside_sees_a_path_joined_to_clustered_short_options(folders):
+    """`tar -xf/tmp/x` is how clustered options are written, so the check reads a run of option letters."""
+    assert _outside("tar -xf/tmp/other/a.tar", folders.roots, folders.work) == ["/tmp/other/a.tar"]
+    assert _outside("grep -rn/tmp/x pattern", folders.roots, folders.work) == ["/tmp/x"]
+    assert _outside("tar -xf../other/a.tar", folders.roots, folders.work) == ["../other/a.tar"]
+    assert _outside("cut -d/ -f1 notes.txt && sed s/a/b/ notes.txt", folders.roots, folders.work) == []
+
+
+@posix_only
 def test_outside_refuses_dots_in_a_command_that_names_the_shared_folder(folders, tmp_path):
     """After `cd <shared folder>`, `../traces` starts from above it, not from the work folder."""
     home = str(tmp_path)
@@ -425,8 +435,6 @@ def test_shell_gives_a_command_no_standard_input(folders):
 @posix_only
 def test_a_running_command_is_in_running_until_it_ends_and_can_be_killed(folders):
     """The caller kills what `running` holds when its call ends early (cancelled)."""
-    import threading
-
     running = set()
     shell = _confined_shell(folders.work, folders.roots, [], running=running)
     out = []

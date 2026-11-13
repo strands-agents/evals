@@ -10,8 +10,15 @@ from strands.types.exceptions import EventLoopException
 from strands_evals.optimization import Criteria, InfrastructureError, Maximize, Reflection, Space, TextValue
 from strands_evals.optimization.candidate import Candidate
 from strands_evals.optimization.search.proposer import ProposalRequest
+from strands_evals.types.trace import TextContent, ToolResultContent, UserMessage
 from tests.strands_evals.optimization.scripted_model import ScriptedModel, ToolUse
-from tests.strands_evals.optimization.search.test_reflection_evidence import REGISTRY, scores_of, summary, trial
+from tests.strands_evals.optimization.search.test_reflection_evidence import (
+    REGISTRY,
+    scores_of,
+    session,
+    summary,
+    trial,
+)
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="Reflection needs Linux or macOS")
 
@@ -180,6 +187,27 @@ async def test_a_value_copying_a_shown_output_is_screened():
     turns = [write("p.txt", "Never say: I could not find the order you asked about."), submit(prompt="p.txt"), "Done."]
     patches, events, _ = await propose(turns)
     assert patches == []
+    assert events[0][1]["reason"].startswith("copies 40 characters from a shown trial verbatim")
+
+
+async def test_a_value_copying_a_shown_tool_result_is_screened():
+    """The trace files show the agent every message, so a tool result is screened like the input and the output."""
+    result = "the warehouse in Cologne ships on Mondays only"
+    conversation = [
+        UserMessage(content=[TextContent(text="Where is my order a?")]),
+        UserMessage(
+            content=[ToolResultContent(name="lookup", content=result, tool_call_id="1")],
+            role="assistant",
+        ),
+    ]
+    trials = [trial("a", score=0.2, output="sorry", trajectory=session(conversation))]
+    turns = [write("p.txt", result), submit(prompt="p.txt"), "Done."]
+    reflection = Reflection(ScriptedModel(turns))
+    reflection._warned = True
+    events = []
+    patches = await reflection.propose(request(trials=trials, events=events))
+    assert patches == []
+    assert events[0][0] == "screened"
     assert events[0][1]["reason"].startswith("copies 40 characters from a shown trial verbatim")
 
 
