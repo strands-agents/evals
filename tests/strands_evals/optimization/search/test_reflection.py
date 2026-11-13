@@ -107,6 +107,24 @@ def test_shell_refuses_and_records_a_command_outside_its_folders(folders):
     assert out.startswith(f"Refused: {target} is outside your folders")
     assert not os.path.exists(target)
     assert refused == [{"command": f"echo x > {target}", "paths": [target]}]
+    assert "shared folder" not in out  # none given
+
+
+@posix_only
+def test_a_refusal_names_the_shared_folder_when_there_is_one(folders, tmp_path):
+    shell = _confined_shell(folders.work, folders.roots, [], str(tmp_path))
+    assert shell(command="ls ..").endswith(
+        f"Their shared folder, {tmp_path}, may be named by its absolute path, never reached by `..`."
+    )
+
+
+@posix_only
+def test_shell_timeout_is_kept_between_1_and_3600_seconds(folders):
+    shell = _confined_shell(folders.work, folders.roots, [])
+    assert shell(command="sleep 0.2; echo done", timeout=0) == "done\n\n[exit code 0]"
+    assert shell(command="sleep 5", timeout=-3).endswith(
+        "[stopped after 1 seconds: the command and what it started were killed]"
+    )
 
 
 @posix_only
@@ -120,14 +138,24 @@ def test_shell_reads_its_roots(folders):
 @posix_only
 def test_shell_stops_a_command_at_its_timeout(folders):
     shell = _confined_shell(folders.work, folders.roots, [])
-    assert shell(command="sleep 5", timeout=1) == "Stopped after 1 seconds."
+    assert shell(command="sleep 5", timeout=1) == (
+        "\n[stopped after 1 seconds: the command and what it started were killed]"
+    )
+
+
+@posix_only
+def test_shell_keeps_what_a_timed_out_command_printed(folders):
+    shell = _confined_shell(folders.work, folders.roots, [])
+    assert shell(command="echo hello; echo err >&2; sleep 5", timeout=1) == (
+        "hello\n\n[stderr]\nerr\n\n[stopped after 1 seconds: the command and what it started were killed]"
+    )
 
 
 @posix_only
 def test_shell_kills_what_a_timed_out_command_started(folders):
     """A child of `bash` (not exec'd: `cd . &&`) dies with it, so its file is never written."""
     shell = _confined_shell(folders.work, folders.roots, [])
-    assert shell(command="cd . && (sleep 2; touch late.txt)", timeout=1) == "Stopped after 1 seconds."
+    assert "[stopped after 1 seconds" in shell(command="cd . && (sleep 2; touch late.txt)", timeout=1)
     time.sleep(2.5)
     assert not os.path.exists(os.path.join(folders.work, "late.txt"))
 
@@ -301,6 +329,28 @@ def test_leak_skips_plain_words_and_acronyms(name):
 )
 def test_outside_sees_dots_before_shell_punctuation_and_under_home(folders, tmp_path, command):
     assert _outside(command, folders.roots, folders.work, str(tmp_path)) != []
+
+
+@posix_only
+def test_outside_sees_a_quoted_path_followed_by_dots_and_a_leading_double_slash(folders, tmp_path):
+    home = str(tmp_path)
+    for command in [f"ls '{home}'/..", f'cat "{home}"/../other/x', "cat '../traces'/../../x", "cat //tmp/x"]:
+        assert _outside(command, folders.roots, folders.work, home) != [], command
+    assert _outside("cat '../traces/a.json'", folders.roots, folders.work, home) == []
+
+
+@posix_only
+@pytest.mark.parametrize("command", ["cat 'a /'../../x", "PATH=a:'/tmp'", "sh -c 'cat /tmp/x'"])
+def test_outside_reads_a_command_both_as_written_and_without_quotes(folders, tmp_path, command):
+    """Removing quotes splits `'a /'..` at the space; as written, `'/tmp` is still seen after the quote."""
+    assert _outside(command, folders.roots, folders.work, str(tmp_path)) != []
+
+
+@posix_only
+def test_outside_sees_a_path_joined_to_a_short_option(folders):
+    assert _outside("tar -C/tmp -xf a.tar", folders.roots, folders.work) == ["/tmp"]
+    assert _outside("cc -I/usr/include x.c && ls -la", folders.roots, folders.work) == []
+    assert _outside("grep -rn x --include=*.json .", folders.roots, folders.work) == []
 
 
 @posix_only

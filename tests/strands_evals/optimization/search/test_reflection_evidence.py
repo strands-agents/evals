@@ -215,6 +215,38 @@ def test_a_bounded_constraint_joins_the_reward_as_a_mean():
     assert rewards[0][2]["constraints_broken"] == {"Cost <= 0.2": pytest.approx(0.2)}
 
 
+def test_a_metric_with_no_value_is_left_out_of_the_reward_not_counted_as_0():
+    """N/A (or a failed evaluator) on one part: the other parts' weights are rescaled, as the objective does."""
+    criteria = Criteria(WeightedSum(Maximize("Score"), Maximize("Cost")), [], REGISTRY)
+    trials = [trial("a", score=0.9), trial("b", score=0.4)]
+    req = request(trials, criteria=criteria)
+    extra = {"a": {"Cost": [None]}, "b": {"Cost": [0.6]}}
+    req = ProposalRequest(**{**req.__dict__, "scores": scores_of(trials, criteria, extra)})
+    rewards, _, _ = _rewards(req, 0.5)
+    assert [r for _, r, _ in rewards] == [pytest.approx(0.9), pytest.approx(0.5)]
+
+
+def test_a_constraint_with_no_value_is_left_out_of_the_mean():
+    criteria = Criteria(Maximize("Score"), [AtMost("Cost", 0.2)], REGISTRY)
+    trials = [trial("a", score=0.8)]
+    req = request(trials, criteria=criteria)
+    req = ProposalRequest(**{**req.__dict__, "scores": scores_of(trials, criteria, {"a": {"Cost": [None]}})})
+    rewards, _, _ = _rewards(req, 0.5)
+    assert rewards[0][1] == pytest.approx(0.8)
+
+
+def test_a_non_finite_or_out_of_range_value_never_makes_a_reward_outside_0_1():
+    """Scoring takes these out; a hand-built request still gets rewards in [0, 1]."""
+    trials = [trial("a", score=0.5), trial("b", score=0.5), trial("c", score=0.5)]
+    req = request(trials)
+    scores = scores_of(trials, req.criteria)
+    runs = {**scores.metrics_by_run, "a": {"Score": [float("nan")]}, "b": {"Score": [1.7]}}
+    req = ProposalRequest(**{**req.__dict__, "scores": scores.model_copy(update={"metrics_by_run": runs})})
+    rewards, _, _ = _rewards(req, 0.5)
+    assert [r for _, r, _ in rewards] == [0.0, 1.0, 0.5]
+    assert "Score" not in rewards[0][2]["metrics"]
+
+
 def test_no_bounded_goal_metric_gives_mid_ranks():
     criteria = Criteria(Minimize("tokens"), [], REGISTRY)
     req = request([trial("a", tokens=10), trial("b", tokens=30), trial("c", tokens=20)], criteria=criteria)

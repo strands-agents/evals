@@ -54,7 +54,7 @@ _MAX_TOOL_OUTPUT = 100_000
 _PRIVATE_DIRS = ("/tmp", "/private", "/home", "/Users", "/root", "/var", "/mnt", "/opt", "/srv", "/data", "/run/user")
 _SEGMENT = r"[^\s'\"|;&<>()`*?\[\]{},]"  # a character a path is read with, up to shell punctuation
 _PATH = re.compile(
-    rf"(?<![\w.:/~-])("
+    rf"(?:(?<![\w.:/~-])|(?<=[\s;|&(]-[A-Za-z]))("  # also a path joined to a short option (`tar -C/tmp`)
     rf"/{_SEGMENT}*"  # absolute
     rf"|~(?![\w.-])(?:/{_SEGMENT}*)?"  # the shell's HOME (the work folder)
     rf"|(?:[\w.-]+/)*\.\.(?![\w.-])(?:/{_SEGMENT}*)?"  # relative, with a `..` segment
@@ -91,8 +91,11 @@ class Reflection(Proposer):
 
     Which of the parent's train trials went well: each trial gets a reward in [0, 1] from the goal's
     bounded metrics (an `agent_failure` gets 0), and a trial succeeds when reward >= `success_threshold`;
-    a case is failing when any of its trials isn't. `success_threshold=None` ranks trials by objective
-    instead (a median split), as does a goal with no bounded metric.
+    a case is failing when any of its trials isn't. A metric with no value on a trial (N/A, or its evaluator
+    failed) is left out of that trial's reward, not counted as 0. `success_threshold=None` ranks trials by
+    objective instead (a median split). A goal with no bounded metric also ranks them: each reward is
+    the objectives' mid-ranks in [0, 1], weighted, compared against `success_threshold` (a median split only at
+    0.5).
 
     Each `propose` call (n=1) runs one agent (`concurrent = True`). The agent is retried 3 times, each
     failure logged as `proposer_retry`, then the last error is raised; nothing submitted, or every value
@@ -104,6 +107,10 @@ class Reflection(Proposer):
     parent's value kept.
 
     Runs on Linux and macOS only (`propose` raises `RuntimeError` on Windows; use WSL or a Linux container there).
+
+    Attributes:
+        refused: Every command the shell refused over this instance's calls, oldest first: {"command": its first
+            500 characters, "paths": the paths it named}. Each patch's `state` also holds its own call's first 10.
     """
 
     kinds: ClassVar[frozenset[ParamKind]] = frozenset({"text"})
@@ -152,7 +159,6 @@ class Reflection(Proposer):
         self.system_prompt = system_prompt
         self.success_threshold = success_threshold
         self.over_limit_retries = over_limit_retries
-        # Each command the shell refused: {"command": its first 500 characters, "paths": the paths it named}.
         self.refused: list[dict[str, Any]] = []
         self._warned = False
 
@@ -394,10 +400,12 @@ def _outside(command: str, roots: Sequence[str], cwd: str, home: str | None = No
 
     inside, named = real(roots), real(roots) | real([home] if home else [])
     paths = []  # (token, its path, whether it is a relative `..` path)
-    for token in _PATH.findall(command):
+    # Read as written and with quotes removed (the shell reads `'a'/..` as one word, but removing the quotes of
+    # `'a /'..` splits one), refused when either reading is. A leading `//`, which `normpath` keeps, is made `/`.
+    for token in {*_PATH.findall(command), *_PATH.findall(re.sub(r"['\"]", "", command))}:
         anchored = token.startswith(("/", "~"))
         rest = token[1:].lstrip("/") if token.startswith("~") else token
-        paths.append((token, os.path.normpath(os.path.join(cwd, rest)), not anchored))
+        paths.append((token, "/" + os.path.normpath(os.path.join(cwd, rest)).lstrip("/"), not anchored))
     names_home = any(not relative and within(path, named) and not within(path, inside) for _, path, relative in paths)
     found = []
     for token, path, relative in paths:
@@ -434,15 +442,21 @@ def _confined_shell(
 
         Args:
             command: The bash command to run.
-            timeout: Seconds before the command is stopped.
+            timeout: Seconds before the command is stopped, from 1 to 3600.
         """
         named = _outside(command, roots, work, home)
         if named:
             refused.append({"command": command[:500], "paths": named})
+            shared = (
+                f" Their shared folder, {home}, may be named by its absolute path, never reached by `..`."
+                if home
+                else ""
+            )
             return (
                 f"Refused: {', '.join(named)} is outside your folders ({', '.join(roots)}). Read only those "
-                f"folders and write only in your working folder, {work}."
+                f"folders and write only in your working folder, {work}.{shared}"
             )
+        timeout = min(max(timeout, 1), 3600)
         env = {**os.environ, "HOME": work, "TMPDIR": work}
         # Files, not pipes: a background process holding a pipe open would keep the call waiting until it exits.
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
@@ -458,11 +472,12 @@ def _confined_shell(
             if running is not None:
                 running.add(process)
             try:
-                deadline = time.monotonic() + timeout
+                deadline, stopped = time.monotonic() + timeout, False
                 # Wait for bash to exit without reaping it (WNOWAIT).
                 while os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
                     if time.monotonic() >= deadline:
-                        return f"Stopped after {timeout} seconds."
+                        stopped = True
+                        break
                     time.sleep(0.02)
             finally:
                 _kill_group(process)
@@ -474,6 +489,8 @@ def _confined_shell(
             stdout = out.read().decode("utf-8", errors="replace")
             stderr = err.read().decode("utf-8", errors="replace")
         tail = f"\n[stderr]\n{stderr}" if stderr else ""
+        if stopped:
+            return f"{stdout}{tail}\n[stopped after {timeout} seconds: the command and what it started were killed]"
         return f"{stdout}{tail}\n[exit code {code}]"
 
     return shell
@@ -570,7 +587,7 @@ def _cap_tool_output(event: AfterToolCallEvent) -> None:
             item["text"] = (
                 f"{text[:_MAX_TOOL_OUTPUT]}\n\n"
                 f"[TRUNCATED: Output exceeded {_MAX_TOOL_OUTPUT} characters. Original length: {len(text)} "
-                f"characters. Use targeted commands (grep, head, jq with selectors) to extract specific content.]"
+                f"characters. Use targeted commands (grep, head, tail) to extract specific content.]"
             )
             logger.warning("Truncated tool output from %d to %d characters", len(text), _MAX_TOOL_OUTPUT)
 
@@ -647,8 +664,9 @@ def _rewards(
     better: the objectives', then the constraints'), combined with the objectives' weights when they are exactly the
     objectives' metrics, else their mean. A metric with no range, such as tokens, would rank a trial only against the
     parent's other trials, so it is judged on whole versions instead. With no bounded goal metric, each objective's
-    mid-rank among the parent's trials, combined with the objectives' weights. With `success_threshold=None`: each
-    trial's mid-rank by its objective among the parent's trials.
+    mid-rank among the parent's trials, combined with the objectives' weights. A part with no value on a trial (N/A,
+    or its evaluator failed) is left out and the others' weights rescaled; a trial with no part known gets 0. With
+    `success_threshold=None`: each trial's mid-rank by its objective among the parent's trials.
     """
     criteria = request.criteria
     registry = criteria.registry
@@ -674,8 +692,10 @@ def _rewards(
     runs = request.scores.metrics_by_run
 
     def value(trial: TrialRecord, metric: str) -> float | None:
+        """The trial's value of `metric`; None when it has none, or a non-finite one (scoring takes those out)."""
         values = runs.get(trial.case_name, {}).get(metric)
-        return values[trial.run_index] if values is not None and trial.run_index < len(values) else None
+        v = values[trial.run_index] if values is not None and trial.run_index < len(values) else None
+        return v if v is not None and math.isfinite(v) else None
 
     def unit(trial: TrialRecord, metric: str, maximize: bool) -> float | None:
         v = value(trial, metric)
@@ -683,7 +703,7 @@ def _rewards(
             return None
         low, high = registry.range(metric)
         assert low is not None and high is not None
-        s = (v - low) / (high - low)
+        s = min(max((v - low) / (high - low), 0.0), 1.0)  # scoring takes out-of-range values out too
         return s if maximize else 1.0 - s
 
     def mid_ranks(values: list[float | None], maximize: bool) -> list[float | None]:
@@ -704,8 +724,11 @@ def _rewards(
         label, ranked = [o.metric for o in objectives], True
         by_run = request.scores.objective_by_run
         values = [
-            by_run.get(t.case_name, [])[t.run_index] if t.run_index < len(by_run.get(t.case_name, [])) else None
+            v if v is not None and math.isfinite(v) else None
             for t in trials
+            for v in [
+                by_run.get(t.case_name, [])[t.run_index] if t.run_index < len(by_run.get(t.case_name, [])) else None
+            ]
         ]
         scores = [0.0 if r is None else r for r in mid_ranks(values, True)]
     else:
@@ -722,11 +745,11 @@ def _rewards(
         scores = []
         for i, t in enumerate(trials):
             if combined or not goal:
-                parts = [0.0 if (x := col[i]) is None else x for col in columns]
-                scores.append(sum(w * s for w, s in zip(weights, parts, strict=True)) / sum(weights))
+                known = [(w, x) for w, col in zip(weights, columns, strict=True) if (x := col[i]) is not None]
+                scores.append(sum(w * x for w, x in known) / sum(w for w, _ in known) if known else 0.0)
             else:
-                units = [unit(t, m, maximize) for m, maximize in goal.items()]
-                scores.append(sum(u if u is not None else 0.0 for u in units) / len(goal))
+                units = [u for m, maximize in goal.items() if (u := unit(t, m, maximize)) is not None]
+                scores.append(sum(units) / len(units) if units else 0.0)
     out = []
     for t, score in zip(trials, scores, strict=True):
         broken = {}
@@ -1038,13 +1061,13 @@ def _shown(c: CandidateSummary, metric: str) -> str:
 
 def _text_files(names: Sequence[str]) -> dict[str, str]:
     """Each text's file name in a version's folder: its name, with anything but letters, digits, `.`, `_` and `-`
-    made `_` and leading dots dropped, then `.txt` (numbered when two names would share one, or `version.md`,
-    compared ignoring case: on a case-insensitive disk `Prompt.txt` and `prompt.txt` are one file)."""
+    made `_` and leading dots dropped, then `.txt` (numbered when two names would share one, compared ignoring
+    case: on a case-insensitive disk `Prompt.txt` and `prompt.txt` are one file)."""
     out: dict[str, str] = {}
     for name in names:
         stem = re.sub(r"[^A-Za-z0-9._-]", "_", name).lstrip(".") or "text"
         file, i = f"{stem}.txt", 2
-        while file.casefold() in {f.casefold() for f in out.values()} or file.casefold() == _VERSION_FILE:
+        while file.casefold() in {f.casefold() for f in out.values()}:
             file, i = f"{stem}-{i}.txt", i + 1
         out[name] = file
     return out
