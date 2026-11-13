@@ -18,6 +18,8 @@ from .topic_planner import TopicPlanner
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_DIFFICULTY_DISTRIBUTION: dict[str, float] = {"easy": 0.3, "medium": 0.5, "hard": 0.2}
+
 
 class ExperimentGenerator(Generic[InputT, OutputT]):
     """
@@ -53,6 +55,7 @@ class ExperimentGenerator(Generic[InputT, OutputT]):
         max_parallel_num_cases: int = 10,
         rubric_system_prompt: str = RUBRIC_SYSTEM_PROMPT,
         case_system_prompt: str = CASE_SYSTEM_PROMPT,
+        difficulty_distribution: dict[str, float] | None = _DEFAULT_DIFFICULTY_DISTRIBUTION,
     ):
         """
         Initialize the experiment generator with configuration for test case structure.
@@ -69,7 +72,20 @@ class ExperimentGenerator(Generic[InputT, OutputT]):
             max_parallel_num_cases: Maximum number of test cases to generate in parallel asynchronously
             rubric_system_prompt: System prompt for rubric generation, defaults to one of the available templates.
             case_system_prompt: System prompt for test case generation, defaults to one of the available templates.
+            difficulty_distribution: Relative weight of each difficulty label across generated cases, defaults to
+                `{"easy": 0.3, "medium": 0.5, "hard": 0.2}`. `None` omits difficulty from the generation prompt.
+
+        Raises:
+            ValueError: If `difficulty_distribution` has a negative weight or no positive weight.
         """
+        if difficulty_distribution is not None:
+            weights = difficulty_distribution.values()
+            if not (min(weights, default=0) >= 0 and max(weights, default=0) > 0):
+                raise ValueError(
+                    "difficulty_distribution must have non-negative weights with at least one positive, "
+                    f"got {difficulty_distribution} (pass None to omit difficulty)"
+                )
+        self.difficulty_distribution = dict(difficulty_distribution) if difficulty_distribution is not None else None
         self.model = model
         self.input_type = input_type
         self.output_type = output_type
@@ -120,13 +136,13 @@ class ExperimentGenerator(Generic[InputT, OutputT]):
                 break
 
             try:
-                full_prompt = prompt + f"Ensure that the test case has a difficulty level of {difficulty}."
+                full_prompt = prompt
+                if difficulty is not None:
+                    full_prompt += f" Ensure that the test case has a difficulty level of {difficulty}."
                 gen_case = await case_generator.structured_output_async(self._Case, full_prompt)
                 results.append(Case(**gen_case.model_dump()))
             except Exception as e:
                 logger.exception(f"Error generating case: {e}")
-            finally:
-                queue.task_done()
 
     async def generate_cases_async(
         self, prompt: str, num_cases: int = 5, message_history: list | None = None, num_topics: int | None = None
@@ -149,11 +165,19 @@ class ExperimentGenerator(Generic[InputT, OutputT]):
             base_prompt=prompt, num_cases=num_cases, num_topics=num_topics
         )
 
+        # Allocate over the whole run, so small topic batches don't skew the totals.
+        total_cases = sum(cases_for_prompt for _, cases_for_prompt in prompt_specs)
+        difficulties = self._allocate_difficulties(total_cases)
+
         generated_cases: list = []
+        start = 0
         for prompt_text, cases_for_prompt in prompt_specs:
             cases = await self._generate_batch(
-                prompt=prompt_text, num_cases=cases_for_prompt, message_history=message_history
+                prompt=prompt_text,
+                difficulties=difficulties[start : start + cases_for_prompt],
+                message_history=message_history,
             )
+            start += cases_for_prompt
             generated_cases.extend(cases)
 
         return generated_cases
@@ -203,31 +227,45 @@ class ExperimentGenerator(Generic[InputT, OutputT]):
 
         return prompt_specs
 
-    async def _generate_batch(self, prompt: str, num_cases: int, message_history: list | None = None) -> list[Case]:
+    async def _generate_batch(
+        self, prompt: str, difficulties: list[str | None], message_history: list | None = None
+    ) -> list[Case]:
         """Generate a batch of cases using the existing worker pattern."""
-        queue: asyncio.Queue[str] = asyncio.Queue()
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
         generated_cases: list = []
 
-        for i in range(num_cases):
-            difficulty = "medium"
-            if i < num_cases * 0.3:
-                difficulty = "easy"
-            elif i > num_cases * 0.8:
-                difficulty = "hard"
+        for difficulty in difficulties:
             queue.put_nowait(difficulty)
 
-        num_workers = min(self.max_parallel_num_cases, num_cases)
+        num_workers = min(self.max_parallel_num_cases, len(difficulties))
         workers = [
             asyncio.create_task(self._case_worker(queue, prompt, message_history, generated_cases))
             for _ in range(num_workers)
         ]
 
-        await queue.join()
-        for worker in workers:
-            worker.cancel()
-        await asyncio.gather(*workers, return_exceptions=True)
+        # Wait on the workers, not the queue, so a worker that dies outside its per-case try raises.
+        try:
+            await asyncio.gather(*workers)
+        finally:
+            for worker in workers:
+                worker.cancel()
 
         return generated_cases
+
+    def _allocate_difficulties(self, num_cases: int) -> list[str | None]:
+        """Pick each case's label as the one furthest below its share so far, so every prefix keeps the mix."""
+        if self.difficulty_distribution is None:
+            return [None] * num_cases
+        distribution = self.difficulty_distribution
+        total = sum(distribution.values())
+        counts = dict.fromkeys(distribution, 0)
+        labels: list[str | None] = []
+        for k in range(1, num_cases + 1):
+            # Increment the label whose actual count is farthest behind from its expected count.
+            label = max(counts, key=lambda label: k * distribution[label] / total - counts[label])
+            counts[label] += 1
+            labels.append(label)
+        return labels
 
     async def construct_evaluator_async(
         self, prompt: str, evaluator: Evaluator, message_history: list | None = None
