@@ -38,7 +38,10 @@ export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok' } =
     url,
     beforeParse(window) {
       if (fetchImpl) window.fetch = (...a) => fetchImpl(...a);
-      window.URL.createObjectURL = () => 'blob:stub';
+      /* Keep the blobs, not just the filenames: for the editor, what matters is the bytes it
+         would have written, and a download is the only place a standalone page emits them. */
+      window.__blobs = [];
+      window.URL.createObjectURL = blob => { window.__blobs.push(blob); return 'blob:stub'; };
       window.URL.revokeObjectURL = () => {};
       window.confirm = () => true;
       // jsdom has no download: record the anchor the page would have clicked.
@@ -61,9 +64,27 @@ export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok' } =
       await tick();
     },
     type: async (s, value) => {
-      const el = d.querySelector(s);
+      const el = typeof s === 'string' ? d.querySelector(s) : s;
       el.value = value;
       el.dispatchEvent(new window.Event('input', { bubbles: true }));
+      await tick();
+    },
+    /** The parsed document behind the page's most recent download. */
+    saved: async () => {
+      const blob = window.__blobs[window.__blobs.length - 1];
+      if (!blob) return null;
+      // jsdom's Blob has no `text()`; FileReader is how this jsdom reads one.
+      const text = await new Promise((resolve, reject) => {
+        const reader = new window.FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsText(blob);
+      });
+      return JSON.parse(text);
+    },
+    /** A keystroke with nothing focused, for the shortcuts that listen on the document. */
+    key: async key => {
+      d.dispatchEvent(new window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
       await tick();
     },
     /** Feed a tree into the standalone folder reader. */

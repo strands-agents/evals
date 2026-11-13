@@ -1,5 +1,5 @@
 /* Edge cases: big reports, deep links, partial documents, runs missing a half. */
-import { page, runner } from './harness.mjs';
+import { page, runner, tick } from './harness.mjs';
 
 const { ok, done } = runner('extras');
 const errs = [];
@@ -261,6 +261,255 @@ const errs = [];
   ok(ink('#rep-rows tr.detail .kv dt') !== FAINT, 'nor is a detail property name',
     ink('#rep-rows tr.detail .kv dt'));
   errs.push(...p.errs);
+}
+
+/* ── the link out to the run explorer ──
+ * A second app on its own route, so it is a link rather than a tab — and only when the server
+ * says it is there, since a link to a 404 is worse than no link. */
+{
+  const reply = body => ({ ok: true, status: 200, statusText: 'OK', json: async () => body });
+  const stub = optimization => async url => {
+    if (url.startsWith('/api/config')) {
+      return reply({ root: '/srv/runs', depth: 3, read_only: false, optimization });
+    }
+    if (url.startsWith('/api/runs')) {
+      return reply({ root: '/srv/runs', runs: [], skipped: [], truncated: false, optimizer_runs: [] });
+    }
+    return { ok: false, status: 404, statusText: 'Not Found', json: async () => ({ error: 'no' }) };
+  };
+
+  const off = await page({ fetchImpl: stub(false) });
+  ok(off.$('#opt-link').hidden === true, 'no runs directory, no link');
+
+  const on = await page({ fetchImpl: stub(true), url: 'http://127.0.0.1:9999/?t=abc%2Fdef' });
+  ok(on.$('#opt-link').hidden === false, 'a served runs directory offers one');
+  ok(on.$('#opt-link').getAttribute('href') === '/optimization/?t=abc%2Fdef',
+    'carrying the token, encoded', on.$('#opt-link').getAttribute('href'));
+  /* It leaves the page rather than swapping the panel below, so it must not be wired as a tab:
+     the tab handler would call show(undefined) and blank the view on the way out. */
+  ok(!on.$('#opt-link').classList.contains('tab'), 'and is not one of the tabs',
+    on.$('#opt-link').className);
+  ok(on.$('#opt-link').dataset.view === undefined, 'nor carries a view for the tab handler to use',
+    on.$('#opt-link').dataset.view);
+  ok(on.$$('.tabs .tab').length === 4, 'the four tabs are unchanged', on.$$('.tabs .tab').length);
+
+  const standalone = await page();
+  ok(standalone.$('#opt-link').hidden === true, 'and a page opened from disk never offers it');
+  errs.push(...off.errs, ...on.errs, ...standalone.errs);
+}
+
+// ── the metadata editor ──
+{
+  const GENERATED = {
+    'gen/experiment.json': {
+      cases: [
+        { name: 'kept', session_id: 's-0', input: 'q0', expected_output: 'a',
+          metadata: { status: 'accepted', source: 'session-7' } },
+        { name: 'draft_a', session_id: 's-1', input: 'q1', metadata: { status: 'draft', turns: 3 } },
+        { name: 'draft_b', session_id: 's-2', input: 'q2', metadata: { status: 'draft' } },
+        { name: 'odd', session_id: 's-3', input: 'q3', metadata: 'not an object' },
+      ],
+      evaluators: [],
+    },
+  };
+  const opened = async () => {
+    const p = await page();
+    await p.openFolder(GENERATED);
+    await p.click('#runs-rows tr.run');
+    await p.click('.tab[data-view="experiment"]');
+    return p;
+  };
+  const rows = p => p.$$('.meta-rows .meta-row');
+  const pair = row => [row.querySelector('[data-meta-k]').value, row.querySelector('[data-meta-v]').value];
+  const pick = async (p, i) => { await p.click(`#case-list li[data-i="${i}"]`); };
+  // The case object is a closure variable; reading it back means re-rendering from it.
+  const reread = async (p, i) => { await pick(p, (i + 1) % 4); await pick(p, i); };
+
+  {
+    const p = await opened();
+    // The glyph strip: which expectations a case carries, without opening it.
+    ok(p.text('#case-list li[data-i="0"] .props') === 'OM', 'a case lists its properties',
+      p.text('#case-list li[data-i="0"] .props'));
+    ok(p.text('#case-list li[data-i="1"] .props') === 'M', 'and only the ones it has',
+      p.text('#case-list li[data-i="1"] .props'));
+    ok(p.$$('#case-list .badge').length === 2, 'each draft is badged as one',
+      p.$$('#case-list .badge').length);
+    ok(!p.$('#case-list li[data-i="0"] .badge'), 'an accepted case is not');
+
+    await pick(p, 1);
+    ok(rows(p).length === 2, 'metadata renders one row per key', rows(p).length);
+    ok(pair(rows(p)[0]).join('=') === 'status=draft', 'key and value, unquoted',
+      pair(rows(p)[0]).join('='));
+    ok(pair(rows(p)[1]).join('=') === 'turns=3', 'a number shows as its digits',
+      pair(rows(p)[1]).join('='));
+    errs.push(...p.errs);
+  }
+
+  // ── editing a value, and what lands in the file ──
+  {
+    const p = await opened();
+    await pick(p, 1);
+    await p.type(rows(p)[1].querySelector('[data-meta-v]'), '4');
+    ok(p.text('#dirty') === '1 unsaved change', 'a metadata edit is an unsaved change',
+      p.text('#dirty'));
+    ok(p.text('#save') === 'Save (1)', 'and the Save button carries the count', p.text('#save'));
+
+    await p.type(rows(p)[0].querySelector('[data-meta-v]'), 'hello world');
+    await p.click('#save');
+    const doc = await p.saved();
+    ok(doc.cases[1].metadata.turns === 4, 'a value that parses as JSON is written as JSON',
+      JSON.stringify(doc.cases[1].metadata));
+    ok(doc.cases[1].metadata.status === 'hello world', 'one that does not is written as text',
+      JSON.stringify(doc.cases[1].metadata));
+    errs.push(...p.errs);
+  }
+
+  // ── renaming and clearing keys ──
+  {
+    const p = await opened();
+    await pick(p, 1);
+    await p.type(rows(p)[1].querySelector('[data-meta-k]'), 'turn_count');
+    await reread(p, 1);
+    ok(rows(p).map(pair).map(kv => kv[0]).join(',') === 'status,turn_count', 'a key can be renamed',
+      rows(p).map(pair).map(kv => kv[0]).join(','));
+
+    await p.type(rows(p)[1].querySelector('[data-meta-k]'), '');
+    await reread(p, 1);
+    ok(rows(p).length === 1, 'emptying a key drops it', rows(p).map(pair).join(' | '));
+
+    await p.type(rows(p)[0].querySelector('[data-meta-k]'), '');
+    await reread(p, 1);
+    ok(rows(p).length === 0, 'and the last one drops the metadata itself', rows(p).length);
+    ok(!p.$('#case-list li[data-i="1"] .props').textContent.includes('M'),
+      'which the glyph strip reflects', p.text('#case-list li[data-i="1"] .props'));
+    errs.push(...p.errs);
+  }
+
+  // ── adding and removing a row ──
+  {
+    const p = await opened();
+    await pick(p, 2);
+    ok(rows(p).length === 1, 'one key to start', rows(p).length);
+    await p.click('[data-meta-add]');
+    ok(rows(p).length === 2, 'the + key button offers a row', rows(p).length);
+    /* A blank row is not a key yet: nothing about the case has changed, so nothing should claim
+       it has — and saving here must not put a `""` key in the file. */
+    ok(p.text('#dirty') === 'No unsaved changes', 'a blank row is not an edit', p.text('#dirty'));
+
+    await p.type(rows(p)[1].querySelector('[data-meta-k]'), 'source');
+    await p.type(rows(p)[1].querySelector('[data-meta-v]'), 'session-9');
+    await reread(p, 2);
+    ok(rows(p).map(pair).map(kv => kv.join('=')).join(',') === 'status=draft,source=session-9',
+      'a filled row becomes a key', rows(p).map(pair).map(kv => kv.join('=')).join(','));
+
+    await p.click(rows(p)[0].querySelector('[data-meta-rm]'));
+    await reread(p, 2);
+    ok(rows(p).map(pair).map(kv => kv.join('=')).join(',') === 'source=session-9',
+      'and the × removes one', rows(p).map(pair).map(kv => kv.join('=')).join(','));
+    errs.push(...p.errs);
+  }
+
+  // ── metadata that rows cannot represent ──
+  {
+    const p = await opened();
+    await pick(p, 3);
+    ok(!p.$('.meta-rows'), 'a metadata that is not an object gets no rows');
+    const area = p.$$('textarea[data-k="metadata"]')[0];
+    ok(area && area.value === '"not an object"', 'it is shown as JSON instead', area && area.value);
+    ok(/not an object, so it is shown as JSON/.test(p.text('#form')), 'and says why');
+    errs.push(...p.errs);
+  }
+
+  /* An empty dict or list is not a property the case carries: `{}` in the file and the key
+     being absent mean the same thing to every evaluator, so neither earns a glyph. */
+  {
+    const p = await page();
+    await p.openFolder({
+      'empties/experiment.json': {
+        cases: [{ name: 'hollow', session_id: 's-h', input: 'q', metadata: {}, expected_trajectory: [] }],
+        evaluators: [],
+      },
+    });
+    await p.click('#runs-rows tr.run');
+    await p.click('.tab[data-view="experiment"]');
+    ok(p.text('#case-list li[data-i="0"] .props') === '', 'an empty property earns no glyph',
+      JSON.stringify(p.text('#case-list li[data-i="0"] .props')));
+    ok(p.$$('.meta-rows .meta-row').length === 0, 'and the editor shows it as no keys',
+      p.$$('.meta-rows .meta-row').length);
+    ok(!!p.$('[data-meta-add]'), 'with the + key button still offered');
+    errs.push(...p.errs);
+  }
+
+  // ── the review pass ──
+  {
+    const p = await opened();
+    ok(p.text('#review-case') === 'Review drafts (2)', 'the button counts the drafts',
+      p.text('#review-case'));
+    ok(p.$('#review-case').disabled === false, 'and is live when there are any');
+    ok(p.$('#review-bar').hidden === true, 'the bar is not shown until asked for');
+
+    await p.click('#review-case');
+    ok(p.$('#review-bar').hidden === false, 'which opens it');
+    ok(/2 drafts left, 2 kept/.test(p.text('#review-bar')), 'counting both sides',
+      p.text('#review-bar'));
+    // Reviewing means looking at the case being decided, so the pass moves the selection.
+    ok(p.$('#case-list li.on').dataset.i === '1', 'and selects the first draft',
+      p.$('#case-list li.on')?.dataset.i);
+
+    await p.key('a');
+    ok(/1 draft left, 3 kept/.test(p.text('#review-bar')), 'accept resolves one draft',
+      p.text('#review-bar'));
+    ok(p.$('#case-list li.on').dataset.i === '2', 'and moves to the next',
+      p.$('#case-list li.on')?.dataset.i);
+    ok(!p.$('#case-list li[data-i="1"] .badge'), 'the accepted case loses its badge');
+
+    await p.key('d');
+    ok(p.$$('#case-list li').length === 3, 'drop removes the case from the list',
+      p.$$('#case-list li').length);
+    ok(p.$('#review-bar').hidden === true, 'and with no drafts left the pass closes');
+    ok(/every draft is resolved/.test(p.text('#saved')), 'saying so', p.text('#saved'));
+    ok(p.$('#review-case').disabled === true, 'with nothing left to review');
+
+    await p.click('#save');
+    const doc = await p.saved();
+    ok(doc.cases.map(c => c.name).join(',') === 'kept,draft_a,odd', 'the dropped case is written out',
+      doc.cases.map(c => c.name).join(','));
+    ok(doc.cases[1].metadata.status === 'accepted', 'and the accepted one keeps its other keys',
+      JSON.stringify(doc.cases[1].metadata));
+    ok(doc.cases[1].metadata.turns === 3, 'untouched', JSON.stringify(doc.cases[1].metadata));
+    errs.push(...p.errs);
+  }
+
+  // ── accept-all, and leaving the pass ──
+  {
+    const p = await opened();
+    await p.click('#review-case');
+    await p.click('[data-rv="acceptall"]');
+    ok(p.$$('#case-list .badge').length === 0, 'accept all resolves every draft at once',
+      p.$$('#case-list .badge').length);
+    ok(p.$('#review-bar').hidden === true, 'and the pass is over');
+    errs.push(...p.errs);
+  }
+
+  {
+    const p = await opened();
+    await p.click('#review-case');
+    await p.key('Escape');
+    ok(p.$('#review-bar').hidden === true, 'escape leaves the pass');
+    ok(p.$$('#case-list .badge').length === 2, 'deciding nothing', p.$$('#case-list .badge').length);
+    ok(p.text('#dirty') === 'No unsaved changes', 'and changing nothing', p.text('#dirty'));
+
+    /* The shortcuts are single letters. While a field has focus they are letters someone is
+       typing, so they must not also be decisions. */
+    await p.click('#review-case');
+    const input = p.$('#case-find');
+    input.focus();
+    input.dispatchEvent(new p.window.KeyboardEvent('keydown', { key: 'd', bubbles: true }));
+    await tick();
+    ok(p.$$('#case-list li').length === 4, 'a keystroke in a field is not a decision',
+      p.$$('#case-list li').length);
+    errs.push(...p.errs);
+  }
 }
 
 done(errs);

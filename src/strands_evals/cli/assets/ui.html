@@ -56,12 +56,16 @@
   .brand { font-weight: 600; letter-spacing: -.01em; }
   .brand span { color: var(--ink3); font-weight: 400; }
   .tabs { display: flex; gap: 2px; }
-  .tab {
+  .tab, .tablink {
     appearance: none; border: 0; background: none; font: inherit; color: var(--ink2);
     padding: 6px 12px; border-radius: 6px; cursor: pointer;
   }
-  .tab:hover { color: var(--ink1); background: var(--hair2); }
+  .tab:hover, .tablink:hover { color: var(--ink1); background: var(--hair2); }
   .tab.on { color: var(--ink1); font-weight: 550; background: var(--hair2); }
+  /* The run explorer is a second app, not a fourth panel: it replaces the page rather than
+     swapping what is under the nav. The arrow is the only thing that says so before the click. */
+  .tablink { text-decoration: none; }
+  .tablink::after { content: ' ↗'; color: var(--ink3); }
   .grow { flex: 1; }
   .path { color: var(--ink3); font-size: 12.5px; }
   .path b { color: var(--ink2); font-weight: 500; }
@@ -138,6 +142,34 @@
   }
   .addchip:hover { color: var(--accent); border-color: var(--accent); }
 
+  /* `metadata` is a free-form dict, and a JSON textarea makes editing one key a syntax exercise.
+     These rows are the same data with the braces taken off; a value that is not a plain object
+     still falls back to the textarea, since rows cannot represent it. */
+  .meta-rows { display: flex; flex-direction: column; gap: 6px; }
+  .meta-row { display: flex; gap: 6px; align-items: center; }
+  .meta-row .mk { width: 160px; flex: none; font-weight: 550; }
+  .meta-row .x { cursor: pointer; color: var(--ink3); font-size: 14px; flex: none; }
+  .meta-row .x:hover { color: var(--bad); }
+
+  /* The glyph strip on a case row: which expectations this case actually carries, so a list of
+     fifty is scannable without opening each one. Initials, with the field name on hover. */
+  .props { margin-left: auto; padding-left: 8px; display: inline-flex; gap: 3px; flex: none; }
+  .props span {
+    color: var(--ink2); background: var(--hair2); border: 1px solid var(--hair);
+    border-radius: 3px; font-size: 9.5px; font-weight: 650; padding: 0 4px; line-height: 15px;
+  }
+  .badge {
+    font-size: 10.5px; padding: 1px 7px; border-radius: 4px; margin-left: 7px;
+    font-weight: 650; color: #fff; background: var(--accent); flex: none;
+  }
+  .review-bar[hidden] { display: none; }
+  .review-bar {
+    display: flex; align-items: center; gap: 10px; padding: 10px 14px; margin: 0 0 12px;
+    border: 1px solid var(--accent); border-radius: var(--r); background: var(--hair2);
+    font-size: 13px;
+  }
+  .review-bar b { font-variant-numeric: tabular-nums; }
+
   .btn {
     appearance: none; font: inherit; font-size: 13px; cursor: pointer;
     padding: 6px 13px; border-radius: 6px; border: 1px solid var(--hair);
@@ -162,6 +194,9 @@
   .hero .big {
     font-size: 54px; line-height: 1; font-weight: 600; letter-spacing: -.03em;
   }
+  /* The placeholder dash, before a report is loaded. At 54px in full ink it reads as a result —
+     a wide black bar where a number belongs — so it is muted to read as an absence instead. */
+  .hero .big.none { color: var(--ink3); font-weight: 400; }
   .hero .cap { font-size: 12.5px; color: var(--ink3); margin-top: 7px; }
   .stats { display: flex; gap: 28px; }
   .stat .v { font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
@@ -414,6 +449,8 @@
       <button class="tab" data-view="experiment">Experiment</button>
       <button class="tab" data-view="report">Report</button>
       <button class="tab" data-view="optimization" id="tab-opt" hidden>Optimization</button>
+      <a class="tablink" id="opt-link" hidden
+         title="the full run explorer: every candidate, trial and transcript">Explorer</a>
     </nav>
     <div class="grow"></div>
     <div class="path mono" id="path"></div>
@@ -454,6 +491,7 @@
         <div class="evnotes" id="evnotes"></div>
       </div>
       <div class="evform" id="evform" hidden></div>
+      <div class="review-bar" id="review-bar" hidden></div>
       <div class="cols">
         <div>
           <input class="find" id="case-find" placeholder="Filter cases" autocomplete="off">
@@ -462,6 +500,7 @@
           <div class="ctl" style="margin:12px 0 0">
             <button class="btn" id="add-case">+ Case</button>
             <button class="btn" id="del-case">Delete</button>
+            <button class="btn" id="review-case" disabled>Review drafts</button>
           </div>
         </div>
         <div class="pane">
@@ -485,7 +524,7 @@
     <section class="view" id="v-report">
       <div class="hero">
         <div>
-          <div class="big" id="r-score">&mdash;</div>
+          <div class="big none" id="r-score">&mdash;</div>
           <div class="cap">Overall score · mean of applicable rows</div>
         </div>
         <div class="stats" id="r-stats"></div>
@@ -3311,12 +3350,17 @@
 
   function clearReport() {
     REP = null; repMeta = null; ROWS = []; BY_CASE = [];
-    $('r-score').textContent = '—';
+    const score = $('r-score');
+    score.textContent = '—'; score.classList.add('none');
     $('r-stats').innerHTML = '';
     $('rep-count').textContent = '';
     $('rep-more').hidden = true;
+    // Named, because "no report" is a step not taken rather than a problem, and the next step is
+    // one command — which is worth saying here instead of leaving it to be looked up.
+    const exp = (expMeta && expMeta.name) || 'experiment.json';
     $('rep-rows').innerHTML = blank('No report in this run',
-      'This experiment has not been run yet, or its report is somewhere else.');
+      `This experiment has not been run yet, or its report is somewhere else. To run it: `
+      + `strands-evals run ${esc(exp)} --agent module:attr, then Rescan.`);
   }
 
   /* ══════════ evaluators ══════════ */
@@ -3429,8 +3473,20 @@
     { k: 'expected_trajectory', l: 'Expected trajectory', t: 'steps' },
     { k: 'expected_interactions', l: 'Expected interactions', t: 'json' },
     { k: 'expected_environment_state', l: 'Expected env state', t: 'json' },
-    { k: 'metadata', l: 'Metadata', t: 'json' },
+    { k: 'metadata', l: 'Metadata', t: 'meta',
+      hint: 'Free-form keys that travel with the case: status, synthetic, source ids, grouping tags.' },
   ];
+
+  const isDraft = c => !!(c && c.metadata && c.metadata.status === 'draft');
+
+  const PROP_GLYPHS = [['expected_output', 'O'], ['expected_assertion', 'A'],
+    ['expected_trajectory', 'T'], ['expected_interactions', 'I'],
+    ['expected_environment_state', 'E'], ['metadata', 'M']];
+  /* An empty dict or list is not a property the case carries — `{}` in the file and the key
+     being absent mean the same thing to every evaluator, so neither earns a glyph. */
+  const props = c => PROP_GLYPHS
+    .filter(([k]) => c[k] != null && (typeof c[k] !== 'object' || Object.keys(c[k]).length))
+    .map(([k, g]) => `<span title="${k}">${g}</span>`).join('');
 
   function renderList() {
     const q = $('case-find').value.trim().toLowerCase();
@@ -3440,10 +3496,13 @@
       const edited = JSON.stringify(c) !== orig[i];
       return `<li data-i="${i}" class="${i === sel ? 'on' : ''}" title="${edited ? 'unsaved changes' : esc(c.name || '(unnamed)')}">`
         + `<span class="dot${edited ? ' edited' : ''}"></span>`
-        + `<span class="nm">${esc(c.name || '(unnamed)')}</span></li>`;
+        + `<span class="nm">${esc(c.name || '(unnamed)')}</span>`
+        + (isDraft(c) ? '<span class="badge">draft</span>' : '')
+        + `<span class="props mono">${props(c)}</span></li>`;
     }).join('') || '<li class="empty" style="cursor:default">No match</li>';
     const d = dirtyCases().length;
     $('case-count').textContent = `${shown.length} of ${plural(cases.length, 'case')}` + (d ? ` · ${d} edited` : '');
+    renderReview();
   }
 
   function renderForm() {
@@ -3464,6 +3523,8 @@
       let ctl;
       if (f.t === 'steps') {
         ctl = stepsControl(f.k, v);
+      } else if (f.t === 'meta') {
+        ctl = metaControl(f.k, v);
       } else if (f.t === 'json') {
         ctl = v == null
           ? `<textarea class="f mono" rows="2" data-k="${f.k}" data-json="1" spellcheck="false" placeholder="empty"></textarea>`
@@ -3504,6 +3565,121 @@
         : '');
   }
 
+  /* ── metadata editor ──
+     `metadata` is `dict[str, Any]`: the keys are whatever the writer chose, so the editor is a
+     key/value list rather than named fields. */
+  function metaVal(v) { return typeof v === 'string' ? v : JSON.stringify(v); }
+
+  /* A value is `Any`, so `2` should land as a number and `true` as a boolean, while `draft`
+     lands as the string it looks like. JSON first, raw text when that fails — which is what
+     lets a plain word be typed without quoting it. */
+  function parseMetaValue(raw) {
+    const t = raw.trim();
+    if (t === '') return '';
+    try { return JSON.parse(t); } catch { return raw; }
+  }
+
+  function readMetaRows(box) {
+    const out = {};
+    box.querySelectorAll('.meta-row').forEach(r => {
+      const k = r.querySelector('[data-meta-k]').value.trim();
+      if (!k) return;                 // a row still being typed into is not a key yet
+      out[k] = parseMetaValue(r.querySelector('[data-meta-v]').value);
+    });
+    return out;
+  }
+
+  const metaRow = (k, v) => '<div class="meta-row">'
+    + `<input class="f mk" data-meta-k="1" value="${esc(k)}" placeholder="key">`
+    + `<input class="f" data-meta-v="1" value="${esc(v)}" placeholder="value">`
+    + '<span class="x" data-meta-rm="1" title="remove">&times;</span></div>';
+
+  function metaControl(key, v) {
+    if (v != null && (typeof v !== 'object' || Array.isArray(v))) {
+      return `<textarea class="f mono" rows="2" data-k="${key}" data-json="1" spellcheck="false">${esc(JSON.stringify(v, null, 2))}</textarea>`
+        + '<div class="hint">This metadata is not an object, so it is shown as JSON rather than as keys.</div>';
+    }
+    return `<div class="meta-rows" data-meta="${key}">`
+      + Object.entries(v || {}).map(([mk, mv]) => metaRow(mk, metaVal(mv))).join('')
+      + `<button class="addchip" data-meta-add="${key}">+ key</button></div>`;
+  }
+
+  /* ── review pass over drafts ──
+     A generated case list arrives as drafts and the job is to go through it deciding what to
+     keep. Doing that through the case list is a click per case per decision; this is the same
+     pass with one key per decision, and it only ever touches `metadata.status`. */
+  let review = false;
+  const draftIdx = () => cases.map((c, i) => (isDraft(c) ? i : -1)).filter(i => i >= 0);
+
+  function renderReview() {
+    const bar = $('review-bar');
+    if (!bar) return;
+    const drafts = draftIdx();
+    const btn = $('review-case');
+    btn.textContent = drafts.length ? `Review drafts (${drafts.length})` : 'Review drafts';
+    btn.disabled = !drafts.length || (MODE === 'server' && READONLY);
+    if (!review) { bar.hidden = true; return; }
+    if (!drafts.length) {
+      review = false; bar.hidden = true;
+      note('every draft is resolved — save to write it out');
+      return;
+    }
+    // Reviewing means looking at the case being decided, so the form follows the pass.
+    if (!drafts.includes(sel)) { sel = drafts[0]; renderForm(); return; }
+    bar.hidden = false;
+    bar.innerHTML = `<span><b>${drafts.length}</b> ${drafts.length === 1 ? 'draft' : 'drafts'} left`
+      + `, <b>${cases.length - drafts.length}</b> kept</span>`
+      + '<span class="grow"></span>'
+      + '<button class="btn" data-rv="accept">Accept (a)</button>'
+      + '<button class="btn" data-rv="drop">Drop (d)</button>'
+      + '<button class="btn" data-rv="acceptall">Accept all</button>'
+      + '<button class="btn" data-rv="exit">Exit (esc)</button>';
+  }
+
+  function reviewAct(act) {
+    if (!review) return;
+    if (act === 'exit') { review = false; renderReview(); return; }
+    /* `note('')` comes first: re-rendering runs `renderReview`, which is what announces the
+       pass being finished, and clearing afterwards would wipe the thing just said. */
+    if (act === 'acceptall') {
+      draftIdx().forEach(i => { cases[i].metadata = { ...cases[i].metadata, status: 'accepted' }; });
+      note(''); renderForm(); refreshDirty(); return;
+    }
+    const c = cases[sel];
+    if (!c) return;
+    if (act === 'accept') c.metadata = { ...c.metadata, status: 'accepted' };
+    /* Dropping removes the case from the list being edited, not from the file: like Delete, it
+       is written out by Save and undone by Revert. */
+    if (act === 'drop') {
+      cases.splice(sel, 1); orig.splice(sel, 1);
+      sel = Math.max(0, Math.min(sel, cases.length - 1));
+    }
+    const drafts = draftIdx();
+    if (drafts.length) sel = drafts[0];
+    note(''); renderForm(); refreshDirty();
+  }
+
+  $('review-case').onclick = () => { review = true; renderReview(); };
+  $('review-bar').onclick = e => {
+    const b = e.target.closest('[data-rv]');
+    if (b) reviewAct(b.dataset.rv);
+  };
+
+  document.addEventListener('keydown', e => {
+    if (!review) return;
+    /* `a` and `d` are letters someone is otherwise trying to type. While a field has focus the
+       shortcuts are off and Escape leaves the field rather than the pass. */
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') {
+      if (e.key === 'Escape') e.target.blur();
+      return;
+    }
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === 'a') { e.preventDefault(); reviewAct('accept'); }
+    else if (e.key === 'd') { e.preventDefault(); reviewAct('drop'); }
+    else if (e.key === 'Escape') reviewAct('exit');
+  });
+
   $('case-find').oninput = renderList;
   $('case-list').onclick = e => {
     const li = e.target.closest('li[data-i]');
@@ -3513,6 +3689,17 @@
   };
 
   $('form').addEventListener('input', e => {
+    /* The metadata rows carry no `data-k`: the dict is rebuilt from every row on each keystroke,
+       because renaming a key is two fields changing together and there is no single value to
+       assign. Rebuilding also drops a key that was just emptied. */
+    const box = e.target.closest('[data-meta]');
+    if (box && cases[sel] && e.target.dataset.k == null) {
+      const next = readMetaRows(box);
+      if (Object.keys(next).length) cases[sel][box.dataset.meta] = next;
+      else delete cases[sel][box.dataset.meta];
+      note(''); refreshDirty();
+      return;
+    }
     const k = e.target.dataset.k;
     if (k == null || !cases[sel]) return;
     const el = e.target, raw = el.value;
@@ -3534,6 +3721,27 @@
   });
 
   $('form').addEventListener('click', e => {
+    if (!cases[sel]) return;
+    /* A metadata row is added and removed in the DOM rather than through the case. An empty row
+       is not a key: writing one into the case would mark it dirty for nothing, and saving before
+       it was filled in would put a `""` key in the file. */
+    const metaAdd = e.target.closest('[data-meta-add]');
+    if (metaAdd) {
+      metaAdd.insertAdjacentHTML('beforebegin', metaRow('', ''));
+      const fresh = metaAdd.previousElementSibling.querySelector('[data-meta-k]');
+      if (fresh) fresh.focus();
+      return;
+    }
+    const metaRm = e.target.closest('[data-meta-rm]');
+    if (metaRm) {
+      const box = metaRm.closest('[data-meta]');
+      metaRm.closest('.meta-row').remove();
+      const next = readMetaRows(box);
+      if (Object.keys(next).length) cases[sel][box.dataset.meta] = next;
+      else delete cases[sel][box.dataset.meta];
+      note(''); refreshDirty();
+      return;
+    }
     const rm = e.target.closest('[data-rm]');
     const add = e.target.closest('[data-add]');
     if (rm) {
@@ -3583,6 +3791,9 @@
     const el = $('dirty');
     el.textContent = d ? `${plural(d, 'unsaved change')}` : 'No unsaved changes';
     el.classList.toggle('yes', !!d);
+    // The count on the button too: Save is the control being reached for, and how much is riding
+    // on it should not need a look across the footer to find out.
+    $('save').textContent = d ? `Save (${d})` : 'Save';
     const blocked = !d || !EXP || (MODE === 'server' && READONLY);
     $('save').disabled = blocked;
     $('save').title = (MODE === 'server' && READONLY) ? 'the server was started with --read-only' : '';
@@ -3709,7 +3920,8 @@
   }
 
   function renderHero() {
-    $('r-score').textContent = fmt(REP.overall_score);
+    const score = $('r-score');
+    score.textContent = fmt(REP.overall_score); score.classList.remove('none');
     const applicable = ROWS.filter(r => !r.na);
     $('r-stats').innerHTML = [
       [`${applicable.filter(r => r.pass).length} / ${applicable.length}`, 'Rows passing'],
@@ -5165,6 +5377,13 @@
     try {
       const config = await api('/api/config');
       MODE = 'server'; ROOT = config.root; READONLY = config.read_only; DEPTH = config.depth;
+      /* Only offered when the server was started with --runs-dir: the explorer is a separate
+         app at its own route, and a link to a 404 is worse than no link. */
+      if (config.optimization) {
+        const link = $('opt-link');
+        link.href = '/optimization/' + (TOKEN ? '?t=' + encodeURIComponent(TOKEN) : '');
+        link.hidden = false;
+      }
       await rescan();
     } catch {
       MODE = 'standalone'; READONLY = false;
