@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import re
+import select
 import signal
 import subprocess
 import tempfile
@@ -28,7 +29,14 @@ from strands.models.model import CacheConfig, Model
 from strands.types.tools import AgentTool
 
 from ...types.optimization import CandidateSummary, Observation, Patch, TrialRecord, TrialStatus, Usage, Value
-from ...types.trace import AgentInvocationSpan, InferenceSpan, Session, ToolCallContent, ToolResultContent
+from ...types.trace import (
+    AgentInvocationSpan,
+    InferenceSpan,
+    Session,
+    ToolCallContent,
+    ToolResultContent,
+    _to_aware_utc,
+)
 from ..declaration.space import ParamKind
 from ..prompt_templates.reflection.reflection_v0 import (
     REFUSED,
@@ -56,7 +64,7 @@ _SEGMENT = r"[^\s'\"|;&<>()`*?\[\]{},]"  # a character a path is read with, up t
 _PATH = re.compile(
     rf"(?:(?<![\w.:/~-])|(?<=[\s;|&(]-[A-Za-z]))("  # also a path joined to a short option (`tar -C/tmp`)
     rf"/{_SEGMENT}*"  # absolute
-    rf"|~(?![\w.-])(?:/{_SEGMENT}*)?"  # the shell's HOME (the work folder)
+    rf"|~[\w.+-]*(?:/{_SEGMENT}*)?"  # `~` (the shell's HOME, the work folder), `~user`, `~+`, `~-`
     rf"|(?:[\w.-]+/)*\.\.(?![\w.-])(?:/{_SEGMENT}*)?"  # relative, with a `..` segment
     rf")"
 )
@@ -390,8 +398,9 @@ class Reflection(Proposer):
 
 def _outside(command: str, roots: Sequence[str], cwd: str, home: str | None = None) -> list[str]:
     """The paths `command` names that the agent may not use, sorted: an absolute path (or one under `~`, the shell's
-    HOME, which is `cwd`) outside `roots` and `home` in a directory where other work keeps its files
-    (`_PRIVATE_DIRS`), and a relative path with a `..` segment that doesn't land inside a root.
+    HOME, which is `cwd`, or under `~user`, that user's home) outside `roots` and `home` in a directory where other
+    work keeps its files (`_PRIVATE_DIRS`), and a relative path with a `..` segment (or under `~+` / `~-`, read
+    from `cwd`) that doesn't land inside a root.
 
     A path is inside a root when it is, as written or with symlinks resolved, so a root's real path counts too: on
     macOS a temp folder is `/var/folders/...` while `pwd` in it prints `/private/var/folders/...`.
@@ -416,9 +425,18 @@ def _outside(command: str, roots: Sequence[str], cwd: str, home: str | None = No
     # Read as written and with quotes removed (the shell reads `'a'/..` as one word, but removing the quotes of
     # `'a /'..` splits one), refused when either reading is. A leading `//`, which `normpath` keeps, is made `/`.
     for token in {*_PATH.findall(command), *_PATH.findall(re.sub(r"['\"]", "", command))}:
-        anchored = token.startswith(("/", "~"))
-        rest = token[1:].lstrip("/") if token.startswith("~") else token
-        paths.append((token, "/" + os.path.normpath(os.path.join(cwd, rest)).lstrip("/"), not anchored))
+        base, rest, relative = cwd, token, not token.startswith("/")
+        if token.startswith("~"):
+            prefix, _, rest = token.partition("/")
+            if prefix == "~":
+                relative = False  # the shell's HOME is `cwd`
+            elif prefix in ("~+", "~-"):
+                pass  # the current / previous directory: read from `cwd`, as a `..` path is
+            elif (expanded := os.path.expanduser(prefix)) != prefix:
+                base, relative = expanded, False  # `~user`: that user's home
+            else:
+                rest = token  # an unknown user: bash keeps the word as written, a name in `cwd`
+        paths.append((token, "/" + os.path.normpath(os.path.join(base, rest)).lstrip("/"), relative))
     names_home = any(not relative and within(path, named) and not within(path, inside) for _, path, relative in paths)
     found = []
     for token, path, relative in paths:
@@ -485,13 +503,7 @@ def _confined_shell(
             if running is not None:
                 running.add(process)
             try:
-                deadline, stopped = time.monotonic() + timeout, False
-                # Wait for bash to exit without reaping it (WNOWAIT).
-                while os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
-                    if time.monotonic() >= deadline:
-                        stopped = True
-                        break
-                    time.sleep(0.02)
+                stopped = not _wait_unreaped(process.pid, timeout)
             finally:
                 _kill_group(process)
                 code = process.wait()
@@ -507,6 +519,27 @@ def _confined_shell(
         return f"{stdout}{tail}\n[exit code {code}]"
 
     return shell
+
+
+def _wait_unreaped(pid: int, timeout: float) -> bool:
+    """Wait up to `timeout` seconds for process `pid` to exit, without reaping it; True when it exited.
+
+    `os.waitid` with `WNOWAIT` where Python has it (Linux; macOS from Python 3.13), else a kqueue exit event
+    (macOS on Python 3.10-3.12), which fires at once for a process that already exited.
+    """
+    if hasattr(os, "waitid"):
+        deadline = time.monotonic() + timeout
+        while os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
+        return True
+    queue = select.kqueue()
+    try:
+        exited = select.kevent(pid, select.KQ_FILTER_PROC, select.KQ_EV_ADD | select.KQ_EV_ONESHOT, select.KQ_NOTE_EXIT)
+        return bool(queue.control([exited], 1, timeout))
+    finally:
+        queue.close()
 
 
 def _kill_group(process: subprocess.Popen[bytes]) -> None:
@@ -602,7 +635,7 @@ def _cap_tool_output(event: AfterToolCallEvent) -> None:
                 f"[TRUNCATED: Output exceeded {_MAX_TOOL_OUTPUT} characters. Original length: {len(text)} "
                 f"characters. Use targeted commands (grep, head, tail) to extract specific content.]"
             )
-            logger.warning("Truncated tool output from %d to %d characters", len(text), _MAX_TOOL_OUTPUT)
+            logger.warning("original=<%d>, limit=<%d> | truncated tool output", len(text), _MAX_TOOL_OUTPUT)
 
 
 @dataclass(frozen=True)
@@ -875,14 +908,17 @@ def _messages(trajectory: Any) -> list[Any]:
                 inside = [
                     i
                     for i, a in enumerate(agents)
-                    if a.span_info.start_time <= span.span_info.start_time
-                    and span.span_info.end_time <= a.span_info.end_time
+                    if _to_aware_utc(a.span_info.start_time) <= _to_aware_utc(span.span_info.start_time)
+                    and _to_aware_utc(span.span_info.end_time) <= _to_aware_utc(a.span_info.end_time)
                 ]
-                owner = max(inside, key=lambda i: agents[i].span_info.start_time) if inside else -1  # the innermost
+                # The innermost.
+                owner = max(inside, key=lambda i: _to_aware_utc(agents[i].span_info.start_time)) if inside else -1
             held = last.get(owner)
-            if held is None or span.span_info.end_time >= held.span_info.end_time:
+            if held is None or _to_aware_utc(span.span_info.end_time) >= _to_aware_utc(held.span_info.end_time):
                 last[owner] = span
-        for owner in sorted(last, key=lambda i: (i >= 0, agents[i].span_info.start_time if i >= 0 else None)):
+        for owner in sorted(
+            last, key=lambda i: (i >= 0, _to_aware_utc(agents[i].span_info.start_time) if i >= 0 else None)
+        ):
             conversation = []
             for message in last[owner].messages:
                 content: list[dict[str, Any]] = []
@@ -1009,6 +1045,7 @@ def _write_versions(folder: str, request: ProposalRequest, goal_metrics: Sequenc
     keys = list(request.keys)
     by_id = {c.candidate_id: c for c in request.candidates}
     rows = []
+    files = _text_files(keys)
     for c in request.candidates:
         parent = by_id.get(c.parent_id) if c.parent_id is not None else None
         changed = [k for k in keys if parent is not None and c.values.get(k) != parent.values.get(k)]
@@ -1029,7 +1066,6 @@ def _write_versions(folder: str, request: ProposalRequest, goal_metrics: Sequenc
         rank = f"rank-{c.rank:03d}" if c.rank is not None else "unranked"
         path = os.path.join(folder, f"{rank}-version-{c.number}")
         os.makedirs(path)
-        files = _text_files(keys)
         lines = [f"# Version {c.number}" + (" (the baseline)" if row.is_baseline else "")]
         lines.append(f"rank: {c.rank if c.rank is not None else 'not ranked (a result is missing)'}")
         lines.append(

@@ -1,6 +1,7 @@
 """Tests for `Reflection`'s tools (the confined shell, the submit tool, the output cap) and its case-name screen."""
 
 import os
+import select
 import time
 from types import SimpleNamespace
 
@@ -364,6 +365,42 @@ def test_outside_refuses_dots_in_a_command_that_names_the_shared_folder(folders,
 @posix_only
 def test_outside_allows_home_and_an_assignment_into_a_root(folders):
     assert _outside("cat ~/notes.txt; T=../traces/a.json; cat $T", folders.roots, folders.work) == []
+
+
+@posix_only
+def test_outside_expands_another_users_home(folders):
+    """Bash expands `~root` to root's home, so it is checked as that path; an unknown user stays a name in `cwd`."""
+    root_home = os.path.expanduser("~root")
+    if root_home == "~root" or not root_home.startswith(reflection._PRIVATE_DIRS):
+        pytest.skip("root's home isn't in a private directory here")
+    assert _outside("cat ~root/.ssh/id_rsa", folders.roots, folders.work) == ["~root/.ssh/id_rsa"]
+    assert _outside("ls ~root", folders.roots, folders.work) == ["~root"]
+    assert _outside("cat ~no-such-user-x/notes.txt", folders.roots, folders.work) == []
+    assert _outside("cat ~no-such-user-x/../../x", folders.roots, folders.work) == ["~no-such-user-x/../../x"]
+
+
+@posix_only
+def test_outside_reads_the_current_and_previous_directory_from_the_work_folder(folders):
+    """`~+` and `~-` are where `cd`s left the shell, which the text can't tell: read from `cwd`, as `..` is."""
+    assert _outside("cat ~+/notes.txt ~-/notes.txt", folders.roots, folders.work) == []
+    assert _outside("ls ~+/.. ~-/../..", folders.roots, folders.work) == ["~+/..", "~-/../.."]
+    assert _outside("git log HEAD~1", folders.roots, folders.work) == []
+
+
+@pytest.mark.skipif(not hasattr(select, "kqueue"), reason="kqueue is macOS / BSD only")
+def test_shell_waits_with_kqueue_where_python_has_no_waitid(folders, monkeypatch):
+    """macOS on Python 3.10-3.12 has no `os.waitid`: the shell waits on a kqueue exit event instead."""
+    monkeypatch.delattr(os, "waitid", raising=False)
+    shell = _confined_shell(folders.work, folders.roots, [])
+    assert shell(command="echo hi; exit 3") == "hi\n\n[exit code 3]"
+    assert shell(command="echo hi; sleep 5", timeout=1).endswith(
+        "[stopped after 1 seconds: the command and what it started were killed]"
+    )
+    started = time.monotonic()
+    assert shell(command="(sleep 2; touch late.txt) & echo started", timeout=30) == "started\n\n[exit code 0]"
+    assert time.monotonic() - started < 1.5
+    time.sleep(2.5)
+    assert not os.path.exists(os.path.join(folders.work, "late.txt"))
 
 
 @posix_only

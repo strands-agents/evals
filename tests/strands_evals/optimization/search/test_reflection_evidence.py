@@ -2,7 +2,7 @@
 
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -398,6 +398,21 @@ def test_messages_of_parallel_agents_follow_their_parent_spans():
     ]
     trajectory = Session(traces=[Trace(spans=spans, trace_id="t", session_id="s")], session_id="s")
     assert [m["content"][0]["text"] for m in _messages(trajectory)] == ["A's call", "B's call"]
+
+
+def test_messages_compare_naive_and_aware_span_times():
+    """The agent's span has naive times and its calls aware ones (UTC): compared as UTC, no `TypeError`."""
+    utc = T0.replace(tzinfo=timezone.utc)
+
+    def call(second, text):
+        info = SpanInfo(
+            session_id="s", start_time=utc + timedelta(seconds=second), end_time=utc + timedelta(seconds=second + 1)
+        )
+        return InferenceSpan(span_info=info, messages=_says(text))
+
+    spans = [_span(AgentInvocationSpan, 0, 60), call(1, "first"), call(30, "last")]
+    trajectory = Session(traces=[Trace(spans=spans, trace_id="t", session_id="s")], session_id="s")
+    assert [m["content"][0]["text"] for m in _messages(trajectory)] == ["last"]
 
 
 def test_reflection_reads_only_train_trials(folders):

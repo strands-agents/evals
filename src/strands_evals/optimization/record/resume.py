@@ -69,7 +69,7 @@ class ResumeState:
         fits: Each `fit` event, in order: fitted ones are refitted, unfitted ones without an error kept the
             previous fit, ones with an error mean no fit in use from there.
         iterations: Rebuilt from the events, so the result covers the whole run.
-        search_cost: Summed from the `observe` events' `Patch.usage`.
+        search_cost: Summed from the `observe` events' `Patch.usage` and the `proposer_usage` events' `usage`.
         finalists: Already chosen by the end phase, reused rather than re-ranked.
         validation: The end phase already picked; only the test report is left.
         is_test_done: A `test` event exists, so the end phase is finished (a None `test` is a finished
@@ -188,6 +188,8 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
                 if open_round.block == event["block"] and open_round.patch == observation.patch:
                     del state.open_rounds[index]
                     break
+        elif name == "proposer_usage":
+            state.search_cost = state.search_cost + Usage.model_validate(event["usage"])
         elif name == "evidence":
             state.feedback.setdefault(event["block"], []).append(Evidence.model_validate(event["evidence"]))
         elif name == "select":
