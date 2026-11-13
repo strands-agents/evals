@@ -709,6 +709,32 @@ than an error, so confirm `parse_available_skills(trajectory)` returns your skil
 a score. The signals are recovered by `parse_available_skills` and `extract_selected_skills` from
 `strands_evals.extractors`.
 
+### Context Utilization
+
+How much of the tool output an agent received (search results, file reads, memory lookups) did it
+actually use, and which tools supplied the useful part? No reference answer is needed: each tool
+output is split into chunks (`chunk_size_tokens` sets their size), an LLM judge marks the chunks the
+agent used in each turn, and the score is `useful tokens / gathered tokens`.
+
+```python
+from strands_evals.evaluators import ContextUtilizationEvaluator
+
+# Every tool call is measured unless `measured_tools` names some (so by default write and edit
+# confirmations count too).
+evaluator = ContextUtilizationEvaluator(measured_tools={"search_docs", "read_file"})
+```
+
+`metadata` breaks the score down by tool (`per_tool`) and by call (`per_call`, which you can regroup
+by any rule), and reports the judge's token usage. With a judge model smaller than the default, set
+`max_judge_input_tokens` below its context window. The `ContextUtilizationEvaluator` docstring lists
+every field and the cases that get a not-applicable row.
+
+Before comparing scores:
+- Scores are comparable only between runs with the same `chunk_size_tokens` (300 by default; each
+  row records it in `metadata`) and traces captured the same way (exporters that truncate tool output
+  show the judge less).
+- With no assistant text between tool calls (`assistant_replies == 0`), the score is a lower bound.
+
 ### Multimodal Evaluation (MLLM-as-a-Judge)
 
 Evaluate multimodal agent responses involving images and text using MLLM-as-a-Judge:
@@ -795,6 +821,7 @@ Evaluate the most recent turn in a conversation:
 #### Session-Level Evaluators
 Evaluate entire conversation sessions:
 - **GoalSuccessRateEvaluator**: Measures if user goals were achieved across the full conversation
+- **ContextUtilizationEvaluator**: Measures how much of the information the agent gathered it actually used, per tool
 
 ### Multimodal Evaluators
 These evaluators assess multimodal (image-to-text) responses using MLLM-as-a-Judge, with built-in rubrics that support both reference-based and reference-free evaluation:
