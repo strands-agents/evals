@@ -153,12 +153,7 @@ class CorrectnessEvaluator(Evaluator[InputT, OutputT]):
         evaluation_case: EvaluationData[InputT, OutputT],
     ) -> str:
         """Format evaluation prompt for reference-based correctness evaluation."""
-        # Extract user prompt from the last user message in session history
-        user_prompt = self._extract_user_prompt(parsed_input)
-
-        parts = []
-        parts.append(f"USER QUERY:\n{user_prompt}")
-        parts.append(f"AGENT RESPONSE:\n{parsed_input.agent_response.text}")
-        parts.append(f"EXPECTED RESPONSE:\n{evaluation_case.expected_assertion}")
-
-        return "\n\n".join(parts)
+        return (
+            f"{self._format_trace_level_prompt(parsed_input)}\n\n"
+            f"# Expected Response:\n{evaluation_case.expected_assertion}"
+        )
