@@ -7,8 +7,8 @@ These types represent standard observability primitives for agents.
 from datetime import datetime, timezone
 from enum import Enum
 
-from pydantic import BaseModel, field_serializer
-from typing_extensions import Any, Mapping, Sequence, TypeAlias
+from pydantic import BaseModel, Field, field_serializer
+from typing_extensions import Annotated, Any, Literal, Mapping, Sequence, TypeAlias
 
 
 class Role(str, Enum):
@@ -68,13 +68,18 @@ class ToolResultContent(ToolResult):
 
 
 class UserMessage(BaseModel):
-    role: Role = Role.USER
+    role: Literal[Role.USER] = Role.USER
     content: list[TextContent | ToolResultContent]
 
 
 class AssistantMessage(BaseModel):
-    role: Role = Role.ASSISTANT
+    role: Literal[Role.ASSISTANT] = Role.ASSISTANT
     content: list[TextContent | ToolCallContent]
+
+
+# Discriminate on `role` so deserialized messages keep their concrete type.
+# A plain union would match left-to-right and turn every message into the first class that accepts it.
+MessageUnion: TypeAlias = Annotated[UserMessage | AssistantMessage, Field(discriminator="role")]
 
 
 class SpanInfo(BaseModel):
@@ -104,7 +109,7 @@ class BaseSpan(BaseModel):
 
 class InferenceSpan(BaseSpan):
     span_type: SpanType = SpanType.INFERENCE
-    messages: list[UserMessage | AssistantMessage]
+    messages: list[MessageUnion]
 
 
 class ToolExecutionSpan(BaseSpan):
@@ -237,7 +242,7 @@ class TraceLevelInput(BaseEvaluationInput):
     """Input for trace-level evaluators"""
 
     agent_response: TextContent
-    session_history: list[UserMessage | list[ToolExecution] | AssistantMessage]
+    session_history: list[MessageUnion | list[ToolExecution]]
 
 
 class ToolLevelInput(BaseEvaluationInput):
@@ -250,7 +255,7 @@ class ToolLevelInput(BaseEvaluationInput):
 
     available_tools: list[ToolConfig]
     tool_execution_details: ToolExecutionSpan
-    session_history: list[UserMessage | list[ToolExecution] | AssistantMessage]
+    session_history: list[MessageUnion | list[ToolExecution]]
 
 
 class EvaluatorScore(BaseModel):
