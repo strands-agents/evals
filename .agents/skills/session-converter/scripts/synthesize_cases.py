@@ -3,9 +3,11 @@
 import argparse
 import asyncio
 import json
+import os
 import random
 import sys
 import uuid
+from pathlib import Path
 
 from strands_evals import Case, Experiment
 from strands_evals.generators import ExperimentGenerator
@@ -71,8 +73,11 @@ def main() -> None:
     for case in generated:
         cases.append({"name": str(uuid.uuid4()), "input": case.input, "metadata": {"synthetic": True}})
 
-    with open(args.experiment_file, "w") as f:
-        json.dump(experiment, f, indent=2, ensure_ascii=False)
+    # Write a sibling temp file and atomically replace, so a failed write can't truncate the original.
+    experiment_path = Path(args.experiment_file)
+    temp_path = experiment_path.with_name(experiment_path.name + ".tmp")
+    temp_path.write_text(json.dumps(experiment, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(temp_path, experiment_path)
     print(f"appended {len(generated)} cases")
 
 
