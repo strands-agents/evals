@@ -152,7 +152,7 @@ Ask the user to review the experiment file and whether they want any of the post
 
 ## Post-generation
 
-Run these only if the user asks for them after step 7.
+Run these only if the user asks for them after step 7. If one response asks to synthesize additional cases and add actor profiles, synthesize the cases first so the synthetic cases get grouped too.
 
 ### Drop cases
 
