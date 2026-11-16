@@ -33,27 +33,41 @@ await click('#tab-opt');
 ok($('#v-optimization').classList.contains('on'), 'the tab opens the view');
 ok(text('#path') === 'demo/events.jsonl', 'the path bar names the log', text('#path'));
 ok(/support-tuning-20261110-091500-7af3e1/.test(text('#opt-sub')), 'names the run', text('#opt-sub'));
-ok(/11 proposals over 6 iterations/.test(text('#opt-sub')), 'counts proposals and iterations', text('#opt-sub'));
-ok(/Stopped: iterations/.test(text('#opt-sub')), 'reports the stop reason', text('#opt-sub'));
+ok(/stopped: iterations/.test(text('#opt-sub')), 'reports the stop reason', text('#opt-sub'));
 ok(/WeightedSum/.test(text('#opt-objective')), 'shows the objective', text('#opt-objective'));
+/* The counts belong to the drawers that chart them. Repeating them in the subtitle put the same
+   figures twice on one screen, which read as a busier run rather than as a clearer one. */
+ok(!/11 proposals/.test(text('#opt-sub')) && !/82 trials/.test(text('#opt-sub')),
+  'and does not repeat the counts the drawers below already carry', text('#opt-sub'));
+ok(/11 proposals over 6 iterations/.test(text('#opt-search-sum')),
+  'the search drawer counts proposals and iterations', text('#opt-search-sum'));
 
 /* ── what the optimizer did, before anything it produced ──
    Every number on this tab is unreadable without the method: the search only ever sees train,
    the pick happens once on validation, and test is measured but never optimized against. The
    `Optimizer` docstring is explicit that the experiment "is never run itself", which is the one
-   thing a reader coming from the Runs tab will assume the opposite of. */
+   thing a reader coming from the Runs tab will assume the opposite of.
+
+   It is in two parts so the method can be on the page without a paragraph sitting above the
+   result on every visit: the line naming what was tuned is always up, and the account of how the
+   splits were used is behind it. Neither part may repeat the other. */
+const line = text('#opt-method-sum');
+ok(/Tuned system_prompt, temperature, tool_descriptions, max_tokens/.test(line),
+  'the line names what it actually varied, taken from the proposals rather than the configured blocks', line);
+ok(/8 train · 4 validation · 3 test/.test(line), 'and the split sizes', line);
+ok($('#opt-method').open === false, 'the account behind it starts closed');
+
 const why = text('#opt-explain');
 ok(/built 10 versions of your agent/.test(why),
-  'the strip counts the configurations it built, not the 11 proposals it drew', why);
-ok(/varying system_prompt, temperature, tool_descriptions, max_tokens/.test(why),
-  'and names what it actually varied, taken from the proposals rather than the configured blocks', why);
+  'the account counts the configurations it built, not the 11 proposals it drew', why);
 ok(/was never run itself/.test(why),
   'and says the experiment supplied the cases and was not itself run — the thing a reader '
   + 'arriving from the Runs tab assumes the opposite of', why);
-ok(/split 8 train · 4 validation · 3 test/.test(why), 'with the split sizes', why);
 ok(/searched on train/.test(why) && /picked the champion once on validation/.test(why)
   && /measured test only to report it/.test(why),
   'and what each split was for, which is the whole method', why);
+ok(!/varying/.test(why) && !/8 train/.test(why),
+  'and does not say again what the line above it already says', why);
 
 /* ── the result, which is what the page opens on ──
    The question a tuning run answers is whether the champion beats the baseline on cases the
@@ -80,9 +94,12 @@ ok(rtab().length === 2, 'a row per goal metric, in the order the run declared th
 ok($$('#opt-result .delta').every(td => /flat/.test(td.className)),
   'no per-metric delta is coloured, because only the objective has a known direction',
   $$('#opt-result .delta').map(td => td.className).join(' | '));
+/* The objective's own difference and interval, which are nowhere else on the page: the table
+   above is per-metric, and the two coincide here only because this objective is dominated by
+   Helpfulness. So the figures are quoted whatever the wording around them. */
 const verdict = text('#opt-result .verdict');
-ok(/improved by 0\.143/.test(verdict), 'the verdict quotes the objective difference', verdict);
-ok(/\[0\.061, 0\.225\] clears zero/.test(verdict), 'and reads the interval as the verdict it is', verdict);
+ok(/\+0\.143/.test(verdict), 'the verdict quotes the objective difference', verdict);
+ok(/\[0\.061, 0\.225\] — clear of zero/.test(verdict), 'and reads the interval as the verdict it is', verdict);
 ok(/never saw/.test(verdict), 'and says the cases were held out', verdict);
 ok(!/flattering/.test(verdict), 'a held-out result is not hedged as a flattering one', verdict);
 
@@ -222,7 +239,8 @@ ok(bars.some(b => b === 'agent failure 1'), 'the agent failure is counted', bars
 ok(bars.some(b => b === 'evaluator invalid 1'), 'and the evaluator failure too', bars.join(' | '));
 ok(bars.some(b => /train 64/.test(b) && /validation 12/.test(b) && /test 6/.test(b)),
   'splits broken out', bars.join(' | '));
-ok(/82 trials/.test(text('#opt-sub')), 'the subtitle counts every trial, not just the training ones', text('#opt-sub'));
+ok(/82 trials/.test(text('#opt-diag-sum')),
+  'the drawer counts every trial, not just the training ones', text('#opt-diag-sum'));
 
 /* ── one metric chart with a picker, not a panel per metric ──
    A panel each put a wall of charts on screen for something read one at a time. The picker has
@@ -519,7 +537,7 @@ await p2.openFolder({
 });
 await p2.click('#tab-opt');
 ok(p2.text('#opt-note') === '', 'a half-written last line is not reported as damage', p2.text('#opt-note'));
-ok(/Still running/.test(p2.text('#opt-sub')), 'a log with no stop event is still running', p2.text('#opt-sub'));
+ok(/still running/.test(p2.text('#opt-sub')), 'a log with no stop event is still running', p2.text('#opt-sub'));
 ok(p2.$$('#opt-obj-chart circle').length > 0, 'and it still draws what it has');
 
 const p3 = await page();
@@ -672,24 +690,26 @@ const pFlat = await resultPage(resultLog(testReport(
   { mean_diff: 0.1, ci_low: -0.04, ci_high: 0.24, n_cases: 6 })));
 ok(/has not shown an improvement/.test(said(pFlat)),
   'an interval that includes zero is reported as no improvement, however large the gap', said(pFlat));
-ok(/\[-0\.04, 0\.24\] includes zero/.test(said(pFlat)), 'and the interval is quoted', said(pFlat));
-ok(!/clears zero/.test(said(pFlat)), 'and never called a clear win', said(pFlat));
+ok(/\[-0\.04, 0\.24\] — includes zero/.test(said(pFlat)), 'and the interval is quoted', said(pFlat));
+ok(!/clear of zero/.test(said(pFlat)), 'and never called a clear win', said(pFlat));
 
 const pWorse = await resultPage(resultLog(testReport(
   { mean_diff: -0.08, ci_low: -0.19, ci_high: -0.02, n_cases: 6 })));
-ok(/0\.08 worse than the baseline/.test(said(pWorse)),
-  'a negative interval is a regression, stated as a positive amount worse', said(pWorse));
+/* Signed, so a regression cannot be misread as a gain of that size — the sign is the whole
+   difference between the two, and it is on the figure rather than only in the words after it. */
+ok(/-0\.08/.test(said(pWorse)) && !/\+0\.08/.test(said(pWorse)),
+  'a negative objective difference is shown as a negative one', said(pWorse));
 ok(/would be a regression/.test(said(pWorse)), 'and named as one', said(pWorse));
 
 /* An interval tight around zero must not be rounded into one that looks like it touches it.
    Two decimals would print [0.004, 0.21], which reads as straddling zero — the opposite verdict. */
 const pFine = await resultPage(resultLog(testReport(
   { mean_diff: 0.1071, ci_low: 0.004, ci_high: 0.2103, n_cases: 6 })));
-ok(/\[0\.004, 0\.2103\] clears zero/.test(said(pFine)),
+ok(/\[0\.004, 0\.2103\] — clear of zero/.test(said(pFine)),
   'a narrow interval keeps the digits the verdict turns on', said(pFine));
 
 const pNoCI = await resultPage(resultLog(testReport({ mean_diff: 0.1, n_cases: 6 })));
-ok(/moved by 0\.1 against the baseline/.test(said(pNoCI)) && /no interval/.test(said(pNoCI)),
+ok(/\+0\.1 against the baseline/.test(said(pNoCI)) && /no interval/.test(said(pNoCI)),
   'a report with no interval says how certain cannot be read off it', said(pNoCI));
 
 /* The validation split is what the search chose on, so it is the weaker evidence and is labelled

@@ -362,6 +362,20 @@
   }
   .explain b { color: var(--ink1); font-weight: 600; }
   .explain code { font-family: var(--font-mono, ui-monospace, Menlo, monospace); font-size: 11.5px; }
+  /* The method has to be on the page — nothing else says how the splits were used — but it is read
+     once, not on every visit. So the line naming what was tuned stays, and the account opens. */
+  details.method { margin: 0 0 18px; }
+  details.method > summary {
+    cursor: pointer; padding: 11px 14px; background: var(--card);
+    border: 1px solid var(--hair); border-left: 2px solid var(--accent); border-radius: 0 9px 9px 0;
+    font-size: 12.5px; line-height: 1.6; color: var(--ink1); font-weight: 600;
+  }
+  details.method[open] > summary { border-radius: 0 9px 0 0; }
+  details.method > summary code {
+    font-family: var(--font-mono, ui-monospace, Menlo, monospace); font-size: 11.5px; font-weight: 400;
+  }
+  details.method > summary .path { font-weight: 400; }
+  details.method > .explain { margin: 0; border-top: 0; border-radius: 0 0 9px 0; }
   .chead2 { margin: 26px 0 3px; font-size: 14px; font-weight: 600; color: var(--ink1); }
   .chead2 + .sub { margin-bottom: 14px; }
   /* A candidate's own cases, nested inside its row: tighter than the table it sits in. */
@@ -559,8 +573,12 @@
         <span class="grow"></span>
         <span class="path mono" id="opt-objective"></span>
       </div>
-      <!-- What the optimizer actually did. Nothing else on the page explains the method. -->
-      <p class="explain" id="opt-explain"></p>
+      <!-- What the optimizer actually did. Nothing else on the page explains the method, so the
+           line naming what it tuned is always up; the account of how it used the splits opens. -->
+      <details class="method" id="opt-method">
+        <summary id="opt-method-sum"></summary>
+        <p class="explain" id="opt-explain"></p>
+      </details>
 
       <!-- What the run is for: the result, then the thing you take away from it. -->
       <div class="result" id="opt-result"></div>
@@ -4815,29 +4833,34 @@
     }).join('');
 
     /* The interval is the verdict. A run whose interval straddles zero has not shown an
-       improvement, however much the best-so-far curve climbed on the training split. */
+       improvement, however much the best-so-far curve climbed on the training split.
+
+       Figures first and the reading after, rather than a sentence that spells each number out in
+       words: these are the objective's own, so they are nowhere else on the page, but the table
+       above has taught the reader to scan a delta and an interval by now. */
     const o = r.objective;
+    const signed = v => (v > 0 ? '+' : '') + fine(v);
     let verdict;
     if (!o || typeof o.mean_diff !== 'number') {
       verdict = 'This report records no overall comparison against the baseline — only the per-metric '
         + 'means above — so how much of the gap is real cannot be read off it.';
     } else if (typeof o.ci_low !== 'number' || typeof o.ci_high !== 'number') {
-      verdict = `The objective moved by <b>${esc(fine(o.mean_diff))}</b> against the baseline, but the `
-        + 'report carries no interval, so how certain that is cannot be read off it.';
-    } else if (o.ci_low > 0) {
-      verdict = `The objective improved by <b>${esc(fine(o.mean_diff))}</b>, and the 95% interval `
-        + `[${esc(fine(o.ci_low))}, ${esc(fine(o.ci_high))}] clears zero`
-        + `${r.heldOut ? ' on cases the search never saw' : ''}.`;
-    } else if (o.ci_high < 0) {
-      verdict = `The champion came out <b>${esc(fine(-o.mean_diff))}</b> worse than the baseline, interval `
-        + `[${esc(fine(o.ci_low))}, ${esc(fine(o.ci_high))}]. Shipping it would be a regression.`;
+      verdict = `Objective <b>${esc(signed(o.mean_diff))}</b> against the baseline, with no interval `
+        + 'in the report — so how certain that is cannot be read off it.';
     } else {
-      verdict = `The objective moved by ${esc(fine(o.mean_diff))}, but the 95% interval `
-        + `[${esc(fine(o.ci_low))}, ${esc(fine(o.ci_high))}] includes zero — <b>this run has not shown `
-        + 'an improvement</b>. More cases or more runs per case would narrow it.';
+      const span = `95% interval [${esc(fine(o.ci_low))}, ${esc(fine(o.ci_high))}]`;
+      const reading = o.ci_low > 0
+        ? `clear of zero${r.heldOut ? ' on cases the search never saw' : ''}.`
+        : o.ci_high < 0
+          ? 'below zero, so shipping the champion would be a regression.'
+          : 'includes zero, so <b>this run has not shown an improvement</b>. More cases or more '
+            + 'runs per case would narrow it.';
+      verdict = `Objective <b>${esc(signed(o.mean_diff))}</b>, ${span} — ${reading}`;
     }
+    /* That these are the cases the search chose on is the label's whole point, so it is not said
+       again here — only the consequence the label does not draw. */
     if (!r.heldOut && r.baselineId) {
-      verdict += ' These are the cases the search selected on, so the gap is likely flattering.';
+      verdict += ' The gap is likely flattering.';
     }
     /* A `picked` report only carries figures for the finalists, and the baseline is rarely one of
        them. Then the column reads as dashes, and saying why beats leaving it to be puzzled over. */
@@ -4936,28 +4959,40 @@
   /* ── what the optimizer did ──
      The method, in one sentence, because none of the numbers can be read without it: the search
      only ever sees train, the champion is picked once on validation, and test is measured and
-     reported but never optimized against. */
+     reported but never optimized against.
+
+     Two parts: the line that is always up, naming what it varied and over how many cases, and the
+     account behind it. Splitting them is what keeps the method on the page without putting a
+     paragraph above the result every time the tab is opened. */
+
+  /** The always-visible line: what it tuned, and the splits it tuned over. */
+  function methodLine(d) {
+    const e = d.explain;
+    const what = e.tuned.length
+      ? `Tuned ${e.tuned.map(k => `<code>${esc(k)}</code>`).join(', ')}`
+      : (e.blocks.length ? `Tuned its ${e.blocks.map(b => esc(b)).join(' and ')}` : 'Searching over your agent');
+    if (!e.sizes.length) return what;
+    const where = e.sizes.map(s => `${s.n} ${esc(s.name)}`).join(' · ');
+    return `${what} <span class="path">· ${where}</span>`;
+  }
+
+  /** The account behind it: how the splits were used, which is the part no figure on the page shows.
+   *  What it varied and the split sizes are in the line above, so they are not repeated here. */
   function explainStrip(d) {
     const e = d.explain;
-    const where = e.sizes.length ? e.sizes.map(s => `<b>${s.n}</b> ${s.name}`).join(' · ') : '';
-    const split = where
-      ? ` Cases were split ${where}: it searched on train, picked the champion once on validation, `
-        + 'and measured test only to report it.'
-      : '';
-    /* A log with no finished iteration has no candidates and no changed keys, and the sentence
-       above would read "built 0 versions of your agent, varying your agent". */
-    if (!e.candidates) {
-      return 'It builds versions of your agent and runs your cases against each one, searching for a '
-        + 'configuration that scores better. No iteration has finished yet, so there is nothing it '
-        + 'built to show.' + split;
-    }
-    const what = e.tuned.length
-      ? `varying ${e.tuned.map(k => `<code>${esc(k)}</code>`).join(', ')}`
-      : (e.blocks.length ? `varying its ${e.blocks.map(b => esc(b)).join(' and ')}` : 'varying your agent');
+    /* A log with no finished iteration has no candidates to count. The split sentence still
+       applies — it describes the plan, not the progress. */
     const runs = e.runs && e.runs > 1 ? `, each case run ${plural(e.runs, 'time')}` : '';
-    return `It built <b>${esc(e.candidates)}</b> versions of your agent, ${what}, and ran your cases `
-      + `against each one${runs}. Your experiment supplied the cases and evaluators and was never run `
-      + 'itself.' + split;
+    const built = e.candidates
+      ? `It built <b>${esc(e.candidates)}</b> versions of your agent and ran your cases against `
+        + `each one${runs}.`
+      : 'It builds versions of your agent and runs your cases against each one, searching for a '
+        + 'configuration that scores better. No iteration has finished yet, so there is nothing it '
+        + 'built to show.';
+    const split = e.sizes.length
+      ? ' It searched on train, picked the champion once on validation, and measured test only to report it.'
+      : '';
+    return `${built} Your experiment supplied the cases and evaluators and was never run itself.${split}`;
   }
 
   /* ── candidates ──
@@ -5133,7 +5168,9 @@
         ? 'Pick a run above.'
         : 'No optimizer run directory in this folder. One is a run.json with an events.jsonl beside it.';
       ['opt-obj-chart', 'opt-budget-chart', 'opt-status-chart', 'opt-metric-chart', 'opt-usage-chart',
-        'opt-result', 'opt-winner', 'opt-cands', 'opt-explain'].forEach(id => { $(id).innerHTML = ''; });
+        'opt-result', 'opt-winner', 'opt-cands', 'opt-explain', 'opt-method-sum']
+        .forEach(id => { $(id).innerHTML = ''; });
+      $('opt-method').hidden = true;
       $('opt-metric-wrap').hidden = true;
       $('opt-cost').hidden = true;
       $('opt-cand-sub').textContent = '';
@@ -5145,9 +5182,11 @@
 
     const d = OPT;
     $('opt-objective').textContent = d.config.objective || '';
-    $('opt-sub').textContent = `${run.run_id} · ${plural(d.proposals.length, 'proposal')} over `
-      + `${plural(d.iterations.length, 'iteration')}, ${plural(d.trials, 'trial')}.`
-      + (d.stop ? ` Stopped: ${d.stop.reason}${d.stop.message ? ` (${d.stop.message})` : ''}.` : ' Still running.');
+    /* Which run, and whether it finished. The proposal, iteration and trial counts used to be
+       here too, and they are already on the drawer summaries below that hold the charts of them —
+       saying them twice on one screen made the run read as busier than it is. */
+    $('opt-sub').textContent = run.run_id
+      + (d.stop ? ` · stopped: ${d.stop.reason}${d.stop.message ? ` (${d.stop.message})` : ''}` : ' · still running');
 
     $('opt-best').textContent = d.best == null ? '—' : fmt(d.best);
     $('opt-best-cap').textContent = d.bestCandidate
@@ -5219,9 +5258,12 @@
     $('opt-status-chart').innerHTML = statusChart(d);
     $('opt-diag-sum').textContent = plural(d.trials, 'trial');
 
+    $('opt-method').hidden = false;
+    $('opt-method-sum').innerHTML = methodLine(d);
     $('opt-explain').innerHTML = explainStrip(d);
-    $('opt-cand-sub').textContent = 'Each one is a configuration the optimizer built and ran your '
-      + 'cases against. Open one to see what it changed and how every case went.';
+    /* What a candidate is, and nothing about how to open one: the caret and the row's own cursor
+       say that, and a line of instructions under a heading is read as part of the explanation. */
+    $('opt-cand-sub').textContent = 'Each one is a configuration the optimizer built and ran your cases against.';
     renderCandidates();
 
     const notes = [];
