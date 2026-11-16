@@ -55,31 +55,36 @@
   }
   .brand { font-weight: 600; letter-spacing: -.01em; }
   .brand span { color: var(--ink3); font-weight: 400; }
-  /* Two sections, each with its own tabs below. The section is the subject — an experiment and its
-     report, or an optimizer run and what it picked — so it is set above and apart from the tabs
-     rather than beside them: Optimization's three panels are not Evals' three under new names. */
-  .sections { display: flex; gap: 4px; }
-  .sec {
-    appearance: none; border: 0; background: none; font: inherit; font-weight: 550;
-    color: var(--ink3); padding: 5px 11px; border-radius: 6px; cursor: pointer;
-  }
-  .sec:hover { color: var(--ink1); background: var(--hair2); }
-  .sec.on { color: var(--ink1); }
-  /* Attached to the bar above it, with the only border under the pair, so the two rows read as one
-     block of chrome and not as a bar with a second bar under it. */
-  .tabs {
-    display: flex; gap: 2px; padding: 0 28px 9px; border-bottom: 1px solid var(--hair);
+  /* Two sections, each heading its own tabs. The section is the subject — an experiment and its
+     report, or an optimizer run and what it picked — so its name sits above its tabs rather than
+     beside them: Optimization's three panels are not Evals' three under new names. Both names stay
+     on the page with their tabs under them, so what the other section holds is readable without
+     switching to it to find out. Attached to the bar above, with the only border under the whole
+     row, so the two rows read as one block of chrome rather than a bar with a bar beneath it. */
+  .sections {
+    display: flex; align-items: flex-end; gap: 30px;
+    padding: 2px 28px 9px; border-bottom: 1px solid var(--hair);
     background: var(--bg); position: sticky; top: 56px; z-index: 5;
   }
+  .sgroup { display: flex; flex-direction: column; gap: 1px; }
+  .sec {
+    appearance: none; border: 0; background: none; font: inherit; font-size: 11px;
+    font-weight: 650; letter-spacing: .07em; text-transform: uppercase; text-align: left;
+    color: var(--ink3); padding: 2px 12px 3px; border-radius: 6px; cursor: pointer;
+  }
+  .sec:hover { color: var(--ink1); }
+  .sec.on { color: var(--ink1); }
+  /* One section is not a choice. With no optimizer run the names go and the three tabs are left on
+     their own, which is how a folder of plain experiments reads exactly as it did before there was
+     an optimizer at all. */
+  .sections.lonely .sec { display: none; }
+  .tabs { display: flex; gap: 2px; }
   .tab {
     appearance: none; border: 0; background: none; font: inherit; color: var(--ink2);
     padding: 6px 12px; border-radius: 6px; cursor: pointer;
   }
   .tab:hover { color: var(--ink1); background: var(--hair2); }
   .tab.on { color: var(--ink1); font-weight: 550; background: var(--hair2); }
-  /* Belongs to the other section. Separate from `hidden`, which means "no run behind it" and is
-     set by discovery — a tab can be both, and switching sections must not reveal one. */
-  .tab.off { display: none; }
   .grow { flex: 1; }
   /* This panel is showing something the other section put here. Accent-marked like `.explain`,
      because it is the same kind of statement: what you are looking at, and why it is not what the
@@ -557,6 +562,9 @@
     main { padding: 18px; }
     .bar { padding: 0 16px; gap: 12px; }
     .bar .path { display: none; }
+    /* Six tabs under two names do not fit one narrow row, so the groups stack instead of being
+       squeezed — a section keeps its own tabs under its own name either way. */
+    .sections { padding: 2px 16px 9px; gap: 10px 18px; flex-wrap: wrap; }
   }
 </style>
 </head>
@@ -564,26 +572,34 @@
 <div class="app">
   <header class="bar">
     <div class="brand">strands<span>-evals</span></div>
-    <!-- A folder can hold two kinds of run, and they answer different questions: an experiment and
-         the report of running it, or an optimizer run and the configuration it picked. So each is
-         its own section with its own three panels, and the parallel is not a renaming — Evals'
-         Experiment is a file you edit, while Optimization's Setup is a record you read. -->
-    <!-- Both start hidden, so a page that never finds an optimizer run never shows a switcher
-         with one thing in it — not even for the moment before the first scan comes back. -->
-    <nav class="sections" id="sections" hidden>
-      <button class="sec on" data-sec="evals">Evals</button>
-      <button class="sec" data-sec="optimization" id="sec-opt" hidden>Optimization</button>
-    </nav>
     <div class="grow"></div>
     <div class="path mono" id="path"></div>
   </header>
-  <nav class="tabs">
-    <button class="tab on" data-view="runs" data-sec="evals">Runs</button>
-    <button class="tab" data-view="experiment" data-sec="evals">Experiment</button>
-    <button class="tab" data-view="report" data-sec="evals">Report</button>
-    <button class="tab" data-view="opt-runs" data-sec="optimization" hidden>Runs</button>
-    <button class="tab" data-view="opt-setup" data-sec="optimization" hidden>Setup</button>
-    <button class="tab" data-view="opt-results" data-sec="optimization" hidden>Results</button>
+  <!-- A folder can hold two kinds of run, and they answer different questions: an experiment and
+       the report of running it, or an optimizer run and the configuration it picked. So each is its
+       own section, named above its own three panels — and the parallel is not a renaming: Evals'
+       Experiment is a file you edit, while Optimization's Setup is a record you read.
+
+       It starts `lonely`, the state with no section names above the tabs, so a page that never
+       finds an optimizer run never shows a name over a single group — not even for the moment
+       before the first scan comes back. -->
+  <nav class="sections lonely" id="sections">
+    <div class="sgroup">
+      <button class="sec on" data-sec="evals">Evals</button>
+      <div class="tabs">
+        <button class="tab on" data-view="runs" data-sec="evals">Runs</button>
+        <button class="tab" data-view="experiment" data-sec="evals">Experiment</button>
+        <button class="tab" data-view="report" data-sec="evals">Report</button>
+      </div>
+    </div>
+    <div class="sgroup" id="sgroup-opt" hidden>
+      <button class="sec" data-sec="optimization" id="sec-opt" hidden>Optimization</button>
+      <div class="tabs">
+        <button class="tab" data-view="opt-runs" data-sec="optimization" hidden>Runs</button>
+        <button class="tab" data-view="opt-setup" data-sec="optimization" hidden>Setup</button>
+        <button class="tab" data-view="opt-results" data-sec="optimization" hidden>Results</button>
+      </div>
+    </div>
   </nav>
 
   <main>
@@ -3374,12 +3390,9 @@
     view = VIEW_ALIAS[view] || view;
     const section = SECTION_OF[view] || 'evals';
     app.querySelectorAll('.sec').forEach(s => s.classList.toggle('on', s.dataset.sec === section));
-    /* Only this section's tabs, and only the ones its runs exist for: `hidden` is owned by
-       whatever discovered them, so a tab hidden for having no run stays hidden here. */
-    app.querySelectorAll('.tab').forEach(t => {
-      t.classList.toggle('on', t.dataset.view === view);
-      t.classList.toggle('off', t.dataset.sec !== section);
-    });
+    /* Both tab rows stay where they are — the section name above the selected tab is what says
+       which subject you are in, so nothing moves or disappears when you cross between them. */
+    app.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.view === view));
     app.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.id === 'v-' + view));
     const run = OPT_RUNS[optSel];
     const where = {
@@ -6572,11 +6585,12 @@
   function renderOptimizerRuns() {
     const any = OPT_RUNS.length > 0;
     $('sec-opt').hidden = !any;
-    /* Evals is the other section, so with no optimizer run there is one section and nothing to
-       switch between — and a lone chip reading "Evals" names the page rather than offering a
-       choice. The whole switcher goes, which is how a folder of plain experiments reads exactly
-       as it did before there was an optimizer at all. */
-    $('sections').hidden = !any;
+    $('sgroup-opt').hidden = !any;
+    /* Evals is the other section, so with no optimizer run there is one group of tabs and nothing
+       to cross to — and a heading reading "Evals" over it names the page rather than telling you
+       anything. Both names go, leaving the three tabs on their own, which is how a folder of plain
+       experiments reads exactly as it did before there was an optimizer at all. */
+    $('sections').classList.toggle('lonely', !any);
     app.querySelectorAll('.tab[data-sec="optimization"]').forEach(t => { t.hidden = !any; });
 
     $('opt-runs-sub').textContent = any

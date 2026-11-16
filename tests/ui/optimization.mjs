@@ -38,17 +38,17 @@ const openResults = q => q.click('.tab[data-view="opt-results"]');
 
 /* ── the Optimization section only exists when there is a run behind it ──
    A folder of plain experiments must look exactly as it did before there was an optimizer: one
-   section, so no section switcher worth showing, and none of its three tabs in the row. */
+   group of tabs, none of the optimizer's three among them, and no section name over them. */
 ok($('#sec-opt').hidden === true, 'Optimization section hidden with no optimizer run');
 ok($$('.tab[data-sec="optimization"]').every(t => t.hidden),
   'and so are all three of its tabs');
-ok($('#sections').hidden === true,
-  'and the switcher with it, since one section is not a choice');
+ok($('#sections').classList.contains('lonely'),
+  'and the section names with them, since one section is not a choice');
 
 await openFolder({ 'demo/run.json': CONFIG, 'demo/events.jsonl': EVENTS, 'demo/effects.json': EFFECTS,
   ...TRANSCRIPTS });
 ok($('#sec-opt').hidden === false, 'the section appears once a run directory is read');
-ok($('#sections').hidden === false, 'and now there is something to switch between');
+ok(!$('#sections').classList.contains('lonely'), 'and now both sections are named above their tabs');
 ok($$('.tab[data-sec="optimization"]').map(t => t.textContent).join() === 'Runs,Setup,Results',
   'with its own three panels — not Evals\' three renamed, since Setup is read where Experiment is edited',
   $$('.tab[data-sec="optimization"]').map(t => t.textContent).join());
@@ -59,8 +59,18 @@ ok(skips(p).length === 0, 'no file of a recognised run is reported as unusable',
 /* ── its Runs tab lists the run directories, the way Evals lists experiment/report pairs ── */
 await click('#sec-opt');
 ok($('#v-opt-runs').classList.contains('on'), 'the section opens on its run list');
-ok($$('.tab:not(.off)').map(t => t.dataset.view).join() === 'opt-runs,opt-setup,opt-results',
-  'and the tab row is now this section\'s', $$('.tab:not(.off)').map(t => t.dataset.view).join());
+/* Its three tabs sit under its own name, and Evals' three stay under theirs: crossing sections
+   moves the highlight, it does not swap one row of tabs for another. */
+ok($$('#sgroup-opt .tab').map(t => t.dataset.view).join() === 'opt-runs,opt-setup,opt-results',
+  'under the Optimization heading, its own three tabs', $$('#sgroup-opt .tab').map(t => t.dataset.view).join());
+ok($$('.tab:not([hidden])').map(t => t.dataset.view).join()
+  === 'runs,experiment,report,opt-runs,opt-setup,opt-results',
+  'with Evals\' three still on the page beside them',
+  $$('.tab:not([hidden])').map(t => t.dataset.view).join());
+ok($$('.sec.on').map(s => s.dataset.sec).join() === 'optimization'
+  && $$('.tab.on').map(t => t.dataset.view).join() === 'opt-runs',
+  'and one name and one tab marked as where you are',
+  $$('.sec.on').map(s => s.dataset.sec).join() + ' / ' + $$('.tab.on').map(t => t.dataset.view).join());
 const runRow = $$('#opt-runs-rows tr[data-opt-run]');
 ok(runRow.length === 1, 'one row for the one run', runRow.length);
 ok(/support-tuning-20261110-091500-7af3e1/.test(runRow[0].textContent), 'naming it',
