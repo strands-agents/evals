@@ -83,16 +83,34 @@ const runRow = $$('#opt-runs-rows tr[data-opt-run]');
 ok(runRow.length === 1, 'one row for the one run', runRow.length);
 ok(/support-tuning-20261110-091500-7af3e1/.test(runRow[0].textContent), 'naming it',
   runRow[0].textContent.replace(/\s+/g, ' ').trim());
-ok(/c10/.test(runRow[0].children[1].textContent), 'with the champion it picked',
-  runRow[0].children[1].textContent);
+/* What the run achieved, which is what a list of runs is asked first. These rows used to say
+   only what the run *did* — how many candidates, how it stopped — and a reader had to open each
+   one to find out whether any of it worked. The figure is the objective's delta, and the second
+   line is the reading of its *interval*: this run's clears zero, so it is the one case where the
+   number can be taken at face value. The split is named because held out and validation are
+   claims of different strength, and the tab a click away labels them so. */
+const resultCell = () => runRow[0].children[1].textContent.replace(/\s+/g, ' ').trim();
+ok(/\+0\.143/.test(resultCell()), 'with what it achieved against the baseline', resultCell());
+ok(/held out/.test(resultCell()) && /clear of zero/.test(resultCell()),
+  'the split it was measured on and the reading of the interval, not of the gap', resultCell());
+ok(runRow[0].children[1].querySelector('.delta.up') !== null,
+  'coloured by the interval clearing zero — the objective is the only quantity here whose '
+  + 'direction is known, so it is the only one that can be coloured without guessing',
+  runRow[0].children[1].innerHTML);
+ok(/\[0\.0\d+, 0\.2\d+\]/.test(runRow[0].children[1].querySelector('.delta').title),
+  'with the interval itself on hover, where it costs the row no width',
+  runRow[0].children[1].querySelector('.delta').title);
+
+ok(/c10/.test(runRow[0].children[2].textContent), 'with the champion it picked',
+  runRow[0].children[2].textContent);
 /* 10, the `propose` events — the configurations it actually built. The 11 the search drawer
    counts includes the proposal that was drawn and never scored, which is a fact about the search
    rather than about what came out of it. */
-ok(/10 candidates/.test(runRow[0].children[2].textContent)
-  && /6 iterations/.test(runRow[0].children[2].textContent),
-  'how far it searched', runRow[0].children[2].textContent.replace(/\s+/g, ' '));
-ok(/iterations/.test(runRow[0].children[3].textContent), 'and why it stopped',
-  runRow[0].children[3].textContent);
+ok(/10 candidates/.test(runRow[0].children[3].textContent)
+  && /6 iterations/.test(runRow[0].children[3].textContent),
+  'how far it searched', runRow[0].children[3].textContent.replace(/\s+/g, ' '));
+ok(/iterations/.test(runRow[0].children[4].textContent), 'and why it stopped',
+  runRow[0].children[4].textContent);
 
 // A run row opens the result, because the result is what the click is asking for.
 await click(runRow[0]);
@@ -1298,6 +1316,55 @@ ok(/nothing here to compare them against/.test(said(pNoBase)),
 ok(!/flattering/.test(said(pNoBase)), 'and does not hedge a gap it never computed', said(pNoBase));
 ok(!pVal.$('#opt-result .rstrip') && !pNoBase.$('#opt-result .rstrip'),
   'and a validation report, which carries no intervals, gets no picture of them either');
+
+/* ── the same readings in the runs list, which is where a reader meets them first ──
+   The list is one line per run and the card is a paragraph, so the list is the one that can be
+   read too generously. These pages are the verdict cases above, re-read in the row: the row may
+   not call a run anything its own Results tab does not. */
+const listCell = q => {
+  const td = q.$$('#opt-runs-rows tr[data-opt-run]')[0].children[1];
+  return { said: td.textContent.replace(/\s+/g, ' ').trim(), tone: td.querySelector('.delta')?.className };
+};
+ok(/includes zero/.test(listCell(pFlat).said) && listCell(pFlat).tone === 'delta flat',
+  'a run whose interval straddles zero is uncoloured in the list too, however large its gap — '
+  + 'colouring the gap would have the row promising what the card then takes back',
+  `${listCell(pFlat).tone}: ${listCell(pFlat).said}`);
+ok(/-0\.08/.test(listCell(pWorse).said) && listCell(pWorse).tone === 'delta down',
+  'a regression is signed and red', `${listCell(pWorse).tone}: ${listCell(pWorse).said}`);
+ok(/no interval/.test(listCell(pNoCI).said) && listCell(pNoCI).tone === 'delta flat',
+  'and a report with no interval shows its figure without a verdict on it, rather than reading '
+  + 'the gap as one', `${listCell(pNoCI).tone}: ${listCell(pNoCI).said}`);
+ok(/not measured/.test(listCell(pVal).said) && !/0/.test(listCell(pVal).said),
+  'and a report carrying no objective difference at all — which is every validation-only one — '
+  + 'says it was not measured, where a 0 would read as a run that measured and found nothing',
+  listCell(pVal).said);
+
+/* A run that never held a split back, but did record an overall comparison on the one it chose
+   on. The figure is real and the label is the weaker one, because held out and selected-on are
+   claims of different strength and the row is read without the tab behind it. */
+const pValObj = await page();
+await pValObj.openFolder({
+  'r/run.json': { run_id: 'no-test-split', objective: 'Maximize(H)' },
+  'r/events.jsonl': JSON.stringify({
+    event: 'picked', iteration: 1,
+    report: { champion_id: 'c1', baseline_id: 'c0',
+      objective: { mean_diff: 0.2, ci_low: 0.05, ci_high: 0.35, n_cases: 4 } },
+  }),
+});
+ok(/\+0\.2/.test(listCell(pValObj).said) && /validation/.test(listCell(pValObj).said)
+  && !/held out/.test(listCell(pValObj).said),
+  'a run with no test split is labelled validation in the list, not held out',
+  listCell(pValObj).said);
+
+const pRunning = await page();
+await pRunning.openFolder({
+  'r/run.json': { run_id: 'still-going', objective: 'Maximize(H)' },
+  'r/events.jsonl': [{ event: 'config' }, { event: 'trial', iteration: 0 }]
+    .map(e => JSON.stringify(e)).join('\n'),
+});
+ok(/not measured/.test(listCell(pRunning).said) && !/0/.test(listCell(pRunning).said),
+  'a run still searching has no result rather than a zero one', listCell(pRunning).said);
+errs.push(...pValObj.errs, ...pRunning.errs);
 
 /* ── which side of the line is "better" comes out of the objective, and nowhere else ──
    A bar is the one thing on the card that is coloured, so colouring it the wrong way round is the

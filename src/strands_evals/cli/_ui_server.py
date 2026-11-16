@@ -502,14 +502,26 @@ def _optimizer_run_summary(
     iterations = {e.get("iteration") for e in log.events if e.get("event") == "iteration_end"}
     champion = None
     stop_reason = None
+    end_reports: dict[str, dict] = {}
     for event in log.events:
         name = event.get("event")
         if name in ("picked", "test"):
             report = event.get("report")
-            if isinstance(report, dict) and report.get("champion_id"):
-                champion = report["champion_id"]
+            if isinstance(report, dict):
+                if report.get("champion_id"):
+                    champion = report["champion_id"]
+                end_reports[name] = report
         elif name == "stop":
             stop_reason = event.get("reason")
+
+    # What the run achieved, which is the one thing a list of runs was not saying. Read, not
+    # computed: it is the comparison the end phase itself recorded, and the precedence is the
+    # page's — `test` is the held-out split, `picked` is the validation split the search chose on
+    # and so the weaker claim, used only when there is no test report. Taking whichever came last
+    # in the log would label a result by the order the end phase happened to write it in.
+    end_report = end_reports.get("test") or end_reports.get("picked")
+    objective = (end_report or {}).get("objective")
+    result = {"objective": objective, "held_out": "test" in end_reports} if isinstance(objective, dict) else None
 
     return {
         "id": directory,
@@ -530,6 +542,7 @@ def _optimizer_run_summary(
         "candidates": sum(1 for e in log.events if e.get("event") == "propose"),
         "trials": sum(1 for e in log.events if e.get("event") == "trial"),
         "champion_id": champion,
+        "result": result,
         "stop_reason": stop_reason,
         "bad_lines": log.bad_lines,
         "truncated": log.truncated,

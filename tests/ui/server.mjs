@@ -103,17 +103,25 @@ try {
   // ── the optimizer run the server found, with its log fetched over HTTP ──
   ok($('#sec-opt').hidden === false, 'Optimization section offered');
   /* The runs it lists are the server's summaries, not the page's: `tuning/` is never parsed here
-     until a row is clicked, so these four figures are the ones that came over the wire. */
+     until a row is clicked, so these figures are the ones that came over the wire. */
   await click('#sec-opt');
   const optRow = $('#opt-runs-rows tr[data-opt-run]');
   ok(/support-tuning-20261110-091500-7af3e1/.test(optRow.textContent), 'the run listed',
     optRow.textContent.replace(/\s+/g, ' ').trim());
-  ok(/c10/.test(optRow.children[1].textContent)
-    && /10 candidates/.test(optRow.children[2].textContent)
-    && /6 iterations/.test(optRow.children[2].textContent)
-    && /iterations/.test(optRow.children[3].textContent),
+  ok(/c10/.test(optRow.children[2].textContent)
+    && /10 candidates/.test(optRow.children[3].textContent)
+    && /6 iterations/.test(optRow.children[3].textContent)
+    && /iterations/.test(optRow.children[4].textContent),
     'with the champion, the search and the stop reason the server read out of the log',
     optRow.textContent.replace(/\s+/g, ' ').trim());
+  /* And what it achieved, which the server has to read out of the end phase itself — the page
+     has not fetched this log yet, so a result column computed only in the page would be blank
+     here while the same folder opened from disk filled it in. */
+  ok(/\+0\.143/.test(optRow.children[1].textContent)
+    && /held out/.test(optRow.children[1].textContent)
+    && /clear of zero/.test(optRow.children[1].textContent),
+    'and the result, read off the `test` report by the server rather than derived in the page',
+    optRow.children[1].textContent.replace(/\s+/g, ' ').trim());
   await click(optRow);
   await waitFor(() => $$('#opt-obj-chart circle').length > 0, 'the objective chart');
   ok(/support-tuning-20261110-091500-7af3e1/.test(text('#opt-sub')), 'names the run', text('#opt-sub'));

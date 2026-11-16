@@ -306,6 +306,70 @@ def test_discover_optimizer_runs_summarises_what_the_log_records(tmp_path: Path)
     assert run["events_path"] == "run-a/events.jsonl"
 
 
+def _end_report(mean_diff: float, n_cases: int) -> dict:
+    return {
+        "champion_id": "c3",
+        "baseline_id": "c0",
+        "objective": {
+            "mean_diff": mean_diff,
+            "ci_low": mean_diff - 0.12,
+            "ci_high": mean_diff + 0.12,
+            "n_cases": n_cases,
+        },
+    }
+
+
+def test_discover_optimizer_runs_reads_the_result_off_the_held_out_split(tmp_path: Path):
+    """What the run achieved, which is the one thing a list of runs was not saying.
+
+    Both end-phase reports compare the champion against the baseline, but not on the same cases:
+    `picked` uses the validation split the search itself chose on, `test` the split held back from
+    it. Reading whichever came last in the log would label a run by the order the end phase
+    happened to append its two events in; preferring validation would have the list making a
+    stronger claim than the run's own Results tab, which reads `test` first for the same reason.
+    """
+    _optimizer_run(
+        tmp_path / "run-a",
+        {"event": "picked", "iteration": 2, "report": _end_report(0.30, 8)},
+        {"event": "test", "iteration": 2, "report": _end_report(0.14, 12)},
+    )
+
+    result = discover_optimizer_runs(tmp_path)[0]["result"]
+
+    assert result["objective"]["mean_diff"] == 0.14
+    assert result["objective"]["n_cases"] == 12
+    assert result["held_out"] is True
+
+
+def test_discover_optimizer_runs_says_when_the_result_is_only_the_validation_split(tmp_path: Path):
+    """A run that held nothing back still achieved something; `held_out` is how it says which."""
+    _optimizer_run(
+        tmp_path / "run-a",
+        {"event": "picked", "iteration": 2, "report": _end_report(0.30, 8)},
+    )
+
+    result = discover_optimizer_runs(tmp_path)[0]["result"]
+
+    assert result["objective"]["mean_diff"] == 0.30
+    assert result["held_out"] is False
+
+
+def test_discover_optimizer_runs_has_no_result_without_a_comparison(tmp_path: Path):
+    """Nothing to say and no number invented to say it with.
+
+    A run still searching has no end phase at all, and an end phase can record a champion without
+    an objective comparison — a single-candidate search has nothing to compare it against. Either
+    way the list has to show that it was not measured rather than a zero, which reads as "measured,
+    and it changed nothing".
+    """
+    _optimizer_run(tmp_path / "running", {"event": "config"}, {"event": "trial", "iteration": 0})
+    _optimizer_run(tmp_path / "unmeasured", {"event": "picked", "report": {"champion_id": "c0"}})
+
+    by_dir = {run["dir"]: run["result"] for run in discover_optimizer_runs(tmp_path)}
+
+    assert by_dir == {"running": None, "unmeasured": None}
+
+
 def test_discover_optimizer_runs_reads_pareto_off_the_objective(tmp_path: Path):
     """A multi-objective run has no flag saying so — its objective is a `Pareto(...)`.
 

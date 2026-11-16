@@ -716,8 +716,8 @@
       <div class="scroll">
         <table class="rep">
           <thead><tr>
-            <th style="width:34%">Run</th><th style="width:14%">Champion</th>
-            <th style="width:18%">Searched</th><th style="width:18%">Finished</th><th>Modified</th>
+            <th style="width:28%">Run</th><th style="width:15%">Result</th><th style="width:13%">Champion</th>
+            <th style="width:16%">Searched</th><th style="width:15%">Finished</th><th>Modified</th>
           </tr></thead>
           <tbody id="opt-runs-rows"></tbody>
         </table>
@@ -4463,6 +4463,7 @@
      of `iteration_end` events, so one iteration recorded twice is not progress. */
   function logSummary(events) {
     const iterations = new Set();
+    const endReports = {};
     let champion = null, stop = null, candidates = 0, trials = 0;
     for (const e of events) {
       switch (e.event) {
@@ -4471,13 +4472,22 @@
         case 'trial': trials++; break;
         case 'picked': case 'test':
           if (e.report && e.report.champion_id) champion = e.report.champion_id;
+          if (e.report) endReports[e.event] = e.report;
           break;
         case 'stop': stop = e.reason || null; break;
       }
     }
+    /* What the run achieved. Same precedence as the result card below, which is the point: `test`
+       is the held-out split and `picked` the validation split the search chose on, so a list that
+       preferred the other one would label the same run's result more strongly than its own
+       Results tab does. */
+    const endReport = endReports.test || endReports.picked || null;
+    const objective = endReport && endReport.objective;
     return {
       iterations: iterations.size, candidates, trials,
       champion_id: champion, stop_reason: stop,
+      result: objective && typeof objective === 'object'
+        ? { objective, held_out: !!endReports.test } : null,
     };
   }
 
@@ -6605,11 +6615,43 @@
   }
 
   const optBlank = (title, body) =>
-    `<tr><td colspan="5"><div class="nores"><b>${title}</b>${body}</div></td></tr>`;
+    `<tr><td colspan="6"><div class="nores"><b>${title}</b>${body}</div></td></tr>`;
 
   /* The run list, which is also what decides whether this section exists. A folder holding no run
      directory shows no Optimization section at all, so it reads exactly as it did before there was
      an optimizer — rather than as a section that is empty for a reason you have to go and find. */
+  /* What the run achieved, for the list — the question a list of runs is asked first, and the one
+     thing these rows did not answer: they said what the run *did* (candidates, iterations, how it
+     stopped) and never what came of it.
+
+     The figure is the objective's delta, which is the only quantity on this page whose direction
+     is known, so it is the only one that can be coloured without guessing. And the colour follows
+     the *interval*, not the delta: a run whose interval straddles zero has shown nothing, however
+     large its gap, so colouring the gap would have the list promising what the Results tab then
+     takes back. Same four readings as the verdict there, in two words each. */
+  function runResultCell(r) {
+    const res = r.result, o = res && res.objective;
+    if (!o || typeof o.mean_diff !== 'number') {
+      return '<span class="empty">not measured</span>';
+    }
+    const interval = typeof o.ci_low === 'number' && typeof o.ci_high === 'number';
+    let tone = 'flat', reading;
+    if (!interval) reading = 'no interval';
+    else if (o.ci_high === o.ci_low) reading = 'no width';
+    else if (o.ci_low > 0) { tone = 'up'; reading = 'clear of zero'; }
+    else if (o.ci_high < 0) { tone = 'down'; reading = 'below zero'; }
+    else reading = 'includes zero';
+    // Held out against validation is the difference between a result and a hopeful one, so the
+    // split is named here rather than left to the tab a click away.
+    const where = res.held_out ? 'held out' : 'validation';
+    const hover = `objective ${signed(o.mean_diff)}`
+      + (interval ? `, 95% interval [${fine(o.ci_low)}, ${fine(o.ci_high)}]` : ', no interval recorded')
+      + ` on the ${where === 'held out' ? 'held-out test' : 'validation'} split`
+      + (o.n_cases ? `, ${plural(o.n_cases, 'case')}` : '');
+    return `<span class="delta ${tone}" title="${esc(hover)}">${esc(signed(o.mean_diff))}</span>`
+      + `<br><span class="path">${esc(where)} · ${esc(reading)}</span>`;
+  }
+
   function renderOptimizerRuns() {
     const any = OPT_RUNS.length > 0;
     $('sec-opt').hidden = !any;
@@ -6631,6 +6673,7 @@
       const at = r.dir && r.dir !== '.' ? r.dir : r.events_path;
       return `<tr class="run${i === optSel ? ' on' : ''}" data-opt-run="${i}">
         <td>${esc(r.run_id)}${alias}<br><span class="path">${esc(at)}</span></td>
+        <td class="ev">${runResultCell(r)}</td>
         <td class="ev">${r.champion_id ? esc(r.champion_id) : '<span class="empty">none picked</span>'}</td>
         <td class="ev">${plural(r.candidates, 'candidate')}`
         + `<br><span class="path">${plural(r.iterations, 'iteration')}</span></td>
