@@ -21,6 +21,7 @@ CORE PRINCIPLES:
 - Include edge cases, corner scenarios, and potential failure modes relevant to the task
 
 TEST CASE DESIGN:
+A prompt may ask for a specific difficulty level. If it does, design the test case to match that level; otherwise, choose whatever complexity best exercises the task and ignore this section.
 - Easy: Basic task functionality, straightforward scenarios, common use cases
 - Medium: Multi-step reasoning, moderate complexity, realistic task challenges
 - Hard: Complex task scenarios, edge cases, advanced reasoning, error handling
