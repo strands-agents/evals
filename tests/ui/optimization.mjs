@@ -1348,8 +1348,8 @@ ok(plainBars[0].label === 'latency' && plainBars[0].cls === 'rs-row plain',
 ok(/the objective states no direction for/.test(plainBars[0].title),
   'and says that is why', plainBars[0].title);
 
-/* Two cases that agreed exactly give a zero-width interval — both sample runs under
-   `examples/optimization` report one, so this is the common case and not the corner. There is no
+/* Two cases that agreed exactly give a zero-width interval, which a real run reports for any
+   deterministic metric — so this is the common case and not the corner. There is no
    spread to draw. Scaled to its own row a point lands hard against the margin, which reads as "as
    far as this could go" about a comparison that showed nothing of the kind, so the picture does
    not appear at all — and the sentence stops claiming the interval clears zero. */
@@ -1415,8 +1415,9 @@ ok(/No champion has been picked yet/.test(p2.text('#opt-winner')),
   'and no winner', p2.text('#opt-winner'));
 
 /* ── the record as the optimizer actually writes it ──
-   The fixture spells these fields the way `optimization/record/events.py` documents them. The
-   runs committed under `examples/optimization/runs` spell the same facts differently: the goal
+   The fixture spells these fields the way `optimization/record/events.py` documents them. A
+   `run.json` the optimizer really wrote spells the same facts differently — checked against one
+   from `workstream/optimizer-workflow`: the goal
    metrics are the `objective`-role keys of `metrics`, the tunable blocks are named inside
    `search.blocks`, repeats are `runs_per_candidate`, the score model and pick rule are under
    `name`, and a multi-objective run says so only in its objective string. Read under one name

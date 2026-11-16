@@ -1,10 +1,14 @@
 # Examples
 
-Sample data for trying the UI without running anything first:
+Sample experiments for trying the UI without writing one first:
 
 ```bash
 strands-evals ui examples
 ```
+
+They are also input to the rest of the CLI, which is the point of keeping them as files rather
+than as fixtures — `strands-evals run experiments/refund_desk.json --task your_module:your_task`
+writes the report the UI then reads.
 
 ## experiments/
 
@@ -15,6 +19,16 @@ Four experiments generated with the strands-evals CLI, plus two reports:
 - `telecom.json` — 12 cases for a telecom troubleshooting agent. `telecom.report.json` is a hand-built sample report, not from a real run.
 - `code_migration.json` — 10 cases for a code migration agent.
 
-## optimization/
+## No sample optimizer run
 
-Two sample optimization run records (run.json schema_version 1) for the Optimization section, written to cover every event and outcome shape: a single-objective run and a Pareto multi-objective run, including a kill plus resume, a rescore, and a stop on proposer error. `optimization/README.md` describes them.
+There is none here on purpose. A run directory is a few hundred files — a recorded conversation
+per trial, a copy of the agent's files per candidate — and checked in, the sample is most of what
+anyone reviewing this directory reads. The Optimization section wants a real one instead:
+
+```bash
+python tests/ui/fixtures/make_optimizer_run.py   # writes tests/ui/fixtures/optimizer-run
+strands-evals ui tests/ui/fixtures
+```
+
+That generator is the test fixture, deterministic and also not checked in. Point `ui` at any
+directory holding runs the optimizer wrote and it will find them the same way.

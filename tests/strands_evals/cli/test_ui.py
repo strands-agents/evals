@@ -309,8 +309,8 @@ def test_discover_optimizer_runs_summarises_what_the_log_records(tmp_path: Path)
 def test_discover_optimizer_runs_reads_pareto_off_the_objective(tmp_path: Path):
     """A multi-objective run has no flag saying so — its objective is a `Pareto(...)`.
 
-    The records under `examples/optimization/runs` carry no `is_pareto` key at all, so reading
-    only the flag would report every real Pareto run as having one best value.
+    A `run.json` the optimizer writes carries no `is_pareto` key at all, so reading only the
+    flag would report every real Pareto run as having one best value.
     """
     _optimizer_run(
         tmp_path / "front",

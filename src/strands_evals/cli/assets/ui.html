@@ -4749,8 +4749,8 @@
   const STATUSES = ['completed', 'agent_failure', 'evaluator_invalid', 'infrastructure_invalid'];
 
   /* The `run.json` facts this page states, read under every name the record has used for them.
-     The committed example runs (`examples/optimization/runs`, schema 1) do not spell these the way
-     a reader of the page might guess: the goal metrics are the `objective`-role keys of `metrics`,
+     A record the optimizer really writes (schema 1) does not spell these the way a reader of the
+     page might guess: the goal metrics are the `objective`-role keys of `metrics`,
      the tunable blocks are the names under `search.blocks`, repeats are `runs_per_candidate`, the
      score model and the final-pick rule are named under `name`, and a Pareto run says so only in
      its objective string. Read in one place, because a field read under a single name is a row
