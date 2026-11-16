@@ -1,0 +1,164 @@
+{
+  "effects": [
+    {
+      "metric": "Helpfulness",
+      "key": "system_prompt",
+      "level": "rewritten",
+      "reference": "default",
+      "mean": 0.12,
+      "ci90": [
+        0.04,
+        0.2
+      ],
+      "p_positive": 0.96
+    },
+    {
+      "metric": "Helpfulness",
+      "key": "temperature",
+      "level": "(0.15, 0.45]",
+      "reference": "(0.45, 0.75]",
+      "mean": 0.03,
+      "ci90": [
+        -0.05,
+        0.11
+      ],
+      "p_positive": 0.73
+    },
+    {
+      "metric": "Helpfulness",
+      "key": "max_tokens",
+      "level": "(1024, 2048]",
+      "reference": "(256, 1024]",
+      "mean": -0.01,
+      "ci90": [
+        -0.09,
+        0.07
+      ],
+      "p_positive": 0.41
+    },
+    {
+      "metric": "tokens",
+      "key": "system_prompt",
+      "level": "rewritten",
+      "reference": "default",
+      "mean": 180.0,
+      "ci90": [
+        60.0,
+        300.0
+      ],
+      "p_positive": 0.99
+    },
+    {
+      "metric": "tokens",
+      "key": "temperature",
+      "level": "(0.15, 0.45]",
+      "reference": "(0.45, 0.75]",
+      "mean": -20.0,
+      "ci90": [
+        -140.0,
+        100.0
+      ],
+      "p_positive": 0.37
+    },
+    {
+      "metric": "tokens",
+      "key": "max_tokens",
+      "level": "(1024, 2048]",
+      "reference": "(256, 1024]",
+      "mean": 45.0,
+      "ci90": [
+        -60.0,
+        150.0
+      ],
+      "p_positive": 0.76
+    }
+  ],
+  "factors": [
+    {
+      "key": "system_prompt",
+      "kind": "text",
+      "levels": [
+        "default",
+        "rewritten"
+      ],
+      "reference": "default"
+    },
+    {
+      "key": "temperature",
+      "kind": "range",
+      "levels": [
+        "(0.45, 0.75]",
+        "(0.15, 0.45]"
+      ],
+      "reference": "(0.45, 0.75]"
+    },
+    {
+      "key": "max_tokens",
+      "kind": "range",
+      "levels": [
+        "(256, 1024]",
+        "(1024, 2048]"
+      ],
+      "reference": "(256, 1024]"
+    }
+  ],
+  "omitted": [
+    {
+      "key": "tool_descriptions",
+      "why": "two values, one candidate each"
+    },
+    {
+      "key": "escalation.policy",
+      "why": "one value"
+    }
+  ],
+  "goals": [
+    {
+      "role": "objective",
+      "index": 0,
+      "metric": "Helpfulness",
+      "better": "higher"
+    },
+    {
+      "role": "constraint",
+      "index": 0,
+      "metric": "tokens",
+      "better": "lower"
+    }
+  ],
+  "metrics": {
+    "Helpfulness": {
+      "scale": {
+        "unit": 1.0,
+        "offset": 0.0
+      },
+      "noise": 0.004,
+      "observations": 48,
+      "diagnostics": {
+        "n_holdout": 8,
+        "z_mean": 0.11,
+        "z_sq_sum": 1.3,
+        "flagged": false,
+        "messages": []
+      }
+    },
+    "tokens": {
+      "scale": {
+        "unit": 1000.0,
+        "offset": 0.0
+      },
+      "noise": 0.02,
+      "observations": 48,
+      "diagnostics": {
+        "n_holdout": 8,
+        "z_mean": 1.4,
+        "z_sq_sum": 9.6,
+        "flagged": true,
+        "messages": [
+          "held-out residuals run high: the model under-states the spread of token counts"
+        ]
+      }
+    }
+  },
+  "reason": null
+}

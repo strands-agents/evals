@@ -21,6 +21,10 @@ const CONFIG = fs.readFileSync(new URL('run.json', DIR), 'utf8');
 const TRANSCRIPTS = Object.fromEntries(fs.readdirSync(new URL('transcripts/', DIR))
   .filter(f => f.endsWith('.json'))
   .map(f => [`demo/transcripts/${f}`, fs.readFileSync(new URL(`transcripts/${f}`, DIR), 'utf8')]));
+/* The effects model, which is the one file in a run directory that was not written by the run: it
+   is fitted to the finished record afterwards, so most runs have none and the page has to read a
+   run with and without it. */
+const EFFECTS = fs.readFileSync(new URL('effects.json', DIR), 'utf8');
 
 const skips = p => p.$$('#skips li').map(li => li.textContent.replace(/\s+/g, ' ').trim());
 const errs = [];                              // for the pages built inside a block
@@ -41,7 +45,8 @@ ok($$('.tab[data-sec="optimization"]').every(t => t.hidden),
 ok($('#sections').hidden === true,
   'and the switcher with it, since one section is not a choice');
 
-await openFolder({ 'demo/run.json': CONFIG, 'demo/events.jsonl': EVENTS, ...TRANSCRIPTS });
+await openFolder({ 'demo/run.json': CONFIG, 'demo/events.jsonl': EVENTS, 'demo/effects.json': EFFECTS,
+  ...TRANSCRIPTS });
 ok($('#sec-opt').hidden === false, 'the section appears once a run directory is read');
 ok($('#sections').hidden === false, 'and now there is something to switch between');
 ok($$('.tab[data-sec="optimization"]').map(t => t.textContent).join() === 'Runs,Setup,Results',
@@ -116,6 +121,36 @@ ok($$('#v-opt-setup input, #v-opt-setup textarea, #v-opt-setup select').length =
 ok($('#opt-source').hidden === true,
   'and no experiment is named when this folder holds none the split could have come from',
   text('#opt-source'));
+
+/* ── what the search was allowed to change ──
+   The declared space, which is the only account of the knobs that exist. `changed_keys` can say a
+   key moved; nothing in the log can say a key was offered and never touched, and that is the row
+   worth having — a space declared and left alone is a search that did less than it was set up to. */
+const spaceRows = () => $$('#opt-space-rows tr')
+  .map(r => [...r.children].map(c => c.textContent.replace(/\s+/g, ' ').trim()).join('/'));
+ok($('#opt-space-wrap').hidden === false, 'the space table is shown for a record that declares one');
+ok(spaceRows().length === 6, 'a row per declared key, in the order the record declares them',
+  spaceRows().length);
+ok(spaceRows()[0] === 'system_prompt/text ≤ 2000 chars/127 characters/10 of 10 7 changes/always',
+  'a text key: its cap, its default as a length rather than the digest beside it, and how many '
+  + 'candidates set and changed it', spaceRows()[0]);
+ok(spaceRows()[1] === 'temperature/float 0 – 1/0.7/10 of 10 2 changes/always',
+  'a float with its bounds', spaceRows()[1]);
+ok(spaceRows()[2] === 'max_tokens/int 256 – 2048 step 256/1024/10 of 10 1 change/always',
+  'an int with the step it moves in', spaceRows()[2]);
+/* The two the table exists for. A key no candidate ever set reads "0 of 11", not a dash: the
+   search was offered it and left it alone, which is a measurement and not a missing value. The
+   denominator is the 10 candidates, not the 11 proposals: the invalid patch never became one. */
+ok(spaceRows()[4] === 'escalation.policy/choice · 2 options/ask/0 of 10/always',
+  'a choice the search never touched is still a row, with nothing behind it', spaceRows()[4]);
+ok(spaceRows()[5] === 'escalation.auto.threshold/float 0.1 – 0.9/0.5/0 of 10/escalation.policy = auto',
+  'and a key that only exists under one option says which, since "0 of 10" means something else '
+  + 'for it', spaceRows()[5]);
+ok(!('Actually varied' in kv),
+  'the list above does not also name the varied keys, which the table says per key',
+  Object.keys(kv).join());
+ok(text('#opt-space-note') === '', 'and nothing is flagged for a log that stays inside the space',
+  text('#opt-space-note'));
 
 const why = text('#opt-explain');
 ok(/built 10 versions of your agent/.test(why),
@@ -405,6 +440,89 @@ await pick('#opt-usage-pick', 'model_calls');
 ok(colTitles()[0] === 'iteration 0: 24 over 8 trials', 'a count of calls is a whole number', colTitles()[0]);
 await pick('#opt-usage-pick', 'seconds');
 ok(colTitles()[0] === 'iteration 0: 33.60 over 8 trials', 'and seconds are not', colTitles()[0]);
+
+/* ── which setting moved the metric, out of the effects model beside the log ──
+   Every other figure on this tab is read straight out of `events.jsonl`. This one is an estimate
+   in `effects.json`, fitted afterwards, and it is the only place on the page that says a *key*
+   did something rather than that a candidate did — so the ways it can mislead are its own. An
+   interval that crosses zero is a key the run cannot speak for, and `p_positive` is the chance the
+   metric went UP, which for `Minimize(tokens)` is the chance it got worse. */
+const effKeys = () => $$('#opt-eff-chart .eff-key').map(t => t.textContent.replace(/\s+/g, ' ').trim());
+const effRows = () => $$('#opt-eff-chart .eff-row').map(g => ({
+  cls: g.getAttribute('class'),
+  level: g.querySelector('.eff-level').textContent,
+  label: [...g.querySelectorAll('text.tick')].map(t => t.textContent).join(),
+  x: Number(g.querySelector('.eff-dot').getAttribute('cx')),
+  lo: Number(g.querySelector('.eff-ci').getAttribute('x1')),
+  hi: Number(g.querySelector('.eff-ci').getAttribute('x2')),
+}));
+ok($('#opt-effects').hidden === false, 'the drawer is there for a run with a model fitted to it');
+ok($('#opt-effects').open === false, 'folded away like the other charts, and drawn anyway');
+ok(text('#opt-eff-sum') === '3 estimates', 'the summary counts this goal\'s estimates, so the drawer '
+  + 'can be judged shut', text('#opt-eff-sum'));
+ok($$('#opt-eff-goal option').map(o => o.textContent).join() === 'Helpfulness · higher is better,'
+  + 'tokens · lower is better',
+  'each goal is offered with the direction it wants, which the effects file states and the '
+  + 'objective string only implies', $$('#opt-eff-goal option').map(o => o.textContent).join());
+ok(/fitted to 48 observations/.test(text('#opt-eff-cap')),
+  'the caption says how much the estimate rests on', text('#opt-eff-cap'));
+ok(effKeys().join() === 'system_prompt vs default,temperature vs (0.45, 0.75],'
+  + 'max_tokens vs (256, 1024]',
+  'a group per key, in the order the space declares them, each naming the level the rest are '
+  + 'read against — a change with no reference is not a number', effKeys().join());
+
+const helpful = effRows();
+ok(helpful.length === 3, 'one row per estimated level', helpful.length);
+ok(helpful[0].level === 'rewritten' && /settled/.test(helpful[0].cls)
+  && !/unsettled/.test(helpful[0].cls),
+  'the one whose interval clears zero is drawn full strength', JSON.stringify(helpful[0]));
+ok(/unsettled/.test(helpful[1].cls) && /unsettled/.test(helpful[2].cls),
+  'and the two whose intervals straddle it are faint, because the run does not settle them',
+  helpful.map(r => r.cls).join(' '));
+ok(helpful[0].label === '+0.12 · 0.96',
+  'the change is signed and sits beside the chance it is an improvement', helpful[0].label);
+ok(helpful[2].label === '-0.01 · 0.41',
+  'a negative estimate keeps its sign rather than being drawn as a smaller improvement',
+  helpful[2].label);
+ok(helpful[0].lo < helpful[0].x && helpful[0].x < helpful[0].hi,
+  'the dot is inside its own interval', JSON.stringify(helpful[0]));
+const zeroX = Number($('#opt-eff-chart .eff-zero').getAttribute('x1'));
+const gridXs = $$('#opt-eff-chart line.grid-l').map(l => Number(l.getAttribute('x1')));
+ok(zeroX > Math.min(...gridXs) && zeroX < Math.max(...gridXs),
+  'zero is inside the drawn range and not off an edge, since every bar is a change away from it '
+  + 'and a plot scaled to the estimates alone could leave it out',
+  `${zeroX} within ${Math.min(...gridXs)}–${Math.max(...gridXs)}`);
+ok(helpful[0].lo > zeroX && helpful[2].lo < zeroX && helpful[2].hi > zeroX,
+  'which is what settled looks like: the settled bar is wholly to one side of it and the faint '
+  + 'one spans it', `${helpful[0].lo} / ${helpful[2].lo}–${helpful[2].hi} vs ${zeroX}`);
+ok(/Not modelled: tool_descriptions \(two values, one candidate each\), escalation\.policy \(one value\)/
+  .test(text('#opt-eff-note')),
+  'the keys the model left out are named with why, so a key absent here is not read as a key that '
+  + 'did nothing', text('#opt-eff-note'));
+ok(!$('#opt-eff-note').className.includes('warn'),
+  'and an unflagged fit is not warned about', $('#opt-eff-note').className);
+
+/* The direction test, and the reason this plot has a P(better) column at all. Both goals say
+   `system_prompt` rewritten pushed the metric up — by 0.12 on Helpfulness and by 180 tokens — and
+   those are the same sign and opposite verdicts. */
+await pick('#opt-eff-goal', 'tokens');
+const costly = effRows();
+ok(/for tokens/.test(text('#opt-eff-cap')), 'picking the other goal refits the caption',
+  text('#opt-eff-cap'));
+ok(costly[0].label === '+180 · 0.01',
+  'a confident rise in a metric that wants to fall reads as almost certainly worse — unflipped '
+  + 'this would have said 0.99', costly[0].label);
+ok(costly[0].x > zeroX, 'while the bar still points the way the number went, not the way the goal '
+  + 'wanted: the plot is the change and the column is the verdict', `${costly[0].x} vs ${zeroX}`);
+ok(/settled/.test(costly[0].cls) && !/unsettled/.test(costly[0].cls),
+  'and it is settled here too, on its own interval', costly[0].cls);
+ok(/The fit is flagged/.test(text('#opt-eff-note'))
+  && /under-states the spread of token counts/.test(text('#opt-eff-note')),
+  'a fit that failed its own held-out check says so, in its words — these estimates are the ones '
+  + 'a reader would otherwise quote', text('#opt-eff-note'));
+ok($('#opt-eff-note').className.includes('warn'), 'and is marked as a warning',
+  $('#opt-eff-note').className);
+await pick('#opt-eff-goal', 'Helpfulness');
 
 /* ── the candidates, browsable the way the Report tab's cases are ──
    A candidate IS an evaluation run of one configuration — `RunDirectory.reports()` rebuilds its
@@ -1144,6 +1262,53 @@ const recRow = pRec.$$('#opt-runs-rows tr[data-opt-run]');
 ok(recRow.length === 1 && /10 candidates/.test(recRow[0].textContent),
   'and the run still lists, which is what silently fails when a field is read under one name',
   recRow.map(r => r.textContent.replace(/\s+/g, ' ').trim()).join());
+/* The blocks are also what the space table tags its keys with, which is the only place the two
+   halves of the record meet: `search.blocks` says which group a key belongs to and `space` says
+   what the key is, and neither names the other's rows. */
+const tagOf = key => {
+  const row = pRec.$$('#opt-space-rows tr').find(r => r.children[0].textContent.startsWith(key));
+  return row && row.querySelector('.tag') ? row.querySelector('.tag').textContent : null;
+};
+ok(tagOf('system_prompt') === 'text' && tagOf('max_tokens') === 'numbers',
+  'each key carries the block that declares it', `${tagOf('system_prompt')}/${tagOf('max_tokens')}`);
+ok(tagOf('temperature') === null,
+  'and a key no block claims carries no tag rather than the first one\'s', tagOf('temperature'));
+
+/* A space that does not declare what the log went on to change. The table is the account of the
+   knobs that exist, so a key moved from outside it is either a stale record or a search reaching
+   past its space — and a reader comparing the two lists by eye would not notice. */
+{
+  const q = await page();
+  const partial = JSON.parse(CONFIG);
+  partial.space = partial.space.filter(r => r.key !== 'temperature' && r.key !== 'max_tokens');
+  await q.openFolder({ 'u/run.json': JSON.stringify(partial), 'u/events.jsonl': EVENTS });
+  await q.click('.tab[data-view="opt-setup"]');
+  ok(q.$$('#opt-space-rows tr').length === 4, 'the declared keys are the rows',
+    q.$$('#opt-space-rows tr').length);
+  ok(q.text('#opt-space-note')
+    === 'The log also changed temperature, max_tokens, which this space does not declare.',
+    'and the ones the log changed without being offered are named', q.text('#opt-space-note'));
+  ok(q.$('#opt-space-note').className.includes('warn'), 'as a warning, since one of them is wrong',
+    q.$('#opt-space-note').className);
+  errs.push(...q.errs);
+}
+
+/* And a record with no space at all, which is every run written before the field existed: the
+   table goes away and the varied-keys line comes back, so the page is never silent about both. */
+{
+  const q = await page();
+  const spaceless = JSON.parse(CONFIG);
+  delete spaceless.space;
+  await q.openFolder({ 'n/run.json': JSON.stringify(spaceless), 'n/events.jsonl': EVENTS });
+  await q.click('.tab[data-view="opt-setup"]');
+  ok(q.$('#opt-space-wrap').hidden === true, 'no declared space, no table');
+  const nkv = Object.fromEntries(q.$$('#opt-setup-kv dt').map((dt, i) =>
+    [dt.textContent, q.$$('#opt-setup-kv dd')[i].textContent.replace(/\s+/g, ' ').trim()]));
+  ok(/system_prompt/.test(nkv['Actually varied'] || ''),
+    'and the keys the log changed are listed instead, which is all such a record can say',
+    nkv['Actually varied']);
+  errs.push(...q.errs);
+}
 
 /* ── what one goal cost another ──
    A run with two goals has no single best value, so the trade-off between them is the answer and
@@ -1306,6 +1471,49 @@ const swapped = byId(pThree);
 ok(swapped.c1.ringed && !swapped.c2.ringed,
   'and the front changes with it: on seconds, c1 is quicker than c2 as well as better',
   marksOf(pThree).map(m => `${m.id}${m.ringed ? '*' : ''}`).join());
+
+/* ── and the runs with no effects to show, which is most of them ──
+   `effects.json` is fitted after the fact and by hand, so its absence is the ordinary case rather
+   than a file gone missing. A drawer that opened onto "no model was fitted" would advertise a
+   step this page cannot offer — there is nothing in the library that fits one yet. */
+ok(pTwo.$('#opt-effects').hidden === true,
+  'a run with no model beside it has no drawer at all, rather than an empty one');
+{
+  const q = await page();
+  /* The shape a fitter writes when it gives up: the goals and the metrics are there, the
+     estimates are not, and the reason is prose. Read as a document it is usable; plotted it is
+     an axis with nothing on it. */
+  await q.openFolder({
+    'e/run.json': { run_id: 'nofit', objective: 'Maximize(Quality)' },
+    'e/events.jsonl': GOAL_LOG,
+    'e/effects.json': { effects: [], factors: [], goals: [{ metric: 'Quality', better: 'higher' }],
+      metrics: { Quality: { observations: 4 } }, reason: 'too few candidates to separate the keys' },
+  });
+  await openResults(q);
+  ok(q.$('#opt-effects').hidden === true,
+    'a model that was attempted and came back empty is the same for a reader as none');
+  errs.push(...q.errs);
+}
+{
+  const q = await page();
+  await q.openFolder({
+    'e/run.json': { run_id: 'onegoal', objective: 'Maximize(Quality)' },
+    'e/events.jsonl': GOAL_LOG,
+    'e/effects.json': { goals: [{ metric: 'Quality', better: 'higher' }],
+      metrics: { Quality: { observations: 12 } },
+      factors: [{ key: 'prompt', kind: 'text', levels: ['default', 'rewritten'], reference: 'default' }],
+      effects: [{ metric: 'Quality', key: 'prompt', level: 'rewritten', reference: 'default',
+        mean: 0.2, ci90: [0.1, 0.3], p_positive: 0.98 }] },
+  });
+  await openResults(q);
+  ok(q.$('#opt-effects').hidden === false, 'one goal still gets the plot — it is per key, not per pair');
+  ok(q.$('#opt-eff-goal').hidden === true,
+    'but no picker, since one goal is nothing to pick between');
+  ok(q.$$('#opt-eff-chart .eff-row text.tick').map(t => t.textContent).join() === '+0.2 · 0.98',
+    'and the estimate reads as it does on a run with two',
+    q.$$('#opt-eff-chart .eff-row text.tick').map(t => t.textContent).join());
+  errs.push(...q.errs);
+}
 
 // ── two runs in one tree ──
 const p6 = await page();

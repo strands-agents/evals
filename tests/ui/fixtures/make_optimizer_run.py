@@ -396,6 +396,212 @@ def case_scores(objective: float, cases: list[str]) -> dict[str, float]:
     return out
 
 
+def text_default(body: str) -> dict:
+    """How a text key's default is recorded: a digest and a length, never the prompt itself."""
+    return {"sha256": hashlib.sha256(body.encode()).hexdigest(), "length": len(body)}
+
+
+# The declared space, one `ParamInfo` per flat key (`optimization/declaration/space.py`). Each kind
+# is here once — a text key with a cap, a float, an int with a step, a text key without a cap — and
+# the last two are the point of the table: a choice the search never touched, and a key that only
+# exists under one of its options, which is why "0 of 11 candidates" is a finding and not a gap.
+SPACE = [
+    {
+        "key": "system_prompt",
+        "name": "system_prompt",
+        "kind": "text",
+        "default": text_default(BASELINE_VALUES["system_prompt"]),
+        "min_value": None,
+        "max_value": None,
+        "log": False,
+        "options": None,
+        "size_cap": 2000,
+        "edit_instructions": None,
+        "active_when": None,
+        "source": None,
+    },
+    {
+        "key": "temperature",
+        "name": "temperature",
+        "kind": "float",
+        "default": 0.7,
+        "min_value": 0.0,
+        "max_value": 1.0,
+        "log": False,
+        "options": None,
+        "size_cap": None,
+        "edit_instructions": None,
+        "active_when": None,
+        "source": None,
+    },
+    {
+        "key": "max_tokens",
+        "name": "max_tokens",
+        "kind": "int",
+        "default": 1024,
+        "min_value": 256,
+        "max_value": 2048,
+        "log": False,
+        "step": 256,
+        "options": None,
+        "size_cap": None,
+        "edit_instructions": None,
+        "active_when": None,
+        "source": None,
+    },
+    {
+        "key": "tool_descriptions",
+        "name": "tool_descriptions",
+        "kind": "text",
+        "default": text_default("Look up an order. / Start a refund."),
+        "min_value": None,
+        "max_value": None,
+        "log": False,
+        "options": None,
+        "size_cap": None,
+        "edit_instructions": None,
+        "active_when": None,
+        "source": None,
+    },
+    {
+        "key": "escalation.policy",
+        "name": "escalation",
+        "kind": "choice",
+        "default": "ask",
+        "min_value": None,
+        "max_value": None,
+        "log": False,
+        "options": ["ask", "auto"],
+        "size_cap": None,
+        "edit_instructions": None,
+        "active_when": None,
+        "source": None,
+    },
+    {
+        "key": "escalation.auto.threshold",
+        "name": "escalation",
+        "kind": "float",
+        "default": 0.5,
+        "min_value": 0.1,
+        "max_value": 0.9,
+        "log": False,
+        "options": None,
+        "size_cap": None,
+        "edit_instructions": None,
+        "active_when": ["escalation.policy", "auto"],
+        "source": None,
+    },
+]
+
+# `effects.json`, as `RunDirectory.save_effects` writes it: each level's change from its key's
+# reference level, with the 90% interval and the probability the metric went *up*. Written so every
+# branch of the plot is exercised — a settled effect and two the data do not settle, a goal that
+# wants less (where a rise is a loss), a key left out of the model, and one goal whose fit is
+# flagged while the other's is not.
+EFFECTS = {
+    "effects": [
+        {
+            "metric": "Helpfulness",
+            "key": "system_prompt",
+            "level": "rewritten",
+            "reference": "default",
+            "mean": 0.12,
+            "ci90": [0.04, 0.2],
+            "p_positive": 0.96,
+        },
+        {
+            "metric": "Helpfulness",
+            "key": "temperature",
+            "level": "(0.15, 0.45]",
+            "reference": "(0.45, 0.75]",
+            "mean": 0.03,
+            "ci90": [-0.05, 0.11],
+            "p_positive": 0.73,
+        },
+        {
+            "metric": "Helpfulness",
+            "key": "max_tokens",
+            "level": "(1024, 2048]",
+            "reference": "(256, 1024]",
+            "mean": -0.01,
+            "ci90": [-0.09, 0.07],
+            "p_positive": 0.41,
+        },
+        {
+            "metric": "tokens",
+            "key": "system_prompt",
+            "level": "rewritten",
+            "reference": "default",
+            "mean": 180.0,
+            "ci90": [60.0, 300.0],
+            "p_positive": 0.99,
+        },
+        {
+            "metric": "tokens",
+            "key": "temperature",
+            "level": "(0.15, 0.45]",
+            "reference": "(0.45, 0.75]",
+            "mean": -20.0,
+            "ci90": [-140.0, 100.0],
+            "p_positive": 0.37,
+        },
+        {
+            "metric": "tokens",
+            "key": "max_tokens",
+            "level": "(1024, 2048]",
+            "reference": "(256, 1024]",
+            "mean": 45.0,
+            "ci90": [-60.0, 150.0],
+            "p_positive": 0.76,
+        },
+    ],
+    "factors": [
+        {"key": "system_prompt", "kind": "text", "levels": ["default", "rewritten"], "reference": "default"},
+        {
+            "key": "temperature",
+            "kind": "range",
+            "levels": ["(0.45, 0.75]", "(0.15, 0.45]"],
+            "reference": "(0.45, 0.75]",
+        },
+        {
+            "key": "max_tokens",
+            "kind": "range",
+            "levels": ["(256, 1024]", "(1024, 2048]"],
+            "reference": "(256, 1024]",
+        },
+    ],
+    "omitted": [
+        {"key": "tool_descriptions", "why": "two values, one candidate each"},
+        {"key": "escalation.policy", "why": "one value"},
+    ],
+    "goals": [
+        {"role": "objective", "index": 0, "metric": "Helpfulness", "better": "higher"},
+        {"role": "constraint", "index": 0, "metric": "tokens", "better": "lower"},
+    ],
+    "metrics": {
+        "Helpfulness": {
+            "scale": {"unit": 1.0, "offset": 0.0},
+            "noise": 0.004,
+            "observations": 48,
+            "diagnostics": {"n_holdout": 8, "z_mean": 0.11, "z_sq_sum": 1.3, "flagged": False, "messages": []},
+        },
+        "tokens": {
+            "scale": {"unit": 1000.0, "offset": 0.0},
+            "noise": 0.02,
+            "observations": 48,
+            "diagnostics": {
+                "n_holdout": 8,
+                "z_mean": 1.4,
+                "z_sq_sum": 9.6,
+                "flagged": True,
+                "messages": ["held-out residuals run high: the model under-states the spread of token counts"],
+            },
+        },
+    },
+    "reason": None,
+}
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     clock = [START]
@@ -422,6 +628,7 @@ def main() -> None:
         "split": {"train": TRAIN, "validation": VALIDATION, "test": TEST, "seed": 20261110},
         "runs": RUNS,
         "blocks": ["instructions", "tools"],
+        "space": SPACE,
         "final_pick": {"n_finalists": 3, "rule": {"kind": "top_ranked"}},
         "score_model": {"kind": "bayesbench", "settings": {}},
         "agent_failure_score": "worst",
@@ -749,9 +956,13 @@ def main() -> None:
             continue
         (held / f"{digest}.json").write_text(json.dumps(document, indent=1) + "\n")
 
+    # `effects.json`, fitted after the fact, which is why a run can have a record and no model.
+    (OUT / "effects.json").write_text(json.dumps(EFFECTS, indent=2) + "\n")
+
     print(f"wrote {OUT}/events.jsonl: {len(events)} events, {len(lines)} bytes")
     print(f"      {OUT}/run.json")
     print(f"      {OUT}/transcripts/: {len(DOCUMENTS) - 1} files, 1 pointer left unwritten on purpose")
+    print(f"      {OUT}/effects.json: {len(EFFECTS['effects'])} estimates over {len(EFFECTS['goals'])} goals")
     print(f"      rollouts spent {spent} of {MAX_ROLLOUTS}, champion c10")
 
 

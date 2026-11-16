@@ -61,6 +61,9 @@ RUN_CONFIG_NAME = "run.json"
 # its own bookkeeping and spend the whole file budget reading it. The page reads a transcript by
 # path, when a trial is opened, which is the only time one is wanted.
 RUN_OWN_DIRS = frozenset({"transcripts", "candidates", "front"})
+# The same, for the files a run writes beside its log: the effects model the page plots on request,
+# and the champion's diff values, which are there for review. Neither is an experiment or a report.
+RUN_OWN_FILES = frozenset({"effects.json", "best.values.json"})
 
 
 def _prune_run_storage(filenames: list[str], dirnames: list[str]) -> None:
@@ -72,6 +75,7 @@ def _prune_run_storage(filenames: list[str], dirnames: list[str]) -> None:
     names = set(filenames)
     if RUN_CONFIG_NAME in names and EVENT_LOG_NAME in names:
         dirnames[:] = [d for d in dirnames if d not in RUN_OWN_DIRS]
+        filenames[:] = [f for f in filenames if f.lower() not in RUN_OWN_FILES]
 
 
 @dataclass

@@ -94,6 +94,11 @@ try {
   ok(/notes.json/.test(skips) && /not an experiment or a report/.test(skips), 'names the unrelated file', skips);
   ok(/half-written.json/.test(skips) && /invalid JSON/.test(skips), 'names the broken file with a reason', skips);
   ok(!/tuning\/run\.json/.test(skips), 'the optimizer run config is not reported as unusable', skips);
+  /* The files a run owns are not candidates for being an experiment or a report: the scan skips
+     the whole of a run directory's own storage, so the eighty transcripts, the effects model and
+     the champion's values do not come back as eighty-two files it could not use. */
+  ok(!/effects\.json/.test(skips) && !/best\.values\.json/.test(skips) && !/transcripts/.test(skips),
+    'nor are the files beside it that belong to the run', skips);
 
   // ── the optimizer run the server found, with its log fetched over HTTP ──
   ok($('#sec-opt').hidden === false, 'Optimization section offered');
@@ -152,6 +157,19 @@ try {
     .test(text('#opt-cands tr.tdetail').replace(/\s+/g, ' ')),
     'a pointer the server answers 404 for is reported as a file the run is missing, named',
     text('#opt-cands tr.tdetail').replace(/\s+/g, ' ').slice(0, 200));
+
+  /* ── the effects model, which is a third fetch and the one file the run did not write ──
+     A picked folder hands the page `effects.json` along with everything else; served, the page has
+     to know to go back for it beside the log, and a run without one answers 404 — the state this
+     drawer is hidden for. */
+  await waitFor(() => $$('#opt-eff-chart .eff-row').length > 0, 'the fetched effects model');
+  ok($('#opt-effects').hidden === false, 'the drawer is shown for the run the server has a model for');
+  ok($$('#opt-eff-chart .eff-row text.tick').map(t => t.textContent).join() === '+0.12 · 0.96,'
+    + '+0.03 · 0.73,-0.01 · 0.41',
+    'with the estimates out of the fetched file',
+    $$('#opt-eff-chart .eff-row text.tick').map(t => t.textContent).join());
+  ok(/fitted to 48 observations/.test(text('#opt-eff-cap')), 'and what it was fitted to',
+    text('#opt-eff-cap'));
   await click('.tab[data-view="runs"]');
 
   // ── selecting a run fetches both documents ──

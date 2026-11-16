@@ -461,6 +461,15 @@
   .pt.champion { fill: var(--accent); }
   /* Where the run started: an outline, so it reads as the thing the others are measured against. */
   .pt.baseline { fill: var(--bg); stroke: var(--ink2); stroke-width: 1.5; }
+  /* The effects forest plot. An interval that includes zero is drawn faint: the run's data do not
+     settle whether that level helped at all, and a crisp mark would claim they do. */
+  .eff-row.unsettled { opacity: .45; }
+  .eff-key { fill: var(--ink2); font-size: 11px; font-family: var(--font-mono, ui-monospace, Menlo, monospace); }
+  .eff-ref { fill: var(--ink3); font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif); }
+  .eff-level { fill: var(--ink1); font-size: 11.5px; }
+  .eff-ci { stroke: var(--accent); stroke-width: 2; stroke-linecap: round; }
+  .eff-dot { fill: var(--accent); stroke: var(--card); stroke-width: 1.5; }
+  .eff-zero { stroke: var(--ink2); stroke-width: 1; opacity: .5; }
   .front-line { fill: none; stroke: var(--good); stroke-width: 1.5; opacity: .75; }
   .front-fill { fill: var(--ink1); opacity: .06; }
   .front-ring { fill: none; stroke: var(--good); stroke-width: 1.25; opacity: .7; }
@@ -704,6 +713,25 @@
            rather than asserting the pair. -->
       <p class="sub source" id="opt-source" hidden></p>
       <dl class="kv wide" id="opt-setup-kv"></dl>
+
+      <!-- What it was allowed to change: the declared space, which is the only place a knob the
+           search never touched appears at all. A key is listed whether or not any candidate used
+           it, because "never changed" is a finding about the search and `changed_keys` cannot
+           state it. -->
+      <div id="opt-space-wrap" hidden>
+        <h3 class="chead2">What it could change</h3>
+        <p class="sub" id="opt-space-sub"></p>
+        <div class="scroll">
+          <table class="rep">
+            <thead><tr>
+              <th style="width:30%">Key</th><th style="width:22%">Range</th>
+              <th style="width:16%">Default</th><th style="width:14%">Candidates</th><th>Only when</th>
+            </tr></thead>
+            <tbody id="opt-space-rows"></tbody>
+          </table>
+        </div>
+        <p class="optnote" id="opt-space-note"></p>
+      </div>
     </section>
 
     <!-- ── Optimization · Results ──
@@ -793,6 +821,24 @@
             <div id="opt-to-chart"></div>
             <div class="legend" id="opt-to-legend"></div>
             <p class="cap" id="opt-to-stats"></p>
+          </div>
+        </div>
+      </details>
+      <!-- Which setting moved the metric, from `effects.json` — an estimate fitted to every trial
+           in the run, so it answers what the candidate table cannot: a candidate differs from the
+           baseline in several places at once, and its score says nothing about which of them did
+           the work. Hidden for a run with no effects model beside it. -->
+      <details class="drawer" id="opt-effects" hidden>
+        <summary>Which setting moved the metric<span class="path" id="opt-eff-sum"></span></summary>
+        <div class="charts">
+          <div class="chart wide">
+            <div class="chead">
+              <h3>Change from each key's reference value</h3>
+              <select id="opt-eff-goal" aria-label="Goal metric to show effects for"></select>
+            </div>
+            <p class="cap" id="opt-eff-cap"></p>
+            <div id="opt-eff-chart"></div>
+            <p class="optnote" id="opt-eff-note"></p>
           </div>
         </div>
       </details>
@@ -4463,7 +4509,7 @@
   /* An optimizer run is a directory holding both a run.json and an events.jsonl. Either alone is
      not enough: run.json is far too ordinary a filename to take as evidence, and the objective
      and the budget a chart needs live in it rather than in the log. */
-  function optimizerRunsFrom(configs, logs, transcripts) {
+  function optimizerRunsFrom(configs, logs, transcripts, effects) {
     const runs = [];
     [...configs.keys()].sort().forEach(dir => {
       if (!logs.has(dir)) return;
@@ -4489,6 +4535,10 @@
            an empty one: a run opened from a folder can only ever show the transcripts that folder
            held, and that is a different answer from a served run, which reads them on request. */
         transcripts: transcripts.get(dir) || new Map(),
+        /* The folder was read once, so the effects model is either in hand or the run has none —
+           either way there is nothing left to go and ask for. */
+        fromFolder: true,
+        effectsDoc: (effects.get(dir) || {}).obj || null,
         ...logSummary(log.events),
         tuned_against: null,          // DRAFT B — filled in by the caller, which holds the experiments
       });
@@ -4500,7 +4550,8 @@
   async function ingest(entries) {
     const found = [];
     skipped = [];
-    const logs = new Map(), configs = new Map(), transcripts = new Map();
+    const logs = new Map(), configs = new Map(), transcripts = new Map(), effects = new Map();
+    const owned = [];                             // `best.values.json`, held aside the same way
 
     for (const { file, path } of entries) {
       /* `transcripts/<hash>.json` is a recorded conversation, not a document to classify: it
@@ -4540,6 +4591,19 @@
           });
           continue;
         }
+        /* The same hold-aside for the two files a run writes beside its log: `effects.json`, which
+           the Results tab plots, and `best.values.json`, which is the champion's diff for review
+           and says nothing this page does not read from the log. Held rather than skipped, because
+           whether they belong to a run depends on a sibling that may not have been read yet — and
+           reported below if no run turned up. */
+        if (!why && obj && file.name.toLowerCase() === 'effects.json') {
+          effects.set(dirOf(path), { path, obj });
+          continue;
+        }
+        if (!why && obj && file.name.toLowerCase() === 'best.values.json') {
+          owned.push({ path, dir: dirOf(path) });
+          continue;
+        }
         skipped.push({ path, why: why || 'not an experiment or a report' });
         continue;
       }
@@ -4552,7 +4616,7 @@
       found.push({ kind, meta, dir: dirOf(path) });
     }
 
-    const optimizerRuns = optimizerRunsFrom(configs, logs, transcripts);
+    const optimizerRuns = optimizerRunsFrom(configs, logs, transcripts, effects);
     /* DRAFT B — the one thread between the two sections, matched here because this is where the
        tree's experiments are already parsed. */
     const experiments = found.filter(f => f.kind === 'experiment');
@@ -4568,6 +4632,12 @@
     });
     logs.forEach((log, dir) => {
       if (!paired.has(dir)) skipped.push({ path: log.path, why: 'no run.json beside it' });
+    });
+    effects.forEach((held, dir) => {
+      if (!paired.has(dir)) skipped.push({ path: held.path, why: 'not an experiment or a report' });
+    });
+    owned.forEach(held => {
+      if (!paired.has(held.dir)) skipped.push({ path: held.path, why: 'not an experiment or a report' });
     });
 
     const byDir = new Map();
@@ -5017,12 +5087,52 @@
       candidates: proposals.filter(p => p.candidate_id).length,
     };
 
+    /* The declared space: one row per flat key, in the order the record declares them, each with
+       what it was allowed to be and how many candidates actually used it. The declaration is the
+       only place a key the search never touched appears — `changed_keys` can say a key moved and
+       nothing at all about a knob that stayed where it started, which is the more interesting
+       finding of the two. */
+    const blockOf = new Map();
+    for (const b of ((cfg.search || {}).blocks || [])) {
+      for (const key of ((b || {}).keys || [])) if (!blockOf.has(key)) blockOf.set(key, b.name || b.key);
+    }
+    const space = (Array.isArray(cfg.space) ? cfg.space : []).map(row => {
+      const key = String((row || {}).key == null ? '' : row.key);
+      let active = 0, changed = 0;
+      for (const p of points) {
+        const values = valuesOf(p.candidate_id);
+        if (values && key in values) active++;
+      }
+      for (const p of proposals) if (p.changed_keys.includes(key)) changed++;
+      return {
+        key,
+        kind: (row || {}).kind || '',
+        min: typeof row.min_value === 'number' ? row.min_value : null,
+        max: typeof row.max_value === 'number' ? row.max_value : null,
+        log: !!row.log,
+        step: typeof row.step === 'number' ? row.step : null,
+        options: Array.isArray(row.options) ? row.options : null,
+        sizeCap: typeof row.size_cap === 'number' ? row.size_cap : null,
+        default: row.default,
+        /* `("conversation_manager", "window")`: the key exists only under that alternative, so a
+           candidate that chose the other one does not have it at all, and the count of candidates
+           it was active for is meaningless without saying so. */
+        when: Array.isArray(row.active_when) && row.active_when.length === 2 ? row.active_when : null,
+        block: blockOf.get(key) || null,
+        active, changed,
+      };
+    });
+    // Keys the search moved that the declaration does not list. Worth saying rather than hiding.
+    const undeclared = space.length ? tuned.filter(k => !space.some(r => r.key === k)) : [];
+
     const budget = cfg.budget || {};
     const scored = proposals.filter(p => p.objective != null);
     return {
       result,
       winner,
       explain,
+      space,
+      undeclared,
       baselineValues,
       baselineId,
       config: cfg,
@@ -5275,6 +5385,87 @@
     return svg(yax + xax + region + line + dots);
   }
 
+  /* ── which setting moved the metric ──
+     A forest plot of `effects.json`: for one goal metric, each level's estimated change from its
+     key's reference level, with the 90% interval the model gives it. It is the one figure on this
+     tab that is not a measurement — a candidate differs from the baseline in several places at
+     once, so its score cannot say which of them did the work, and only a model fitted across
+     every trial can separate them. Rows are grouped by key, since a level means nothing without
+     the one it is a change *from*. */
+
+  const EFF = { row: 22, head: 20, lab: 152, right: 104 };
+
+  /* A change, with its sign spelled out: "0.12" and "+0.12" are the same number and read as
+     different claims, and the result card above says its deltas the same way. */
+  const signed = v => (v > 0 ? '+' : '') + fine(v);
+  /* The model estimates a change; whether that change is an improvement is the goal's business.
+     `p_positive` is the probability the metric went up, so for a goal that wants less it is the
+     probability it got worse — reporting it unflipped would call a token saving a 0.1 chance of
+     being better. */
+  const pBetter = (e, better) =>
+    better === 'lower' ? 1 - (e.p_positive || 0) : (e.p_positive || 0);
+
+  function effectsChart(ef, goal) {
+    const rows = (ef.effects || []).filter(e => e && e.metric === goal.metric
+      && Array.isArray(e.ci90) && e.ci90.length === 2 && typeof e.mean === 'number');
+    if (!rows.length) {
+      return '<div class="empty">The model estimated no effect for this metric.</div>';
+    }
+    /* In the space's own order, so the plot reads down the keys the way Setup lists them. A key the
+       factors list does not mention goes last rather than first. */
+    const order = new Map((ef.factors || []).map((f, i) => [f.key, i]));
+    const sorted = rows.slice().sort((a, b) =>
+      (order.has(a.key) ? order.get(a.key) : 1e6) - (order.has(b.key) ? order.get(b.key) : 1e6));
+    const groups = [];
+    for (const e of sorted) {
+      const last = groups[groups.length - 1];
+      if (last && last.key === e.key) last.rows.push(e);
+      else groups.push({ key: e.key, reference: e.reference, rows: [e] });
+    }
+
+    /* Zero is always in view: every bar is a change *from* the reference level, so the line at no
+       change is what each of them is read against. */
+    const lo = Math.min(0, ...rows.map(e => e.ci90[0]));
+    const hi = Math.max(0, ...rows.map(e => e.ci90[1]));
+    const pad = ((hi - lo) || Math.abs(hi) || 1) * 0.08;
+    const span = (hi + pad) - (lo - pad);
+    const left = EFF.lab, right = W - EFF.right;
+    const x = v => left + ((v - (lo - pad)) / span) * (right - left);
+    const height = EFF.head + groups.reduce((n, g) => n + g.rows.length + 1, 0) * EFF.row + 8;
+
+    let ticks = '';
+    for (let i = 0; i <= 4; i++) {
+      const v = (lo - pad) + (span * i) / 4, xx = x(v);
+      ticks += `<line class="grid-l" x1="${xx}" y1="${EFF.head - 4}" x2="${xx}" y2="${height - 6}"/>`
+        + `<text class="tick" x="${xx}" y="${EFF.head - 8}" `
+        + `text-anchor="${i === 0 ? 'start' : i === 4 ? 'end' : 'middle'}">${esc(nice(v))}</text>`;
+    }
+    ticks += `<line class="eff-zero" x1="${x(0)}" y1="${EFF.head - 4}" x2="${x(0)}" y2="${height - 6}"/>`
+      + `<text class="tick" x="${right + 6}" y="${EFF.head - 8}">change · P(better)</text>`;
+
+    let body = '', y = EFF.head;
+    for (const g of groups) {
+      body += `<text class="eff-key" x="2" y="${y + EFF.row / 2}" dy="0.32em">${esc(g.key)}`
+        + `<tspan class="eff-ref"> vs ${esc(g.reference)}</tspan></text>`;
+      y += EFF.row;
+      for (const e of g.rows) {
+        const cy = y + EFF.row / 2;
+        y += EFF.row;
+        const settled = e.ci90[0] > 0 || e.ci90[1] < 0;
+        const p = pBetter(e, goal.better);
+        body += `<g class="eff-row ${settled ? 'settled' : 'unsettled'}">`
+          + `<title>${esc(`${e.key} = ${e.level} vs ${g.reference}: ${signed(e.mean)}`
+            + ` [${fine(e.ci90[0])} – ${fine(e.ci90[1])}], P(better) ${p.toFixed(2)}`)}</title>`
+          + `<text class="eff-level" x="14" y="${cy}" dy="0.32em">${esc(e.level)}</text>`
+          + `<line class="eff-ci" x1="${x(e.ci90[0])}" y1="${cy}" x2="${x(e.ci90[1])}" y2="${cy}"/>`
+          + `<circle class="eff-dot" cx="${x(e.mean)}" cy="${cy}" r="4"/>`
+          + `<text class="tick" x="${right + 6}" y="${cy}" dy="0.32em">`
+          + `${esc(signed(e.mean))} · ${esc(p.toFixed(2))}</text></g>`;
+      }
+    }
+    return `<svg viewBox="0 0 ${W} ${height}" role="img">${ticks}${body}</svg>`;
+  }
+
   /* Columns, not a line: each bar is what one iteration cost, and a line between them would
      imply a rate in between that nothing measured. */
   function usageChart(d, key, label) {
@@ -5338,7 +5529,6 @@
        words: these are the objective's own, so they are nowhere else on the page, but the table
        above has taught the reader to scan a delta and an interval by now. */
     const o = r.objective;
-    const signed = v => (v > 0 ? '+' : '') + fine(v);
     let verdict;
     if (!o || typeof o.mean_diff !== 'number') {
       verdict = 'This report records no overall comparison against the baseline — only the per-metric '
@@ -5442,6 +5632,12 @@
   let optMetric = null, optUsage = null;
   // Which pair of goals is on the trade-off chart, kept across re-renders for the same reason.
   let optToX = null, optToY = null;
+  // Which goal the effects plot is showing, likewise.
+  let optEffGoal = null;
+  /* The selected run's effects model: `{ state, doc }` where state is `ok`, `none` for a run with
+     no `effects.json` beside it — the usual case, since it is fitted after the fact — or `error`.
+     One run at a time, because it is one small file read when that run is selected. */
+  let EFFECTS = { state: 'none' };
   let optQuery = '', optFilter = 'all';
   const optOpen = new Set();
   /* Which trial is open, as `<candidate_id>|<index into its trials>`. One at a time: a trial opens
@@ -5567,6 +5763,65 @@
     } catch (err) {
       done(err.status === 404 ? { state: 'missing' } : { state: 'error', why: err.message });
     }
+  }
+
+  /* The run's effects model, read the same two ways — except that its absence needs no explaining.
+     `effects.json` is fitted to a finished record rather than written as the run goes, so most
+     runs have none, and a 404 here is an ordinary answer rather than a file gone missing. */
+  async function readEffects(run) {
+    if (run.effectsDoc) return { state: 'ok', doc: run.effectsDoc };
+    if (run.fromFolder || MODE !== 'server') return { state: 'none' };
+    const rel = `${run.dir && run.dir !== '.' ? run.dir + '/' : ''}effects.json`;
+    try {
+      return { state: 'ok', doc: (await api('/api/file?path=' + encodeURIComponent(rel))).document };
+    } catch (err) {
+      return err.status === 404 ? { state: 'none' } : { state: 'error', why: err.message };
+    }
+  }
+
+  /* What an effects document has to carry before the plot can claim to read it: the estimates, the
+     goals they are estimated for, and the per-metric block the observation count comes from. */
+  const usableEffects = doc => !!doc && typeof doc === 'object'
+    && Array.isArray(doc.effects) && Array.isArray(doc.goals) && !!doc.metrics;
+
+  function renderEffects() {
+    const ef = EFFECTS.state === 'ok' && usableEffects(EFFECTS.doc) ? EFFECTS.doc : null;
+    /* No model, no drawer. A run with no `effects.json` is the normal case, and a drawer that
+       opens onto "not fitted" is a promise the page cannot keep. */
+    $('opt-effects').hidden = !ef || !ef.effects.length;
+    if (!ef || !ef.effects.length) return;
+
+    /* The goals the model fitted, which are the record's own goals plus their direction — the one
+       thing the effects file states outright that the objective string only implies. */
+    const goals = ef.goals.filter(g => g && g.metric);
+    optEffGoal = fillPick('opt-eff-goal', goals.map(g => ({
+      value: g.metric,
+      label: `${g.metric} · ${g.better === 'lower' ? 'lower' : 'higher'} is better`,
+    })), optEffGoal);
+    $('opt-eff-goal').hidden = goals.length < 2;
+    const goal = goals.find(g => g.metric === optEffGoal) || goals[0];
+
+    const m = (ef.metrics || {})[goal.metric] || {};
+    const diag = m.diagnostics || null;
+    $('opt-eff-sum').textContent = plural(ef.effects.filter(e => e.metric === goal.metric).length, 'estimate');
+    $('opt-eff-cap').textContent = `Each level against its key's reference level, for ${goal.metric}`
+      + `${typeof m.observations === 'number' ? `, fitted to ${plural(m.observations, 'observation')}` : ''}`
+      + '. The bar is the 90% interval; one that crosses zero is drawn faint, because the run\'s '
+      + 'trials do not settle it.';
+    $('opt-eff-chart').innerHTML = effectsChart(ef, goal);
+
+    /* Two things the plot cannot show and a reader needs: the keys left out of the model, and
+       whether the fit held up on the trials it was not given. */
+    const notes = [];
+    if ((ef.omitted || []).length) {
+      notes.push(`Not modelled: ${ef.omitted.map(o => `${o.key} (${o.why})`).join(', ')}.`);
+    }
+    if (diag && diag.flagged) {
+      notes.push('The fit is flagged, so read these estimates as rough'
+        + `${(diag.messages || []).length ? `: ${diag.messages.join('; ')}` : '.'}`);
+    }
+    $('opt-eff-note').textContent = notes.join(' ');
+    $('opt-eff-note').className = 'optnote' + (diag && diag.flagged ? ' warn' : '');
   }
 
   /* Long text, cut with the amount cut named. There is no "show more" here on purpose: the whole
@@ -6063,6 +6318,8 @@
       $('opt-source').hidden = true;
       $('opt-metric-wrap').hidden = true;
       $('opt-tradeoff').hidden = true;
+      $('opt-effects').hidden = true;
+      $('opt-space-wrap').hidden = true;
       $('opt-cost').hidden = true;
       $('opt-cand-sub').textContent = '';
       $('opt-cand-count').textContent = '';
@@ -6125,6 +6382,9 @@
        there is no such number, so the trade-off between them is the only honest answer. */
     $('opt-tradeoff').hidden = d.goals.length < 2;
     if (d.goals.length >= 2) renderTradeoff(d);
+
+    /* Which setting moved the metric, when the run has a model of that beside it. */
+    renderEffects();
 
     /* Tokens, model calls and seconds are the same shape in almost every run, so they share one
        chart and a unit picker rather than taking three panels to say it three times. */
@@ -6219,11 +6479,15 @@
        answer about one run directory and must not be carried into the next. */
     openTrial = null;
     TRANSCRIPTS.clear();
+    EFFECTS = { state: 'none' };
     if (!run) { renderOptimization(); return; }
     try {
       const events = run.eventsCache || (await api('/api/events?path=' + encodeURIComponent(run.events_path))).events;
       run.eventsCache = events;
       OPT = deriveOptimization(events, run.config);
+      /* Awaited, so the run renders once with a settled answer: the effects drawer is either there
+         or it is not, rather than appearing a moment after the rest of the tab. */
+      EFFECTS = await readEffects(run);
     } catch (err) {
       OPT = null;
       $('opt-sub').textContent = `Could not read ${run.events_path}: ${err.message}`;
@@ -6325,7 +6589,12 @@
     rows.push(['Budget', limits.length ? limits.join(' · ') : '<span class="empty">none set</span>']);
 
     if (f.blocks.length) rows.push(['Tunable blocks', f.blocks.map(esc).join(', ')]);
-    if (d.explain.tuned.length) rows.push(['Actually varied', d.explain.tuned.map(k => mono(k)).join(', ')]);
+    /* Only when there is no space table under this list. With one, every key is a row there with
+       the count of candidates that changed it, and this line would be the same answer again in a
+       form that cannot say which keys never moved. */
+    if (!d.space.length && d.explain.tuned.length) {
+      rows.push(['Actually varied', d.explain.tuned.map(k => mono(k)).join(', ')]);
+    }
     const pick = c.final_pick || {};
     if (pick.n_finalists != null || f.pickRule) {
       rows.push(['Final pick', [pick.n_finalists != null ? `${plural(pick.n_finalists, 'finalist')}` : null,
@@ -6340,6 +6609,62 @@
     $('opt-setup-kv').innerHTML = rows.map(([k, v]) =>
       `<dt>${esc(k)}</dt><dd${/^(Objective|Constraints|Started in|Run id)$/.test(k) ? ' class="m"' : ''}>${v}</dd>`
     ).join('');
+    renderOptimizerSpace(d);
+  }
+
+  /* ── what the search was allowed to change ──
+     The declared space, one row per flat key. Read from `run.json`, so it is the record as written
+     like the rest of Setup — and the only account of the knobs that exist, as against the ones
+     some candidate happened to move. */
+
+  /* What a key was allowed to be. A bound without its kind is ambiguous — `4 – 40` could be a
+     float — and a step of 1 on an int is what `int` already means, so it is not said twice. */
+  function domainText(r) {
+    if (r.kind === 'int' || r.kind === 'float') {
+      const step = r.step != null && !(r.kind === 'int' && r.step === 1) ? ` step ${fine(r.step)}` : '';
+      return `${r.kind} ${r.min == null ? '?' : fine(r.min)} – ${r.max == null ? '?' : fine(r.max)}`
+        + `${r.log ? ' log' : ''}${step}`;
+    }
+    if (r.kind === 'text') return r.sizeCap ? `text ≤ ${compact(r.sizeCap)} chars` : 'text';
+    if (r.kind === 'skills') return 'skill library';
+    return r.options ? `${r.kind} · ${plural(r.options.length, 'option')}` : r.kind || '—';
+  }
+
+  /* A text key's default is recorded as a digest and a length, never the prompt itself — so the
+     cell says how long it was rather than printing a hash as though it were a value. */
+  function defaultText(r) {
+    const v = r.default;
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      return typeof v.length === 'number'
+        ? `<span class="path">${esc(plural(v.length, 'character'))}</span>` : '<span class="path">recorded</span>';
+    }
+    if (v === undefined) return '<span class="empty">none</span>';
+    return `<span class="mono">${esc(typeof v === 'number' ? fine(v) : String(v))}</span>`;
+  }
+
+  function renderOptimizerSpace(d) {
+    const space = d.space || [];
+    $('opt-space-wrap').hidden = !space.length;
+    if (!space.length) return;
+    const total = d.points.length;
+    $('opt-space-sub').textContent = `${plural(space.length, 'key')} the optimizer could set, as `
+      + 'run.json declares them. A key with no candidate behind it was never varied.';
+    $('opt-space-rows').innerHTML = space.map(r => {
+      const block = r.block ? ` <span class="tag">${esc(r.block)}</span>` : '';
+      /* "0 of 11" rather than a dash: the key was declared and the search left it alone, which is
+         a measurement of the search and not a missing value. */
+      const used = `${r.active} of ${total}`
+        + (r.changed ? ` <span class="path">${esc(plural(r.changed, 'change'))}</span>` : '');
+      return `<tr><td><span class="mono">${esc(r.key)}</span>${block}</td>`
+        + `<td>${esc(domainText(r))}</td><td>${defaultText(r)}</td>`
+        + `<td>${used}</td>`
+        + `<td>${r.when
+          ? `<span class="mono">${esc(r.when[0])}</span> = <span class="mono">${esc(r.when[1])}</span>`
+          : '<span class="path">always</span>'}</td></tr>`;
+    }).join('');
+    $('opt-space-note').textContent = d.undeclared.length
+      ? `The log also changed ${d.undeclared.join(', ')}, which this space does not declare.` : '';
+    $('opt-space-note').className = 'optnote' + (d.undeclared.length ? ' warn' : '');
   }
 
   /* Copy and download the winning configuration. `navigator.clipboard` needs a secure context,
@@ -6449,6 +6774,7 @@
   $('opt-usage-pick').onchange = e => { optUsage = e.target.value; renderOptimization(); };
   $('opt-to-x').onchange = e => { optToX = e.target.value; renderOptimization(); };
   $('opt-to-y').onchange = e => { optToY = e.target.value; renderOptimization(); };
+  $('opt-eff-goal').onchange = e => { optEffGoal = e.target.value; renderOptimization(); };
 
   /* ══════════ boot ══════════ */
 
