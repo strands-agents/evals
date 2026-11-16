@@ -524,7 +524,6 @@ def _iteration_rows(
     ends: dict[int, Mapping[str, Any]] = {}
     tokens: Counter[int] = Counter()
     calls: Counter[int] = Counter()
-    opened: dict[str, int] = {}  # a round opener's patch -> the step that proposed it (it is observed later)
     baseline_rollouts = 0
     for event in events:
         name, iteration = event["event"], event["iteration"]
@@ -532,21 +531,11 @@ def _iteration_rows(
             fits[iteration] = event
         elif name == "iteration_end":
             ends[iteration] = event
-        elif name in ("propose", "duplicate") and event.get("patch") is not None:
-            opened.setdefault(json.dumps(event["patch"], sort_keys=True), iteration)
         elif name == "score" and iteration == 0 and event["split"] == "train":
             baseline_rollouts += event["rollouts"]
-    for event in events:
-        usage = None
-        if event["event"] == "observe":
-            patch = event["observation"]["patch"]
-            usage = patch.get("usage")
-            iteration = opened.get(json.dumps(patch, sort_keys=True), event["iteration"])
-        elif event["event"] == "proposer_usage":
-            usage, iteration = event["usage"], event["iteration"]
-        if usage is not None:
-            tokens[iteration] += usage["tokens"]
-            calls[iteration] += usage["model_calls"]
+        elif name == "proposer_usage":  # every proposer call's spend, in the step that asked
+            tokens[iteration] += event["usage"]["tokens"]
+            calls[iteration] += event["usage"]["model_calls"]
     rows = []
     total = baseline_rollouts
     for record in iterations:

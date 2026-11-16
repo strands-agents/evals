@@ -10,7 +10,7 @@ import random
 import statistics
 import warnings
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -126,7 +126,7 @@ class Optimizer:
         seed: int = 0,
         base_dir: str | Path | None = None,
         name: str | None = None,
-        on_iteration: Callable[[IterationRecord], None] | None = None,
+        on_iteration: Callable[[IterationRecord], Awaitable[None] | None] | None = None,
     ):
         """`base_dir=None` puts runs under `.strands-evals/optimization/runs/`, relative to the working directory.
 
@@ -159,13 +159,15 @@ class Optimizer:
             seed: Seeds the split (unless `Split(seed=)` is set), selection, TPE, and Thompson.
             base_dir: Where run directories go.
             name: The run folder's prefix (lowercase letters, digits, `-`, `_`); for reading only.
-            on_iteration: Called with each finished iteration.
+            on_iteration: Called with each finished iteration, after its `iteration_end` event; an `async def`
+                callback is awaited. An error it raises stops the run there and reaches the caller, and
+                `Optimizer.resume` continues from the next iteration.
 
         Raises:
             TypeError: Conflicting arguments, e.g. `factory` and `build_task` together.
-            ValueError: No evaluators and no objective, fewer than one train or validation case, a bad
-                `name`, or a budget below the baseline plus the end phase's reserve. (Split shares not
-                summing to 1 are rejected by `Split` itself.)
+            ValueError: No evaluators and no objective, case or evaluator names not unique, fewer than one
+                train or validation case, a bad `name`, or a budget below the baseline plus the end phase's
+                reserve. (Split shares not summing to 1 are rejected by `Split` itself.)
         """
         if (factory is None) == (build_task is None):
             raise TypeError(
@@ -218,6 +220,13 @@ class Optimizer:
             raise ValueError(f"case names must be unique; repeated: {repeated}")
         # Experiment replaces an empty evaluator list with a placeholder Evaluator() that always raises.
         evaluators = [e for e in experiment.evaluators if type(e) is not Evaluator]
+        evaluator_names = [e.get_name() for e in evaluators]
+        repeated = sorted({n for n in evaluator_names if evaluator_names.count(n) > 1})
+        if repeated:
+            raise ValueError(
+                f"evaluator names must be unique; repeated: {repeated}; pass name=... to tell instances of one "
+                "evaluator class apart"
+            )
         registry = MetricRegistry(
             {e.get_name(): tuple(getattr(e, "score_range", None) or (0.0, 1.0)) for e in evaluators}
         )
@@ -451,6 +460,16 @@ class Optimizer:
         """
         self._setup()
         self._propose_lock = asyncio.Lock()
+        if self._resumed is not None:
+            assert self._run is not None
+            budget = self._budget.budget
+            self._run.events.append(
+                "resume",
+                iteration=self._resumed.iteration,
+                spent=self._resumed.spent,
+                budget={"max_rollouts": budget.max_rollouts, "max_iterations": budget.max_iterations},
+                code=code_version(),
+            )
         if self._resumed is not None and self._resumed.candidates:
             self._restore(self._resumed)
             return
@@ -578,7 +597,9 @@ class Optimizer:
                 return "proposer_error"
             self._iterations.append(record)
             if self._on_iteration is not None:
-                self._on_iteration(record)
+                outcome = self._on_iteration(record)
+                if inspect.isawaitable(outcome):
+                    await outcome
 
     def _stop(self, reason: StopReason) -> None:
         """Close every open round (its opener told the round's best), then write the `stop` event."""
@@ -1291,9 +1312,14 @@ class Optimizer:
                 error=str(error),
             )
             raise _ProposerFailed(name) from error
-        for patch in patches:
-            if patch.usage is not None:
-                self._search_cost = self._search_cost + patch.usage
+        # Logged now, not only in the observe events, so a killed iteration's proposals still count on resume.
+        spent = [patch.usage for patch in patches if patch.usage is not None]
+        if spent:
+            usage = Usage.zero()
+            for patch_usage in spent:
+                usage = usage + patch_usage
+            self._search_cost = self._search_cost + usage
+            run.events.append("proposer_usage", iteration=iteration, block=name, redraw=redraw, usage=usage)
         return patches
 
     def _merge(
@@ -1705,7 +1731,7 @@ class Optimizer:
         environment: EnvironmentFn | None = None,
         budget: Budget | None = None,
         max_workers: int | None = None,
-        on_iteration: Callable[[IterationRecord], None] | None = None,
+        on_iteration: Callable[[IterationRecord], Awaitable[None] | None] | None = None,
     ) -> Optimizer:
         """Reopen a killed run; every saved trial is reused as is.
 
@@ -1823,13 +1849,6 @@ class Optimizer:
                 UserWarning,
                 stacklevel=2,
             )
-        run.events.append(
-            "resume",
-            iteration=state.iteration,
-            spent=state.spent,
-            budget={"max_rollouts": budget.max_rollouts, "max_iterations": budget.max_iterations},
-            code=code,
-        )
         optimizer._run, optimizer._resumed = run, state
         return optimizer
 

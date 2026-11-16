@@ -159,6 +159,13 @@ def test_cases_need_unique_names():
         _optimizer(unnamed)
 
 
+def test_evaluators_need_unique_names(tmp_path):
+    with pytest.raises(ValueError, match=r"evaluator names must be unique; repeated: \['Score'\]"):
+        _optimizer(_experiment(evaluators=[Score(), Score()]), base_dir=tmp_path)
+    assert list(tmp_path.iterdir()) == []  # rejected before any run folder exists
+    _optimizer(_experiment(evaluators=[Score(), Score(name="Score2")]))
+
+
 def test_no_evaluators_and_no_objective():
     with pytest.raises(ValueError, match="nothing to optimize"):
         _optimizer(_experiment(evaluators=[]))
@@ -521,11 +528,10 @@ async def test_a_step_is_cut_to_what_the_budget_can_score(tmp_path):
         budget=Budget(max_rollouts=52, max_iterations=1),
         proposals_per_iteration=2,
     )
-    _, events = await _search(optimizer)
-    # One slot, so the step never proposes a candidate it couldn't score: no `unscored` event.
+    await _search(optimizer)
+    # One slot, so the step never proposes a candidate it couldn't score.
     assert optimizer._iterations[0].n_candidates == 1
     assert [o.outcome for o in proposer.observed] == ["feasible"]
-    assert not any(e["event"] == "unscored" for e in events)
     assert proposer.updates == [{"temperature": 1.0}]  # never asked for
     assert optimizer._budget.spent == 16
 
@@ -664,6 +670,82 @@ async def test_a_round_opener_is_told_the_rounds_best_at_its_end(tmp_path):
     assert first.round_candidate_ids == round_zero and first.candidate_id == round_zero[0]
     # The outer block isn't told the inner candidates as evidence.
     assert outer.evidenced == []
+
+
+async def test_every_proposer_calls_spend_counts_on_resume(tmp_path):
+    spend = Usage(
+        input_tokens=9,
+        output_tokens=1,
+        tokens=10,
+        cache_read_tokens=None,
+        cache_write_tokens=None,
+        model_calls=1,
+        seconds=1.0,
+        models=["m"],
+    )
+
+    class Spending(Scripted):
+        async def propose(self, request):
+            patches = await super().propose(request)
+            return [p.model_copy(update={"usage": spend}) for p in patches]
+
+    optimizer = _searching(
+        Block(Spending({"manager": "Summary"}, {"manager": "Window"}), "manager", name="structure"),
+        Block(Spending({"temperature": 0.5}, {"temperature": 1.0}), "temperature"),
+        schedule=Nested("structure", inner_iterations=2),
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=4),
+        proposals_per_iteration=1,
+    )
+    await _search(optimizer)
+    assert optimizer._search_cost.tokens == 40  # opener, inner, inner, opener
+
+    def search_cost(where, keep):
+        copy = _killed(optimizer._run.root, tmp_path / where, keep)
+        return load_state(RunDirectory.open(copy), config=optimizer._config()).search_cost.tokens
+
+    # Round 0 open: its opener is observed only at the round's end, but was paid for.
+    assert search_cost("open round", lambda events: _index(events, "iteration_end")) == 10
+    # Killed in iteration 2 after its proposal was scored: the iteration runs again, its spend still counts.
+    killed = search_cost("killed", lambda events: _index(events, "score", after=_index(events, "iteration_end")))
+    assert killed == 20
+    state = load_state(RunDirectory.open(optimizer._run.root), config=optimizer._config())
+    assert state.search_cost == optimizer._search_cost
+
+
+async def test_on_iteration_may_be_async_and_its_error_stops_the_run(tmp_path):
+    records = []
+
+    async def collect(record):
+        await asyncio.sleep(0)
+        records.append(record)
+
+    optimizer = _searching(
+        Block(Scripted({"temperature": 0.5}), "temperature"),
+        schedule=Alternate(),
+        base_dir=tmp_path / "async",
+        budget=Budget(max_iterations=1),
+        on_iteration=collect,
+        proposals_per_iteration=1,
+    )
+    await _search(optimizer)
+    assert [r.iteration for r in records] == [1]
+
+    def broken(record):
+        raise RuntimeError("callback bug")
+
+    optimizer = _searching(
+        Block(Scripted({"temperature": 0.5}), "temperature"),
+        schedule=Alternate(),
+        base_dir=tmp_path / "raising",
+        budget=Budget(max_iterations=1),
+        on_iteration=broken,
+        proposals_per_iteration=1,
+    )
+    with pytest.raises(RuntimeError, match="callback bug"):
+        await optimizer.run_async()
+    # The iteration was closed first, so the run resumes past it.
+    assert [e["event"] for e in _events(optimizer)][-1] == "iteration_end"
 
 
 async def test_a_refit_that_raises_is_recorded_and_the_run_goes_on(tmp_path):
@@ -1053,7 +1135,9 @@ async def test_resuming_a_finished_run_returns_its_result_and_spends_nothing(tmp
     root = original_optimizer._run.root
     trials = sum(1 for e in _events_at(root) if e["event"] == "trial")
 
-    again = await _resume(root, budget=Budget(max_rollouts=2000, max_iterations=50)).run_async()
+    resumed = _resume(root, budget=Budget(max_rollouts=2000, max_iterations=50))
+    assert [e["event"] for e in _events_at(root)][-1] != "resume"  # resume() itself writes nothing
+    again = await resumed.run_async()
 
     _assert_same(again, original)
     assert sum(1 for e in _events_at(root) if e["event"] == "trial") == trials

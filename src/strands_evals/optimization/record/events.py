@@ -63,7 +63,9 @@ class EventLog:
     - `duplicate`: `block`, `redraw`, `candidate_id` (the existing one); `patch` and `round` for a round's
       opener.
     - `proposer_retry`, `proposer_error`: `block`, `redraw`, `error_type`, `error`.
-    - `proposer_usage`: `block`, `redraw`, `usage` (`Usage`: a `propose` call's spend no returned patch carries).
+    - `proposer_usage`: `block`, `redraw`, `usage` (`Usage`): a `propose` call's spend, written by the proposer
+      for spend no returned patch carries, and by the optimizer for the returned patches' `usage` (also in
+      their `observe` events, which `search_cost` doesn't read).
     - `screened`: `block`, `key`, `reason`.
     - `resume`: `spent`, `budget`, `code` (the resuming strands-evals: version, git commit, dirty).
     - `stop`: `reason` (a `stop_reason`, or `"setup"` when the baseline isn't eligible), `message`.
@@ -78,9 +80,9 @@ class EventLog:
     `previous_attempts`'); candidates, numbers, parents, and rounds from `propose` and `iteration_end`;
     exhausted blocks and iterations from `iteration_end`; history from `select`; open rounds from openers
     with no observe yet; `stop_reason` from the last `stop`; proposer feedback from `observe` / `evidence`;
-    `search_cost` from the `observe` events' `Patch.usage` plus the `proposer_usage` events; the fit sequence
-    from `fit`; the end phase's progress from `finalists` / `picked` / `test`. Only search events up to the
-    last `iteration_end` are replayed; trial events are always read (the cache).
+    `search_cost` from every `proposer_usage` event, a killed iteration's included; the fit sequence from
+    `fit`; the end phase's progress from `finalists` / `picked` / `test`. Only search events up to the last
+    `iteration_end` are replayed; trial and `proposer_usage` events are always read.
     """
 
     def __init__(self, path: Path):

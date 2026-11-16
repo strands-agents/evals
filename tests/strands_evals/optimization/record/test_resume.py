@@ -117,6 +117,7 @@ def run(tmp_path):
     outer = _patch("outer", tokens=5)
     log.append("select", iteration=1, parent_id="base", strategy="top_ranked")
     _propose(log, "c1", "base", "structure", round=[0], role="opener", patch=outer)
+    log.append("proposer_usage", block="structure", redraw=0, usage=_usage(5))  # the opener's patch
     log.append("trial", record=_trial("c1", "a"))
     log.append("fit", candidates=["base", "c1"], is_fitted=False, error="ValueError: boom", flagged=[], diagnostics={})
     log.append("evidence", block="numbers", evidence=_evidence("c1"))
@@ -126,6 +127,7 @@ def run(tmp_path):
     log.append("select", iteration=2, parent_id="c1", strategy="top_ranked")
     log.append("duplicate", block="numbers", redraw=0, candidate_id="base", patch=inner, round=[0, 0])
     _propose(log, "base", "base", "numbers", rescore=True)
+    log.append("proposer_usage", block="numbers", redraw=0, usage=_usage(7))  # the invalid patch's
     log.append("observe", block="numbers", candidate_id=None, observation=_observation(None, _patch(9, tokens=7)))
     log.append("proposer_usage", block="numbers", redraw=0, usage=_usage(3))  # a call that returned no patch
     log.append("fit", candidates=["base", "c1"], is_fitted=True, error=None, flagged=[], diagnostics={})
@@ -167,7 +169,9 @@ def test_load_state_rebuilds_the_search_up_to_the_last_closed_iteration(run):
     ]
     assert [type(f).__name__ for f in state.feedback["numbers"]] == ["Evidence", "Observation"]
     assert "structure" not in state.feedback  # the outer opener's observe was in the killed iteration
-    assert state.search_cost.tokens == 10  # the closed iterations' observe (7) and proposer_usage (3) events
+    # Every proposer_usage event: the open round's opener (5), the invalid patch (7), a call that returned no
+    # patch (3), and the killed iteration 3's call (100), which was paid for though its events are dropped.
+    assert state.search_cost.tokens == 115
     assert state.stop_reason is None
     assert state.finalists is None
     assert state.is_test_done is False
@@ -272,12 +276,12 @@ def _validation(champion):
         ),
         (
             lambda c: c["space"][1].update(max_value=50),
-            r"^space\['cm\.window\.window_size'\]\.max_value changed: 40 -> 50; start a new run",
+            r"^space\['cm\.window\.window_size'\]\.max_value changed: 40 -> 50; pass the run's space",
         ),
         (lambda c: c["space"].pop(1), r"^space\['cm\.window\.window_size'\] changed: \{.* -> None"),
         (
             lambda c: c["space"][2]["default"].update(sha256="b" * 64),
-            r"^space\['rules'\]\.default\.sha256 changed: 'a{64}' -> 'b{64}'; start a new run",
+            r"^space\['rules'\]\.default\.sha256 changed: 'a{64}' -> 'b{64}'; pass the run's space",
         ),
         (
             lambda c: c["selection"].update(name="random_top_k"),
