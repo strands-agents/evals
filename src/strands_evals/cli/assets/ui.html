@@ -4490,10 +4490,21 @@
      Same rule as the server's `tuned_against`, so one folder reads the same opened from disk as
      served: the winner matches the most of the split, ties go to the first path, and nothing
      matching is `null` rather than a file named at random. */
+  /* The case ids in one split, out of either shape a record writes them in. The optimizer puts the
+     *fractions* it was asked for at `split.train` and the names it drew under `split.cases.train`;
+     earlier records put the names at `split.train` directly. Reading the first shape as the second
+     iterated the number 0.4, which threw on the opened folder and took the whole page with it. */
+  const splitCases = (split, part) => {
+    const s = split || {};
+    const nested = (s.cases || {})[part];
+    if (Array.isArray(nested)) return nested;
+    return Array.isArray(s[part]) ? s[part] : [];
+  };
+
   function tunedAgainst(split, experiments) {
     const wanted = new Set();
     for (const part of ['train', 'validation', 'test']) {
-      for (const id of ((split || {})[part] || [])) {
+      for (const id of splitCases(split, part)) {
         if (typeof id === 'string' || typeof id === 'number') wanted.add(String(id));
       }
     }
@@ -5089,7 +5100,7 @@
        never optimized against. A reader who does not know that cannot read any of the numbers. */
     const split = cfg.split || {};
     const sizes = ['train', 'validation', 'test']
-      .map(name => ({ name, n: Array.isArray(split[name]) ? split[name].length : null }))
+      .map(name => ({ name, n: splitCases(split, name).length }))
       .filter(s => s.n);
     const tuned = [];
     for (const p of proposals) {

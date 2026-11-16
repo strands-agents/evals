@@ -62,8 +62,9 @@ RUN_CONFIG_NAME = "run.json"
 # path, when a trial is opened, which is the only time one is wanted.
 RUN_OWN_DIRS = frozenset({"transcripts", "candidates", "front"})
 # The same, for the files a run writes beside its log: the effects model the page plots on request,
-# and the champion's diff values, which are there for review. Neither is an experiment or a report.
-RUN_OWN_FILES = frozenset({"effects.json", "best.values.json"})
+# the champion's diff values, which are there for review, and the `OptimizationResult` the run
+# returns. None of the three is an experiment or a report, and a real run leaves all of them.
+RUN_OWN_FILES = frozenset({"effects.json", "best.values.json", "result.json"})
 
 
 def _prune_run_storage(filenames: list[str], dirnames: list[str]) -> None:
@@ -187,12 +188,21 @@ def _experiment_case_ids(experiment_obj: dict) -> set[str]:
 
 
 def _split_case_ids(split: Any) -> set[str]:
-    """Every case an optimizer run's split names, across train, validation and test."""
+    """Every case an optimizer run's split names, across train, validation and test.
+
+    Out of either shape a record writes them in. The optimizer puts the *fractions* it was asked
+    for at `split.train` and the names it drew under `split.cases.train`; earlier records put the
+    names at `split.train` directly. Reading only the second finds nothing at all in a real run's
+    record, and nothing is how this says "no experiment here supplied these cases".
+    """
     ids: set[str] = set()
     if not isinstance(split, dict):
         return ids
+    nested = split.get("cases")
     for part in ("train", "validation", "test"):
-        cases = split.get(part)
+        cases = (nested or {}).get(part) if isinstance(nested, dict) else None
+        if not isinstance(cases, list):
+            cases = split.get(part)
         if isinstance(cases, list):
             ids.update(str(case) for case in cases if isinstance(case, (str, int)))
     return ids

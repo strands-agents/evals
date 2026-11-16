@@ -355,6 +355,26 @@ def test_discover_keeps_a_recognised_run_json_out_of_skipped(tmp_path: Path):
     assert [s["path"] for s in result.skipped] == ["elsewhere/run.json"]
 
 
+def test_discover_keeps_a_runs_own_storage_out_of_skipped(tmp_path: Path):
+    """Everything a real `Optimizer.run()` leaves beside its log, none of it an experiment.
+
+    These are the names seen in a run directory the library itself wrote. A run of a few hundred
+    trials would otherwise fill the "could not use" list with its own bookkeeping, and the one
+    file that matters — an experiment the scan really could not read — would be lost in it.
+    """
+    run = _optimizer_run(tmp_path / "opt", {"event": "config"})
+    for name in ("result.json", "effects.json", "best.values.json"):
+        _write(run / name, {"whatever": 1})
+    _write(run / "transcripts" / "a1b2.json", {"messages": []})
+    _write(run / "candidates" / "c0.json", {"values": {}})
+    _write(run / "front" / "c0.json", {"values": {}})
+
+    result = discover(tmp_path)
+
+    assert [r["dir"] for r in result.optimizer_runs] == ["opt"]
+    assert result.skipped == []
+
+
 def test_discover_optimizer_runs_respects_depth(tmp_path: Path):
     _optimizer_run(tmp_path / "a" / "b" / "deep", {"event": "config"})
 
@@ -387,6 +407,31 @@ def test_tuned_against_names_the_experiment_whose_cases_the_split_holds(tmp_path
         "experiment_cases": 3,
         "status": "verified",
     }
+
+
+def test_tuned_against_reads_the_split_shape_the_optimizer_writes(tmp_path: Path):
+    """`split.train` is the *fraction* asked for; the names it drew are under `split.cases`.
+
+    This is what a run directory the library wrote actually holds, and it is the shape that has
+    to work: reading only the names-at-`train` form finds no case ids in a real record at all,
+    which is indistinguishable from a folder whose experiments have nothing to do with the run.
+    """
+    _write(tmp_path / "experiment.json", _experiment("a", "b", "c"))
+    _split_run(
+        tmp_path / "opt",
+        {
+            "train": 0.4,
+            "validation": 0.3,
+            "test": 0.3,
+            "seed": 0,
+            "cases": {"train": ["a"], "validation": ["b"], "test": ["c"]},
+        },
+    )
+
+    tuned = discover(tmp_path).optimizer_runs[0]["tuned_against"]
+
+    assert tuned is not None, "a real run's split named no cases"
+    assert (tuned["path"], tuned["matched"], tuned["status"]) == ("experiment.json", 3, "verified")
 
 
 def test_tuned_against_matches_session_ids_too(tmp_path: Path):

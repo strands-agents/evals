@@ -36,6 +36,11 @@ by content hash, which checked in meant every review of this directory was mostl
 The generator is deterministic, so the fixture the assertions were written against is the one you
 get.
 
-Nothing in the library writes an `events.jsonl` yet — the optimizer's record layer still raises
-`NotImplementedError` — so the page's reader is coded against the schema documented in
-`optimization/record/events.py` and this fixture stands in for a real run until that lands.
+On this branch nothing in the library writes an `events.jsonl` — the optimizer's record layer
+still raises `NotImplementedError` — so the page's reader is coded against the schema documented
+in `optimization/record/events.py` and this fixture stands in for a real run until that lands.
+`workstream/optimizer-workflow` does write one, and the page has been run over a directory it
+produced. Two assertions come directly out of that: the split, which a real record writes as the
+*fractions* at `split.train` with the case names under `split.cases.train` rather than the names
+at `split.train`; and a run's own `result.json`, which is covered on the Python side because it is
+the scan that has to know not to read it as an experiment.

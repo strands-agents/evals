@@ -964,6 +964,33 @@ ok(text('#opt-note') === '', 'no warnings for a clean log', text('#opt-note'));
   ok(qNone.$('#opt-source').hidden === true,
     'an experiment with no case in common is not named at all', qNone.text('#opt-source'));
 
+  /* The shape a real run writes. `Optimizer` records at `split.train` the *fraction* it was
+     asked for and puts the names it drew under `split.cases.train`; the records this suite reads
+     put the names at `split.train` directly. Both have to be read, and reading the first as the
+     second iterated the number `0.4` — which threw before anything rendered and took the whole
+     page down on the only input that matters, a directory the library itself wrote. */
+  const qFrac = await page();
+  const fracCfg = JSON.parse(CONFIG);
+  fracCfg.split = {
+    train: 0.4, validation: 0.3, test: 0.3, seed: 0,
+    cases: { train: split.train, validation: split.validation, test: split.test },
+  };
+  await qFrac.openFolder({
+    'cases/experiment.json': expOf(all),
+    'tuning/run.json': JSON.stringify(fracCfg),
+    'tuning/events.jsonl': EVENTS,
+  });
+  ok(qFrac.errs.length === 0, 'the real split shape renders at all', qFrac.errs.join(' | '));
+  ok(/8 train · 4 validation · 3 test/.test(qFrac.text('#opt-method-sum')),
+    'the split sizes are the cases drawn, not the fractions asked for',
+    qFrac.text('#opt-method-sum'));
+  await qFrac.click('.tab[data-view="opt-setup"]');
+  ok(/8 train · 4 validation · 3 test/.test(qFrac.text('#opt-setup-kv') || ''),
+    'and Setup counts them the same way', qFrac.text('#opt-setup-kv'));
+  ok(qFrac.text('#opt-source') === 'Its 15 cases are cases of cases/experiment.json.',
+    'and the experiment is still found, since the ids are there to be matched',
+    qFrac.text('#opt-source'));
+
   /* The point of naming it is the cases, and the cases are on the Experiment tab under Evals —
      so the name is a way there. */
   await q.click('#opt-source a[data-exp]');
@@ -972,7 +999,7 @@ ok(text('#opt-note') === '', 'no warnings for a clean log', text('#opt-note'));
   ok(q.$$('#case-list li[data-i]').length === 15, 'with them loaded', q.$$('#case-list li[data-i]').length);
   ok(q.$('#runs-rows tr.run.on') !== null,
     'and the Runs tab agrees about which run is open, rather than highlighting nothing');
-  errs.push(...q.errs, ...qSid.errs, ...qPart.errs, ...qTwo.errs, ...qNone.errs);
+  errs.push(...q.errs, ...qSid.errs, ...qPart.errs, ...qTwo.errs, ...qNone.errs, ...qFrac.errs);
 }
 
 /* ── the report panel is on loan, not reassigned ──
