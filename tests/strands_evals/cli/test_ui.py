@@ -21,6 +21,7 @@ from strands_evals.cli._ui_server import (
     build_server,
     classify,
     discover,
+    discover_explorer_runs,
     discover_optimizer_runs,
     link_status,
     read_event_log,
@@ -843,11 +844,61 @@ def test_explorer_runs_lists_only_directories_holding_a_log(explorer):
     assert body["runs"][0]["modified"] > 0
 
 
+def test_explorer_runs_walks_the_tree_rather_than_one_level(tmp_path: Path):
+    """Nested as deep as the Optimization tab scans, because they read the same tree.
+
+    Listing only immediate subdirectories made a run the tab found invisible here, which looks
+    like the explorer losing a run rather than like two different discovery rules.
+    """
+    _optimizer_run(tmp_path / "flat")
+    _optimizer_run(tmp_path / "nested" / "deeper" / "tuning")
+    assert [run["id"] for run in discover_explorer_runs(tmp_path)] == ["flat", "nested/deeper/tuning"]
+
+
+def test_explorer_runs_stops_at_the_depth_limit(tmp_path: Path):
+    _optimizer_run(tmp_path / "a" / "b" / "c" / "too-deep")
+    assert discover_explorer_runs(tmp_path, depth=3) == []
+
+
+def test_explorer_runs_and_optimizer_runs_agree_on_a_run_s_id(tmp_path: Path):
+    """The invariant the shared root exists to keep: the tab's `dir` is a route into the explorer.
+
+    If these ever diverge, the Optimization tab lists a run whose id names nothing the explorer
+    will open, and the link out of it leads to an empty page.
+    """
+    _optimizer_run(tmp_path / "nested" / "tuning")
+    assert [run["dir"] for run in discover_optimizer_runs(tmp_path)] == [
+        run["id"] for run in discover_explorer_runs(tmp_path)
+    ]
+
+
+def test_explorer_runs_names_a_served_run_directory_itself(tmp_path: Path):
+    """`strands-evals ui RUN_DIR`, where the directory served *is* the run.
+
+    `.` resolves back to the root, so the route can still read it; dropping it instead would make
+    the explorer empty for exactly the folder the Optimization tab has a run for.
+    """
+    _optimizer_run(tmp_path)
+    assert [run["id"] for run in discover_explorer_runs(tmp_path)] == ["."]
+    assert resolve_within(tmp_path, ".") == tmp_path.resolve()
+
+
+def test_explorer_runs_does_not_require_a_run_config(tmp_path: Path):
+    """The objective and the budget are in the log's own `config` event, so the log is enough.
+
+    More permissive than the Optimization tab's discovery, which is the safe direction: every run
+    the tab lists is one the explorer can open, never the other way round.
+    """
+    _event_log(tmp_path / "log-only" / "events.jsonl", {"event": "propose", "candidate": 0})
+    assert [run["id"] for run in discover_explorer_runs(tmp_path)] == ["log-only"]
+    assert discover_optimizer_runs(tmp_path) == []
+
+
 def test_explorer_runs_404s_when_none_was_configured(served):
     _, request, _ = served
     status, body = request("GET", "/api/explorer/runs")
     assert status == HTTPStatus.NOT_FOUND
-    assert "--runs-dir" in body["error"]
+    assert "no runs directory" in body["error"]
 
 
 def test_explorer_file_returns_the_bytes_on_disk(explorer):
@@ -869,7 +920,7 @@ def test_explorer_file_404s_when_not_configured(served):
     _, request, _ = served
     status, body = request("GET", "/api/explorer/file?run=x&path=y")
     assert status == HTTPStatus.NOT_FOUND
-    assert "--runs-dir" in body["error"]
+    assert "no runs directory" in body["error"]
 
 
 def test_explorer_file_404s_on_a_missing_file(explorer):
@@ -1027,9 +1078,11 @@ def test_a_supplied_token_read_only_says_only_read(tmp_path: Path, launched, cap
     assert "can read files" in err and "read and write" not in err
 
 
-def test_ui_serves_no_runs_directory_by_default(tmp_path: Path, launched):
+def test_ui_serves_the_directory_to_the_explorer_by_default(tmp_path: Path, launched):
+    """One tree, both views. Pointed at different trees, a run is browsable in the explorer and
+    missing from the Optimization tab, which reads as a broken page rather than as two directories."""
     assert main(["ui", str(tmp_path), "--no-browser"]) == 0
-    assert launched["explorer_root"] is None
+    assert launched["explorer_root"] == tmp_path
 
 
 def test_ui_passes_the_runs_directory_through(tmp_path: Path, launched):

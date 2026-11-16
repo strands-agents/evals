@@ -264,25 +264,33 @@ const errs = [];
 }
 
 /* ── the link out to the run explorer ──
- * A second app on its own route, so it is a link rather than a tab — and only when the server
- * says it is there, since a link to a 404 is worse than no link. */
+ * A second app on its own route, so it is a link rather than a tab — and only when the server has
+ * one to serve *and* this tree has a run to open in it. A link to a 404 is worse than no link, and
+ * one to an empty list is not much better; the explorer reads the runs this tab discovered, so the
+ * two appear together or not at all. */
 {
   const reply = body => ({ ok: true, status: 200, statusText: 'OK', json: async () => body });
-  const stub = explorer => async url => {
+  const stub = (explorer, optimizerRuns = []) => async url => {
     if (url.startsWith('/api/config')) {
       return reply({ root: '/srv/runs', depth: 3, read_only: false, explorer });
     }
     if (url.startsWith('/api/runs')) {
-      return reply({ root: '/srv/runs', runs: [], skipped: [], truncated: false, optimizer_runs: [] });
+      return reply({
+        root: '/srv/runs', runs: [], skipped: [], truncated: false, optimizer_runs: optimizerRuns,
+      });
     }
     return { ok: false, status: 404, statusText: 'Not Found', json: async () => ({ error: 'no' }) };
   };
+  const RUN = { id: 'tuning', dir: 'tuning', run_id: 'tuning', events_path: 'tuning/events.jsonl', config: {} };
 
-  const off = await page({ fetchImpl: stub(false) });
-  ok(off.$('#opt-link').hidden === true, 'no runs directory, no link');
+  const off = await page({ fetchImpl: stub(false, [RUN]) });
+  ok(off.$('#opt-link').hidden === true, 'no explorer installed, no link');
 
-  const on = await page({ fetchImpl: stub(true), url: 'http://127.0.0.1:9999/?t=abc%2Fdef' });
-  ok(on.$('#opt-link').hidden === false, 'a served runs directory offers one');
+  const empty = await page({ fetchImpl: stub(true, []) });
+  ok(empty.$('#opt-link').hidden === true, 'nor one installed over a tree with no run in it');
+
+  const on = await page({ fetchImpl: stub(true, [RUN]), url: 'http://127.0.0.1:9999/?t=abc%2Fdef' });
+  ok(on.$('#opt-link').hidden === false, 'a run to open offers one');
   ok(on.$('#opt-link').getAttribute('href') === '/explorer/?t=abc%2Fdef',
     'carrying the token, encoded', on.$('#opt-link').getAttribute('href'));
   /* It leaves the page rather than swapping the panel below, so it must not be wired as a tab:
@@ -295,7 +303,7 @@ const errs = [];
 
   const standalone = await page();
   ok(standalone.$('#opt-link').hidden === true, 'and a page opened from disk never offers it');
-  errs.push(...off.errs, ...on.errs, ...standalone.errs);
+  errs.push(...off.errs, ...empty.errs, ...on.errs, ...standalone.errs);
 }
 
 // ── the metadata editor ──

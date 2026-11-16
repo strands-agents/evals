@@ -54,16 +54,18 @@ def _run(args: argparse.Namespace) -> int:
         depth=args.depth,
         read_only=args.read_only,
         token=token,
-        explorer_root=runs_dir,
+        # DIRECTORY unless told otherwise, so the explorer and the page's Optimization tab read
+        # the same tree. Pointed at different trees, the same run is browsable in one and missing
+        # from the other, which reads as a broken page rather than as two directories.
+        explorer_root=runs_dir or root,
     )
     url = server_url(server)
 
     mode = " (read-only)" if args.read_only else ""
     print(f"strands-evals ui{mode}: serving {root.resolve()}", file=sys.stderr)  # noqa: T201
     print(f"  {url}", file=sys.stderr)  # noqa: T201
-    if runs_dir is not None:
-        explorer = url.replace("/?t=", "/explorer/?t=")
-        print(f"  run explorer over {runs_dir.resolve()} at {explorer}", file=sys.stderr)  # noqa: T201
+    explorer = url.replace("/?t=", "/explorer/?t=")
+    print(f"  run explorer over {(runs_dir or root).resolve()} at {explorer}", file=sys.stderr)  # noqa: T201
     if token:
         # Said plainly, because a token you chose is one someone else can guess, and anything
         # that reaches loopback on this machine can then read and write files under DIRECTORY.
@@ -133,7 +135,9 @@ def add_subparser(
     parser.add_argument(
         "--runs-dir",
         default=None,
-        help="directory of optimizer run folders (each holding an events.jsonl); serves the run explorer at /explorer",
+        help="read optimizer runs for the explorer from here instead of DIRECTORY (a tree of "
+        "folders, each holding an events.jsonl). Pointing it elsewhere lets the explorer and the "
+        "Optimization tab list different runs, so prefer a DIRECTORY that contains both.",
     )
     parser.add_argument(
         "--read-only",

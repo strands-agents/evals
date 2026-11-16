@@ -4,9 +4,10 @@ A browser app for the run records written by `strands_evals.optimization`: a run
 `run.json`, its `transcripts/`, and its `effects.json` when one has been fitted. It shows the overview, progress,
 trade-off, search space, every candidate and each of its trials, and the setup.
 
-This is the deep view. `strands-evals ui` has an Optimization tab of its own over the same records — method, result,
-winner, candidates — which is the one to reach for when the question is "what came out of this run". The explorer is
-where the whole search is, candidate by candidate and trial by trial.
+This is the deep view. `strands-evals ui` has an Optimization tab of its own over the same records, and the two differ
+only in how far down they go: the tab answers "what came out of this run" — method, result, winner, candidates — and
+stops there, while the explorer goes run → candidate → trial → transcript, so it is where the whole search is and where
+the model's actual output for one case on one candidate can be read.
 
 Records are read in the browser; nothing is uploaded.
 
@@ -14,12 +15,17 @@ Records are read in the browser; nothing is uploaded.
 
 Served beside the main page, which is how it is normally reached:
 
-    strands-evals ui RUNS_PARENT --runs-dir RUNS_DIR
+    strands-evals ui DIRECTORY
 
-`--runs-dir` is a directory of run folders, each holding an `events.jsonl`. The CLI prints an `/explorer/?t=<token>`
-link next to the usual one, and the top bar of the main page gains an **Explorer** link to the same place. The app reads
-the records over `/api/explorer/runs` and `/api/explorer/file`, under the same token and the same path-traversal checks
-as everything else the server reads.
+Nothing to opt into: the explorer reads the runs under `DIRECTORY` — any folder holding an `events.jsonl`, as deep as
+`--depth` scans — which is the same tree, scanned the same way, that the main page's Optimization tab discovers runs in.
+The CLI prints an `/explorer/?t=<token>` link next to the usual one, and the main page's top bar gains an **Explorer**
+link to the same place once there is a run to open. The app reads the records over `/api/explorer/runs` and
+`/api/explorer/file`, under the same token and the same path-traversal checks as everything else the server reads.
+
+`--runs-dir` points the explorer at a different tree instead. It is an override and rarely wanted: aimed somewhere
+`DIRECTORY` does not contain, a run is browsable here and missing from the Optimization tab, which reads as a broken
+page rather than as two directories.
 
 One name throughout: the link says Explorer, the route is `/explorer`, the title is "Run explorer", and the top bar here
 marks **Explorer** as the page you are on. The main page's **Optimization** tab is a different, shallower view over the

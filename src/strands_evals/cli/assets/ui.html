@@ -3094,6 +3094,8 @@
 
   const TOKEN = new URLSearchParams(location.search).get('t') || '';
   let MODE = 'standalone', ROOT = '', READONLY = true, DEPTH = null;
+  // Whether this server can serve the run explorer at all. Whether to offer it is renderOptimization's.
+  let EXPLORER = false;
 
   async function api(path, opts) {
     const res = await fetch(path, Object.assign({ headers: { 'X-Evals-Token': TOKEN } }, opts || {}));
@@ -5123,6 +5125,9 @@
   function renderOptimization() {
     const run = OPT_RUNS[optSel];
     $('tab-opt').hidden = OPT_RUNS.length === 0;
+    /* The Explorer reads the same runs this tab discovered, so it is offered exactly when there is
+       one to open. Installed-but-empty would link to a page listing nothing. */
+    $('opt-link').hidden = !EXPLORER || OPT_RUNS.length === 0;
     if (!run || !OPT) {
       $('opt-sub').textContent = OPT_RUNS.length
         ? 'Pick a run above.'
@@ -5377,13 +5382,11 @@
     try {
       const config = await api('/api/config');
       MODE = 'server'; ROOT = config.root; READONLY = config.read_only; DEPTH = config.depth;
-      /* Only offered when the server was started with --runs-dir: the explorer is a separate
-         app at its own route, and a link to a 404 is worse than no link. */
-      if (config.explorer) {
-        const link = $('opt-link');
-        link.href = '/explorer/' + (TOKEN ? '?t=' + encodeURIComponent(TOKEN) : '');
-        link.hidden = false;
-      }
+      /* The explorer is a separate app at its own route, and a link to a 404 is worse than no
+         link, so the server says whether it has one to serve. renderOptimization then shows it
+         only when there is a run to open. */
+      EXPLORER = !!config.explorer;
+      if (EXPLORER) $('opt-link').href = '/explorer/' + (TOKEN ? '?t=' + encodeURIComponent(TOKEN) : '');
       await rescan();
     } catch {
       MODE = 'standalone'; READONLY = false;

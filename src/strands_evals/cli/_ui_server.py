@@ -479,6 +479,42 @@ def discover_optimizer_runs(root: Path, depth: int = DEFAULT_DEPTH) -> list[dict
     return found
 
 
+def discover_explorer_runs(root: Path, depth: int = DEFAULT_DEPTH) -> list[dict]:
+    """Find run directories for the explorer: any directory holding an `events.jsonl`.
+
+    Walked to the same depth as `discover_optimizer_runs`, over the same tree, so the explorer and
+    the Optimization tab never disagree about which runs exist — the two views reading different
+    trees is the one way for a run to be browsable in one and invisible in the other.
+
+    `run.json` is not required here, unlike the Optimization tab's discovery: the explorer reads the
+    objective and the budget out of the log's own `config` event, so it can open a run directory
+    that has only the log. Being the more permissive of the two is the safe direction — every run
+    the tab lists is one the explorer can open.
+    """
+    found: list[dict] = []
+    root = root.resolve()
+
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        here = Path(dirpath)
+        level = len(here.relative_to(root).parts)
+        if level >= depth:
+            dirnames[:] = []
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d not in {"node_modules", "__pycache__"})
+
+        if EVENT_LOG_NAME not in set(filenames):
+            continue
+        try:
+            modified = (here / EVENT_LOG_NAME).stat().st_mtime
+        except OSError:
+            continue
+        # "." when the served directory is itself a run, which `resolve_within` resolves to the
+        # root and the explorer's route carries as a study name like any other.
+        found.append({"id": here.relative_to(root).as_posix(), "modified": modified})
+
+    found.sort(key=lambda r: r["id"])
+    return found
+
+
 # The only suffixes the explorer's build emits. Anything else is served as bytes rather than
 # guessed at, since a wrong type on a script is worse than no type at all.
 ASSET_TYPES = {".js": "text/javascript", ".css": "text/css", ".map": "application/json"}
@@ -757,7 +793,9 @@ class UIHandler(BaseHTTPRequestHandler):
                     "root": str(self.config.root),
                     "depth": self.config.depth,
                     "read_only": self.config.read_only,
-                    "explorer": self.config.explorer_root is not None,
+                    # Both halves are needed to serve it: a tree to read and a built app to read
+                    # it with. Whether to *offer* the link is the page's call, not this one's.
+                    "explorer": self.config.explorer_root is not None and self.config.explorer_app is not None,
                 },
             )
             return
@@ -829,20 +867,19 @@ class UIHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/explorer/runs":
             if self.config.explorer_root is None:
-                self._error(HTTPStatus.NOT_FOUND, "no runs directory was configured (--runs-dir)")
+                self._error(HTTPStatus.NOT_FOUND, "this server has no runs directory to read")
                 return
-            runs = []
-            if self.config.explorer_root.is_dir():
-                for entry in sorted(self.config.explorer_root.iterdir()):
-                    record = entry / "events.jsonl"
-                    if entry.is_dir() and record.is_file():
-                        runs.append({"id": entry.name, "modified": record.stat().st_mtime})
+            runs = (
+                discover_explorer_runs(self.config.explorer_root, self.config.depth)
+                if self.config.explorer_root.is_dir()
+                else []
+            )
             self._json(HTTPStatus.OK, {"root": str(self.config.explorer_root), "runs": runs})
             return
 
         if parsed.path == "/api/explorer/file":
             if self.config.explorer_root is None:
-                self._error(HTTPStatus.NOT_FOUND, "no runs directory was configured (--runs-dir)")
+                self._error(HTTPStatus.NOT_FOUND, "this server has no runs directory to read")
                 return
             run = query.get("run", [""])[0]
             rel = query.get("path", [""])[0]
