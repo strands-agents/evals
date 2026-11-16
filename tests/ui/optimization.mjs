@@ -1015,6 +1015,168 @@ ok(recRow.length === 1 && /10 candidates/.test(recRow[0].textContent),
   'and the run still lists, which is what silently fails when a field is read under one name',
   recRow.map(r => r.textContent.replace(/\s+/g, ' ').trim()).join());
 
+/* ── what one goal cost another ──
+   A run with two goals has no single best value, so the trade-off between them is the answer and
+   it is on this page. The way this chart can lie is by direction: `Minimize(tokens)` means fewer
+   tokens is better, that direction is stated nowhere but the objective expression, and an axis
+   drawn the wrong way round reads every candidate backwards. So the geometry is asserted — which
+   mark is right of which, which is above which — and not just that something was drawn.
+
+   The baseline is proposed, measured and compared against but never reported as the proposal of
+   any iteration, which is how both committed example runs record it. It still has to be on the
+   chart: it is where the run started, and every other mark is read against it. */
+const labelled = (id, measured) => ({
+  event: 'label', iteration: 1, candidate_id: id,
+  label: { measured: Object.fromEntries(Object.entries(measured).map(([m, v]) => [m, { mean: v, n: 3 }])) },
+});
+const GOAL_LOG = jsonl([
+  { event: 'config', iteration: 0 },
+  { event: 'propose', iteration: 0, candidate_id: 'c0', number: 0, origin: 'baseline', parent_id: null,
+    values: { prompt: 'answer' } },
+  ...[1, 2, 3, 4].map(n => ({
+    event: 'propose', iteration: 1, candidate_id: `c${n}`, number: n, parent_id: 'c0',
+    values: { prompt: `answer ${n}` },
+  })),
+  labelled('c0', { Quality: 0.5, tokens: 200 }),
+  labelled('c1', { Quality: 0.9, tokens: 400 }),      // the best Quality, and the dearest
+  labelled('c2', { Quality: 0.6, tokens: 100 }),      // the cheapest, and good enough
+  labelled('c3', { Quality: 0.4, tokens: 300 }),      // worse than the baseline on both
+  labelled('c4', { Quality: 0.7 }),                   // tokens never measured: unplottable
+  iterationEnd(1, [1, 2, 3, 4].map(n => ({
+    candidate_id: `c${n}`, number: n, outcome: 'feasible', objective: 0.5,
+  })), 8),
+  { event: 'picked', iteration: 2,
+    report: { champion_id: 'c1', front: ['c1', 'c2'], measured: { c1: { Quality: { mean: 0.9 } } } } },
+]);
+
+/* The same as `pick` above, on a page of its own: these runs each need their own log, so the
+   picker being driven is not the one on the first page. */
+const pickOn = async (q, sel, value) => {
+  q.$(sel).value = value;
+  q.$(sel).dispatchEvent(new q.window.Event('change', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 20));
+};
+
+const goalPage = async (objective, log) => {
+  const q = await page();
+  await q.openFolder({ 'g/run.json': { run_id: 'goals', objective }, 'g/events.jsonl': log || GOAL_LOG });
+  await openResults(q);
+  return q;
+};
+
+/* Marks, by the candidate their hover names, with where they were drawn. The ring is a separate
+   circle at the same centre, so a ringed mark is one that shares its centre with a ring. */
+const marksOf = q => {
+  const rings = q.$$('#opt-to-chart circle.front-ring')
+    .map(c => `${c.getAttribute('cx')},${c.getAttribute('cy')}`);
+  return q.$$('#opt-to-chart circle.pt').map(c => ({
+    id: c.querySelector('title').textContent.split(' · ')[0],
+    cls: c.getAttribute('class'),
+    x: Number(c.getAttribute('cx')),
+    y: Number(c.getAttribute('cy')),
+    ringed: rings.includes(`${c.getAttribute('cx')},${c.getAttribute('cy')}`),
+  }));
+};
+const byId = q => Object.fromEntries(marksOf(q).map(m => [m.id, m]));
+
+const pOne = await goalPage('Maximize(Quality)');
+ok(pOne.$('#opt-tradeoff').hidden === true,
+  'a run with one goal has a best value and nothing to trade off, so there is no such drawer');
+
+const pTwo = await goalPage('Pareto(Maximize(Quality), Minimize(tokens))');
+ok(pTwo.$('#opt-tradeoff').hidden === false, 'two goals, and the drawer is there');
+ok(pTwo.text('#opt-to-sum') === 'Quality ↑ · tokens ↓',
+  'named by its goals and the direction each wants, so the drawer can be judged shut',
+  pTwo.text('#opt-to-sum'));
+ok(pTwo.$('#opt-to-x').hidden && pTwo.$('#opt-to-y').hidden,
+  'with no axis pickers, since two goals are one pair and there is nothing to pick');
+
+const two = byId(pTwo);
+ok(Object.keys(two).sort().join() === 'c0,c1,c2,c3',
+  'every candidate measured on both goals is plotted, the baseline among them — no iteration '
+  + 'reported it, so a chart drawn from proposals alone would lose where the run started',
+  Object.keys(two).join());
+ok(/was not measured on both goals: c4/.test(pTwo.text('#opt-to-stats')),
+  'and the one that was measured on only one goal is named rather than quietly dropped',
+  pTwo.text('#opt-to-stats'));
+ok(/4 candidates plotted/.test(pTwo.text('#opt-to-stats')), 'with the count of what is here',
+  pTwo.text('#opt-to-stats'));
+
+/* The direction test. The goals go on the axes in the order the objective names them, so Quality
+   is across and tokens up — and tokens is MINIMIZED, so c2's 100 belongs above c1's 400. Drawn the
+   way the numbers run, the cheapest candidate would sit at the bottom and read as the worst, which
+   is the whole mistake this chart exists to avoid. */
+ok(pTwo.text('#opt-to-head') === 'tokens against Quality',
+  'the first goal is across and the second up', pTwo.text('#opt-to-head'));
+ok(two.c2.y < two.c1.y,
+  'fewer tokens is higher up, because the goal says lower is better', `${two.c2.y} vs ${two.c1.y}`);
+ok(two.c1.x > two.c2.x, 'and more Quality is further right', `${two.c1.x} vs ${two.c2.x}`);
+ok(/tokens lower is better/.test(pTwo.$('#opt-to-chart').innerHTML)
+  && /Quality higher is better/.test(pTwo.$('#opt-to-chart').innerHTML),
+  'and each axis says which way is better on it, since the numbers alone no longer say');
+
+ok(two.c1.ringed && two.c2.ringed && !two.c0.ringed && !two.c3.ringed,
+  'the front the report named is ringed, and nothing else is',
+  marksOf(pTwo).map(m => `${m.id}${m.ringed ? '*' : ''}`).join());
+ok(/the 2 candidates on the front in its end-phase report/.test(pTwo.text('#opt-to-cap')),
+  'and the caption says whose claim the line is', pTwo.text('#opt-to-cap'));
+ok(/baseline/.test(two.c0.cls), 'the baseline is drawn as the baseline', two.c0.cls);
+ok(/champion/.test(two.c1.cls), 'and the champion as the champion', two.c1.cls);
+
+/* The staircase steps through the front and nothing else, and it is a boundary: it starts at the
+   left edge and ends at the bottom, so the region it closes is what the front dominates. */
+const stair = pTwo.$('#opt-to-chart path.front-line').getAttribute('d');
+ok(/^M40,/.test(stair) && /V194$/.test(stair),
+  'the front line runs in from the left edge and down to the bottom', stair);
+ok(stair.includes(`H${two.c1.x}`) && stair.includes(`H${two.c2.x}`),
+  'with a step at each candidate on the front', stair);
+/* A dominated candidate is inside the region, which is the claim the shading makes. c3 is worse
+   than c2 on both goals — less Quality, more tokens — so it cannot be outside it. */
+ok(two.c3.x < two.c2.x && two.c3.y > two.c2.y,
+  'and a candidate the front beats on both goals sits inside it',
+  `c3 ${two.c3.x},${two.c3.y} against c2 ${two.c2.x},${two.c2.y}`);
+
+ok(/front is under "What one goal cost another"/.test(pTwo.text('#opt-note')),
+  'the Pareto note sends the reader to that chart — it used to point out of the page entirely',
+  pTwo.text('#opt-note'));
+
+/* Three goals and up: the recorded set is a front over more dimensions than a plane has, so the
+   front of the pair on screen is worked out here and said to be. */
+const pThree = await goalPage('Pareto(Maximize(Quality), Minimize(tokens), Minimize(seconds))',
+  jsonl([
+    { event: 'config', iteration: 0 },
+    { event: 'propose', iteration: 0, candidate_id: 'c0', number: 0, origin: 'baseline', parent_id: null },
+    { event: 'propose', iteration: 1, candidate_id: 'c1', number: 1, parent_id: 'c0' },
+    { event: 'propose', iteration: 1, candidate_id: 'c2', number: 2, parent_id: 'c0' },
+    labelled('c0', { Quality: 0.5, tokens: 200, seconds: 3 }),
+    labelled('c1', { Quality: 0.9, tokens: 400, seconds: 1 }),
+    labelled('c2', { Quality: 0.6, tokens: 100, seconds: 9 }),
+    iterationEnd(1, [{ candidate_id: 'c1', number: 1, outcome: 'feasible', objective: 0.9 },
+      { candidate_id: 'c2', number: 2, outcome: 'feasible', objective: 0.6 }], 4),
+  ]));
+ok(pThree.$('#opt-to-sum').textContent === '3 goals', 'three goals are counted, not listed',
+  pThree.text('#opt-to-sum'));
+ok(!pThree.$('#opt-to-x').hidden && !pThree.$('#opt-to-y').hidden,
+  'and now there is a pair to pick');
+ok(pThree.$$('#opt-to-y option').map(o => o.value).join() === 'tokens,seconds',
+  'the goal on one axis is off the other\'s list, since a goal against itself is no trade-off',
+  pThree.$$('#opt-to-y option').map(o => o.value).join());
+ok(/worked out here/.test(pThree.text('#opt-to-cap')) && /front over all 3/.test(pThree.text('#opt-to-cap')),
+  'and the front is named as this pair\'s, computed, rather than passed off as the recorded one',
+  pThree.text('#opt-to-cap'));
+const three = byId(pThree);
+ok(three.c1.ringed && three.c2.ringed && !three.c0.ringed,
+  'which on Quality against tokens is c1 and c2 — neither beats the other, and both beat c0',
+  marksOf(pThree).map(m => `${m.id}${m.ringed ? '*' : ''}`).join());
+
+await pickOn(pThree, '#opt-to-y', 'seconds');
+ok(pThree.text('#opt-to-head') === 'seconds against Quality',
+  'picking the other goal redraws the pair', pThree.text('#opt-to-head'));
+const swapped = byId(pThree);
+ok(swapped.c1.ringed && !swapped.c2.ringed,
+  'and the front changes with it: on seconds, c1 is quicker than c2 as well as better',
+  marksOf(pThree).map(m => `${m.id}${m.ringed ? '*' : ''}`).join());
+
 // ── two runs in one tree ──
 const p6 = await page();
 await p6.openFolder({
@@ -1044,4 +1206,4 @@ ok(!rows6()[0].classList.contains('on') && rows6()[1].classList.contains('on'),
    'with the mark moved, so the list and the result cannot disagree about which run is open');
 
 done([p, p2, p3, p4, p5, p6, pLate, pEmpty, pFall, pFlat, pWorse, pFine, pNoCI, pVal, pNoBase, pBare]
-  .concat([pRec]).flatMap(each => each.errs).concat(errs));
+  .concat([pRec, pOne, pTwo, pThree]).flatMap(each => each.errs).concat(errs));

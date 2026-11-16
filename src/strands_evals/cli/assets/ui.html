@@ -459,9 +459,16 @@
   .pt.infeasible { fill: var(--bad); }
   .pt.ineligible { fill: var(--ink3); }
   .pt.champion { fill: var(--accent); }
+  /* Where the run started: an outline, so it reads as the thing the others are measured against. */
+  .pt.baseline { fill: var(--bg); stroke: var(--ink2); stroke-width: 1.5; }
+  .front-line { fill: none; stroke: var(--good); stroke-width: 1.5; opacity: .75; }
+  .front-fill { fill: var(--ink1); opacity: .06; }
+  .front-ring { fill: none; stroke: var(--good); stroke-width: 1.25; opacity: .7; }
   .legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 8px 0 2px; font-size: 11px; color: var(--ink2); }
   .legend i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 5px; }
   .legend .ln { width: 14px; height: 0; border-top: 2px solid var(--good); border-radius: 0; margin-bottom: 3px; }
+  .legend .hollow { background: var(--bg); border: 1.5px solid var(--ink2); }
+  .legend .shade { background: var(--ink1); opacity: .14; border-radius: 2px; }
   .bars { display: flex; height: 26px; border-radius: 6px; overflow: hidden; border: 1px solid var(--hair); }
   .bars span { display: block; height: 100%; }
   .bars .completed { background: var(--good); }
@@ -722,6 +729,24 @@
             </div>
             <p class="cap" id="opt-metric-cap"></p>
             <div id="opt-metric-chart"></div>
+          </div>
+        </div>
+      </details>
+      <!-- Two goals or more: what one cost the other. Hidden for a single-goal run, which has a
+           best value and so nothing to trade off. -->
+      <details class="drawer" id="opt-tradeoff" hidden>
+        <summary>What one goal cost another<span class="path" id="opt-to-sum"></span></summary>
+        <div class="charts">
+          <div class="chart wide">
+            <div class="chead">
+              <h3 id="opt-to-head">Goals against each other</h3>
+              <select id="opt-to-x" aria-label="Goal on the x axis"></select>
+              <select id="opt-to-y" aria-label="Goal on the y axis"></select>
+            </div>
+            <p class="cap" id="opt-to-cap"></p>
+            <div id="opt-to-chart"></div>
+            <div class="legend" id="opt-to-legend"></div>
+            <p class="cap" id="opt-to-stats"></p>
           </div>
         </div>
       </details>
@@ -4585,7 +4610,18 @@
     // `kind` in the fixture, `name` in the records on disk; both are the class that was used.
     const named = v => (v && typeof v === 'object' && (v.kind || v.name)) || null;
     const num = (...values) => values.find(v => typeof v === 'number') ?? null;
+    /* Each goal and the direction it is wanted in, which only the objective expression states:
+       `Maximize(ExactAnswer)`, `Minimize(tokens)`, or a `Pareto(...)` of those. A metric's
+       direction is nowhere else in the record, and guessing it from the metric's name would read
+       "+150 tokens" as an improvement. The metric is the goal's first argument, so the scale a
+       `WeightedSum` gives it is skipped; a goal over an expression rather than a bare metric —
+       `Maximize(Helpfulness - 0.01 * tokens)` — names no single metric and so yields none. */
+    const goals = [];
+    for (const m of String(cfg.objective || '').matchAll(/(Maximize|Minimize)\(\s*([A-Za-z_][\w.]*)\s*[,)]/g)) {
+      goals.push({ metric: m[2], dir: m[1] === 'Maximize' ? 'max' : 'min' });
+    }
     return {
+      goals,
       goalMetrics: (cfg.goal_metrics || []).length ? cfg.goal_metrics : metrics,
       blocks: (cfg.blocks || []).length ? cfg.blocks : grouped,
       runs: num(cfg.runs, cfg.runs_per_candidate),
@@ -4747,15 +4783,17 @@
       p.best = running;          // null until the first feasible candidate is scored
     }
 
-    for (const p of proposals) {
-      const own = measured.get(p.candidate_id) || {};
-      const averaged = fromTrials.get(p.candidate_id) || {};
-      p.measured = {};
+    const meansOf = id => {
+      const own = measured.get(id) || {};
+      const averaged = fromTrials.get(id) || {};
+      const out = {};
       for (const metric of metricNames) {
-        if (own[metric] != null) p.measured[metric] = own[metric];
-        else if (averaged[metric] && averaged[metric].n) p.measured[metric] = averaged[metric].sum / averaged[metric].n;
+        if (own[metric] != null) out[metric] = own[metric];
+        else if (averaged[metric] && averaged[metric].n) out[metric] = averaged[metric].sum / averaged[metric].n;
       }
-    }
+      return out;
+    };
+    for (const p of proposals) p.measured = meansOf(p.candidate_id);
 
     /* The config names the metrics the run was set up to move, so those lead and in its order.
        Anything else the log measured still gets a chart — a metric that appears only in the
@@ -4763,6 +4801,9 @@
     const declared = facts.goalMetrics.filter(m => metricNames.includes(m));
     const metrics = declared.concat(metricNames.filter(m => !declared.includes(m)))
       .filter(m => proposals.some(p => p.measured[m] != null));
+    /* A goal is only plottable against another if the run actually measured it. A direction with
+       no measurements behind it is a claim about an empty axis. */
+    const goals = facts.goals.filter(g => metrics.includes(g.metric));
 
     const usageKeys = [
       { key: 'tokens', label: 'Tokens' },
@@ -4772,10 +4813,47 @@
 
     /* The baseline is whoever the test report compared against. Failing that, the candidate the
        run opened with — the schema gives the baseline iteration 0, and it is its own parent. */
+    /* Mid-run there is no test report to name the baseline, and the opening candidate is not among
+       the proposals either — no iteration reports it as one. Its own `propose` says what it is:
+       the records on disk mark it `origin: "baseline"` with no parent, the fixture makes it its
+       own parent, and either way it is number 0. */
+    const opened = [...proposed.values()].find(e => e.origin === 'baseline'
+      || e.number === 0 || !e.parent_id || e.parent_id === e.candidate_id);
     const baselineId = (test && test.baseline_id)
       || (proposals.find(p => p.candidate_id && (p.parent_id === p.candidate_id || p.number === 0)) || {}).candidate_id
+      || (opened || {}).candidate_id
       || (proposals[0] || {}).candidate_id
       || null;
+
+    /* Every candidate that can be put on a chart of measurements: one per candidate, which the
+       proposal rows are not — an invalid patch never became a candidate at all, and a rescored
+       candidate is proposed twice with one set of measurements. The baseline is proposed, measured
+       and compared against, but no `iteration_end` ever reports it as a proposal of an iteration —
+       both committed example runs leave it out — so a plot drawn from proposals alone has no mark
+       for where the run started, which is what every other mark is read against. */
+    const points = proposals.filter((p, i) =>
+      p.candidate_id && proposals.findIndex(q => q.candidate_id === p.candidate_id) === i);
+    if (baselineId && !points.some(p => p.candidate_id === baselineId)) {
+      const means = meansOf(baselineId);
+      if (Object.keys(means).length) {
+        points.push({
+          candidate_id: baselineId, iteration: 0, outcome: null, objective: null,
+          measured: means, isBaseline: true, isChampion: baselineId === champion,
+        });
+      }
+    }
+
+    /* Which candidates the run itself called best, and on whose say. A Pareto run has a set rather
+       than a winner and its end-phase report names that set outright; a scalarised run records an
+       empty `front` there and a champion instead, which is its last word and so beats the
+       mid-search snapshots. Those snapshots — what each `iteration_end` had best at the time — are
+       all there is to go on until the run reaches its end phase. */
+    const front = [
+      { ids: (validation || {}).front, source: 'report' },
+      { ids: (test || {}).front, source: 'report' },
+      { ids: champion ? [champion] : null, source: 'champion' },
+      { ids: bestAfter, source: 'snapshot' },
+    ].find(s => Array.isArray(s.ids) && s.ids.length) || { ids: [], source: null };
 
     /* What the run is for: the champion against the baseline on cases held out of the search.
        `test` is that comparison. `picked` is the validation split, which the search chose on, so
@@ -4888,9 +4966,12 @@
       baselineId,
       config: cfg,
       proposals,
+      points,
+      front,
       scored,
       iterations,
       metrics,
+      goals,
       usageKeys,
       endPhase,
       statuses,
@@ -4930,6 +5011,22 @@
     }
     if (label) out += `<text class="axlab" x="${PAD.l}" y="${PAD.t - 1}">${esc(label)}</text>`;
     return { y, out };
+  }
+
+  /* The same axis along the bottom. `lo` greater than `hi` runs it backwards, which is how a goal
+     that wants a metric lower still reads better to the right. */
+  function xAxis(lo, hi, label) {
+    const span = (hi - lo) || 1;
+    const x = v => PAD.l + ((v - lo) / span) * IN_W;
+    let out = `<line class="ax" x1="${PAD.l}" y1="${PAD.t + IN_H}" x2="${PAD.l + IN_W}" y2="${PAD.t + IN_H}"/>`;
+    for (let i = 0; i <= 4; i++) {
+      const v = lo + (span * i) / 4, xx = x(v);
+      out += `<line class="grid-l" x1="${xx}" y1="${PAD.t}" x2="${xx}" y2="${PAD.t + IN_H}"/>`
+        + `<text class="tick" x="${xx}" y="${PAD.t + IN_H + 12}" `
+        + `text-anchor="${i === 0 ? 'start' : i === 4 ? 'end' : 'middle'}">${esc(nice(v))}</text>`;
+    }
+    if (label) out += `<text class="axlab" x="${PAD.l + IN_W}" y="${H - 2}" text-anchor="end">${esc(label)}</text>`;
+    return { x, out };
   }
 
   function objectiveChart(d) {
@@ -5032,6 +5129,89 @@
     });
     flush();
     return svg(axis + segments + marks + xticks);
+  }
+
+  /* ── one goal against another ──
+     What a run with two goals cannot say in a single number: what it cost in one to gain in the
+     other. Both axes are oriented so better is up and to the right, whichever direction the goal
+     wants its metric in, so dominance is readable as position: a mark above and right of another
+     beats it on both goals, and the step line is the edge of the region the front dominates. */
+
+  /** The measured value of a goal, signed so that bigger is always better. */
+  const oriented = (goal, p) => (goal.dir === 'min' ? -1 : 1) * p.measured[goal.metric];
+
+  /** The candidates no other candidate beats on both of these two goals. */
+  function front2(points, xg, yg) {
+    return points.filter(a => !points.some(b => {
+      const [bu, bv, au, av] = [oriented(xg, b), oriented(yg, b), oriented(xg, a), oriented(yg, a)];
+      return bu >= au && bv >= av && (bu !== au || bv !== av);
+    }));
+  }
+
+  /* The boundary of what a set of marks dominates: in from the left edge at the highest of them, a
+     step at each, then down to the bottom. Stepped because nothing was measured between two
+     candidates — the corner is a claim about neither. Only marks actually on the boundary get a
+     step, so a recorded set that holds a candidate dominated in this pair of goals does not draw a
+     line that doubles back. */
+  function staircase(marks) {
+    if (!marks.length) return null;
+    const byX = marks.slice().sort((a, b) => b.px - a.px || a.py - b.py);
+    const edge = [];
+    let top = Infinity;
+    for (const m of byX) if (m.py < top) { edge.push(m); top = m.py; }
+    edge.reverse();
+    let line = `M${PAD.l},${edge[0].py}`;
+    edge.forEach((m, i) => {
+      line += `H${m.px}V${i + 1 < edge.length ? edge[i + 1].py : PAD.t + IN_H}`;
+    });
+    return { line, region: `${line}H${PAD.l}Z`, on: edge.length };
+  }
+
+  function tradeoffChart(d, xg, yg, frontIds) {
+    const plotted = d.points.filter(p =>
+      p.measured[xg.metric] != null && p.measured[yg.metric] != null);
+    if (plotted.length < 2) {
+      return '<div class="empty">Fewer than two candidates have both goals measured, so there is '
+        + 'nothing to trade off yet.</div>';
+    }
+    const span = goal => {
+      const values = plotted.map(p => p.measured[goal.metric]);
+      let lo = Math.min(...values), hi = Math.max(...values);
+      const pad = ((hi - lo) || Math.abs(hi) || 1) * 0.12;
+      lo -= pad; hi += pad;
+      // Better to the right, and better up: a goal that wants less runs its axis backwards.
+      return goal.dir === 'min' ? [hi, lo] : [lo, hi];
+    };
+    /* Each axis says which way is better on it, because for a goal that wants less the numbers run
+       the other way and a reader who misses that reads the whole chart backwards. */
+    const label = (goal, towards) =>
+      `${goal.metric} ${goal.dir === 'min' ? 'lower' : 'higher'} is better ${towards}`;
+    const { x, out: xax } = xAxis(...span(xg), label(xg, '→'));
+    const { y, out: yax } = yAxis(...span(yg), label(yg, '↑'));
+
+    const on = new Set(frontIds);
+    const marks = plotted.map(p => ({
+      p,
+      px: x(p.measured[xg.metric]),
+      py: y(p.measured[yg.metric]),
+    }));
+    const steps = staircase(marks.filter(m => on.has(m.p.candidate_id)));
+    const region = steps ? `<path class="front-fill" d="${steps.region}"/>` : '';
+    const line = steps ? `<path class="front-line" d="${steps.line}"/>` : '';
+
+    const dots = marks.map(({ p, px, py }) => {
+      const cls = p.isChampion ? 'champion' : p.isBaseline ? 'baseline'
+        : p.outcome === 'infeasible' ? 'infeasible'
+          : p.outcome === 'feasible' || p.outcome == null ? 'feasible' : 'ineligible';
+      const ring = on.has(p.candidate_id)
+        ? `<circle class="front-ring" cx="${px}" cy="${py}" r="7.5"/>` : '';
+      const label = p.isBaseline ? ' · baseline' : p.isChampion ? ' · champion' : '';
+      return ring + `<circle class="pt ${esc(cls)}" cx="${px}" cy="${py}" r="4">`
+        + `<title>${esc(`${p.candidate_id}${label} · ${xg.metric} ${nice(p.measured[xg.metric])}`
+          + ` · ${yg.metric} ${nice(p.measured[yg.metric])}`)}</title></circle>`;
+    }).join('');
+
+    return svg(yax + xax + region + line + dots);
   }
 
   /* Columns, not a line: each bar is what one iteration cost, and a line between them would
@@ -5199,6 +5379,8 @@
   /* Which metric and which usage measure are on screen. Kept across re-renders so switching run
      or rescanning does not throw you back to the first metric. */
   let optMetric = null, optUsage = null;
+  // Which pair of goals is on the trade-off chart, kept across re-renders for the same reason.
+  let optToX = null, optToY = null;
   let optQuery = '', optFilter = 'all';
   const optOpen = new Set();
 
@@ -5449,6 +5631,72 @@
         + '</div></td></tr>';
   }
 
+  /* ── the trade-off panel ──
+     The front is what a multi-goal run has instead of a winner, so it is on the page rather than
+     in a pointer to somewhere else. Which front is drawn depends on how many goals there are: with
+     exactly two, the run's own recorded set is the front and is shown as the run's claim; with
+     more, the recorded set is a front in more dimensions than the chart has, so the front of this
+     pair is computed here and labelled as computed. */
+  function renderTradeoff(d) {
+    const many = d.goals.length > 2;
+    const option = g => ({ value: g.metric, label: `${g.metric} ${g.dir === 'min' ? '↓' : '↑'}` });
+    optToX = fillPick('opt-to-x', d.goals.map(option), optToX);
+    const xg = d.goals.find(g => g.metric === optToX);
+    // Never the same goal on both axes: a goal against itself is a diagonal line and no trade-off.
+    optToY = fillPick('opt-to-y', d.goals.filter(g => g.metric !== optToX).map(option), optToY);
+    const yg = d.goals.find(g => g.metric === optToY);
+    $('opt-to-x').hidden = !many;
+    $('opt-to-y').hidden = !many;
+
+    const plotted = d.points.filter(p =>
+      p.measured[xg.metric] != null && p.measured[yg.metric] != null);
+    const recorded = d.front.ids.filter(id => plotted.some(p => p.candidate_id === id));
+    const stated = !many && recorded.length > 0;
+    const ids = stated ? recorded : front2(plotted, xg, yg).map(p => p.candidate_id);
+
+    /* Whose claim the step line is. A set from the end-phase report is a front; a champion is one
+       winner and calling that a front would invent a shape the run never had; a mid-search
+       snapshot is only what was best at the time. */
+    const whose = {
+      report: `the ${plural(ids.length, 'candidate')} on the front in its end-phase report`,
+      champion: 'the champion it picked',
+      snapshot: `the ${plural(ids.length, 'candidate')} the last finished iteration had best so far`,
+    }[d.front.source];
+    const short = { report: 'the recorded front', champion: 'the champion', snapshot: 'best so far' };
+
+    $('opt-to-head').textContent = `${yg.metric} against ${xg.metric}`;
+    // Closed, the drawer still says which goals are in it — that is what decides whether to open it.
+    $('opt-to-sum').textContent = many
+      ? `${d.goals.length} goals`
+      : d.goals.map(g => `${g.metric} ${g.dir === 'min' ? '↓' : '↑'}`).join(' · ');
+    $('opt-to-cap').textContent = 'One mark per candidate, both axes turned so better is up and to '
+      + 'the right: a mark above and right of another beats it on both goals. The step line is the '
+      + 'edge of what ' + (stated
+        ? `the run itself called best — ${whose}.`
+        : `${plural(ids.length, 'candidate')} dominate on this pair of goals, worked out here: the `
+          + 'set the run recorded is a front over all '
+          + `${d.goals.length} of them, which this chart cannot show.`);
+    $('opt-to-chart').innerHTML = tradeoffChart(d, xg, yg, ids);
+
+    /* The champion gets no entry of its own when the line is the champion: the same candidate
+       twice in one legend reads as two things on the chart. */
+    $('opt-to-legend').innerHTML = '<span><i class="ln front"></i>'
+      + `${stated ? short[d.front.source] : 'front of this pair'}</span>`
+      + '<span><i class="shade"></i>dominated</span>'
+      + (plotted.some(p => p.isBaseline) ? '<span><i class="hollow"></i>baseline</span>' : '')
+      + (plotted.some(p => p.isChampion) && !(stated && d.front.source === 'champion')
+        ? '<span><i style="background:var(--accent)"></i>champion</span>' : '');
+
+    /* What is not on the chart. A candidate the run never measured on both goals cannot be placed,
+       and silently dropping it would make the front look like it was drawn over everything. */
+    const missing = d.points.filter(p => !plotted.includes(p));
+    $('opt-to-stats').textContent = `${plural(plotted.length, 'candidate')} plotted`
+      + (missing.length
+        ? `. ${plural(missing.length, 'other')} ${missing.length === 1 ? 'was' : 'were'} not `
+          + `measured on both goals: ${missing.map(p => p.candidate_id).join(', ')}.`
+        : '.');
+  }
+
   /* One render for all three of Optimization's panels. Redrawing them together is cheap — the log
      is already parsed — and it is the only way they cannot disagree about which run is open. */
   function renderOptimization() {
@@ -5463,11 +5711,13 @@
         ? 'Pick a run on the Runs tab.'
         : 'No optimizer run directory in this folder. One is a run.json with an events.jsonl beside it.';
       ['opt-obj-chart', 'opt-budget-chart', 'opt-status-chart', 'opt-metric-chart', 'opt-usage-chart',
-        'opt-result', 'opt-winner', 'opt-cands', 'opt-explain', 'opt-method-sum', 'opt-setup-kv']
+        'opt-to-chart', 'opt-to-legend', 'opt-result', 'opt-winner', 'opt-cands', 'opt-explain',
+        'opt-method-sum', 'opt-setup-kv']
         .forEach(id => { $(id).innerHTML = ''; });
       $('opt-setup-sub').textContent = '';
       $('opt-source').hidden = true;
       $('opt-metric-wrap').hidden = true;
+      $('opt-tradeoff').hidden = true;
       $('opt-cost').hidden = true;
       $('opt-cand-sub').textContent = '';
       $('opt-cand-count').textContent = '';
@@ -5526,6 +5776,11 @@
       $('opt-metric-chart').innerHTML = metricChart(d, optMetric);
     }
 
+    /* A run with one goal has a best value and the chart above says what it is. With two or more
+       there is no such number, so the trade-off between them is the only honest answer. */
+    $('opt-tradeoff').hidden = d.goals.length < 2;
+    if (d.goals.length >= 2) renderTradeoff(d);
+
     /* Tokens, model calls and seconds are the same shape in almost every run, so they share one
        chart and a unit picker rather than taking three panels to say it three times. */
     $('opt-cost').hidden = d.usageKeys.length === 0;
@@ -5582,9 +5837,16 @@
       notes.push(`${plural(run.bad_lines.length, 'line')} in the log could not be parsed `
         + `(${run.bad_lines.map(b => 'line ' + b.line).join(', ')}).`);
     }
+    /* The hero figure above is a single best objective, which a Pareto run does not really have.
+       Where to read the run instead depends on whether its goals can be plotted against each
+       other — and when they cannot, saying so beats pointing at a chart that is not there. */
     if (d.isPareto) {
-      notes.push('This run uses a Pareto objective, so a single best value understates it — the front is in '
-        + 'the end-phase reports rather than on this chart.');
+      notes.push(d.goals.length >= 2
+        ? 'This run uses a Pareto objective, so a single best value understates it: its front is '
+          + 'under "What one goal cost another".'
+        : 'This run uses a Pareto objective, so a single best value understates it — and '
+          + `${d.goals.length ? 'only one of its goals was' : 'none of its goals were'} measured, `
+          + 'so there is no trade-off to plot.');
     }
     $('opt-note').textContent = notes.join(' ');
     $('opt-note').className = 'optnote' + (notes.length ? ' warn' : '');
@@ -5817,6 +6079,8 @@
   // Redrawing the whole view is cheap — the log is already parsed — and keeps one render path.
   $('opt-metric-pick').onchange = e => { optMetric = e.target.value; renderOptimization(); };
   $('opt-usage-pick').onchange = e => { optUsage = e.target.value; renderOptimization(); };
+  $('opt-to-x').onchange = e => { optToX = e.target.value; renderOptimization(); };
+  $('opt-to-y').onchange = e => { optToY = e.target.value; renderOptimization(); };
 
   /* ══════════ boot ══════════ */
 
