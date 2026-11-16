@@ -801,29 +801,23 @@
       <!-- How it got there, and then the diagnostics for when the result is surprising. -->
       <details class="drawer" id="opt-search">
         <summary>How the search got there<span class="path" id="opt-search-sum"></span></summary>
-        <div class="hero">
-          <div>
-            <div class="big" id="opt-best">&mdash;</div>
-            <div class="cap" id="opt-best-cap">Best feasible objective</div>
-          </div>
-          <div class="stats" id="opt-stats"></div>
-        </div>
+        <!-- The best feasible objective sits in this row rather than over it as a hero number: the
+             result above is a difference with an interval around it, and a big bare value next to
+             it reads as the finding when it is only the best score the search happened to see. -->
+        <div class="stats" id="opt-stats"></div>
+        <!-- One chart and one picker for the objective and every metric. They are the same shape —
+             a value per candidate in search order — and they are read one at a time, so two panels
+             drew the same picture twice, the second with a picker that already knew how to switch
+             series. -->
         <div class="charts">
           <div class="chart wide">
-            <h3>Objective by candidate</h3>
-            <p class="cap" id="opt-obj-cap"></p>
-            <div id="opt-obj-chart"></div>
-            <div class="legend" id="opt-obj-legend"></div>
-          </div>
-        </div>
-        <div class="charts" id="opt-metric-wrap">
-          <div class="chart wide">
             <div class="chead">
-              <h3>Metric by candidate</h3>
-              <select id="opt-metric-pick" aria-label="Metric to chart"></select>
+              <h3 id="opt-series-head">Objective by candidate</h3>
+              <select id="opt-series-pick" aria-label="Series to chart"></select>
             </div>
-            <p class="cap" id="opt-metric-cap"></p>
-            <div id="opt-metric-chart"></div>
+            <p class="cap" id="opt-series-cap"></p>
+            <div id="opt-series-chart"></div>
+            <div class="legend" id="opt-series-legend"></div>
           </div>
         </div>
       </details>
@@ -863,9 +857,13 @@
           </div>
         </div>
       </details>
+      <!-- What the run cost and how its trials went: spend per iteration, the rollouts against the
+           budget, and how every trial ended. One drawer, because two of them made one question —
+           what did this cost — read as two topics, and the rollout count was in the second while
+           the spend it is a count of was in the first. -->
       <details class="drawer" id="opt-cost">
-        <summary>Cost per iteration<span class="path" id="opt-cost-sum"></span></summary>
-        <div class="charts">
+        <summary>What it cost<span class="path" id="opt-cost-sum"></span></summary>
+        <div class="charts" id="opt-usage-wrap">
           <div class="chart wide">
             <div class="chead">
               <h3>Spend by iteration</h3>
@@ -875,19 +873,16 @@
             <div id="opt-usage-chart"></div>
           </div>
         </div>
-      </details>
-      <details class="drawer" id="opt-diag">
-        <summary>Trial outcomes and rollouts<span class="path" id="opt-diag-sum"></span></summary>
         <div class="charts">
-          <div class="chart">
-            <h3>Trial outcomes</h3>
-            <p class="cap" id="opt-status-cap"></p>
-            <div id="opt-status-chart"></div>
-          </div>
           <div class="chart">
             <h3>Rollouts spent</h3>
             <p class="cap" id="opt-budget-cap"></p>
             <div id="opt-budget-chart"></div>
+          </div>
+          <div class="chart">
+            <h3>Trial outcomes</h3>
+            <p class="cap" id="opt-status-cap"></p>
+            <div id="opt-status-chart"></div>
           </div>
         </div>
       </details>
@@ -5771,7 +5766,7 @@
   let OPT_RUNS = [], optSel = -1, OPT = null;
   /* Which metric and which usage measure are on screen. Kept across re-renders so switching run
      or rescanning does not throw you back to the first metric. */
-  let optMetric = null, optUsage = null;
+  let optSeries = null, optUsage = null;
   // Which pair of goals is on the trade-off chart, kept across re-renders for the same reason.
   let optToX = null, optToY = null;
   // Which goal the effects plot is showing, likewise.
@@ -6429,13 +6424,12 @@
       $('opt-sub').textContent = OPT_RUNS.length
         ? 'Pick a run on the Runs tab.'
         : 'No optimizer run directory in this folder. One is a run.json with an events.jsonl beside it.';
-      ['opt-obj-chart', 'opt-budget-chart', 'opt-status-chart', 'opt-metric-chart', 'opt-usage-chart',
-        'opt-to-chart', 'opt-to-legend', 'opt-result', 'opt-winner', 'opt-cands', 'opt-explain',
-        'opt-method-sum', 'opt-setup-kv']
+      ['opt-series-chart', 'opt-series-legend', 'opt-budget-chart', 'opt-status-chart',
+        'opt-usage-chart', 'opt-to-chart', 'opt-to-legend', 'opt-result', 'opt-winner', 'opt-cands',
+        'opt-explain', 'opt-method-sum', 'opt-setup-kv']
         .forEach(id => { $(id).innerHTML = ''; });
       $('opt-setup-sub').textContent = '';
       $('opt-source').hidden = true;
-      $('opt-metric-wrap').hidden = true;
       $('opt-tradeoff').hidden = true;
       $('opt-effects').hidden = true;
       $('opt-space-wrap').hidden = true;
@@ -6443,7 +6437,6 @@
       $('opt-cand-sub').textContent = '';
       $('opt-cand-count').textContent = '';
       $('opt-stats').innerHTML = '';
-      $('opt-best').textContent = '—';
       return;
     }
 
@@ -6454,16 +6447,18 @@
     $('opt-sub').textContent = run.run_id
       + (d.stop ? ` · stopped: ${d.stop.reason}${d.stop.message ? ` (${d.stop.message})` : ''}` : ' · still running');
 
-    $('opt-best').textContent = d.best == null ? '—' : fmt(d.best);
-    $('opt-best-cap').textContent = d.bestCandidate
-      ? `Best feasible objective · ${d.bestCandidate.candidate_id}`
-      : 'Best feasible objective';
-
-    /* Three figures, because the page answers one question first: did it get better, and what
+    /* A few figures, because the page answers one question first: did it get better, and what
        won. Scored-against-not-scored and the trial tally are diagnostics, so they label the
-       drawers they live in instead of competing up here. */
+       drawers they live in instead of competing up here.
+
+       The best feasible objective is one of them rather than a hero number over them. It is not
+       the finding — the finding is the difference and its interval, in the card above — and set in
+       hero type beside that card it read like a second, bolder answer to the same question. */
     const champ = d.champion ? d.champion : '—';
     const stats = [
+      optStat(d.best == null ? '—' : fmt(d.best), d.bestCandidate
+        ? `Best feasible objective · ${d.bestCandidate.candidate_id}`
+        : 'Best feasible objective'),
       optStat(champ, 'Champion'),
       optStat(d.maxRollouts != null ? `${d.spent} / ${d.maxRollouts}` : String(d.spent), 'Rollouts'),
     ];
@@ -6478,24 +6473,29 @@
     $('opt-search-sum').textContent = `${plural(d.proposals.length, 'proposal')} over `
       + plural(d.iterations.length, 'iteration');
 
-    $('opt-obj-cap').textContent = 'One mark per proposal in search order. '
-      + 'The line is the best feasible objective so far.';
-    $('opt-obj-chart').innerHTML = objectiveChart(d);
-    $('opt-obj-legend').innerHTML = ['feasible', 'infeasible', 'ineligible'].map(o =>
+    /* One series at a time, picked: the objective first, because it is what the search ranked on,
+       and then each measured metric. A panel each put a wall of charts on screen for something
+       read one at a time — nobody compares Helpfulness against a token count, and the objective
+       against either is the same chart twice. The metric names are prefixed, so a metric that
+       happens to be called "Objective" still gets its own entry. */
+    const series = [{ value: 'objective', label: 'Objective' },
+      ...d.metrics.map(m => ({ value: 'm:' + m, label: m }))];
+    optSeries = fillPick('opt-series-pick', series, optSeries);
+    $('opt-series-pick').hidden = series.length < 2;
+    const metric = optSeries.startsWith('m:') ? optSeries.slice(2) : null;
+    $('opt-series-head').textContent = `${metric || 'Objective'} by candidate`;
+    $('opt-series-cap').textContent = metric
+      ? `The mean recorded for ${metric} on each candidate it was measured on — the metric itself, `
+        + 'not its contribution to the objective.'
+      : 'One mark per proposal in search order. The line is the best feasible objective so far.';
+    $('opt-series-chart').innerHTML = metric ? metricChart(d, metric) : objectiveChart(d);
+    /* The legend belongs to the objective: the best-so-far line and the eligibility colours are
+       its own. A metric chart carries the same mark colours but no line, so a legend naming one
+       would be describing something that is not on screen. */
+    $('opt-series-legend').innerHTML = metric ? '' : ['feasible', 'infeasible', 'ineligible'].map(o =>
       `<span><i class="pt ${o}" style="background:var(--${o === 'feasible' ? 'good' : o === 'infeasible' ? 'bad' : 'ink3'})"></i>${o}</span>`
     ).join('') + (d.champion ? '<span><i style="background:var(--accent)"></i>champion</span>' : '')
       + '<span><i class="ln"></i>best feasible so far</span>';
-
-    /* One metric at a time, picked. A panel per metric put a wall of charts on screen, and they
-       are read one at a time anyway — nobody compares Helpfulness against a token count. */
-    $('opt-metric-wrap').hidden = d.metrics.length === 0;
-    if (d.metrics.length) {
-      optMetric = fillPick('opt-metric-pick', d.metrics.map(m => ({ value: m, label: m })), optMetric);
-      $('opt-metric-pick').hidden = d.metrics.length < 2;
-      $('opt-metric-cap').textContent = `The mean recorded for ${optMetric} on each candidate it was `
-        + 'measured on — the metric itself, not its contribution to the objective.';
-      $('opt-metric-chart').innerHTML = metricChart(d, optMetric);
-    }
 
     /* A run with one goal has a best value and the chart above says what it is. With two or more
        there is no such number, so the trade-off between them is the only honest answer. */
@@ -6507,7 +6507,8 @@
 
     /* Tokens, model calls and seconds are the same shape in almost every run, so they share one
        chart and a unit picker rather than taking three panels to say it three times. */
-    $('opt-cost').hidden = d.usageKeys.length === 0;
+    $('opt-cost').hidden = false;
+    $('opt-usage-wrap').hidden = d.usageKeys.length === 0;
     if (d.usageKeys.length) {
       optUsage = fillPick('opt-usage-pick', d.usageKeys.map(u => ({ value: u.key, label: u.label })), optUsage);
       const unit = d.usageKeys.find(u => u.key === optUsage);
@@ -6520,7 +6521,6 @@
           ? `, excluding the ${plural(d.endPhase.trials, 'trial')} recorded after the last finished iteration.`
           : '.');
       $('opt-usage-chart').innerHTML = usageChart(d, unit.key, unit.label);
-      $('opt-cost-sum').textContent = tokens ? `${compact(tokens)} tokens` : '';
     }
 
     $('opt-budget-cap').textContent = d.maxRollouts != null
@@ -6530,7 +6530,11 @@
 
     $('opt-status-cap').textContent = 'Every recorded trial by how it ended. A trial is one case run once.';
     $('opt-status-chart').innerHTML = statusChart(d);
-    $('opt-diag-sum').textContent = plural(d.trials, 'trial');
+    /* Both halves of what this drawer holds, on its fold: what was spent and over how many trials.
+       They were a drawer each, and a reader deciding whether to open either had to read two folds
+       to find out they answered the same question. */
+    $('opt-cost-sum').textContent = [tokens ? `${compact(tokens)} tokens` : '', plural(d.trials, 'trial')]
+      .filter(Boolean).join(' · ');
 
     /* Results keeps the one line of method — no figure under it is readable without knowing what
        was tuned and over how many cases — and Setup takes the account of how the splits were
@@ -6561,9 +6565,10 @@
       notes.push(`${plural(run.bad_lines.length, 'line')} in the log could not be parsed `
         + `(${run.bad_lines.map(b => 'line ' + b.line).join(', ')}).`);
     }
-    /* The hero figure above is a single best objective, which a Pareto run does not really have.
-       Where to read the run instead depends on whether its goals can be plotted against each
-       other — and when they cannot, saying so beats pointing at a chart that is not there. */
+    /* The best-feasible figure above is a single objective value, which a Pareto run does not
+       really have. Where to read the run instead depends on whether its goals can be plotted
+       against each other — and when they cannot, saying so beats pointing at a chart that is not
+       there. */
     if (d.isPareto) {
       notes.push(d.goals.length >= 2
         ? 'This run uses a Pareto objective, so a single best value understates it: its front is '
@@ -6915,7 +6920,7 @@
     selectRun(i, { view: 'experiment' });
   };
   // Redrawing the whole view is cheap — the log is already parsed — and keeps one render path.
-  $('opt-metric-pick').onchange = e => { optMetric = e.target.value; renderOptimization(); };
+  $('opt-series-pick').onchange = e => { optSeries = e.target.value; renderOptimization(); };
   $('opt-usage-pick').onchange = e => { optUsage = e.target.value; renderOptimization(); };
   $('opt-to-x').onchange = e => { optToX = e.target.value; renderOptimization(); };
   $('opt-to-y').onchange = e => { optToY = e.target.value; renderOptimization(); };

@@ -123,11 +123,15 @@ try {
     'and the result, read off the `test` report by the server rather than derived in the page',
     optRow.children[1].textContent.replace(/\s+/g, ' ').trim());
   await click(optRow);
-  await waitFor(() => $$('#opt-obj-chart circle').length > 0, 'the objective chart');
+  await waitFor(() => $$('#opt-series-chart circle').length > 0, 'the objective chart');
   ok(/support-tuning-20261110-091500-7af3e1/.test(text('#opt-sub')), 'names the run', text('#opt-sub'));
-  ok(text('#opt-best') === '0.67', 'best feasible objective derived from the fetched log', text('#opt-best'));
-  ok($$('#opt-obj-chart circle').length === 8, 'one mark per scored proposal',
-    $$('#opt-obj-chart circle').length);
+  const best = $$('#opt-stats .stat')
+    .find(el => /^Best feasible objective/.test(el.querySelector('.k').textContent));
+  ok(best && best.querySelector('.v').textContent === '0.67',
+    'best feasible objective derived from the fetched log',
+    best && best.querySelector('.v').textContent);
+  ok($$('#opt-series-chart circle').length === 8, 'one mark per scored proposal',
+    $$('#opt-series-chart circle').length);
   ok($$('#opt-cands tr.case').length === 11, 'a candidate row per proposal',
     $$('#opt-cands tr.case').length);
   /* The candidate table is built from the `trial` events, not from the iteration summaries, so
@@ -136,9 +140,9 @@ try {
   ok($$('#opt-cands tr.detail table.trials tr').length === 15,
      'opening the champion lists every trial the fetched log recorded for it',
      $$('#opt-cands tr.detail table.trials tr').length);
-  ok($$('#opt-metric-chart circle').length === 8 && $$('#opt-usage-chart rect.col').length === 6,
-    'the metric and cost charts are derived from the fetched log too',
-    `${$$('#opt-metric-chart circle').length} marks, ${$$('#opt-usage-chart rect.col').length} columns`);
+  ok($$('#opt-series-chart circle').length === 8 && $$('#opt-usage-chart rect.col').length === 6,
+    'the per-candidate and cost charts are derived from the fetched log too',
+    `${$$('#opt-series-chart circle').length} marks, ${$$('#opt-usage-chart rect.col').length} columns`);
   ok(text('#path') === 'tuning/events.jsonl', 'the path bar names the log it read', text('#path'));
 
   /* ── and a trial's transcript, which is a second fetch against a path out of the log ──

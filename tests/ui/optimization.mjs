@@ -339,28 +339,35 @@ await click('#opt-winner [data-act="copy-winner"]');
 ok(/could not reach the clipboard/.test(text('#opt-copied')),
   'a copy that could not happen says so rather than claiming success', text('#opt-copied'));
 
-// ── the hero number: best FEASIBLE, which is not the best scored ──
-ok(text('#opt-best') === '0.67', 'best feasible objective is c10, not infeasible c8', text('#opt-best'));
-ok(/c10/.test(text('#opt-best-cap')), 'and names the candidate it came from', text('#opt-best-cap'));
-
+/* ── the figures over the search: best FEASIBLE, which is not the best scored ──
+   The best objective is one stat among them rather than a hero number over them: the finding is
+   the difference and its interval in the card above, and in hero type beside that card a bare
+   best-ever value read as a second, bolder answer to the same question. */
 const stats = $$('#opt-stats .stat').map(s =>
   s.querySelector('.k').textContent + '=' + s.querySelector('.v').textContent);
+ok(stats.some(s => /^Best feasible objective · c10=0\.67$/.test(s)),
+  'the best feasible objective is c10\'s 0.67, not infeasible c8\'s, and names the candidate',
+  stats.join(' '));
 ok(stats.includes('Champion=c10'), 'champion read from the end-phase report', stats.join(' '));
 ok(stats.includes('Rollouts=64 / 240'), 'rollouts are the iterations\' own tally against the budget', stats.join(' '));
-ok(stats.length === 3, 'three figures in the headline, not every number the run produced', stats.join(' '));
+ok(stats.length === 4, 'four figures over the charts, not every number the run produced', stats.join(' '));
 
-/* The rest is diagnostics, so it starts folded away — the page opens on the objective and one
-   metric. What is inside each drawer is summarised on the fold, including the scored-against-
+/* The rest is diagnostics, so it starts folded away — the page opens on the result and the
+   objective. What is inside each drawer is summarised on the fold, including the scored-against-
    unscored split that used to compete for space in the headline. */
-ok(['#opt-search', '#opt-cost', '#opt-diag'].every(id => $(id).open === false),
-  'the search and diagnostics drawers start closed');
+ok(['#opt-search', '#opt-cost'].every(id => $(id).open === false),
+  'the search and cost drawers start closed');
 ok(/11 proposals over 6 iterations/.test(text('#opt-search-sum')),
   'the search drawer says how much work is folded inside it', text('#opt-search-sum'));
-ok(text('#opt-cost-sum') === '277k tokens', 'the cost drawer says what the run cost', text('#opt-cost-sum'));
-ok(text('#opt-diag-sum') === '82 trials', 'the diagnostics drawer counts the trials', text('#opt-diag-sum'));
+/* Spend and trials were a drawer each — "Cost per iteration" and "Trial outcomes and rollouts" —
+   so a reader deciding whether to open either read two folds to find they answered one question,
+   with the rollout count in the second and the spend it counts in the first. */
+ok(text('#opt-cost-sum') === '277k tokens · 82 trials',
+  'one cost drawer, whose fold carries both what was spent and over how many trials',
+  text('#opt-cost-sum'));
 
 // ── the objective chart ──
-const pts = $$('#opt-obj-chart circle');
+const pts = $$('#opt-series-chart circle');
 ok(pts.length === 8, 'one mark per SCORED proposal, not per proposal', pts.length);
 const titles = pts.map(c => c.querySelector('title').textContent);
 ok(!titles.some(t => /^c4 |^c7 |^c9 /.test(t)), 'unscored, invalid and duplicate candidates are not plotted', titles.join(' | '));
@@ -376,7 +383,7 @@ ok(/feasible/.test(cls('c6')) && !/infeasible/.test(cls('c6')), 'an ordinary fea
 
 /* The best-so-far line. In SVG a larger value is a smaller y, so improvement is a decreasing y
    and a chart that counted c8 would dip below c10's mark somewhere. */
-const path = $('#opt-obj-chart path.best');
+const path = $('#opt-series-chart path.best');
 ok(!!path, 'the best-so-far line is drawn');
 const points = (path.getAttribute('d') || '').split(/[ML]/).filter(Boolean)
   .map(seg => seg.split(',').map(Number));
@@ -421,29 +428,47 @@ ok(bars.some(b => b === 'agent failure 1'), 'the agent failure is counted', bars
 ok(bars.some(b => b === 'evaluator invalid 1'), 'and the evaluator failure too', bars.join(' | '));
 ok(bars.some(b => /train 64/.test(b) && /validation 12/.test(b) && /test 6/.test(b)),
   'splits broken out', bars.join(' | '));
-ok(/82 trials/.test(text('#opt-diag-sum')),
-  'the drawer counts every trial, not just the training ones', text('#opt-diag-sum'));
+ok(/82 trials/.test(text('#opt-cost-sum')),
+  'the drawer counts every trial, not just the training ones', text('#opt-cost-sum'));
 
-/* ── one metric chart with a picker, not a panel per metric ──
-   A panel each put a wall of charts on screen for something read one at a time. The picker has
-   to carry the same guarantees the panels did: every metric on offer, its own axis units, and a
-   redraw that actually changes the chart. */
-const metricMarks = () => $$('#opt-metric-chart circle');
+/* ── one chart with a picker, not a panel per series ──
+   A panel each put a wall of charts on screen for something read one at a time, and the objective
+   panel was the metric panel with the picker taken off it. The picker has to carry the same
+   guarantees the panels did: every series on offer, its own axis units, and a redraw that actually
+   changes the chart. */
+const metricMarks = () => $$('#opt-series-chart circle');
 const metricTitles = () => metricMarks().map(c => c.querySelector('title').textContent);
-const metricTicks = () => $$('#opt-metric-chart text.tick')
+const metricTicks = () => $$('#opt-series-chart text.tick')
   .map(t => Number(t.textContent)).filter(v => !Number.isNaN(v));
-const axlab = () => $$('#opt-metric-chart .axlab').map(t => t.textContent).join();
-const pick = async (sel, value) => {
-  $(sel).value = value;
-  $(sel).dispatchEvent(new p.window.Event('change', { bubbles: true }));
+const axlab = () => $$('#opt-series-chart .axlab').map(t => t.textContent).join();
+/* Pickers are read on pages other than this one too, so the act of choosing takes the page it is
+   choosing on. */
+const pickOn = async (q, sel, value) => {
+  q.$(sel).value = value;
+  q.$(sel).dispatchEvent(new q.window.Event('change', { bubbles: true }));
   await new Promise(r => setTimeout(r, 20));
 };
+const pick = (sel, value) => pickOn(p, sel, value);
 
-ok($$('#opt-metric-pick option').map(o => o.value).join() === 'Helpfulness,tokens',
-  'every measured metric is on offer, in the order run.json declares its goal metrics',
-  $$('#opt-metric-pick option').map(o => o.value).join());
-ok($('#opt-metric-pick').value === 'Helpfulness', 'the first goal metric is what you land on',
-  $('#opt-metric-pick').value);
+/* The objective leads, because it is what the search ranked on and so what the tab opens showing;
+   then every measured metric, in the order `run.json` declares its goal metrics. The metric names
+   are prefixed, so a metric that happens to be called "Objective" still gets its own entry rather
+   than colliding with it. */
+ok($$('#opt-series-pick option').map(o => o.value).join() === 'objective,m:Helpfulness,m:tokens',
+  'the objective and every measured metric are on offer in one picker',
+  $$('#opt-series-pick option').map(o => o.value).join());
+ok($('#opt-series-pick').value === 'objective' && /Objective by candidate/.test(text('#opt-series-head')),
+  'and the objective is what you land on', `${$('#opt-series-pick').value} / ${text('#opt-series-head')}`);
+ok($$('#opt-series-legend span').length > 0,
+  'with the legend for the best-so-far line and the eligibility colours that are its own',
+  text('#opt-series-legend'));
+
+await pick('#opt-series-pick', 'm:Helpfulness');
+ok(/Helpfulness by candidate/.test(text('#opt-series-head')), 'the heading follows the picker',
+  text('#opt-series-head'));
+ok($$('#opt-series-legend span').length === 0,
+  'and the objective\'s legend goes with it: a metric chart has no best-so-far line, so naming '
+  + 'one would describe something that is not on screen', text('#opt-series-legend'));
 
 const help = metricTitles();
 ok(help.length === 8, 'one mark per candidate the metric was measured on', help.length);
@@ -461,7 +486,7 @@ ok(Math.max(...metricTicks()) < 1, 'and scaled to the metric alone, in score uni
 
 /* The joining line stops at a candidate that was never measured. Drawn straight through, it
    would read as a value passing through a candidate nothing was recorded for. */
-const segs = $$('#opt-metric-chart path.metric-line')
+const segs = $$('#opt-series-chart path.metric-line')
   .map(pth => pth.getAttribute('d').split(/[ML]/).filter(Boolean).map(s => s.split(',').map(Number)));
 ok(segs.length === 2, 'the line breaks rather than spanning the gaps', segs.length);
 ok(segs.map(s => s.length).join() === '4,2',
@@ -472,7 +497,7 @@ const reach = segs.flatMap(s => s.slice(1).map(([x], i) => x - s[i][0])).find(dx
 ok(reach === undefined, 'no segment reaches over a candidate it has no value for', reach);
 
 // Switching metric redraws in that metric's own units, not on an axis shared with the score.
-await pick('#opt-metric-pick', 'tokens');
+await pick('#opt-series-pick', 'm:tokens');
 const tokenMarks = metricTitles();
 ok(tokenMarks[0] === 'c0 · tokens 3180', 'a metric that is a count keeps its decimals off', tokenMarks[0]);
 ok(tokenMarks[6] === 'c8 · tokens 4210', 'including the candidate that blew the 4000-token constraint', tokenMarks[6]);
@@ -480,8 +505,8 @@ ok(/infeasible/.test(metricMarks()[6].getAttribute('class')), 'which is marked i
   metricMarks()[6].getAttribute('class'));
 ok(axlab() === 'tokens', 'the axis label follows the picker', axlab());
 ok(Math.min(...metricTicks()) > 1000, 'and the axis is in token units', metricTicks().join(' '));
-ok(/mean recorded for tokens/.test(text('#opt-metric-cap')), 'as does the caption', text('#opt-metric-cap'));
-await pick('#opt-metric-pick', 'Helpfulness');
+ok(/mean recorded for tokens/.test(text('#opt-series-cap')), 'as does the caption', text('#opt-series-cap'));
+await pick('#opt-series-pick', 'm:Helpfulness');
 ok(metricTitles()[0] === 'c0 · Helpfulness 0.51', 'and switching back restores the first',
   metricTitles()[0]);
 
@@ -1096,7 +1121,7 @@ await p2.openFolder({
 await openResults(p2);
 ok(p2.text('#opt-note') === '', 'a half-written last line is not reported as damage', p2.text('#opt-note'));
 ok(/still running/.test(p2.text('#opt-sub')), 'a log with no stop event is still running', p2.text('#opt-sub'));
-ok(p2.$$('#opt-obj-chart circle').length > 0, 'and it still draws what it has');
+ok(p2.$$('#opt-series-chart circle').length > 0, 'and it still draws what it has');
 
 const p3 = await page();
 await p3.openFolder({
@@ -1141,16 +1166,23 @@ await pLate.openFolder({
   ]),
 });
 await openResults(pLate);
-const latePts = pLate.$$('#opt-obj-chart circle');
+const latePts = pLate.$$('#opt-series-chart circle');
 ok(latePts.length === 2, 'the unscored opening proposal is not plotted', latePts.length);
-const lateLine = pLate.$('#opt-obj-chart path.best');
+const lateLine = pLate.$('#opt-series-chart path.best');
 ok(!!lateLine, 'a line is still drawn');
 const lateXs = (lateLine.getAttribute('d') || '').split(/[ML]/).filter(Boolean)
   .map(seg => Number(seg.split(',')[0]));
 ok(Math.abs(Math.min(...lateXs) - Number(latePts[0].getAttribute('cx'))) < 1e-6,
   'the line starts at the first scored candidate, not at the left edge',
   `line ${Math.min(...lateXs)} vs first mark ${latePts[0].getAttribute('cx')}`);
-ok(pLate.text('#opt-best') === '0.60', 'best is the better of the two measured', pLate.text('#opt-best'));
+/* The best figure is a stat in the row over the charts now, not a hero number beside the result
+   card — so it is read by its label rather than by its id. */
+const bestStat = q => {
+  const stat = q.$$('#opt-stats .stat')
+    .find(el => /^Best feasible objective/.test(el.querySelector('.k').textContent));
+  return stat ? stat.querySelector('.v').textContent : null;
+};
+ok(bestStat(pLate) === '0.60', 'best is the better of the two measured', bestStat(pLate));
 
 // ── a run with nothing measured at all, and a Pareto run ──
 const pEmpty = await page();
@@ -1160,9 +1192,9 @@ await pEmpty.openFolder({
 });
 await openResults(pEmpty);
 ok(pEmpty.$('#sec-opt').hidden === false, 'a run with only a config event is still a run');
-ok(pEmpty.text('#opt-best') === '—', 'no best objective is a dash, not 0.00', pEmpty.text('#opt-best'));
-ok(/No candidate has been scored/.test(pEmpty.text('#opt-obj-chart')), 'says why the chart is empty',
-  pEmpty.text('#opt-obj-chart'));
+ok(bestStat(pEmpty) === '—', 'no best objective is a dash, not 0.00', bestStat(pEmpty));
+ok(/No candidate has been scored/.test(pEmpty.text('#opt-series-chart')), 'says why the chart is empty',
+  pEmpty.text('#opt-series-chart'));
 ok(/No iteration has finished/.test(pEmpty.text('#opt-budget-chart')), 'and the budget chart too',
   pEmpty.text('#opt-budget-chart'));
 ok(/No candidate yet/.test(pEmpty.text('#opt-cands')), 'and the candidate table', pEmpty.text('#opt-cands'));
@@ -1176,9 +1208,14 @@ ok(/searching for a configuration that scores better/.test(pEmpty.text('#opt-exp
   'still saying what the run is for', pEmpty.text('#opt-explain'));
 ok(/Pareto/.test(pEmpty.text('#opt-note')), 'a Pareto run is flagged, because one best understates it',
   pEmpty.text('#opt-note'));
-ok(pEmpty.$('#opt-metric-wrap').hidden === true,
-  'a run that measured no metric hides the metric chart rather than framing an empty one');
-ok(pEmpty.$('#opt-cost').hidden === true, 'and the cost drawer too, with nothing to put in it');
+ok(pEmpty.$('#opt-series-pick').hidden === true,
+  'a run that measured no metric has only the objective to chart, so there is nothing to pick '
+  + 'between and the picker is not offered');
+/* The spend chart goes, the drawer stays: a run that recorded no usage still has rollouts and
+   trial outcomes to account for, and they are the other two charts in it. */
+ok(pEmpty.$('#opt-usage-wrap').hidden === true && pEmpty.$('#opt-cost').hidden === false,
+  'and the spend chart is hidden rather than framing an empty one, without taking the rest of the '
+  + 'cost drawer with it');
 
 /* ── a candidate the optimizer never labelled ──
    Then the only measurement available is the mean over its own trials. The fixture labels every
@@ -1202,13 +1239,16 @@ await pFall.openFolder({
   ]),
 });
 await openResults(pFall);
-const fallMarks = pFall.$$('#opt-metric-chart circle').map(c => c.querySelector('title').textContent);
+await pickOn(pFall, '#opt-series-pick', 'm:Helpfulness');
+const fallMarks = pFall.$$('#opt-series-chart circle').map(c => c.querySelector('title').textContent);
 ok(fallMarks.length === 1, 'the unlabelled candidate is still measured', fallMarks.join(' | '));
 ok(fallMarks[0] === 'c0 · Helpfulness 0.30', 'from the mean of its trials, not their sum or the last of them',
   fallMarks[0]);
-ok(pFall.$$('#opt-metric-chart path.metric-line').length === 0,
+ok(pFall.$$('#opt-series-chart path.metric-line').length === 0,
   'a single point draws no line between itself and nothing');
-ok(pFall.$('#opt-metric-pick').hidden === true, 'with one metric there is nothing to pick between');
+ok(pFall.$$('#opt-series-pick option').map(o => o.value).join() === 'objective,m:Helpfulness',
+  'and the picker offers the objective and its one metric, nothing it never measured',
+  pFall.$$('#opt-series-pick option').map(o => o.value).join());
 const fallCols = pFall.$$('#opt-usage-chart rect.col').map(r => r.querySelector('title').textContent);
 ok(fallCols[0] === 'iteration 0: 400 over 2 trials', 'usage is summed over the iteration, not averaged',
   fallCols[0]);
@@ -1619,14 +1659,8 @@ const GOAL_LOG = jsonl([
     report: { champion_id: 'c1', front: ['c1', 'c2'], measured: { c1: { Quality: { mean: 0.9 } } } } },
 ]);
 
-/* The same as `pick` above, on a page of its own: these runs each need their own log, so the
-   picker being driven is not the one on the first page. */
-const pickOn = async (q, sel, value) => {
-  q.$(sel).value = value;
-  q.$(sel).dispatchEvent(new q.window.Event('change', { bubbles: true }));
-  await new Promise(r => setTimeout(r, 20));
-};
-
+/* These runs each need their own log, so the pickers driven below are not the ones on the first
+   page — hence `pickOn` rather than `pick`. */
 const goalPage = async (objective, log) => {
   const q = await page();
   await q.openFolder({ 'g/run.json': { run_id: 'goals', objective }, 'g/events.jsonl': log || GOAL_LOG });
