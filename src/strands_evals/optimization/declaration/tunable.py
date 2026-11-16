@@ -44,7 +44,8 @@ class BuildContext:
             not first inside the task, so a copy that fails stops the run instead of failing every trial.
             The first read makes the copy in the reading thread: `build_task`, and an async task, run on
             the optimizer's event loop, so other trials wait while it copies (once per candidate; later
-            reads return at once). A large folder is cheaper as a folder of its own beside the tuned file.
+            reads return at once). Keep the tuned file in a small folder of its own: everything beside it is
+            copied for every candidate.
     """
 
     values: Values

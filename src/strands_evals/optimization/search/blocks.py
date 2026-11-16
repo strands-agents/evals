@@ -148,7 +148,12 @@ class Schedule(ABC):
     @abstractmethod
     def next(self, ctx: ScheduleContext) -> Step | None:
         """The next step; None means nothing is left to try (`stop_reason="exhausted"`), or, inside a
-        `Nested` round, that the round is over."""
+        `Nested` round, that the round is over.
+
+        Must return None once its steps stop saving candidates (e.g. after a step, or a full cycle of steps,
+        that saved none): a step that saves nothing spends no rollouts and uses no `max_iterations` slot, so
+        nothing else ends the run.
+        """
 
     def config(self) -> dict[str, Any]:
         """JSON-serializable constructor arguments, stored in `run.json`; default `{}`."""

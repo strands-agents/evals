@@ -1787,9 +1787,11 @@ class Optimizer:
         Resume continues a run that was killed; it never extends a finished one. Every stop runs the end
         phase, so a finished run only finishes or returns its end phase. To search more, start a new run.
         A killed search may get a larger `Budget`, which only moves where it stops. The resumed run proposes what
-        an uninterrupted one would, except near the rollout cap: what the killed iteration spent counts from the
-        start, while its trials are reused at no cost, so a step can be cut narrower or the search stop a step
-        earlier than without the kill. If you changed cases,
+        an uninterrupted one would, with two exceptions: near the rollout cap, what the killed iteration spent
+        counts from the start, while its trials are reused at no cost, so a step can be cut narrower or the
+        search stop a step earlier than without the kill; and a refit that succeeded in the run but raises when
+        replayed (e.g. under another numpy) is replaced by measured means until a refit succeeds, with a
+        warning. If you changed cases,
         evaluators, judge settings, or agent code, start a new run instead: resuming would mix results from
         the old and new setups.
 
