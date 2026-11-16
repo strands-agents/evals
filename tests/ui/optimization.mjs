@@ -12,6 +12,14 @@ import { page, runner } from './harness.mjs';
 const { ok, done } = runner('optimization');
 
 const DIR = new URL('./fixtures/optimizer-run/', import.meta.url);
+/* Written by `npm run fixture`, which `npm test` does first — it is generated rather than committed,
+   so a single suite run straight after a clone finds nothing and should say which command makes it
+   rather than failing on a missing file eighty lines later. */
+if (!fs.existsSync(new URL('events.jsonl', DIR))) {
+  console.error('fixtures/optimizer-run is not there — run `npm run fixture` (or `npm test`, which '
+    + 'writes it first).');
+  process.exit(1);
+}
 const EVENTS = fs.readFileSync(new URL('events.jsonl', DIR), 'utf8');
 const CONFIG = fs.readFileSync(new URL('run.json', DIR), 'utf8');
 /* The run's recorded conversations, which a trial's log entry only *points* at. They are handed to
