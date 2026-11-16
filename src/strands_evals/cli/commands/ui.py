@@ -54,7 +54,7 @@ def _run(args: argparse.Namespace) -> int:
         depth=args.depth,
         read_only=args.read_only,
         token=token,
-        # DIRECTORY unless told otherwise, so the explorer and the page's Optimization tab read
+        # DIRECTORY unless told otherwise, so the explorer and the page's Optimization section read
         # the same tree. Pointed at different trees, the same run is browsable in one and missing
         # from the other, which reads as a broken page rather than as two directories.
         explorer_root=runs_dir or root,
@@ -137,7 +137,7 @@ def add_subparser(
         default=None,
         help="read optimizer runs for the explorer from here instead of DIRECTORY (a tree of "
         "folders, each holding an events.jsonl). Pointing it elsewhere lets the explorer and the "
-        "Optimization tab list different runs, so prefer a DIRECTORY that contains both.",
+        "Optimization section list different runs, so prefer a DIRECTORY that contains both.",
     )
     parser.add_argument(
         "--read-only",

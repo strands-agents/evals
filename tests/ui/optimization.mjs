@@ -1,6 +1,6 @@
-/* The Optimization view, driven from the committed fixture run.
+/* The Optimization section — Runs, Setup, Results — driven from the committed fixture run.
  *
- * The numbers on this tab are *derived* — best-so-far, the budget curve, the status breakdown —
+ * The numbers here are *derived* — best-so-far, the budget curve, the status breakdown —
  * so the way they can be wrong is to be plausible. The assertions below are written against the
  * fixture's plan rather than against whatever the page currently draws: the best feasible
  * objective is c10's 0.671 and never c8's higher-but-infeasible 0.690, a candidate that was never
@@ -16,25 +16,58 @@ const EVENTS = fs.readFileSync(new URL('events.jsonl', DIR), 'utf8');
 const CONFIG = fs.readFileSync(new URL('run.json', DIR), 'utf8');
 
 const skips = p => p.$$('#skips li').map(li => li.textContent.replace(/\s+/g, ' ').trim());
+const errs = [];                              // for the pages built inside a block
 
 const p = await page();                       // no fetch -> standalone
 const { $, $$, text, click, openFolder } = p;
 
-// ── the tab only exists when there is a run behind it ──
-ok($('#tab-opt').hidden === true, 'Optimization tab hidden with no optimizer run');
+/* Nearly every assertion below reads the Results panel, and clicking a tab switches to its section
+   as well as its view — so one helper stands in for "show me this run's result". */
+const openResults = q => q.click('.tab[data-view="opt-results"]');
+
+/* ── the Optimization section only exists when there is a run behind it ──
+   A folder of plain experiments must look exactly as it did before there was an optimizer: one
+   section, so no section switcher worth showing, and none of its three tabs in the row. */
+ok($('#sec-opt').hidden === true, 'Optimization section hidden with no optimizer run');
+ok($$('.tab[data-sec="optimization"]').every(t => t.hidden),
+  'and so are all three of its tabs');
+ok($('#sections').hidden === true,
+  'and the switcher with it, since one section is not a choice');
 
 await openFolder({ 'demo/run.json': CONFIG, 'demo/events.jsonl': EVENTS });
-ok($('#tab-opt').hidden === false, 'tab appears once a run directory is read');
-ok($('#opt-run').hidden === true, 'the run picker stays hidden for a single run');
-ok($('#opt-run-label').hidden === true, 'and so does its label, which would otherwise label nothing');
+ok($('#sec-opt').hidden === false, 'the section appears once a run directory is read');
+ok($('#sections').hidden === false, 'and now there is something to switch between');
+ok($$('.tab[data-sec="optimization"]').map(t => t.textContent).join() === 'Runs,Setup,Results',
+  'with its own three panels — not Evals\' three renamed, since Setup is read where Experiment is edited',
+  $$('.tab[data-sec="optimization"]').map(t => t.textContent).join());
 ok(skips(p).length === 0, 'neither file of a recognised run is reported as unusable', skips(p).join(' | '));
 
-await click('#tab-opt');
-ok($('#v-optimization').classList.contains('on'), 'the tab opens the view');
+/* ── its Runs tab lists the run directories, the way Evals lists experiment/report pairs ── */
+await click('#sec-opt');
+ok($('#v-opt-runs').classList.contains('on'), 'the section opens on its run list');
+ok($$('.tab:not(.off)').map(t => t.dataset.view).join() === 'opt-runs,opt-setup,opt-results',
+  'and the tab row is now this section\'s', $$('.tab:not(.off)').map(t => t.dataset.view).join());
+const runRow = $$('#opt-runs-rows tr[data-opt-run]');
+ok(runRow.length === 1, 'one row for the one run', runRow.length);
+ok(/support-tuning-20261110-091500-7af3e1/.test(runRow[0].textContent), 'naming it',
+  runRow[0].textContent.replace(/\s+/g, ' ').trim());
+ok(/c10/.test(runRow[0].children[1].textContent), 'with the champion it picked',
+  runRow[0].children[1].textContent);
+/* 10, the `propose` events — the configurations it actually built. The 11 the search drawer
+   counts includes the proposal that was drawn and never scored, which is a fact about the search
+   rather than about what came out of it. */
+ok(/10 candidates/.test(runRow[0].children[2].textContent)
+  && /6 iterations/.test(runRow[0].children[2].textContent),
+  'how far it searched', runRow[0].children[2].textContent.replace(/\s+/g, ' '));
+ok(/iterations/.test(runRow[0].children[3].textContent), 'and why it stopped',
+  runRow[0].children[3].textContent);
+
+// A run row opens the result, because the result is what the click is asking for.
+await click(runRow[0]);
+ok($('#v-opt-results').classList.contains('on'), 'clicking a run goes to its result');
 ok(text('#path') === 'demo/events.jsonl', 'the path bar names the log', text('#path'));
 ok(/support-tuning-20261110-091500-7af3e1/.test(text('#opt-sub')), 'names the run', text('#opt-sub'));
 ok(/stopped: iterations/.test(text('#opt-sub')), 'reports the stop reason', text('#opt-sub'));
-ok(/WeightedSum/.test(text('#opt-objective')), 'shows the objective', text('#opt-objective'));
 /* The counts belong to the drawers that chart them. Repeating them in the subtitle put the same
    figures twice on one screen, which read as a busier run rather than as a clearer one. */
 ok(!/11 proposals/.test(text('#opt-sub')) && !/82 trials/.test(text('#opt-sub')),
@@ -42,20 +75,38 @@ ok(!/11 proposals/.test(text('#opt-sub')) && !/82 trials/.test(text('#opt-sub'))
 ok(/11 proposals over 6 iterations/.test(text('#opt-search-sum')),
   'the search drawer counts proposals and iterations', text('#opt-search-sum'));
 
-/* ── what the optimizer did, before anything it produced ──
-   Every number on this tab is unreadable without the method: the search only ever sees train,
+/* ── what the optimizer did ──
+   Every number under Results is unreadable without the method: the search only ever sees train,
    the pick happens once on validation, and test is measured but never optimized against. The
    `Optimizer` docstring is explicit that the experiment "is never run itself", which is the one
-   thing a reader coming from the Runs tab will assume the opposite of.
+   thing a reader coming from Evals will assume the opposite of.
 
-   It is in two parts so the method can be on the page without a paragraph sitting above the
-   result on every visit: the line naming what was tuned is always up, and the account of how the
-   splits were used is behind it. Neither part may repeat the other. */
+   It is split across the two tabs so the method is on the page without a paragraph sitting above
+   the result on every visit: Results keeps the line naming what was tuned, Setup takes the account
+   of how the splits were used. Neither half may repeat the other. */
 const line = text('#opt-method-sum');
 ok(/Tuned system_prompt, temperature, tool_descriptions, max_tokens/.test(line),
   'the line names what it actually varied, taken from the proposals rather than the configured blocks', line);
 ok(/8 train · 4 validation · 3 test/.test(line), 'and the split sizes', line);
-ok($('#opt-method').open === false, 'the account behind it starts closed');
+
+await click('.tab[data-view="opt-setup"]');
+ok($('#v-opt-setup').classList.contains('on'), 'Setup opens');
+ok(/run\.json/.test(text('#path')), 'and the path bar names the record it reads', text('#path'));
+const kv = Object.fromEntries($$('#opt-setup-kv dt').map((dt, i) =>
+  [dt.textContent, $$('#opt-setup-kv dd')[i].textContent.replace(/\s+/g, ' ').trim()]));
+ok(/WeightedSum/.test(kv.Objective || ''), 'the objective it scored against', kv.Objective);
+ok(/tokens <= 4000/.test(kv.Constraints || ''), 'the constraints it had to satisfy', kv.Constraints);
+ok(/8 train · 4 validation · 3 test/.test(kv.Cases || '') && /seed 20261110/.test(kv.Cases || ''),
+  'the splits and the seed that made them, which is what makes two runs comparable', kv.Cases);
+ok(/240 rollouts/.test(kv.Budget || '') && /6 iterations/.test(kv.Budget || ''),
+  'and the budget it was given', kv.Budget);
+/* Read, not edited: nothing on this page writes a `run.json`, so there must be no field here that
+   looks like one. */
+ok($$('#v-opt-setup input, #v-opt-setup textarea, #v-opt-setup select').length === 0,
+  'Setup offers nothing to type into, because nothing here writes that file');
+ok($('#opt-source').hidden === true,
+  'and no experiment is named when this folder holds none the split could have come from',
+  text('#opt-source'));
 
 const why = text('#opt-explain');
 ok(/built 10 versions of your agent/.test(why),
@@ -515,7 +566,7 @@ ok(!/Actual trajectory/.test(repDetail()),
 
 /* A candidate with a failed trial carries that failure into its report rather than dropping the
    row — a run that lost a case to a tool timeout scored lower for it, and the report must say so. */
-await click('#tab-opt');
+await openResults(p);
 await openCand('c2');
 await click('#opt-cands [data-open]');
 ok(text('#rep-count') === '8 of 8 rows', 'its eight training trials', text('#rep-count'));
@@ -524,9 +575,154 @@ const failRow = $$('#rep-rows tr.case').find(r => /train_case_05/.test(r.textCon
 await click(failRow);
 ok(/agent_failure: the refund tool timed out/.test(repDetail()),
   'and the error named, not just the status', repDetail().slice(0, 240));
-await click('#tab-opt');
+await openResults(p);
 
 ok(text('#opt-note') === '', 'no warnings for a clean log', text('#opt-note'));
+
+/* ── DRAFT B · which experiment the cases came from ──
+   A run record cannot name its own experiment, so the only thread between the two sections is the
+   case ids in the split. That makes the line a guess, and every assertion below is about it being
+   reported as one: the count is the hedge, a partial match says how partial, and nothing matching
+   says nothing rather than naming the nearest file. */
+{
+  const split = JSON.parse(CONFIG).split;
+  const expOf = names => ({ cases: names.map(n => ({ name: n, input: 'q' })), evaluators: [] });
+  const all = [...split.train, ...split.validation, ...split.test];
+
+  const q = await page();
+  await q.openFolder({
+    'cases/experiment.json': expOf(all),
+    'tuning/run.json': CONFIG,
+    'tuning/events.jsonl': EVENTS,
+  });
+  await q.click('.tab[data-view="opt-setup"]');
+  ok(q.$('#opt-source').hidden === false, 'an experiment holding every case of the split is named');
+  ok(q.text('#opt-source') === 'Its 15 cases are cases of cases/experiment.json.',
+    'and a complete match is stated without a count of how much of it matched', q.text('#opt-source'));
+
+  /* Session ids, which is the other thing a split can hold — and the id alone does not say which,
+     so both have to be looked at. */
+  const qSid = await page();
+  await qSid.openFolder({
+    'cases/experiment.json': { cases: all.map(n => ({ session_id: n, name: 'case ' + n })), evaluators: [] },
+    'tuning/run.json': CONFIG,
+    'tuning/events.jsonl': EVENTS,
+  });
+  await qSid.click('.tab[data-view="opt-setup"]');
+  ok(/Its 15 cases are cases of/.test(qSid.text('#opt-source')),
+    'a split of session ids matches on session_id too', qSid.text('#opt-source'));
+
+  // A partial match is the common case — an experiment edited since the run — and it says so.
+  const qPart = await page();
+  await qPart.openFolder({
+    'cases/experiment.json': expOf(all.slice(0, 9)),
+    'tuning/run.json': CONFIG,
+    'tuning/events.jsonl': EVENTS,
+  });
+  await qPart.click('.tab[data-view="opt-setup"]');
+  ok(qPart.text('#opt-source') === '9 of its 15 cases are cases of cases/experiment.json.',
+    'a partial match says how much of the split it accounts for', qPart.text('#opt-source'));
+
+  // Two candidates: the one accounting for more of the split, not the first one read.
+  const qTwo = await page();
+  await qTwo.openFolder({
+    'a-few/experiment.json': expOf(all.slice(0, 3)),
+    'most/experiment.json': expOf(all.slice(0, 12)),
+    'tuning/run.json': CONFIG,
+    'tuning/events.jsonl': EVENTS,
+  });
+  await qTwo.click('.tab[data-view="opt-setup"]');
+  ok(/most\/experiment\.json/.test(qTwo.text('#opt-source')),
+    'the experiment matching more of the split wins, not the first one read',
+    qTwo.text('#opt-source'));
+
+  // Nothing in common: silence, rather than the nearest file named as the source.
+  const qNone = await page();
+  await qNone.openFolder({
+    'other/experiment.json': expOf(['something_else']),
+    'tuning/run.json': CONFIG,
+    'tuning/events.jsonl': EVENTS,
+  });
+  await qNone.click('.tab[data-view="opt-setup"]');
+  ok(qNone.$('#opt-source').hidden === true,
+    'an experiment with no case in common is not named at all', qNone.text('#opt-source'));
+
+  /* The point of naming it is the cases, and the cases are on the Experiment tab under Evals —
+     so the name is a way there. */
+  await q.click('#opt-source a[data-exp]');
+  ok(q.$('#v-experiment').classList.contains('on'), 'the named experiment opens where its cases are');
+  ok(q.text('#path') === 'cases/experiment.json', 'the one it named', q.text('#path'));
+  ok(q.$$('#case-list li[data-i]').length === 15, 'with them loaded', q.$$('#case-list li[data-i]').length);
+  ok(q.$('#runs-rows tr.run.on') !== null,
+    'and the Runs tab agrees about which run is open, rather than highlighting nothing');
+  errs.push(...q.errs, ...qSid.errs, ...qPart.errs, ...qTwo.errs, ...qNone.errs);
+}
+
+/* ── the report panel is on loan, not reassigned ──
+   There is one report panel and two sections that want it. A candidate opened as a report used to
+   overwrite whatever report Evals had loaded and say nothing about it: the Runs tab went on
+   highlighting a run whose report was no longer the one on screen. So the loan is announced, and
+   it is given back. */
+{
+  const cases = [{ name: 'a', session_id: 's-a', input: 'q', expected_output: 'yes' },
+    { name: 'b', session_id: 's-b', input: 'q2', expected_output: 'no' }];
+  const q = await page();
+  await q.openFolder({
+    'evals/experiment.json': { cases, evaluators: ['OutputEvaluator'] },
+    'evals/report.json': {
+      overall_score: 1, cases: cases.map(c => ({ ...c, evaluator: 'OutputEvaluator', actual_output: c.expected_output })),
+      scores: [1, 1], test_passes: [true, true],
+      detailed_results: cases.map(() => [{ score: 1, test_pass: true, label: 'match' }]),
+    },
+    'tuning/run.json': CONFIG,
+    'tuning/events.jsonl': EVENTS,
+  });
+  await q.click('#runs-rows tr.run');
+  await q.click('.tab[data-view="report"]');
+  ok(q.text('#rep-count') === '2 of 2 rows', 'Evals has a report of its own open', q.text('#rep-count'));
+  ok(q.$('#rep-borrowed').hidden === true, 'and nothing is on loan');
+
+  await openResults(q);
+  await q.click(q.$$('#opt-cands tr.case').find(r => /c10/.test(r.textContent)));
+  await q.click('#opt-cands [data-open]');
+  ok(q.$('#rep-borrowed').hidden === false, 'the candidate jump announces whose report is in the panel');
+  const loan = q.text('#rep-borrowed');
+  ok(/c10/.test(loan) && /support-tuning-20261110-091500-7af3e1/.test(loan),
+    'naming the candidate and the run it came from', loan);
+  ok(/Back to this run’s report/.test(loan),
+    'and offering back the report it displaced, because there was one', loan);
+  ok(q.text('#rep-count') === '15 of 15 rows', 'the panel is showing the candidate', q.text('#rep-count'));
+
+  await q.click('#rep-borrowed [data-act="unborrow"]');
+  ok(q.$('#rep-borrowed').hidden === true, 'giving it back clears the notice');
+  ok(q.text('#rep-count') === '2 of 2 rows', 'and restores the report Evals had', q.text('#rep-count'));
+  ok(q.text('#path') === 'evals/report.json',
+    'down to the file it came from, which the loan had replaced with a run and a candidate id',
+    q.text('#path'));
+  ok(q.$('#runs-rows tr.run').classList.contains('on'),
+    'and the run the Runs tab highlights is the one whose report is open again');
+
+  /* Nothing displaced — an experiment with no report run against it yet. Then there is no report
+     to go back to, and offering one would be a button that loads whatever was last in the panel
+     under a label that lies about it. */
+  const q2 = await page();
+  await q2.openFolder({
+    'evals/experiment.json': { cases, evaluators: ['OutputEvaluator'] },
+    'tuning/run.json': CONFIG,
+    'tuning/events.jsonl': EVENTS,
+  });
+  await q2.click('#runs-rows tr.run');
+  ok(q2.text('#rep-count') === '', 'a run with no report leaves the panel empty', q2.text('#rep-count'));
+  await openResults(q2);
+  await q2.click(q2.$$('#opt-cands tr.case').find(r => /c10/.test(r.textContent)));
+  await q2.click('#opt-cands [data-open]');
+  ok(/Back to Results/.test(q2.text('#rep-borrowed')),
+    'with no report of its own, the way back is to the run', q2.text('#rep-borrowed'));
+  await q2.click('#rep-borrowed [data-act="unborrow"]');
+  ok(q2.$('#v-opt-results').classList.contains('on'), 'and it goes there');
+  ok(q2.text('#rep-count') === '', 'leaving no half-loaded report behind it', q2.text('#rep-count'));
+  errs.push(...q.errs, ...q2.errs);
+}
 
 // ── a log that is still being written, and one with a broken line ──
 const p2 = await page();
@@ -535,7 +731,7 @@ await p2.openFolder({
   'demo/run.json': CONFIG,
   'demo/events.jsonl': lines.slice(0, 40).join('\n') + '\n' + lines[40].slice(0, 30),
 });
-await p2.click('#tab-opt');
+await openResults(p2);
 ok(p2.text('#opt-note') === '', 'a half-written last line is not reported as damage', p2.text('#opt-note'));
 ok(/still running/.test(p2.text('#opt-sub')), 'a log with no stop event is still running', p2.text('#opt-sub'));
 ok(p2.$$('#opt-obj-chart circle').length > 0, 'and it still draws what it has');
@@ -545,20 +741,20 @@ await p3.openFolder({
   'demo/run.json': CONFIG,
   'demo/events.jsonl': lines.slice(0, 5).join('\n') + '\n{"event": "tri\n' + lines.slice(5).join('\n') + '\n',
 });
-await p3.click('#tab-opt');
+await openResults(p3);
 ok(/line 6/.test(p3.text('#opt-note')), 'a broken line in the middle is reported with its number', p3.text('#opt-note'));
 ok(p3.$('#opt-note').className.includes('warn'), 'and flagged');
 
 // ── a run directory missing half of itself is not a run ──
 const p4 = await page();
 await p4.openFolder({ 'demo/run.json': CONFIG });
-ok(p4.$('#tab-opt').hidden === true, 'a run.json with no event log is not an optimizer run');
+ok(p4.$('#sec-opt').hidden === true, 'a run.json with no event log is not an optimizer run');
 ok(skips(p4).some(s => /demo\/run\.json/.test(s)),
   'and it is reported as unusable rather than vanishing', skips(p4).join(' | '));
 
 const p5 = await page();
 await p5.openFolder({ 'demo/events.jsonl': EVENTS });
-ok(p5.$('#tab-opt').hidden === true, 'an event log with no config is not an optimizer run either');
+ok(p5.$('#sec-opt').hidden === true, 'an event log with no config is not an optimizer run either');
 ok(skips(p5).some(s => /no run\.json beside it/.test(s)),
   'and says what it was missing', skips(p5).join(' | '));
 
@@ -582,7 +778,7 @@ await pLate.openFolder({
     iterationEnd(2, [{ candidate_id: 'c2', number: 2, outcome: 'feasible', objective: 0.6 }], 4),
   ]),
 });
-await pLate.click('#tab-opt');
+await openResults(pLate);
 const latePts = pLate.$$('#opt-obj-chart circle');
 ok(latePts.length === 2, 'the unscored opening proposal is not plotted', latePts.length);
 const lateLine = pLate.$('#opt-obj-chart path.best');
@@ -600,8 +796,8 @@ await pEmpty.openFolder({
   'empty/run.json': { run_id: 'just-started', objective: 'Maximize(H)', is_pareto: true },
   'empty/events.jsonl': jsonl([{ event: 'config', iteration: 0 }]),
 });
-await pEmpty.click('#tab-opt');
-ok(pEmpty.$('#tab-opt').hidden === false, 'a run with only a config event is still a run');
+await openResults(pEmpty);
+ok(pEmpty.$('#sec-opt').hidden === false, 'a run with only a config event is still a run');
 ok(pEmpty.text('#opt-best') === '—', 'no best objective is a dash, not 0.00', pEmpty.text('#opt-best'));
 ok(/No candidate has been scored/.test(pEmpty.text('#opt-obj-chart')), 'says why the chart is empty',
   pEmpty.text('#opt-obj-chart'));
@@ -643,7 +839,7 @@ await pFall.openFolder({
     iterationEnd(0, [{ candidate_id: 'c0', number: 0, outcome: 'feasible', objective: 0.3 }], 2),
   ]),
 });
-await pFall.click('#tab-opt');
+await openResults(pFall);
 const fallMarks = pFall.$$('#opt-metric-chart circle').map(c => c.querySelector('title').textContent);
 ok(fallMarks.length === 1, 'the unlabelled candidate is still measured', fallMarks.join(' | '));
 ok(fallMarks[0] === 'c0 · Helpfulness 0.30', 'from the mean of its trials, not their sum or the last of them',
@@ -681,7 +877,7 @@ const testReport = (objective, means) => ({
 const resultPage = async log => {
   const q = await page();
   await q.openFolder({ 'r/run.json': { run_id: 'verdicts', objective: 'Maximize(H)' }, 'r/events.jsonl': log });
-  await q.click('#tab-opt');
+  await openResults(q);
   return q;
 };
 const said = q => q.text('#opt-result .verdict');
@@ -763,6 +959,62 @@ ok(/Best feasible objective so far/.test(p2.text('#opt-result'))
 ok(/No champion has been picked yet/.test(p2.text('#opt-winner')),
   'and no winner', p2.text('#opt-winner'));
 
+/* ── the record as the optimizer actually writes it ──
+   The fixture spells these fields the way `optimization/record/events.py` documents them. The
+   runs committed under `examples/optimization/runs` spell the same facts differently: the goal
+   metrics are the `objective`-role keys of `metrics`, the tunable blocks are named inside
+   `search.blocks`, repeats are `runs_per_candidate`, the score model and pick rule are under
+   `name`, and a multi-objective run says so only in its objective string. Read under one name
+   each, every one of these rows would be missing for every real run — which is the kind of
+   wrongness that looks like a run with nothing configured. */
+const pRec = await page();
+const written = JSON.parse(CONFIG);
+delete written.is_pareto; delete written.goal_metrics; delete written.blocks;
+delete written.runs; delete written.run_id; delete written.split.seed;
+await pRec.openFolder({
+  'rec/run.json': JSON.stringify({
+    ...written,
+    objective: 'Pareto(Maximize(Helpfulness), Minimize(tokens))',
+    metrics: {
+      Helpfulness: { kind: 'evaluator', roles: ['objective'] },
+      tokens: { kind: 'usage', roles: ['objective', 'constraint'] },
+      Latency: { kind: 'usage', roles: ['constraint'] },
+    },
+    search: { blocks: [{ name: 'text', keys: ['system_prompt'] }, { name: 'numbers', keys: ['max_tokens'] }] },
+    runs_per_candidate: 2,
+    seed: 7,
+    selection: { name: 'top_ranked', config: {} },
+    score_model: { name: 'BayesBenchModel', config: {} },
+    final_pick: { n_finalists: 3, rule: { name: 'Mean', config: {} } },
+  }),
+  'rec/events.jsonl': EVENTS,
+});
+await pRec.click('.tab[data-view="opt-setup"]');
+const rkv = Object.fromEntries(pRec.$$('#opt-setup-kv dt').map((dt, i) =>
+  [dt.textContent, pRec.$$('#opt-setup-kv dd')[i].textContent.replace(/\s+/g, ' ').trim()]));
+ok(rkv['Goal metrics'] === 'Helpfulness, tokens',
+  'the goal metrics are the objective-role keys of `metrics`, and a constraint-only metric is not one of them',
+  rkv['Goal metrics']);
+ok(rkv['Tunable blocks'] === 'text, numbers',
+  'the tunable blocks are the names inside `search.blocks`', rkv['Tunable blocks']);
+ok(/each case run 2 times/.test(rkv.Repeats || ''),
+  'repeats are read from `runs_per_candidate`', rkv.Repeats);
+ok(/Pareto front/.test(rkv.Shape || ''),
+  'and a Pareto run is recognised from its objective, since no flag says so', rkv.Shape);
+ok(/seed 7/.test(rkv.Cases || ''),
+  'the seed falls back to the run\'s own when the split does not carry one', rkv.Cases);
+ok(/Mean/.test(rkv['Final pick'] || '') && /3 finalists/.test(rkv['Final pick'] || ''),
+  'the pick rule is named under `name`', rkv['Final pick']);
+ok(rkv['Score model'] === 'BayesBenchModel', 'so is the score model', rkv['Score model']);
+ok(rkv['Parents chosen by'] === 'top_ranked',
+  'and the parent selection is stated, which only the written record carries', rkv['Parents chosen by']);
+ok(rkv['Run id'] === 'rec',
+  'a record with no `run_id` is named by its directory rather than left blank', rkv['Run id']);
+const recRow = pRec.$$('#opt-runs-rows tr[data-opt-run]');
+ok(recRow.length === 1 && /10 candidates/.test(recRow[0].textContent),
+  'and the run still lists, which is what silently fails when a field is read under one name',
+  recRow.map(r => r.textContent.replace(/\s+/g, ' ').trim()).join());
+
 // ── two runs in one tree ──
 const p6 = await page();
 await p6.openFolder({
@@ -771,16 +1023,25 @@ await p6.openFolder({
   'b/run.json': JSON.stringify({ ...JSON.parse(CONFIG), run_id: 'second-run', name: 'other' }),
   'b/events.jsonl': lines.slice(0, 20).join('\n') + '\n',
 });
-ok(p6.$('#opt-run').hidden === false, 'the picker appears for more than one run');
-ok(p6.$$('#opt-run option').length === 2, 'both runs offered', p6.$$('#opt-run option').length);
-await p6.click('#tab-opt');
+const rows6 = () => p6.$$('#opt-runs-rows tr[data-opt-run]');
+ok(rows6().length === 2, 'both runs listed', rows6().length);
+ok(/2 runs/.test(p6.text('#opt-runs-count')), 'and counted', p6.text('#opt-runs-count'));
+await openResults(p6);
 const first = p6.text('#opt-sub');
-const picker = p6.$('#opt-run');
-picker.value = '1';
-picker.dispatchEvent(new p6.window.Event('change', { bubbles: true }));
-await new Promise(r => setTimeout(r, 20));
+ok(/support-tuning/.test(first), 'the first run is the one open to begin with', first);
+/* The row that is open is marked, because otherwise the only way to tell which of two runs the
+   Results tab is showing is to read the id out of the subtitle and compare it by eye. */
+await p6.click('.tab[data-view="opt-runs"]');
+ok(rows6()[0].classList.contains('on') && !rows6()[1].classList.contains('on'),
+   'and its row says so');
+await p6.click(rows6()[1]);
 ok(p6.text('#opt-sub') !== first, 'picking the other run changes the view', p6.text('#opt-sub'));
 ok(/second-run/.test(p6.text('#opt-sub')), 'and names it', p6.text('#opt-sub'));
+ok(p6.$('#v-opt-results').classList.contains('on'),
+   'and lands on its result rather than leaving the reader on the list');
+await p6.click('.tab[data-view="opt-runs"]');
+ok(!rows6()[0].classList.contains('on') && rows6()[1].classList.contains('on'),
+   'with the mark moved, so the list and the result cannot disagree about which run is open');
 
 done([p, p2, p3, p4, p5, p6, pLate, pEmpty, pFall, pFlat, pWorse, pFine, pNoCI, pVal, pNoBase, pBare]
-  .flatMap(each => each.errs));
+  .concat([pRec]).flatMap(each => each.errs).concat(errs));

@@ -26,6 +26,7 @@ import re
 import secrets
 import socket
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -147,6 +148,65 @@ def _case_keys(report_obj: dict) -> set[str]:
     return keys
 
 
+def _experiment_case_ids(experiment_obj: dict) -> set[str]:
+    """Every identifier a case in an experiment can be referred to by.
+
+    Both `session_id` and `name`, because a case may be matched against a report row (which
+    prefers `session_id`) or against an optimizer split (which holds whichever the run was
+    handed), and there is no way to tell from the id alone which one it is.
+    """
+    ids: set[str] = set()
+    for case in experiment_obj.get("cases", []):
+        if isinstance(case, dict):
+            for key in ("session_id", "name"):
+                if case.get(key) is not None:
+                    ids.add(str(case[key]))
+    return ids
+
+
+def _split_case_ids(split: Any) -> set[str]:
+    """Every case an optimizer run's split names, across train, validation and test."""
+    ids: set[str] = set()
+    if not isinstance(split, dict):
+        return ids
+    for part in ("train", "validation", "test"):
+        cases = split.get(part)
+        if isinstance(cases, list):
+            ids.update(str(case) for case in cases if isinstance(case, (str, int)))
+    return ids
+
+
+def tuned_against(split: Any, experiments: Sequence[ScannedFile]) -> dict | None:
+    """Which experiment, if any, supplied the cases an optimizer run split up.
+
+    A run record cannot name its own experiment: `Optimizer.resume` has to be handed one back
+    because `run.json` has nowhere to keep it. So the only thing connecting a run on the
+    Optimization section to anything on the Runs tab is the case identifiers in its split, which
+    makes this the same kind of guess `link_status` makes about a report — and it is reported the
+    same way, as an overlap rather than as a claim.
+
+    `None` when nothing overlaps, so the page says nothing instead of naming a file at random.
+    The winner is the experiment matching the most of the split; ties go to the first path, so
+    two identical experiments in a tree give the same answer on every scan.
+    """
+    wanted = _split_case_ids(split)
+    if not wanted:
+        return None
+
+    best: dict | None = None
+    for experiment in sorted(experiments, key=lambda f: f.path):
+        matched = len(wanted & _experiment_case_ids(experiment.obj))
+        if matched and (best is None or matched > best["matched"]):
+            best = {
+                "path": experiment.path,
+                "matched": matched,
+                "split_cases": len(wanted),
+                "experiment_cases": len(experiment.obj.get("cases", [])),
+                "status": "verified" if matched == len(wanted) else "partial",
+            }
+    return best
+
+
 def link_status(experiment_obj: dict, report_obj: dict) -> dict:
     """Whether a report plausibly came from the experiment it is being shown beside.
 
@@ -156,14 +216,7 @@ def link_status(experiment_obj: dict, report_obj: dict) -> dict:
     carry `session_id`, so the overlap is checkable; the UI reports what this returns rather
     than implying the pair is certain.
     """
-    exp_keys = set()
-    for case in experiment_obj.get("cases", []):
-        if isinstance(case, dict):
-            if case.get("session_id") is not None:
-                exp_keys.add(str(case["session_id"]))
-            if case.get("name") is not None:
-                exp_keys.add(str(case["name"]))
-
+    exp_keys = _experiment_case_ids(experiment_obj)
     rep_keys = _case_keys(report_obj)
     if not exp_keys or not rep_keys:
         return {"status": "unverified", "detail": "no case identifiers to compare"}
@@ -334,6 +387,14 @@ def discover(root: Path, depth: int = DEFAULT_DEPTH) -> Discovery:
 
     optimizer_runs = discover_optimizer_runs(root, depth)
 
+    # The one link between the two kinds of run in this tree. Done here rather than in
+    # `discover_optimizer_runs` because this scan already parsed every experiment, so matching
+    # the splits against them costs no extra read.
+    scanned_experiments = [f for f in found if f.kind == EXPERIMENT]
+    for optimizer_run in optimizer_runs:
+        split = (optimizer_run.get("config") or {}).get("split")
+        optimizer_run["tuned_against"] = tuned_against(split, scanned_experiments)
+
     # An optimizer run's `run.json` is not an experiment or a report, so the scan files it under
     # "did not classify". Once it has been recognised as a run config, saying so again as a
     # problem would send someone looking for a fault that isn't there.
@@ -424,7 +485,8 @@ def _optimizer_run_summary(
         "name": config.get("name"),
         "objective": config.get("objective"),
         "constraints": config.get("constraints") or [],
-        "is_pareto": bool(config.get("is_pareto")),
+        # A multi-objective run says so in its objective string; older records carried a flag.
+        "is_pareto": bool(config.get("is_pareto")) or str(config.get("objective") or "").startswith("Pareto("),
         "budget": config.get("budget") or {},
         "config": config,
         "events_path": f"{directory}/{EVENT_LOG_NAME}" if directory != "." else EVENT_LOG_NAME,
@@ -438,6 +500,9 @@ def _optimizer_run_summary(
         "stop_reason": stop_reason,
         "bad_lines": log.bad_lines,
         "truncated": log.truncated,
+        # Filled in by `discover`, the only caller holding the tree's experiments to match the
+        # split against. Always present, so the page reads one shape however it was discovered.
+        "tuned_against": None,
     }
 
 
@@ -483,10 +548,10 @@ def discover_explorer_runs(root: Path, depth: int = DEFAULT_DEPTH) -> list[dict]
     """Find run directories for the explorer: any directory holding an `events.jsonl`.
 
     Walked to the same depth as `discover_optimizer_runs`, over the same tree, so the explorer and
-    the Optimization tab never disagree about which runs exist — the two views reading different
+    the Optimization section never disagree about which runs exist — the two views reading different
     trees is the one way for a run to be browsable in one and invisible in the other.
 
-    `run.json` is not required here, unlike the Optimization tab's discovery: the explorer reads the
+    `run.json` is not required here, unlike the Optimization section's discovery: the explorer reads the
     objective and the budget out of the log's own `config` event, so it can open a run directory
     that has only the log. Being the more permissive of the two is the safe direction — every run
     the tab lists is one the explorer can open.

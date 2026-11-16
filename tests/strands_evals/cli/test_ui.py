@@ -307,6 +307,28 @@ def test_discover_optimizer_runs_summarises_what_the_log_records(tmp_path: Path)
     assert run["events_path"] == "run-a/events.jsonl"
 
 
+def test_discover_optimizer_runs_reads_pareto_off_the_objective(tmp_path: Path):
+    """A multi-objective run has no flag saying so — its objective is a `Pareto(...)`.
+
+    The records under `examples/optimization/runs` carry no `is_pareto` key at all, so reading
+    only the flag would report every real Pareto run as having one best value.
+    """
+    _optimizer_run(
+        tmp_path / "front",
+        {"event": "config"},
+        config={"run_id": "r-8", "objective": "Pareto(Maximize(H), Minimize(tokens))"},
+    )
+    _optimizer_run(
+        tmp_path / "single",
+        {"event": "config"},
+        config={"run_id": "r-9", "objective": "WeightedSum(Maximize(H), Minimize(tokens))"},
+    )
+
+    by_dir = {run["dir"]: run["is_pareto"] for run in discover_optimizer_runs(tmp_path)}
+
+    assert by_dir == {"front": True, "single": False}
+
+
 def test_discover_optimizer_runs_needs_both_files(tmp_path: Path):
     """`run.json` is far too ordinary a name to take as evidence on its own."""
     _write(tmp_path / "config-only" / "run.json", {"run_id": "r-1"})
@@ -339,6 +361,103 @@ def test_discover_optimizer_runs_respects_depth(tmp_path: Path):
 
     assert discover_optimizer_runs(tmp_path, depth=2) == []
     assert len(discover_optimizer_runs(tmp_path, depth=3)) == 1
+
+
+# ── which experiment an optimizer run split up ──
+#
+# A run record cannot name its own experiment: `Optimizer.resume` has to be handed one back
+# because `run.json` has nowhere to keep it. So this is a guess made from the case ids in the
+# split, and these cover the ways a guess can mislead — claiming a partial match as the source,
+# naming a file with nothing in common, or answering differently on two scans of one tree.
+
+
+def _split_run(directory: Path, split: dict) -> Path:
+    return _optimizer_run(directory, {"event": "config"}, config={"run_id": "r-1", "split": split})
+
+
+def test_tuned_against_names_the_experiment_whose_cases_the_split_holds(tmp_path: Path):
+    _write(tmp_path / "experiment.json", _experiment("a", "b", "c"))
+    _split_run(tmp_path / "opt", {"train": ["a", "b"], "validation": ["c"], "seed": 7})
+
+    run = discover(tmp_path).optimizer_runs[0]
+
+    assert run["tuned_against"] == {
+        "path": "experiment.json",
+        "matched": 3,
+        "split_cases": 3,
+        "experiment_cases": 3,
+        "status": "verified",
+    }
+
+
+def test_tuned_against_matches_session_ids_too(tmp_path: Path):
+    """A split holds whichever identifier the run was handed, and the id alone does not say which."""
+    _write(tmp_path / "experiment.json", _experiment("a", "b"))
+    _split_run(tmp_path / "opt", {"train": ["sid-a", "sid-b"]})
+
+    assert discover(tmp_path).optimizer_runs[0]["tuned_against"]["status"] == "verified"
+
+
+def test_tuned_against_reports_a_partial_match_as_partial(tmp_path: Path):
+    """An experiment edited since the run matches some of the split. That is not the same claim."""
+    _write(tmp_path / "experiment.json", _experiment("a", "b"))
+    _split_run(tmp_path / "opt", {"train": ["a", "b"], "test": ["gone"]})
+
+    tuned = discover(tmp_path).optimizer_runs[0]["tuned_against"]
+
+    assert (tuned["matched"], tuned["split_cases"], tuned["status"]) == (2, 3, "partial")
+
+
+def test_tuned_against_prefers_the_experiment_matching_more_of_the_split(tmp_path: Path):
+    _write(tmp_path / "few" / "experiment.json", _experiment("a"))
+    _write(tmp_path / "most" / "experiment.json", _experiment("a", "b", "c"))
+    _split_run(tmp_path / "opt", {"train": ["a", "b", "c"]})
+
+    assert discover(tmp_path).optimizer_runs[0]["tuned_against"]["path"] == "most/experiment.json"
+
+
+def test_tuned_against_breaks_a_tie_by_path_so_two_scans_agree(tmp_path: Path):
+    """Two identical experiments in one tree must not make the answer depend on walk order."""
+    _write(tmp_path / "b-copy" / "experiment.json", _experiment("a", "b"))
+    _write(tmp_path / "a-copy" / "experiment.json", _experiment("a", "b"))
+    _split_run(tmp_path / "opt", {"train": ["a", "b"]})
+
+    assert discover(tmp_path).optimizer_runs[0]["tuned_against"]["path"] == "a-copy/experiment.json"
+
+
+def test_tuned_against_is_none_when_nothing_overlaps(tmp_path: Path):
+    """Better to say nothing than to name the only experiment in the folder as the source."""
+    _write(tmp_path / "experiment.json", _experiment("x", "y"))
+    _split_run(tmp_path / "opt", {"train": ["a", "b"]})
+
+    assert discover(tmp_path).optimizer_runs[0]["tuned_against"] is None
+
+
+def test_tuned_against_is_none_when_the_run_recorded_no_split(tmp_path: Path):
+    _write(tmp_path / "experiment.json", _experiment("a"))
+    _optimizer_run(tmp_path / "opt", {"event": "config"}, config={"run_id": "r-1"})
+
+    assert discover(tmp_path).optimizer_runs[0]["tuned_against"] is None
+
+
+def test_tuned_against_survives_a_split_that_is_not_a_mapping_of_lists(tmp_path: Path):
+    """Hand-written records exist, and a crash here would take the whole scan with it."""
+    _write(tmp_path / "experiment.json", _experiment("a"))
+    _split_run(tmp_path / "junk", "all of them")  # type: ignore[arg-type]
+    _split_run(tmp_path / "halfjunk", {"train": "a", "validation": [None, {"a": 1}, "a"]})
+
+    runs = {r["dir"]: r["tuned_against"] for r in discover(tmp_path).optimizer_runs}
+
+    assert runs["junk"] is None
+    # The one usable id is still read; the string and the mapping are not case ids and are dropped.
+    assert runs["halfjunk"]["matched"] == 1
+
+
+def test_optimizer_runs_discovered_alone_carry_the_field_unfilled(tmp_path: Path):
+    """`discover` is the only caller holding the experiments, so the key is always present."""
+    _split_run(tmp_path / "opt", {"train": ["a"]})
+
+    assert discover_optimizer_runs(tmp_path)[0]["tuned_against"] is None
 
 
 def test_fixture_run_is_readable():
@@ -845,7 +964,7 @@ def test_explorer_runs_lists_only_directories_holding_a_log(explorer):
 
 
 def test_explorer_runs_walks_the_tree_rather_than_one_level(tmp_path: Path):
-    """Nested as deep as the Optimization tab scans, because they read the same tree.
+    """Nested as deep as the Optimization section scans, because they read the same tree.
 
     Listing only immediate subdirectories made a run the tab found invisible here, which looks
     like the explorer losing a run rather than like two different discovery rules.
@@ -863,7 +982,7 @@ def test_explorer_runs_stops_at_the_depth_limit(tmp_path: Path):
 def test_explorer_runs_and_optimizer_runs_agree_on_a_run_s_id(tmp_path: Path):
     """The invariant the shared root exists to keep: the tab's `dir` is a route into the explorer.
 
-    If these ever diverge, the Optimization tab lists a run whose id names nothing the explorer
+    If these ever diverge, the Optimization section lists a run whose id names nothing the explorer
     will open, and the link out of it leads to an empty page.
     """
     _optimizer_run(tmp_path / "nested" / "tuning")
@@ -876,7 +995,7 @@ def test_explorer_runs_names_a_served_run_directory_itself(tmp_path: Path):
     """`strands-evals ui RUN_DIR`, where the directory served *is* the run.
 
     `.` resolves back to the root, so the route can still read it; dropping it instead would make
-    the explorer empty for exactly the folder the Optimization tab has a run for.
+    the explorer empty for exactly the folder the Optimization section has a run for.
     """
     _optimizer_run(tmp_path)
     assert [run["id"] for run in discover_explorer_runs(tmp_path)] == ["."]
@@ -886,7 +1005,7 @@ def test_explorer_runs_names_a_served_run_directory_itself(tmp_path: Path):
 def test_explorer_runs_does_not_require_a_run_config(tmp_path: Path):
     """The objective and the budget are in the log's own `config` event, so the log is enough.
 
-    More permissive than the Optimization tab's discovery, which is the safe direction: every run
+    More permissive than the Optimization section's discovery, which is the safe direction: every run
     the tab lists is one the explorer can open, never the other way round.
     """
     _event_log(tmp_path / "log-only" / "events.jsonl", {"event": "propose", "candidate": 0})
@@ -1080,7 +1199,7 @@ def test_a_supplied_token_read_only_says_only_read(tmp_path: Path, launched, cap
 
 def test_ui_serves_the_directory_to_the_explorer_by_default(tmp_path: Path, launched):
     """One tree, both views. Pointed at different trees, a run is browsable in the explorer and
-    missing from the Optimization tab, which reads as a broken page rather than as two directories."""
+    missing from the Optimization section, which reads as a broken page rather than as two directories."""
     assert main(["ui", str(tmp_path), "--no-browser"]) == 0
     assert launched["explorer_root"] == tmp_path
 

@@ -17,4 +17,4 @@ Four experiments generated with the strands-evals CLI, plus two reports:
 
 ## optimization/
 
-Two sample optimization run records (run.json schema_version 1) for the Optimization tab, written to cover every event and outcome shape: a single-objective run and a Pareto multi-objective run, including a kill plus resume, a rescore, and a stop on proposer error. `optimization/README.md` describes them.
+Two sample optimization run records (run.json schema_version 1) for the Optimization section, written to cover every event and outcome shape: a single-objective run and a Pareto multi-objective run, including a kill plus resume, a rescore, and a stop on proposer error. `optimization/README.md` describes them.

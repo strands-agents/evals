@@ -44,6 +44,18 @@ const errs = [];
   errs.push(...p.errs);
 }
 
+/* ── a link saved when Optimization was one view ──
+   `tab=optimization` named the whole of it before it became Runs, Setup and Results. The result
+   is what that link was looking at, so that is where it still lands, rather than at a view name
+   this page no longer has and a silent fall back to the run list. */
+{
+  const p = await page({ url: 'http://127.0.0.1/?x=1#tab=optimization' });
+  ok(p.$('#v-opt-results').classList.contains('on'), 'an old link lands on the result');
+  ok(/tab=opt-results/.test(p.window.location.hash), 'and is rewritten to the view it found',
+    p.window.location.hash);
+  errs.push(...p.errs);
+}
+
 // ── a report that omits every optional array still renders ──
 {
   const p = await page();
@@ -267,7 +279,12 @@ const errs = [];
  * A second app on its own route, so it is a link rather than a tab — and only when the server has
  * one to serve *and* this tree has a run to open in it. A link to a 404 is worse than no link, and
  * one to an empty list is not much better; the explorer reads the runs this tab discovered, so the
- * two appear together or not at all. */
+ * two appear together or not at all.
+ *
+ * It lives in the candidate table's controls rather than in the nav: it is one run seen deeper,
+ * not a fifth view of the folder, so it opens at *this* run and belongs beside the thing it zooms
+ * into. The route carries the run's discovery id, which is why the server walks one tree for both
+ * views — an id this page invented would 404 over there. */
 {
   const reply = body => ({ ok: true, status: 200, statusText: 'OK', json: async () => body });
   const stub = (explorer, optimizerRuns = []) => async url => {
@@ -291,15 +308,23 @@ const errs = [];
 
   const on = await page({ fetchImpl: stub(true, [RUN]), url: 'http://127.0.0.1:9999/?t=abc%2Fdef' });
   ok(on.$('#opt-link').hidden === false, 'a run to open offers one');
-  ok(on.$('#opt-link').getAttribute('href') === '/explorer/?t=abc%2Fdef',
-    'carrying the token, encoded', on.$('#opt-link').getAttribute('href'));
+  ok(on.$('#opt-link').getAttribute('href') === '/explorer/?t=abc%2Fdef#/s/tuning/candidates',
+    'carrying the token in the query and the run in the hash, which is where each is read from',
+    on.$('#opt-link').getAttribute('href'));
   /* It leaves the page rather than swapping the panel below, so it must not be wired as a tab:
      the tab handler would call show(undefined) and blank the view on the way out. */
   ok(!on.$('#opt-link').classList.contains('tab'), 'and is not one of the tabs',
     on.$('#opt-link').className);
   ok(on.$('#opt-link').dataset.view === undefined, 'nor carries a view for the tab handler to use',
     on.$('#opt-link').dataset.view);
-  ok(on.$$('.tabs .tab').length === 4, 'the four tabs are unchanged', on.$$('.tabs .tab').length);
+  ok(on.$$('.tabs .tab:not(.off)').length === 3, 'the tab row is the open section\'s own three',
+    on.$$('.tabs .tab:not(.off)').map(t => t.dataset.view).join());
+  ok(on.$('.tabs #opt-link') === null, 'and the link is not among them',
+    (on.$('.tabs') || {}).innerHTML);
+  ok(on.$('#opt-link').closest('.ctl') !== null, 'it sits with the candidate table it zooms into');
+  // A new tab, because the page it leaves is the one holding the result it was read against.
+  ok(on.$('#opt-link').target === '_blank' && /noopener/.test(on.$('#opt-link').rel),
+    'and opens beside this page rather than replacing it', on.$('#opt-link').outerHTML);
 
   const standalone = await page();
   ok(standalone.$('#opt-link').hidden === true, 'and a page opened from disk never offers it');

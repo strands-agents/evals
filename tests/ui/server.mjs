@@ -43,7 +43,7 @@ fs.mkdirSync(path.join(root, 'nested'));
 fs.writeFileSync(path.join(root, 'nested/experiment.json'), JSON.stringify({ cases: [], evaluators: [] }));
 fs.writeFileSync(path.join(root, 'notes.json'), '{"just": "notes"}');
 fs.writeFileSync(path.join(root, 'half-written.json'), '{"cases": [');
-// An optimizer run, so the Optimization tab is fed by the real server rather than a picked folder.
+// An optimizer run, so the Optimization section is fed by the real server rather than a picked folder.
 fs.cpSync(new URL('./fixtures/optimizer-run/', import.meta.url).pathname, path.join(root, 'tuning'),
   { recursive: true });
 
@@ -96,8 +96,20 @@ try {
   ok(!/tuning\/run\.json/.test(skips), 'the optimizer run config is not reported as unusable', skips);
 
   // ── the optimizer run the server found, with its log fetched over HTTP ──
-  ok($('#tab-opt').hidden === false, 'Optimization tab offered');
-  await click('#tab-opt');
+  ok($('#sec-opt').hidden === false, 'Optimization section offered');
+  /* The runs it lists are the server's summaries, not the page's: `tuning/` is never parsed here
+     until a row is clicked, so these four figures are the ones that came over the wire. */
+  await click('#sec-opt');
+  const optRow = $('#opt-runs-rows tr[data-opt-run]');
+  ok(/support-tuning-20261110-091500-7af3e1/.test(optRow.textContent), 'the run listed',
+    optRow.textContent.replace(/\s+/g, ' ').trim());
+  ok(/c10/.test(optRow.children[1].textContent)
+    && /10 candidates/.test(optRow.children[2].textContent)
+    && /6 iterations/.test(optRow.children[2].textContent)
+    && /iterations/.test(optRow.children[3].textContent),
+    'with the champion, the search and the stop reason the server read out of the log',
+    optRow.textContent.replace(/\s+/g, ' ').trim());
+  await click(optRow);
   await waitFor(() => $$('#opt-obj-chart circle').length > 0, 'the objective chart');
   ok(/support-tuning-20261110-091500-7af3e1/.test(text('#opt-sub')), 'names the run', text('#opt-sub'));
   ok(text('#opt-best') === '0.67', 'best feasible objective derived from the fetched log', text('#opt-best'));

@@ -50,23 +50,59 @@
   /* ── chrome ───────────────────────────────────────────── */
   .bar {
     display: flex; align-items: center; gap: 20px;
-    padding: 0 28px; height: 56px; border-bottom: 1px solid var(--hair);
+    padding: 0 28px; height: 56px;
     background: var(--bg); position: sticky; top: 0; z-index: 5;
   }
   .brand { font-weight: 600; letter-spacing: -.01em; }
   .brand span { color: var(--ink3); font-weight: 400; }
-  .tabs { display: flex; gap: 2px; }
+  /* Two sections, each with its own tabs below. The section is the subject — an experiment and its
+     report, or an optimizer run and what it picked — so it is set above and apart from the tabs
+     rather than beside them: Optimization's three panels are not Evals' three under new names. */
+  .sections { display: flex; gap: 4px; }
+  .sec {
+    appearance: none; border: 0; background: none; font: inherit; font-weight: 550;
+    color: var(--ink3); padding: 5px 11px; border-radius: 6px; cursor: pointer;
+  }
+  .sec:hover { color: var(--ink1); background: var(--hair2); }
+  .sec.on { color: var(--ink1); }
+  /* Attached to the bar above it, with the only border under the pair, so the two rows read as one
+     block of chrome and not as a bar with a second bar under it. */
+  .tabs {
+    display: flex; gap: 2px; padding: 0 28px 9px; border-bottom: 1px solid var(--hair);
+    background: var(--bg); position: sticky; top: 56px; z-index: 5;
+  }
   .tab, .tablink {
     appearance: none; border: 0; background: none; font: inherit; color: var(--ink2);
     padding: 6px 12px; border-radius: 6px; cursor: pointer;
   }
   .tab:hover, .tablink:hover { color: var(--ink1); background: var(--hair2); }
   .tab.on { color: var(--ink1); font-weight: 550; background: var(--hair2); }
+  /* Belongs to the other section. Separate from `hidden`, which means "no run behind it" and is
+     set by discovery — a tab can be both, and switching sections must not reveal one. */
+  .tab.off { display: none; }
   /* The run explorer is a second app, not a fourth panel: it replaces the page rather than
      swapping what is under the nav. The arrow is the only thing that says so before the click. */
   .tablink { text-decoration: none; }
   .tablink::after { content: ' ↗'; color: var(--ink3); }
   .grow { flex: 1; }
+  /* A link that leaves this page for the explorer. Same arrow as the nav's, because it is the
+     same kind of departure, but inline in a sentence or a table cell rather than a nav item. */
+  .xlink { color: var(--accent); text-decoration: none; }
+  .xlink:hover { text-decoration: underline; }
+  .xlink::after { content: ' ↗'; color: var(--ink3); }
+  /* This panel is showing something the other section put here. Accent-marked like `.explain`,
+     because it is the same kind of statement: what you are looking at, and why it is not what the
+     tab you clicked would otherwise hold. */
+  .borrowed {
+    margin: 0 0 18px; padding: 10px 14px; background: var(--card); border: 1px solid var(--hair);
+    border-left: 2px solid var(--accent); border-radius: 0 9px 9px 0;
+    font-size: 12.5px; color: var(--ink2); display: flex; align-items: center; gap: 12px;
+  }
+  .borrowed b { color: var(--ink1); font-weight: 600; }
+  .borrowed .btn { margin-left: auto; flex: none; }
+  .source { margin: -10px 0 18px; }
+  .source a { color: var(--ink1); text-decoration: none; border-bottom: 1px dashed var(--hair); cursor: pointer; }
+  .source a:hover { border-bottom-color: var(--accent); }
   .path { color: var(--ink3); font-size: 12.5px; }
   .path b { color: var(--ink2); font-weight: 500; }
 
@@ -362,31 +398,28 @@
   }
   .explain b { color: var(--ink1); font-weight: 600; }
   .explain code { font-family: var(--font-mono, ui-monospace, Menlo, monospace); font-size: 11.5px; }
-  /* The method has to be on the page — nothing else says how the splits were used — but it is read
-     once, not on every visit. So the line naming what was tuned stays, and the account opens. */
-  details.method { margin: 0 0 18px; }
-  details.method > summary {
-    cursor: pointer; padding: 11px 14px; background: var(--card);
-    border: 1px solid var(--hair); border-left: 2px solid var(--accent); border-radius: 0 9px 9px 0;
-    font-size: 12.5px; line-height: 1.6; color: var(--ink1); font-weight: 600;
+  /* One line of method above the figures it makes readable. The account behind it is its own tab
+     now, so this is a line rather than a drawer: a disclosure arrow over a sentence that never
+     changes is a control that does nothing worth doing. */
+  .methodline { margin: -6px 0 18px; color: var(--ink2); }
+  .methodline code {
+    font-family: var(--font-mono, ui-monospace, Menlo, monospace); font-size: 11.5px; color: var(--ink1);
   }
-  details.method[open] > summary { border-radius: 0 9px 0 0; }
-  details.method > summary code {
-    font-family: var(--font-mono, ui-monospace, Menlo, monospace); font-size: 11.5px; font-weight: 400;
-  }
-  details.method > summary .path { font-weight: 400; }
-  details.method > .explain { margin: 0; border-top: 0; border-radius: 0 0 9px 0; }
   .chead2 { margin: 26px 0 3px; font-size: 14px; font-weight: 600; color: var(--ink1); }
   .chead2 + .sub { margin-bottom: 14px; }
   /* A candidate's own cases, nested inside its row: tighter than the table it sits in. */
   table.trials { width: 100%; border-collapse: collapse; margin: 4px 0 2px; }
   table.trials td { padding: 4px 10px 4px 0; border-bottom: 1px solid var(--hair2); vertical-align: top; }
   table.trials tr:last-child td { border-bottom: 0; }
-  .optpick { display: flex; align-items: center; gap: 10px; margin: 0 0 18px; flex-wrap: wrap; }
-  .optpick select {
-    background: var(--card); color: var(--ink1); border: 1px solid var(--hair);
-    border-radius: 7px; padding: 7px 9px; font: inherit; font-size: 13px; max-width: 460px;
+  /* The run config, read not edited: wider keys than the inline `kv` in a table row, because a
+     key here is a whole setting name rather than a label on one field. */
+  .kv.wide { grid-template-columns: 196px 1fr; gap: 9px 18px; margin: 4px 0 0; }
+  .kv.wide dt { color: var(--ink2); }
+  .kv.wide dd { margin: 0; color: var(--ink1); }
+  .kv.wide dd.m {
+    font-family: var(--font-mono, ui-monospace, Menlo, monospace); font-size: 12px; overflow-wrap: anywhere;
   }
+  .kv.wide dd .path { display: block; margin-top: 2px; }
   .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 4px 0 20px; }
   .charts .wide { grid-column: 1 / -1; }
   .chart {
@@ -458,17 +491,30 @@
 <div class="app">
   <header class="bar">
     <div class="brand">strands<span>-evals</span></div>
-    <nav class="tabs">
-      <button class="tab on" data-view="runs">Runs</button>
-      <button class="tab" data-view="experiment">Experiment</button>
-      <button class="tab" data-view="report">Report</button>
-      <button class="tab" data-view="optimization" id="tab-opt" hidden>Optimization</button>
-      <a class="tablink" id="opt-link" hidden
-         title="the full run explorer: every candidate, trial and transcript">Explorer</a>
+    <!-- A folder can hold two kinds of run, and they answer different questions: an experiment and
+         the report of running it, or an optimizer run and the configuration it picked. So each is
+         its own section with its own three panels, and the parallel is not a renaming — Evals'
+         Experiment is a file you edit, while Optimization's Setup is a record you read. -->
+    <!-- Both start hidden, so a page that never finds an optimizer run never shows a switcher
+         with one thing in it — not even for the moment before the first scan comes back. -->
+    <nav class="sections" id="sections" hidden>
+      <button class="sec on" data-sec="evals">Evals</button>
+      <button class="sec" data-sec="optimization" id="sec-opt" hidden>Optimization</button>
     </nav>
     <div class="grow"></div>
     <div class="path mono" id="path"></div>
   </header>
+  <nav class="tabs">
+    <button class="tab on" data-view="runs" data-sec="evals">Runs</button>
+    <button class="tab" data-view="experiment" data-sec="evals">Experiment</button>
+    <button class="tab" data-view="report" data-sec="evals">Report</button>
+    <!-- The run explorer used to sit here, as a fifth item. It was never a fifth view of this
+         folder — it is one run, deeper — so it lives in Optimization's own panels now, beside the
+         run and the candidate it opens at. -->
+    <button class="tab" data-view="opt-runs" data-sec="optimization" hidden>Runs</button>
+    <button class="tab" data-view="opt-setup" data-sec="optimization" hidden>Setup</button>
+    <button class="tab" data-view="opt-results" data-sec="optimization" hidden>Results</button>
+  </nav>
 
   <main>
     <section class="view on" id="v-runs">
@@ -536,6 +582,11 @@
     </section>
 
     <section class="view" id="v-report">
+      <!-- A candidate opened from Optimization renders here, because this is the only report panel
+           on the page. That displaces whatever report this section had, so it says so and offers
+           the way back — before, it replaced it silently while the Runs tab still showed the old
+           run as the selected one. -->
+      <p class="borrowed" id="rep-borrowed" hidden></p>
       <div class="hero">
         <div>
           <div class="big none" id="r-score">&mdash;</div>
@@ -564,21 +615,53 @@
       <button class="more" id="rep-more" hidden></button>
     </section>
 
-    <section class="view" id="v-optimization">
-      <h2>Optimization run</h2>
-      <p class="sub" id="opt-sub"></p>
-      <div class="optpick">
-        <label for="opt-run" class="path" id="opt-run-label">Run</label>
-        <select id="opt-run"></select>
+    <!-- ── Optimization · Runs ──
+         The run directories in this folder, listed the way Evals lists its experiment/report
+         pairs. This replaced a one-line picker above the result: with more than one run the
+         picker made choosing a run a thing you did inside the answer to a different run. -->
+    <section class="view" id="v-opt-runs">
+      <h2>Optimization runs in this folder</h2>
+      <p class="sub" id="opt-runs-sub"></p>
+      <div class="ctl">
+        <button class="btn" data-act="rescan">Rescan</button>
         <span class="grow"></span>
-        <span class="path mono" id="opt-objective"></span>
+        <span class="path" id="opt-runs-count"></span>
       </div>
-      <!-- What the optimizer actually did. Nothing else on the page explains the method, so the
-           line naming what it tuned is always up; the account of how it used the splits opens. -->
-      <details class="method" id="opt-method">
-        <summary id="opt-method-sum"></summary>
-        <p class="explain" id="opt-explain"></p>
-      </details>
+      <div class="scroll">
+        <table class="rep">
+          <thead><tr>
+            <th style="width:34%">Run</th><th style="width:14%">Champion</th>
+            <th style="width:18%">Searched</th><th style="width:18%">Finished</th><th>Modified</th>
+          </tr></thead>
+          <tbody id="opt-runs-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ── Optimization · Setup ──
+         What the run was told to do, which is the half of the record that is read once: the
+         method, the objective it scored against, and the schedule. It is here rather than above
+         the result because every visit after the first is a visit to the result. -->
+    <section class="view" id="v-opt-setup">
+      <h2>Setup</h2>
+      <p class="sub" id="opt-setup-sub"></p>
+      <p class="explain" id="opt-explain"></p>
+      <!-- DRAFT B — which experiment under Evals supplied the cases. Matched by case id, because a
+           run record has nowhere to name its experiment, so the line says how much of it matched
+           rather than asserting the pair. -->
+      <p class="sub source" id="opt-source" hidden></p>
+      <dl class="kv wide" id="opt-setup-kv"></dl>
+    </section>
+
+    <!-- ── Optimization · Results ──
+         What came out: the held-out comparison, the configuration to take away, every candidate,
+         and then the search itself in drawers. -->
+    <section class="view" id="v-opt-results">
+      <h2>Results</h2>
+      <p class="sub" id="opt-sub"></p>
+      <!-- One line of method, because no figure below is readable without it: what was tuned and
+           over how many cases. The account of how the splits were used is on Setup. -->
+      <p class="sub methodline" id="opt-method-sum"></p>
 
       <!-- What the run is for: the result, then the thing you take away from it. -->
       <div class="result" id="opt-result"></div>
@@ -596,6 +679,9 @@
           <button data-f="unscored">Never scored</button>
         </div>
         <span class="grow"></span>
+        <!-- DRAFT A — the whole search, one zoom down from this table. -->
+        <a class="xlink" id="opt-link" target="_blank" rel="noopener" hidden
+           title="the run explorer: every candidate, trial and transcript of this run">every trial</a>
         <span class="path" id="opt-cand-count"></span>
       </div>
       <div class="scroll">
@@ -3142,6 +3228,10 @@
   let REP = null, repMeta = null;
   let ROWS = [], BY_CASE = [];
   let filter = 'all', query = '', open = new Set(), limit = 300;
+  /* What this section's report was before Optimization borrowed the panel to show a candidate in.
+     `{ meta, doc }`, or `{ meta: null }` when there was nothing to displace — both of which have
+     to be told apart from "not borrowed", which is why this is null rather than a flag. */
+  let repDisplaced = null;
 
   const dirtyCases = () => cases.map((c, i) => JSON.stringify(c) !== orig[i] ? i : -1).filter(i => i >= 0);
   const evalsDirty = () => JSON.stringify(evals) !== origEvals;
@@ -3149,19 +3239,47 @@
 
   /* ══════════ chrome ══════════ */
 
+  /* Which section each view belongs under, so showing a view also opens its section and its tab
+     row. The view name stays the thing the URL and the tests name — the section is derived from
+     it rather than tracked beside it, which is one less piece of state to get out of step. */
+  const SECTION_OF = {
+    runs: 'evals', experiment: 'evals', report: 'evals',
+    'opt-runs': 'optimization', 'opt-setup': 'optimization', 'opt-results': 'optimization',
+  };
+  /* `tab=optimization` was one view before it became three. Landing a saved link on the result is
+     what it meant, and silently showing nothing would be the alternative. */
+  const VIEW_ALIAS = { optimization: 'opt-results' };
+
   function show(view, opts) {
-    app.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.view === view));
+    view = VIEW_ALIAS[view] || view;
+    const section = SECTION_OF[view] || 'evals';
+    app.querySelectorAll('.sec').forEach(s => s.classList.toggle('on', s.dataset.sec === section));
+    /* Only this section's tabs, and only the ones its runs exist for: `hidden` is owned by
+       whatever discovered them, so a tab hidden for having no run stays hidden here. */
+    app.querySelectorAll('.tab').forEach(t => {
+      t.classList.toggle('on', t.dataset.view === view);
+      t.classList.toggle('off', t.dataset.sec !== section);
+    });
     app.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.id === 'v-' + view));
+    const run = OPT_RUNS[optSel];
     const where = {
       runs: ROOT || folderLabel || 'no folder opened',
       experiment: (expMeta && expMeta.path) || 'no experiment loaded',
       report: (repMeta && repMeta.path) || 'no report loaded',
-      optimization: (OPT_RUNS[optSel] && OPT_RUNS[optSel].events_path) || 'no optimizer run loaded',
+      'opt-runs': ROOT || folderLabel || 'no folder opened',
+      'opt-setup': (run && (run.dir === '.' ? 'run.json' : run.dir + '/run.json')) || 'no optimizer run loaded',
+      'opt-results': (run && run.events_path) || 'no optimizer run loaded',
     }[view];
     $('path').textContent = where;
     if (!opts || !opts.silent) writeHash(view);
   }
   app.querySelectorAll('.tab').forEach(t => t.onclick = () => show(t.dataset.view));
+  /* A section button opens that section's first tab that has something behind it, which for
+     Optimization is Runs. Picking the section is picking a subject, not a panel. */
+  app.querySelectorAll('.sec').forEach(s => s.onclick = () => {
+    const first = [...app.querySelectorAll('.tab')].find(t => t.dataset.sec === s.dataset.sec && !t.hidden);
+    if (first) show(first.dataset.view);
+  });
   const currentView = () => (app.querySelector('.tab.on') || {}).dataset?.view || 'runs';
 
   /* Deep links. A colleague asking "look at this case" should be able to send a URL. */
@@ -3225,7 +3343,8 @@
       : showingSample
         ? 'No server behind this page, so it is showing the sample it carries. Open a folder to read your own.'
         : `Reading the folder you opened${folderLabel ? ` (${folderLabel})` : ''}. Edits save as a download, not back to these files.`;
-    app.querySelector('[data-act="rescan"]').hidden = MODE !== 'server';
+    // Both sections have a Rescan, because both list what one scan found.
+    app.querySelectorAll('[data-act="rescan"]').forEach(b => { b.hidden = MODE !== 'server'; });
     app.querySelector('[data-act="pick"]').hidden = MODE === 'server';
 
     $('runs-count').innerHTML = plural(RUNS.length, 'run')
@@ -3264,7 +3383,7 @@
       : '';
   }
 
-  app.querySelector('[data-act="rescan"]').onclick = () => rescan();
+  app.querySelectorAll('[data-act="rescan"]').forEach(b => { b.onclick = () => rescan(); });
 
   /* ══════════ loading a run ══════════ */
 
@@ -3299,6 +3418,11 @@
     if (!(opts && opts.force) && dirty && i !== selRun
         && !confirm(`${plural(dirty, 'unsaved change')} will be lost. Switch run?`)) return;
     selRun = i;
+    /* Picking an Evals run loads this section's own report, so the loan is over whether or not it
+       was returned — leaving the banner up would caption this run's report as a candidate's. */
+    repDisplaced = null;
+    $('rep-borrowed').hidden = true;
+    $('rep-borrowed').innerHTML = '';
     try {
       const [expDoc, repDoc] = await Promise.all([document_for(run.experiment), document_for(run.report)]);
       expDoc ? loadExperiment(run.experiment, expDoc) : clearExperiment();
@@ -3359,6 +3483,32 @@
     $('exp-sub').textContent = '';
     refreshDirty(); note('');
   }
+
+  /* ── the report panel, on loan ──
+     One report panel, two sections that want it. Saying whose report is in it, and giving the one
+     click back, is what keeps the loan from reading as this section's report having changed. */
+  function borrowReport(what) {
+    $('rep-borrowed').hidden = false;
+    $('rep-borrowed').innerHTML = what
+      + '<button class="btn" data-act="unborrow">'
+      + (repDisplaced && repDisplaced.meta ? 'Back to this run&rsquo;s report' : 'Back to Results')
+      + '</button>';
+  }
+
+  function returnReport() {
+    const had = repDisplaced;
+    repDisplaced = null;
+    $('rep-borrowed').hidden = true;
+    $('rep-borrowed').innerHTML = '';
+    // Nothing was displaced, so there is no report to go back to — only the panel that sent us.
+    if (!had || !had.meta) { clearReport(); return show('opt-results'); }
+    loadReport(had.meta, had.doc);
+    show('report');
+  }
+
+  app.querySelector('#rep-borrowed').onclick = e => {
+    if (e.target.closest('[data-act="unborrow"]')) returnReport();
+  };
 
   function loadReport(meta, doc) {
     repMeta = meta; REP = doc;
@@ -4174,6 +4324,71 @@
 
   const dirOf = path => path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '.';
 
+  /* What the runs list shows about a log, read out of it rather than derived — the same fields the
+     server fills in for the same rows, computed the same way, so a folder opened from disk and the
+     same folder served over HTTP list identically. Distinct iteration numbers rather than a count
+     of `iteration_end` events, so one iteration recorded twice is not progress. */
+  function logSummary(events) {
+    const iterations = new Set();
+    let champion = null, stop = null, candidates = 0, trials = 0;
+    for (const e of events) {
+      switch (e.event) {
+        case 'iteration_end': iterations.add(e.iteration); break;
+        case 'propose': candidates++; break;
+        case 'trial': trials++; break;
+        case 'picked': case 'test':
+          if (e.report && e.report.champion_id) champion = e.report.champion_id;
+          break;
+        case 'stop': stop = e.reason || null; break;
+      }
+    }
+    return {
+      iterations: iterations.size, candidates, trials,
+      champion_id: champion, stop_reason: stop,
+    };
+  }
+
+  /* DRAFT B — which experiment, if any, supplied the cases a run split up. A run record cannot
+     name its own experiment (`Optimizer.resume` has to be handed one back, because `run.json` has
+     nowhere to keep it), so the only thread between the two sections is the case identifiers in
+     the split. Both `session_id` and `name` count: a split holds whichever the run was handed, and
+     the id alone does not say which.
+
+     Same rule as the server's `tuned_against`, so one folder reads the same opened from disk as
+     served: the winner matches the most of the split, ties go to the first path, and nothing
+     matching is `null` rather than a file named at random. */
+  function tunedAgainst(split, experiments) {
+    const wanted = new Set();
+    for (const part of ['train', 'validation', 'test']) {
+      for (const id of ((split || {})[part] || [])) {
+        if (typeof id === 'string' || typeof id === 'number') wanted.add(String(id));
+      }
+    }
+    if (!wanted.size) return null;
+
+    let best = null;
+    for (const exp of [...experiments].sort((a, b) => a.meta.path.localeCompare(b.meta.path))) {
+      const cases = exp.meta.obj.cases || [];
+      /* Identifiers in common, not cases that match one: two cases of the same name are one id,
+         and a case whose `name` and `session_id` are both in the split is two. The server counts
+         it the same way, and a figure the page and the server disagree about is worse than either. */
+      const have = new Set();
+      for (const c of cases) {
+        if (!c || typeof c !== 'object') continue;
+        for (const k of ['session_id', 'name']) if (c[k] != null) have.add(String(c[k]));
+      }
+      let matched = 0;
+      wanted.forEach(id => { if (have.has(id)) matched++; });
+      if (matched && (!best || matched > best.matched)) {
+        best = {
+          path: exp.meta.path, matched, split_cases: wanted.size, experiment_cases: cases.length,
+          status: matched === wanted.size ? 'verified' : 'partial',
+        };
+      }
+    }
+    return best;
+  }
+
   /* An optimizer run is a directory holding both a run.json and an events.jsonl. Either alone is
      not enough: run.json is far too ordinary a filename to take as evidence, and the objective
      and the budget a chart needs live in it rather than in the log. */
@@ -4189,7 +4404,7 @@
         name: config.obj.name || null,
         objective: config.obj.objective || null,
         constraints: config.obj.constraints || [],
-        is_pareto: !!config.obj.is_pareto,
+        is_pareto: configFacts(config.obj).isPareto,
         budget: config.obj.budget || {},
         config: config.obj,
         events_path: log.path,
@@ -4199,6 +4414,8 @@
         bad_lines: log.bad,
         truncated: false,
         eventsCache: log.events,
+        ...logSummary(log.events),
+        tuned_against: null,          // DRAFT B — filled in by the caller, which holds the experiments
       });
     });
     runs.sort((a, b) => b.modified - a.modified);
@@ -4250,6 +4467,12 @@
     }
 
     const optimizerRuns = optimizerRunsFrom(configs, logs);
+    /* DRAFT B — the one thread between the two sections, matched here because this is where the
+       tree's experiments are already parsed. */
+    const experiments = found.filter(f => f.kind === 'experiment');
+    optimizerRuns.forEach(run => {
+      run.tuned_against = tunedAgainst((run.config || {}).split, experiments);
+    });
     /* A run.json with no events.jsonl beside it was held aside for nothing, so report it now
        rather than letting it vanish from the skipped list. The ones that did pair up stay out,
        the way the server leaves a recognised run.json out of its own skipped list. */
@@ -4342,8 +4565,42 @@
   const OUTCOMES = ['feasible', 'infeasible', 'ineligible', 'invalid', 'unscored', 'duplicate'];
   const STATUSES = ['completed', 'agent_failure', 'evaluator_invalid', 'infrastructure_invalid'];
 
+  /* The `run.json` facts this page states, read under every name the record has used for them.
+     The committed example runs (`examples/optimization/runs`, schema 1) do not spell these the way
+     a reader of the page might guess: the goal metrics are the `objective`-role keys of `metrics`,
+     the tunable blocks are the names under `search.blocks`, repeats are `runs_per_candidate`, the
+     score model and the final-pick rule are named under `name`, and a Pareto run says so only in
+     its objective string. Read in one place, because a field read under a single name is a row
+     that silently disappears for half the runs in the wild. */
+  function configFacts(cfg) {
+    cfg = cfg || {};
+    const metrics = cfg.metrics && typeof cfg.metrics === 'object' && !Array.isArray(cfg.metrics)
+      ? Object.keys(cfg.metrics).filter(key => {
+        const roles = (cfg.metrics[key] || {}).roles;
+        return !Array.isArray(roles) || roles.includes('objective');
+      })
+      : [];
+    const grouped = ((cfg.search || {}).blocks || [])
+      .map(b => b && (b.name || b.key)).filter(Boolean);
+    // `kind` in the fixture, `name` in the records on disk; both are the class that was used.
+    const named = v => (v && typeof v === 'object' && (v.kind || v.name)) || null;
+    const num = (...values) => values.find(v => typeof v === 'number') ?? null;
+    return {
+      goalMetrics: (cfg.goal_metrics || []).length ? cfg.goal_metrics : metrics,
+      blocks: (cfg.blocks || []).length ? cfg.blocks : grouped,
+      runs: num(cfg.runs, cfg.runs_per_candidate),
+      isPareto: !!cfg.is_pareto || /^Pareto\(/.test(cfg.objective || ''),
+      // The seed belongs to the split it made; the examples also keep the run's own seed at the top.
+      seed: (cfg.split || {}).seed != null ? cfg.split.seed : (cfg.seed != null ? cfg.seed : null),
+      scoreModel: named(cfg.score_model),
+      pickRule: named((cfg.final_pick || {}).rule),
+      selection: named(cfg.selection),
+    };
+  }
+
   function deriveOptimization(events, config) {
     const cfg = config || {};
+    const facts = configFacts(cfg);
     const proposals = [];      // one row per proposal, in the order the search made them
     const statuses = {};       // trial status -> count
     const bySplit = {};        // split -> trial count
@@ -4503,7 +4760,7 @@
     /* The config names the metrics the run was set up to move, so those lead and in its order.
        Anything else the log measured still gets a chart — a metric that appears only in the
        trials is exactly the kind of thing worth noticing. */
-    const declared = (cfg.goal_metrics || []).filter(m => metricNames.includes(m));
+    const declared = facts.goalMetrics.filter(m => metricNames.includes(m));
     const metrics = declared.concat(metricNames.filter(m => !declared.includes(m)))
       .filter(m => proposals.some(p => p.measured[m] != null));
 
@@ -4616,8 +4873,8 @@
     const explain = {
       sizes,
       tuned,
-      blocks: cfg.blocks || [],
-      runs: typeof cfg.runs === 'number' ? cfg.runs : null,
+      blocks: facts.blocks,
+      runs: facts.runs,
       candidates: proposals.filter(p => p.candidate_id).length,
     };
 
@@ -4646,7 +4903,8 @@
       maxRollouts: typeof budget.max_rollouts === 'number' ? budget.max_rollouts : null,
       maxIterations: typeof budget.max_iterations === 'number' ? budget.max_iterations : null,
       champion, finalists, validation, test, stop,
-      isPareto: !!cfg.is_pareto,
+      isPareto: facts.isPareto,
+      facts,
     };
   }
 
@@ -4944,6 +5202,29 @@
   let optQuery = '', optFilter = 'all';
   const optOpen = new Set();
 
+  /* DRAFT A — a link into the run explorer, at a page of one run.
+     The token rides in the query and the route in the hash, which is the order the explorer reads
+     them in: `parse` takes the hash, and the fetches it then makes carry `?t=`. The study is the
+     run's discovery id, which is why the server walks one tree for both views — an id this page
+     made up would 404 over there. */
+  function explorerHref(study, page) {
+    return '/explorer/' + (TOKEN ? '?t=' + encodeURIComponent(TOKEN) : '')
+      + '#/s/' + encodeURIComponent(study) + '/' + page;
+  }
+
+  /** DRAFT B — the experiment whose cases this run split up, if one in this folder has them. */
+  function sourceLine(run) {
+    const t = run && run.tuned_against;
+    if (!t) return '';
+    const link = `<a data-exp="${esc(t.path)}">${esc(t.path)}</a>`;
+    /* The count is the hedge. A split naming cases this folder's experiment does not have is
+       either a different experiment or an edited one, and either way the page should not say
+       "these came from there" as though the record had named it. */
+    return t.status === 'verified'
+      ? `Its ${plural(t.split_cases, 'case')} are cases of ${link}.`
+      : `${t.matched} of its ${plural(t.split_cases, 'case')} are cases of ${link}.`;
+  }
+
   function optStat(value, key) {
     return `<div class="stat"><span class="v">${esc(value)}</span><span class="k">${esc(key)}</span></div>`;
   }
@@ -5128,12 +5409,23 @@
     $('opt-cand-count').textContent = `${shown.length} of ${plural(d.proposals.length, 'candidate')}`
       + (unscored ? `, ${unscored} never scored` : '');
 
+    /* DRAFT A — each row links to that candidate in the explorer. The route is by candidate
+       `number`, which is what the explorer's own candidate links use, so a row with no number
+       gets no link rather than one to candidate 0. Only in server mode: there is no explorer
+       behind a folder picked from disk. */
+    const run = OPT_RUNS[optSel];
+    const deepLink = p => (EXPLORER && run && p.candidate_id && p.number != null
+      ? ` <a class="xlink" href="${esc(explorerHref(run.id, 'candidate/' + p.number))}"`
+        + ` target="_blank" rel="noopener" title="open ${esc(p.candidate_id)} in the run explorer"></a>`
+      : '');
+
     $('opt-cands').innerHTML = shown.map(p => {
       const key = p.candidate_id || `invalid-${p.iteration}-${p.number}`;
       const on = optOpen.has(key);
       const name = p.candidate_id
         ? `<span class="caret${on ? ' open' : ''}"></span>${esc(p.candidate_id)}`
           + (p.number != null ? ` <span class="path">#${esc(p.number)}</span>` : '')
+          + deepLink(p)
         : '<span class="path">no candidate</span>';
       const tags = (p.isChampion ? ' <span class="tag ok">champion</span>' : '')
         + (p.isBaseline ? ' <span class="tag">baseline</span>' : '');
@@ -5157,20 +5449,24 @@
         + '</div></td></tr>';
   }
 
+  /* One render for all three of Optimization's panels. Redrawing them together is cheap — the log
+     is already parsed — and it is the only way they cannot disagree about which run is open. */
   function renderOptimization() {
     const run = OPT_RUNS[optSel];
-    $('tab-opt').hidden = OPT_RUNS.length === 0;
+    renderOptimizerRuns();
     /* The Explorer reads the same runs this tab discovered, so it is offered exactly when there is
-       one to open. Installed-but-empty would link to a page listing nothing. */
-    $('opt-link').hidden = !EXPLORER || OPT_RUNS.length === 0;
+       one to open — and at the run that is open, not at an index of all of them. */
+    $('opt-link').hidden = !EXPLORER || !run;
+    if (EXPLORER && run) $('opt-link').href = explorerHref(run.id, 'candidates');
     if (!run || !OPT) {
       $('opt-sub').textContent = OPT_RUNS.length
-        ? 'Pick a run above.'
+        ? 'Pick a run on the Runs tab.'
         : 'No optimizer run directory in this folder. One is a run.json with an events.jsonl beside it.';
       ['opt-obj-chart', 'opt-budget-chart', 'opt-status-chart', 'opt-metric-chart', 'opt-usage-chart',
-        'opt-result', 'opt-winner', 'opt-cands', 'opt-explain', 'opt-method-sum']
+        'opt-result', 'opt-winner', 'opt-cands', 'opt-explain', 'opt-method-sum', 'opt-setup-kv']
         .forEach(id => { $(id).innerHTML = ''; });
-      $('opt-method').hidden = true;
+      $('opt-setup-sub').textContent = '';
+      $('opt-source').hidden = true;
       $('opt-metric-wrap').hidden = true;
       $('opt-cost').hidden = true;
       $('opt-cand-sub').textContent = '';
@@ -5181,7 +5477,6 @@
     }
 
     const d = OPT;
-    $('opt-objective').textContent = d.config.objective || '';
     /* Which run, and whether it finished. The proposal, iteration and trial counts used to be
        here too, and they are already on the drawer summaries below that hold the charts of them —
        saying them twice on one screen made the run read as busier than it is. */
@@ -5258,9 +5553,22 @@
     $('opt-status-chart').innerHTML = statusChart(d);
     $('opt-diag-sum').textContent = plural(d.trials, 'trial');
 
-    $('opt-method').hidden = false;
+    /* Results keeps the one line of method — no figure under it is readable without knowing what
+       was tuned and over how many cases — and Setup takes the account of how the splits were
+       used, which is the part that is read once. */
     $('opt-method-sum').innerHTML = methodLine(d);
+    $('opt-setup-sub').textContent = 'What this run was told to do, as its run.json records it. Read-only: '
+      + 'nothing here writes that file.';
     $('opt-explain').innerHTML = explainStrip(d);
+    /* DRAFT B — on Setup, because which cases the run was given is part of what it was told to do.
+       Hidden rather than blank when nothing matched, so an unmatched run has no empty line where
+       the answer would be. */
+    const source = sourceLine(run);
+    $('opt-source').innerHTML = source;
+    $('opt-source').hidden = !source;
+    $('opt-source').title = source
+      ? 'Matched by case id. A run record does not name the experiment it was given.' : '';
+    renderOptimizerSetup(d, run);
     /* What a candidate is, and nothing about how to open one: the caret and the row's own cursor
        say that, and a line of instructions under a heading is read as part of the explanation. */
     $('opt-cand-sub').textContent = 'Each one is a configuration the optimizer built and ran your cases against.';
@@ -5283,13 +5591,13 @@
   }
 
   /* Both origins land here — the server's discovery pass and a folder picked in standalone mode —
-     so the tab appears and the selection survives a rescan the same way either way. */
+     so the section appears and the selection survives a rescan the same way either way. */
   async function loadOptimizerRuns(runs) {
     const previous = optSel >= 0 && OPT_RUNS[optSel] ? OPT_RUNS[optSel].id : null;
     OPT_RUNS = runs;
     optSel = previous ? OPT_RUNS.findIndex(r => r.id === previous) : -1;
     if (optSel < 0 && OPT_RUNS.length) optSel = 0;
-    renderOptimizerPicker();
+    renderOptimizerRuns();
     if (OPT_RUNS.length) await selectOptimizerRun(optSel);
     else { OPT = null; renderOptimization(); }
   }
@@ -5310,16 +5618,116 @@
     renderOptimization();
   }
 
-  function renderOptimizerPicker() {
-    $('tab-opt').hidden = OPT_RUNS.length === 0;
-    $('opt-run').innerHTML = OPT_RUNS.map((r, i) =>
-      `<option value="${i}">${esc(r.run_id)}${r.name && r.name !== r.run_id ? ` — ${esc(r.name)}` : ''}</option>`
-    ).join('');
-    // Its label goes with it, or a lone "Run" sits there labelling nothing.
-    $('opt-run').hidden = $('opt-run-label').hidden = OPT_RUNS.length < 2;
-    $('opt-run').value = String(Math.max(0, optSel));
+  const optBlank = (title, body) =>
+    `<tr><td colspan="5"><div class="nores"><b>${title}</b>${body}</div></td></tr>`;
+
+  /* The run list, which is also what decides whether this section exists. A folder holding no run
+     directory shows no Optimization section at all, so it reads exactly as it did before there was
+     an optimizer — rather than as a section that is empty for a reason you have to go and find. */
+  function renderOptimizerRuns() {
+    const any = OPT_RUNS.length > 0;
+    $('sec-opt').hidden = !any;
+    /* Evals is the other section, so with no optimizer run there is one section and nothing to
+       switch between — and a lone chip reading "Evals" names the page rather than offering a
+       choice. The whole switcher goes, which is how a folder of plain experiments reads exactly
+       as it did before there was an optimizer at all. */
+    $('sections').hidden = !any;
+    app.querySelectorAll('.tab[data-sec="optimization"]').forEach(t => { t.hidden = !any; });
+
+    $('opt-runs-sub').textContent = any
+      ? 'Each one is a directory holding a run.json and the events.jsonl the run appended to.'
+      : '';
+    $('opt-runs-count').textContent = any ? plural(OPT_RUNS.length, 'run') : '';
+    $('opt-runs-rows').innerHTML = any ? OPT_RUNS.map((r, i) => {
+      const alias = r.name && r.name !== r.run_id ? ` <span class="dim">/ ${esc(r.name)}</span>` : '';
+      // Where the run is, which is the only way to tell two runs of the same name apart.
+      const at = r.dir && r.dir !== '.' ? r.dir : r.events_path;
+      const deep = EXPLORER
+        ? `<br><a class="xlink" href="${esc(explorerHref(r.id, 'overview'))}" target="_blank" rel="noopener"`
+          + ' title="open this whole run in the run explorer">run explorer</a>'
+        : '';
+      return `<tr class="run${i === optSel ? ' on' : ''}" data-opt-run="${i}">
+        <td>${esc(r.run_id)}${alias}<br><span class="path">${esc(at)}</span>${deep}</td>
+        <td class="ev">${r.champion_id ? esc(r.champion_id) : '<span class="empty">none picked</span>'}</td>
+        <td class="ev">${plural(r.candidates, 'candidate')}`
+        + `<br><span class="path">${plural(r.iterations, 'iteration')}</span></td>
+        <td class="ev">${r.stop_reason
+          ? `<span class="tag">${esc(r.stop_reason)}</span>`
+          : '<span class="empty">still running</span>'}</td>
+        <td class="ev">${when(r.modified)}</td></tr>`;
+    }).join('') : optBlank('No optimizer run here', MODE === 'server'
+      ? `No directory under ${esc(ROOT)} holds a run.json with an events.jsonl beside it.`
+      : 'Open a folder that holds an optimizer run directory.');
+
+    /* The run that was open is gone — a rescan after it was deleted, or a different folder opened.
+       Sitting on a hidden tab over a dead panel is worse than landing back on Evals. */
+    if (!any && SECTION_OF[currentView()] === 'optimization') show('runs');
   }
-  $('opt-run').onchange = e => selectOptimizerRun(Number(e.target.value));
+
+  $('opt-runs-rows').onclick = e => {
+    // The explorer link is in the row and navigates on its own.
+    if (e.target.closest('a[href]')) return;
+    const tr = e.target.closest('tr[data-opt-run]');
+    if (!tr) return;
+    const i = Number(tr.dataset.optRun);
+    /* Already selected: just go to the result. Re-reading the log would be work for no change,
+       and the point of the click is the answer, not the selection. */
+    if (i === optSel) return show('opt-results');
+    selectOptimizerRun(i).then(() => show('opt-results'));
+  };
+
+  /* ── Setup ──
+     The run config, as the record states it. Read-only on purpose: nothing in this page writes a
+     `run.json`, and a field that looks editable but is not is worse than a field that does not. */
+  function renderOptimizerSetup(d, run) {
+    const c = d.config || {};
+    const f = d.facts || configFacts(c);
+    const rows = [];
+    const mono = v => `<span class="mono">${esc(v)}</span>`;
+
+    rows.push(['Objective', c.objective ? mono(c.objective) : '<span class="empty">none recorded</span>']);
+    if (f.isPareto) rows.push(['Shape', 'a Pareto front, so there is no single best value']);
+    if (f.goalMetrics.length) rows.push(['Goal metrics', f.goalMetrics.map(esc).join(', ')]);
+    rows.push(['Constraints', (c.constraints || []).length
+      ? c.constraints.map(x => mono(x)).join('<br>')
+      : '<span class="empty">none</span>']);
+    if (c.feasibility_threshold != null) {
+      rows.push(['Feasible at', `${esc(c.feasibility_threshold)} of the cases passing the constraints`]);
+    }
+
+    /* The split is the method, so it is spelled out rather than summarised: which sizes, and the
+       seed, because the same seed over the same cases is what makes two runs comparable. */
+    if (d.explain.sizes.length) {
+      rows.push(['Cases', d.explain.sizes.map(s => `${s.n} ${esc(s.name)}`).join(' · ')
+        + (f.seed != null ? ` <span class="path">split with seed ${esc(f.seed)}</span>` : '')]);
+    }
+    if (d.explain.runs > 1) rows.push(['Repeats', `each case run ${plural(d.explain.runs, 'time')}`]);
+
+    const budget = c.budget || {};
+    const limits = [
+      budget.max_rollouts != null ? `${budget.max_rollouts} rollouts` : null,
+      budget.max_iterations != null ? `${budget.max_iterations} iterations` : null,
+      budget.max_seconds != null ? `${budget.max_seconds} seconds` : null,
+    ].filter(Boolean);
+    rows.push(['Budget', limits.length ? limits.join(' · ') : '<span class="empty">none set</span>']);
+
+    if (f.blocks.length) rows.push(['Tunable blocks', f.blocks.map(esc).join(', ')]);
+    if (d.explain.tuned.length) rows.push(['Actually varied', d.explain.tuned.map(k => mono(k)).join(', ')]);
+    const pick = c.final_pick || {};
+    if (pick.n_finalists != null || f.pickRule) {
+      rows.push(['Final pick', [pick.n_finalists != null ? `${plural(pick.n_finalists, 'finalist')}` : null,
+        f.pickRule ? esc(f.pickRule) : null].filter(Boolean).join(' · ')]);
+    }
+    if (f.selection) rows.push(['Parents chosen by', esc(f.selection)]);
+    if (f.scoreModel) rows.push(['Score model', esc(f.scoreModel)]);
+    if (c.agent_failure_score) rows.push(['A failed agent scores', esc(c.agent_failure_score)]);
+    if (c.workdir) rows.push(['Started in', mono(c.workdir)]);
+    rows.push(['Run id', mono(c.run_id || run.run_id)]);
+
+    $('opt-setup-kv').innerHTML = rows.map(([k, v]) =>
+      `<dt>${esc(k)}</dt><dd${/^(Objective|Constraints|Started in|Run id)$/.test(k) ? ' class="m"' : ''}>${v}</dd>`
+    ).join('');
+  }
 
   /* Copy and download the winning configuration. `navigator.clipboard` needs a secure context,
      which `file://` is not, so there is a fallback — and if both fail the page says so instead of
@@ -5371,6 +5779,8 @@
     renderCandidates();
   };
   $('opt-cands').onclick = e => {
+    // DRAFT A — the explorer link is inside the row too, and it navigates on its own.
+    if (e.target.closest('a[href]')) return;
     /* The jump is inside the row, so it has to be handled before the row's own toggle —
        otherwise clicking it would collapse the detail it was sitting in. */
     const jump = e.target.closest('[data-open]');
@@ -5378,7 +5788,12 @@
       const p = OPT && OPT.proposals.find(x => x.candidate_id === jump.dataset.open);
       if (p && p.trials.length) {
         const run = OPT_RUNS[optSel] || {};
+        /* Remember what Evals had, once. Jumping to a second candidate must not overwrite the
+           saved report with the first candidate's — the way back is to Evals, not to a candidate. */
+        if (!repDisplaced) repDisplaced = { meta: repMeta, doc: REP };
         loadReport({ path: `${run.run_id || 'run'} · ${p.candidate_id}` }, candidateReport(p));
+        borrowReport(`Candidate <b>${esc(p.candidate_id)}</b> of ${esc(run.run_id || 'this run')}, `
+          + 'from Optimization.');
         show('report');
       }
       return;
@@ -5388,6 +5803,16 @@
     const key = tr.dataset.k;
     optOpen.has(key) ? optOpen.delete(key) : optOpen.add(key);
     renderCandidates();
+  };
+  /* DRAFT B — the named experiment opens on the Experiment tab, which is the point of naming it:
+     the split is a list of case ids, and the cases themselves are over there. */
+  $('opt-source').onclick = e => {
+    const link = e.target.closest('a[data-exp]');
+    if (!link) return;
+    const i = RUNS.findIndex(r => r.experiment && r.experiment.path === link.dataset.exp);
+    if (i < 0) return;
+    if (i === selRun) return show('experiment');
+    selectRun(i, { view: 'experiment' });
   };
   // Redrawing the whole view is cheap — the log is already parsed — and keeps one render path.
   $('opt-metric-pick').onchange = e => { optMetric = e.target.value; renderOptimization(); };
@@ -5428,7 +5853,6 @@
          link, so the server says whether it has one to serve. renderOptimization then shows it
          only when there is a run to open. */
       EXPLORER = !!config.explorer;
-      if (EXPLORER) $('opt-link').href = '/explorer/' + (TOKEN ? '?t=' + encodeURIComponent(TOKEN) : '');
       await rescan();
     } catch {
       MODE = 'standalone'; READONLY = false;
