@@ -893,6 +893,34 @@ def test_ui_list_prints_the_discovered_runs(tmp_path: Path, capsys):
     assert payload["runs"][0]["link"]["status"] == "verified"
 
 
+def test_ui_list_prints_the_optimizer_runs_too(tmp_path: Path, capsys):
+    """`--list` is the non-interactive half of the server's discovery, so it has to agree with it.
+
+    A directory holding nothing but optimizer runs printed as an empty directory, which reads as
+    "there is nothing here" about a tree the server opens a whole section for.
+    """
+    _optimizer_run(
+        tmp_path / "tuning",
+        {"event": "config"},
+        {"event": "propose", "iteration": 0, "candidate_id": "c0", "number": 0},
+        {"event": "iteration_end", "iteration": 0, "best_candidate_id": "c0"},
+        {"event": "picked", "iteration": 0, "report": {"champion_id": "c0"}},
+        {"event": "stop", "iteration": 0, "reason": "budget"},
+    )
+
+    assert main(["--json", "ui", str(tmp_path), "--list"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [r["dir"] for r in payload["optimizer_runs"]] == ["tuning"]
+
+    # `--rich` only to defeat the format default: stdout is not a TTY under capsys, so the
+    # plain listing is otherwise never the one taken.
+    assert main(["--rich", "ui", str(tmp_path), "--list"]) == 0
+    line = capsys.readouterr().out
+    assert "optimizer run tuning" in line
+    assert "1 candidates, 1 iterations" in line
+    assert "champion c0" in line and "stopped: budget" in line
+
+
 @pytest.fixture
 def launched(monkeypatch):
     """Run `strands-evals ui` without serving: capture what it asked `build_server` for."""

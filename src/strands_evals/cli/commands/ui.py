@@ -26,7 +26,17 @@ def _run(args: argparse.Namespace) -> int:
     if args.list:
         result = discover(root, args.depth)
         if resolve_format(args) == "json":
-            print(json.dumps({"root": str(root.resolve()), "runs": result.runs, "skipped": result.skipped}, indent=2))  # noqa: T201
+            print(  # noqa: T201
+                json.dumps(
+                    {
+                        "root": str(root.resolve()),
+                        "runs": result.runs,
+                        "optimizer_runs": result.optimizer_runs,
+                        "skipped": result.skipped,
+                    },
+                    indent=2,
+                )
+            )
         else:
             for run in result.runs:
                 experiment = run["experiment"]
@@ -34,6 +44,15 @@ def _run(args: argparse.Namespace) -> int:
                 left = f"{experiment['path']} ({experiment['cases']} cases)" if experiment else "(no experiment)"
                 right = f"{report['path']} ({report['overall_score']:.2f})" if report else "(not run)"
                 print(f"{left}  ->  {right}")  # noqa: T201
+            # Named as what they are rather than listed alongside: an optimizer run is a
+            # directory, not a file pair, and a line that could be either is one a script has to
+            # guess at. Omitted entirely, which is what this did, a tree of nothing but runs
+            # printed as an empty tree — while the server it is supposed to agree with found them.
+            for run in result.optimizer_runs:
+                search = f"{run['candidates']} candidates, {run['iterations']} iterations"
+                champion = f"champion {run['champion_id']}" if run.get("champion_id") else "no champion"
+                stopped = f", stopped: {run['stop_reason']}" if run.get("stop_reason") else ""
+                print(f"optimizer run {run['dir']} ({search})  ->  {champion}{stopped}")  # noqa: T201
             for skip in result.skipped:
                 print(f"skipped {skip['path']}: {skip['why']}", file=sys.stderr)  # noqa: T201
         return EXIT_OK
