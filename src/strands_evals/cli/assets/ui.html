@@ -360,6 +360,26 @@
   .delta.up { color: var(--good); }
   .delta.down { color: var(--bad); }
   .delta.flat { color: var(--ink3); }
+  /* The result as a picture: one interval per row against a line at no change. It carries no
+     figures — the table above it has them all — so everything here is the shape of the claim. */
+  .rstrip { margin: 14px 0 2px; }
+  .rstrip.weak { opacity: .6; }
+  .rstrip svg { display: block; width: 100%; height: auto; }
+  .rs-zero { stroke: var(--ink2); stroke-width: 1; opacity: .55; }
+  .rs-lab { fill: var(--ink2); font-size: 11.5px; }
+  .rs-dir { fill: var(--ink3); }
+  .rs-note { fill: var(--ink3); font-size: 10.5px; }
+  .rs-obj .rs-lab { fill: var(--ink1); font-weight: 600; }
+  .rs-ci { stroke: var(--ink3); stroke-width: 2.5; stroke-linecap: round; }
+  .rs-dot { fill: var(--ink3); stroke: var(--card); stroke-width: 1.5; }
+  /* Green and red only where the objective expression said which way the goal wants the metric to
+     go. A row with no direction recorded is drawn in the chart ink instead of being guessed at. */
+  .rs-row.good .rs-ci { stroke: var(--good); }
+  .rs-row.good .rs-dot { fill: var(--good); }
+  .rs-row.bad .rs-ci { stroke: var(--bad); }
+  .rs-row.bad .rs-dot { fill: var(--bad); }
+  .rs-row.plain .rs-ci { stroke: var(--accent); }
+  .rs-row.plain .rs-dot { fill: var(--accent); }
   .verdict { margin: 13px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--ink2); }
   .verdict b { color: var(--ink1); }
   .winner .wid { font-size: 15px; font-weight: 600; color: var(--ink1); }
@@ -5479,6 +5499,93 @@
      The objective is the only quantity whose direction is known — it is always higher-is-better —
      so it is the only delta coloured. A metric's direction lives in the objective expression,
      and guessing it from the metric's name would colour "+150 tokens" green. */
+
+  /* The same comparison as a picture, which is the one thing above the fold a reader can take in
+     without reading: an interval wholly on the side the goal wants is a change this run has shown,
+     and one that crosses no change is not — which is the verdict the sentence below spells out.
+
+     It carries no figures. Every number it could print is in the table directly above it or in
+     that sentence, and a third copy would be the page saying one thing three ways.
+
+     Each row is scaled to its own interval. A shared axis would have to put a 0.14 change in a
+     score and a 190-token change on one scale, and the score would vanish; what is worth
+     comparing between rows is which side of the line they fall on, and that is a side rather
+     than a width. The note on the chart says so, because a bar invites being measured. */
+  const RS = { row: 22, head: 20, lab: 104, right: 14, foot: 16 };
+  function resultStrip(d) {
+    const r = d.result;
+    if (!r) return '';
+    /* `d.goals` is the subset the trials measured, which is what an axis can be drawn for. Here the
+       metrics come from the end-phase report instead, so the directions are read off the record's
+       own goals — a metric the search never charted still has a stated direction. */
+    const dirOf = m => ((((d.facts || {}).goals || []).find(g => g.metric === m) || {}).dir) || null;
+    const rows = [];
+    const interval = o => o && typeof o.ci_low === 'number' && typeof o.ci_high === 'number';
+    for (const m of r.metrics) {
+      if (!interval(m.diff)) continue;      // only the goal metrics get a `difference` entry
+      rows.push({
+        label: m.metric,
+        dir: dirOf(m.metric),
+        lo: m.diff.ci_low,
+        hi: m.diff.ci_high,
+        mean: typeof m.diff.mean_diff === 'number' ? m.diff.mean_diff : (m.diff.ci_low + m.diff.ci_high) / 2,
+      });
+    }
+    /* The objective is always higher-is-better, whichever way the goals under it want their own
+       metrics — but on a single-goal run it IS that metric, reported twice, and two identical bars
+       read as two findings. */
+    const o = r.objective;
+    if (interval(o) && typeof o.mean_diff === 'number'
+      && !rows.some(x => x.lo === o.ci_low && x.hi === o.ci_high && x.mean === o.mean_diff)) {
+      rows.push({ label: 'Objective', dir: 'max', lo: o.ci_low, hi: o.ci_high, mean: o.mean_diff, objective: true });
+    }
+    if (!rows.length) return '';
+
+    const left = RS.lab, right = W - RS.right;
+    const zero = (left + right) / 2;
+    const half = (right - left) / 2 - 10;
+    const height = RS.head + rows.length * RS.row + RS.foot;
+
+    let body = '';
+    rows.forEach((row, i) => {
+      const cy = RS.head + i * RS.row + RS.row / 2;
+      /* Per row, against its own largest end. A zero-width interval — which is what a comparison
+         over two cases that agreed exactly reports — scales to a dot, and a dot is the honest
+         drawing of it. */
+      const m = Math.max(Math.abs(row.lo), Math.abs(row.hi), Math.abs(row.mean)) || 1;
+      const x = v => zero + (v / m) * half;
+      const crosses = row.lo <= 0 && row.hi >= 0;
+      const kind = crosses ? 'flat'
+        : !row.dir ? 'plain'
+          : (row.lo > 0) === (row.dir === 'max') ? 'good' : 'bad';
+      const reading = crosses
+        ? 'crosses no change, so this run has not shown it moved'
+        : kind === 'plain'
+          ? 'clear of no change, in a metric the objective states no direction for'
+          : kind === 'good' ? 'clear of no change, the way the goal wants' : 'clear of no change, the wrong way';
+      const arrow = row.dir ? `<tspan class="rs-dir"> ${row.dir === 'max' ? '↑' : '↓'}</tspan>` : '';
+      body += `<g class="rs-row ${kind}${row.objective ? ' rs-obj' : ''}">`
+        + `<title>${esc(`${row.label}: ${signed(row.mean)} [${fine(row.lo)}, ${fine(row.hi)}] — ${reading}`)}`
+        + `</title>`
+        + `<text class="rs-lab" x="0" y="${cy}" dy="0.32em">${esc(row.label)}${arrow}</text>`
+        + `<line class="rs-ci" x1="${x(row.lo)}" y1="${cy}" x2="${x(row.hi)}" y2="${cy}"/>`
+        + `<circle class="rs-dot" cx="${x(row.mean)}" cy="${cy}" r="4"/></g>`;
+    });
+
+    /* On a validation split the search chose on these very cases, so the picture is drawn faint to
+       match the label above it: the same shape, held with less confidence. */
+    return `<div class="rstrip${r.heldOut ? '' : ' weak'}">`
+      + `<svg viewBox="0 0 ${W} ${height}" role="img" aria-label="the change in each goal metric, `
+      + 'against a line at no change">'
+      + `<line class="rs-zero" x1="${zero}" y1="${RS.head - 5}" x2="${zero}" y2="${height - RS.foot + 3}"/>`
+      + `<text class="rs-note" x="${zero}" y="${RS.head - 9}" text-anchor="middle">no change</text>`
+      + `<text class="rs-note" x="${left}" y="${height - 3}">`
+      + `${r.heldOut ? 'champion against baseline, on the held-out cases' : 'champion against baseline'}</text>`
+      + `<text class="rs-note" x="${right}" y="${height - 3}" text-anchor="end">`
+      + 'each bar scaled to itself, so widths do not compare</text>'
+      + body + '</svg></div>';
+  }
+
   function resultCard(d) {
     if (!d.result) {
       const why = d.stop
@@ -5542,6 +5649,7 @@
     }
 
     return `<p class="rlabel">${esc(label)}</p><table class="rtab"><tbody>${rows}</tbody></table>`
+      + resultStrip(d)
       + `<p class="verdict">${verdict}</p>`;
   }
 

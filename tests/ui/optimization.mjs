@@ -198,6 +198,57 @@ ok(/\[0\.061, 0\.225\] — clear of zero/.test(verdict), 'and reads the interval
 ok(/never saw/.test(verdict), 'and says the cases were held out', verdict);
 ok(!/flattering/.test(verdict), 'a held-out result is not hedged as a flattering one', verdict);
 
+/* ── and the same comparison as a picture ──
+   The sentence above is the verdict in words; the strip is the verdict in a glance, which is what
+   a reader who does not read the card still takes away. So it has to be the SAME verdict: an
+   interval clear of the line is drawn as clear of it, and one crossing it is drawn as crossing,
+   whatever `mean_diff` says. It prints no figures at all — the table and the sentence have them
+   — so every assertion here is about geometry and colour. */
+const strip = (q = p) => q.$$('#opt-result .rstrip .rs-row').map(g => ({
+  cls: g.getAttribute('class'),
+  label: g.querySelector('text').textContent.replace(/\s+/g, ' ').trim(),
+  title: g.querySelector('title').textContent,
+  x1: Number(g.querySelector('line').getAttribute('x1')),
+  x2: Number(g.querySelector('line').getAttribute('x2')),
+  dot: Number(g.querySelector('circle').getAttribute('cx')),
+}));
+const zeroAt = (q = p) => Number(q.$('#opt-result .rs-zero').getAttribute('x1'));
+const rbars = strip();
+/* One row, not two. `tokens` has no interval in this report, and the objective's interval IS
+   Helpfulness's — a single-goal run reports the same three numbers twice, and two identical bars
+   would read as two findings. */
+ok(rbars.length === 1 && rbars[0].label === 'Helpfulness ↑',
+  'a bar per goal metric the report gave an interval for, with the way its goal wants it to go',
+  rbars.map(b => b.label).join(' | '));
+ok(!rbars.some(b => /Objective/.test(b.label)),
+  'and the objective is not drawn a second time when its interval is a metric\'s own',
+  rbars.map(b => b.label).join(' | '));
+ok(rbars[0].cls === 'rs-row good', '[0.061, 0.225] is wholly the way the goal wants, so it is green',
+  rbars[0].cls);
+ok(rbars[0].x1 > zeroAt() && rbars[0].x2 > rbars[0].x1,
+  'and drawn wholly to the better side of the line at no change',
+  `zero ${zeroAt()}, bar ${rbars[0].x1}–${rbars[0].x2}`);
+ok(rbars[0].dot > rbars[0].x1 && rbars[0].dot < rbars[0].x2,
+  'with the mean difference between its ends', `${rbars[0].x1} < ${rbars[0].dot} < ${rbars[0].x2}`);
+/* The figures are a tooltip, not a label: on the chart they would be the page's third copy of
+   +0.143, and the reading is the thing the picture adds. */
+ok(rbars[0].title === 'Helpfulness: +0.143 [0.061, 0.225] — clear of no change, the way the goal wants',
+  'hovering a bar gives the numbers and what they mean', rbars[0].title);
+ok($$('#opt-result .rstrip text').every(t => !/0\.143|0\.061|0\.225/.test(t.textContent)),
+  'but nothing on the chart repeats a figure the table above it already carries',
+  $$('#opt-result .rstrip text').map(t => t.textContent).join(' | '));
+const stripNotes = $$('#opt-result .rstrip text.rs-note').map(t => t.textContent).join(' | ');
+ok(/no change/.test(stripNotes), 'the line is named, since an unlabelled axis is a scale', stripNotes);
+ok(/champion against baseline, on the held-out cases/.test(stripNotes),
+  'and the sense of it, so a bar cannot be read as a score', stripNotes);
+/* Each bar is scaled to its own interval, because a shared axis would have to put a 0.14 change
+   in a score and a 150-token change on one — and the score would vanish. So the chart says what
+   does not compare across rows, since a bar invites being measured against its neighbour. */
+ok(/widths do not compare/.test(stripNotes), 'and that a width is not comparable between rows',
+  stripNotes);
+ok(!$('#opt-result .rstrip').className.includes('weak'),
+  'a held-out result is drawn at full strength');
+
 // ── the winner: the configuration the run exists to produce, not just the name of it ──
 ok(text('#opt-winner .wid') === 'c10', 'the champion is named', text('#opt-winner .wid'));
 ok(text('#opt-winner .lineage') === 'c10 ← c6 ← c3 ← c1 ← c0',
@@ -1136,6 +1187,16 @@ ok(/has not shown an improvement/.test(said(pFlat)),
   'an interval that includes zero is reported as no improvement, however large the gap', said(pFlat));
 ok(/\[-0\.04, 0\.24\] — includes zero/.test(said(pFlat)), 'and the interval is quoted', said(pFlat));
 ok(!/clear of zero/.test(said(pFlat)), 'and never called a clear win', said(pFlat));
+/* The picture has to agree with the sentence, which is the whole reason it is allowed above it.
+   An interval crossing the line is drawn in the chart's own ink and at full strength — this is
+   the case a reader most needs to notice, so it is not the one that is faded out. */
+const flatBar = strip(pFlat)[0];
+ok(flatBar.cls === 'rs-row flat', 'the bar for it is neither green nor red', flatBar.cls);
+ok(flatBar.x1 < zeroAt(pFlat) && flatBar.x2 > zeroAt(pFlat),
+  'and is drawn crossing the line, which is what "includes zero" looks like',
+  `${flatBar.x1} … ${zeroAt(pFlat)} … ${flatBar.x2}`);
+ok(/crosses no change, so this run has not shown it moved/.test(flatBar.title),
+  'with the same reading the verdict gives', flatBar.title);
 
 const pWorse = await resultPage(resultLog(testReport(
   { mean_diff: -0.08, ci_low: -0.19, ci_high: -0.02, n_cases: 6 })));
@@ -1144,6 +1205,10 @@ const pWorse = await resultPage(resultLog(testReport(
 ok(/-0\.08/.test(said(pWorse)) && !/\+0\.08/.test(said(pWorse)),
   'a negative objective difference is shown as a negative one', said(pWorse));
 ok(/would be a regression/.test(said(pWorse)), 'and named as one', said(pWorse));
+const worseBar = strip(pWorse)[0];
+ok(worseBar.cls === 'rs-row bad' && worseBar.x2 < zeroAt(pWorse),
+  'and drawn red, wholly on the wrong side of no change',
+  `${worseBar.cls} at ${worseBar.x1}–${worseBar.x2}, zero ${zeroAt(pWorse)}`);
 
 /* An interval tight around zero must not be rounded into one that looks like it touches it.
    Two decimals would print [0.004, 0.21], which reads as straddling zero — the opposite verdict. */
@@ -1155,6 +1220,10 @@ ok(/\[0\.004, 0\.2103\] — clear of zero/.test(said(pFine)),
 const pNoCI = await resultPage(resultLog(testReport({ mean_diff: 0.1, n_cases: 6 })));
 ok(/\+0\.1 against the baseline/.test(said(pNoCI)) && /no interval/.test(said(pNoCI)),
   'a report with no interval says how certain cannot be read off it', said(pNoCI));
+/* A picture of this would have to be a dot on a line with nothing to say about it, and the
+   sentence already says the one true thing. So there is no chart rather than an empty one. */
+ok(!pNoCI.$('#opt-result .rstrip'),
+  'a report with no interval anywhere is not drawn at all');
 
 /* The validation split is what the search chose on, so it is the weaker evidence and is labelled
    as such rather than dressed up as a held-out result. */
@@ -1182,6 +1251,95 @@ ok(/nothing here to compare them against/.test(said(pNoBase)),
   'a report with no baseline figures says so instead of leaving a column of dashes unexplained',
   said(pNoBase));
 ok(!/flattering/.test(said(pNoBase)), 'and does not hedge a gap it never computed', said(pNoBase));
+ok(!pVal.$('#opt-result .rstrip') && !pNoBase.$('#opt-result .rstrip'),
+  'and a validation report, which carries no intervals, gets no picture of them either');
+
+/* ── which side of the line is "better" comes out of the objective, and nowhere else ──
+   A bar is the one thing on the card that is coloured, so colouring it the wrong way round is the
+   worst thing this chart can do. The direction is in the objective expression; the metric's name
+   does not carry it, and the report does not state it. */
+const stripPage = async (objective, report) => {
+  const q = await page();
+  await q.openFolder({
+    'r/run.json': { run_id: 'verdicts', objective },
+    'r/events.jsonl': resultLog(report),
+  });
+  await openResults(q);
+  return q;
+};
+const pMin = await stripPage('Minimize(tokens) with Maximize(H)', {
+  champion_id: 'c1', baseline_id: 'c0',
+  objective: { mean_diff: 0.11, ci_low: 0.03, ci_high: 0.19, n_cases: 6 },
+  difference: { tokens: { mean_diff: 180, ci_low: 60, ci_high: 300, n_cases: 6 } },
+  means: { c1: { tokens: { mean: 3340 } }, c0: { tokens: { mean: 3160 } } },
+});
+const minBars = strip(pMin);
+ok(minBars[0].label === 'tokens ↓', 'a minimised metric is marked as wanting to go down',
+  minBars[0].label);
+ok(minBars[0].cls === 'rs-row bad' && minBars[0].x1 > zeroAt(pMin),
+  'and 180 more tokens is drawn red, on the far side of no change from where the goal wants it — '
+  + 'the same rise in a maximised metric would be green',
+  `${minBars[0].cls} at ${minBars[0].x1}, zero ${zeroAt(pMin)}`);
+ok(/clear of no change, the wrong way/.test(minBars[0].title),
+  'and says which way that is', minBars[0].title);
+/* The objective is always higher-is-better whichever way the goals under it point, so here it is
+   a second, differently-directed row — and unlike the single-goal case it is not a duplicate. */
+ok(minBars.length === 2 && minBars[1].label === 'Objective ↑'
+  && minBars[1].cls === 'rs-row good rs-obj',
+  'and the objective gets its own row when its interval is not a metric\'s own, always up-is-better',
+  minBars.map(b => `${b.label} ${b.cls}`).join(' | '));
+
+const pPlain = await stripPage('Maximize(H)', {
+  champion_id: 'c1', baseline_id: 'c0',
+  objective: { mean_diff: 0.1, ci_low: 0.02, ci_high: 0.18, n_cases: 6 },
+  difference: { latency: { mean_diff: 0.4, ci_low: 0.1, ci_high: 0.7, n_cases: 6 } },
+  means: { c1: { latency: { mean: 2.4 } }, c0: { latency: { mean: 2.0 } } },
+});
+const plainBars = strip(pPlain);
+ok(plainBars[0].label === 'latency' && plainBars[0].cls === 'rs-row plain',
+  'a metric the objective states no direction for is drawn in neither green nor red, and carries '
+  + 'no arrow — guessing from the name is how "+0.4 latency" comes out green',
+  `${plainBars[0].label} / ${plainBars[0].cls}`);
+ok(/the objective states no direction for/.test(plainBars[0].title),
+  'and says that is why', plainBars[0].title);
+
+/* Two cases that agreed exactly give a zero-width interval — both sample runs under
+   `examples/optimization` report one. A bar of no length is a dot, and a dot is the honest
+   drawing of it: it must not come out as a bar of some arbitrary minimum width. */
+const pPoint = await stripPage('Maximize(H)', {
+  champion_id: 'c1', baseline_id: 'c0',
+  objective: { mean_diff: 0.7, ci_low: 0.7, ci_high: 0.7, n_cases: 2 },
+  difference: { H: { mean_diff: 0.7, ci_low: 0.7, ci_high: 0.7, n_cases: 2 } },
+  means: { c1: { H: { mean: 0.7 } }, c0: { H: { mean: 0.0 } } },
+});
+const point = strip(pPoint)[0];
+ok(point.x1 === point.x2 && point.dot === point.x1,
+  'an interval with no width draws as its mean alone', `${point.x1}–${point.x2}, dot ${point.dot}`);
+ok(point.cls === 'rs-row good' && point.x1 > zeroAt(pPoint),
+  'still on the better side of the line, since it does not touch it', point.cls);
+
+/* On a validation split the search chose on these very cases. The label above already says that
+   is weaker evidence; the picture is faded to match, rather than presenting the same shape with
+   the same confidence. (The page reads `difference` off whichever report it was given, so this is
+   the one thing that distinguishes the two drawings.) */
+const pWeak = await page();
+await pWeak.openFolder({
+  'r/run.json': { run_id: 'verdicts', objective: 'Maximize(H)' },
+  'r/events.jsonl': resultLog(null, [{
+    event: 'picked', iteration: 1,
+    report: { champion_id: 'c1', measured: { c1: { H: { mean: 0.6 } }, c0: { H: { mean: 0.5 } } },
+      difference: { H: { mean_diff: 0.1, ci_low: 0.02, ci_high: 0.18, n_cases: 6 } },
+      reason: 'c1 ranked first.' },
+  }]),
+});
+await openResults(pWeak);
+ok(pWeak.$('#opt-result .rstrip').className.includes('weak'),
+  'a validation-split comparison is drawn faint, matching the label it already carries',
+  pWeak.$('#opt-result .rstrip').className);
+ok(!/held-out/.test(pWeak.$$('#opt-result .rstrip text.rs-note').map(t => t.textContent).join(' | ')),
+  'and does not claim the cases were held out',
+  pWeak.$$('#opt-result .rstrip text.rs-note').map(t => t.textContent).join(' | '));
+errs.push(...pMin.errs, ...pPlain.errs, ...pPoint.errs, ...pWeak.errs);
 
 /* `propose.values` is the only copy of a candidate's configuration. A log without it cannot show
    one, and inventing a diff out of `changed_keys` would be making it up. */
