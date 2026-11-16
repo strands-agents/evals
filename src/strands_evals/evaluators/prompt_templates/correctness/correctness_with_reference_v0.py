@@ -6,13 +6,13 @@ You will be provided with:
 3. The expected (reference) response.
 
 TASK:
-Determine if the agent's responses across the conversation are CORRECT by comparing them to the expected response.
+Determine if the agent response is CORRECT by comparing it to the expected response. Use the conversation history as context: credit facts the agent already conveyed in earlier assistant turns (a final response that only acknowledges or closes the conversation is CORRECT if the expected content was conveyed earlier), and do not penalize errors in earlier turns that the expected response does not cover.
 
 EVALUATION RULES:
 
-1. CORRECT means the agent's responses across the conversation convey the same core factual content as the expected response, even if they use different wording, format, or level of detail.
+1. CORRECT means the agent response conveys the same core factual content as the expected response, even if it uses different wording, format, or level of detail.
 
-2. INCORRECT means the agent's responses across the conversation contain critical factual errors, fundamentally contradict the expected response, or are too vague/incomplete to meaningfully answer the query.
+2. INCORRECT means the agent response contains critical factual errors, fundamentally contradicts the expected response, or is too vague/incomplete to meaningfully answer the query.
 
 SPECIFIC GUIDANCE:
 
