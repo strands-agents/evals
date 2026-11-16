@@ -36,9 +36,11 @@ class FinalPick:
     rule: PickRule = Mean()
 
     def __post_init__(self) -> None:
-        """`n_finalists` >= 1, else `ValueError`."""
-        if isinstance(self.n_finalists, bool) or not isinstance(self.n_finalists, int) or self.n_finalists < 1:
-            raise ValueError(f"FinalPick(n_finalists=) must be an int >= 1, got {self.n_finalists!r}")
+        """`n_finalists` an int (else `TypeError`) >= 1 (else `ValueError`); `rule` `Mean()` or `LowerBound(q)`."""
+        if isinstance(self.n_finalists, bool) or not isinstance(self.n_finalists, int):
+            raise TypeError(f"FinalPick(n_finalists=) must be an int, got {self.n_finalists!r}")
+        if self.n_finalists < 1:
+            raise ValueError(f"FinalPick(n_finalists=) must be >= 1, got {self.n_finalists!r}")
         if not isinstance(self.rule, (Mean, LowerBound)):
             raise TypeError(f"FinalPick(rule=) must be Mean() or LowerBound(q), got {type(self.rule).__name__}")
 

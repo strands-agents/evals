@@ -1574,21 +1574,29 @@ class Optimizer:
         return None
 
     def _task_for(self, candidate: Candidate) -> TaskFn:
-        """The candidate's task, not yet instrumented; file-backed values copied into its workspace first."""
+        """The candidate's task, not yet instrumented; file-backed values copied into its workspace first.
+
+        On the `build_task` path the copy is made at once only when a value reaches the agent as a path
+        (`resolve` returns a path into it); otherwise the first read of `BuildContext.workspace` makes it, so a
+        `build_task` that never reads it copies nothing.
+        """
         assert self._run is not None
         workspace = self._run.workspace(candidate.id)
         if self._factory is not None:
             bound = self._factory.bind(candidate.values, workspace=workspace)
             return make_task(bound, self._rollout_fn or default_rollout, self._environment)
         assert self._build_task is not None
-        values = candidate.values
-        if self._space._files:  # any file-backed value: a config-defined agent may load a whole edited file
-            self._space.create_candidate_copy(values, workspace)
-        else:
-            workspace = None  # type: ignore[assignment]
-        return self._build_task(
-            BuildContext(values, lambda name: self._space.resolve(name, values, workspace), workspace)
-        )
+        values, space = candidate.values, self._space
+        if space._copies_files:
+            space.create_candidate_copy(values, workspace)
+
+        def copy() -> Path | None:
+            if not space._files:
+                return None
+            space.create_candidate_copy(values, workspace)  # returns at once once the copy exists
+            return workspace
+
+        return self._build_task(BuildContext(values, lambda name: space.resolve(name, values, workspace), copy))
 
     async def _score(
         self,

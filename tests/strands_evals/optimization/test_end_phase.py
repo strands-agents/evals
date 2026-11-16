@@ -104,8 +104,10 @@ REGISTRY = MetricRegistry({HELP: (0.0, 1.0)})
 def test_final_pick_rejects_bad_arguments():
     with pytest.raises(ValueError, match="n_finalists"):
         FinalPick(n_finalists=0)
-    with pytest.raises(ValueError, match="n_finalists"):
+    with pytest.raises(TypeError, match="n_finalists"):
         FinalPick(n_finalists=True)  # a bool isn't an int here
+    with pytest.raises(TypeError, match="n_finalists"):
+        FinalPick(n_finalists="3")
     with pytest.raises(TypeError, match="Mean.*LowerBound"):
         FinalPick(rule="mean")
 

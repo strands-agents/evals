@@ -9,7 +9,7 @@ import shutil
 import tempfile
 import weakref
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, overload
 
@@ -36,12 +36,19 @@ class BuildContext:
         workspace: The candidate's copy of the file-backed folders
             (`<run>/candidates/<id>/optimization_files/`), or None when the space has no
             file-backed values. Lets a config-defined agent load the whole edited file, e.g. the
-            `agent.json` a `JsonField` points into.
+            `agent.json` a `JsonField` points into. Each file-backed value's whole folder is copied, so
+            the copy is made the first time `workspace` is read (unless a value already reaches the agent
+            as a path); a `build_task` that never reads it copies nothing.
     """
 
     values: Values
     resolve: Callable[[str], Any]
-    workspace: Path | None
+    _workspace: Callable[[], Path | None] = field(repr=False)
+
+    @property
+    def workspace(self) -> Path | None:
+        """The candidate's copy, made on first read; None when the space has no file-backed values."""
+        return self._workspace()
 
 
 class _FactoryArgumentError(TypeError):

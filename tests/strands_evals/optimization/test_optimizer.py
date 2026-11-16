@@ -416,6 +416,30 @@ async def test_build_task_gets_a_workspace_for_any_file_backed_value(tmp_path):
     assert trial["record"]["output"] == "Be brief."
 
 
+async def test_build_task_copies_nothing_until_it_reads_the_workspace(tmp_path):
+    config = tmp_path / "agent.json"
+    config.write_text(json.dumps({"prompt": "Be brief."}) + "\n")
+
+    def build_task(ctx):
+        async def task(case):
+            return ctx.resolve("prompt")
+
+        return task
+
+    optimizer = Optimizer(
+        _experiment(),
+        build_task=build_task,
+        space={"prompt": JsonField(config, "/prompt")},
+        base_dir=tmp_path / "runs",
+        max_workers=64,
+    )
+    optimizer._setup()
+    await optimizer._score_baseline()
+    assert not (optimizer._run.root / "candidates").exists()
+    trial = next(e for e in _events(optimizer) if e["event"] == "trial")
+    assert trial["record"]["output"] == "Be brief."
+
+
 def test_setup_warns_when_a_step_runs_in_batches(tmp_path):
     optimizer = _optimizer(base_dir=tmp_path)
     with pytest.warns(UserWarning, match=r"4 candidates x 8 train cases x 1 runs = 32 trials, but max_workers is 4"):
@@ -833,6 +857,19 @@ async def test_a_refit_that_raises_is_recorded_and_the_run_goes_on(tmp_path):
     fits = [e for e in events if e["event"] == "fit"]
     # The setup's fit and iteration 1's.
     assert [f["error"] for f in fits] == ["ArithmeticError: singular"] * 2 and not any(f["is_fitted"] for f in fits)
+
+
+async def test_a_validation_fit_of_none_says_the_model_returned_no_fit(tmp_path):
+    optimizer = _searching(
+        Block(Scripted({"temperature": 0.5}), "temperature"),
+        schedule=Alternate(),
+        base_dir=tmp_path,
+        score_model=_Sequence(),
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+    )
+    result = await optimizer.run_async()
+    assert result.validation.problem == "the model returned no fit"
 
 
 class _FlaggedFit:
