@@ -8,6 +8,7 @@ import inspect
 import json
 import random
 import statistics
+import threading
 import warnings
 from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -1590,10 +1591,13 @@ class Optimizer:
         if space._copies_files:
             space.create_candidate_copy(values, workspace)
 
+        lock = threading.Lock()
+
         def copy() -> Path | None:
             if not space._files:
                 return None
-            space.create_candidate_copy(values, workspace)  # returns at once once the copy exists
+            with lock:  # one copy per candidate, however many trials read it first
+                space.create_candidate_copy(values, workspace)  # returns at once once the copy exists
             return workspace
 
         return self._build_task(BuildContext(values, lambda name: space.resolve(name, values, workspace), copy))

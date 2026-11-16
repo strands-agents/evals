@@ -38,17 +38,18 @@ class BuildContext:
             file-backed values. Lets a config-defined agent load the whole edited file, e.g. the
             `agent.json` a `JsonField` points into. Each file-backed value's whole folder is copied, so
             the copy is made the first time `workspace` is read (unless a value already reaches the agent
-            as a path); a `build_task` that never reads it copies nothing.
+            as a path); a `build_task` that never reads it copies nothing. Read it in `build_task` itself,
+            not first inside the task, so a copy that fails stops the run instead of failing every trial.
     """
 
     values: Values
     resolve: Callable[[str], Any]
-    _workspace: Callable[[], Path | None] = field(repr=False)
+    _workspace: Path | Callable[[], Path | None] | None = field(default=None, repr=False)
 
     @property
     def workspace(self) -> Path | None:
         """The candidate's copy, made on first read; None when the space has no file-backed values."""
-        return self._workspace()
+        return self._workspace() if callable(self._workspace) else self._workspace
 
 
 class _FactoryArgumentError(TypeError):
