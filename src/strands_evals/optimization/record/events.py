@@ -49,7 +49,8 @@ class EventLog:
     - `propose`: `candidate_id`, `number` (display only), `parent_id`, `origin`, `values` (the only copy of
       the candidate's typed values), `changed_keys`, `rationale`, `inherited`, `defaulted`, `round`, `role`;
       `rescore=true` for an ineligible candidate proposed again (then no `values`, the first number and
-      parent kept); `patch` when its observe is deferred (a round's opener).
+      parent kept); `deferred_patches` (block -> `Patch`) for the blocks whose observe is deferred (a
+      round's opener), else None.
     - `trial`: `record` (`TrialRecord`, its trajectory replaced by `transcript`: `{hash, format}` or None),
       one per trial as soon as it finishes. A later one for the same (candidate, run, case) replaces it.
       Trials of concurrently scored candidates interleave; every other event is written in a fixed order.

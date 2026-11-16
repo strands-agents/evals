@@ -509,7 +509,8 @@ class Optimizer:
 
     def _restore(self, state: ResumeState) -> None:
         """Rebuild the search from the closed iterations: candidates and their scores from the saved trials,
-        the fits replayed in order, and each block's `observe` / `evidence` history told to its proposer again."""
+        the fits replayed in order (a replayed refit that raises is caught as a live one), and each block's
+        `observe` / `evidence` history told to its proposer again."""
         assert self._run is not None
         run = self._run
         self._baseline = run.load_candidate(state.candidates[0])
@@ -539,7 +540,22 @@ class Optimizer:
                 self._fit, self._fit_error = None, replay.error
                 self._fit_errors.add(replay.error)
             elif replay.is_fitted:
-                fit = self._score_model.fit(self._fit_data(replay.ids, "train", self._train), previous=self._last_fit)
+                try:
+                    fit = self._score_model.fit(
+                        self._fit_data(replay.ids, "train", self._train), previous=self._last_fit
+                    )
+                except Exception as error:  # noqa: BLE001 - as a live refit: measured means until one succeeds
+                    text = f"{type(error).__name__}: {error}"
+                    if text not in self._fit_errors:
+                        self._fit_errors.add(text)
+                        warnings.warn(
+                            f"replaying a refit on resume raised ({text}), though it succeeded in the run; measured"
+                            " means are used until a refit succeeds, so the resumed run may differ from the original",
+                            UserWarning,
+                            stacklevel=2,
+                        )
+                    self._fit, self._fit_error = None, text
+                    continue
                 if fit is not None:
                     self._fit = self._last_fit = fit
                     self._fit_error = None
@@ -1086,13 +1102,13 @@ class Optimizer:
                 continue
             first_of[candidate.id] = draw
             rescore = candidate.id in self._train
-            opener_patch = next((p for b, p in draw.patches.items() if b in deferred), None)
+            deferred_patches = {b: p for b, p in draw.patches.items() if b in deferred}
             self._run.save_candidate(
                 candidate,
                 changed_keys=changed_keys(parent, candidate),
                 round=None if step.round is None else list(step.round),
                 role=step.role,
-                patch=opener_patch,
+                deferred_patches=deferred_patches or None,
             )
             self._saved.setdefault(candidate.id, candidate)
             # The step's n was cut to what the search allowance covers and `pending` is at most one full pass,
@@ -1100,9 +1116,8 @@ class Optimizer:
             pending = runner.pending(candidate.id, list(self._case_split.train), runs=self._runs_per_candidate)
             budgeted += pending
             to_score.append((candidate, rescore, pending))
-            if opener_patch is not None:
-                for block in deferred & set(draw.patches):
-                    self._open_rounds.append(OpenRound(step.round or (), candidate.id, block, draw.patches[block]))
+            for block, patch in deferred_patches.items():
+                self._open_rounds.append(OpenRound(step.round or (), candidate.id, block, patch))
         spent_before = self._budget.spent
         results = await self._score_together(to_score, "train")
         for (candidate, _, _), scores in zip(to_score, results, strict=True):
@@ -1565,7 +1580,8 @@ class Optimizer:
         if self._factory is None:
             return None
         try:
-            built = self._factory.bind(candidate.values)()
+            # bind() copies path-backed files into a temp folder: in a worker thread, so other trials keep running.
+            built = (await asyncio.to_thread(self._factory.bind, candidate.values))()
             if inspect.isawaitable(built):
                 await built
         except _FactoryArgumentError:
@@ -1574,30 +1590,36 @@ class Optimizer:
             return f"the agent can't be built: {type(error).__name__}: {error}"
         return None
 
-    def _task_for(self, candidate: Candidate) -> TaskFn:
+    async def _task_for(self, candidate: Candidate) -> TaskFn:
         """The candidate's task, not yet instrumented; file-backed values copied into its workspace first.
 
-        On the `build_task` path the copy is made at once only when a value reaches the agent as a path
-        (`resolve` returns a path into it); otherwise the first read of `BuildContext.workspace` makes it, so a
-        `build_task` that never reads it copies nothing.
+        When a value reaches the agent as a path (`as_path=True`, `SkillLibrary`), the copy is made at once, in a
+        worker thread so concurrent trials keep running. Otherwise, on the `build_task` path, the first read of
+        `BuildContext.workspace` makes it, in the reading thread, so a `build_task` that never reads it copies
+        nothing; later reads don't wait.
         """
         assert self._run is not None
         workspace = self._run.workspace(candidate.id)
-        if self._factory is not None:
-            bound = self._factory.bind(candidate.values, workspace=workspace)
-            return make_task(bound, self._rollout_fn or default_rollout, self._environment)
-        assert self._build_task is not None
         values, space = candidate.values, self._space
         if space._copies_files:
-            space.create_candidate_copy(values, workspace)
+            await asyncio.to_thread(space.create_candidate_copy, values, workspace)
+        if self._factory is not None:
+            bound = self._factory.bind(values, workspace=workspace)  # the copy exists: bind returns at once
+            return make_task(bound, self._rollout_fn or default_rollout, self._environment)
+        assert self._build_task is not None
 
         lock = threading.Lock()
+        copied = False
 
         def copy() -> Path | None:
+            nonlocal copied
             if not space._files:
                 return None
-            with lock:  # one copy per candidate, however many trials read it first
-                space.create_candidate_copy(values, workspace)  # returns at once once the copy exists
+            if not copied:
+                with lock:  # one copy per candidate, however many trials read it first
+                    if not copied:
+                        space.create_candidate_copy(values, workspace)
+                        copied = True
             return workspace
 
         return self._build_task(BuildContext(values, lambda name: space.resolve(name, values, workspace), copy))
@@ -1622,7 +1644,7 @@ class Optimizer:
         case_names = list(getattr(self._case_split, split))
         records, rollouts = await self._runner().run(
             candidate.id,
-            self._task_for(candidate),
+            await self._task_for(candidate),
             case_names,
             runs=self._runs_per_candidate,
             allowance=allowance,

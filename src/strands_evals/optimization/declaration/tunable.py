@@ -26,8 +26,10 @@ _KEYWORD_KINDS = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEY
 class BuildContext:
     """What `Optimizer(build_task=...)` receives, once per candidate.
 
-    A dataclass, not a record: it holds a callable and is never saved. Adding a field doesn't
-    break existing `build_task` functions.
+    The optimizer builds it. To test a `build_task` on its own, build one with the workspace given
+    positionally: `BuildContext(values, resolve, path)` (the field is private: `workspace` is the
+    property that reads it). A dataclass, not a record: it holds a callable and is never saved.
+    Adding a field doesn't break existing `build_task` functions.
 
     Attributes:
         values: The candidate's typed flat values.
@@ -40,6 +42,9 @@ class BuildContext:
             the copy is made the first time `workspace` is read (unless a value already reaches the agent
             as a path); a `build_task` that never reads it copies nothing. Read it in `build_task` itself,
             not first inside the task, so a copy that fails stops the run instead of failing every trial.
+            The first read makes the copy in the reading thread: `build_task`, and an async task, run on
+            the optimizer's event loop, so other trials wait while it copies (once per candidate; later
+            reads return at once). A large folder is cheaper as a folder of its own beside the tuned file.
     """
 
     values: Values

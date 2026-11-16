@@ -116,7 +116,7 @@ def run(tmp_path):
     # Iteration 1: the outer Nested's opener, observed at its round's end.
     outer = _patch("outer", tokens=5)
     log.append("select", iteration=1, parent_id="base", strategy="top_ranked")
-    _propose(log, "c1", "base", "structure", round=[0], role="opener", patch=outer)
+    _propose(log, "c1", "base", "structure", round=[0], role="opener", deferred_patches={"structure": outer})
     log.append("proposer_usage", block="structure", redraw=0, usage=_usage(5))  # the opener's patch
     log.append("trial", record=_trial("c1", "a"))
     log.append("fit", candidates=["base", "c1"], is_fitted=False, error="ValueError: boom", flagged=[], diagnostics={})
@@ -206,6 +206,39 @@ def test_two_nested_rounds_stay_open_outermost_first(run):
         ((0, 0), "base", "numbers"),
     ]
     assert state.open_rounds[0].patch == _patch("outer", tokens=5)
+
+
+def test_an_opener_deferring_several_blocks_reopens_one_round_per_block(tmp_path):
+    # A custom schedule's opener: two contributing blocks, both deferred, and the first in `origin` isn't one.
+    run = RunDirectory.create(tmp_path, CONFIG)
+    log = run.events
+    _propose(log, "base", None, "baseline", iteration=0)
+    log.append("select", iteration=1, parent_id="base", strategy="top_ranked")
+    outer, other = _patch("outer"), _patch("other")
+    log.append(
+        "propose",
+        candidate_id="c1",
+        number=1,
+        parent_id="base",
+        origin=["numbers", "structure", "extra"],
+        values={"x": 1},
+        rationale="",
+        inherited={},
+        defaulted=[],
+        rescore=False,
+        round=[0],
+        role="opener",
+        deferred_patches={"structure": outer, "extra": other},
+    )
+    _iteration_end(log, 1, "base", ["numbers", "structure", "extra"], round=(0,), role="opener")
+    # The first deferred block's round closes; the other's stays open.
+    log.append("select", iteration=2, parent_id="c1", strategy="top_ranked")
+    log.append("observe", block="structure", candidate_id="c1", observation=_observation("c1", outer, source_id="c1"))
+    _iteration_end(log, 2, "c1", ["numbers"], round=(0,))
+
+    state = load_state(RunDirectory.open(run.root), config=CONFIG)
+
+    assert [(r.round, r.opener_id, r.block, r.patch) for r in state.open_rounds] == [((0,), "c1", "extra", other)]
 
 
 def test_an_openers_observe_closes_its_round(run):

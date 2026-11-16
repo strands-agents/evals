@@ -185,11 +185,9 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
             if not event["rescore"] and candidate_id not in state.parents:
                 state.parents[candidate_id] = event["parent_id"]
                 state.candidates.append(candidate_id)
-            if event.get("patch") is not None:
+            for block, patch in (event.get("deferred_patches") or {}).items():  # one round per deferred block
                 state.open_rounds.append(
-                    OpenRound(
-                        tuple(event["round"]), candidate_id, event["origin"][0], Patch.model_validate(event["patch"])
-                    )
+                    OpenRound(tuple(event["round"]), candidate_id, block, Patch.model_validate(patch))
                 )
         elif name == "duplicate" and event.get("patch") is not None:
             state.open_rounds.append(

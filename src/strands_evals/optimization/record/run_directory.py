@@ -148,7 +148,7 @@ class RunDirectory:
 
         Args:
             candidate: The candidate.
-            **fields: The optimizer's fields: `changed_keys`, `round`, `role`, `patch`.
+            **fields: The optimizer's fields: `changed_keys`, `round`, `role`, `deferred_patches`.
         """
         first = self._candidates.get(candidate.id)
         if first is not None and candidate.id not in self._killed:

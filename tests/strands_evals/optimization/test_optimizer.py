@@ -2,7 +2,9 @@ import asyncio
 import hashlib
 import json
 import shutil
+import threading
 import warnings
+from pathlib import Path
 
 import pytest
 
@@ -15,6 +17,7 @@ from strands_evals.optimization import (
     AtLeast,
     Block,
     Budget,
+    FileText,
     FinalPick,
     Float,
     InfrastructureError,
@@ -42,6 +45,7 @@ from strands_evals.optimization import (
     component,
     tunable,
 )
+from strands_evals.optimization.declaration.space import Space
 from strands_evals.optimization.optimizer import _slots_used
 from strands_evals.optimization.record.resume import load_state
 from strands_evals.optimization.record.run_directory import RunDirectory
@@ -438,6 +442,67 @@ async def test_build_task_copies_nothing_until_it_reads_the_workspace(tmp_path):
     assert not (optimizer._run.root / "candidates").exists()
     trial = next(e for e in _events(optimizer) if e["event"] == "trial")
     assert trial["record"]["output"] == "Be brief."
+
+
+def _spy_copies(monkeypatch, *, every_call=False):
+    """Record the thread of every `create_candidate_copy` call that makes a copy (or of every call)."""
+    threads = []
+    real = Space.create_candidate_copy
+
+    def spy(self, values, directory):
+        if every_call or not self._has_copy(directory, self._copy_key(values)):
+            threads.append(threading.get_ident())
+        return real(self, values, directory)
+
+    monkeypatch.setattr(Space, "create_candidate_copy", spy)
+    return threads
+
+
+async def test_a_path_backed_value_is_copied_off_the_event_loop(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompts" / "system.md"
+    prompt.parent.mkdir()
+    prompt.write_text("Be brief.\n")
+
+    @tunable(prompt=FileText(prompt, as_path=True))
+    def make(prompt):
+        return prompt
+
+    async def rollout(agent_factory, case):
+        return Path(agent_factory()).read_text()
+
+    threads = _spy_copies(monkeypatch)
+    optimizer = Optimizer(_experiment(n=4), make, rollout_fn=rollout, base_dir=tmp_path / "runs", max_workers=8)
+    optimizer._setup()
+    await optimizer._score_baseline()
+    # One copy, made in a worker thread: concurrent trials kept running on the loop.
+    assert len(threads) == 1 and threads[0] != threading.get_ident()
+    outputs = {e["record"]["output"] for e in _events(optimizer) if e["event"] == "trial"}
+    assert outputs == {"Be brief.\n"}
+
+
+async def test_trials_reading_the_workspace_at_once_make_one_copy(tmp_path, monkeypatch):
+    config = tmp_path / "agent.json"
+    config.write_text(json.dumps({"prompt": "Be brief."}) + "\n")
+
+    def build_task(ctx):
+        def task(case):  # sync: the trials read the workspace at once, from worker threads
+            return json.loads(next(ctx.workspace.rglob("agent.json")).read_text())["prompt"]
+
+        return task
+
+    threads = _spy_copies(monkeypatch, every_call=True)
+    optimizer = Optimizer(
+        _experiment(n=8),
+        build_task=build_task,
+        space={"prompt": JsonField(config, "/prompt")},
+        base_dir=tmp_path / "runs",
+        max_workers=8,
+    )
+    optimizer._setup()
+    await optimizer._score_baseline()
+    assert len(threads) == 1  # later reads don't even check for the copy
+    outputs = {e["record"]["output"] for e in _events(optimizer) if e["event"] == "trial"}
+    assert outputs == {"Be brief."}
 
 
 def test_setup_warns_when_a_step_runs_in_batches(tmp_path):
@@ -1201,6 +1266,33 @@ async def test_a_killed_run_resumes_to_the_same_result_spending_nothing_twice(tm
     assert resumed_optimizer._budget.spent == original_optimizer._budget.spent
     new_trials = sum(1 for e in _events_at(copy) if e["event"] == "trial") - trials_before
     assert new_trials == sum(1 for e in _events(original_optimizer) if e["event"] == "trial") - trials_before
+
+
+async def test_a_refit_that_raises_on_replay_falls_back_to_measured_means_and_the_resume_goes_on(tmp_path):
+    original_optimizer = _default_search(tmp_path / "runs")
+    await original_optimizer.run_async()
+    copy = _killed(
+        original_optimizer._run.root,
+        tmp_path,
+        lambda events: _index(events, "score", after=_index(events, "iteration_end", nth=2)),
+    )
+    resumed_optimizer = _resume(copy)
+    model = resumed_optimizer._score_model
+    real_fit, calls = model.fit, []
+
+    def fit(data, *, previous=None):  # the first replayed refit raises (e.g. another numpy), then fits again
+        calls.append(previous)
+        if len(calls) == 1:
+            raise ArithmeticError("singular")
+        return real_fit(data, previous=previous)
+
+    model.fit = fit
+    with pytest.warns(UserWarning, match="replaying a refit on resume raised"):
+        resumed = await resumed_optimizer.run_async()
+
+    # The next refit gets the last successful one as `previous`: none yet, since the first raised.
+    assert len(calls) > 2 and calls[1] is None
+    assert resumed.best is not None and resumed.stop_reason == "iterations"
 
 
 def _events_at(root):
