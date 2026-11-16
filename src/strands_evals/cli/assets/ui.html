@@ -304,7 +304,7 @@
     border-bottom: 3.5px solid transparent; transition: transform .12s ease;
   }
   .caret.open { transform: rotate(90deg); }
-  tr.case:hover .caret { color: var(--ink1); }
+  tr.case:hover .caret, tr.trial:hover .caret { color: var(--ink1); }
 
   /* ── additions: provenance, skipped files, narrow screens ── */
   .roots { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 0 0 18px; }
@@ -477,6 +477,52 @@
   .bars .infrastructure_invalid { background: var(--ink3); }
   .optnote { font-size: 12px; color: var(--ink2); margin: 10px 0 0; line-height: 1.5; }
   .optnote.warn { color: #d9a13b; }
+
+  /* One trial, opened inside its candidate's case list: what the agent was asked, what came back,
+     and the conversation in between. Indented and boxed, because it is a third level of nesting
+     and without the rule down its left edge it reads as a sibling of the rows above it. */
+  tr.trial td:first-child { cursor: pointer; }
+  tr.trial.on td { border-bottom: 0; }
+  tr.tdetail > td { padding: 0 0 10px !important; }
+  /* The case list it opens inside is set in mono, because a case name is an identifier. What a
+     trial *said* is not, so the panel sets the page's own font back. */
+  .trial-panel {
+    border-left: 2px solid var(--hair); padding: 2px 0 2px 12px; margin: 2px 0 0;
+    font-family: var(--font-sans, ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif);
+  }
+  .trial-panel .kv { grid-template-columns: 112px 1fr; }
+  .trial-panel pre.out {
+    margin: 0; padding: 8px 10px; background: var(--bg); border: 1px solid var(--hair);
+    border-radius: 7px; font-size: 11.5px; line-height: 1.5; white-space: pre-wrap;
+    word-break: break-word; max-height: 240px; overflow: auto;
+  }
+  .trial-panel .why { color: var(--ink2); font-size: 12px; line-height: 1.5; margin-top: 2px; }
+  /* The transcript. A turn is a card rather than a line: a tool call inside one is itself
+     several lines, and without the card it is impossible to see which turn it belonged to. */
+  .tr-count { font-size: 11.5px; color: var(--ink3); margin: 2px 0 6px; }
+  .msg {
+    border: 1px solid var(--hair); border-radius: 8px; padding: 7px 10px; margin: 0 0 6px;
+    background: var(--card);
+  }
+  .msg.user { background: var(--hair2); }
+  .msg .who {
+    display: flex; gap: 10px; align-items: baseline; font-size: 11px; color: var(--ink3);
+    text-transform: lowercase; margin-bottom: 4px;
+  }
+  .msg .who b { color: var(--ink2); font-weight: 600; }
+  .msg .say { font-size: 12.5px; line-height: 1.55; color: var(--ink1); white-space: pre-wrap; }
+  .msg .say.think { color: var(--ink3); font-style: italic; }
+  .msg .call { margin: 5px 0 0; }
+  .msg .call .ckind { font-size: 11px; color: var(--ink3); }
+  .msg .call .ckind b { color: var(--ink2); font-family: var(--font-mono, ui-monospace, Menlo, monospace); }
+  .msg .call .ckind b.warn { color: var(--bad); }
+  .msg pre {
+    margin: 3px 0 0; padding: 6px 8px; background: var(--bg); border: 1px solid var(--hair2);
+    border-radius: 6px; font-size: 11px; line-height: 1.45; white-space: pre-wrap;
+    word-break: break-word; color: var(--ink2);
+  }
+  .msg.nested { margin: 5px 0 0; }
+  details.raw > summary { cursor: pointer; font-size: 11.5px; color: var(--ink3); padding: 4px 0; }
 
   @media (max-width: 880px) {
     .charts { grid-template-columns: 1fr; }
@@ -4417,7 +4463,7 @@
   /* An optimizer run is a directory holding both a run.json and an events.jsonl. Either alone is
      not enough: run.json is far too ordinary a filename to take as evidence, and the objective
      and the budget a chart needs live in it rather than in the log. */
-  function optimizerRunsFrom(configs, logs) {
+  function optimizerRunsFrom(configs, logs, transcripts) {
     const runs = [];
     [...configs.keys()].sort().forEach(dir => {
       if (!logs.has(dir)) return;
@@ -4439,6 +4485,10 @@
         bad_lines: log.bad,
         truncated: false,
         eventsCache: log.events,
+        /* The conversations behind the trials, as the Files they were found in. Always a Map, even
+           an empty one: a run opened from a folder can only ever show the transcripts that folder
+           held, and that is a different answer from a served run, which reads them on request. */
+        transcripts: transcripts.get(dir) || new Map(),
         ...logSummary(log.events),
         tuned_against: null,          // DRAFT B — filled in by the caller, which holds the experiments
       });
@@ -4450,9 +4500,20 @@
   async function ingest(entries) {
     const found = [];
     skipped = [];
-    const logs = new Map(), configs = new Map();
+    const logs = new Map(), configs = new Map(), transcripts = new Map();
 
     for (const { file, path } of entries) {
+      /* `transcripts/<hash>.json` is a recorded conversation, not a document to classify: it
+         belongs to the run directory above it, and it is kept as the File rather than parsed. A
+         run can hold hundreds of them, and every one but the trial actually opened would be
+         parsed for nothing — and listed as "not an experiment or a report" for nothing too. */
+      const held = /(^|\/)transcripts\/([^/]+)\.json$/i.exec(path);
+      if (held) {
+        const dir = dirOf(dirOf(path));
+        if (!transcripts.has(dir)) transcripts.set(dir, new Map());
+        transcripts.get(dir).set(held[2], file);
+        continue;
+      }
       if (/\.jsonl$/i.test(file.name)) {
         if (file.name.toLowerCase() !== 'events.jsonl') {
           skipped.push({ path, why: 'not an optimizer event log' });
@@ -4491,7 +4552,7 @@
       found.push({ kind, meta, dir: dirOf(path) });
     }
 
-    const optimizerRuns = optimizerRunsFrom(configs, logs);
+    const optimizerRuns = optimizerRunsFrom(configs, logs, transcripts);
     /* DRAFT B — the one thread between the two sections, matched here because this is where the
        tree's experiments are already parsed. */
     const experiments = found.filter(f => f.kind === 'experiment');
@@ -5383,6 +5444,15 @@
   let optToX = null, optToY = null;
   let optQuery = '', optFilter = 'all';
   const optOpen = new Set();
+  /* Which trial is open, as `<candidate_id>|<index into its trials>`. One at a time: a trial opens
+     onto a whole conversation, and two of those in one table is a page you scroll past rather than
+     read. `null` is none, which is what every re-render starts from. */
+  let openTrial = null;
+  /* Transcripts already asked for, by hash: `{ state, ... }` where state is `loading`, `ok` with a
+     `doc`, `missing` for a pointer whose file is not there, `unread` for a folder the file was not
+     in, or `error` with the reason. Keyed by hash and not by trial, because a hash IS the content —
+     two trials that went identically point at one file, and the record stores it once. */
+  const TRANSCRIPTS = new Map();
 
   /* DRAFT A — a link into the run explorer, at a page of one run.
      The token rides in the query and the route in the hash, which is the order the explorer reads
@@ -5458,6 +5528,265 @@
     return `${built} Your experiment supplied the cases and evaluators and was never run itself.${split}`;
   }
 
+  /* ── one trial, and the conversation behind it ──
+     Everything else on this tab is derived from the event log. A transcript is not: the log carries
+     a `{hash, format}` pointer and the conversation itself is `transcripts/<hash>.json` in the run
+     directory, written once per distinct trajectory. So this is the only part of a run the page has
+     to go and fetch, and the ways that fetch can fail are worth saying out loud — a pointer to a
+     file that is not there is a real thing to learn about a run, and not the same as a trial that
+     recorded no transcript at all. */
+  const transcriptHash = t => {
+    const v = t && t.transcript;
+    if (typeof v === 'string') return v;                      // older records wrote the bare hash
+    return v && typeof v === 'object' && typeof v.hash === 'string' ? v.hash : null;
+  };
+
+  /** Where the file is, relative to the tree being read — the same path in both modes. */
+  const transcriptPath = (run, hash) =>
+    `${run.dir && run.dir !== '.' ? run.dir + '/' : ''}transcripts/${hash}.json`;
+
+  async function fetchTranscript(run, hash) {
+    const rel = transcriptPath(run, hash);
+    TRANSCRIPTS.set(hash, { state: 'loading', rel });
+    const done = v => {
+      TRANSCRIPTS.set(hash, Object.assign({ rel }, v));
+      renderCandidates();
+    };
+    try {
+      /* A folder opened from disk was read once, up front: there is nothing to fetch, and a hash
+         with no File is one whose transcript was not in what was read. A served run is the other
+         way round — the file is read on request, so the server decides whether it exists. */
+      if (run.transcripts) {
+        const file = run.transcripts.get(hash);
+        done(file ? { state: 'ok', doc: JSON.parse(await file.text()) } : { state: 'unread' });
+      } else if (MODE === 'server') {
+        done({ state: 'ok', doc: (await api('/api/file?path=' + encodeURIComponent(rel))).document });
+      } else {
+        done({ state: 'unread' });
+      }
+    } catch (err) {
+      done(err.status === 404 ? { state: 'missing' } : { state: 'error', why: err.message });
+    }
+  }
+
+  /* Long text, cut with the amount cut named. There is no "show more" here on purpose: the whole
+     document is one `<details>` away at the foot of the transcript, so a second way to expand the
+     same text would be two controls for one job. */
+  function clip(text, limit) {
+    const s = text == null ? '' : String(text);
+    const n = limit || 1200;
+    if (s.length <= n) return esc(s);
+    return esc(s.slice(0, n))
+      + `<span class="path"> … ${plural(s.length - n, 'character')} more, in the raw JSON below</span>`;
+  }
+
+  /* Tool output arrives as a string far more often than as a structure, and that string is usually
+     JSON. Printing its source escaped is unreadable, so it is laid out — and a lone
+     `{"output": "..."}` is just the tool's text wearing an envelope. */
+  function blockText(v) {
+    if (typeof v !== 'string') return JSON.stringify(v === undefined ? null : v, null, 1);
+    const s = v.trim();
+    if (!/^[[{]/.test(s) || !/[\]}]$/.test(s)) return v;
+    try {
+      const o = JSON.parse(s);
+      if (o && typeof o === 'object' && !Array.isArray(o)
+        && Object.keys(o).length === 1 && typeof o.output === 'string') return o.output;
+      return JSON.stringify(o, null, 1);
+    } catch { return v; }
+  }
+
+  const toolCall = (name, input) =>
+    `<div class="call"><span class="ckind">tool call <b>${esc(name || '?')}</b></span>`
+    + `<pre>${clip(JSON.stringify(input === undefined ? null : input, null, 1), 700)}</pre></div>`;
+
+  const toolResult = (text, status) =>
+    `<div class="call"><span class="ckind">tool result${status
+      ? ` · <b class="warn">${esc(status)}</b>` : ''}</span><pre>${clip(text, 700)}</pre></div>`;
+
+  /* One content block of a message. Two vocabularies reach here: the Strands blocks a rollout
+     records (`toolUse`, `toolResult`, `reasoningContent`) and the `content_type` ones a recorded
+     session's spans carry. Both are read, because which one a run wrote is not this page's call. */
+  function contentBlock(b) {
+    if (b == null || typeof b !== 'object') return `<div class="say">${clip(b)}</div>`;
+    if (typeof b.text === 'string') return `<div class="say">${clip(b.text)}</div>`;
+    if (b.toolUse) return toolCall(b.toolUse.name, b.toolUse.input);
+    if (b.content_type === 'tool_use') return toolCall(b.name, b.arguments);
+    if (b.toolResult) {
+      /* A `text` block's string is the tool's output as much as a `json` block's value is, and it
+         is the one that arrives wearing a JSON envelope — so both go through `blockText`. */
+      const parts = (b.toolResult.content || []).map(c => blockText(c && typeof c === 'object'
+        ? ('json' in c ? c.json : typeof c.text === 'string' ? c.text : c) : c));
+      const status = b.toolResult.status && b.toolResult.status !== 'success' ? b.toolResult.status : null;
+      return toolResult(parts.join('\n'), status);
+    }
+    if (b.content_type === 'tool_result') {
+      return toolResult(typeof b.error === 'string' ? b.error : blockText(b.content),
+        b.error ? 'error' : null);
+    }
+    /* Reasoning is shown rather than hidden behind a toggle, but set apart: it is the model
+       talking to itself, and reading it as part of the answer misattributes it. */
+    if (b.reasoningContent) {
+      return `<div class="say think">${clip(((b.reasoningContent.reasoningText || {}).text) || '')}</div>`;
+    }
+    return `<pre>${clip(JSON.stringify(b), 700)}</pre>`;
+  }
+
+  const usageLine = u => {
+    if (!u || typeof u !== 'object') return '';
+    const parts = [];
+    if (typeof u.inputTokens === 'number') parts.push(`${compact(u.inputTokens)} in`);
+    if (typeof u.outputTokens === 'number') parts.push(`${compact(u.outputTokens)} out`);
+    if (u.cacheReadInputTokens) parts.push(`${compact(u.cacheReadInputTokens)} cache read`);
+    return parts.length ? parts.join(' · ') + ' tokens' : '';
+  };
+
+  function messageCard(m, nested) {
+    const role = (m && m.role) || 'unknown';
+    const content = Array.isArray(m.content) ? m.content
+      : [{ text: m.content == null ? '' : String(m.content) }];
+    const u = usageLine((m.metadata || {}).usage);
+    return `<div class="msg ${esc(role)}${nested ? ' nested' : ''}"><div class="who">`
+      + `<b>${esc(role)}</b>${u ? `<span>${esc(u)}</span>` : ''}</div>`
+      + content.map(b => contentBlock(b)).join('') + '</div>';
+  }
+
+  /* A span of a recorded session. Each kind says a different thing happened, so each is named:
+     folding them all into "a message" would print a tool execution as though the model had said
+     its result out loud. */
+  function spanCard(s, i) {
+    const kind = (s && s.span_type) || 'span';
+    const head = n => `<div class="who"><span>#${i}</span><b>${esc(n)}</b></div>`;
+    if (kind === 'inference' && Array.isArray(s.messages)) {
+      return `<div class="msg">${head('inference')}`
+        + s.messages.map(m => messageCard(m, true)).join('') + '</div>';
+    }
+    if (kind === 'execute_tool') {
+      const call = s.tool_call || {};
+      const res = s.tool_result || {};
+      return `<div class="msg">${head('tool')}${toolCall(call.name, call.arguments)}`
+        + toolResult(typeof res.error === 'string' ? res.error : blockText(res.content),
+          res.error ? 'error' : null) + '</div>';
+    }
+    if (kind === 'invoke_agent') {
+      const say = (label, text) => (text
+        ? `<div class="call"><span class="ckind">${label}</span><pre>${clip(text, 700)}</pre></div>` : '');
+      return `<div class="msg">${head('invoke agent')}${say('system prompt', s.system_prompt)}`
+        + say('prompt', s.user_prompt) + say('response', s.agent_response) + '</div>';
+    }
+    return `<div class="msg">${head(kind)}<pre>${clip(JSON.stringify(s), 700)}</pre></div>`;
+  }
+
+  /* The conversation itself, in either of the two shapes the record stores: a strands-evals
+     `Session` (traces of spans) or the rollout's own list of Strands messages. The shape decides
+     what a turn even is, so it is read off the document rather than taken from the `format` the
+     pointer claimed — a pointer and the file it points at can disagree. */
+  function transcriptBody(doc) {
+    const raw = `<details class="raw"><summary>the file as written</summary>`
+      + `<pre class="out">${esc(JSON.stringify(doc, null, 1).slice(0, 200000))}</pre></details>`;
+    const spans = doc && typeof doc === 'object' && !Array.isArray(doc) && Array.isArray(doc.traces)
+      ? doc.traces.flatMap(tr => (tr && Array.isArray(tr.spans) ? tr.spans : []))
+      : null;
+    if (spans) {
+      if (!spans.length) {
+        return '<div class="empty">This session was recorded with no spans in it.</div>' + raw;
+      }
+      return `<div class="tr-count">${plural(spans.length, 'span')} of a recorded session</div>`
+        + spans.map((s, i) => spanCard(s, i)).join('') + raw;
+    }
+    if (Array.isArray(doc)) {
+      if (!doc.length) return '<div class="empty">This transcript is an empty list.</div>' + raw;
+      return `<div class="tr-count">${plural(doc.length, 'message')}</div>`
+        + doc.map(m => messageCard(m)).join('') + raw;
+    }
+    return '<div class="empty">This file is neither a recorded session nor a list of messages, '
+      + 'so it is shown as it was written rather than as a conversation.</div>' + raw;
+  }
+
+  function transcriptSlot(run, t) {
+    const hash = transcriptHash(t);
+    if (!hash) {
+      return '<span class="empty">this trial recorded no transcript</span>';
+    }
+    const got = TRANSCRIPTS.get(hash);
+    const where = `<code>${esc(transcriptPath(run, hash))}</code>`;
+    if (!got || got.state === 'loading') return `<span class="empty">reading ${where}…</span>`;
+    if (got.state === 'missing') {
+      return `<span class="empty">the log points at ${where}, which is not in the run directory`
+        + '</span>';
+    }
+    if (got.state === 'unread') {
+      return `<span class="empty">${where} was not among the files read from the opened folder — `
+        + `the picker scans ${SCAN_DEPTH} levels down, so a run nested deeper keeps its transcripts `
+        + 'to itself. Serving the folder with <code>strands-evals ui</code> reads them on '
+        + 'request.</span>';
+    }
+    if (got.state === 'error') return `<span class="empty">${where} could not be read: ${esc(got.why)}</span>`;
+    return transcriptBody(got.doc);
+  }
+
+  /* What one trial was: the case, how it ended, what was measured on it, what came back, and the
+     conversation. The scores and the output are also in the report this candidate opens as — what
+     is only here is the transcript, the attempts behind a retried trial, and the errors an
+     evaluator raised, none of which an `EvaluationReport` has a field for. */
+  function trialPanel(p, t, run) {
+    const kv = [];
+    const bad = t.status && t.status !== 'completed';
+    kv.push(['Ended as', (bad
+      ? `<span class="tag warn">${esc(t.status)}</span>`
+      : `<span class="tag ok">${esc(t.status || 'completed')}</span>`)
+      + (t.error_type ? ` <span class="mono">${esc(t.error_type)}</span>` : '')
+      + (t.error ? `<div class="why">${esc(t.error)}</div>` : '')]);
+
+    /* Only when there was more than one. "attempt 1 of 1" is the normal case stated as though it
+       were news, and the previous attempts are the interesting half anyway. */
+    if (typeof t.attempts === 'number' && t.attempts > 1) {
+      const before = (t.previous_attempts || []).map(a =>
+        esc((a && (a.status || a.error_type)) || 'unrecorded')).join(', ');
+      kv.push(['Attempts', `${t.attempts}${before ? ` — earlier: ${before}` : ''}`]);
+    }
+
+    const scores = Object.entries(t.evaluations || {});
+    if (scores.length) {
+      kv.push(['Scored', scores.map(([m, v]) => {
+        const score = v && typeof v === 'object' ? v.score : v;
+        const why = v && typeof v === 'object' && v.reason ? v.reason : '';
+        return `<div class="setting"><span class="skey">${esc(m)}</span> `
+          + `<span class="mono">${typeof score === 'number' ? esc(fmt(score)) : '—'}</span>`
+          + (why ? `<div class="why">${esc(why)}</div>` : '') + '</div>';
+      }).join('')]);
+    }
+
+    /* An evaluator that raised is not an evaluator that scored zero, and the distinction is the
+       whole reason this row exists: a trial can be `completed` with nothing judged on it. */
+    const errors = Object.entries(t.evaluator_errors || {});
+    if (errors.length) {
+      kv.push(['Evaluator errors', errors.map(([m, why]) =>
+        `<div class="setting"><span class="skey">${esc(m)}</span> `
+        + `<span class="tag warn">raised</span><div class="why">${esc(typeof why === 'string'
+          ? why : JSON.stringify(why))}</div></div>`).join('')]);
+    }
+
+    const u = t.usage || {};
+    const cost = [
+      typeof u.tokens === 'number' && u.tokens ? `${compact(u.tokens)} tokens` : '',
+      typeof u.model_calls === 'number' && u.model_calls ? plural(u.model_calls, 'model call') : '',
+      typeof u.seconds === 'number' && u.seconds ? `${nice(u.seconds)}s` : '',
+    ].filter(Boolean).join(' · ');
+    if (cost) kv.push(['Cost', `<span class="mono">${esc(cost)}</span>`]);
+
+    kv.push(['Output', t.output == null
+      ? '<span class="empty">none recorded</span>'
+      : (String(t.output).trim() === ''
+        ? '<span class="empty">empty</span>'
+        : `<pre class="out">${clip(t.output, 4000)}</pre>`)]);
+
+    kv.push(['Transcript', transcriptSlot(run, t)]);
+
+    return `<div class="trial-panel"><dl class="kv">`
+      + kv.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')
+      + '</dl></div>';
+  }
+
   /* ── candidates ──
      A candidate is one configuration, and its trials are an evaluation run of it — the library
      says so itself: `RunDirectory.reports()` rebuilds them "as `Experiment` would return them".
@@ -5520,7 +5849,9 @@
     return hay.includes(optQuery);
   }
 
-  function candidateDetail(p, d) {
+  /* `run` is the run directory this candidate is in, which only a trial needs: its transcript is a
+     file in that directory rather than anything in the log. */
+  function candidateDetail(p, d, run) {
     const kv = [];
     if (p.rationale) kv.push(['Why it was tried', esc(p.rationale)]);
     if (p.parent_id && p.parent_id !== p.candidate_id) kv.push(['Derived from', esc(p.parent_id)]);
@@ -5562,16 +5893,30 @@
         .map(s => `${p.splits[s]} ${esc(s)}`).join(' · ');
       kv.push(['Cases', `${plural(p.trials.length, 'trial')} · ${splits}`
         + ` <button class="btn" data-open="${esc(p.candidate_id)}">Open as report</button>`]);
-      const rows = p.trials.map(t => {
+      const rows = p.trials.map((t, i) => {
         const scored = Object.entries(t.evaluations || {}).map(([m, v]) => {
           const score = v && typeof v === 'object' ? v.score : v;
           return `${esc(m)} ${typeof score === 'number' ? esc(fmt(score)) : '—'}`;
         }).join(' · ');
         const bad = t.status && t.status !== 'completed';
-        return `<tr><td>${esc(t.case_name == null ? '—' : t.case_name)}</td>`
+        /* Keyed by position in the candidate's own trials, not by case and run index: a trial
+           recorded twice has one key under either naming, and the index is the one that cannot
+           collide with the trial beside it. */
+        const key = `${p.candidate_id}|${i}`;
+        const on = openTrial === key;
+        /* How many times the case was run only matters when it was run more than once, and
+           `runs_per_candidate: 1` is the common setting. */
+        const nth = typeof t.run_index === 'number' && p.trials.some(x => x.run_index > 0)
+          ? ` <span class="path">run ${esc(t.run_index)}</span>` : '';
+        const head = `<tr class="trial${on ? ' on' : ''}" data-trial="${esc(key)}">`
+          + `<td><span class="caret${on ? ' open' : ''}"></span>`
+          + `${esc(t.case_name == null ? '—' : t.case_name)}${nth}</td>`
           + `<td class="path">${esc(t.split || '')}</td>`
           + `<td>${scored || '<span class="path">not judged</span>'}</td>`
           + `<td>${bad ? `<span class="tag warn">${esc(t.status)}</span>` : verdict({ pass: true })}</td></tr>`;
+        return on
+          ? head + `<tr class="tdetail"><td colspan="4">${trialPanel(p, t, run || {})}</td></tr>`
+          : head;
       }).join('');
       kv.push(['Per case', `<table class="trials"><tbody>${rows}</tbody></table>`]);
     }
@@ -5623,7 +5968,7 @@
       const head = `<tr class="case" data-k="${esc(key)}"><td>${name}${tags}</td>`
         + `<td>${esc(p.iteration)}</td><td>${obj}</td><td>${outcome}</td>`
         + `<td class="mono">${esc((p.changed_keys || []).join(', ') || '—')}</td></tr>`;
-      return on ? head + candidateDetail(p, d) : head;
+      return on ? head + candidateDetail(p, d, run) : head;
     }).join('')
       || `<tr><td colspan="5"><div class="nores">${d.proposals.length
         ? '<b>No candidate matches</b>Try a different filter, or clear the search.'
@@ -5868,6 +6213,12 @@
     optSel = index;
     const run = OPT_RUNS[index];
     OPT = null;
+    /* Two runs can hold a candidate of the same id — a resumed run does, by design — so a trial
+       left open would otherwise be reopened against a different run's log. The transcripts go with
+       it: a hash names the same conversation in any run, but "not in the run directory" is an
+       answer about one run directory and must not be carried into the next. */
+    openTrial = null;
+    TRANSCRIPTS.clear();
     if (!run) { renderOptimization(); return; }
     try {
       const events = run.eventsCache || (await api('/api/events?path=' + encodeURIComponent(run.events_path))).events;
@@ -6058,6 +6409,23 @@
           + 'from Optimization.');
         show('report');
       }
+      return;
+    }
+    /* A trial row is inside the candidate's detail, so it is matched first — and it is not a
+       `tr.case`, so the row toggle below never sees it. */
+    const trial = e.target.closest('tr[data-trial]');
+    if (trial) {
+      const key = trial.dataset.trial;
+      openTrial = openTrial === key ? null : key;
+      if (openTrial) {
+        const at = key.lastIndexOf('|');
+        const p = OPT.proposals.find(x => x.candidate_id === key.slice(0, at));
+        const hash = p && transcriptHash(p.trials[Number(key.slice(at + 1))]);
+        /* Asked for once: the second open of the same conversation is the cached one, and a
+           re-render while it is still in flight must not start the fetch again. */
+        if (hash && !TRANSCRIPTS.has(hash)) fetchTranscript(OPT_RUNS[optSel] || {}, hash);
+      }
+      renderCandidates();
       return;
     }
     const tr = e.target.closest('tr.case');

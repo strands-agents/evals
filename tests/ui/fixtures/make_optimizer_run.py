@@ -270,12 +270,107 @@ Give the same answer to the same question every time. Do not improvise policy.""
 UPDATES["c9"]["system_prompt"] = UPDATES["c6"]["system_prompt"]
 
 
-def transcript(*parts: str) -> dict[str, str]:
-    """The first 16 hex of a sha256, as `RunDirectory` names transcript files.
+# The conversations, by hash, as `transcripts/<hash>.json` holds them. Filled in by `transcript()`
+# and written at the end of `main`, which is also where the one deliberately left out is dropped.
+DOCUMENTS: dict[str, dict | list] = {}
 
-    Not `hash()`: that is salted per process, which would make this fixture differ run to run.
+# One trial's transcript is the rollout's own list of Strands messages rather than a recorded
+# session. Both shapes are real, they are read completely differently, and the page has to decide
+# which it is from the document rather than from the `format` the pointer claims.
+AS_MESSAGE_LIST = ("c0", "train_case_02", "train")
+
+# One pointer names a file this generator does not write. A run directory can genuinely be missing
+# a transcript — copied without it, or pruned — and "the file is not there" is a different thing to
+# say than "this trial recorded no transcript", which the agent-failure trial below says instead.
+LEFT_UNWRITTEN = ("c6", "val_case_02", "validation")
+
+
+def transcript(cid: str, case: str, split: str, output: str | None = None) -> dict[str, str] | None:
+    """The `{hash, format}` pointer for one trial, registering the document it points at.
+
+    The hash is the first 16 hex of a sha256, as `RunDirectory` names transcript files. Not
+    `hash()`: that is salted per process, which would make this fixture differ run to run.
     """
-    return {"hash": hashlib.sha256("/".join(parts).encode()).hexdigest()[:16], "format": "session"}
+    key = (cid, case, split)
+    digest = hashlib.sha256("/".join(key).encode()).hexdigest()
+    as_list = key == AS_MESSAGE_LIST
+    DOCUMENTS[digest[:16]] = message_list(cid, case, output) if as_list else session(digest, cid, case, output)
+    return {"hash": digest[:16], "format": "list" if as_list else "session"}
+
+
+def session(digest: str, cid: str, case: str, output: str | None) -> dict:
+    """A recorded session: traces of spans, which is what `Session` serializes to.
+
+    Three span kinds, because each says a different thing happened — the agent being invoked, a
+    model call, a tool being run — and rendering them all as "a message" would print a tool's
+    result as though the model had said it out loud.
+    """
+    sid = digest[:32]
+    asked = f"Where is my order? ({case})"
+    spans = [
+        {
+            "span_type": "invoke_agent",
+            "span_info": {"span_id": digest[32:48], "session_id": sid, "trace_id": sid},
+            "system_prompt": f"<the system prompt {cid} was built with>",
+            "user_prompt": asked,
+            "agent_response": output,
+        },
+        {
+            "span_type": "inference",
+            "span_info": {"span_id": digest[48:64], "session_id": sid, "trace_id": sid},
+            "messages": [
+                {"role": "user", "content": [{"content_type": "text", "text": asked}]},
+                {
+                    "role": "assistant",
+                    "content": [{"content_type": "text", "text": output or "I could not complete that."}],
+                },
+            ],
+        },
+        {
+            "span_type": "execute_tool",
+            "span_info": {"span_id": digest[16:32], "session_id": sid, "trace_id": sid},
+            "tool_call": {"name": "lookup_order", "arguments": {"order_id": "NW-000000"}},
+            "tool_result": (
+                {"content": '{"output": "delivered 2026-10-02"}', "error": None}
+                if output
+                else {"content": None, "error": "the refund tool timed out"}
+            ),
+        },
+    ]
+    return {"session_id": sid, "traces": [{"session_id": sid, "spans": spans}]}
+
+
+def message_list(cid: str, case: str, output: str | None) -> list[dict]:
+    """The other shape: Strands messages, with the blocks a rollout actually records.
+
+    Reasoning, a tool call and its result, and per-message usage — none of which a span carries in
+    the same place, which is the whole reason the page cannot read one shape as the other.
+    """
+    return [
+        {"role": "user", "content": [{"text": f"Where is my order? ({case})"}]},
+        {
+            "role": "assistant",
+            "content": [
+                {"reasoningContent": {"reasoningText": {"text": "No order id in the message, so ask for it."}}},
+                {"toolUse": {"toolUseId": "tu-1", "name": "lookup_order", "input": {"order_id": "NW-000000"}}},
+            ],
+            "metadata": {"usage": {"inputTokens": 2345, "outputTokens": 1005, "cacheReadInputTokens": 1800}},
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "toolResult": {
+                        "toolUseId": "tu-1",
+                        "status": "success",
+                        # Tool output arrives as a JSON string far more often than as a structure.
+                        "content": [{"text": '{"output": "delivered 2026-10-02"}'}],
+                    }
+                }
+            ],
+        },
+        {"role": "assistant", "content": [{"text": output or f"<no answer from {cid}>"}]},
+    ]
 
 
 def compose_values() -> dict[str, dict]:
@@ -413,23 +508,33 @@ def main() -> None:
             for case in TRAIN:
                 status = FAILED_TRIALS.get((cid, case), "completed")
                 statuses[status] = statuses.get(status, 0) + 1
+                failed, unjudged = status == "agent_failure", status == "evaluator_invalid"
+                output = None if failed else f"<answer for {case} under {cid}>"
                 record = {
                     "candidate_id": cid,
                     "case_name": case,
                     "run_index": 0,
                     "split": "train",
                     "status": status,
-                    "error_type": "ToolError" if status == "agent_failure" else None,
-                    "error": "the refund tool timed out" if status == "agent_failure" else None,
-                    "attempts": 1,
-                    "previous_attempts": [],
-                    "output": f"<answer for {case} under {cid}>",
-                    "transcript": transcript(cid, case, "train"),
+                    "error_type": "ToolError" if failed else None,
+                    "error": "the refund tool timed out" if failed else None,
+                    "attempts": 2 if failed else 1,
+                    # Only the retried trial has any, and it is the half of "attempts: 2" worth
+                    # reading: what went wrong the first time.
+                    "previous_attempts": [{"status": "agent_failure", "error_type": "ToolError"}] if failed else [],
+                    "output": output,
+                    # The agent never finished, so there was no trajectory to write — which is a
+                    # different thing from a pointer whose file is missing.
+                    "transcript": None if failed else transcript(cid, case, "train", output),
                     "interactions": None,
                     "environment_state": None,
-                    "evaluations": {"Helpfulness": {"score": per_case[case], "reason": "judged"}},
+                    # An evaluator that raised is not an evaluator that scored zero: the trial
+                    # completed and nothing was judged on it.
+                    "evaluations": {} if unjudged else {"Helpfulness": {"score": per_case[case], "reason": "judged"}},
                     "details": {},
-                    "evaluator_errors": {},
+                    "evaluator_errors": (
+                        {"Helpfulness": "the judge returned no score for this answer"} if unjudged else {}
+                    ),
                     "usage": {
                         "tokens": p["tokens"],
                         "input_tokens": int(p["tokens"] * 0.7),
@@ -529,7 +634,7 @@ def main() -> None:
                     "attempts": 1,
                     "previous_attempts": [],
                     "output": f"<validation answer {case} / {cid}>",
-                    "transcript": transcript(cid, case, "validation"),
+                    "transcript": transcript(cid, case, "validation", f"<validation answer {case} / {cid}>"),
                     "interactions": None,
                     "environment_state": None,
                     "evaluations": {"Helpfulness": {"score": validation_objectives[cid], "reason": "judged"}},
@@ -584,7 +689,7 @@ def main() -> None:
                     "attempts": 1,
                     "previous_attempts": [],
                     "output": f"<test answer {case} / {cid}>",
-                    "transcript": transcript(cid, case, "test"),
+                    "transcript": transcript(cid, case, "test", f"<test answer {case} / {cid}>"),
                     "interactions": None,
                     "environment_state": None,
                     "evaluations": {"Helpfulness": {"score": 0.664 if cid == "c10" else 0.521, "reason": "judged"}},
@@ -632,8 +737,21 @@ def main() -> None:
     lines = "".join(json.dumps(e) + "\n" for e in events)
     (OUT / "events.jsonl").write_text(lines)
 
+    # `transcripts/<hash>.json`, one per distinct trajectory, as the run directory holds them.
+    # Rewritten from scratch so a hash that no trial points at any more does not linger.
+    held = OUT / "transcripts"
+    for stale in sorted(held.glob("*.json")) if held.is_dir() else []:
+        stale.unlink()
+    held.mkdir(exist_ok=True)
+    unwritten = hashlib.sha256("/".join(LEFT_UNWRITTEN).encode()).hexdigest()[:16]
+    for digest, document in sorted(DOCUMENTS.items()):
+        if digest == unwritten:
+            continue
+        (held / f"{digest}.json").write_text(json.dumps(document, indent=1) + "\n")
+
     print(f"wrote {OUT}/events.jsonl: {len(events)} events, {len(lines)} bytes")
     print(f"      {OUT}/run.json")
+    print(f"      {OUT}/transcripts/: {len(DOCUMENTS) - 1} files, 1 pointer left unwritten on purpose")
     print(f"      rollouts spent {spent} of {MAX_ROLLOUTS}, champion c10")
 
 

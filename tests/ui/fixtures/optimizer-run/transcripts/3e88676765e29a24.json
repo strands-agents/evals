@@ -1,0 +1,67 @@
+{
+ "session_id": "3e88676765e29a245b6c9ac81935b91b",
+ "traces": [
+  {
+   "session_id": "3e88676765e29a245b6c9ac81935b91b",
+   "spans": [
+    {
+     "span_type": "invoke_agent",
+     "span_info": {
+      "span_id": "92f445672522b3f5",
+      "session_id": "3e88676765e29a245b6c9ac81935b91b",
+      "trace_id": "3e88676765e29a245b6c9ac81935b91b"
+     },
+     "system_prompt": "<the system prompt c3 was built with>",
+     "user_prompt": "Where is my order? (train_case_04)",
+     "agent_response": "<answer for train_case_04 under c3>"
+    },
+    {
+     "span_type": "inference",
+     "span_info": {
+      "span_id": "db04cce6f685671b",
+      "session_id": "3e88676765e29a245b6c9ac81935b91b",
+      "trace_id": "3e88676765e29a245b6c9ac81935b91b"
+     },
+     "messages": [
+      {
+       "role": "user",
+       "content": [
+        {
+         "content_type": "text",
+         "text": "Where is my order? (train_case_04)"
+        }
+       ]
+      },
+      {
+       "role": "assistant",
+       "content": [
+        {
+         "content_type": "text",
+         "text": "<answer for train_case_04 under c3>"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "span_type": "execute_tool",
+     "span_info": {
+      "span_id": "5b6c9ac81935b91b",
+      "session_id": "3e88676765e29a245b6c9ac81935b91b",
+      "trace_id": "3e88676765e29a245b6c9ac81935b91b"
+     },
+     "tool_call": {
+      "name": "lookup_order",
+      "arguments": {
+       "order_id": "NW-000000"
+      }
+     },
+     "tool_result": {
+      "content": "{\"output\": \"delivered 2026-10-02\"}",
+      "error": null
+     }
+    }
+   ]
+  }
+ ]
+}

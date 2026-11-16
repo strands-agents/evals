@@ -1,0 +1,62 @@
+[
+ {
+  "role": "user",
+  "content": [
+   {
+    "text": "Where is my order? (train_case_02)"
+   }
+  ]
+ },
+ {
+  "role": "assistant",
+  "content": [
+   {
+    "reasoningContent": {
+     "reasoningText": {
+      "text": "No order id in the message, so ask for it."
+     }
+    }
+   },
+   {
+    "toolUse": {
+     "toolUseId": "tu-1",
+     "name": "lookup_order",
+     "input": {
+      "order_id": "NW-000000"
+     }
+    }
+   }
+  ],
+  "metadata": {
+   "usage": {
+    "inputTokens": 2345,
+    "outputTokens": 1005,
+    "cacheReadInputTokens": 1800
+   }
+  }
+ },
+ {
+  "role": "user",
+  "content": [
+   {
+    "toolResult": {
+     "toolUseId": "tu-1",
+     "status": "success",
+     "content": [
+      {
+       "text": "{\"output\": \"delivered 2026-10-02\"}"
+      }
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "role": "assistant",
+  "content": [
+   {
+    "text": "<answer for train_case_02 under c0>"
+   }
+  ]
+ }
+]

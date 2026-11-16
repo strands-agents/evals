@@ -55,6 +55,24 @@ REPORT = "report"
 EVENT_LOG_NAME = "events.jsonl"
 RUN_CONFIG_NAME = "run.json"
 
+# Inside a run directory these hold the run's own storage: the transcript of every distinct
+# trajectory, the files copied per candidate, the diffs left for review. None of them is a document
+# to classify, and a run of a few hundred trials would otherwise fill the "could not use" list with
+# its own bookkeeping and spend the whole file budget reading it. The page reads a transcript by
+# path, when a trial is opened, which is the only time one is wanted.
+RUN_OWN_DIRS = frozenset({"transcripts", "candidates", "front"})
+
+
+def _prune_run_storage(filenames: list[str], dirnames: list[str]) -> None:
+    """Drop a run directory's own storage from a walk, in place.
+
+    Only inside a directory that *is* a run — a `run.json` with an `events.jsonl` beside it. A
+    folder called `candidates` anywhere else is someone's own folder and gets walked like any.
+    """
+    names = set(filenames)
+    if RUN_CONFIG_NAME in names and EVENT_LOG_NAME in names:
+        dirnames[:] = [d for d in dirnames if d not in RUN_OWN_DIRS]
+
 
 @dataclass
 class ScannedFile:
@@ -304,6 +322,7 @@ def scan(root: Path, depth: int = DEFAULT_DEPTH) -> tuple[list[ScannedFile], lis
             dirnames[:] = []
         # Scanning a repo's dependencies is slow and finds nothing a user is looking for.
         dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d not in {"node_modules", "__pycache__"})
+        _prune_run_storage(filenames, dirnames)
 
         for filename in sorted(filenames):
             if not filename.lower().endswith(".json"):
@@ -522,6 +541,7 @@ def discover_optimizer_runs(root: Path, depth: int = DEFAULT_DEPTH) -> list[dict
         if level >= depth:
             dirnames[:] = []
         dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d not in {"node_modules", "__pycache__"})
+        _prune_run_storage(filenames, dirnames)
 
         names = set(filenames)
         if RUN_CONFIG_NAME not in names or EVENT_LOG_NAME not in names:

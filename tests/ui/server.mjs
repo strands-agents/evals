@@ -127,6 +127,31 @@ try {
     'the metric and cost charts are derived from the fetched log too',
     `${$$('#opt-metric-chart circle').length} marks, ${$$('#opt-usage-chart rect.col').length} columns`);
   ok(text('#path') === 'tuning/events.jsonl', 'the path bar names the log it read', text('#path'));
+
+  /* ── and a trial's transcript, which is a second fetch against a path out of the log ──
+     Every other figure on this tab came from `events.jsonl`. A recorded conversation is a file
+     beside it, named by the hash the trial points at, so served mode has to go back for it — and
+     the distinction folder mode cannot make, between a pointer whose file is gone and a trial that
+     never had one, is a real 404 here. */
+  const trialRow = name =>
+    $$('#opt-cands tr.trial').find(r => r.children[0].textContent.includes(name));
+  await click(trialRow('train_case_01'));
+  await waitFor(() => !!$('#opt-cands tr.tdetail .trial-panel .msg'), 'the fetched transcript');
+  ok(text('#opt-cands tr.tdetail .tr-count') === '3 spans of a recorded session',
+    'the transcript is fetched by hash from the run directory and read as a session',
+    text('#opt-cands tr.tdetail .tr-count'));
+  ok($$('#opt-cands tr.tdetail .call').some(c => /lookup_order/.test(c.textContent)),
+    'with the tool call the span recorded');
+  await click(trialRow('train_case_01'));
+
+  await click($$('#opt-cands tr.case').find(r => /c6/.test(r.textContent)));
+  await click(trialRow('val_case_02'));
+  await waitFor(() => /not in the run directory/.test(text('#opt-cands tr.tdetail') || ''),
+    'the answer for a transcript the server does not have');
+  ok(/transcripts\/4ed70e0cfecb415b\.json, which is not in the run directory/
+    .test(text('#opt-cands tr.tdetail').replace(/\s+/g, ' ')),
+    'a pointer the server answers 404 for is reported as a file the run is missing, named',
+    text('#opt-cands tr.tdetail').replace(/\s+/g, ' ').slice(0, 200));
   await click('.tab[data-view="runs"]');
 
   // ── selecting a run fetches both documents ──

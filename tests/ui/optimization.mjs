@@ -14,6 +14,13 @@ const { ok, done } = runner('optimization');
 const DIR = new URL('./fixtures/optimizer-run/', import.meta.url);
 const EVENTS = fs.readFileSync(new URL('events.jsonl', DIR), 'utf8');
 const CONFIG = fs.readFileSync(new URL('run.json', DIR), 'utf8');
+/* The run's recorded conversations, which a trial's log entry only *points* at. They are handed to
+   the picker alongside the two documents, because that is what picking the directory would hand
+   over — and because a run holds one per trial, so a reader that classified them as documents
+   would list eighty files it could not use. */
+const TRANSCRIPTS = Object.fromEntries(fs.readdirSync(new URL('transcripts/', DIR))
+  .filter(f => f.endsWith('.json'))
+  .map(f => [`demo/transcripts/${f}`, fs.readFileSync(new URL(`transcripts/${f}`, DIR), 'utf8')]));
 
 const skips = p => p.$$('#skips li').map(li => li.textContent.replace(/\s+/g, ' ').trim());
 const errs = [];                              // for the pages built inside a block
@@ -34,13 +41,15 @@ ok($$('.tab[data-sec="optimization"]').every(t => t.hidden),
 ok($('#sections').hidden === true,
   'and the switcher with it, since one section is not a choice');
 
-await openFolder({ 'demo/run.json': CONFIG, 'demo/events.jsonl': EVENTS });
+await openFolder({ 'demo/run.json': CONFIG, 'demo/events.jsonl': EVENTS, ...TRANSCRIPTS });
 ok($('#sec-opt').hidden === false, 'the section appears once a run directory is read');
 ok($('#sections').hidden === false, 'and now there is something to switch between');
 ok($$('.tab[data-sec="optimization"]').map(t => t.textContent).join() === 'Runs,Setup,Results',
   'with its own three panels — not Evals\' three renamed, since Setup is read where Experiment is edited',
   $$('.tab[data-sec="optimization"]').map(t => t.textContent).join());
-ok(skips(p).length === 0, 'neither file of a recognised run is reported as unusable', skips(p).join(' | '));
+/* Including the transcripts: a run's own storage is not a document the picker failed to classify,
+   and eighty of them in the "could not use" list would bury the one file that really is unusable. */
+ok(skips(p).length === 0, 'no file of a recognised run is reported as unusable', skips(p).join(' | '));
 
 /* ── its Runs tab lists the run directories, the way Evals lists experiment/report pairs ── */
 await click('#sec-opt');
@@ -466,6 +475,127 @@ const trialRows = () => $$('#opt-cands tr.detail table.trials tr')
 ok(trialRows().length === 15, 'a line per trial, every split together', trialRows().length);
 ok(trialRows()[0] === 'train_case_01/train/Helpfulness 0.49/pass',
   'naming the case, its split, what was judged and how it went', trialRows()[0]);
+
+/* ── one trial, and the conversation behind it ──
+   Everything else on this tab is derived from the event log. A transcript is not: the log carries
+   a `{hash, format}` pointer and the conversation is a file in the run directory. So these
+   assertions are about the two shapes that file can hold, read off the document rather than from
+   the `format` the pointer claims, and about every way the lookup can come back with nothing —
+   which are different facts about a run and have to read as different ones. */
+const openTrialRow = async name => {
+  await click($$('#opt-cands tr.trial').find(r => r.children[0].textContent.includes(name)));
+};
+/* The page sets these in spans and `<b>`s with no whitespace between them, since that is how they
+   read on screen — so `textContent` would run "0.49" into the reason beside it. Walking the text
+   nodes and joining them is what the eye does with the gap the layout leaves. */
+const flat = el => {
+  if (!el) return '';
+  const w = el.ownerDocument.createTreeWalker(el, 4 /* NodeFilter.SHOW_TEXT */);
+  const out = [];
+  for (let n = w.nextNode(); n; n = w.nextNode()) out.push(n.textContent);
+  return out.join(' ').replace(/\s+/g, ' ').trim();
+};
+const panel = () => {
+  const box = $('#opt-cands tr.tdetail .trial-panel');
+  return !box ? {} : Object.fromEntries([...box.querySelectorAll(':scope > dl > dt')].map(dt =>
+    [dt.textContent.trim(), flat(dt.nextElementSibling)]));
+};
+const spoken = () => $$('#opt-cands tr.tdetail .trial-panel .msg')
+  .map(m => flat(m.querySelector('.who')));
+
+await openTrialRow('train_case_01');
+ok(!!$('#opt-cands tr.tdetail .trial-panel'), 'a trial row opens onto the trial');
+ok(Object.keys(panel()).join() === 'Ended as,Scored,Cost,Output,Transcript',
+  'the trial in the order it is read: how it ended, what was judged, what it cost, what came back',
+  Object.keys(panel()).join());
+ok(panel()['Ended as'] === 'completed', 'a clean trial says so rather than only not warning',
+  panel()['Ended as']);
+ok(panel().Scored === 'Helpfulness 0.49 judged',
+  'each metric with its score and the reason the judge gave', panel().Scored);
+ok(panel().Cost === '3350 tokens · 3 model calls · 4.20s',
+  'what the trial spent, which is the other half of a score', panel().Cost);
+ok(panel().Output === '<answer for train_case_01 under c10>', 'the answer it produced',
+  panel().Output);
+/* The pointer's file is a `Session`, so the transcript is spans — and each span kind is named,
+   because "a message" would print a tool's result as though the model had said it out loud. */
+ok(text('#opt-cands tr.tdetail .tr-count') === '3 spans of a recorded session',
+  'the session is counted in spans', text('#opt-cands tr.tdetail .tr-count'));
+ok(spoken().join(' | ') === '#0 invoke agent | #1 inference | user | assistant | #2 tool',
+  'each span by kind, with the inference span opened out into the messages it carried',
+  spoken().join(' | '));
+const calls = () => $$('#opt-cands tr.tdetail .call').map(flat);
+ok(calls().some(c => /^tool call lookup_order/.test(c) && /NW-000000/.test(c)),
+  'the tool call names the tool and shows what it was called with', calls().join(' | ').slice(0, 160));
+/* Tool output arrives as a JSON string far more often than as a structure, and a lone
+   `{"output": "..."}` is the tool's own text in an envelope. Printing the envelope is printing
+   the plumbing. */
+ok(calls().some(c => c === 'tool result delivered 2026-10-02'),
+  'and its result is laid out as text rather than as the JSON envelope it arrived in',
+  calls().filter(c => /^tool result/.test(c)).join(' | '));
+ok(text('#opt-cands tr.tdetail details.raw summary') === 'the file as written',
+  'with the document itself one disclosure away, which is where "show more" would otherwise go',
+  text('#opt-cands tr.tdetail details.raw summary'));
+
+await openTrialRow('train_case_01');
+ok(!$('#opt-cands tr.tdetail'), 'and a second click closes the trial again');
+
+/* A trial whose transcript the folder did not hold is not a trial without one. The page says which
+   of those it is, because a pointer at a file that is not there is a fact about the run.
+   `c6/val_case_02` is the one pointer the fixture deliberately leaves unwritten. */
+await openCand('c10');
+await openCand('c6');
+await openTrialRow('val_case_02');
+ok(/transcripts\/4ed70e0cfecb415b\.json was not among the files read from the opened folder/
+  .test(panel().Transcript || ''),
+  'a transcript the opened folder did not hold names the file it was looking for',
+  (panel().Transcript || '').slice(0, 200));
+await openTrialRow('val_case_02');
+
+/* ── the other shape, and the two other ways a transcript can be absent ── */
+await openCand('c6');
+await openCand('c0');
+await openTrialRow('train_case_02');
+ok(text('#opt-cands tr.tdetail .tr-count') === '4 messages',
+  'a transcript stored as the rollout\'s own messages is counted in messages, not spans',
+  text('#opt-cands tr.tdetail .tr-count'));
+ok(spoken().join(' | ') === 'user | assistant 2345 in · 1005 out · 1800 cache read tokens | user | assistant',
+  'each message by role, with the usage the one that recorded any carries',
+  spoken().join(' | '));
+ok(!!$('#opt-cands tr.tdetail .say.think'),
+  'reasoning is shown, and set apart from what the model actually said');
+ok(/No order id in the message/.test(text('#opt-cands tr.tdetail .say.think') || ''),
+  'which is the model talking to itself', text('#opt-cands tr.tdetail .say.think'));
+ok(calls().some(c => /^tool call lookup_order/.test(c)) && calls().some(c => c === 'tool result delivered 2026-10-02'),
+  'and the Strands tool blocks read the same as a span\'s do', calls().join(' | ').slice(0, 160));
+
+await openCand('c0');
+await openCand('c2');
+await openTrialRow('train_case_05');
+ok(/^agent_failure ToolError/.test(panel()['Ended as'] || ''),
+  'a failed trial leads with the status and the error type', panel()['Ended as']);
+ok(/the refund tool timed out/.test(panel()['Ended as'] || ''),
+  'and the message itself, since the type alone says nothing about what happened',
+  panel()['Ended as']);
+ok(panel().Attempts === '2 — earlier: agent_failure',
+  'a retried trial says how many attempts and what went wrong before', panel().Attempts);
+ok(panel().Output === 'none recorded',
+  'an agent that never finished recorded no answer, said rather than left blank', panel().Output);
+/* The agent never produced a trajectory, so there is no pointer at all — which is a different
+   thing from a pointer whose file is missing, and has to read as one. */
+ok(panel().Transcript === 'this trial recorded no transcript',
+  'and no transcript to point at', panel().Transcript);
+
+await openCand('c2');
+await openCand('c5');
+await openTrialRow('train_case_03');
+ok(panel()['Evaluator errors'] === 'Helpfulness raised the judge returned no score for this answer',
+  'an evaluator that raised is named with what it raised', panel()['Evaluator errors']);
+ok(!('Scored' in panel()),
+  'and the trial has no score, rather than a zero standing in for one that was never taken',
+  Object.keys(panel()).join());
+await openTrialRow('train_case_03');
+await openCand('c5');
+await openCand('c10');
 
 /* c0 is the baseline, so there is nothing to diff it against — "identical to c0" would be true
    and useless, and a key list would imply it changed something. */
