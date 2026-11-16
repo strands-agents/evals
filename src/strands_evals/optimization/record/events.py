@@ -24,10 +24,9 @@ EventName = Literal[
     "label",
     "invalid",
     "duplicate",
-    "unscored",
     "proposer_retry",
-    "proposer_error",
     "proposer_usage",
+    "proposer_error",
     "resume",
     "stop",
     "observe",
@@ -50,7 +49,8 @@ class EventLog:
     - `propose`: `candidate_id`, `number` (display only), `parent_id`, `origin`, `values` (the only copy of
       the candidate's typed values), `changed_keys`, `rationale`, `inherited`, `defaulted`, `round`, `role`;
       `rescore=true` for an ineligible candidate proposed again (then no `values`, the first number and
-      parent kept); `patch` when its observe is deferred (a round's opener).
+      parent kept); `deferred_patches` (block -> `Patch`) for the blocks whose observe is deferred (a
+      round's opener), else None.
     - `trial`: `record` (`TrialRecord`, its trajectory replaced by `transcript`: `{hash, format}` or None),
       one per trial as soon as it finishes. A later one for the same (candidate, run, case) replaces it.
       Trials of concurrently scored candidates interleave; every other event is written in a fixed order.
@@ -63,15 +63,19 @@ class EventLog:
     - `invalid`: `block`, `redraw`, `updates`, `reason` (no candidate).
     - `duplicate`: `block`, `redraw`, `candidate_id` (the existing one); `patch` and `round` for a round's
       opener.
-    - `unscored`: `candidate_id`, `pending`, `remaining`, `reserve`.
     - `proposer_retry`, `proposer_error`: `block`, `redraw`, `error_type`, `error`.
-    - `proposer_usage`: `block`, `redraw`, `usage` (`Usage`: a `propose` call's spend no returned patch carries).
+    - `proposer_usage`: `block`, `redraw`, `usage` (`Usage`): a `propose` call's spend, written by the proposer
+      for spend no returned patch carries, and by the optimizer for the returned patches' `usage` (also in
+      their `observe` events, which `search_cost` doesn't read).
     - `screened`: `block`, `key`, `reason`.
-    - `resume`: `spent`, `budget`, `code` (the resuming strands-evals: version, git commit, dirty).
-    - `stop`: `reason` (a `stop_reason`, or `"setup"` when the baseline isn't eligible), `message`.
+    - `resume`: `spent`, `budget`, `code` (`code_version()` of the resuming code: strands-evals version, git commit,
+      dirty, numpy and optuna versions).
+    - `stop`: `reason` (a `stop_reason`, or `"setup"` when the baseline can't be a parent: ineligible, no
+      completed train trial, or a goal metric never measured), `message`.
     - `observe`: `block`, `candidate_id` (None for an invalid patch), `observation` (`Observation`).
     - `evidence`: `block` (the proposer told), `evidence` (`Evidence`).
-    - `iteration_end`: `record` (`IterationRecord`), `exhausted`, `best_after` (a snapshot).
+    - `iteration_end`: `record` (`IterationRecord`), `exhausted`, `best_after`, `best_objective` (the first
+      `best_after` candidate's objective, or None; snapshots).
     - `finalists`: `candidate_ids` (ranked). `picked`: `report` (`ValidationReport`). `test`: `report`
       (`TestReport` or None), `reason` (also naming the front members it couldn't afford), `front` (under a
       `Pareto` objective, each tested front member's `TestReport`, the champion's included; `{}` otherwise).
@@ -80,9 +84,9 @@ class EventLog:
     `previous_attempts`'); candidates, numbers, parents, and rounds from `propose` and `iteration_end`;
     exhausted blocks and iterations from `iteration_end`; history from `select`; open rounds from openers
     with no observe yet; `stop_reason` from the last `stop`; proposer feedback from `observe` / `evidence`;
-    `search_cost` from the `observe` events' `Patch.usage` plus the `proposer_usage` events; the fit sequence
-    from `fit`; the end phase's progress from `finalists` / `picked` / `test`. Only search events up to the
-    last `iteration_end` are replayed; trial events are always read (the cache).
+    `search_cost` from every `proposer_usage` event, a killed iteration's included; the fit sequence from
+    `fit`; the end phase's progress from `finalists` / `picked` / `test`. Only search events of closed iterations
+    (ended by `iteration_end` or by `stop`) are replayed; trial and `proposer_usage` events are always read.
     """
 
     def __init__(self, path: Path):

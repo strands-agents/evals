@@ -114,7 +114,7 @@ def evidence(values, objective, *, violations=None, cid="other"):
     return Evidence(
         candidate_id=cid,
         values=values,
-        origin="other",
+        origin=["other"],
         objective=objective,
         term_values=None,
         violations=[] if violations is None else violations,
@@ -127,7 +127,7 @@ def summary(cid, objective, *, violations=(), term_values=None, is_eligible=True
     return CandidateSummary(
         candidate_id=cid,
         parent_id=None,
-        origin="test",
+        origin=["test"],
         values={},
         number=0,
         measured_objective=objective,
@@ -183,7 +183,7 @@ def test_a_choice_is_drawn_before_its_sub_keys():
 
 def test_a_key_inactive_under_the_parents_choices_is_not_proposed():
     space = structured_space()
-    parent = Candidate(space.complete({"manager": "summary"}), None, "baseline", "")
+    parent = Candidate(space.complete({"manager": "summary"}), None, ("baseline",), "")
     assert propose(TPE(), request(space, ["manager.window.size"], parent=parent)) == []
 
 
@@ -307,8 +307,8 @@ def test_a_duplicate_is_valued_at_the_existing_candidate():
 def test_numbers_under_a_choice_are_learned_per_structure():
     space = structured_space()
     tpe = TPE()
-    window = Candidate(space.complete({"manager": "window"}), None, "baseline", "")
-    summary = Candidate(space.complete({"manager": "summary"}), None, "baseline", "")
+    window = Candidate(space.complete({"manager": "window"}), None, ("baseline",), "")
+    summary = Candidate(space.complete({"manager": "summary"}), None, ("baseline",), "")
     tpe.evidence(evidence({**window.values, "temperature": 0.1}, 0.9))
     tpe.evidence(evidence({**summary.values, "temperature": 0.9}, 0.2))
     (patch,) = propose(tpe, request(space, ["temperature"], parent=window))

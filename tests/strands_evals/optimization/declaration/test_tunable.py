@@ -358,3 +358,11 @@ def test_an_optional_component_builds_fresh_when_on_and_passes_none_when_off():
 
 def test_the_plain_call_builds_the_baseline_component():
     assert isinstance(make_strands_agent().conversation_manager, SummarizingConversationManager)
+
+
+def test_a_build_context_can_be_built_by_hand(tmp_path):
+    from strands_evals.optimization import BuildContext
+
+    assert BuildContext({}, lambda name: None).workspace is None
+    assert BuildContext({}, lambda name: None, tmp_path).workspace == tmp_path
+    assert BuildContext({}, lambda name: None, lambda: tmp_path).workspace == tmp_path

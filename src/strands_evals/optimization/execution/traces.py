@@ -83,7 +83,8 @@ class TraceCapture:
     """
 
     def __init__(self) -> None:
-        """Install or attach the in-memory exporter; must run before any `Experiment` is built.
+        """Install an SDK tracer provider if needed and attach the trial span filter; must run before any
+        `Experiment` is built.
 
         With no OpenTelemetry SDK tracer provider installed, installs one (`StrandsEvalsTelemetry`) as the
         global provider; then attaches a span processor keeping only registered traces, so nothing else

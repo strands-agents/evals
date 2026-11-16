@@ -9,7 +9,7 @@ import shutil
 import tempfile
 import weakref
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, overload
 
@@ -26,8 +26,10 @@ _KEYWORD_KINDS = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEY
 class BuildContext:
     """What `Optimizer(build_task=...)` receives, once per candidate.
 
-    A dataclass, not a record: it holds a callable and is never saved. Adding a field doesn't
-    break existing `build_task` functions.
+    The optimizer builds it. To test a `build_task` on its own, build one with the workspace given
+    positionally: `BuildContext(values, resolve, path)` (the field is private: `workspace` is the
+    property that reads it). A dataclass, not a record: it holds a callable and is never saved.
+    Adding a field doesn't break existing `build_task` functions.
 
     Attributes:
         values: The candidate's typed flat values.
@@ -36,12 +38,24 @@ class BuildContext:
         workspace: The candidate's copy of the file-backed folders
             (`<run>/candidates/<id>/optimization_files/`), or None when the space has no
             file-backed values. Lets a config-defined agent load the whole edited file, e.g. the
-            `agent.json` a `JsonField` points into.
+            `agent.json` a `JsonField` points into. Each file-backed value's whole folder is copied, so
+            the copy is made the first time `workspace` is read (unless a value already reaches the agent
+            as a path); a `build_task` that never reads it copies nothing. Read it in `build_task` itself,
+            not first inside the task, so a copy that fails stops the run instead of failing every trial.
+            The first read makes the copy in the reading thread: `build_task`, and an async task, run on
+            the optimizer's event loop, so other trials wait while it copies (once per candidate; later
+            reads return at once). Keep the tuned file in a small folder of its own: everything beside it is
+            copied for every candidate.
     """
 
     values: Values
     resolve: Callable[[str], Any]
-    workspace: Path | None
+    _workspace: Path | Callable[[], Path | None] | None = field(default=None, repr=False)
+
+    @property
+    def workspace(self) -> Path | None:
+        """The candidate's copy, made on first read; None when the space has no file-backed values."""
+        return self._workspace() if callable(self._workspace) else self._workspace
 
 
 class _FactoryArgumentError(TypeError):

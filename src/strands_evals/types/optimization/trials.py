@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict
 
@@ -11,6 +11,7 @@ from ..evaluation import EnvironmentState, EvaluationOutput, Interaction
 from ..trace import Session
 
 SplitName = Literal["train", "validation", "test"]
+SPLIT_NAMES: tuple[SplitName, ...] = get_args(SplitName)  # the same names, to iterate over
 
 
 class TrialStatus(str, Enum):
@@ -45,7 +46,8 @@ class Usage(BaseModel):
         cache_write_tokens: Part of `input_tokens`; None when the provider never reported it
             (unmeasured, not 0).
         model_calls: Number of `chat` spans.
-        seconds: Duration of the `rollout` span (environment setup and teardown excluded).
+        seconds: Duration of the `rollout` span (environment setup and teardown excluded), or of the
+            attempt span when there is none (a `build_task` task).
         models: Model ids that made the calls, first use first, from each `chat` span's
             `gen_ai.request.model`; `[]` when no span has it. Summing two usages joins the lists in
             first-use order. For `Patch.usage`, the proposer agent's configured model id.
@@ -120,7 +122,8 @@ class AttemptRecord(BaseModel):
             `TrialRecord.judge_usage` nothing needs it per evaluator); judges whose scores the new
             record kept count there instead, so this is only wasted work. Zero for a throttled attempt
             `Experiment` retried.
-        pass_index: The `TrialRunner` pass it ran in (0 = first; retried throttling keeps its pass).
+        pass_index: The `TrialRunner` pass it ran in (0 = first; retried throttling keeps its pass; 0 for
+            a replaced record an earlier `TrialRunner.run` call saved).
         rollouts: What it cost the budget, as `TrialRecord.rollouts`.
     """
 
@@ -139,7 +142,8 @@ class TrialRecord(BaseModel):
     """One case x one run of one candidate.
 
     Stores no objective: scoring computes each run's objective from `evaluations` and `usage`.
-    Each evaluator name is in exactly one of `evaluations` and `evaluator_errors`; `details` has the same
+    When the agent completed, each evaluator name is in exactly one of `evaluations` and `evaluator_errors`
+    (both are empty when it didn't); `details` has the same
     keys as `evaluations`: each evaluator's own outputs (one per tool call or turn for tool- and
     turn-level evaluators), so reports rebuilt from the records match what `Experiment` returned and
     Reflection sees per-row reasons. Status, metrics, and usage read the last attempt;

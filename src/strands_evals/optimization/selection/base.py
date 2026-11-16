@@ -22,13 +22,14 @@ class SelectionContext:
     Attributes:
         ranking: The step's possible parents (`Step.parents`, else every eligible candidate so far, the
             baseline and infeasible ones included), in ranking order (ties: earlier first); never empty.
-            Ineligible candidates and invalid, duplicate, or unscored proposals are not in it.
+            Ineligible candidates and invalid or duplicate proposals are not in it.
         assessments: The ranking's `Assessment` for every candidate in `ranking`.
         scores: Candidate id -> case name -> train objective (`CandidateScores.objective_by_case`).
         values: Candidate id -> key -> value.
         parents: Candidate id -> parent id (None for the baseline).
         trial_counts: Candidate id -> train trials that count.
-        fit: Read-only; None before 2 candidates are eligible.
+        fit: Read-only; None before 2 candidates are eligible, after a refit that raised, or while any
+            metric is flagged.
         iteration: The current iteration.
         history: Parents chosen so far, oldest first.
         rng: `random.Random(f"{seed}:{iteration}")`, so a resumed run picks the same parents.

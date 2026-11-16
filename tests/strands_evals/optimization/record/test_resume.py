@@ -93,7 +93,7 @@ def _propose(log, candidate_id, parent, origin, *, rescore=False, **fields):
         candidate_id=candidate_id,
         number=0,
         parent_id=parent,
-        origin=origin,
+        origin=[origin],
         values={"x": 1},
         rationale="",
         inherited={},
@@ -116,7 +116,8 @@ def run(tmp_path):
     # Iteration 1: the outer Nested's opener, observed at its round's end.
     outer = _patch("outer", tokens=5)
     log.append("select", iteration=1, parent_id="base", strategy="top_ranked")
-    _propose(log, "c1", "base", "structure", round=[0], role="opener", patch=outer)
+    _propose(log, "c1", "base", "structure", round=[0], role="opener", deferred_patches={"structure": outer})
+    log.append("proposer_usage", block="structure", redraw=0, usage=_usage(5))  # the opener's patch
     log.append("trial", record=_trial("c1", "a"))
     log.append("fit", candidates=["base", "c1"], is_fitted=False, error="ValueError: boom", flagged=[], diagnostics={})
     log.append("evidence", block="numbers", evidence=_evidence("c1"))
@@ -126,6 +127,7 @@ def run(tmp_path):
     log.append("select", iteration=2, parent_id="c1", strategy="top_ranked")
     log.append("duplicate", block="numbers", redraw=0, candidate_id="base", patch=inner, round=[0, 0])
     _propose(log, "base", "base", "numbers", rescore=True)
+    log.append("proposer_usage", block="numbers", redraw=0, usage=_usage(7))  # the invalid patch's
     log.append("observe", block="numbers", candidate_id=None, observation=_observation(None, _patch(9, tokens=7)))
     log.append("proposer_usage", block="numbers", redraw=0, usage=_usage(3))  # a call that returned no patch
     log.append("fit", candidates=["base", "c1"], is_fitted=True, error=None, flagged=[], diagnostics={})
@@ -143,7 +145,7 @@ def _evidence(candidate_id):
     return {
         "candidate_id": candidate_id,
         "values": {"x": 1},
-        "origin": "structure",
+        "origin": ["structure"],
         "objective": 0.4,
         "term_values": None,
         "violations": None,
@@ -167,7 +169,9 @@ def test_load_state_rebuilds_the_search_up_to_the_last_closed_iteration(run):
     ]
     assert [type(f).__name__ for f in state.feedback["numbers"]] == ["Evidence", "Observation"]
     assert "structure" not in state.feedback  # the outer opener's observe was in the killed iteration
-    assert state.search_cost.tokens == 10  # the closed iterations' observe (7) and proposer_usage (3) events
+    # Every proposer_usage event: the open round's opener (5), the invalid patch (7), a call that returned no
+    # patch (3), and the killed iteration 3's call (100), which was paid for though its events are dropped.
+    assert state.search_cost.tokens == 115
     assert state.stop_reason is None
     assert state.finalists is None
     assert state.is_test_done is False
@@ -204,6 +208,39 @@ def test_two_nested_rounds_stay_open_outermost_first(run):
     assert state.open_rounds[0].patch == _patch("outer", tokens=5)
 
 
+def test_an_opener_deferring_several_blocks_reopens_one_round_per_block(tmp_path):
+    # A custom schedule's opener: two contributing blocks, both deferred, and the first in `origin` isn't one.
+    run = RunDirectory.create(tmp_path, CONFIG)
+    log = run.events
+    _propose(log, "base", None, "baseline", iteration=0)
+    log.append("select", iteration=1, parent_id="base", strategy="top_ranked")
+    outer, other = _patch("outer"), _patch("other")
+    log.append(
+        "propose",
+        candidate_id="c1",
+        number=1,
+        parent_id="base",
+        origin=["numbers", "structure", "extra"],
+        values={"x": 1},
+        rationale="",
+        inherited={},
+        defaulted=[],
+        rescore=False,
+        round=[0],
+        role="opener",
+        deferred_patches={"structure": outer, "extra": other},
+    )
+    _iteration_end(log, 1, "base", ["numbers", "structure", "extra"], round=(0,), role="opener")
+    # The first deferred block's round closes; the other's stays open.
+    log.append("select", iteration=2, parent_id="c1", strategy="top_ranked")
+    log.append("observe", block="structure", candidate_id="c1", observation=_observation("c1", outer, source_id="c1"))
+    _iteration_end(log, 2, "c1", ["numbers"], round=(0,))
+
+    state = load_state(RunDirectory.open(run.root), config=CONFIG)
+
+    assert [(r.round, r.opener_id, r.block, r.patch) for r in state.open_rounds] == [((0,), "c1", "extra", other)]
+
+
 def test_an_openers_observe_closes_its_round(run):
     _iteration_end(run.events, 3, "c1", ["numbers"])
 
@@ -212,17 +249,6 @@ def test_an_openers_observe_closes_its_round(run):
     assert [r.round for r in state.open_rounds] == [(0, 0)]
     assert state.candidates == ["base", "c1", "c3"]
     assert state.feedback["structure"][0].source_id == "c1"
-
-
-def test_an_unscored_opener_has_no_opener_id(tmp_path):
-    run = RunDirectory.create(tmp_path, CONFIG)
-    _propose(run.events, "c1", "base", "structure", round=[0], role="opener", patch=_patch("outer"))
-    run.events.append("unscored", candidate_id="c1", pending=2, remaining=1, reserve=0)
-    _iteration_end(run.events, 1, "base", ["structure"])
-
-    state = load_state(RunDirectory.open(run.root), config=CONFIG)
-
-    assert [(r.round, r.opener_id) for r in state.open_rounds] == [((0,), None)]
 
 
 def test_a_second_resume_does_not_replay_the_first_kills_iteration(run):
@@ -283,12 +309,12 @@ def _validation(champion):
         ),
         (
             lambda c: c["space"][1].update(max_value=50),
-            r"^space\['cm\.window\.window_size'\]\.max_value changed: 40 -> 50; start a new run",
+            r"^space\['cm\.window\.window_size'\]\.max_value changed: 40 -> 50; pass the run's space",
         ),
         (lambda c: c["space"].pop(1), r"^space\['cm\.window\.window_size'\] changed: \{.* -> None"),
         (
             lambda c: c["space"][2]["default"].update(sha256="b" * 64),
-            r"^space\['rules'\]\.default\.sha256 changed: 'a{64}' -> 'b{64}'; start a new run",
+            r"^space\['rules'\]\.default\.sha256 changed: 'a{64}' -> 'b{64}'; pass the run's space",
         ),
         (
             lambda c: c["selection"].update(name="random_top_k"),

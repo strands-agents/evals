@@ -192,7 +192,26 @@ def test_the_same_metric_twice_after_resolution_fails():
 def test_an_unbounded_evaluator_in_a_combination_needs_a_scale():
     with pytest.raises(ValueError, match="Open has no bounded range"):
         Criteria(WeightedSum(Maximize("Stars"), Maximize("Open")), [], UNBOUNDED)
-    Criteria(WeightedSum(Maximize("Stars"), Maximize("Open", scale=10)), [], UNBOUNDED)
+    half = MetricRegistry({"Stars": (1.0, 5.0), "Open": (0.0, None)})  # bounded on its worse side under Maximize
+    Criteria(WeightedSum(Maximize("Stars"), Maximize("Open", scale=10)), [], half)
+
+
+@pytest.mark.parametrize(
+    ("objective", "range_", "side"),
+    [
+        (Maximize("Open", scale=10), (None, None), "low"),
+        (Maximize("Open", scale=10), (None, 10.0), "low"),
+        (Minimize("Open", scale=10), (0.0, None), "high"),
+    ],
+)
+def test_an_evaluator_without_its_worse_end_cant_be_combined(objective, range_, side):
+    # Its term would be dropped on a case it finds N/A, scoring that case above a perfect one.
+    registry = MetricRegistry({"Stars": (1.0, 5.0), "Open": range_})
+    for combination in (WeightedSum, Pareto):
+        with pytest.raises(ValueError, match=f"Open has no {side} end in its score_range"):
+            Criteria(combination(Maximize("Stars"), objective), [], registry)
+    Criteria(type(objective)("Open"), [], registry)  # alone it is never combined, so nothing is dropped
+    Criteria(WeightedSum(Maximize("Stars"), Minimize("tokens", scale=1000)), [], registry)  # usage is never N/A
 
 
 def test_an_evaluator_with_an_infinite_range_in_a_combination_needs_a_scale():

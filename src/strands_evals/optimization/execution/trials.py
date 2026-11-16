@@ -20,7 +20,7 @@ from ...case import Case
 from ...evaluators.evaluator import Evaluator
 from ...experiment import Experiment
 from ...types.evaluation import EvaluationData, EvaluationOutput
-from ...types.optimization import AttemptRecord, SplitName, TrialRecord, TrialStatus, Usage
+from ...types.optimization import AttemptRecord, SplitName, TrialRecord, TrialStatus, Usage, near
 from ...types.trace import Session
 from .rollout import _THREAD_POOL, TaskFn, TrialLog, TrialLogEntry, instrument
 from .traces import EvaluatorView, TraceCapture
@@ -46,7 +46,9 @@ class _EvaluatorProxy:
     `evaluate_async` registers the current trace, so a judge-only re-run (no attempt span) keeps its
     judge spans, and records the type of any exception before re-raising it. A non-finite score (NaN or
     infinity), in a row or from the aggregator, raises `ValueError`, so it is a failed evaluator like any
-    other (re-judged by the re-run passes) and the record never holds a score the save can't write. Not a
+    other (re-judged by the re-run passes) and the record never holds a score the save can't write. So does a
+    row's score outside the evaluator's range (its `score_range`, else (0, 1); N/A rows aside), which scoring
+    would otherwise take out with no repair. Not a
     subclass: `get_type_name` is a classmethod and would name the proxy.
     """
 
@@ -70,9 +72,28 @@ class _EvaluatorProxy:
         name = self._evaluator.get_name()
         try:
             outputs = await self._evaluator.evaluate_async(evaluation_case)
-            score = next((o.score for o in outputs if not math.isfinite(o.score)), None)
-            if score is not None:
-                raise ValueError(f"evaluator {name} returned a score that isn't finite: {score!r}")
+            # The range scoring uses: `score_range`, else (0, 1); a None end is unbounded.
+            low, high = getattr(self._evaluator, "score_range", None) or (0.0, 1.0)
+            for output in outputs:
+                score = output.score
+                if not math.isfinite(score):
+                    raise ValueError(f"evaluator {name} returned a score that isn't finite: {score!r}")
+                if output.not_applicable:
+                    continue  # nothing to judge, so the score is not a verdict and no range applies
+                # Float noise at an end is in range, as scoring's own range check treats it.
+                below = low is not None and score < low and not near(score, low)
+                above = high is not None and score > high and not near(score, high)
+                if below or above:
+                    logger.warning(
+                        "evaluator=<%s>, score=<%r>, range=<[%s, %s]> | score outside the evaluator's range, judged "
+                        "again by the re-run passes; give the evaluator a score_range = (low, high) (None for "
+                        "unbounded)",
+                        name,
+                        score,
+                        low,
+                        high,
+                    )
+                    raise ValueError(f"evaluator {name} returned {score!r}, outside its range [{low}, {high}]")
         except Exception as error:
             self._state.errors[name] = type(error).__name__
             raise
@@ -122,6 +143,13 @@ class TrialCache(Protocol):
             The saved trial, or None if it was never saved.
         """
 
+    def trial_status(self, candidate_id: str, run_index: int, case_name: str) -> TrialStatus | None:
+        """The saved trial's status without loading the record (`pending` calls it per case and run).
+
+        Returns:
+            The status of `load_trial`'s record, or None if it was never saved.
+        """
+
     def save_trial(self, record: TrialRecord) -> None:
         """Save a trial; a later save for the same (candidate, run, case) replaces it."""
 
@@ -129,9 +157,9 @@ class TrialCache(Protocol):
 class TrialRunner:
     """Runs a candidate's uncached trials, each through its own one-case `Experiment`.
 
-    `rerun_passes` caps the infrastructure re-run passes per call; this runner never retries inside a
-    trial. `Experiment` keeps its own throttling retries inside one trial's task span; each retry is an
-    attempt (`TrialRecord.previous_attempts`).
+    `rerun_passes` caps the re-run passes per call (infrastructure re-runs and failed-evaluator re-judges);
+    this runner never retries inside a trial. `Experiment` keeps its own throttling retries inside one trial's
+    task span; each retry is an attempt (`TrialRecord.previous_attempts`).
     """
 
     def __init__(
@@ -149,22 +177,23 @@ class TrialRunner:
 
         Each trial builds a fresh `Experiment([case], evaluators)` with `diagnosis_config` off, after
         `TraceCapture` is installed, and runs it in an empty OTel context so an outer span can't merge
-        trials into one trace. The user's `Experiment` instance is never run (its tracer is a no-op).
+        trials into one trace. The user's `Experiment` instance is never run (its tracer may predate the
+        capture and be a no-op).
 
         With no evaluators, `Experiment` substitutes a placeholder `Evaluator()` that always raises. The
-        placeholder (`type(e) is Evaluator`) is dropped from `evaluations`, `evaluator_errors`, and the
-        every-evaluator-failed check, so a trial with zero evaluators (a usage-only objective) is
-        `completed`, not `evaluator_invalid`.
+        caller passes the evaluators without that placeholder (`Optimizer` drops it), and only
+        `evaluators` are read, so a trial with zero evaluators (a usage-only objective) is `completed`,
+        not `evaluator_invalid`.
 
         Each evaluator is passed to `Experiment` wrapped in a thin private proxy that delegates every
-        attribute to the evaluator (so `get_name`, `get_type_name`, `aggregator`, and the label mapping
-        are its own) and wraps only `evaluate_async`. The proxy registers the current trace with
+        attribute to the evaluator (so `get_name`, `get_type_name`, and the label mapping are its own)
+        and wraps `evaluate_async` and `aggregator`. The proxy registers the current trace with
         `TraceCapture`, since a judge-only re-run has no attempt span to do it and its judge spans would
-        be dropped. When the evaluator raises, it records the exception's type name and re-raises. A
-        failed judge, on infrastructure or not, never changes the trial's status: the trial stays
+        be dropped. When the evaluator raises, it records the exception's type name and re-raises; a
+        non-finite score, or a row's score outside the evaluator's range, raises `ValueError` the same
+        way. A failed judge, on infrastructure or not, never changes the trial's status: the trial stays
         `completed` with that evaluator in `evaluator_errors` (every evaluator failed is
-        `evaluator_invalid`), and only the agent side makes a trial `infrastructure_invalid`. The
-        placeholder's error is dropped from the evaluator view as well.
+        `evaluator_invalid`), and only the agent side makes a trial `infrastructure_invalid`.
 
         Args:
             cases: Every case of the run.
@@ -173,7 +202,7 @@ class TrialRunner:
             cache: Saved trials (the run directory).
             split_of: Case name -> its split, given once so a record's split can't be wrong.
             max_workers: Parallel trials within one call.
-            rerun_passes: Max infrastructure re-run passes per call.
+            rerun_passes: Max re-run passes per call (infrastructure re-runs and failed-evaluator re-judges).
 
         Raises:
             ValueError: A case without a name, two cases with one name, a case missing from `split_of`,
@@ -223,7 +252,7 @@ class TrialRunner:
             1
             for name in case_names
             for run_index in range(runs)
-            if _needs_agent(self._cache.load_trial(candidate_id, run_index, name))
+            if self._cache.trial_status(candidate_id, run_index, name) in (None, TrialStatus.INFRASTRUCTURE_INVALID)
         )
 
     async def run(
@@ -235,6 +264,7 @@ class TrialRunner:
         runs: int,
         allowance: int,
         rejudge: bool = False,
+        limiter: asyncio.Semaphore | None = None,
     ) -> tuple[list[TrialRecord], int]:
         """Score every run, then re-run failures; returns (records, rollouts spent).
 
@@ -245,20 +275,22 @@ class TrialRunner:
         Each trial is its own `Experiment` call over one case, so it is saved as soon as that call
         returns. Every trial of the call, all runs included, runs at once under one `max_workers` cap,
         case-major (each case's runs, then the next case's); sync tasks run in the call's own pool of
-        `max_workers` threads, so the cap holds for them too. Each call gets a private in-memory
-        `EvaluationDataStore`: it captures the task's live output (`Session` included) and replays it on
-        a judge-only re-run, which runs only the evaluators that failed.
+        `max_workers` threads, so the cap holds for them too. With `limiter`, that semaphore caps the
+        trials instead, so candidates scored at once share one cap rather than one each. Each trial gets a
+        private in-memory store: it captures the task's live output (`Session` included), which the call
+        keeps and replays on a judge-only re-run, which runs only the evaluators that failed.
 
-        `task` is not yet instrumented (`make_task(...)` or the `build_task` path's task); each run wraps
-        it with `instrument(task, TrialLog(), traces)`. After every run's first pass, up to `rerun_passes`
-        re-run passes each retry the trials still `infrastructure_invalid` or with a failed evaluator.
+        `task` is not yet instrumented (`make_task(...)` or the `build_task` path's task); each trial (one
+        case, one run) wraps it with `instrument(task, TrialLog(), traces)`. After every run's first pass, up
+        to `rerun_passes` re-run passes each retry the trials still `infrastructure_invalid` or with a failed evaluator.
         `allowance` caps the rollouts of the whole call, first pass included: the caller checks
         `can_afford(pending(...))` first, so the first pass always fits, and the re-runs get what is left of
         it (`BudgetTracker.allowance(phase=...)` read before the call, so `max_rollouts` and the later
         phases' reserves hold). Trials left when it runs out stay `infrastructure_invalid`. A judge-only
         re-run costs 0 rollouts. A record a
         re-run replaces moves into the new record's `previous_attempts`. Each record's and attempt's
-        `rollouts` is set to what it cost (1 when the agent ran, else 0).
+        `rollouts` is set to what it cost (1 when a pass ran the agent; 0 for a judge-only re-run and for an
+        attempt `Experiment` retried on throttling).
 
         Each cost stays with what it bought. After a judge-only re-run, the new record keeps the reused
         output's usage and the judge spend of every score it holds; the replaced attempt keeps its
@@ -281,6 +313,8 @@ class TrialRunner:
             allowance: Rollouts the whole call may spend, first pass included.
             rejudge: Re-judge saved trials' failed evaluators; set only when an ineligible candidate is
                 scored again.
+            limiter: A semaphore the trials of several concurrent calls share, so `max_workers` caps them
+                together; None gives this call its own cap.
 
         Returns:
             One record per requested (case, run), cached ones included, and the rollouts spent.
@@ -300,7 +334,11 @@ class TrialRunner:
         if duplicates:
             raise ValueError(f"case names listed more than once: {duplicates}")
         keys = [(name, run_index) for name in case_names for run_index in range(runs)]  # case-major
-        call = _Call(candidate_id=candidate_id, task=task, semaphore=asyncio.Semaphore(self._max_workers))
+        call = _Call(
+            candidate_id=candidate_id,
+            task=task,
+            semaphore=limiter if limiter is not None else asyncio.Semaphore(self._max_workers),
+        )
         jobs: list[tuple[_Key, bool]] = []  # (key, judge only), case-major
         for key in keys:
             saved = self._cache.load_trial(candidate_id, key[1], key[0])
@@ -609,7 +647,10 @@ def _replaced(record: TrialRecord, *, pass_index: int) -> AttemptRecord:
 
 
 def _evaluation_data(case: Case, record: TrialRecord) -> EvaluationData:
-    """A saved trial's output as `Experiment` hands it to evaluators, to re-judge without running the agent."""
+    """A saved trial's output as `Experiment` hands it to evaluators, to re-judge without running the agent.
+
+    The input is the case's own: an `input` the rollout returned to replace it isn't saved in the record.
+    """
     return EvaluationData(
         name=case.name,
         input=case.input,

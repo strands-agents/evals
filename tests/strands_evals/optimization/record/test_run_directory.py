@@ -55,11 +55,11 @@ def _trial(candidate_id, case_name="a", run_index=0, *, trajectory=None, score=1
 
 
 def _baseline():
-    return Candidate(values={"x": 1, "prompt": "hi"}, parent_id=None, origin="baseline", rationale="")
+    return Candidate(values={"x": 1, "prompt": "hi"}, parent_id=None, origin=("baseline",), rationale="")
 
 
 def _child(parent, x=2):
-    return Candidate(values={"x": x, "prompt": "hi"}, parent_id=parent.id, origin="numbers", rationale="try")
+    return Candidate(values={"x": x, "prompt": "hi"}, parent_id=parent.id, origin=("numbers",), rationale="try")
 
 
 def test_create_writes_run_json_and_the_config_event(tmp_path):
@@ -68,7 +68,7 @@ def test_create_writes_run_json_and_the_config_event(tmp_path):
     assert re.fullmatch(r"quickstart-\d{8}-\d{6}-[0-9a-f]{6}", run.run_id)
     saved = json.loads((run.root / "run.json").read_text())
     assert saved["schema_version"] == SCHEMA_VERSION
-    assert set(saved["code"]) == {"version", "commit", "dirty"}
+    assert set(saved["code"]) == {"version", "commit", "dirty", "numpy", "optuna"}
     events = run.events.read()
     assert events[0]["event"] == "config"
     assert events[0]["config"] == saved == run.config
@@ -156,7 +156,7 @@ def test_a_killed_iterations_candidate_proposed_again_is_a_full_propose_with_its
 
     reopened = RunDirectory.open(run.root)
     reopened.events.append("resume", spent=0, budget={}, code={})
-    again = Candidate(values=killed.values, parent_id=baseline.id, origin="numbers", rationale="second try")
+    again = Candidate(values=killed.values, parent_id=baseline.id, origin=("numbers",), rationale="second try")
     assert reopened.save_candidate(again, changed_keys=["x"]) == 1
 
     event = reopened.events.read()[-1]
@@ -191,6 +191,17 @@ def test_a_trial_round_trips_with_its_session_transcript(tmp_path):
     assert loaded == record
     assert isinstance(loaded.trajectory, Session)
     assert run.load_trial("c1", 1, "a") is None
+
+
+def test_trial_status_reads_the_index_without_the_transcript(tmp_path):
+    run = RunDirectory.create(tmp_path, CONFIG)
+    run.save_trial(_trial("c1", trajectory=["read", "answer"]))
+    for path in (run.root / "transcripts").iterdir():
+        path.unlink()
+
+    reopened = RunDirectory.open(run.root)
+    assert reopened.trial_status("c1", 0, "a") is TrialStatus.COMPLETED
+    assert reopened.trial_status("c1", 1, "a") is None
 
 
 def test_an_identical_transcript_is_stored_once(tmp_path):

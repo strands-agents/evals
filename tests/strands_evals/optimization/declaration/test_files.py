@@ -247,6 +247,15 @@ def test_a_file_text_file_declared_twice_fails_at_declaration(project):
         Space({"one": FileText(path), "two": FileText(path)})
 
 
+def test_the_same_file_under_another_casing_fails_at_declaration(project):
+    path = project / "prompts" / "system.md"
+    other = project / "prompts" / "SYSTEM.md"
+    if not other.exists():
+        pytest.skip("case-sensitive file system")
+    with pytest.raises(TypeError, match="already declared"):
+        Space({"one": FileText(path), "two": FileText(other)})
+
+
 def test_a_file_text_file_used_by_a_json_field_fails_at_declaration(project):
     path = project / "config" / "agent.json"
     with pytest.raises(TypeError, match="already declared"):
@@ -977,7 +986,7 @@ def test_a_skill_edit_diffs_on_its_real_file(library):
     space = Space({"skills": SkillLibrary(library)})
     base = Candidate.baseline(space)
     edited = skill_text("triage", "Sort incoming tickets.", "Check the level first.\n")
-    other = base.child(space, {"skills/triage/SKILL.md": edited}, origin="text", rationale="")
+    other = base.child(space, {"skills/triage/SKILL.md": edited}, origin=["text"], rationale="")
     text = diff(space, base, other, root=library.parent)
     assert text.startswith("--- a/skills/triage/SKILL.md\n+++ b/skills/triage/SKILL.md\n")
     assert "-Do the thing.\n+Check the level first.\n" in text

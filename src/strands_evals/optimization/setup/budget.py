@@ -9,7 +9,13 @@ from ...types.optimization import SplitName
 
 @dataclass(frozen=True, kw_only=True)
 class Budget:
-    """`max_rollouts` always applies; `max_iterations=None` means no iteration cap."""
+    """`max_rollouts` always applies; `max_iterations=None` means no iteration cap.
+
+    `max_iterations=n` is n steps' worth of candidates: `n x proposals_per_iteration` candidate slots, charged as
+    a `Nested` round charges its own. A step that saved a candidate uses the `n_candidates` it was given, a round's
+    opener 1 (none when it repeats a measured candidate), and a step that saved nothing (every proposal a
+    duplicate or invalid) none, so a run can have more than n steps. The last step is cut to the slots left.
+    """
 
     max_rollouts: int = 500
     max_iterations: int | None = None
@@ -29,9 +35,9 @@ class BudgetTracker:
     runs and `test_reserve` = 2 x |test| x runs. The search can spend neither, and validation can't spend
     the test share. Under a `Pareto` objective `max(n_finalists, PARETO_MIN_FINALISTS)` (`end_phase.py`)
     replaces `n_finalists`, and `test_reserve` = (that + 1) x |test| x runs (every front member is tested); a
-    test report that can't afford every member tests the champion and the baseline first, then the others in
-    ranking order while affordable. The optimizer computes both reserves and passes them in, so this module
-    imports no constant.
+    test report that can't afford every member tests the champion and the baseline first, then each other
+    member in ranking order that still fits (one that doesn't is skipped). The optimizer computes both reserves
+    and passes them in, so this module imports no constant.
     """
 
     def __init__(self, budget: Budget, spent: int = 0, *, validation_reserve: int = 0, test_reserve: int = 0):

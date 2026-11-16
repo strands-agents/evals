@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any
 
 from ...types.optimization import (
@@ -41,10 +41,10 @@ class FitReplay:
 
 @dataclass(frozen=True)
 class OpenRound:
-    """A `Nested` round started but not finished; `opener_id` None when the opener was unscored."""
+    """A `Nested` round started but not finished."""
 
     round: tuple[int, ...]
-    opener_id: str | None
+    opener_id: str
     block: str
     patch: Patch
 
@@ -69,7 +69,8 @@ class ResumeState:
         fits: Each `fit` event, in order: fitted ones are refitted, unfitted ones without an error kept the
             previous fit, ones with an error mean no fit in use from there.
         iterations: Rebuilt from the events, so the result covers the whole run.
-        search_cost: Summed from the `observe` events' `Patch.usage` and the `proposer_usage` events' `usage`.
+        search_cost: Summed from every `proposer_usage` event, closed iterations or not (a killed iteration's
+            proposer calls were paid for, as its trials count in `spent`).
         finalists: Already chosen by the end phase, reused rather than re-ranked.
         validation: The end phase already picked; only the test report is left.
         is_test_done: A `test` event exists, so the end phase is finished (a None `test` is a finished
@@ -78,6 +79,10 @@ class ResumeState:
         test_reason: Why it was skipped (the `test` event's reason); None otherwise.
         front_test: The `test` event's front reports (`{}` unless the objective is a `Pareto`).
         stop_reason: The last `stop` event's reason.
+        trials: (candidate id, run index, case name) -> the last `trial` event's saved record by the end of the
+            closed iterations (every trial once the search stopped), so scores are rebuilt as the uninterrupted run
+            had them (`RunDirectory.record_from` makes it a `TrialRecord`); a trial a killed iteration replaced is
+            still a cache hit when that iteration runs again.
     """
 
     parents: dict[str, str | None]
@@ -98,6 +103,7 @@ class ResumeState:
     test_reason: str | None
     front_test: dict[str, TestReport]
     stop_reason: StopReason | None
+    trials: dict[tuple[str, int, str], Mapping[str, Any]]
 
 
 def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
@@ -128,7 +134,7 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
     for field in _COMPARED:
         changed = _difference(run.config.get(field), given.get(field), field)
         if changed is not None:
-            raise ValueError(f"{changed}; start a new run to change it")
+            raise ValueError(f"{changed}; pass the run's {field} to resume it, or start a new run to change it")
 
     events = run.events.read()
     # The last trial per key, as RunDirectory.open indexed it.
@@ -154,19 +160,34 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
         test_reason=None,
         front_test={},
         stop_reason=None,
+        trials={},
     )
-    for event in closed_events(events):
+    closed = closed_events(events)
+    kept = {id(event) for event in closed}
+    if any(event["event"] == "stop" for event in closed):
+        last = len(events) - 1  # the search is over: every trial counts
+    else:
+        last = max(
+            (i for i, e in enumerate(events) if id(e) in kept and e["event"] not in ("config", "trial", "resume")),
+            default=-1,
+        )
+    for event in events[: last + 1]:
+        if event["event"] == "trial":
+            record = event["record"]
+            state.trials[(record["candidate_id"], record["run_index"], record["case_name"])] = record
+    for event in events:  # every call's spend, a killed iteration's too, as `spent` counts every trial
+        if event["event"] == "proposer_usage":
+            state.search_cost = state.search_cost + Usage.model_validate(event["usage"])
+    for event in closed:
         name = event["event"]
         if name == "propose":
             candidate_id = event["candidate_id"]
             if not event["rescore"] and candidate_id not in state.parents:
                 state.parents[candidate_id] = event["parent_id"]
                 state.candidates.append(candidate_id)
-            if event.get("patch") is not None:
+            for block, patch in (event.get("deferred_patches") or {}).items():  # one round per deferred block
                 state.open_rounds.append(
-                    OpenRound(
-                        tuple(event["round"]), candidate_id, event["origin"], Patch.model_validate(event["patch"])
-                    )
+                    OpenRound(tuple(event["round"]), candidate_id, block, Patch.model_validate(patch))
                 )
         elif name == "duplicate" and event.get("patch") is not None:
             state.open_rounds.append(
@@ -174,22 +195,14 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
                     tuple(event["round"]), event["candidate_id"], event["block"], Patch.model_validate(event["patch"])
                 )
             )
-        elif name == "unscored":
-            state.open_rounds = [
-                replace(r, opener_id=None) if r.opener_id == event["candidate_id"] else r for r in state.open_rounds
-            ]
         elif name == "observe":
             observation = Observation.model_validate(event["observation"])
             state.feedback.setdefault(event["block"], []).append(observation)
-            if observation.patch.usage is not None:
-                state.search_cost = state.search_cost + observation.patch.usage
             # An opener's deferred observe closes its round.
             for index, open_round in enumerate(state.open_rounds):
                 if open_round.block == event["block"] and open_round.patch == observation.patch:
                     del state.open_rounds[index]
                     break
-        elif name == "proposer_usage":
-            state.search_cost = state.search_cost + Usage.model_validate(event["usage"])
         elif name == "evidence":
             state.feedback.setdefault(event["block"], []).append(Evidence.model_validate(event["evidence"]))
         elif name == "select":

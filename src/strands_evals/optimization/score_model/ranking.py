@@ -14,8 +14,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from ...types.optimization import CandidateLabel, CandidateScores, Estimate, Values
-from ..scoring.objectives import AtMost, Constraint, Criteria, Maximize, Minimize, near
+from ...types.optimization import CandidateLabel, CandidateScores, Estimate, Values, near
+from ..scoring.objectives import AtMost, Constraint, Criteria, Maximize, Minimize, measured_metrics
 from .protocols import Fit
 
 
@@ -49,8 +49,9 @@ class Assessment:
         is_feasible: Every constraint has P(met) >= `criteria.feasibility_threshold` under the fit, or is
             met on measured means.
         violations: Per constraint, <= 0 when met: the metric's quantile at
-            `criteria.feasibility_threshold` against the limit, or the measured mean against the limit (0 when
-            equal up to float noise, infinite when the metric was never measured).
+            `criteria.feasibility_threshold` (`AtMost`) or at 1 minus it (`AtLeast`) against the limit, or the
+            measured mean against the limit (0 when equal up to float noise, infinite when the metric was never
+            measured).
         total_violation: The sum of the positive violations (0 when feasible); what "least violation" ranks by.
         p_met: Per constraint; empty when assessed by measured means.
         estimates: Per goal metric, `fit.estimates(values, candidate)`; empty when assessed by measured means.
@@ -230,8 +231,8 @@ def pareto_front(assessments: Mapping[str, Assessment], ids: Sequence[str]) -> l
     """The feasible candidates among `ids` that no other feasible one dominates, in `ids`' order.
 
     A dominates B when every one of A's `terms` is >= B's and they aren't all equal. Infeasible candidates are
-    left out: constraints filter, they are never front dimensions. Used by the end phase only (the
-    finalists from the search ranking, the validated front from the validation one).
+    left out: constraints filter, they are never front dimensions. Used for the finalists (from the search
+    ranking), the validated front (from the validation one), and each step's `best_after`.
 
     Args:
         assessments: Candidate id -> its assessment.
@@ -252,8 +253,8 @@ def pareto_front(assessments: Mapping[str, Assessment], ids: Sequence[str]) -> l
 def p_met(constraint: Constraint, value: Estimate) -> float:
     """P(constraint holds), 0 to 1, under the metric's estimate.
 
-    Read by the ranking (feasible = P(met) >= `criteria.feasibility_threshold` for every constraint)
-    and by the final pick under the validation fit. With sd 0, 1 when the mean meets the bound (equal up to
+    Reported in `Assessment.p_met` and the label's reasons; feasibility itself is `assess`'s quantile test
+    (the same rule, without the float noise at the bound). With sd 0, 1 when the mean meets the bound (equal up to
     float noise counts), else 0.
     """
     at_most = isinstance(constraint, AtMost)
@@ -285,4 +286,36 @@ def label_candidate(
         assessment: Its `Assessment` from the step's ranking right after the refit; None when ineligible.
         criteria: Names the constraints in the reasons; holds the feasibility threshold.
     """
-    raise NotImplementedError
+    measured = measured_metrics(candidate, criteria.registry)
+    if assessment is None or not candidate.is_eligible:
+        unmeasured = sorted(c for c, runs in candidate.objective_by_run.items() if all(v is None for v in runs))
+        reason = "a train case has no counted run for every goal metric"
+        if unmeasured:
+            reason += f": {', '.join(unmeasured)}"
+        return CandidateLabel(
+            outcome="ineligible",
+            reason=reason,
+            unmet_constraints=[],
+            estimates={},
+            p_met={},
+            is_from_fit=False,
+            measured=measured,
+        )
+    if assessment.is_from_fit:
+        threshold = criteria.feasibility_threshold
+        unmet = [
+            f"{c}: P(met) {assessment.p_met[str(c)]:.2g} < {threshold:g}"
+            for c, v in zip(criteria.constraints, assessment.violations, strict=True)
+            if v > 0
+        ]
+    else:
+        unmet = criteria.unmet_constraints(candidate.metrics_by_case)
+    return CandidateLabel(
+        outcome="infeasible" if unmet else "feasible",
+        reason="; ".join(unmet) if unmet else "meets every constraint",
+        unmet_constraints=unmet,
+        estimates=dict(assessment.estimates),
+        p_met=dict(assessment.p_met),
+        is_from_fit=assessment.is_from_fit,
+        measured=measured,
+    )

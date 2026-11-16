@@ -3,6 +3,7 @@
 from .estimates import Estimate
 from .results import IterationRecord, ProposalOutcome, StopReason
 from .scores import (
+    LABEL_OUTCOMES,
     CandidateLabel,
     CandidateScores,
     CaseSplit,
@@ -13,9 +14,10 @@ from .scores import (
     SplitScores,
     TestReport,
     ValidationReport,
+    near,
 )
 from .search import CandidateSummary, Evidence, Observation, ObservationOutcome, Patch, Value, Values
-from .trials import AttemptRecord, SplitName, TrialRecord, TrialStatus, Usage
+from .trials import SPLIT_NAMES, AttemptRecord, SplitName, TrialRecord, TrialStatus, Usage
 
 __all__ = [
     "AttemptRecord",
@@ -26,6 +28,7 @@ __all__ = [
     "Estimate",
     "Evidence",
     "IterationRecord",
+    "LABEL_OUTCOMES",
     "LabelOutcome",
     "Measured",
     "Observation",
@@ -34,6 +37,7 @@ __all__ = [
     "Patch",
     "ProposalOutcome",
     "Range",
+    "SPLIT_NAMES",
     "SplitName",
     "SplitScores",
     "StopReason",
@@ -44,4 +48,5 @@ __all__ = [
     "ValidationReport",
     "Value",
     "Values",
+    "near",
 ]

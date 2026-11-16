@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Literal
+import math
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict
 
@@ -10,7 +11,14 @@ from .estimates import Estimate
 
 Range = tuple[float | None, float | None]  # (low, high); None = unbounded on that side
 
+
+def near(value: float, end: float) -> bool:
+    """Equal up to float noise: the tolerance every range check, constraint bound, and score range uses."""
+    return math.isclose(value, end, rel_tol=1e-9, abs_tol=1e-12)
+
+
 LabelOutcome = Literal["feasible", "infeasible", "ineligible"]  # also the first three ObservationOutcomes
+LABEL_OUTCOMES: tuple[LabelOutcome, ...] = get_args(LabelOutcome)  # the same outcomes, to iterate over
 
 
 class CaseSplit(BaseModel):
@@ -32,9 +40,9 @@ class CandidateScores(BaseModel):
     Attributes:
         objective_by_case: Case name -> mean of that case's measured per-run objectives. For Reflection's
             per-case scores and the test report, never for ranking.
-        metrics_by_case: Case name -> metric name -> that case's mean, for every metric (each evaluator and
-            every usage metric), so `measured_metrics()` can report tokens and seconds next to the scores. Usage
-            means cover completed and `agent_failure` runs, so a crash's cost counts.
+        metrics_by_case: Case name -> metric name -> that case's mean, for every metric with a value on that
+            case (each evaluator and every usage metric), so `measured_metrics()` can report tokens and seconds
+            next to the scores. Usage means cover completed and `agent_failure` runs, so a crash's cost counts.
         unavailable: Case name -> run index -> metric -> why scoring took the value out (e.g. outside the
             evaluator's range).
         objective_by_run: Case name -> each run's objective (None = not measured); written to the `score`
@@ -43,9 +51,9 @@ class CandidateScores(BaseModel):
             `FitData.scores`).
         objective: The measured objective: `Criteria.objective_value` over each goal metric's mean across
             cases; what the ranking uses without a fit.
-        is_eligible: Every case has at least one run that counts for every goal metric; an evaluator N/A on a
-            case doesn't count against it. Only eligible candidates are fitted, ranked as parents, or chosen
-            as finalists.
+        is_eligible: Every case has at least one run that counts for every goal metric (an evaluator N/A on a
+            case doesn't count against it), and the objective (under `Pareto` every term) is measured. Only
+            eligible candidates are fitted, ranked as parents, or chosen as finalists.
         failures: `agent_failure` trials on this split (each trial's last attempt); infrastructure and
             evaluator failures aren't counted.
     """
@@ -67,10 +75,10 @@ class Measured(BaseModel):
     """One metric measured over a split's cases; for reporting only.
 
     Attributes:
-        mean: Mean over the units: the case (its mean over runs), or the run when the split has a
-            single case.
+        mean: Mean over the units: the case (its mean over runs), or that case's runs when only one case
+            has a value of the metric.
         ci95: 95% t-interval over the units, clipped to the metric's range; None when `n < 2`.
-        n: Units with a value: cases, or runs when there is a single case.
+        n: Units with a value: cases, or runs when only one case has a value.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -85,7 +93,8 @@ class SplitScores(BaseModel):
 
     The search (fit, selection, labels, observe, Reflection) reads `train`; the end phase's pick reads
     `validation`; the test report reads `test`. Every scored candidate has train scores; `validation` is
-    None unless it was a finalist or the baseline, `test` None unless it was the champion or the baseline.
+    None unless it was a finalist or the baseline, `test` None unless it was the champion, the baseline, or
+    (under `Pareto`) a tested front member.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -114,7 +123,7 @@ class CandidateLabel(BaseModel):
     """A candidate's label on train, recorded in the `label` event; a label, never a filter.
 
     `infeasible` means the ranking's feasibility says no (still a possible parent, ranked lower);
-    `ineligible` means some train case is unmeasured (out of the fit and the parents until a re-run
+    `ineligible` means some train case, or the objective, is unmeasured (out of the fit and the parents until a re-run
     succeeds). `estimates`, `p_met`, `is_from_fit`, and `measured` are the ranking's view at this step
     as a snapshot, never read on resume.
 

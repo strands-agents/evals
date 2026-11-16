@@ -10,10 +10,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from ...case import Case
-from ...types.optimization import CaseSplit
+from ...types.optimization import SPLIT_NAMES, CaseSplit
 
 _TOLERANCE = 1e-9
-_ROLES = ("train", "validation", "test")
 
 
 class _DefaultTest:
@@ -77,7 +76,7 @@ class Split:
                     "(test=None means no test cases)"
                 )
             return
-        listed = [case for role in _ROLES for case in getattr(self, role) or ()]
+        listed = [case for role in SPLIT_NAMES for case in getattr(self, role) or ()]
         if any(case.name is None for case in listed):
             raise ValueError("Split: every listed case needs a name (Case(name=...)); names pair a case's runs")
         seen: set[str] = set()
@@ -178,7 +177,7 @@ class Split:
         Raises:
             ValueError: A listed case not in the experiment, or an experiment case in no list.
         """
-        roles = {role: tuple(case.name for case in getattr(self, role) or ()) for role in _ROLES}
+        roles = {role: tuple(case.name for case in getattr(self, role) or ()) for role in SPLIT_NAMES}
         listed = {name for role_names in roles.values() for name in role_names}
         outside = sorted(listed - set(names))
         if outside:
