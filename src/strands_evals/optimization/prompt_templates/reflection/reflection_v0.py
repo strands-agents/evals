@@ -275,9 +275,11 @@ def task_message(
 
     Args:
         versions: The versions table's rows, best first.
-        versions_folder: The folder holding each version's parameters, one file per version.
+        versions_folder: The folder holding each version's parameters, one folder per version (`version.md`
+            plus each text in its own `<name>.txt`).
         goal_metrics: The table's metric columns.
-        limits: The constraints, as sentences; empty for none (then the table has no "Meets the limits" column).
+        limits: The constraints, as written (`str(constraint)`, e.g. `tokens <= 4000`); empty for none (then the
+            table has no "Meets the limits" column).
         traces_folder: The folder holding the current version's conversations.
         digest_file: The digest of every conversation; None for none.
         label_metrics: The metrics a conversation's reward is computed from.

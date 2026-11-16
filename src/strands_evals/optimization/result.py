@@ -131,16 +131,19 @@ class OptimizationResult(BaseModel):
         run_id: The run folder's name.
         run_dir: The run folder; it may not exist on another machine, and nothing here reads it.
         baseline_id: The baseline's id.
-        candidates: Every saved candidate by id, in display-number order.
+        candidates: Every candidate of the run's closed iterations by id, in display-number order (a killed
+            iteration's candidate that the resumed run didn't propose again is left out).
         validation: How the champion was picked on validation: every finalist's objective and estimates, and
             why any was infeasible.
         test: The champion against the baseline on test, report only: a negative `mean_diff` is possible
             and never changes what ships. When the baseline ships it is compared with itself. None without
-            test cases or when it couldn't be afforded (`test_reason` says which).
+            test cases, when it couldn't be afforded, or when every test trial of the champion or the baseline
+            failed (`test_reason` says which).
         test_reason: Why `test` is None (the `test` event's reason), or under `Pareto` which front members
-            the test report couldn't afford; None when everything ran.
+            the test report couldn't afford or measured nothing for; None when everything ran.
         front_test: Under a `Pareto` objective, each tested front member against the baseline on test
-            (`front_test[best.id]` is `test`); `{}` otherwise or when the test report was skipped.
+            (`front_test[best.id]` is `test` when the champion is on the validated front; members not afforded
+            or with every test trial failed are absent); `{}` otherwise or when the test report was skipped.
         effects: `effects.json`: per metric and option from the search fit, or empty with the reason.
         iterations: Every search step, in order.
         rollouts_spent: Rollouts counted against the budget, the end phase's included.
@@ -303,6 +306,9 @@ class OptimizationResult(BaseModel):
 
         Every row of one grain has the same keys; a value that doesn't apply is None. Per-metric columns
         are named `<prefix>.<metric>`, e.g. `train.HelpfulnessEvaluator`. `pandas.DataFrame(rows)` works.
+        Iteration rows cover the closed iterations only, so after a kill and resume their `rollouts_total`
+        and `search_tokens` can sum to less than `rollouts_spent` and `search_cost` (which count the killed
+        iteration's spend too).
 
         Args:
             grain: What one row is: `proposal` (every proposal, the baseline included, with its label at
@@ -533,7 +539,7 @@ def _iteration_rows(
             ends[iteration] = event
         elif name == "score" and iteration == 0 and event["split"] == "train":
             baseline_rollouts += event["rollouts"]
-        elif name == "proposer_usage":  # every proposer call's spend, in the step that asked
+        elif name == "proposer_usage":  # each closed iteration's proposer spend, in the step that asked
             tokens[iteration] += event["usage"]["tokens"]
             calls[iteration] += event["usage"]["model_calls"]
     rows = []

@@ -109,7 +109,8 @@ class Reflection(Proposer):
     Each `propose` call (n=1) runs one agent (`concurrent = True`). The agent is retried 3 times, each
     failure logged as `proposer_retry`, then the last error is raised; nothing submitted, or every value
     dropped, returns `[]`. A returned patch's `usage` holds its call's model spend, every attempt and send-back
-    included; a call that returns nothing after its agent ran, or raises, logs that spend as `proposer_usage`
+    included; a call that returns nothing after its agent ran, or whose agent fails on every attempt, logs that
+    spend as `proposer_usage`
     instead (nothing when cancelled). Guardrails run in code after the agent returns,
     including the leakage screen (drop a value that adds a shown case's identifier-like name, or a
     verbatim run of >= 40 characters from a shown trial's input, output, or conversation, that the
@@ -561,7 +562,8 @@ def _submit_tool(
     """A tool that reads each submitted value from a file in `work` (real path checked) into `submitted`, replacing
     only the values it names (an earlier submission's others are kept); all or nothing: one bad file, or one value
     carrying a version's header (`_VERSION_HEADER`), and nothing from this submission is taken.
-    Each refused submission is appended to `rejected` (value name -> why), and the agent is told why.
+    Each submission refused for a version's header is appended to `rejected` (value name -> why); a bad file is
+    only reported to the agent, which is told why either way.
 
     Each value is stripped (a shell's `echo` and heredocs add a newline the agent didn't mean), then given the leading
     and trailing whitespace of the parent's value under that key, so a file's final newline survives: an unchanged
@@ -878,9 +880,10 @@ def _messages(trajectory: Any) -> list[Any]:
     for each agent invocation in the trial, in the order they started, the messages of its last model call (what it
     sent, then what it answered). A trajectory that isn't a `Session` (a rollout's own list) is kept as is.
 
-    A model call belongs to the agent invocation its parent spans lead to; without parent ids, to the innermost
-    invocation whose time contains it. An invocation whose conversation is the start of a later one's (the same agent
-    invoked again, its history carried over) is left out, so a multi-turn rollout's messages appear once.
+    A model call belongs to the agent invocation its parent spans lead to; when they lead to none, to the innermost
+    invocation whose time contains it; model calls under no invocation form one conversation, placed first. An
+    invocation whose conversation is the start of a later one's (the same agent invoked again, its history carried
+    over) is left out, so a multi-turn rollout's messages appear once.
 
     Messages are read by `role`, never by class: a reloaded assistant message can come back as a `UserMessage` with
     role "assistant".
@@ -981,7 +984,8 @@ def _trial_line(r: dict[str, Any], cap: int) -> str:
 
 def _digest_text(rows: Sequence[dict[str, Any]], threshold: float, limit: int) -> str:
     """The digest of every trace: a header, then every case with a conversation whose reward is below `threshold`
-    (each such conversation: its file, reward, how it ended, the evaluators' reasons, its size), then the cases where
+    (each of its conversations: its file, reward, how it ended, the evaluators' reasons, its size; in the short
+    form, one line per case naming only its failing files), then the cases where
     every conversation succeeded. Its fields are cut until it fits in `limit` characters; every case that did not
     succeed is always named (when even their names do not fit, the digest says how many lines are left out)."""
     by_case: dict[str, list[dict[str, Any]]] = {}

@@ -84,9 +84,9 @@ class Observation(BaseModel):
 
     Outcomes are labels, not filters: `feasible` = eligible and meeting every constraint as the ranking
     assesses it; `infeasible` = a constraint not met (still a possible parent, ranked lower);
-    `ineligible` = some train case unmeasured; `invalid` = the patch failed validation or touched keys
-    outside its block (no candidate); `duplicate` = its values equal an eligible candidate's (`objective`
-    is that candidate's).
+    `ineligible` = some train case, or the objective, unmeasured; `invalid` = the patch failed validation or
+    touched keys outside its block (no candidate); `duplicate` = its values equal an eligible candidate's, or a
+    candidate's proposed earlier in the same step (`objective` is that candidate's).
 
     Attributes:
         candidate_id: None for an invalid patch; for a duplicate, the existing candidate's id.
@@ -96,8 +96,9 @@ class Observation(BaseModel):
         round_candidate_ids: For a `Nested` round's opener, the round's candidates (the opener and the
             candidates its steps saved), whichever of them was the best. None otherwise.
         objective: The candidate's `Assessment.objective` right after the step's refit (a snapshot); for a
-            duplicate, told as soon as it is found (before the redraw), the existing candidate's from the step's
-            start. None if never measured.
+            duplicate of an eligible candidate, told as soon as it is found (before the redraw), the existing
+            candidate's from the step's start; for a same-step twin, told after the refit, that candidate's
+            then. None if never measured.
         term_values: Each objective term's raw value (not oriented, unlike `Assessment.terms`: the resolved
             estimate, else the measured mean), in objective order, taken with `objective`; what `TPE` is told
             under `Pareto`. None when `objective` is None.
@@ -120,7 +121,8 @@ class Observation(BaseModel):
 
 
 class Evidence(BaseModel):
-    """A candidate another block proposed, told to every other block's proposer.
+    """A candidate another block proposed, told to every other block's proposer (except one waiting for an open
+    `Nested` round's end, which is told only the round's best).
 
     `objective`, `term_values`, and `violations` are snapshots, as in `Observation`.
     """

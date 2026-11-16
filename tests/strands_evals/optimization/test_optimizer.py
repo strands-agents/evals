@@ -20,6 +20,7 @@ from strands_evals.optimization import (
     InfrastructureError,
     Int,
     Joint,
+    JsonField,
     Maximize,
     Minimize,
     Nested,
@@ -388,6 +389,33 @@ async def test_build_task_gets_the_candidates_values(tmp_path):
     assert trial["record"]["output"] == "k=3"
 
 
+async def test_build_task_gets_a_workspace_for_any_file_backed_value(tmp_path):
+    config = tmp_path / "agent.json"
+    config.write_text(json.dumps({"prompt": "Be brief."}) + "\n")
+    built = []
+
+    def build_task(ctx):
+        built.append(ctx)
+
+        async def task(case):
+            return json.loads(next(ctx.workspace.rglob("agent.json")).read_text())["prompt"]
+
+        return task
+
+    optimizer = Optimizer(
+        _experiment(),
+        build_task=build_task,
+        space={"prompt": JsonField(config, "/prompt")},
+        base_dir=tmp_path / "runs",
+        max_workers=64,
+    )
+    optimizer._setup()
+    await optimizer._score_baseline()
+    assert built[0].workspace is not None
+    trial = next(e for e in _events(optimizer) if e["event"] == "trial")
+    assert trial["record"]["output"] == "Be brief."
+
+
 def test_setup_warns_when_a_step_runs_in_batches(tmp_path):
     optimizer = _optimizer(base_dir=tmp_path)
     with pytest.warns(UserWarning, match=r"4 candidates x 8 train cases x 1 runs = 32 trials, but max_workers is 4"):
@@ -711,6 +739,39 @@ async def test_every_proposer_calls_spend_counts_on_resume(tmp_path):
     assert killed == 20
     state = load_state(RunDirectory.open(optimizer._run.root), config=optimizer._config())
     assert state.search_cost == optimizer._search_cost
+
+
+async def test_a_run_killed_in_its_first_iteration_keeps_that_proposer_spend(tmp_path):
+    spend = Usage(
+        input_tokens=9,
+        output_tokens=1,
+        tokens=10,
+        cache_read_tokens=None,
+        cache_write_tokens=None,
+        model_calls=1,
+        seconds=1.0,
+        models=["m"],
+    )
+
+    class Spending(Scripted):
+        async def propose(self, request):
+            patches = await super().propose(request)
+            return [p.model_copy(update={"usage": spend}) for p in patches]
+
+    original = _searching(
+        Block(Spending({"temperature": 0.5}), "temperature"),
+        schedule=Alternate(),
+        base_dir=tmp_path / "runs",
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+    )
+    await original.run_async()
+    # Killed just after iteration 1's proposal was paid for; the resumed proposer proposes nothing (no spend).
+    copy = _killed(original._run.root, tmp_path, lambda events: _index(events, "proposer_usage"))
+    search = Search([Block(Spending(), "temperature"), Block(Scripted(), "manager")], schedule=Alternate())
+    result = await _resume(copy, search=search, budget=Budget(max_iterations=1)).run_async()
+    assert result.search_cost.tokens == 10
+    assert OptimizationResult.from_file(copy / "result.json").search_cost.tokens == 10
 
 
 async def test_on_iteration_may_be_async_and_its_error_stops_the_run(tmp_path):

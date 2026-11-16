@@ -221,6 +221,8 @@ def test_proposer_configs():
         Reflection(success_threshold=1.5)
     with pytest.raises(ValueError, match="n_startup_trials"):
         TPE(n_startup_trials=-1)
+    with pytest.raises(TypeError, match="n_startup_trials"):
+        TPE(n_startup_trials=2.0)
 
 
 # ---- Search.resolve: the default schedule and the check ----------------------------------------------------------

@@ -12,8 +12,9 @@ class TopRanked(Selection):
 
     Feasible candidates first, by the highest objective (each goal metric's estimate resolved to a tenth of
     its sd, combined by `Criteria`; measured train means without a fit or with any metric flagged); none
-    feasible -> the least violation. Ties go to the earlier candidate, so the baseline wins when nothing
-    beats it at the model's resolution.
+    feasible -> the least violation, equal violations by the higher objective. Ties go to the earlier
+    candidate (under `Pareto` first to the larger terms), so the baseline wins when nothing beats it at the
+    model's resolution.
     """
 
     name: ClassVar[str] = "top_ranked"

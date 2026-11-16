@@ -63,7 +63,7 @@ class TrialLogEntry:
 
 @dataclass
 class TrialLog:
-    """One run's trial status, written by `instrument`, keyed by case name.
+    """One trial's status (one case, one run), written by `instrument`, keyed by case name.
 
     Lives here, not in `trials.py`, so the two modules don't import each other.
 
@@ -218,7 +218,7 @@ async def _in_thread(fn: Callable[..., Any], *args: Any) -> Any:
 def instrument(task: TaskFn, log: TrialLog, traces: TraceCapture) -> TaskFn:
     """Open one span per attempt, classify and re-raise errors, and attach the `Session` as trajectory.
 
-    Called by `TrialRunner.run`, once per run with a fresh `TrialLog`. A setup error is stored as
+    Called by `TrialRunner.run`, once per trial (one case, one run) with a fresh `TrialLog`. A setup error is stored as
     `log.setup_error`, not classified: a `_FactoryArgumentError`, or a `RuntimeError` when the attempt
     span isn't recorded (an SDK disabled or sampling out), since every such trial would read as
     `completed` with no usage and no trajectory. A rollout-returned `trajectory` that is not None wins;

@@ -351,7 +351,7 @@ def choice(*alternatives: Component, **labeled: Component | Any) -> Choice:
     )
 
 
-# ---- Private helpers (shared with space.py, tools.py, tunable.py) ------------
+# ---- Private helpers (shared with files.py, space.py, tools.py, tunable.py) ------------
 
 
 def _is_option(value: Any, options: Sequence[Any]) -> bool:
@@ -360,7 +360,7 @@ def _is_option(value: Any, options: Sequence[Any]) -> bool:
 
 
 def _default_size_cap(baseline: str) -> int:
-    """`max(2000, 3 * len(baseline))`; shared with `files.py`."""
+    """`max(2000, 3 * len(baseline))`; shared with `space.py`."""
     return max(2000, 3 * len(baseline))
 
 

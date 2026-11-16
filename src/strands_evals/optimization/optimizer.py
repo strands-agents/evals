@@ -155,13 +155,15 @@ class Optimizer:
             proposals_per_iteration: Candidates per step, its full width (a step's candidates merge one
                 patch of each of its blocks). The schedule may give a step fewer (`Step.n_candidates`).
             max_workers: Parallel trials, shared by the candidates scored at once.
-            rerun_passes: Max infrastructure re-run passes per candidate and phase.
+            rerun_passes: Max re-run passes per scoring call: trials still `infrastructure_invalid` are re-run, and
+                evaluators that failed are re-judged on the saved output (0 rollouts).
             seed: Seeds the split (unless `Split(seed=)` is set), selection, TPE, and Thompson.
             base_dir: Where run directories go.
             name: The run folder's prefix (lowercase letters, digits, `-`, `_`); for reading only.
             on_iteration: Called with each finished iteration, after its `iteration_end` event; an `async def`
-                callback is awaited. An error it raises stops the run there and reaches the caller, and
-                `Optimizer.resume` continues from the next iteration.
+                callback is awaited, on the optimizer's own event loop under `run()` (use `run_async()` for
+                a callback that awaits something bound to the caller's loop). An error it raises stops the run
+                there and reaches the caller, and `Optimizer.resume` continues from the next iteration.
 
         Raises:
             TypeError: Conflicting arguments, e.g. `factory` and `build_task` together.
@@ -475,6 +477,8 @@ class Optimizer:
             return
         scores = await self._score_baseline()
         self._init_state(self._baseline)
+        if self._resumed is not None:  # killed in iteration 1: its proposers were already paid
+            self._search_cost = self._resumed.search_cost
         self._candidates[self._baseline.id] = self._baseline
         self._train[self._baseline.id] = scores
         self._refit(scored=True)
@@ -521,7 +525,7 @@ class Optimizer:
                 if (saved_trial := state.trials.get((candidate_id, index, case))) is not None
             }
             if not records:
-                continue  # saved but never scored (the budget couldn't cover it)
+                continue  # defensive: every candidate of a closed iteration has trials
             self._records[candidate_id] = records
             train = [r for r in records.values() if r.split == "train"]
             if train:
@@ -661,7 +665,7 @@ class Optimizer:
             except Exception as error:  # noqa: BLE001 - a failed validation fit picks by measured means
                 problem = f"the model raised: {type(error).__name__}: {error}"
             else:
-                problem = None if fit is not None else problem
+                problem = None if fit is not None else "the model returned no fit"
         report = pick(
             baseline_id=baseline,
             finalist_ids=finalists,
@@ -1578,7 +1582,7 @@ class Optimizer:
             return make_task(bound, self._rollout_fn or default_rollout, self._environment)
         assert self._build_task is not None
         values = candidate.values
-        if self._space._copies_files:
+        if self._space._files:  # any file-backed value: a config-defined agent may load a whole edited file
             self._space.create_candidate_copy(values, workspace)
         else:
             workspace = None  # type: ignore[assignment]
@@ -1597,8 +1601,9 @@ class Optimizer:
     ) -> CandidateScores:
         """Score one candidate on one split's cases and count the rollouts; `_score_event` writes its event.
 
-        Every trial is saved as it finishes (`TrialRunner` writes the `trial` events); the caller has checked
-        `can_afford(pending(...))`, so the first pass fits and `allowance` caps the re-run passes. Candidates
+        Every trial is saved as it finishes (`TrialRunner` writes the `trial` events); the caller guarantees the
+        first pass fits (an explicit `can_afford`, the step's `n` cut, or the end phase's reserves), and
+        `allowance` caps the re-run passes. Candidates
         scored at once write their `score` events afterwards, in proposal order.
         """
         assert self._run is not None
@@ -1628,7 +1633,7 @@ class Optimizer:
         The calls share one `max_workers` semaphore, so that many trials run at once however many candidates
         the step has, and each gets its pending trials plus an even share of what the phase's allowance leaves
         for re-runs (earlier entries get the remainder), so the run is the same whatever finishes first. The
-        caller has checked the first passes fit.
+        caller guarantees the first passes fit.
         """
         if not entries:
             return []
@@ -1855,8 +1860,9 @@ class Optimizer:
 
 def _slots_used(records: Sequence[IterationRecord]) -> int:
     """The candidate slots a run's steps used against `Budget.max_iterations`, charged as a `Nested` round charges
-    its own: a step that saved a candidate, the `n_candidates` it was given; a round's opener, its 1 unless it repeated
-    a measured candidate (that costs only its own round); a step that saved nothing, none."""
+    its own: a step that saved a candidate, the `n_candidates` it was given; a round's opener, its 1 when it proposed
+    something other than a repeat of a measured candidate (a repeat costs only its own round); a step that saved
+    nothing, none."""
     used = 0
     for record in records:
         if record.role == "opener":

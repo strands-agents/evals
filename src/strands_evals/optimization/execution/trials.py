@@ -157,9 +157,9 @@ class TrialCache(Protocol):
 class TrialRunner:
     """Runs a candidate's uncached trials, each through its own one-case `Experiment`.
 
-    `rerun_passes` caps the infrastructure re-run passes per call; this runner never retries inside a
-    trial. `Experiment` keeps its own throttling retries inside one trial's task span; each retry is an
-    attempt (`TrialRecord.previous_attempts`).
+    `rerun_passes` caps the re-run passes per call (infrastructure re-runs and failed-evaluator re-judges);
+    this runner never retries inside a trial. `Experiment` keeps its own throttling retries inside one trial's
+    task span; each retry is an attempt (`TrialRecord.previous_attempts`).
     """
 
     def __init__(
@@ -177,22 +177,23 @@ class TrialRunner:
 
         Each trial builds a fresh `Experiment([case], evaluators)` with `diagnosis_config` off, after
         `TraceCapture` is installed, and runs it in an empty OTel context so an outer span can't merge
-        trials into one trace. The user's `Experiment` instance is never run (its tracer is a no-op).
+        trials into one trace. The user's `Experiment` instance is never run (its tracer may predate the
+        capture and be a no-op).
 
         With no evaluators, `Experiment` substitutes a placeholder `Evaluator()` that always raises. The
-        placeholder (`type(e) is Evaluator`) is dropped from `evaluations`, `evaluator_errors`, and the
-        every-evaluator-failed check, so a trial with zero evaluators (a usage-only objective) is
-        `completed`, not `evaluator_invalid`.
+        caller passes the evaluators without that placeholder (`Optimizer` drops it), and only
+        `evaluators` are read, so a trial with zero evaluators (a usage-only objective) is `completed`,
+        not `evaluator_invalid`.
 
         Each evaluator is passed to `Experiment` wrapped in a thin private proxy that delegates every
-        attribute to the evaluator (so `get_name`, `get_type_name`, `aggregator`, and the label mapping
-        are its own) and wraps only `evaluate_async`. The proxy registers the current trace with
+        attribute to the evaluator (so `get_name`, `get_type_name`, and the label mapping are its own)
+        and wraps `evaluate_async` and `aggregator`. The proxy registers the current trace with
         `TraceCapture`, since a judge-only re-run has no attempt span to do it and its judge spans would
-        be dropped. When the evaluator raises, it records the exception's type name and re-raises. A
-        failed judge, on infrastructure or not, never changes the trial's status: the trial stays
+        be dropped. When the evaluator raises, it records the exception's type name and re-raises; a
+        non-finite score, or a row's score outside the evaluator's range, raises `ValueError` the same
+        way. A failed judge, on infrastructure or not, never changes the trial's status: the trial stays
         `completed` with that evaluator in `evaluator_errors` (every evaluator failed is
-        `evaluator_invalid`), and only the agent side makes a trial `infrastructure_invalid`. The
-        placeholder's error is dropped from the evaluator view as well.
+        `evaluator_invalid`), and only the agent side makes a trial `infrastructure_invalid`.
 
         Args:
             cases: Every case of the run.
@@ -201,7 +202,7 @@ class TrialRunner:
             cache: Saved trials (the run directory).
             split_of: Case name -> its split, given once so a record's split can't be wrong.
             max_workers: Parallel trials within one call.
-            rerun_passes: Max infrastructure re-run passes per call.
+            rerun_passes: Max re-run passes per call (infrastructure re-runs and failed-evaluator re-judges).
 
         Raises:
             ValueError: A case without a name, two cases with one name, a case missing from `split_of`,
@@ -275,20 +276,21 @@ class TrialRunner:
         returns. Every trial of the call, all runs included, runs at once under one `max_workers` cap,
         case-major (each case's runs, then the next case's); sync tasks run in the call's own pool of
         `max_workers` threads, so the cap holds for them too. With `limiter`, that semaphore caps the
-        trials instead, so candidates scored at once share one cap rather than one each. Each call gets a
-        private in-memory `EvaluationDataStore`: it captures the task's live output (`Session` included) and
-        replays it on a judge-only re-run, which runs only the evaluators that failed.
+        trials instead, so candidates scored at once share one cap rather than one each. Each trial gets a
+        private in-memory store: it captures the task's live output (`Session` included), which the call
+        keeps and replays on a judge-only re-run, which runs only the evaluators that failed.
 
-        `task` is not yet instrumented (`make_task(...)` or the `build_task` path's task); each run wraps
-        it with `instrument(task, TrialLog(), traces)`. After every run's first pass, up to `rerun_passes`
-        re-run passes each retry the trials still `infrastructure_invalid` or with a failed evaluator.
+        `task` is not yet instrumented (`make_task(...)` or the `build_task` path's task); each trial (one
+        case, one run) wraps it with `instrument(task, TrialLog(), traces)`. After every run's first pass, up
+        to `rerun_passes` re-run passes each retry the trials still `infrastructure_invalid` or with a failed evaluator.
         `allowance` caps the rollouts of the whole call, first pass included: the caller checks
         `can_afford(pending(...))` first, so the first pass always fits, and the re-runs get what is left of
         it (`BudgetTracker.allowance(phase=...)` read before the call, so `max_rollouts` and the later
         phases' reserves hold). Trials left when it runs out stay `infrastructure_invalid`. A judge-only
         re-run costs 0 rollouts. A record a
         re-run replaces moves into the new record's `previous_attempts`. Each record's and attempt's
-        `rollouts` is set to what it cost (1 when the agent ran, else 0).
+        `rollouts` is set to what it cost (1 when a pass ran the agent; 0 for a judge-only re-run and for an
+        attempt `Experiment` retried on throttling).
 
         Each cost stays with what it bought. After a judge-only re-run, the new record keeps the reused
         output's usage and the judge spend of every score it holds; the replaced attempt keeps its
@@ -645,7 +647,10 @@ def _replaced(record: TrialRecord, *, pass_index: int) -> AttemptRecord:
 
 
 def _evaluation_data(case: Case, record: TrialRecord) -> EvaluationData:
-    """A saved trial's output as `Experiment` hands it to evaluators, to re-judge without running the agent."""
+    """A saved trial's output as `Experiment` hands it to evaluators, to re-judge without running the agent.
+
+    The input is the case's own: an `input` the rollout returned to replace it isn't saved in the record.
+    """
     return EvaluationData(
         name=case.name,
         input=case.input,

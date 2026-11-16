@@ -134,10 +134,10 @@ def diff(space: Space, base: Candidate, other: Candidate, *, root: Path) -> str:
     """A valid unified diff of every changed text value, for review.
 
     File-backed values are hunks on their real files, headed `--- a/<path>` / `+++ b/<path>` with the
-    path relative to `root` (absolute for a file outside it); a `JsonField`'s hunk is on its whole
-    file. Each changed non-file text value follows as a hunk headed `--- <key>` / `+++ <key>`. Not
-    promised to apply with `git apply`: the CLI applies a candidate from its values. Numbers and
-    choices never appear (see `changed_values`).
+    path relative to `root` (a file outside it is headed by its absolute path, without `a/` / `b/`); a
+    `JsonField`'s hunk is on its whole file. Each changed non-file text value follows as a hunk headed
+    `--- <key>` / `+++ <key>`. Not promised to apply with `git apply`: the CLI applies a candidate from its
+    values. Numbers and choices never appear (see `changed_values`).
 
     Args:
         space: Maps file-backed keys to their real paths.

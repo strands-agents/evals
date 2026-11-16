@@ -78,7 +78,8 @@ class Minimize(_Direction):
 
 @dataclass(frozen=True, init=False)
 class _Combination:
-    """Two or more objectives combined; `WeightedSum` and `Pareto` differ only in how the end phase uses them."""
+    """Two or more objectives combined; `WeightedSum` and `Pareto` differ in how search ties, the proposers, and
+    the end phase treat them."""
 
     objectives: tuple[Maximize | Minimize, ...]
 
@@ -90,7 +91,8 @@ class _Combination:
 
         Raises:
             TypeError: No objectives, or one that isn't a `Maximize` / `Minimize`.
-            ValueError: The same target string twice, or a usage metric name without `scale=`. `Criteria`
+            ValueError: The same target string twice, or, with two or more objectives, a usage metric name
+                without `scale=`. `Criteria`
                 repeats both checks on resolved names and ranges (an evaluator with an unbounded
                 `score_range`, `"Helpfulness"` next to `HelpfulnessEvaluator`).
         """

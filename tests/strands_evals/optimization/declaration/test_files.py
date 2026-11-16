@@ -247,6 +247,15 @@ def test_a_file_text_file_declared_twice_fails_at_declaration(project):
         Space({"one": FileText(path), "two": FileText(path)})
 
 
+def test_the_same_file_under_another_casing_fails_at_declaration(project):
+    path = project / "prompts" / "system.md"
+    other = project / "prompts" / "SYSTEM.md"
+    if not other.exists():
+        pytest.skip("case-sensitive file system")
+    with pytest.raises(TypeError, match="already declared"):
+        Space({"one": FileText(path), "two": FileText(other)})
+
+
 def test_a_file_text_file_used_by_a_json_field_fails_at_declaration(project):
     path = project / "config" / "agent.json"
     with pytest.raises(TypeError, match="already declared"):

@@ -267,7 +267,7 @@ class Space:
         keeps its name; a folder inside another is copied once, as part of the outer one. Each active
         key is written by its marker's `write()`, so the copy holds the candidate's values even if a source file changed
         since declaration; a file that already holds its value keeps the original bytes. Built in a
-        temp folder and renamed into place, with a marker file naming the file-backed values it holds,
+        temp folder and renamed into place, with a marker file holding the sha256 of its file-backed values,
         so a second call with the same values returns at once and one with other values raises. An
         empty `directory` is replaced; concurrent calls for the same values all succeed. Originals are
         never written: files are replaced rather than written through, and a folder containing
@@ -474,10 +474,11 @@ def _check_no_overlap(
     declared: Mapping[str, FileText | JsonField | _SkillFile],
 ) -> None:
     """Raise `TypeError` if `marker` edits text another declared file marker edits too."""
-    # Every marker's path is already resolved: FileText and JsonField resolve theirs, and a skill's
-    # file and folder are never symlinks, so equal files have equal paths.
+    # Every marker's path is already resolved (FileText and JsonField resolve theirs, and a skill's file and
+    # folder are never symlinks), but a case-insensitive file system keeps the casing it was given, so paths
+    # that differ are compared as files too.
     for other_key, other in declared.items():
-        if other.path != marker.path:
+        if other.path != marker.path and not os.path.samefile(other.path, marker.path):
             continue
         if isinstance(marker, JsonField) and isinstance(other, JsonField):
             shorter, longer = sorted((marker._tokens, other._tokens), key=len)

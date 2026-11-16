@@ -16,7 +16,8 @@ class ProposalOutcome(BaseModel):
 
     `number` is the display number (None for an invalid patch); `origin` names the blocks whose patches the
     candidate merges, in proposal order (`Candidate.origin`; for an invalid patch, the blocks that proposed it);
-    `objective` is the objective it was observed with (`Observation.objective`).
+    `objective` is its own objective at its step (for a round's opener, `Observation.objective` is the round's
+    best instead).
     """
 
     model_config = ConfigDict(frozen=True)

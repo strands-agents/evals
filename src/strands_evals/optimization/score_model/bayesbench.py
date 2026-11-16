@@ -313,8 +313,8 @@ class BayesBenchFit:
 
 
 def _scale(range_: tuple[float | None, float | None], baseline: Mapping[str, Any] | None) -> tuple[float, float]:
-    """(offset, unit): the range's low end and width, or for an unbounded metric 0 and twice the baseline's mean
-    over the cases (1 when the baseline has none or it is 0)."""
+    """(offset, unit): the range's low end and width, or for an unbounded metric 0 and twice the absolute value of
+    the baseline's mean over the cases (1 when the baseline has none or it is 0)."""
     low, high = range_
     if low is not None and high is not None and high > low:
         return float(low), float(high - low)

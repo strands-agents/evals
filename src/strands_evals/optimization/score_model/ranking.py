@@ -49,8 +49,9 @@ class Assessment:
         is_feasible: Every constraint has P(met) >= `criteria.feasibility_threshold` under the fit, or is
             met on measured means.
         violations: Per constraint, <= 0 when met: the metric's quantile at
-            `criteria.feasibility_threshold` against the limit, or the measured mean against the limit (0 when
-            equal up to float noise, infinite when the metric was never measured).
+            `criteria.feasibility_threshold` (`AtMost`) or at 1 minus it (`AtLeast`) against the limit, or the
+            measured mean against the limit (0 when equal up to float noise, infinite when the metric was never
+            measured).
         total_violation: The sum of the positive violations (0 when feasible); what "least violation" ranks by.
         p_met: Per constraint; empty when assessed by measured means.
         estimates: Per goal metric, `fit.estimates(values, candidate)`; empty when assessed by measured means.
@@ -230,8 +231,8 @@ def pareto_front(assessments: Mapping[str, Assessment], ids: Sequence[str]) -> l
     """The feasible candidates among `ids` that no other feasible one dominates, in `ids`' order.
 
     A dominates B when every one of A's `terms` is >= B's and they aren't all equal. Infeasible candidates are
-    left out: constraints filter, they are never front dimensions. Used by the end phase only (the
-    finalists from the search ranking, the validated front from the validation one).
+    left out: constraints filter, they are never front dimensions. Used for the finalists (from the search
+    ranking), the validated front (from the validation one), and each step's `best_after`.
 
     Args:
         assessments: Candidate id -> its assessment.
@@ -252,8 +253,8 @@ def pareto_front(assessments: Mapping[str, Assessment], ids: Sequence[str]) -> l
 def p_met(constraint: Constraint, value: Estimate) -> float:
     """P(constraint holds), 0 to 1, under the metric's estimate.
 
-    Read by the ranking (feasible = P(met) >= `criteria.feasibility_threshold` for every constraint)
-    and by the final pick under the validation fit. With sd 0, 1 when the mean meets the bound (equal up to
+    Reported in `Assessment.p_met` and the label's reasons; feasibility itself is `assess`'s quantile test
+    (the same rule, without the float noise at the bound). With sd 0, 1 when the mean meets the bound (equal up to
     float noise counts), else 0.
     """
     at_most = isinstance(constraint, AtMost)

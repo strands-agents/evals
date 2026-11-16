@@ -8,8 +8,8 @@
 2. each text block (the texts one proposer rewrites together) by whether it is rewritten;
 3. each number's linear trend over its values (their logarithms for a log-scale one), standardized, so a value
    anywhere in its bin is predicted along the trend rather than at the bin's;
-4. each fitted candidate's own effect (the first, the baseline, is the reference), for what its factors leave
-   unexplained (a rewrite's text, a number within its bin);
+4. each fitted candidate's own effect (the first fitted one, the baseline when it is eligible, is the reference),
+   for what its factors leave unexplained (a rewrite's text, a number within its bin);
 5. the case (the first is the reference), so case difficulty is shared by every candidate.
 
 Groups 2-5 have main effects only.
@@ -119,7 +119,8 @@ class _Design:
         Args:
             space: The declared space.
             text_blocks: Block name -> its text keys.
-            candidates: The fitted candidates' values, in scoring order (the baseline first).
+            candidates: The fitted candidates' values, in scoring order (the baseline first when it is
+                eligible).
             cases: The split's case names.
         """
         fitted = list(candidates.values())

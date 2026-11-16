@@ -77,12 +77,14 @@ class TPE(Proposer):
                 uses 2.
 
         Raises:
-            TypeError: `seed` is not an int or None.
-            ValueError: `n_startup_trials` is not an int >= 0.
+            TypeError: `seed` is not an int or None, or `n_startup_trials` is not an int.
+            ValueError: `n_startup_trials` is negative.
         """
         if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool)):
             raise TypeError(f"TPE(seed=...) must be an int or None, not {seed!r}")
-        if not isinstance(n_startup_trials, int) or isinstance(n_startup_trials, bool) or n_startup_trials < 0:
+        if not isinstance(n_startup_trials, int) or isinstance(n_startup_trials, bool):
+            raise TypeError(f"TPE(n_startup_trials=...) must be an int, not {n_startup_trials!r}")
+        if n_startup_trials < 0:
             raise ValueError(f"TPE(n_startup_trials=...) must be an int >= 0, not {n_startup_trials!r}")
         self.seed = seed
         self.n_startup_trials = n_startup_trials

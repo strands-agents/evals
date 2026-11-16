@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 
 
 class Block:
-    """One proposer owns some variables; a top-level name expands to every key under it.
+    """One proposer owns some variables; a top-level name expands to every key under it that its proposer can
+    propose.
 
     Attributes:
         proposer: Proposes values for these variables.
@@ -209,7 +210,8 @@ class Nested(Schedule):
     then inner steps (the inner schedule's blocks, narrowed to those with an active key in `ctx.keys` under
     the opener's values) whose parents are the round's own eligible candidates.
     A round holds `1 + inner_iterations * ctx.proposals_per_iteration` candidates: its opener uses 1, an
-    inner `Nested`'s opener 1 unless it repeats a measured candidate (then it costs only its own round), and
+    inner `Nested`'s opener 1 when it proposed something other than a repeat (a repeat of a measured
+    candidate costs only its own round), and
     a step that saved a candidate the `n_candidates` it was given (`IterationRecord.n_candidates`). A step's
     `n_candidates` is cut to the room left in every round around it, so the last one can be narrower, and
     the round ends when the room is used up; an inner step that saved nothing uses none, while an opener
@@ -509,7 +511,8 @@ class Search:
                 kind the block's proposer can't propose (not in `proposer.kinds`, e.g. a text key given to
                 `TPE`), naming the key and the block; or a `Nested` (given, or in `within`) whose
                 outer block is an unnamed `Block` not in this search, is outside its scope, or has keys that
-                exist only under a choice in one of its inner blocks.
+                exist only under a choice in one of its inner blocks; or, for the default schedule,
+                structural blocks whose choices depend on each other in a cycle.
         """
         params = space.params()
         order = {info.key: i for i, info in enumerate(params)}
