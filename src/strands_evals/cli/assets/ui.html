@@ -5523,7 +5523,13 @@
      Each row is scaled to its own interval. A shared axis would have to put a 0.14 change in a
      score and a 190-token change on one scale, and the score would vanish; what is worth
      comparing between rows is which side of the line they fall on, and that is a side rather
-     than a width. The note on the chart says so, because a bar invites being measured. */
+     than a width. The note on the chart says so, because a bar invites being measured.
+
+     Only intervals with width are drawn. Two test cases that agreed exactly report `[149, 149]`,
+     which is an interval in name only: there is no spread to show, and scaling it to itself put a
+     dot hard against the right edge of every such row — a drawing that said "as far as this can
+     go" about a run whose two cases simply happened to match. When no row has width the picture
+     does not appear at all, and the table and the sentence are left to say it in figures. */
   const RS = { row: 22, head: 20, lab: 104, right: 14, foot: 16 };
   function resultStrip(d) {
     const r = d.result;
@@ -5533,7 +5539,10 @@
        own goals — a metric the search never charted still has a stated direction. */
     const dirOf = m => ((((d.facts || {}).goals || []).find(g => g.metric === m) || {}).dir) || null;
     const rows = [];
-    const interval = o => o && typeof o.ci_low === 'number' && typeof o.ci_high === 'number';
+    /* Both bounds, and apart: a bound of `null` is a comparison that reported no interval, and
+       `ci_low === ci_high` is one with nothing to draw. Neither is a bar. */
+    const interval = o => o && typeof o.ci_low === 'number' && typeof o.ci_high === 'number'
+      && o.ci_high > o.ci_low;
     for (const m of r.metrics) {
       if (!interval(m.diff)) continue;      // only the goal metrics get a `difference` entry
       rows.push({
@@ -5562,9 +5571,9 @@
     let body = '';
     rows.forEach((row, i) => {
       const cy = RS.head + i * RS.row + RS.row / 2;
-      /* Per row, against its own largest end. A zero-width interval — which is what a comparison
-         over two cases that agreed exactly reports — scales to a dot, and a dot is the honest
-         drawing of it. */
+      /* Per row, against its own furthest end, which is therefore the row that reaches the margin.
+         Every row having an end at the margin is the point: the width is this row's own, so the
+         only thing to read across rows is the side of the line. */
       const m = Math.max(Math.abs(row.lo), Math.abs(row.hi), Math.abs(row.mean)) || 1;
       const x = v => zero + (v / m) * half;
       const crosses = row.lo <= 0 && row.hi >= 0;
@@ -5592,10 +5601,11 @@
       + 'against a line at no change">'
       + `<line class="rs-zero" x1="${zero}" y1="${RS.head - 5}" x2="${zero}" y2="${height - RS.foot + 3}"/>`
       + `<text class="rs-note" x="${zero}" y="${RS.head - 9}" text-anchor="middle">no change</text>`
-      + `<text class="rs-note" x="${left}" y="${height - 3}">`
-      + `${r.heldOut ? 'champion against baseline, on the held-out cases' : 'champion against baseline'}</text>`
-      + `<text class="rs-note" x="${right}" y="${height - 3}" text-anchor="end">`
-      + 'each bar scaled to itself, so widths do not compare</text>'
+      /* One caption, on one line, left of everything. Two of them — one each side of the line at
+         no change — read as that line's two axis labels rather than as a note about the chart. */
+      + `<text class="rs-note" x="0" y="${height - 3}">`
+      + `${r.heldOut ? 'champion against baseline, on the held-out cases' : 'champion against baseline'}`
+      + ' · each bar scaled to itself, so widths do not compare</text>'
       + body + '</svg></div>';
   }
 
@@ -5639,6 +5649,13 @@
     } else if (typeof o.ci_low !== 'number' || typeof o.ci_high !== 'number') {
       verdict = `Objective <b>${esc(signed(o.mean_diff))}</b> against the baseline, with no interval `
         + 'in the report — so how certain that is cannot be read off it.';
+    } else if (o.ci_high === o.ci_low) {
+      /* Every case reported the same difference, so there is nothing to resample and the interval
+         collapses onto the mean. That is not a narrow interval, it is no interval — and reading it
+         as "clear of zero" would turn two cases that happened to agree into confidence. */
+      verdict = `Objective <b>${esc(signed(o.mean_diff))}</b> against the baseline — the same on every `
+        + `one of ${plural(r.cases || 0, 'test case')}, so its 95% interval has no width and says `
+        + 'nothing about how far this would carry to other cases.';
     } else {
       const span = `95% interval [${esc(fine(o.ci_low))}, ${esc(fine(o.ci_high))}]`;
       const reading = o.ci_low > 0

@@ -1314,19 +1314,23 @@ ok(/the objective states no direction for/.test(plainBars[0].title),
   'and says that is why', plainBars[0].title);
 
 /* Two cases that agreed exactly give a zero-width interval — both sample runs under
-   `examples/optimization` report one. A bar of no length is a dot, and a dot is the honest
-   drawing of it: it must not come out as a bar of some arbitrary minimum width. */
+   `examples/optimization` report one, so this is the common case and not the corner. There is no
+   spread to draw. Scaled to its own row a point lands hard against the margin, which reads as "as
+   far as this could go" about a comparison that showed nothing of the kind, so the picture does
+   not appear at all — and the sentence stops claiming the interval clears zero. */
 const pPoint = await stripPage('Maximize(H)', {
   champion_id: 'c1', baseline_id: 'c0',
   objective: { mean_diff: 0.7, ci_low: 0.7, ci_high: 0.7, n_cases: 2 },
   difference: { H: { mean_diff: 0.7, ci_low: 0.7, ci_high: 0.7, n_cases: 2 } },
   means: { c1: { H: { mean: 0.7 } }, c0: { H: { mean: 0.0 } } },
 });
-const point = strip(pPoint)[0];
-ok(point.x1 === point.x2 && point.dot === point.x1,
-  'an interval with no width draws as its mean alone', `${point.x1}–${point.x2}, dot ${point.dot}`);
-ok(point.cls === 'rs-row good' && point.x1 > zeroAt(pPoint),
-  'still on the better side of the line, since it does not touch it', point.cls);
+ok(!pPoint.$('#opt-result .rstrip'),
+  'an interval with no width is drawn neither as a bar nor as a dot pinned to the edge of one',
+  pPoint.$('#opt-result .rstrip') ? pPoint.$('#opt-result .rstrip').textContent : '(no picture)');
+ok(/\+0\.7/.test(said(pPoint)) && /no width/.test(said(pPoint))
+  && !/clear of zero/.test(said(pPoint)),
+  'and the sentence gives the difference but declines to call it clear of zero, since every case '
+  + 'reporting the same number is agreement and not evidence', said(pPoint));
 
 /* On a validation split the search chose on these very cases. The label above already says that
    is weaker evidence; the picture is faded to match, rather than presenting the same shape with
