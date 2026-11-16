@@ -71,25 +71,16 @@
     display: flex; gap: 2px; padding: 0 28px 9px; border-bottom: 1px solid var(--hair);
     background: var(--bg); position: sticky; top: 56px; z-index: 5;
   }
-  .tab, .tablink {
+  .tab {
     appearance: none; border: 0; background: none; font: inherit; color: var(--ink2);
     padding: 6px 12px; border-radius: 6px; cursor: pointer;
   }
-  .tab:hover, .tablink:hover { color: var(--ink1); background: var(--hair2); }
+  .tab:hover { color: var(--ink1); background: var(--hair2); }
   .tab.on { color: var(--ink1); font-weight: 550; background: var(--hair2); }
   /* Belongs to the other section. Separate from `hidden`, which means "no run behind it" and is
      set by discovery — a tab can be both, and switching sections must not reveal one. */
   .tab.off { display: none; }
-  /* The run explorer is a second app, not a fourth panel: it replaces the page rather than
-     swapping what is under the nav. The arrow is the only thing that says so before the click. */
-  .tablink { text-decoration: none; }
-  .tablink::after { content: ' ↗'; color: var(--ink3); }
   .grow { flex: 1; }
-  /* A link that leaves this page for the explorer. Same arrow as the nav's, because it is the
-     same kind of departure, but inline in a sentence or a table cell rather than a nav item. */
-  .xlink { color: var(--accent); text-decoration: none; }
-  .xlink:hover { text-decoration: underline; }
-  .xlink::after { content: ' ↗'; color: var(--ink3); }
   /* This panel is showing something the other section put here. Accent-marked like `.explain`,
      because it is the same kind of statement: what you are looking at, and why it is not what the
      tab you clicked would otherwise hold. */
@@ -570,9 +561,6 @@
     <button class="tab on" data-view="runs" data-sec="evals">Runs</button>
     <button class="tab" data-view="experiment" data-sec="evals">Experiment</button>
     <button class="tab" data-view="report" data-sec="evals">Report</button>
-    <!-- The run explorer used to sit here, as a fifth item. It was never a fifth view of this
-         folder — it is one run, deeper — so it lives in Optimization's own panels now, beside the
-         run and the candidate it opens at. -->
     <button class="tab" data-view="opt-runs" data-sec="optimization" hidden>Runs</button>
     <button class="tab" data-view="opt-setup" data-sec="optimization" hidden>Setup</button>
     <button class="tab" data-view="opt-results" data-sec="optimization" hidden>Results</button>
@@ -760,9 +748,6 @@
           <button data-f="unscored">Never scored</button>
         </div>
         <span class="grow"></span>
-        <!-- DRAFT A — the whole search, one zoom down from this table. -->
-        <a class="xlink" id="opt-link" target="_blank" rel="noopener" hidden
-           title="the run explorer: every candidate, trial and transcript of this run">every trial</a>
         <span class="path" id="opt-cand-count"></span>
       </div>
       <div class="scroll">
@@ -3315,8 +3300,6 @@
 
   const TOKEN = new URLSearchParams(location.search).get('t') || '';
   let MODE = 'standalone', ROOT = '', READONLY = true, DEPTH = null;
-  // Whether this server can serve the run explorer at all. Whether to offer it is renderOptimization's.
-  let EXPLORER = false;
 
   async function api(path, opts) {
     const res = await fetch(path, Object.assign({ headers: { 'X-Evals-Token': TOKEN } }, opts || {}));
@@ -5650,16 +5633,6 @@
      two trials that went identically point at one file, and the record stores it once. */
   const TRANSCRIPTS = new Map();
 
-  /* DRAFT A — a link into the run explorer, at a page of one run.
-     The token rides in the query and the route in the hash, which is the order the explorer reads
-     them in: `parse` takes the hash, and the fetches it then makes carry `?t=`. The study is the
-     run's discovery id, which is why the server walks one tree for both views — an id this page
-     made up would 404 over there. */
-  function explorerHref(study, page) {
-    return '/explorer/' + (TOKEN ? '?t=' + encodeURIComponent(TOKEN) : '')
-      + '#/s/' + encodeURIComponent(study) + '/' + page;
-  }
-
   /** DRAFT B — the experiment whose cases this run split up, if one in this folder has them. */
   function sourceLine(run) {
     const t = run && run.tuned_against;
@@ -6191,15 +6164,7 @@
     $('opt-cand-count').textContent = `${shown.length} of ${plural(d.proposals.length, 'candidate')}`
       + (unscored ? `, ${unscored} never scored` : '');
 
-    /* DRAFT A — each row links to that candidate in the explorer. The route is by candidate
-       `number`, which is what the explorer's own candidate links use, so a row with no number
-       gets no link rather than one to candidate 0. Only in server mode: there is no explorer
-       behind a folder picked from disk. */
     const run = OPT_RUNS[optSel];
-    const deepLink = p => (EXPLORER && run && p.candidate_id && p.number != null
-      ? ` <a class="xlink" href="${esc(explorerHref(run.id, 'candidate/' + p.number))}"`
-        + ` target="_blank" rel="noopener" title="open ${esc(p.candidate_id)} in the run explorer"></a>`
-      : '');
 
     $('opt-cands').innerHTML = shown.map(p => {
       const key = p.candidate_id || `invalid-${p.iteration}-${p.number}`;
@@ -6207,7 +6172,6 @@
       const name = p.candidate_id
         ? `<span class="caret${on ? ' open' : ''}"></span>${esc(p.candidate_id)}`
           + (p.number != null ? ` <span class="path">#${esc(p.number)}</span>` : '')
-          + deepLink(p)
         : '<span class="path">no candidate</span>';
       const tags = (p.isChampion ? ' <span class="tag ok">champion</span>' : '')
         + (p.isBaseline ? ' <span class="tag">baseline</span>' : '');
@@ -6302,10 +6266,6 @@
   function renderOptimization() {
     const run = OPT_RUNS[optSel];
     renderOptimizerRuns();
-    /* The Explorer reads the same runs this tab discovered, so it is offered exactly when there is
-       one to open — and at the run that is open, not at an index of all of them. */
-    $('opt-link').hidden = !EXPLORER || !run;
-    if (EXPLORER && run) $('opt-link').href = explorerHref(run.id, 'candidates');
     if (!run || !OPT) {
       $('opt-sub').textContent = OPT_RUNS.length
         ? 'Pick a run on the Runs tab.'
@@ -6519,12 +6479,8 @@
       const alias = r.name && r.name !== r.run_id ? ` <span class="dim">/ ${esc(r.name)}</span>` : '';
       // Where the run is, which is the only way to tell two runs of the same name apart.
       const at = r.dir && r.dir !== '.' ? r.dir : r.events_path;
-      const deep = EXPLORER
-        ? `<br><a class="xlink" href="${esc(explorerHref(r.id, 'overview'))}" target="_blank" rel="noopener"`
-          + ' title="open this whole run in the run explorer">run explorer</a>'
-        : '';
       return `<tr class="run${i === optSel ? ' on' : ''}" data-opt-run="${i}">
-        <td>${esc(r.run_id)}${alias}<br><span class="path">${esc(at)}</span>${deep}</td>
+        <td>${esc(r.run_id)}${alias}<br><span class="path">${esc(at)}</span></td>
         <td class="ev">${r.champion_id ? esc(r.champion_id) : '<span class="empty">none picked</span>'}</td>
         <td class="ev">${plural(r.candidates, 'candidate')}`
         + `<br><span class="path">${plural(r.iterations, 'iteration')}</span></td>
@@ -6542,8 +6498,6 @@
   }
 
   $('opt-runs-rows').onclick = e => {
-    // The explorer link is in the row and navigates on its own.
-    if (e.target.closest('a[href]')) return;
     const tr = e.target.closest('tr[data-opt-run]');
     if (!tr) return;
     const i = Number(tr.dataset.optRun);
@@ -6717,8 +6671,6 @@
     renderCandidates();
   };
   $('opt-cands').onclick = e => {
-    // DRAFT A — the explorer link is inside the row too, and it navigates on its own.
-    if (e.target.closest('a[href]')) return;
     /* The jump is inside the row, so it has to be handled before the row's own toggle —
        otherwise clicking it would collapse the detail it was sitting in. */
     const jump = e.target.closest('[data-open]');
@@ -6807,10 +6759,6 @@
     try {
       const config = await api('/api/config');
       MODE = 'server'; ROOT = config.root; READONLY = config.read_only; DEPTH = config.depth;
-      /* The explorer is a separate app at its own route, and a link to a 404 is worse than no
-         link, so the server says whether it has one to serve. renderOptimization then shows it
-         only when there is a run to open. */
-      EXPLORER = !!config.explorer;
       await rescan();
     } catch {
       MODE = 'standalone'; READONLY = false;

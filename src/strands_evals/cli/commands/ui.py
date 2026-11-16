@@ -42,11 +42,6 @@ def _run(args: argparse.Namespace) -> int:
     # and copying a fresh link out of the terminal every time. Opt-in: the default stays random.
     token = args.token or os.environ.get(TOKEN_ENV) or None
 
-    runs_dir = Path(args.runs_dir).expanduser() if args.runs_dir else None
-    if runs_dir is not None and not runs_dir.is_dir():
-        print(f"strands-evals: error: {args.runs_dir} is not a directory", file=sys.stderr)  # noqa: T201
-        return EXIT_BAD_INPUT
-
     server = build_server(
         root,
         host=args.host,
@@ -54,18 +49,12 @@ def _run(args: argparse.Namespace) -> int:
         depth=args.depth,
         read_only=args.read_only,
         token=token,
-        # DIRECTORY unless told otherwise, so the explorer and the page's Optimization section read
-        # the same tree. Pointed at different trees, the same run is browsable in one and missing
-        # from the other, which reads as a broken page rather than as two directories.
-        explorer_root=runs_dir or root,
     )
     url = server_url(server)
 
     mode = " (read-only)" if args.read_only else ""
     print(f"strands-evals ui{mode}: serving {root.resolve()}", file=sys.stderr)  # noqa: T201
     print(f"  {url}", file=sys.stderr)  # noqa: T201
-    explorer = url.replace("/?t=", "/explorer/?t=")
-    print(f"  run explorer over {(runs_dir or root).resolve()} at {explorer}", file=sys.stderr)  # noqa: T201
     if token:
         # Said plainly, because a token you chose is one someone else can guess, and anything
         # that reaches loopback on this machine can then read and write files under DIRECTORY.
@@ -131,13 +120,6 @@ def add_subparser(
         type=int,
         default=DEFAULT_DEPTH,
         help=f"how many directories deep to scan (default: {DEFAULT_DEPTH})",
-    )
-    parser.add_argument(
-        "--runs-dir",
-        default=None,
-        help="read optimizer runs for the explorer from here instead of DIRECTORY (a tree of "
-        "folders, each holding an events.jsonl). Pointing it elsewhere lets the explorer and the "
-        "Optimization section list different runs, so prefer a DIRECTORY that contains both.",
     )
     parser.add_argument(
         "--read-only",

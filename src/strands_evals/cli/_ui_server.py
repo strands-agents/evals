@@ -568,47 +568,6 @@ def discover_optimizer_runs(root: Path, depth: int = DEFAULT_DEPTH) -> list[dict
     return found
 
 
-def discover_explorer_runs(root: Path, depth: int = DEFAULT_DEPTH) -> list[dict]:
-    """Find run directories for the explorer: any directory holding an `events.jsonl`.
-
-    Walked to the same depth as `discover_optimizer_runs`, over the same tree, so the explorer and
-    the Optimization section never disagree about which runs exist — the two views reading different
-    trees is the one way for a run to be browsable in one and invisible in the other.
-
-    `run.json` is not required here, unlike the Optimization section's discovery: the explorer reads the
-    objective and the budget out of the log's own `config` event, so it can open a run directory
-    that has only the log. Being the more permissive of the two is the safe direction — every run
-    the tab lists is one the explorer can open.
-    """
-    found: list[dict] = []
-    root = root.resolve()
-
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        here = Path(dirpath)
-        level = len(here.relative_to(root).parts)
-        if level >= depth:
-            dirnames[:] = []
-        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d not in {"node_modules", "__pycache__"})
-
-        if EVENT_LOG_NAME not in set(filenames):
-            continue
-        try:
-            modified = (here / EVENT_LOG_NAME).stat().st_mtime
-        except OSError:
-            continue
-        # "." when the served directory is itself a run, which `resolve_within` resolves to the
-        # root and the explorer's route carries as a study name like any other.
-        found.append({"id": here.relative_to(root).as_posix(), "modified": modified})
-
-    found.sort(key=lambda r: r["id"])
-    return found
-
-
-# The only suffixes the explorer's build emits. Anything else is served as bytes rather than
-# guessed at, since a wrong type on a script is worse than no type at all.
-ASSET_TYPES = {".js": "text/javascript", ".css": "text/css", ".map": "application/json"}
-
-
 class PathOutsideRoot(ValueError):
     """A client-supplied path resolved outside the served directory."""
 
@@ -755,10 +714,6 @@ class UIConfig:
     asset: str = ""
     # True when `asset` came from the shipped file rather than a caller, so it can be re-read.
     reload_asset: bool = False
-    # The explorer: a directory of optimizer run folders to read, and the built app that reads
-    # them. Both None means the page is not served and its routes answer 404.
-    explorer_root: Path | None = None
-    explorer_app: Path | None = None
 
     def page(self) -> str:
         """The page to serve, re-read from disk unless a caller pinned one.
@@ -845,32 +800,6 @@ class UIHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.OK, self.config.page().encode("utf-8"), "text/html; charset=utf-8")
             return
 
-        if parsed.path in ("/explorer", "/explorer/"):
-            if self.config.explorer_app is None or not (self.config.explorer_app / "index.html").is_file():
-                self._error(HTTPStatus.NOT_FOUND, "no run explorer is installed")
-                return
-            if not self._authorized(query):
-                self._error(HTTPStatus.UNAUTHORIZED, "missing or wrong token")
-                return
-            page = (self.config.explorer_app / "index.html").read_bytes()
-            self._send(HTTPStatus.OK, page, "text/html; charset=utf-8")
-            return
-
-        # The bundle is code, never data, so script and style requests work without the token.
-        if parsed.path.startswith("/explorer/assets/") and self.config.explorer_app is not None:
-            rel = parsed.path[len("/explorer/assets/") :]
-            try:
-                target = resolve_within(self.config.explorer_app / "assets", rel)
-            except PathOutsideRoot as exc:
-                self._error(HTTPStatus.FORBIDDEN, str(exc))
-                return
-            if not target.is_file():
-                self._error(HTTPStatus.NOT_FOUND, "no such asset")
-                return
-            kind = ASSET_TYPES.get(target.suffix, "application/octet-stream")
-            self._send(HTTPStatus.OK, target.read_bytes(), f"{kind}; charset=utf-8")
-            return
-
         if not self._authorized(query):
             self._error(HTTPStatus.UNAUTHORIZED, "missing or wrong token")
             return
@@ -882,9 +811,6 @@ class UIHandler(BaseHTTPRequestHandler):
                     "root": str(self.config.root),
                     "depth": self.config.depth,
                     "read_only": self.config.read_only,
-                    # Both halves are needed to serve it: a tree to read and a built app to read
-                    # it with. Whether to *offer* the link is the page's call, not this one's.
-                    "explorer": self.config.explorer_root is not None and self.config.explorer_app is not None,
                 },
             )
             return
@@ -952,35 +878,6 @@ class UIHandler(BaseHTTPRequestHandler):
                     "evaluator_notes": check_evaluators(obj.get("evaluators") if isinstance(obj, dict) else None),
                 },
             )
-            return
-
-        if parsed.path == "/api/explorer/runs":
-            if self.config.explorer_root is None:
-                self._error(HTTPStatus.NOT_FOUND, "this server has no runs directory to read")
-                return
-            runs = (
-                discover_explorer_runs(self.config.explorer_root, self.config.depth)
-                if self.config.explorer_root.is_dir()
-                else []
-            )
-            self._json(HTTPStatus.OK, {"root": str(self.config.explorer_root), "runs": runs})
-            return
-
-        if parsed.path == "/api/explorer/file":
-            if self.config.explorer_root is None:
-                self._error(HTTPStatus.NOT_FOUND, "this server has no runs directory to read")
-                return
-            run = query.get("run", [""])[0]
-            rel = query.get("path", [""])[0]
-            try:
-                target = resolve_within(resolve_within(self.config.explorer_root, run), rel)
-            except PathOutsideRoot as exc:
-                self._error(HTTPStatus.FORBIDDEN, str(exc))
-                return
-            if not target.is_file():
-                self._error(HTTPStatus.NOT_FOUND, f"{run}/{rel} is not a file")
-                return
-            self._send(HTTPStatus.OK, target.read_bytes(), "text/plain; charset=utf-8")
             return
 
         self._error(HTTPStatus.NOT_FOUND, f"no route for {parsed.path}")
@@ -1090,12 +987,6 @@ def load_asset() -> str:
     return resources.files(__package__).joinpath("assets/ui.html").read_text(encoding="utf-8")
 
 
-def _default_explorer_app() -> Path | None:
-    """The explorer bundle shipped beside this module, if one was built into the package."""
-    candidate = Path(__file__).parent / "assets" / "explorer"
-    return candidate if (candidate / "index.html").is_file() else None
-
-
 def build_server(
     root: Path,
     *,
@@ -1105,8 +996,6 @@ def build_server(
     read_only: bool = False,
     token: str | None = None,
     asset: str | None = None,
-    explorer_root: Path | None = None,
-    explorer_app: Path | None = None,
 ) -> _Server:
     """Bind a server for `root`. Port 0 picks a free one, which the tests rely on."""
     config = UIConfig(
@@ -1116,8 +1005,6 @@ def build_server(
         read_only=read_only,
         asset=asset if asset is not None else load_asset(),
         reload_asset=asset is None,
-        explorer_root=explorer_root.resolve() if explorer_root else None,
-        explorer_app=explorer_app.resolve() if explorer_app else _default_explorer_app(),
     )
     try:
         return _Server((host, port), UIHandler, config)

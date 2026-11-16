@@ -3,7 +3,7 @@
 Sample data for trying the UI without running anything first:
 
 ```bash
-strands-evals ui examples/experiments --runs-dir examples/optimization/runs
+strands-evals ui examples
 ```
 
 ## experiments/
