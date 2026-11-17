@@ -24,7 +24,6 @@ import logging
 import os
 import re
 import secrets
-import socket
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -1044,8 +1043,3 @@ def server_url(server: _Server) -> str:
         shown = f"[{shown}]"
     return f"http://{shown}:{port}/?t={server.config.token}"
 
-
-def free_port(host: str = "127.0.0.1") -> int:
-    with socket.socket() as probe:
-        probe.bind((host, 0))
-        return int(probe.getsockname()[1])

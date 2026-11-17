@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import { JSDOM } from 'jsdom';
 
-export const ASSET = process.env.UI_HTML
+const ASSET = process.env.UI_HTML
   ? new URL(process.env.UI_HTML, `file://${process.cwd()}/`)
   : new URL('../../src/strands_evals/cli/assets/ui.html', import.meta.url);
-export const HTML = fs.readFileSync(ASSET, 'utf8');
+const HTML = fs.readFileSync(ASSET, 'utf8');
 
 /** A File stand-in: jsdom cannot build a real FileList, and only `text()` is used. */
 export class FakeFile {
