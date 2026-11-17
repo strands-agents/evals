@@ -4,7 +4,7 @@ import hashlib
 import json
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from ...types.evaluation_report import EvaluationReport
 
@@ -15,29 +15,44 @@ class PairedScore(BaseModel):
     Attributes:
         case_id: Stable identifier derived from the case name or input.
         evaluator: Name of the evaluator that produced both scores.
+        baseline_index: Source row in the baseline report.
+        candidate_index: Source row in the candidate report.
         baseline_score: Score produced by the baseline.
         candidate_score: Score produced by the candidate.
         delta: Candidate score minus baseline score.
     """
 
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     case_id: str
     evaluator: str
+    baseline_index: int = Field(ge=0)
+    candidate_index: int = Field(ge=0)
     baseline_score: float
     candidate_score: float
-    delta: float
+
+    @computed_field
+    def delta(self) -> float:
+        """Return the candidate-minus-baseline score change."""
+        return self.candidate_score - self.baseline_score
 
 
-def pair_reports(baseline: EvaluationReport, candidate: EvaluationReport) -> list[PairedScore]:
-    """Match comparable evaluator scores from two reports.
+def pair_reports(*, baseline: EvaluationReport, candidate: EvaluationReport) -> list[PairedScore]:
+    """Strictly match comparable evaluator scores from two reports.
 
-    Cases are paired by exact case name when one is present. An unnamed case is
-    paired by a deterministic hash of its input. Evaluator names must also
-    match. Row order, generated session IDs, and task outputs do not affect
-    pairing.
+    Cases are paired by their exact case name when one is present. An unnamed
+    case is paired by a deterministic hash of its input. Evaluator names must
+    also match. Row order, generated session IDs, and task outputs do not
+    affect pairing. Results are sorted by evaluator and case identifier.
 
     Rows that are not applicable in both reports are omitted. A mismatch in
     applicability is rejected because the two scores do not represent the same
-    measurement.
+    measurement. This strict behavior is intended for controlled regression
+    comparisons where both runs must use the same cases and evaluators.
+
+    The returned source indices let later layers inspect report reasons or
+    exclude infrastructure-corrupted trials without inferring corruption from
+    a low score.
 
     Args:
         baseline: Evaluation report produced by the existing configuration.
@@ -59,20 +74,15 @@ def pair_reports(baseline: EvaluationReport, candidate: EvaluationReport) -> lis
     if baseline_keys != candidate_keys:
         raise ValueError(
             "reports do not contain the same case/evaluator rows: "
-            f"baseline_only={sorted(baseline_keys - candidate_keys)}, "
-            f"candidate_only={sorted(candidate_keys - baseline_keys)}"
+            f"baseline_only={_summarize_keys(baseline_keys - candidate_keys)}, "
+            f"candidate_only={_summarize_keys(candidate_keys - baseline_keys)}"
         )
 
     pairs: list[PairedScore] = []
     for key in sorted(baseline_keys):
         baseline_index = baseline_rows[key]
         candidate_index = candidate_rows[key]
-        baseline_case = baseline.cases[baseline_index]
-        candidate_case = candidate.cases[candidate_index]
         evaluator, case_id = key
-
-        if _canonical_json(baseline_case["input"]) != _canonical_json(candidate_case["input"]):
-            raise ValueError(f"case inputs differ between reports: case_id={case_id!r}, evaluator={evaluator!r}")
 
         baseline_details = (
             baseline.detailed_results[baseline_index] if baseline_index < len(baseline.detailed_results) else []
@@ -95,9 +105,10 @@ def pair_reports(baseline: EvaluationReport, candidate: EvaluationReport) -> lis
             PairedScore(
                 case_id=case_id,
                 evaluator=evaluator,
+                baseline_index=baseline_index,
+                candidate_index=candidate_index,
                 baseline_score=baseline_score,
                 candidate_score=candidate_score,
-                delta=candidate_score - baseline_score,
             )
         )
 
@@ -135,7 +146,7 @@ def _case_id(case: dict, report_name: str, index: int) -> str:
     if name is not None and not isinstance(name, str):
         raise ValueError(f"{report_name} report row {index} has a non-string case name")
     if isinstance(name, str) and name.strip():
-        return name.strip()
+        return name
 
     input_signature = _canonical_json(case["input"])
     digest = hashlib.sha256(input_signature.encode("utf-8")).hexdigest()
@@ -144,6 +155,14 @@ def _case_id(case: dict, report_name: str, index: int) -> str:
 
 def _canonical_json(value: Any) -> str:
     try:
-        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        json_value = json.loads(json.dumps(value, default=str))
+        return json.dumps(json_value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     except (TypeError, ValueError) as error:
         raise ValueError("case input must be JSON-serializable") from error
+
+
+def _summarize_keys(keys: set[tuple[str, str]], limit: int = 10) -> str:
+    ordered = sorted(keys)
+    if len(ordered) <= limit:
+        return str(ordered)
+    return f"{ordered[:limit]} ... ({len(ordered) - limit} more)"

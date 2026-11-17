@@ -149,7 +149,7 @@ strands-evals/
 │   │   └── (data records in types/optimization/)
 │   │
 │   ├── experimental/                         # Experimental features (no stability guarantees)
-│   │   └── comparison/                       # Deterministic statistical report comparison
+│   │   └── comparison/                       # Strict baseline/candidate report pairing
 │   │       ├── __init__.py
 │   │       └── pairing.py                    # Exact baseline/candidate report pairing
 │   │
