@@ -234,10 +234,14 @@ ok(!/varying/.test(why) && !/8 train/.test(why),
    objective (0.658), or a mean over the cases the search chose on. */
 const rtab = () => $$('#opt-result .rtab tbody tr').map(r =>
   [...r.children].map(c => c.textContent.replace(/\s+/g, ' ').trim()));
-ok(/^Held out/.test(text('#opt-result .rlabel')), 'the headline is the held-out comparison',
+ok(/^Result · held out/.test(text('#opt-result .rlabel')),
+  'the card is headed by what it holds — the result — and then by the split behind it',
   text('#opt-result .rlabel'));
-ok(/3 test cases kept out of the search/.test(text('#opt-result .rlabel')),
-  'and says how many cases are behind it', text('#opt-result .rlabel'));
+/* How many cases are behind it, in its own span: the label is set in small caps, and a whole
+   sentence spelled that way is a heading rather than something read. */
+ok(text('#opt-result .rlabel .rq') === '3 test cases kept out of the search',
+  'and says how many cases are behind it, in ordinary case beside the label',
+  text('#opt-result .rlabel .rq'));
 const helpRow = rtab().find(r => r[0] === 'Helpfulness');
 ok(helpRow && helpRow.slice(1).join(' | ') === '0.521 | → | 0.664 | +0.143 | [0.061, 0.225] | 1.274×',
   'the champion against the baseline on the test split, with its interval and ratio',
@@ -312,8 +316,9 @@ ok(/widths do not compare/.test(stripNotes), 'and that a width is not comparable
 /* `tokens` is the run's other goal and has no interval in this report, so it gets no bar. A reader
    who knows there were two goals and counts one bar is owed the reason rather than left to guess
    that the picture dropped it. */
-ok(/no interval to draw for tokens/.test(stripNotes),
-  'a goal with nothing to draw is named under the picture', stripNotes);
+ok(/nothing to draw for tokens \(no interval reported\)/.test(stripNotes),
+  'a goal with nothing to draw is named under the picture, with which of the two reasons it is',
+  stripNotes);
 ok(!$('#opt-result .rstrip').className.includes('weak'),
   'a held-out result is drawn at full strength');
 
@@ -377,18 +382,24 @@ ok(/could not reach the clipboard/.test(text('#opt-copied')),
    best-ever value read as a second, bolder answer to the same question. */
 const stats = $$('#opt-stats .stat').map(s =>
   s.querySelector('.k').textContent + '=' + s.querySelector('.v').textContent);
-ok(stats.includes('Best feasible objective=0.67'),
+ok(stats.includes('Best on training=0.67'),
   'the best feasible objective is c10\'s 0.67, not infeasible c8\'s', stats.join(' '));
 ok(stats.includes('Champion=c10'), 'champion read from the end-phase report', stats.join(' '));
 ok(stats.includes('Rollouts=64 / 240'), 'rollouts are the iterations\' own tally against the budget', stats.join(' '));
-ok(stats.length === 4, 'four figures over the charts, not every number the run produced', stats.join(' '));
+ok(stats.length === 3, 'three figures over the charts, not every number the run produced', stats.join(' '));
+/* And the champion first. The training best is a figure from inside the search, and on a run
+   where it belongs to a candidate validation did not pick, leading with it names one candidate
+   in the first stat and a different one in the second with nothing saying why. */
+ok(stats[0].startsWith('Champion=') && stats[2].startsWith('Best on training='),
+  'what it picked leads, the score it picked from is last', stats.join(' '));
 /* Each with the one thing it cannot be read without, on a line of its own under the label: a
    score with no candidate and no split behind it is not an answer to anything, and run into the
    label it read as part of it — "0.67Best feasible objective · c10". */
 const notes = $$('#opt-stats .stat').map(s =>
   s.querySelector('.k').textContent + '/' + (s.querySelector('.n') || {}).textContent);
-ok(notes.includes('Best feasible objective/c10 · on the training split'),
-  'the best score says which candidate scored it and which split it was scored on', notes.join(' '));
+ok(notes.includes('Best on training/the champion, on the cases it searched over'),
+  'where the training high is the champion, the note says so rather than repeating its id',
+  notes.join(' '));
 ok(notes.includes('Rollouts/spent of the budget'),
   'and "64 / 240" says which of the two is the budget', notes.join(' '));
 ok(notes.includes('Champion/the configuration it picked'), 'and the champion what it is',
@@ -605,8 +616,9 @@ ok(tokVals.reduce((a, b) => a + b, 0) === 217480, 'the columns are the search co
   tokVals.reduce((a, b) => a + b, 0));
 ok(/excluding the 18 trials recorded after the last finished iteration/.test(text('#opt-usage-cap')),
   'the caption says what is left out', text('#opt-usage-cap'));
-ok(stats.includes('Tokens=277k'), 'while the stat is the whole run, 217480 plus the 59190 spent after it',
-  stats.join(' '));
+ok(/^277k tokens · /.test(text('#opt-cost-sum')),
+  'while this drawer\'s fold is the whole run, 217480 plus the 59190 spent after it',
+  text('#opt-cost-sum'));
 
 // Height follows the number: a column is only as tall as its share of the costliest iteration.
 const heights = cols().map(r => Number(r.getAttribute('height')));
@@ -1246,10 +1258,43 @@ ok(Math.abs(Math.min(...lateXs) - Number(latePts[0].getAttribute('cx'))) < 1e-6,
    card — so it is read by its label rather than by its id. */
 const bestStat = q => {
   const stat = q.$$('#opt-stats .stat')
-    .find(el => /^Best feasible objective/.test(el.querySelector('.k').textContent));
+    .find(el => /^Best on training/.test(el.querySelector('.k').textContent));
   return stat ? stat.querySelector('.v').textContent : null;
 };
 ok(bestStat(pLate) === '0.60', 'best is the better of the two measured', bestStat(pLate));
+
+/* ── the training high and the champion need not be the same candidate ──
+   The training best is whatever scored highest on the cases the search chose from; the champion
+   is chosen on the validation split. Two stats naming two candidates, with nothing between them
+   saying how that happens, read as the page contradicting itself. */
+const pSplit = await page();
+await pSplit.openFolder({
+  'split/run.json': { run_id: 'split-pick', objective: 'Maximize(H)' },
+  'split/events.jsonl': jsonl([
+    { event: 'config', iteration: 0 },
+    iterationEnd(0, [{ candidate_id: 'c0', number: 0, outcome: 'feasible', objective: 0.4 }], 4),
+    iterationEnd(1, [{ candidate_id: 'c1', number: 1, outcome: 'feasible', objective: 0.9 }], 4),
+    {
+      event: 'picked', iteration: 2,
+      report: {
+        champion_id: 'c0', measured: { c0: { H: { mean: 0.6 } }, c1: { H: { mean: 0.3 } } },
+        reason: 'c0 ranked first on validation.',
+      },
+    },
+  ]),
+});
+await openResults(pSplit);
+const bestCell = q => q.$$('#opt-stats .stat')
+  .find(el => /^Best on training/.test(el.querySelector('.k').textContent));
+ok(bestStat(pSplit) === '0.90' && pSplit.text('#opt-stats .stat .v') === 'c0',
+  'the champion stat is c0 while the training high is c1\'s 0.90',
+  `${pSplit.text('#opt-stats .stat .v')} / ${bestStat(pSplit)}`);
+ok(bestCell(pSplit).querySelector('.n').textContent === 'c1 · highest here, not the pick',
+  'so the training stat names the candidate it belongs to and says it was not the one picked',
+  bestCell(pSplit).querySelector('.n').textContent);
+ok(/champion is chosen on the validation split, so the two can differ/
+  .test(bestCell(pSplit).getAttribute('title') || ''),
+  'and the whole of why, on hover', bestCell(pSplit).getAttribute('title'));
 
 // ── a run with nothing measured at all, and a Pareto run ──
 const pEmpty = await page();
@@ -1445,7 +1490,7 @@ const pVal = await resultPage(resultLog(null, [{
   report: { champion_id: 'c1', measured: { c1: { H: { mean: 0.6 } }, c0: { H: { mean: 0.5 } } },
     reason: 'c1 ranked first.' },
 }]));
-ok(/^Validation split/.test(pVal.text('#opt-result .rlabel')),
+ok(/^Result · validation split/.test(pVal.text('#opt-result .rlabel')),
   'a run with no test split is not called held out', pVal.text('#opt-result .rlabel'));
 ok(/flattering/.test(said(pVal)), 'and the gap is hedged as the selected-on gap it is', said(pVal));
 ok(/no overall comparison/.test(said(pVal)),
@@ -1637,6 +1682,25 @@ ok(/\+0\.7/.test(said(pPoint)) && /no width/.test(said(pPoint))
   'and the sentence gives the difference but declines to call it clear of zero, since every case '
   + 'reporting the same number is agreement and not evidence', said(pPoint));
 
+/* And where only one of two goals collapses that way, the picture still appears — with the row it
+   could not draw named under it, and named by which of the two reasons it is. A reader has just
+   read `[-331, -331]` in the table, so "no interval" about that row would contradict the figures
+   directly above it. */
+const pOneWide = await stripPage('Maximize(H) with Minimize(tokens)', {
+  champion_id: 'c1', baseline_id: 'c0',
+  objective: { mean_diff: 0.3, ci_low: 0.1, ci_high: 0.5, n_cases: 6 },
+  difference: {
+    H: { mean_diff: 0.3, ci_low: 0.1, ci_high: 0.5, n_cases: 6 },
+    tokens: { mean_diff: -331, ci_low: -331, ci_high: -331, n_cases: 6 },
+  },
+  means: { c1: { H: { mean: 0.6 }, tokens: { mean: 369 } }, c0: { H: { mean: 0.3 }, tokens: { mean: 700 } } },
+});
+ok(strip(pOneWide).map(b => b.label).join(' | ') === 'H ↑',
+  'the goal with width is the only bar', strip(pOneWide).map(b => b.label).join(' | '));
+const flatNote = pOneWide.$$('#opt-result .rstrip .rs-note').map(t => t.textContent).join(' | ');
+ok(/nothing to draw for tokens \(the same on every case\)/.test(flatNote),
+  'and the other is named with the reason the table bears out, not "no interval"', flatNote);
+
 /* On a validation split the search chose on these very cases. The label above already says that
    is weaker evidence; the picture is faded to match, rather than presenting the same shape with
    the same confidence. (The page reads `difference` off whichever report it was given, so this is
@@ -1658,7 +1722,8 @@ ok(pWeak.$('#opt-result .rstrip').className.includes('weak'),
 ok(!/held-out/.test(pWeak.$$('#opt-result .rstrip text.rs-note').map(t => t.textContent).join(' | ')),
   'and does not claim the cases were held out',
   pWeak.$$('#opt-result .rstrip text.rs-note').map(t => t.textContent).join(' | '));
-errs.push(...pMin.errs, ...pPlain.errs, ...pDp.errs, ...pPoint.errs, ...pWeak.errs);
+errs.push(...pMin.errs, ...pPlain.errs, ...pDp.errs, ...pPoint.errs, ...pOneWide.errs,
+  ...pWeak.errs);
 
 /* `propose.values` is the only copy of a candidate's configuration. A log without it cannot show
    one, and inventing a diff out of `changed_keys` would be making it up. */

@@ -357,6 +357,12 @@
   .result .rlabel, .winner .wlabel {
     margin: 0 0 12px; font-size: 11.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink3);
   }
+  /* What the label qualifies, in ordinary case beside it: "RESULT · HELD OUT, 6 TEST CASES KEPT
+     OUT OF THE SEARCH" is a sentence set in small caps, which is how a heading is spelled and not
+     how a sentence is read. The two words that name the card stay a label; the rest is prose. */
+  .result .rlabel .rq {
+    margin-left: 8px; letter-spacing: 0; text-transform: none; font-size: 12px;
+  }
   table.rtab { border-collapse: collapse; font-size: 13px; }
   table.rtab td, table.rtab th {
     padding: 5px 14px 5px 0; text-align: left; font-weight: 400; white-space: nowrap;
@@ -414,6 +420,10 @@
   .rs-row.bad .rs-read { fill: var(--bad); }
   .verdict { margin: 13px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--ink2); }
   .verdict b { color: var(--ink1); }
+  /* The finding, first. It used to be the last line of the card, under the table and the picture:
+     a reader asking the one question a tuning run answers read two figures of evidence before
+     reaching the answer, and three tellings of the same comparison in the order weakest-first. */
+  .verdict.lead { margin: 0 0 14px; font-size: 14px; color: var(--ink1); }
   .winner .wid { font-size: 15px; font-weight: 600; color: var(--ink1); }
   .winner .lineage { font-size: 12px; color: var(--ink3); margin-left: 9px; }
   .setting { border-top: 1px solid var(--hair2); padding: 10px 0 2px; font-size: 12.5px; }
@@ -809,12 +819,13 @@
            over how many cases. The account of how the splits were used is on Setup. -->
       <p class="sub methodline" id="opt-method-sum"></p>
 
-      <!-- The best feasible objective is in this row rather than over it as a hero number: the
-           result below is a difference with an interval around it, and a big bare value above it
-           reads as the finding when it is only the best score the search happened to see. -->
+      <!-- The best training objective is in this row rather than over it as a hero number, and
+           last within it: the result below is a difference with an interval around it, and a big
+           bare value above it reads as the finding when it is only the best score the search
+           happened to see, on the very cases it chose from. -->
       <div class="stats" id="opt-stats"></div>
 
-      <!-- What the run is for: the result, then the thing you take away from it. -->
+      <!-- What the run is for: the result, then the configuration behind it. -->
       <div class="result" id="opt-result"></div>
       <div class="winner" id="opt-winner"></div>
       <p class="optnote" id="opt-note"></p>
@@ -5826,6 +5837,21 @@
      go" about a run whose two cases simply happened to match. When no row has width the picture
      does not appear at all, and the table and the sentence are left to say it in figures. */
   const RS = { row: 24, head: 22, lab: 112, right: 112, foot: 32 };
+
+  /** What the run was aiming at: the goals the objective expression states, and the metrics the
+      constraints name. Shared by the table, which leads with these and folds the rest, and by the
+      picture, which has to say which of them it could not draw — the two disagreeing about what
+      the run was for is how a reader ends up counting two rows against one bar. */
+  function aimedMetrics(d) {
+    const f = d.facts || {};
+    const set = new Set([...(f.goalMetrics || []), ...(f.goals || []).map(g => g.metric)]);
+    for (const con of ((d.config || {}).constraints || [])) {
+      const named = String(con).match(/[A-Za-z_][\w.]*/);
+      if (named) set.add(named[0]);
+    }
+    return set;
+  }
+
   function resultStrip(d) {
     const r = d.result;
     if (!r) return '';
@@ -5858,11 +5884,14 @@
     }
     if (!rows.length) return '';
 
-    /* A goal the run states and this picture has no bar for is named, not silently absent: a reader
-       who knows there were two goals and counts one bar is owed the reason it is one. */
+    /* Anything the run was aiming at that this picture has no bar for is named, not silently
+       absent: a reader who has just read two rows of the table above and counts one bar is owed
+       the reason it is one. The folded metrics are not named, because they are not claimed. */
     const drawn = new Set(rows.map(x => x.label));
-    const missing = ((((d.facts || {}).goals) || []).map(g => g.metric))
-      .filter(m => !drawn.has(m) && r.metrics.some(x => x.metric === m));
+    const aimed = aimedMetrics(d);
+    const missing = r.metrics.filter(x => aimed.has(x.metric) && !drawn.has(x.metric));
+    const missWhy = m => `${m.metric} (${m.diff && typeof m.diff.ci_low === 'number'
+      && typeof m.diff.ci_high === 'number' ? 'the same on every case' : 'no interval reported'})`;
 
     const left = RS.lab, right = W - RS.right;
     const zero = (left + right) / 2;
@@ -5914,7 +5943,10 @@
          no change they read as that line's two axis labels rather than as a note. */
       + `<text class="rs-note" x="0" y="${height - 17}">`
       + `${r.heldOut ? 'champion against baseline, on the held-out cases' : 'champion against baseline'}`
-      + `${missing.length ? esc(` · no interval to draw for ${missing.join(', ')}`) : ''}`
+      /* With the reason, which is not the same reason twice: a comparison can report no interval
+         at all, or report one that every case agreed on and so has no width. Told apart, because
+         the second is a real interval and the reader will have seen it in the table. */
+      + `${missing.length ? esc(` · nothing to draw for ${missing.map(missWhy).join(', ')}`) : ''}`
       + '</text>'
       + `<text class="rs-note" x="0" y="${height - 4}">each bar is the 95% interval of the change,`
       + ' scaled to its own row — so widths do not compare</text>'
@@ -5934,9 +5966,12 @@
     const r = d.result;
     const c = d.config || {};
     const f = d.facts || {};
+    /* The card says what it is, not only which split it is on. Two cards headed "HELD OUT" and
+       "WINNER" named a qualifier and a prize; a reader landing on Overview is looking for the
+       result and the configuration, which is what they are. */
     const label = r.heldOut
-      ? `Held out · ${plural(r.cases || 0, 'test case')} kept out of the search`
-      : 'Validation split · the search chose on these cases, so this is weaker evidence';
+      ? ['Result · held out', `${plural(r.cases || 0, 'test case')} kept out of the search`]
+      : ['Result · validation split', 'the search chose on these cases, so this is weaker evidence'];
     /* One row, one number format. `fine` gives each value the decimals that value needs, which set
        a baseline of 0.1667 beside a champion of 1 — the same quantity printed two ways, and the
        reader left to work out that 1 means 1.0000. The row's widest format sets all of them. */
@@ -5972,11 +6007,7 @@
 
        A report whose metrics the config names none of is left whole: an empty table with a fold
        under it saying "six others" is the page hiding its own answer. */
-    const aimed = new Set([...(f.goalMetrics || []), ...(f.goals || []).map(g => g.metric)]);
-    for (const con of (c.constraints || [])) {
-      const named = String(con).match(/[A-Za-z_][\w.]*/);
-      if (named) aimed.add(named[0]);
-    }
+    const aimed = aimedMetrics(d);
     const lead = r.metrics.filter(m => aimed.has(m.metric));
     const rest = lead.length ? r.metrics.filter(m => !aimed.has(m.metric)) : [];
     /* Headed, because the row on its own is five numbers and no statement of what any of them is:
@@ -6038,9 +6069,11 @@
         + ' there is nothing here to compare them against.';
     }
 
-    return `<p class="rlabel">${esc(label)}</p>${table}`
-      + resultStrip(d)
-      + `<p class="verdict">${verdict}</p>`;
+    /* Answer, then evidence: the sentence, then the table it is read off, then the picture of the
+       table. The other order put the reader through a seven-column table and a chart before saying
+       what either showed. */
+    return `<p class="rlabel">${esc(label[0])}<span class="rq">${esc(label[1])}</span></p>`
+      + `<p class="verdict lead">${verdict}</p>` + table + resultStrip(d);
   }
 
   /** `a → b` for short values, a two-line diff for anything long or multi-line. */
@@ -6067,11 +6100,18 @@
      The artefact of a tuning run is the configuration that won, so it is on the page and it is
      copyable. `changed_keys` alone would name what moved without ever showing it. */
   function winnerCard(d) {
-    if (!d.winner) return '<p class="wlabel">Winner</p><p class="verdict">No champion has been picked yet.</p>';
+    if (!d.winner) {
+      return '<p class="wlabel">Champion configuration</p>'
+        + '<p class="verdict">No champion has been picked yet.</p>';
+    }
     const w = d.winner;
     const chain = w.lineage.length > 1
       ? `<span class="lineage">${esc(w.lineage.join(' ← '))}</span>` : '';
-    const head = `<p class="wlabel">Winner</p><div><span class="wid">${esc(w.id)}</span>${chain}</div>`;
+    /* "Winner" was the third word on one screen for one thing — the stats row says Champion and so
+       does the table column above it — and it named the candidate rather than what this card holds,
+       which is the configuration behind it. */
+    const head = '<p class="wlabel">Champion configuration</p>'
+      + `<div><span class="wid">${esc(w.id)}</span>${chain}</div>`;
 
     if (!w.settings) {
       return head + '<p class="verdict">The log records no values for this candidate, so its '
@@ -6819,19 +6859,29 @@
     /* A candidate id can be a twelve-character digest, which at 20px beside three other figures
        was the widest thing in the row and unreadable as any of them. Shortened, with the whole of
        it on hover and in the Candidates table. */
+    /* The champion leads. The row used to open on the best training objective, which is a figure
+       from the search and not the answer — and on a run where the highest training score went to
+       one candidate and validation picked another, the first and second figures on the tab named
+       two different candidates with nothing saying why. So: what it picked, what that cost, and
+       the training high last, saying in its own note that it is ranked on different cases. */
     const stats = [
-      optStat(d.best == null ? '—' : fmt(d.best), 'Best feasible objective',
-        d.bestCandidate ? `${shortId(d.bestCandidate.candidate_id)} · on the training split`
-          : 'on the training split',
-        d.bestCandidate ? `candidate ${d.bestCandidate.candidate_id}` : ''),
       optStat(d.champion ? shortId(d.champion) : '—', 'Champion',
         d.champion ? 'the configuration it picked' : 'none picked yet', d.champion || ''),
       optStat(d.maxRollouts != null ? `${d.spent} / ${d.maxRollouts}` : String(d.spent), 'Rollouts',
         d.maxRollouts != null ? 'spent of the budget' : 'spent · no budget declared'),
+      optStat(d.best == null ? '—' : fmt(d.best), 'Best on training',
+        d.bestCandidate
+          ? (d.champion && d.bestCandidate.candidate_id === d.champion
+            ? 'the champion, on the cases it searched over'
+            : `${shortId(d.bestCandidate.candidate_id)} · highest here, not the pick`)
+          : 'on the cases it searched over',
+        d.bestCandidate
+          ? `candidate ${d.bestCandidate.candidate_id} scored highest on the training split; the `
+            + 'champion is chosen on the validation split, so the two can differ'
+          : ''),
     ];
     // Every trial's tokens, search and end phase together: what the whole run cost.
     const tokens = d.iterations.reduce((sum, it) => sum + (it.usage.tokens || 0), 0) + (d.endPhase.tokens || 0);
-    if (tokens) stats.push(optStat(compact(tokens), 'Tokens', 'over the whole run', String(tokens)));
     $('opt-stats').innerHTML = stats.join('');
 
     // The result and the thing you take away from it, before any account of the search.

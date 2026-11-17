@@ -126,7 +126,7 @@ try {
   await waitFor(() => $$('#opt-series-chart circle').length > 0, 'the objective chart');
   ok(/support-tuning-20261110-091500-7af3e1/.test(text('#opt-sub')), 'names the run', text('#opt-sub'));
   const best = $$('#opt-stats .stat')
-    .find(el => /^Best feasible objective/.test(el.querySelector('.k').textContent));
+    .find(el => /^Best on training/.test(el.querySelector('.k').textContent));
   ok(best && best.querySelector('.v').textContent === '0.67',
     'best feasible objective derived from the fetched log',
     best && best.querySelector('.v').textContent);
