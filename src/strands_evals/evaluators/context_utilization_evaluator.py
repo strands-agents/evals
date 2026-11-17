@@ -144,10 +144,12 @@ class ContextUtilizationEvaluator(Evaluator[InputT, OutputT]):
     The output of each measured tool call (every successful call by default, or those of the tools
     named in `measured_tools`) is split into chunks, each tagged with an id: runs of whole lines of
     about `chunk_size_tokens` tokens (300 by default). A failed call (`error` set) is shown to the judge
-    but never measured. Each turn of the session with measured output (each `Trace`: one user
-    request and the agent's work on it) is judged in its own call, which sees that turn's request,
-    run and answer plus the later requests and answers, clipped, and returns the ids of the chunks
-    the agent used.
+    but never measured. Each turn of the session with measured output (each root agent invocation:
+    one user request and the agent's work on it, so several turns can share one `Trace`) is judged
+    in its own call, which sees that turn's request, run and answer plus the later requests and
+    answers, clipped, and returns the ids of the chunks the agent used. Within a trace, a span joins
+    the latest turn started before it, so two agent invocations that overlap in time (e.g.
+    concurrent agent calls in one task) belong in separate traces.
 
     The score is `useful tokens / gathered tokens` over every measured call: a useful chunk counts
     all its tokens. A chunk identical to an earlier one (ignoring whitespace) stays in the
@@ -431,7 +433,7 @@ class ContextUtilizationEvaluator(Evaluator[InputT, OutputT]):
         first request or last answer, since they need not be the prompt (e.g. a dict or a row id).
         """
         state = _RenderState()
-        drafts = [self._draft_turn(trace, state) for trace in session.traces]
+        drafts = [draft for trace in session.traces for draft in self._draft_turns(trace, state)]
         if drafts:
             if not drafts[0].request and evaluation_case.input is not None:
                 drafts[0].request = str(evaluation_case.input)
@@ -455,14 +457,19 @@ class ContextUtilizationEvaluator(Evaluator[InputT, OutputT]):
         ]
         return turns, state.assistant_replies
 
-    def _draft_turn(self, trace: Trace, state: _RenderState) -> _TurnDraft:
-        """Read one trace in time order into its request, answer, rendered run and chunks.
+    def _draft_turns(self, trace: Trace, state: _RenderState) -> list[_TurnDraft]:
+        """Read one trace in time order into its turns: their requests, answers, rendered runs and chunks.
+
+        Each root agent invocation (one user request) starts a turn. A trace can hold several, e.g. a
+        conversation run inside `Experiment`'s task span, where every agent call shares one trace.
+        Spans before the first root agent belong to the first turn. Spans are assigned by start time,
+        not by their parent spans, so the work of overlapping invocations would mix.
 
         Updates `state`: one source number per measured call, one count per assistant reply shown.
         """
-        draft = _TurnDraft()
+        drafts = [_TurnDraft()]
         # Consecutive inference spans can end in the same assistant message: skip a reply identical to
-        # the last one shown.
+        # the last one shown in the turn.
         last_assistant_text = ""
         agents = [span for span in trace.spans if isinstance(span, AgentInvocationSpan)]
         # Root agents have no parent. When a source keeps a parent outside the trace on every agent
@@ -472,20 +479,19 @@ class ContextUtilizationEvaluator(Evaluator[InputT, OutputT]):
             roots = [a for a in agents if a.span_info.parent_span_id == earliest.span_info.parent_span_id]
         seen_root = False
         for span in sorted(trace.spans, key=lambda s: _to_aware_utc(s.span_info.start_time)):
+            draft = drafts[-1]
             if isinstance(span, AgentInvocationSpan):
                 text = span.user_prompt.strip()
                 if not any(span is root for root in roots):
                     if text:
                         draft.run.append(f"[sub-agent task] {text}")
-                elif not seen_root:
-                    seen_root = True
-                    draft.request, draft.answer = text, span.agent_response
-                else:  # a later root agent in the same trace: show the answer so far, then the new request
-                    if draft.answer:
-                        draft.run.append(f"[answer] {draft.answer}")
-                    if text:
-                        draft.run.append(f"[user] {text}")
-                    draft.answer = span.agent_response or draft.answer
+                    continue
+                if seen_root:  # a later request in the same trace: a turn of its own
+                    draft = _TurnDraft()
+                    drafts.append(draft)
+                    last_assistant_text = ""
+                seen_root = True
+                draft.request, draft.answer = text, span.agent_response
             elif isinstance(span, InferenceSpan):
                 text = self._assistant_text(span)
                 if text and text != last_assistant_text:
@@ -500,7 +506,7 @@ class ContextUtilizationEvaluator(Evaluator[InputT, OutputT]):
                 lines, pieces = self._render_call(span, sid)
                 draft.run.extend(lines)
                 draft.pieces.extend(pieces)
-        return draft
+        return drafts
 
     def _measured(self, span: ToolExecutionSpan) -> bool:
         """Whether a call's output is gathered: the call did not fail and its tool is measured.
