@@ -1,0 +1,13 @@
+{
+  "name": "strands-evals-ui-tests",
+  "private": true,
+  "type": "module",
+  "description": "jsdom tests for the single-file page served by `strands-evals ui`",
+  "scripts": {
+    "fixture": "${PYTHON:-python3} fixtures/make_optimizer_run.py",
+    "test": "node run.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^24.1.3"
+  }
+}
