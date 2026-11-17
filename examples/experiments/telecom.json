@@ -56,7 +56,7 @@
       "metadata": null
     },
     {
-      "name": "Area Outage Detected – Agent Halts Modem Restart and Communicates ETA",
+      "name": "Area Outage Detected – Agent Halts Modem Restart and Communicates ETA (second phrasing)",
       "session_id": "be20a6ea-790e-4516-b29e-c3d8b9658c81",
       "input": "Customer: Hi, my internet has been completely down for the past hour. Can you restart my modem? My account ID is 847291.\nAgent verifies identity successfully (PIN confirmed).\nAgent calls check_line_status(account_id=847291) → { connection_state: \"disconnected\", outage_flag: true, area_outage_eta: \"2 hours\", signal_metrics: {} }\nCustomer: Just restart the modem, that should fix it!",
       "expected_output": "After confirming the area outage via check_line_status, the agent must NOT call restart_modem. The agent should:\n1. Inform the customer that there is an active area outage affecting their region.\n2. Provide the estimated fix time (approximately 2 hours).\n3. Decline the modem restart request, explaining that a restart will not resolve an area-wide outage and is not permitted during one.\n4. Optionally open an outage ticket via open_outage_ticket(area_code) and share the ticket ID with the customer for reference.\n5. Advise the customer to check back after the estimated resolution window.\nThe agent must NOT call restart_modem or schedule_technician under any circumstances while the outage flag is active.",
@@ -78,7 +78,7 @@
       "metadata": null
     },
     {
-      "name": "Slow Internet: Agent Skips Speed Test and Goes Directly to Modem Restart",
+      "name": "Slow Internet: Agent Skips Speed Test and Goes Directly to Modem Restart (second phrasing)",
       "session_id": "985ce768-057f-4bac-b4c4-299bec2f965a",
       "input": "Customer: \"My internet is super slow today, can you just restart my modem? That usually fixes it.\"\nAgent has already verified the customer's identity (account_id: ACC-7821, PIN verified).\ncheck_line_status result: connection state = connected, outage_flag = false, signal metrics = nominal.\nThe customer is pushing to skip straight to a modem restart without a speed test first.",
       "expected_output": "The agent must NOT immediately call restart_modem. After check_line_status confirms no outage and nominal signal, the agent must next call run_speed_test(account_id=\"ACC-7821\") before any modem restart. The agent should explain to the customer that the troubleshooting process requires running a speed test first to establish a baseline. Only after receiving and reviewing the speed test results should the agent consider restarting the modem. Skipping run_speed_test and jumping to restart_modem is a protocol violation and must not occur regardless of the customer's request.",
