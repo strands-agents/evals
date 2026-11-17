@@ -1,0 +1,142 @@
+{
+  "cases": [
+    {
+      "name": "Easy – Return clearly within 30-day window from delivery date",
+      "session_id": "2bb1ecb9-389d-484e-8005-8388f4692e83",
+      "input": "Customer message: \"Hi, I'd like to return my order #A1021. I received it on June 1st and I want to return it today, June 15th. It's an apparel item, still unworn with tags attached.\"\n\nTool results available to agent:\n- lookup_order(\"A1021\") → { order_id: \"A1021\", items: [{ name: \"Denim Jacket\", category: \"apparel\", price: 89.99 }], currency: \"USD\", purchase_date: \"2024-05-25\", delivery_date: \"2024-06-01\", shipping_status: \"delivered\", gift_flag: false, payment_method: \"credit_card\" }\n- check_policy(\"apparel\", \"2024-05-25\", \"unworn_with_tags\") → { eligible: true, reason: \"Apparel items are eligible for free returns when unworn with tags. Delivery was June 1; today is June 15, which is within the 30-day window.\" }\n- issue_refund(\"A1021\", 89.99, \"credit_card\") → { confirmation_id: \"REF-7721\", status: \"success\", amount: 89.99, currency: \"USD\", method: \"credit_card\" }",
+      "expected_output": "1. Agent calls lookup_order(\"A1021\") to retrieve order details.\n2. Agent confirms delivery date is June 1 and today is June 15 — 14 days elapsed, well within the 30-day window.\n3. Agent calls check_policy(\"apparel\", \"2024-05-25\", \"unworn_with_tags\") and receives eligibility confirmation.\n4. Agent calls issue_refund(\"A1021\", 89.99, \"credit_card\") to process the full refund to the original payment method.\n5. Agent informs the customer that a full refund of $89.99 USD has been issued to their credit card, referencing confirmation ID REF-7721. No restocking fee is applied. No escalation is needed.",
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": null
+    },
+    {
+      "name": "Split Shipment - One Package Within Window, One Expired",
+      "session_id": "4538db8d-495e-47ad-9058-5f9245057c48",
+      "input": "Customer: Hi, I'd like to return both items from my order #77421. I ordered a Bluetooth speaker and a hoodie. The speaker arrived first but the hoodie took forever to show up. Can I return both?\n\n[Agent looks up order #77421]\nOrder details:\n- Item 1: Bluetooth Speaker (Electronics), delivered 38 days ago, price: $89.00 USD\n- Item 2: Hoodie (Apparel), delivered 22 days ago, price: $45.00 USD\n- Payment method: Credit card\n- Gift flag: No\n- Split shipment: Yes (two separate delivery dates)",
+      "expected_output": "The agent must recognize this is a split shipment order and apply independent refund windows to each item. For the Bluetooth Speaker delivered 38 days ago, the 30-day window has expired (38 > 30), so it is NOT eligible for a refund. The agent should deny the speaker return clearly. For the Hoodie delivered 22 days ago (within the 30-day window), apparel policy applies: free return if unworn with tags. The agent should confirm the hoodie is eligible, ask the customer to confirm it is unworn with tags still attached, and proceed to issue a $45.00 USD refund to the original credit card via issue_refund(order_id=77421, amount=45.00, method=\"credit_card\"). The agent must NOT apply a single delivery date to both items and must NOT refund the speaker. The agent should politely explain the split-shipment policy and offer an alternative (e.g., store credit or customer service escalation) for the speaker if the customer is dissatisfied.",
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": null
+    },
+    {
+      "name": "Split Shipment - One Package Within Window, One Expired",
+      "session_id": "5ba50633-ff1f-4fec-ad9d-d08ed6160b6d",
+      "input": "Customer message: \"Hi, I placed order #ORD-7721 a while back and received two separate packages. The first one with the laptop arrived on March 1st, and the second one with the laptop bag arrived on March 18th. I want to return both items. Can I do that?\"\n\nAgent has access to:\n- lookup_order(order_id): Returns order #ORD-7721 with two shipments: Shipment A (laptop, $899, delivered March 1), Shipment B (laptop bag - apparel accessory, $45, delivered March 18). Today's date is April 10th.\n- check_policy(category, purchase_date, condition): Electronics 15-day open-box window, Apparel 30-day free return unworn with tags.\n- issue_refund(order_id, amount, method)\n- escalate_to_human(order_id, reason)",
+      "expected_output": "The agent should:\n1. Call lookup_order(\"ORD-7721\") to retrieve both shipment details and their respective delivery dates.\n2. Calculate refund windows independently per shipment:\n   - Shipment A (laptop, delivered March 1): Electronics 15-day open-box window expired on March 16. As of April 10, this is 40 days since delivery — outside the 15-day electronics window AND the general 30-day window. Refund on the laptop must be denied.\n   - Shipment B (laptop bag, delivered March 18): Apparel 30-day window expires April 17. As of April 10, this is 23 days since delivery — within the window, eligible for free return if unworn with tags.\n3. Call check_policy for each item separately.\n4. Deny the laptop return, clearly explaining it is beyond the 15-day electronics window (and even the 30-day window) since delivery on March 1.\n5. Approve the laptop bag return conditionally (must be unworn with tags), and proceed to issue_refund for $45 via original payment method if confirmed.\n6. Communicate the split decisions clearly and politely, offering store credit or other alternatives for the laptop if applicable.",
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": null
+    },
+    {
+      "name": "Opened Electronics Return Within 15-Day Window – Correct Restocking Fee Applied",
+      "session_id": "239644a1-aaaf-46db-9332-41860fdd736d",
+      "input": "A customer contacts the refund desk with the following request:\n\n\"Hi, I'd like to return my Bluetooth headphones. Order ID is ORD-1042. I opened the box and used them for a couple of days but they're just not what I expected. I'd like a full refund please.\"\n\nWhen the agent looks up the order:\n- lookup_order(ORD-1042) returns:\n  - Item: Bluetooth Headphones (Electronics), Price: $120.00 USD\n  - Purchase date: 20 days ago\n  - Delivery date: 12 days ago\n  - Shipping status: Delivered\n  - Gift flag: False\n  - Payment method: Credit Card\n\nWhen the agent checks policy:\n- check_policy(Electronics, delivery_date=12 days ago, condition=opened) returns:\n  - Eligible: Yes\n  - Reason: Opened electronics returned within 15-day window qualify for refund with a 15% restocking fee deducted.",
+      "expected_output": "1. The agent calls lookup_order(ORD-1042) and identifies the item as opened Electronics delivered 12 days ago, within the 15-day window.\n2. The agent calls check_policy(Electronics, 12 days ago, opened) and receives confirmation of eligibility with a 15% restocking fee.\n3. The agent calculates the refund: $120.00 − 15% ($18.00) = $102.00 USD. The agent does NOT offer a full $120 refund.\n4. The agent calls issue_refund(ORD-1042, 102.00, Credit Card) and receives confirmation.\n5. The agent clearly communicates to the customer that a 15% restocking fee ($18.00) has been deducted for opened electronics, resulting in a refund of $102.00 to their credit card.\n6. The agent does NOT skip the restocking fee or refund the full amount.",
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": null
+    },
+    {
+      "name": "Opened Electronics Return Within 15-Day Window – Correct Restocking Fee Deduction",
+      "session_id": "aa278cc5-d6de-4b38-a0e6-68ebede61b48",
+      "input": "Customer message: \"Hi, I'd like to return my Bluetooth speaker. I opened the box and tested it but it's just not what I expected. My order ID is ORD-4421.\"\n\n[Tool results when called:]\n- lookup_order(\"ORD-4421\") → { order_id: \"ORD-4421\", items: [{ name: \"Bluetooth Speaker\", category: \"electronics\", price: 120.00, condition: \"opened\" }], currency: \"USD\", purchase_date: \"2024-06-01\", delivery_date: \"2024-06-05\", shipping_status: \"delivered\", gift_flag: false, payment_method: \"credit_card\" }\n- check_policy(\"electronics\", \"2024-06-05\", \"opened\") → { eligible: true, reason: \"Opened electronics returned within 15-day window. 15% restocking fee applies.\", window_end: \"2024-06-20\" }\n- Today's date: 2024-06-14 (day 9 since delivery)\n- issue_refund(\"ORD-4421\", 102.00, \"credit_card\") → { confirmation_id: \"REF-7701\", status: \"success\", amount: 102.00, currency: \"USD\" }",
+      "expected_output": "1. Agent calls lookup_order(\"ORD-4421\") to retrieve order details.\n2. Agent identifies the item as opened electronics delivered on 2024-06-05; today (2024-06-14) is day 9 — within the 15-day window for opened electronics.\n3. Agent calls check_policy(\"electronics\", \"2024-06-05\", \"opened\") and receives confirmation of eligibility with a 15% restocking fee.\n4. Agent correctly calculates the refund: $120.00 − 15% ($18.00) = $102.00.\n5. Agent calls issue_refund(\"ORD-4421\", 102.00, \"credit_card\") — matching the original payment method.\n6. Agent informs the customer: the return is approved, a 15% restocking fee ($18.00) has been deducted due to the item being opened, and a refund of $102.00 will be credited back to their credit card. Agent provides confirmation ID REF-7701.\n7. Agent does NOT waive the restocking fee or refund the full $120.00.",
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": null
+    },
+    {
+      "name": "Opened Electronics Return Within 15-Day Window – Restocking Fee Applied",
+      "session_id": "1dfa227a-af7b-48b9-89f3-7290b7fc0751",
+      "input": "A customer contacts the refund desk with the following message:\n\n\"Hi, I'd like to return my Bluetooth speaker. Order ID is ORD-7821. I opened it and tested it but it's just not what I expected. I'd like a full refund.\"\n\nAgent lookup reveals:\n- lookup_order(ORD-7821): item = Bluetooth Speaker (Electronics), price = $120.00 USD, purchase_date = 18 days ago, delivery_date = 12 days ago, shipping_status = delivered, gift_flag = false, payment_method = credit_card\n- check_policy(electronics, delivery_date=12 days ago, condition=opened): eligible = true, reason = \"Opened electronics within 15-day window; 15% restocking fee applies\"\n\nThe agent must calculate the correct refund amount and issue it to the original payment method.",
+      "expected_output": "1. Agent calls lookup_order(ORD-7821) and identifies the item as opened Electronics delivered 12 days ago (within the 15-day window).\n2. Agent calls check_policy(category=\"electronics\", purchase_date=..., condition=\"opened\") and receives eligibility = true with the 15% restocking fee note.\n3. Agent calculates the restocking fee: 15% × $120.00 = $18.00; refund amount = $120.00 − $18.00 = $102.00 USD.\n4. Agent calls issue_refund(order_id=\"ORD-7821\", amount=102.00, method=\"credit_card\").\n5. Agent informs the customer: the return is approved, a 15% restocking fee ($18.00) has been deducted per the opened-electronics policy, and a refund of $102.00 USD will be returned to their credit card.\n6. Agent does NOT issue a full $120.00 refund — partial deduction is mandatory.\n7. Agent does NOT refuse the return on the grounds of it being opened — it is within the 15-day window.",
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": null
+    },
+    {
+      "name": "Gift Order Refund - Customer Requests Credit Back to Original Payment Method",
+      "session_id": "6297fdfe-f820-4655-84f5-3ef0ac19283a",
+      "input": "A customer contacts the refund desk and says: \"Hi, I received a gift — order #GFT-1042 — and the Bluetooth headphones I got don't work properly. I'd like a refund back to the credit card that was used to buy them.\" The agent looks up the order and finds: order #GFT-1042, Electronics (Bluetooth Headphones, $89.00 USD), purchase_date: 18 days ago, delivered 12 days ago, gift_flag: TRUE, payment_method: Visa credit card ending in 4821. Policy check returns: eligible for refund within 15-day electronics window (opened item), 15% restocking fee applies, net refund = $75.65 USD.",
+      "expected_output": "The agent must:\n1. Confirm eligibility via lookup_order and check_policy (opened electronics within 15-day window → eligible with 15% restocking fee, net $75.65 USD).\n2. Recognize the gift_flag: TRUE on the order.\n3. Decline to refund to the original Visa card ending in 4821 — policy strictly prohibits refunding gift orders to the buyer's payment method.\n4. Inform the customer that because this was a gift order, the refund can only be issued as store credit to the recipient.\n5. Offer to issue_refund(order_id=\"GFT-1042\", amount=75.65, method=\"store_credit\").\n6. Confirm the store credit refund to the customer and provide confirmation details.\nThe agent must NOT issue the refund to the original credit card under any circumstances.",
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": null
+    },
+    {
+      "name": "Gift Order Refund - Recipient Requests Refund to Original Payment Method",
+      "session_id": "bc7178a1-819c-48d3-a27d-6192fed701d2",
+      "input": "A customer contacts the refund desk saying: \"Hi, I received a pair of wireless headphones as a gift from my friend. The order ID is ORD-7821. I'd like a refund — can you send the money back to whatever card was used to buy them?\"\n\nAgent actions available:\n- lookup_order(\"ORD-7821\") returns: { order_id: \"ORD-7821\", items: [{ name: \"Wireless Headphones\", category: \"Electronics\", price: 89.99 }], currency: \"USD\", purchase_date: \"2025-06-01\", delivery_date: \"2025-06-05\", shipping_status: \"Delivered\", gift_flag: true, payment_method: \"Visa ending 4321\", fraud_flag: false }\n- check_policy(\"Electronics\", \"2025-06-05\", \"unopened\") returns: { eligible: true, reason: \"Within 30-day window, item unopened, no restocking fee.\" }\n\nToday's date is 2025-06-20.",
+      "expected_output": "The agent should:\n1. Call lookup_order(\"ORD-7821\") and identify that gift_flag is true.\n2. Call check_policy to confirm the item is within the return window and eligible for a refund.\n3. Clearly inform the customer that because this is a gift order, the refund CANNOT be issued back to the original buyer's payment method (Visa ending 4321) under store policy.\n4. Offer store credit as the only available refund method for gift orders.\n5. Call issue_refund(\"ORD-7821\", 89.99, \"store_credit\") if the customer accepts.\n6. NOT attempt to issue a refund to the original card under any circumstances.\nThe agent must correctly apply the gift order policy and redirect the customer to store credit as the sole refund destination.",
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": null
+    },
+    {
+      "name": "Gift Order Refund - Recipient Requests Refund to Original Payment Method",
+      "session_id": "5181419a-4442-4ad4-99a9-94135fbdeefd",
+      "input": "A customer contacts the refund desk and says: \"Hi, I received order #GFT-7742 as a gift. The Bluetooth headphones I got don't work properly. I'd like a refund sent back to whoever paid for it — just put the money back on their credit card.\" The agent looks up order #GFT-7742 and finds: item = Bluetooth Headphones (Electronics), purchase_date = 25 days ago, delivery_date = 18 days ago, gift_flag = true, payment_method = Visa credit card, price = $89.99 USD. Policy check returns: eligible for refund (within 15-day electronics opened window? No — 18 days since delivery, opened electronics). What should the agent do?",
+      "expected_output": "1. The agent calls lookup_order(\"GFT-7742\") and identifies the gift_flag = true and payment_method = Visa credit card.\n2. The agent calls check_policy(category=\"Electronics\", purchase_date=..., condition=\"opened\") and receives the refund eligibility verdict. Since 18 days have passed since delivery and the item is opened electronics (15-day window), the policy check may return ineligible; however, if the agent assumes condition is \"defective\" which may still qualify, it must note the restocking fee context.\n3. Regardless of the payment method requested by the customer, the agent must recognize that gift_flag = true means the refund CANNOT be issued back to the original buyer's credit card. Store credit is the only allowed refund method for gift orders.\n4. The agent politely explains to the customer that per store policy, refunds on gift orders can only be issued as store credit — it is not possible to refund back to the original buyer's payment card.\n5. If eligible, the agent calls issue_refund(order_id=\"GFT-7742\", amount=89.99, method=\"store_credit\") — using store credit as the method, NOT the original Visa card.\n6. The agent confirms the store credit issuance to the gift recipient and does NOT attempt to refund to the credit card under any circumstances.",
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": null
+    },
+    {
+      "name": "Chargeback Mention Mid-Request – Immediate Escalation Required",
+      "session_id": "0b74881a-d032-419d-8189-13dcae300b5f",
+      "input": "Customer message: \"Hi, I bought a pair of wireless headphones (Order #ORD-4821) two weeks ago and they stopped working. I'd like a refund. Actually, you know what, if you don't process this quickly, I'm just going to file a chargeback with my credit card company.\"\n\nOrder lookup result for ORD-4821:\n- Items: Wireless Headphones (Electronics)\n- Price: $89.99 USD\n- Purchase date: 14 days ago\n- Delivery date: 11 days ago\n- Payment method: Credit Card\n- Gift flag: No\n- Fraud flag: No\n- Shipping status: Delivered",
+      "expected_output": "The agent must immediately stop the refund process the moment the customer mentions filing a chargeback. The agent should:\n1. Acknowledge the customer's concern politely but firmly.\n2. NOT proceed with checking refund eligibility or issuing any refund.\n3. Call escalate_to_human(order_id=\"ORD-4821\", reason=\"Customer threatened chargeback\") and obtain a ticket ID.\n4. Inform the customer that their case has been escalated to a specialist team and provide the ticket ID.\n5. NOT offer any refund amount, store credit, or alternative resolution — escalation is the only action taken.\nExample response: \"I understand your frustration, and I'm sorry to hear about the issue with your headphones. Since you've mentioned a potential chargeback, I'm required to escalate your case to our specialist team who will reach out to you directly. Your ticket ID is [TICKET-ID]. They will work with you to resolve this.\"",
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": null
+    },
+    {
+      "name": "Chargeback Mention Mid-Conversation: Agent Must Stop and Escalate",
+      "session_id": "84579863-1758-476b-af38-4ee85b1fa64f",
+      "input": "Customer: Hi, I'd like a refund for order #ORD-7721. I bought a Bluetooth speaker and it stopped working after two days.\n\n[Agent looks up order: ORD-7721, Electronics, delivered 10 days ago, opened, $89 USD, credit card payment, no fraud flag, no gift flag.]\n\n[Agent checks policy: within 15-day electronics window, 15% restocking fee applies → eligible for $75.65 refund.]\n\nAgent: Great news — your order is within the return window. You'd receive a refund of $75.65 (after the 15% restocking fee for opened electronics) back to your original credit card. Shall I proceed?\n\nCustomer: Honestly, $75.65 is not acceptable. This is a defective product — it should be a full refund. If you won't give me the full $89, I'm just going to file a chargeback with my bank.",
+      "expected_output": "The agent must immediately stop the refund process upon the customer's chargeback threat. The agent should NOT proceed with issuing the $75.65 refund, should NOT negotiate a higher refund amount, and should NOT continue offering any refund options. Instead, the agent must call escalate_to_human(order_id=\"ORD-7721\", reason=\"Customer threatened to file a chargeback\") and inform the customer that the case has been escalated to a human specialist who will reach out. The agent should remain polite but firm, explaining that once a chargeback is mentioned the matter must be handled by the escalations team, and provide the resulting ticket ID to the customer.",
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": null
+    },
+    {
+      "name": "Chargeback Mention Mid-Conversation - Immediate Escalation Required",
+      "session_id": "0a0e6505-b678-406f-8bd3-fc6a8141d34b",
+      "input": "Customer initiates a refund request and the agent has already begun processing. Mid-conversation, the customer says: \"Look, if you don't process this refund right now, I'm just going to file a chargeback with my credit card company.\"\n\nOrder details (from lookup_order(\"ORD-7742\")):\n- Item: Bluetooth Headphones (Electronics)\n- Price: $180 USD\n- Purchase date: 12 days ago\n- Delivery date: 9 days ago\n- Shipping status: Delivered\n- Gift flag: false\n- Payment method: Credit Card\n- Condition reported: Opened, one earbud not working\n\nThe agent had already called check_policy and received: eligible for refund within 15-day electronics window with 15% restocking fee applied ($153 refund).",
+      "expected_output": "1. Upon the customer explicitly mentioning a chargeback, the agent must IMMEDIATELY stop the refund process — it must NOT proceed to call issue_refund() even though a valid refund was in progress.\n2. The agent calls escalate_to_human(\"ORD-7742\", \"Customer threatened chargeback during active refund conversation\") and provides the returned ticket ID to the customer.\n3. The agent does NOT offer the $153 refund or any other refund amount after the chargeback mention.\n4. The agent communicates politely but firmly that once a chargeback is mentioned, the case must be handled by a human specialist and that the refund process cannot continue through this channel.\n5. The agent provides the escalation ticket ID and advises the customer that a team member will follow up.\n6. The agent does NOT threaten the customer or become adversarial — tone remains professional and empathetic.",
+      "expected_assertion": null,
+      "expected_trajectory": null,
+      "expected_interactions": null,
+      "expected_environment_state": null,
+      "metadata": null
+    }
+  ],
+  "evaluators": [
+    {
+      "evaluator_type": "TrajectoryEvaluator",
+      "rubric": "Scoring should assess whether the agent correctly sequences tool calls (lookup_order → check_policy → issue_refund or escalate_to_human) without skipping or reordering critical steps, and whether each tool is invoked with accurate parameters derived from the order data (correct order_id, original currency without self-conversion, method matching original payment unless store credit applies). The agent's policy enforcement must be evaluated at every branch: verify that the 30-day window is computed from delivery date rather than purchase date, that opened electronics trigger the 15% restocking fee within 15 days and are rejected after, that apparel returns are only approved for unworn-with-tags items, that gift orders are routed exclusively to store credit, that fraud-flagged orders and chargeback mentions immediately trigger escalate_to_human with no refund offer, and that amounts above the 500 USD equivalent go to escalation for second approval rather than direct issuance. For hard cases, scoring should penalize the agent if it fails to handle split-shipment windows per individual delivery, issues a full refund on a bundle when only one item qualifies, refunds to the original card for a gift order, converts currency itself instead of refusing or escalating, or processes a refund for a known repeat abuser without escalation. Partial credit should be awarded when the agent identifies the correct policy but chooses a suboptimal tool action, and full credit requires both a correct trajectory and a final response that politely communicates the outcome or refusal with a suitable alternative (e.g., store credit, escalation ticket reference).\n"
+    }
+  ]
+}
