@@ -12,6 +12,7 @@ import threading
 import warnings
 from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -80,6 +81,7 @@ from .setup.budget import Budget, BudgetTracker
 from .setup.splits import Split
 
 _DEFAULT_BASE_DIR = Path(".strands-evals/optimization/runs")
+_UNREADABLE = object()  # `_loop_executor_threads`: the loop has no readable default executor
 
 
 class Optimizer:
@@ -428,13 +430,30 @@ class Optimizer:
     def run(self) -> OptimizationResult:
         """Run the search and the end phase; the sync form of `run_async`.
 
+        Runs on a new event loop in a worker thread. Strands runs each Bedrock model call (judges' included)
+        and each sync tool call in a thread of the loop's default executor (`asyncio.to_thread`), and one
+        trial can use several at once, so that executor gets 8 threads per `max_workers`, at least 32.
+
         Raises:
             RuntimeError: As `run_async`.
         """
-        return _run_in_thread(self.run_async)
+
+        async def with_wide_executor() -> OptimizationResult:
+            asyncio.get_running_loop().set_default_executor(
+                ThreadPoolExecutor(max_workers=_executor_threads(self._max_workers), thread_name_prefix="optimizer")
+            )
+            return await self.run_async()
+
+        return _run_in_thread(with_wide_executor)
 
     async def run_async(self) -> OptimizationResult:
         """Score the baseline, run the search until it stops, then the end phase.
+
+        Strands runs each Bedrock model call and each sync tool call in a thread of the running loop's
+        default executor (`asyncio.to_thread`), which asyncio sizes min(32, cpus + 4). When that executor has
+        fewer threads than `max_workers`, trials can wait for a thread, and their `Usage.seconds` then
+        include the wait, so this warns; give the loop a larger executor first (`loop.set_default_executor`).
+        `run()` sizes its own loop's executor.
 
         Returns:
             The champion, the validation and test reports, the effects, and the run's costs.
@@ -446,6 +465,17 @@ class Optimizer:
                 reason `"setup"` is written first, and the message names the unmeasured cases or the
                 metric, the trial status counts, and the first error.
         """
+        threads = _loop_executor_threads(asyncio.get_running_loop())
+        if threads is not None and threads < self._max_workers:
+            warnings.warn(
+                f"the event loop's default executor has {threads} threads but max_workers is {self._max_workers}: "
+                "Strands runs each Bedrock model call (judges' included) and each sync tool call in a thread of it, "
+                "so trials can wait for a thread and their measured seconds then include the wait; before run_async, "
+                "give the loop a larger one, e.g. "
+                f"loop.set_default_executor(ThreadPoolExecutor({_executor_threads(self._max_workers)}))",
+                UserWarning,
+                stacklevel=2,
+            )
         await self._start()
         resumed = self._resumed
         if resumed is not None and resumed.stop_reason is not None:
@@ -1919,6 +1949,34 @@ async def _gather_or_cancel(awaitables: Sequence[Any]) -> list[Any]:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
+
+
+def _executor_threads(max_workers: int) -> int:
+    """The default executor size `run()` gives its loop: 8 threads per trial, at least 32.
+
+    `max_workers` is meant to limit the trials, so the executor shouldn't. One trial can use several threads at
+    once (`Experiment` runs a case's evaluators together, and Strands runs one turn's tool calls together); 8 is
+    chosen, not measured. A thread starts only when no idle one is free, so unused threads are never created. 32
+    is the most asyncio's own default executor has.
+    """
+    return max(32, 8 * max_workers)
+
+
+def _loop_executor_threads(loop: asyncio.AbstractEventLoop) -> int | None:
+    """How many threads `loop`'s default executor has, or will have when asyncio creates it; None when that can't
+    be read.
+
+    Neither value has a public getter, so this reads `BaseEventLoop._default_executor` and
+    `ThreadPoolExecutor._max_workers`. A loop that doesn't expose that attribute, or an executor of another kind,
+    gives None.
+    """
+    executor = getattr(loop, "_default_executor", _UNREADABLE)
+    if executor is None:  # created on first use as `ThreadPoolExecutor()`
+        executor = ThreadPoolExecutor()  # starts no thread until something is submitted
+    if not isinstance(executor, ThreadPoolExecutor):
+        return None
+    threads = getattr(executor, "_max_workers", None)
+    return threads if isinstance(threads, int) else None
 
 
 class _ProposerFailed(Exception):
