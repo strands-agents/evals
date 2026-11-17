@@ -495,3 +495,96 @@ def test_space_must_be_a_mapping(experiment_path, tmp_path, capsys):
     args[args.index(f"{AGENTS}:space")] = f"{AGENTS}:EXACT"
     assert main(args) == 2
     assert "is a str, not a mapping" in capsys.readouterr().err
+
+
+# the .toml run file
+
+
+def _write_run_file(folder: Path, body: str) -> Path:
+    path = folder / "optimize.toml"
+    path.write_text(body)
+    return path
+
+
+RUN_FILE = f"""
+experiment = "experiment.json"
+agent = "{AGENTS}:manager_agent"
+custom_evaluator = ["{CORRECT}"]
+objective = ["maximize:Correct"]
+constraint = ["tokens<=450"]
+max_iterations = 2
+proposals_per_iteration = 2
+max_workers = 40
+base_dir = "runs"
+"""
+
+
+def test_a_run_file_gives_the_same_inputs_as_the_flags(experiment_path, tmp_path, monkeypatch, capsys):
+    assert main(_run_args(experiment_path, tmp_path / "flags")) == 0
+    from_flags = json.loads((_only_run(tmp_path / "flags") / "cli.json").read_text())
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)  # paths in the file resolve against its folder, not the working directory
+    assert main(["--json", "optimize", "run", str(_write_run_file(tmp_path, RUN_FILE))]) == 0
+    root = _only_run(tmp_path)
+    assert json.loads((root / "cli.json").read_text()) == from_flags
+    flags_run = json.loads((_only_run(tmp_path / "flags") / "run.json").read_text())
+    file_run = json.loads((root / "run.json").read_text())
+    for key in ("objective", "constraints", "budget", "search", "split", "proposals_per_iteration"):
+        assert file_run[key] == flags_run[key]
+
+
+def test_command_line_flags_override_the_run_file(experiment_path, tmp_path, capsys):
+    path = _write_run_file(tmp_path, RUN_FILE)
+    assert main(["--json", "optimize", "run", str(path), "--max-iterations", "1", "--name", "override"]) == 0
+    root = _only_run(tmp_path)
+    assert root.name.startswith("override-")
+    assert json.loads((root / "run.json").read_text())["budget"]["max_iterations"] == 1
+
+
+def test_an_agent_flag_replaces_the_run_files_agent_route(experiment_path, tmp_path, capsys):
+    path = _write_run_file(tmp_path, RUN_FILE)
+    args = [
+        "--json",
+        "optimize",
+        "run",
+        str(path),
+        "--build-task",
+        f"{AGENTS}:build_task",
+        "--space",
+        f"{AGENTS}:space",
+    ]
+    assert main(args) == 0
+    saved = json.loads((_only_run(tmp_path) / "cli.json").read_text())
+    assert saved["agent"] is None and saved["build_task"] == f"{AGENTS}:build_task"
+
+
+def test_a_path_form_hook_resolves_against_the_run_files_folder(experiment_path, tmp_path, monkeypatch, capsys):
+    (tmp_path / "agent.py").write_text(f"from {AGENTS} import manager_agent  # noqa: F401\n")
+    body = RUN_FILE.replace(f'agent = "{AGENTS}:manager_agent"', 'agent = "agent.py:manager_agent"')
+    path = _write_run_file(tmp_path, body)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert main(["--json", "optimize", "run", str(path)]) == 0
+    saved = json.loads((_only_run(tmp_path) / "cli.json").read_text())
+    assert saved["agent"] == f"{tmp_path / 'agent.py'}:manager_agent"
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (RUN_FILE + "json = true\n", "unknown key 'json'"),
+        (RUN_FILE + "nope = 1\n", "unknown key 'nope'"),
+        (RUN_FILE.replace("max_iterations = 2", 'max_iterations = "two"'), "max_iterations must be an integer"),
+        (RUN_FILE.replace('objective = ["maximize:Correct"]', 'objective = "maximize:Correct"'), "list of strings"),
+        (RUN_FILE + "pareto = 1\n", "pareto must be true or false"),
+        (RUN_FILE.replace('experiment = "experiment.json"\n', ""), "has no experiment"),
+        (RUN_FILE.replace(f'agent = "{AGENTS}:manager_agent"\n', ""), "give exactly one of --agent"),
+        (RUN_FILE + 'config = "agent.json"\n', "give exactly one of --agent"),
+        ("experiment = [", "isn't valid TOML"),
+    ],
+)
+def test_a_bad_run_file_is_a_usage_error(experiment_path, tmp_path, capsys, body, message):
+    assert main(["optimize", "run", str(_write_run_file(tmp_path, body))]) == 2
+    assert message in capsys.readouterr().err

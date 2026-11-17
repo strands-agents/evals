@@ -3,10 +3,14 @@
 `cli.json` holds the inputs of `optimize run`, as given, so `resume RUN_DIR` rebuilds the same experiment, agent,
 objective, constraints, search, selection, score model, and progress callback from the run folder alone. A flag that
 takes an object takes `MODULE:ATTR` (`import_attr`), checked against the type the `Optimizer` expects.
+
+A `.toml` run file holds the same flags: each key is a `run` flag (without `--`, `-` -> `_`), each value what the
+flag takes; flags given on the command line win (`apply_run_file`).
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import inspect
 import json
@@ -44,7 +48,12 @@ from ..optimization import (
     WeightedSum,
 )
 from ..optimization.declaration.files import _write_text_atomically
-from ._entrypoint import EntryPointError, import_attr, resolve_custom_evaluators
+from ._entrypoint import EntryPointError, _looks_like_path, import_attr, resolve_custom_evaluators
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover
+    import tomli as tomllib
 
 logger = logging.getLogger(__name__)
 
@@ -388,3 +397,125 @@ async def drive(optimizer: Optimizer, on_folder: Callable[[Path], None]) -> Opti
     if optimizer.run_dir is not None:
         on_folder(optimizer.run_dir)
     return await task
+
+
+# The .toml run file.
+
+RUN_FILE_SUFFIX = ".toml"
+_AGENT_ROUTE = ("agent", "build_task", "space", "config")
+_PATH_KEYS = ("experiment_file", "config", "base_dir")
+_HOOK_KEYS = (
+    "agent",
+    "build_task",
+    "space",
+    "rollout",
+    "environment",
+    "custom_evaluator",
+    "search",
+    "selection",
+    "score_model",
+    "final_pick",
+    "on_iteration",
+)
+_OUTPUT_FLAGS = ("format", "verbose", "debug", "help")
+
+
+def apply_run_file(path: Path, parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Fill `args` from the `.toml` run file at `path`, for every flag not given on the command line.
+
+    Keys are the `run` flags without `--` (`-` -> `_`), plus `experiment` for the experiment file; the output
+    flags (`--json`, `--rich`, `-v`, `--debug`) aren't keys. A repeatable flag's value is a list, `--pareto`'s a
+    boolean, every other flag's a string or number. A flag on the command line replaces the file's value (for a
+    repeatable flag, its whole list); giving any agent flag (`--agent`, `--build-task`, `--space`, `--config`) on
+    the command line replaces the file's agent route. Paths (`experiment`, `config`, `base_dir`) and path-form
+    `MODULE:ATTR`s resolve against the file's folder; dotted modules import from the working directory, as on the
+    command line.
+
+    Raises:
+        ValueError: The file can't be read or parsed, has an unknown key, a value of the wrong type, or no
+            `experiment`.
+    """
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except OSError as error:
+        raise ValueError(f"run file {path}: {error}") from error
+    except tomllib.TOMLDecodeError as error:
+        raise ValueError(f"run file {path} isn't valid TOML: {error}") from error
+    actions = _run_file_actions(parser)
+    unknown = sorted(set(data) - set(actions))
+    if unknown:
+        raise ValueError(
+            f"run file {path}: unknown key {unknown[0]!r}; keys are the run flags, e.g. {', '.join(list(actions)[:4])}"
+        )
+    if "experiment" not in data:
+        raise ValueError(f'run file {path} has no experiment = "<experiment.json>"')
+    base = path.resolve().parent
+    on_command_line = {action.dest for action in actions.values() if getattr(args, action.dest) not in (None, False)}
+    on_command_line.discard("experiment_file")  # the positional named the run file itself
+    if on_command_line & set(_AGENT_ROUTE):
+        data = {key: value for key, value in data.items() if key not in _AGENT_ROUTE}
+    for key, value in data.items():
+        action = actions[key]
+        if action.dest in on_command_line:
+            continue
+        value = _run_file_value(path, key, action, value)
+        setattr(args, action.dest, _resolve_against(base, action.dest, value))
+
+
+def _run_file_actions(parser: argparse.ArgumentParser) -> dict[str, argparse.Action]:
+    """Run-file key -> the `run` argument it sets."""
+    actions: dict[str, argparse.Action] = {}
+    for action in parser._actions:
+        if action.dest in _OUTPUT_FLAGS:
+            continue
+        if not action.option_strings:
+            actions["experiment"] = action
+            continue
+        flag = next(option for option in action.option_strings if option.startswith("--"))
+        actions[flag[2:].replace("-", "_")] = action
+    return actions
+
+
+def _run_file_value(path: Path, key: str, action: argparse.Action, value: Any) -> Any:
+    """`value` checked against what the flag takes, converted as argparse would convert it."""
+    where = f"run file {path}: {key}"
+    if isinstance(action, argparse._AppendAction):
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise ValueError(f"{where} must be a list of strings, as the flag is repeatable")
+        return value
+    if isinstance(action, argparse._StoreTrueAction):
+        if not isinstance(value, bool):
+            raise ValueError(f"{where} must be true or false")
+        return value
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError(f"{where} must be a string or a number")
+    if action.type in (int, float):
+        if isinstance(value, str) or (action.type is int and not isinstance(value, int)):
+            raise ValueError(f"{where} must be {'an integer' if action.type is int else 'a number'}")
+        return action.type(value)
+    return str(value)
+
+
+def _resolve_against(base: Path, dest: str, value: Any) -> Any:
+    """A path or path-form `MODULE:ATTR` from the run file, made absolute against the file's folder."""
+    if dest in _PATH_KEYS:
+        target = Path(value).expanduser()
+        return str(target if target.is_absolute() else base / target)
+    if dest in _HOOK_KEYS:
+        return [_hook_against(base, v) for v in value] if isinstance(value, list) else _hook_against(base, value)
+    if dest == "objective_specs":
+        return [spec if is_objective_spec(spec) else _hook_against(base, spec) for spec in value]
+    if dest == "constraint_specs":
+        return [spec if any(c in spec for c in "<>=") else _hook_against(base, spec) for spec in value]
+    if dest == "split":
+        return _hook_against(base, value) if ":" in value else value
+    return value
+
+
+def _hook_against(base: Path, spec: str) -> str:
+    """`spec` with a path-form module made absolute against `base`; a dotted module is left as is."""
+    module, sep, attr = spec.rpartition(":")
+    if not sep or not _looks_like_path(module):
+        return spec
+    target = Path(module).expanduser()
+    return f"{target if target.is_absolute() else base / target}:{attr}"

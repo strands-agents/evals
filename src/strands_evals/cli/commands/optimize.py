@@ -37,6 +37,12 @@ def _run(args: argparse.Namespace) -> int:
     from ...optimization import Budget, FinalPick, Optimizer
     from .. import _optimize
 
+    if args.experiment_file.endswith(_optimize.RUN_FILE_SUFFIX):
+        try:
+            _optimize.apply_run_file(Path(args.experiment_file), args.run_parser, args)
+        except ValueError as run_file_error:
+            emit_error(str(run_file_error))
+            return EXIT_BAD_INPUT
     error = _check_agent_flags(args)
     if error is not None:
         emit_error(error)
@@ -110,9 +116,18 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def _check_agent_flags(args: argparse.Namespace) -> str | None:
-    """Flags that need another flag, or exclude one: `--tune` goes with `--config`; `--build-task` with `--space`;
-    `--rollout` with `--agent` or `--config`; `--environment` with `--agent`; `--final-pick` replaces
-    `--n-finalists`, `--search` replaces `--reflection-model`."""
+    """Flags that need another flag, or exclude one: exactly one agent route (`--agent`, `--build-task`, `--config`,
+    on the command line or in a run file); `--tune` goes with `--config`; `--build-task` with `--space`; `--rollout`
+    with `--agent` or `--config`; `--environment` with `--agent`; `--final-pick` replaces `--n-finalists`,
+    `--search` replaces `--reflection-model`."""
+    routes = [
+        flag
+        for flag, value in (("--agent", args.agent), ("--build-task", args.build_task), ("--config", args.config))
+        if value
+    ]
+    if len(routes) != 1:
+        given = f"got {', '.join(routes)}" if routes else "got none"
+        return f"give exactly one of --agent, --build-task (with --space), --config ({given})"
     if args.config is None and args.tune:
         return "--tune needs --config (with --agent or --space, declare what may change with markers)"
     if (args.build_task is None) != (args.space is None):
@@ -170,8 +185,15 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
             "best.values.json, result.json, cli.json); nothing in your project is changed."
         ),
     )
-    parser.add_argument("experiment_file", metavar="EXPERIMENT_FILE", help="path to a serialized Experiment JSON file")
-    agent = parser.add_mutually_exclusive_group(required=True)
+    parser.add_argument(
+        "experiment_file",
+        metavar="EXPERIMENT_FILE",
+        help=(
+            "a serialized Experiment JSON file, or a .toml run file holding the run's flags (keys are the flag names "
+            "with _ for -, plus experiment; flags given here override it)"
+        ),
+    )
+    agent = parser.add_mutually_exclusive_group()
     agent.add_argument(
         "--agent",
         metavar="MODULE:ATTR",
@@ -275,7 +297,7 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
     )
     settings.add_argument("--base-dir", metavar="DIR", default=None, help="parent of run folders")
     settings.add_argument("--name", default=None, help="prefix of the run folder's name")
-    parser.set_defaults(func=_run)
+    parser.set_defaults(func=_run, run_parser=parser)
 
 
 def add_subparser(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentParser) -> argparse.ArgumentParser:
