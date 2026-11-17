@@ -59,8 +59,9 @@ class BayesBenchModel(ScoreModel):
     resumed run refits the same fit.
 
     One observation per candidate x case: the mean of its per-run values, scaled by the metric's range (an
-    unbounded one by twice the baseline's mean). The per-run values set only the noise: the mean
-    within-case variance / runs, floored, then the first fit's residual mean square if larger.
+    unbounded one by twice the mean of the first of `data.candidates`, the baseline unless it was left out).
+    The per-run values set only the noise: the mean within-case variance / runs, floored, then the first
+    fit's residual mean square if larger.
     """
 
     name: ClassVar[str] = "bayesbench"
@@ -75,7 +76,8 @@ class BayesBenchModel(ScoreModel):
         Eligible = `CandidateScores.is_eligible`; the others are left out of the fit, design columns included.
 
         Args:
-            data: The candidates' scores on one split; the baseline is the first of `data.candidates`.
+            data: The candidates' scores on one split; the first of `data.candidates` (the baseline, unless it
+                was left out) sets an unbounded metric's unit.
             previous: The last successful fit, whose held-out checks are carried forward; another model's fit
                 counts as none. A candidate measured on a case `previous` wasn't fitted on isn't checked.
 

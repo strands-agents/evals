@@ -1053,7 +1053,7 @@ async def test_the_end_phase_ships_the_best_finalist_and_writes_the_run_files(tm
     assert (test.champion_id, test.baseline_id) == (result.best.id, result.baseline_id)
     assert test.objective.mean_diff == pytest.approx(1.0) and test.objective.n_cases == 6
     assert test.ratio == {"Temperature": None}  # the baseline's mean is 0
-    assert test.missing == {result.best.id: 0, result.baseline_id: 0}
+    assert test.missing == {result.best.id: 0, result.baseline_id: 0} and result.test_failed_ids == []
     assert result.rollouts_spent == optimizer._budget.spent == 8 * 3 + 6 * 3 + 6 * 2
     assert set(result.agent_cost) == {"train", "validation", "test"}
 
@@ -1093,6 +1093,57 @@ async def test_a_test_arm_with_no_completed_trial_skips_the_report(tmp_path):
     assert result.best.values["temperature"] == 1.0  # picked on validation, where it ran
     assert result.test is None
     assert result.test_reason == "every test trial of the champion failed, so there is nothing to compare"
+    # The result says which tested candidate measured nothing on test, in result.json and on resume too.
+    assert result.test_failed_ids == [result.best.id]
+    root = optimizer._run.root
+    assert OptimizationResult.from_file(root / "result.json").test_failed_ids == [result.best.id]
+    assert load_state(RunDirectory.open(root), config=optimizer._config()).test_failed_ids == [result.best.id]
+
+
+async def test_a_finalist_with_no_completed_validation_trial_cannot_ship(tmp_path):
+    # A crash counts as 0.5, above the baseline's 0.0, so without the check the crashing finalist would ship.
+    optimizer = _two_steps({"temperature": 1.0}, base_dir=tmp_path, agent_failure_score=0.5)
+    validation_cases = set(optimizer._case_split.validation)
+
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        if temperature == 1.0 and case.name in validation_cases:
+            raise ValueError("crashes on validation")
+        return str(temperature)
+
+    optimizer._rollout_fn = rollout
+    result = await optimizer.run_async()
+    crashed = next(c.id for c in result.candidates.values() if c.values["temperature"] == 1.0)
+    assert result.best.id == result.baseline_id and not result.improved
+    assert result.validation.infeasible[crashed] == "every validation trial failed, so nothing was measured"
+    # Left out of the validation fit as well, so only the baseline is left to fit.
+    assert result.validation.problem == "fewer than 2 eligible candidates with a completed validation trial"
+
+
+@pytest.mark.parametrize("crashes", [1.0, 0.0])
+async def test_the_validation_fit_leaves_out_a_candidate_with_no_completed_validation_trial(tmp_path, crashes):
+    fitted = []
+
+    class Spy(_Sequence):
+        def fit(self, data, *, previous=None):
+            fitted.append((tuple(data.cases), list(data.candidates)))
+            return None
+
+    optimizer = _two_steps({"temperature": 0.5}, {"temperature": 1.0}, base_dir=tmp_path, score_model=Spy())
+    validation_cases = optimizer._case_split.validation
+
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        if temperature == crashes and case.name in validation_cases:
+            raise ValueError("crashes on validation")
+        return str(temperature)
+
+    optimizer._rollout_fn = rollout
+    result = await optimizer.run_async()
+    by_temperature = {c.values["temperature"]: c.id for c in result.candidates.values()}
+    # The baseline, then the finalists in ranking order, without the one that crashed (the baseline included).
+    expected = [by_temperature[t] for t in (0.0, 1.0, 0.5) if t != crashes]
+    assert [ids for cases, ids in fitted if cases == validation_cases] == [expected]
 
 
 async def test_a_finalist_failing_a_constraint_on_validation_cannot_ship(tmp_path):
@@ -1233,6 +1284,7 @@ def _assert_same(resumed, original, *, rerun=None):
         assert getattr(resumed.validation, field) == getattr(original.validation, field)
     for field in ("champion_id", "objective", "difference", "ratio", "missing"):
         assert getattr(resumed.test, field) == getattr(original.test, field)
+    assert resumed.test_failed_ids == original.test_failed_ids
 
 
 @pytest.mark.parametrize(
@@ -1784,6 +1836,35 @@ async def test_pareto_ships_the_front_s_max_gain_member_and_tests_every_member(t
         (report.champion_id, report.baseline_id) == (member, result.baseline_id)
         for member, report in result.front_test.items()
     )
+
+
+async def test_a_front_member_with_no_completed_test_trial_is_listed_as_failed(tmp_path):
+    optimizer = _optimizer(
+        _experiment(evaluators=[Temperature(), Cool()]),
+        rollout_fn=_temperature_rollout,
+        search=Search(
+            [Block(Scripted({"temperature": 1.0}, {"temperature": 0.5}), "temperature"), Block(Scripted(), "manager")],
+            schedule=Joint(),
+        ),
+        objective=Pareto(Maximize("Temperature", weight=2), Maximize("Cool")),
+        budget=Budget(max_iterations=2),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path,
+    )
+    test_cases = set(optimizer._case_split.test)
+
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        if temperature == 0.5 and case.name in test_cases:
+            raise ValueError("crashes on test")
+        return str(temperature)
+
+    optimizer._rollout_fn = rollout
+    result = await optimizer.run_async()
+    member = next(c.id for c in result.candidates.values() if c.values["temperature"] == 0.5)
+    assert member in result.validation.front and result.best.id != member and result.test is not None
+    assert result.test_failed_ids == [member] and member not in result.front_test
 
 
 # ---- resume inside a two-level Nested -------------------------------------------------------------------
