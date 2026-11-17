@@ -169,9 +169,6 @@ def test_load_state_rebuilds_the_search_up_to_the_last_closed_iteration(run):
     ]
     assert [type(f).__name__ for f in state.feedback["numbers"]] == ["Evidence", "Observation"]
     assert "structure" not in state.feedback  # the outer opener's observe was in the killed iteration
-    # Every proposer_usage event: the open round's opener (5), the invalid patch (7), a call that returned no
-    # patch (3), and the killed iteration 3's call (100), which was paid for though its events are dropped.
-    assert state.search_cost.tokens == 115
     assert state.stop_reason is None
     assert state.finalists is None
     assert state.is_test_done is False

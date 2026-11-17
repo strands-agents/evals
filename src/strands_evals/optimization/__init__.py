@@ -51,7 +51,7 @@ from .end_phase import FinalPick
 from .execution.rollout import EnvironmentFn, RolloutFn, TaskFn
 from .execution.status import InfrastructureError
 from .optimizer import Optimizer
-from .result import CandidateView, Grain, OptimizationResult
+from .result import AgentSpend, CandidateView, Grain, OptimizationResult, RunCost, Spend
 from .score_model.bayesbench import BayesBenchModel
 from .score_model.design import design
 from .score_model.effects import effects
@@ -81,6 +81,7 @@ from .setup.budget import Budget
 from .setup.splits import Split
 
 __all__ = [
+    "AgentSpend",
     "Alternate",
     "Assessment",
     "AtLeast",
@@ -143,6 +144,7 @@ __all__ = [
     "Range",
     "Reflection",
     "RolloutFn",
+    "RunCost",
     "Schedule",
     "ScheduleContext",
     "ScoreModel",
@@ -151,6 +153,7 @@ __all__ = [
     "SelectionContext",
     "SkillLibrary",
     "Space",
+    "Spend",
     "Split",
     "SplitName",
     "Step",

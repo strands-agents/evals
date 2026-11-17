@@ -742,7 +742,7 @@ async def test_a_re_judge_keeps_each_cost_with_what_it_bought(traces):
     record = records[0]
     assert record.judge_usage["Kept"].tokens == 500  # carried over with its score
     assert record.judge_usage["Flaky"].tokens == 400  # the re-judge's own spend
-    assert record.previous_attempts[-1].judge_usage.tokens == 400  # only the failed judge's spend: retry cost
+    assert record.previous_attempts[-1].judge_usage.tokens == 400  # only the failed judge's spend
     assert record.usage.tokens == 15
 
 

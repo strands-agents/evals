@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
@@ -17,6 +17,7 @@ from ..types.evaluation_report import EvaluationReport
 from ..types.optimization import (
     LABEL_OUTCOMES,
     SPLIT_NAMES,
+    AttemptRecord,
     CandidateLabel,
     CaseSplit,
     IterationRecord,
@@ -37,6 +38,9 @@ from .end_phase import TEST_LEVEL
 from .scoring.metrics import USAGE_METRICS
 
 Grain = Literal["iteration", "proposal", "case"]
+
+_AGENT_FAILED = (TrialStatus.AGENT_FAILURE, TrialStatus.INFRASTRUCTURE_INVALID)
+_JUDGED = (TrialStatus.COMPLETED, TrialStatus.EVALUATOR_INVALID)  # statuses of an attempt whose judges ran
 
 
 class CandidateView(BaseModel):
@@ -124,6 +128,71 @@ class CandidateView(BaseModel):
         return path
 
 
+class Spend(BaseModel):
+    """What one role spent in one phase (`RunCost`).
+
+    Attributes:
+        usage: The model usage, summed; `usage.model_calls` counts its model calls (chat spans, or a proposer
+            agent's event-loop cycles), not its attempts.
+        failed: How many of its attempts failed. The agent: trial attempts that raised (`agent_failure`, or
+            `infrastructure_invalid`, then run again or left so). The judges: trial attempts with at least one
+            failed evaluator (an earlier attempt keeps one judge total, not which evaluators failed). A
+            proposer block: failures its proposer retried (`proposer_retry` events) and `propose` requests that
+            raised (`proposer_error` events).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    usage: Usage
+    failed: int
+
+
+class AgentSpend(Spend):
+    """The agent's `Spend` on one split, with what it ran.
+
+    Attributes:
+        trials: The split's trials (candidate x case x run), each once.
+        attempts: The attempts to run the agent: one per trial (its last, or the one whose output a judge-only
+            re-run judged again), plus each earlier attempt that ended `infrastructure_invalid` (one a re-run
+            pass replaced, or one `Experiment` retried on throttling). `attempts - trials` is how many times the
+            agent was run again.
+    """
+
+    trials: int
+    attempts: int
+
+
+class RunCost(BaseModel):
+    """What the run spent in model usage, by role and phase; nothing is priced.
+
+    Built from every saved trial and every event, so a killed iteration's trials and proposer calls count, as its
+    trials count in `rollouts_spent`. Every attempt counts once: a judge-only re-run keeps the agent's usage on
+    the new record and leaves the replaced attempt only its failed judges' spend.
+
+    Attributes:
+        agent: Split -> the agent's usage on that split's trials (train = the search, validation and test = the
+            end phase): `TrialRecord.usage` plus every earlier attempt's (`previous_attempts`).
+        judges: Split -> the evaluators' usage on those trials: `TrialRecord.judge_usage` plus every earlier
+            attempt's failed judges.
+        proposers: Block name -> what its proposer reported spending, all of it in the search: the `usage` of
+            the patches each successful `propose` request returned, and its own `proposer_usage` events. Every
+            block of the search, zero when its proposer reported nothing.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    agent: dict[SplitName, AgentSpend]
+    judges: dict[SplitName, Spend]
+    proposers: dict[str, Spend]
+
+    @property
+    def total(self) -> Usage:
+        """Everything the run spent: every role in every phase. `seconds` sums rollout, judge, and proposer
+        durations, which overlap under concurrency; it is not wall time."""
+        spends = [*self.agent.values(), *self.judges.values(), *self.proposers.values()]
+        return sum((spend.usage for spend in spends), Usage.zero())
+
+
 class OptimizationResult(BaseModel):
     """What a run returns, saved and reloaded whole (`to_file` / `from_file`; the run writes `<run>/result.json`).
 
@@ -151,11 +220,8 @@ class OptimizationResult(BaseModel):
             one more candidate), `iterations` (the cap), `exhausted` (the schedule had nothing left), or
             `proposer_error` (a proposer raised). The end phase runs after any of them. Never `setup`: a setup
             stop raises instead of returning.
-        agent_cost: The agent's own usage per split (each trial's last attempt): train = the search,
-            validation and test = the end phase.
-        search_cost: Total proposer usage.
-        judge_cost: Judge usage per trial's last attempt, as `agent_cost` counts the agent's.
-        retry_cost: Agent and judge usage in earlier attempts (`TrialRecord.previous_attempts`).
+        cost: What the run spent: the agent's and the judges' usage per split, every attempt included, and
+            each proposer block's, with their failed attempts.
         reports: Candidate id -> split -> the `EvaluationReport` `Experiment` would have returned for those
             trials (every run's rows, each tagged with `run_index`; failed trials as `Experiment`'s score-0
             rows), for every candidate and split it has trials on. Display only: nothing in the run reads it.
@@ -176,10 +242,7 @@ class OptimizationResult(BaseModel):
     iterations: list[IterationRecord]
     rollouts_spent: int
     stop_reason: StopReason
-    agent_cost: dict[SplitName, Usage]
-    search_cost: Usage
-    judge_cost: Usage
-    retry_cost: Usage
+    cost: RunCost
     # Left out of the repr: every trial's rows and evaluation data, hundreds of kilobytes on a real run.
     reports: dict[str, dict[SplitName, EvaluationReport]] = Field(repr=False)
     rows: dict[Grain, list[dict[str, Any]]] = Field(repr=False)
@@ -275,13 +338,8 @@ class OptimizationResult(BaseModel):
                 new = repr(sides["new"]) if "new" in sides else "(inactive)"
                 lines.append(f"  {key}: {old} -> {new}")
 
-        cost = self.agent_cost
-        lines += [
-            "",
-            f"Agent tokens: {cost['train'].tokens} train (the search), {cost['validation'].tokens} validation, "
-            f"{cost['test'].tokens} test. Proposers {self.search_cost.tokens}, judges {self.judge_cost.tokens}, "
-            f"earlier attempts {self.retry_cost.tokens}.",
-        ]
+        lines += ["", f"Cost: {self.cost.total.tokens} tokens, every attempt included (train = the search):"]
+        lines += _table(_cost_rows(self.cost))
         if self.effects.get("reason"):
             lines.append(f"Effects: none ({self.effects['reason']}).")
         return "\n".join(lines)
@@ -307,8 +365,8 @@ class OptimizationResult(BaseModel):
         Every row of one grain has the same keys; a value that doesn't apply is None. Per-metric columns
         are named `<prefix>.<metric>`, e.g. `train.HelpfulnessEvaluator`. `pandas.DataFrame(rows)` works.
         Iteration rows cover the closed iterations only, so after a kill and resume their `rollouts_total`
-        and `search_tokens` can sum to less than `rollouts_spent` and `search_cost` (which count the killed
-        iteration's spend too).
+        and `search_tokens` can sum to less than `rollouts_spent` and the proposers' tokens in `cost` (which
+        count the killed iteration's spend too).
 
         Args:
             grain: What one row is: `proposal` (every proposal, the baseline included, with its label at
@@ -361,6 +419,81 @@ def _table(rows: list[list[str]]) -> list[str]:
     """Rows of cells as left-aligned columns, indented two spaces."""
     widths = [max(len(row[i]) for row in rows if i < len(row)) for i in range(max(map(len, rows)))]
     return ["  " + "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip() for row in rows]
+
+
+def _cost_rows(cost: RunCost) -> list[list[str]]:
+    """The summary's cost table: one row per role, then the total; tokens per split, model calls, the
+    agent's attempts, and each role's failed attempts."""
+
+    def row(role: str, spends: Mapping[SplitName, Spend], attempts: str) -> list[str]:
+        tokens = [str(spends[split].usage.tokens) if split in spends else "-" for split in SPLIT_NAMES]
+        calls = sum(spend.usage.model_calls for spend in spends.values())
+        failed = sum(spend.failed for spend in spends.values())
+        return [role, *tokens, str(calls), attempts, str(failed)]
+
+    roles: list[tuple[str, Mapping[SplitName, Spend]]] = [("agent", cost.agent), ("judges", cost.judges)]
+    roles += [(f"proposer {block}", {"train": spend}) for block, spend in cost.proposers.items()]
+    by_split = {
+        split: sum(spends[split].usage.tokens for _, spends in roles if split in spends) for split in SPLIT_NAMES
+    }
+    return [
+        ["", *SPLIT_NAMES, "model calls", "attempts", "failed attempts"],
+        row("agent", cost.agent, str(sum(spend.attempts for spend in cost.agent.values()))),
+        *(row(role, spends, "-") for role, spends in roles[1:]),
+        ["total", *(str(by_split[split]) for split in SPLIT_NAMES), str(cost.total.model_calls), "-", "-"],
+    ]
+
+
+def _run_cost(
+    trials: Iterable[Mapping[str, Any]], events: Sequence[Mapping[str, Any]], *, blocks: Sequence[str]
+) -> RunCost:
+    """What the run spent (`RunCost`), from its saved trials and every event.
+
+    Args:
+        trials: Every saved trial record as JSON, the last per (candidate, run, case).
+        events: Every event of the run, a killed iteration's included.
+        blocks: The search's block names, in order; a block only the events name is added after them.
+    """
+    agent = dict.fromkeys(SPLIT_NAMES, Usage.zero())
+    judges = dict.fromkeys(SPLIT_NAMES, Usage.zero())
+    counts: dict[str, Counter[str]] = {split: Counter() for split in SPLIT_NAMES}
+    for saved in trials:
+        split, count = saved["split"], counts[saved["split"]]
+        attempts = [AttemptRecord.model_validate(attempt) for attempt in saved["previous_attempts"]]
+        agent[split] += Usage.model_validate(saved["usage"])
+        for usage in saved["judge_usage"].values():
+            judges[split] += Usage.model_validate(usage)
+        for attempt in attempts:
+            agent[split] += attempt.usage
+            judges[split] += attempt.judge_usage
+        statuses = [a.status for a in attempts] + [TrialStatus(saved["status"])]
+        count["trials"] += 1
+        count["attempts"] += 1 + sum(a.status is TrialStatus.INFRASTRUCTURE_INVALID for a in attempts)
+        count["agent_failed"] += sum(status in _AGENT_FAILED for status in statuses)
+        # Only a judge-only re-run replaces a judged attempt, and only when one of its evaluators failed.
+        count["judges_failed"] += sum(a.status in _JUDGED for a in attempts) + bool(saved["evaluator_errors"])
+    proposers = dict.fromkeys(blocks, Usage.zero())
+    proposers_failed: Counter[str] = Counter()
+    for event in events:
+        if event["event"] == "proposer_usage":
+            block = event["block"]
+            proposers[block] = proposers.get(block, Usage.zero()) + Usage.model_validate(event["usage"])
+        elif event["event"] in ("proposer_retry", "proposer_error"):
+            proposers.setdefault(event["block"], Usage.zero())
+            proposers_failed[event["block"]] += 1
+    return RunCost(
+        agent={
+            split: AgentSpend(
+                usage=agent[split],
+                failed=counts[split]["agent_failed"],
+                trials=counts[split]["trials"],
+                attempts=counts[split]["attempts"],
+            )
+            for split in SPLIT_NAMES
+        },
+        judges={split: Spend(usage=judges[split], failed=counts[split]["judges_failed"]) for split in SPLIT_NAMES},
+        proposers={block: Spend(usage=usage, failed=proposers_failed[block]) for block, usage in proposers.items()},
+    )
 
 
 def _proposal_rows(

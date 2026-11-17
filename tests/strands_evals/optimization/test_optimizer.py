@@ -49,6 +49,7 @@ from strands_evals.optimization.declaration.space import Space
 from strands_evals.optimization.optimizer import _slots_used
 from strands_evals.optimization.record.resume import load_state
 from strands_evals.optimization.record.run_directory import RunDirectory
+from strands_evals.optimization.result import _run_cost
 from strands_evals.optimization.search.blocks import _saved
 from strands_evals.optimization.selection.top_ranked import TopRanked
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
@@ -789,6 +790,12 @@ async def test_a_round_opener_is_told_the_rounds_best_at_its_end(tmp_path):
     assert outer.evidenced == []
 
 
+def _proposer_tokens(root):
+    """Each block's proposer tokens, as the result of the run, or of its resume, counts them from the record."""
+    cost = _run_cost([], RunDirectory.open(root).events.read(), blocks=[])
+    return {block: spend.usage.tokens for block, spend in cost.proposers.items()}
+
+
 async def test_every_proposer_calls_spend_counts_on_resume(tmp_path):
     spend = Usage(
         input_tokens=9,
@@ -815,19 +822,16 @@ async def test_every_proposer_calls_spend_counts_on_resume(tmp_path):
         proposals_per_iteration=1,
     )
     await _search(optimizer)
-    assert optimizer._search_cost.tokens == 40  # opener, inner, inner, opener
+    assert _proposer_tokens(optimizer._run.root) == {"structure": 20, "numbers": 20}  # the openers; the inners
 
-    def search_cost(where, keep):
-        copy = _killed(optimizer._run.root, tmp_path / where, keep)
-        return load_state(RunDirectory.open(copy), config=optimizer._config()).search_cost.tokens
+    def killed_at(where, keep):
+        return _proposer_tokens(_killed(optimizer._run.root, tmp_path / where, keep))
 
     # Round 0 open: its opener is observed only at the round's end, but was paid for.
-    assert search_cost("open round", lambda events: _index(events, "iteration_end")) == 10
+    assert killed_at("open round", lambda events: _index(events, "iteration_end")) == {"structure": 10}
     # Killed in iteration 2 after its proposal was scored: the iteration runs again, its spend still counts.
-    killed = search_cost("killed", lambda events: _index(events, "score", after=_index(events, "iteration_end")))
-    assert killed == 20
-    state = load_state(RunDirectory.open(optimizer._run.root), config=optimizer._config())
-    assert state.search_cost == optimizer._search_cost
+    killed = killed_at("killed", lambda events: _index(events, "score", after=_index(events, "iteration_end")))
+    assert killed == {"structure": 10, "numbers": 10}
 
 
 async def test_a_run_killed_in_its_first_iteration_keeps_that_proposer_spend(tmp_path):
@@ -859,8 +863,8 @@ async def test_a_run_killed_in_its_first_iteration_keeps_that_proposer_spend(tmp
     copy = _killed(original._run.root, tmp_path, lambda events: _index(events, "proposer_usage"))
     search = Search([Block(Spending(), "temperature"), Block(Scripted(), "manager")], schedule=Alternate())
     result = await _resume(copy, search=search, budget=Budget(max_iterations=1)).run_async()
-    assert result.search_cost.tokens == 10
-    assert OptimizationResult.from_file(copy / "result.json").search_cost.tokens == 10
+    assert result.cost.proposers["numbers"].usage.tokens == 10
+    assert OptimizationResult.from_file(copy / "result.json").cost == result.cost
 
 
 async def test_on_iteration_may_be_async_and_its_error_stops_the_run(tmp_path):
@@ -1055,7 +1059,7 @@ async def test_the_end_phase_ships_the_best_finalist_and_writes_the_run_files(tm
     assert test.ratio == {"Temperature": None}  # the baseline's mean is 0
     assert test.missing == {result.best.id: 0, result.baseline_id: 0}
     assert result.rollouts_spent == optimizer._budget.spent == 8 * 3 + 6 * 3 + 6 * 2
-    assert set(result.agent_cost) == {"train", "validation", "test"}
+    assert set(result.cost.agent) == set(result.cost.judges) == {"train", "validation", "test"}
 
     root = optimizer._run.root
     assert json.loads((root / "best.values.json").read_text()) == {"temperature": {"old": 0.0, "new": 1.0}}
@@ -1315,7 +1319,7 @@ async def test_costs_after_resume_count_a_killed_iterations_trials(tmp_path):
     trials = [e["record"] for e in _events_at(copy) if e["event"] == "trial"]
     for split in ("train", "validation", "test"):
         seconds = sum(r["usage"]["seconds"] for r in trials if r["split"] == split)
-        assert result.agent_cost[split].seconds == pytest.approx(seconds)
+        assert result.cost.agent[split].usage.seconds == pytest.approx(seconds)
     assert result.rollouts_spent == len(trials)
 
 
@@ -1399,7 +1403,7 @@ class _OneStep(Schedule):
         return Step(blocks=(block,), **{**fields, **self.step})
 
 
-async def test_a_proposers_spend_on_no_patch_is_counted_and_survives_resume(tmp_path):
+async def test_a_proposers_spend_on_no_patch_is_counted_under_its_block(tmp_path):
     spend = Usage(
         input_tokens=90,
         output_tokens=10,
@@ -1419,9 +1423,21 @@ async def test_a_proposers_spend_on_no_patch_is_counted_and_survives_resume(tmp_
     optimizer = _searching(Block(Spender(), "temperature"), schedule=Alternate(), base_dir=tmp_path)
     await _search(optimizer)
     logged = [e for e in _events(optimizer) if e["event"] == "proposer_usage"]
-    assert logged and optimizer._search_cost.tokens == 100 * len(logged)
-    state = load_state(RunDirectory.open(optimizer._run.root), config=optimizer._config())
-    assert state.search_cost == optimizer._search_cost
+    assert logged and _proposer_tokens(optimizer._run.root) == {"numbers": 100 * len(logged)}
+
+
+async def test_a_proposer_usage_event_without_a_usage_is_refused_before_it_is_written(tmp_path):
+    class Miscounting(Scripted):
+        async def propose(self, request):
+            request.log("proposer_usage", usage={"tokens": 1})
+            return []
+
+    optimizer = _searching(Block(Miscounting(), "temperature"), schedule=Alternate(), base_dir=tmp_path)
+    reason, events = await _search(optimizer)
+    assert reason == "proposer_error"
+    error = next(e for e in events if e["event"] == "proposer_error")
+    assert error["error_type"] == "TypeError" and "needs usage= a Usage" in error["error"]
+    assert "proposer_usage" not in _names(events)
 
 
 async def test_a_concurrent_proposer_that_raises_cancels_its_sibling_calls(tmp_path):
