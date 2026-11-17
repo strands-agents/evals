@@ -1056,7 +1056,10 @@ class Optimizer:
                 existing = self._train.get(candidate.id)
                 if existing is not None and existing.is_eligible:
                     a = assessments.get(candidate.id)
+                    repeats = f"repeats candidate {self._run.number(candidate.id)}"
                     if step.role == "opener" and deferred & set(draw.patches):
+                        # The round opens on the repeated candidate. Deferred blocks wait for the round's end; the
+                        # draw's other blocks are told the duplicate now.
                         for block, patch in draw.patches.items():
                             self._run.events.append(
                                 "duplicate",
@@ -1069,21 +1072,15 @@ class Optimizer:
                             )
                             if block in deferred:
                                 self._open_rounds.append(OpenRound(step.round or (), candidate.id, block, patch))
+                            else:
+                                self._tell(block, patch, candidate.id, candidate.values, "duplicate", repeats, a)
                         opened = draw
                     else:
                         for block, patch in draw.patches.items():
                             self._run.events.append(
                                 "duplicate", iteration=iteration, block=block, redraw=redraw, candidate_id=candidate.id
                             )
-                            self._tell(
-                                block,
-                                patch,
-                                candidate.id,
-                                candidate.values,
-                                "duplicate",
-                                f"repeats candidate {self._run.number(candidate.id)}",
-                                a,
-                            )
+                            self._tell(block, patch, candidate.id, candidate.values, "duplicate", repeats, a)
                     outcomes.append(
                         _outcome(draw, candidate.id, self._run.number(candidate.id), parent.id, "duplicate", a)
                     )
