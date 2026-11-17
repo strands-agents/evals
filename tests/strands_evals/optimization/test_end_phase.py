@@ -261,6 +261,46 @@ def test_pick_tie_without_trial_counts_goes_to_the_baseline():
     assert report.champion_id == "0"
 
 
+@pytest.mark.parametrize("twins", [0, 1, 2])
+def test_pick_by_measured_means_fills_a_finalist_s_n_a_case_and_the_baseline_wins_the_tie(twins):
+    # Finalist "a" matches the baseline on v1 and leaves the evaluator nothing to judge on v2, where the baseline
+    # (and each twin, a finalist equal to it) scored 0.1; on plain means "a" would ship (0.7 against 0.4). Filled
+    # in, it ties the baseline exactly, whatever the number of other candidates on the case.
+    criteria = Criteria(Maximize(HELP), [], REGISTRY)
+
+    def scores(candidate_id, help_by_case):
+        judged = {c: v for c, v in help_by_case.items() if v is not None}
+        return CandidateScores(
+            candidate_id=candidate_id,
+            objective_by_case=judged,
+            metrics_by_case={c: {HELP: v} for c, v in judged.items()},
+            unavailable={},
+            objective_by_run={c: [v] for c, v in help_by_case.items()},
+            metrics_by_run={c: {HELP: [v]} for c, v in help_by_case.items()},
+            objective=sum(judged.values()) / len(judged),
+            is_eligible=True,
+            failures=0,
+        )
+
+    validation = {
+        "0": scores("0", {"v1": 0.7, "v2": 0.1}),
+        "a": scores("a", {"v1": 0.7, "v2": None}),
+        **{f"t{i}": scores(f"t{i}", {"v1": 0.7, "v2": 0.1}) for i in range(twins)},
+    }
+    report = pick(
+        baseline_id="0",
+        finalist_ids=[c for c in validation if c != "0"],
+        validation=validation,
+        fit=None,
+        values={c: {} for c in validation},
+        trial_counts={c: 2 for c in validation},
+        criteria=criteria,
+        rule=Mean(),
+    )
+    assert report.objectives["a"] == report.objectives["0"]
+    assert report.champion_id == "0"
+
+
 def test_pick_under_pareto_a_gain_tie_with_another_trade_off_ships_the_baseline():
     # The baseline (help 0.5, 250 tokens) and "a" (help 0.75, 500 tokens) are both on the front with the same
     # weighted gain, (0.5 - 0.25) / 2 == (0.75 - 0.5) / 2: at the final pick the tie goes to the baseline.

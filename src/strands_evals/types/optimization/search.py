@@ -46,7 +46,9 @@ class CandidateSummary(BaseModel):
             `agent_failure_score=None`, which doesn't count them), so `trial_count - failures` completed: how a
             proposer tells a version that crashed from one that scored low.
         ranking_objective: What the ranking used when the request was built (`Assessment.objective`): the
-            fit's resolved estimate, or `measured_objective` without a usable fit.
+            fit's resolved estimate, or without a usable fit the objective over the measured means as the
+            ranking adjusts them (`measured_objective` unless the candidate has an N/A case that another assessed
+            candidate was judged on).
         term_values: Each objective term's raw value under that ranking, as `Observation.term_values`;
             None for an ineligible candidate.
         rank: Position in that ranking, 1 = best; None for an ineligible candidate.
@@ -100,8 +102,8 @@ class Observation(BaseModel):
             candidate's from the step's start; for a same-step twin, told after the refit, that candidate's
             then. None if never measured.
         term_values: Each objective term's raw value (not oriented, unlike `Assessment.terms`: the resolved
-            estimate, else the measured mean), in objective order, taken with `objective`; what `TPE` is told
-            under `Pareto`. None when `objective` is None.
+            estimate, else the measured mean the ranking used), in objective order, taken with `objective`;
+            what `TPE` is told under `Pareto`. None when `objective` is None.
         reason: One sentence from train data, e.g. "tokens <= 4000: mean 4210 violates by 210".
         violations: Per constraint, <= 0 when met, taken with `objective`; None when `objective` is None.
     """

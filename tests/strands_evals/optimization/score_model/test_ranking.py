@@ -228,13 +228,14 @@ def test_a_flagged_fit_or_an_unfitted_candidate_is_assessed_by_measured_means():
     fit = FakeFit({"a": {HELP: e(0.7)}})
     out = assess(["a", "b"], fit=fit, criteria=criteria, values=values, measured=measured, rule=LowerBound(0.1))
     assert out["a"].is_from_fit and out["a"].objective == round_to_sd(e(0.7).quantile(0.1), 0.01)
-    assert not out["b"].is_from_fit and out["b"].objective == 0.9 and out["b"].estimates == {}  # rule ignored
+    # rule ignored; b has no value on y, filled from a's measured 0.4 shifted by b's +0.7 on x and clipped to 1
+    assert not out["b"].is_from_fit and out["b"].objective == pytest.approx(0.95) and out["b"].estimates == {}
     flagged = FakeFit({"a": {HELP: e(0.7)}}, flagged=[HELP])
     out = assess(["a"], fit=flagged, criteria=criteria, values=values, measured=measured, rule=Mean())
-    assert not out["a"].is_from_fit and out["a"].objective == 0.3 and out["a"].terms == (pytest.approx(0.3),)
-    assert (
-        assess(["a"], fit=None, criteria=criteria, values=values, measured=measured, rule=Mean())["a"].objective == 0.3
-    )
+    assert not out["a"].is_from_fit and out["a"].objective == pytest.approx(0.3)
+    assert out["a"].terms == (pytest.approx(0.3),)
+    unfitted = assess(["a"], fit=None, criteria=criteria, values=values, measured=measured, rule=Mean())
+    assert unfitted["a"].objective == pytest.approx(0.3)
 
 
 def test_measured_constraints_use_the_mean_over_cases():
@@ -259,6 +260,113 @@ def test_a_constraint_never_measured_is_unmet():
     measured = {"a": scores("a", {"x": {HELP: 0.5}}, 0.5)}
     a = assess(["a"], fit=None, criteria=criteria, values={"a": {}}, measured=measured, rule=Mean())["a"]
     assert a.violations == (math.inf,) and not a.is_feasible
+
+
+def _help(by_case):
+    """Per-case means of HELP alone; a case left out is one the evaluator found N/A."""
+    return {case: {HELP: value} for case, value in by_case.items()}
+
+
+def test_measured_means_fill_the_cases_a_candidate_leaves_unjudged():
+    # "b" is 0.1 below "a" where both are judged and leaves the evaluator nothing to judge on the hard cases,
+    # where "a" scored 0.5; plain means would rank "b" first (0.9 against 0.75).
+    criteria = Criteria(Maximize(HELP), [], REGISTRY)
+    measured = {
+        "a": scores("a", _help({"e1": 1.0, "e2": 1.0, "h1": 0.5, "h2": 0.5}), 0.75),
+        "b": scores("b", _help({"e1": 0.9, "e2": 0.9}), 0.9),
+    }
+    values = {"a": {}, "b": {}}
+    out = assess(["b", "a"], fit=None, criteria=criteria, values=values, measured=measured, rule=Mean())
+    assert out["a"].objective == 0.75  # a value on every case: its plain mean
+    assert out["b"].objective == pytest.approx(0.65)  # h1 and h2 filled at a's 0.5 shifted by b's -0.1
+    assert rank(out, ["b", "a"]) == ["a", "b"]
+    # Alone, there is nothing to fill from.
+    assert (
+        assess(["b"], fit=None, criteria=criteria, values=values, measured=measured, rule=Mean())["b"].objective == 0.9
+    )
+    # Measuring b's hard cases at exactly the filled value leaves its mean where it was.
+    measured["b"] = scores("b", _help({"e1": 0.9, "e2": 0.9, "h1": 0.4, "h2": 0.4}), 0.65)
+    out = assess(["b", "a"], fit=None, criteria=criteria, values=values, measured=measured, rule=Mean())
+    assert out["b"].objective == pytest.approx(0.65)
+
+
+def test_the_others_mean_leaves_the_candidate_out():
+    criteria = Criteria(Maximize(HELP), [], REGISTRY)
+    measured = {
+        "a": scores("a", _help({"e1": 1.0, "e2": 0.8, "h1": 0.4}), 2.2 / 3),
+        "b": scores("b", _help({"e1": 0.6, "e2": 0.6, "h1": 0.2}), 1.4 / 3),
+        "c": scores("c", _help({"e1": 0.9, "e2": 0.5}), 0.7),
+    }
+    out = assess(
+        list(measured), fit=None, criteria=criteria, values={c: {} for c in measured}, measured=measured, rule=Mean()
+    )
+    # The others' means on e1 and e2 are 0.8 and 0.7, so c's shift is (0.1 - 0.2) / 2; h1 is filled at 0.3 - 0.05.
+    assert out["c"].objective == pytest.approx((0.9 + 0.5 + 0.25) / 3)
+    assert out["a"].objective == pytest.approx(2.2 / 3) and out["b"].objective == pytest.approx(1.4 / 3)
+
+
+def test_a_filled_case_is_clipped_to_the_metric_range():
+    criteria = Criteria(Maximize(HELP), [], REGISTRY)
+    measured = {
+        "a": scores("a", _help({"e1": 0.9, "e2": 0.9, "h1": 0.1, "h2": 0.1}), 0.5),
+        "b": scores("b", _help({"e1": 0.4, "e2": 0.4}), 0.4),
+    }
+    out = assess(["a", "b"], fit=None, criteria=criteria, values={"a": {}, "b": {}}, measured=measured, rule=Mean())
+    assert out["b"].objective == pytest.approx(0.2)  # h1 and h2: 0.1 - 0.5 clipped to 0
+
+
+def test_with_no_case_in_common_the_others_values_fill_in_unshifted():
+    criteria = Criteria(Maximize(HELP), [], REGISTRY)
+    measured = {"x": scores("x", _help({"c1": 1.0, "c2": 1.0}), 1.0), "y": scores("y", _help({"c3": 0.0}), 0.0)}
+    out = assess(["x", "y"], fit=None, criteria=criteria, values={"x": {}, "y": {}}, measured=measured, rule=Mean())
+    assert out["x"].objective == pytest.approx(2 / 3) and out["y"].objective == pytest.approx(2 / 3)
+
+
+def test_measured_constraints_and_the_label_judge_the_filled_means():
+    criteria = Criteria(Maximize(STARS), [AtLeast(HELP, 0.7)], REGISTRY)
+    measured = {
+        "a": scores("a", {c: {HELP: 1.0 if c[0] == "e" else 0.5, STARS: 3.0} for c in ("e1", "e2", "h1", "h2")}, 3.0),
+        # N/A on the hard cases: its plain mean, 0.9, would meet the bound.
+        "b": scores(
+            "b", {c: {HELP: 0.9, STARS: 3.0} if c[0] == "e" else {STARS: 3.0} for c in ("e1", "e2", "h1", "h2")}, 3.0
+        ),
+        "c": scores("c", {c: {STARS: 3.0} for c in ("e1", "e2", "h1", "h2")}, 3.0),  # N/A everywhere
+    }
+    out = assess(
+        ["a", "b", "c"], fit=None, criteria=criteria, values={c: {} for c in measured}, measured=measured, rule=Mean()
+    )
+    assert out["a"].is_feasible
+    assert out["b"].violations == (pytest.approx(0.05),) and not out["b"].is_feasible
+    assert out["c"].violations == (math.inf,)
+    assert label_candidate(measured["b"], out["b"], criteria=criteria).unmet_constraints == [
+        f"{HELP} >= 0.7: mean 0.65 violates by 0.05"
+    ]
+    assert label_candidate(measured["c"], out["c"], criteria=criteria).unmet_constraints == [
+        f"{HELP} >= 0.7: never measured"
+    ]
+
+
+def test_the_measured_label_words_constraints_as_criteria_unmet_constraints():
+    criteria = Criteria(Maximize(HELP), [AtMost(STARS, 3.0), AtLeast(HELP, 0.6)], REGISTRY)
+    measured = {"a": scores("a", {"x": {HELP: 0.5, STARS: 3.5}, "y": {HELP: 0.4, STARS: 3.6}}, 0.45)}
+    a = assess(["a"], fit=None, criteria=criteria, values={"a": {}}, measured=measured, rule=Mean())["a"]
+    label = label_candidate(measured["a"], a, criteria=criteria)
+    assert label.unmet_constraints == criteria.unmet_constraints(measured["a"].metrics_by_case)
+    assert len(label.unmet_constraints) == 2
+
+
+def test_measured_pareto_terms_use_the_filled_means():
+    criteria = Criteria(Pareto(Maximize(HELP), Minimize(STARS)), [], REGISTRY)
+    measured = {
+        "a": scores("a", {c: {HELP: 1.0 if c[0] == "e" else 0.5, STARS: 2.0} for c in ("e1", "e2", "h1", "h2")}, 0.75),
+        "b": scores(
+            "b", {c: {HELP: 0.9, STARS: 1.0} if c[0] == "e" else {STARS: 1.0} for c in ("e1", "e2", "h1", "h2")}, 0.95
+        ),
+    }
+    out = assess(["a", "b"], fit=None, criteria=criteria, values={"a": {}, "b": {}}, measured=measured, rule=Mean())
+    assert out["b"].terms == (pytest.approx(0.65), pytest.approx(-1.0))
+    # On plain means, b (0.9, -1.0) would dominate a (0.75, -2.0).
+    assert pareto_front(out, ["a", "b"]) == ["a", "b"]
 
 
 def test_terms_follow_the_objective():
@@ -491,7 +599,7 @@ def test_label_candidate_infeasible_from_measured_means_lists_the_constraint():
     a = _label_assessment("a", objective=0.8, feasible=False, violation=0.3, from_fit=False, n_constraints=1)
     label = label_candidate(_label_scores("a", {"c1": 0.8, "c2": 0.8}), a, criteria=criteria)
     assert (label.outcome, label.is_from_fit, label.estimates, label.p_met) == ("infeasible", False, {}, {})
-    assert any("<= 0.5" in sentence for sentence in label.unmet_constraints)
+    assert label.unmet_constraints == [f"{HELP} <= 0.5: mean 0.8 violates by 0.3"]
 
 
 def test_label_candidate_ineligible_when_a_train_case_has_no_counted_run():

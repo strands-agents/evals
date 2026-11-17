@@ -50,7 +50,8 @@ class CandidateScores(BaseModel):
         metrics_by_run: Case name -> metric name -> each run's value; what the score model fits (via
             `FitData.scores`).
         objective: The measured objective: `Criteria.objective_value` over each goal metric's mean across
-            cases; what the ranking uses without a fit.
+            cases. Without a usable fit the ranking starts from the same means and fills in the cases another
+            assessed candidate has a value on and this one has none (`Assessment.objective`).
         is_eligible: Every case has at least one run that counts for every goal metric (an evaluator N/A on a
             case doesn't count against it), and the objective (under `Pareto` every term) is measured. Only
             eligible candidates are fitted, ranked as parents, or chosen as finalists.
@@ -131,7 +132,9 @@ class CandidateLabel(BaseModel):
         outcome: `feasible`, `infeasible`, or `ineligible`.
         reason: One sentence, e.g. "tokens <= 4000: P(met) 0.62 < 0.9".
         unmet_constraints: Each constraint not met, as the ranking assessed it, as a sentence (e.g. "tokens <= 4000:
-            P(met) 0.62 < 0.9"); unlike the per-constraint margins elsewhere named `violations`.
+            P(met) 0.62 < 0.9"); unlike the per-constraint margins elsewhere named `violations`. On measured
+            means the sentence's mean is the one the ranking judged, which can differ from the mean in
+            `measured` for a candidate with N/A cases that another assessed candidate was judged on.
         estimates: Per goal metric (`Assessment.estimates`); empty when `is_from_fit` is False.
         p_met: Per constraint (`Assessment.p_met`); empty when `is_from_fit` is False.
         is_from_fit: False when assessed by measured means.
@@ -157,7 +160,8 @@ class ValidationReport(BaseModel):
         front: Under a `Pareto` objective, the validated front (the baseline included when on it), in ranking
             order, so the champion is first unless the front is empty; `[]` otherwise.
         objectives: Candidate id -> its validation objective under the validation fit, or by measured
-            validation means when `problem` is set; None when it isn't eligible on validation.
+            validation means (`Assessment.objective`) when `problem` is set; None when it isn't eligible on
+            validation.
         estimates: Candidate id -> goal metric -> the validation fit's estimate; empty when assessed by
             measured means.
         infeasible: Candidate id -> why it can't ship (a constraint not met on validation, or not
