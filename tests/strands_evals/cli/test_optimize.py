@@ -84,6 +84,10 @@ def test_run_saves_its_inputs_and_prints_the_result(experiment_path, tmp_path, c
         "schema_version": 1,
         "experiment_file": str(experiment_path.resolve()),
         "agent": f"{AGENTS}:manager_agent",
+        "config": None,
+        "config_sha256": None,
+        "tune": [],
+        "harness_version": None,
         "custom_evaluators": [CORRECT],
         "rollout": None,
         "environment": None,
@@ -256,3 +260,165 @@ def test_apply_needs_a_finished_run(finished_prompt_run, capsys):
     (result.run_dir / "result.json").unlink()
     assert main(["optimize", "apply", str(result.run_dir)]) == 2
     assert "the run hasn't finished" in capsys.readouterr().err
+
+
+# --config: a strands-harness portable config
+
+
+def _write_config(folder: Path, **extra) -> Path:
+    config = {
+        "name": "qa",
+        "instructions": "You answer questions.",
+        "modelModule": {"module": AGENTS, "export": "world"},
+        "builtinTools": [],
+        "builtinPlugins": [],
+        "skills": False,
+        **extra,
+    }
+    path = folder / "agent.json"
+    path.write_text(json.dumps(config, indent=2) + "\n")
+    return path
+
+
+def _config_args(experiment_path: Path, config: Path, tmp_path: Path, *extra: str) -> list[str]:
+    return [
+        "--json",
+        "optimize",
+        "run",
+        str(experiment_path),
+        "--config",
+        str(config),
+        "--custom-evaluator",
+        CORRECT,
+        "--objective",
+        "maximize:Correct",
+        "--max-iterations",
+        "4",
+        "--proposals-per-iteration",
+        "2",
+        "--max-workers",
+        "40",
+        "--base-dir",
+        str(tmp_path / "runs"),
+        *extra,
+    ]
+
+
+@pytest.fixture
+def scripted_text_proposer(monkeypatch):
+    """The default search's text block on a scripted proposer instead of Reflection (no model calls)."""
+    monkeypatch.setattr("strands_evals.optimization.search.blocks.Reflection", AddInstruction)
+
+
+def test_config_run_tunes_instructions_and_a_choice_then_apply_writes_both(
+    experiment_path, tmp_path, monkeypatch, capsys, scripted_text_proposer
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    config = _write_config(project, effort="auto")
+    monkeypatch.chdir(project)
+    args = _config_args(experiment_path, config, tmp_path, "--tune", 'effort=["auto","low"]')
+    assert main(args) == 0
+    root = _only_run(tmp_path)
+    result = OptimizationResult.from_file(root / "result.json")
+    assert result.improved and EXACT in result.best.values["instructions"]
+    assert result.best.values["effort"] in ("auto", "low")
+    assert "--- a/agent.json" in result.best.diff()  # the text change lands on the config file
+    saved = json.loads((root / "cli.json").read_text())
+    assert saved["config"] == str(config.resolve()) and saved["agent"] is None
+    assert saved["tune"] == ['effort=["auto","low"]'] and saved["harness_version"]
+    assert not (project / ".agent").exists()  # every trial's session and memory lived in its own temp folder
+    capsys.readouterr()
+
+    assert main(["optimize", "apply", str(root), "--yes"]) == 0
+    written = json.loads(config.read_text())
+    assert written["instructions"] == result.best.values["instructions"]
+    assert written["effort"] == result.best.values["effort"]
+    assert "edit them by hand" not in capsys.readouterr().out  # the config is the CLI's: choices are written too
+
+
+def test_apply_refuses_a_config_changed_since_the_run(
+    experiment_path, tmp_path, monkeypatch, capsys, scripted_text_proposer
+):
+    config = _write_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    assert main(_config_args(experiment_path, config, tmp_path)) == 0
+    config.write_text(config.read_text().replace('"qa"', '"renamed"'))
+    assert main(["optimize", "apply", str(_only_run(tmp_path)), "--yes"]) == 2
+    assert "changed since the run" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("config", "tune", "message"),
+    [
+        ({}, ["subagents.0.instructions"], "the config has nothing at that path"),
+        ({}, ["name=[1, 2]"], "must be one of the options"),
+        ({}, ["builtinTools"], "is a list, not text"),
+        ({}, ["effort=[]"], "non-empty JSON list"),
+        ({"a_b": "x", "a": {"b": "y"}}, ["a_b", "a.b"], "also named 'a_b'"),
+        ({"skills": ["one", "two"]}, ["skills"], "skills must be one local folder path"),
+    ],
+)
+def test_bad_tune_paths_are_usage_errors(experiment_path, tmp_path, capsys, config, tune, message):
+    path = _write_config(tmp_path, **config)
+    args = _config_args(experiment_path, path, tmp_path)
+    for spec in tune:
+        args += ["--tune", spec]
+    assert main(args) == 2
+    assert message in capsys.readouterr().err
+
+
+def test_a_config_without_instructions_asks_for_one(experiment_path, tmp_path, capsys):
+    path = _write_config(tmp_path)
+    data = json.loads(path.read_text())
+    del data["instructions"]
+    path.write_text(json.dumps(data))
+    assert main(_config_args(experiment_path, path, tmp_path)) == 2
+    assert 'has no "instructions"; add one' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (["--tune", "instructions"], "--tune needs --config"),
+        (["--rollout", f"{AGENTS}:manager_agent"], None),
+    ],
+)
+def test_agent_flags_go_with_their_agent(experiment_path, tmp_path, capsys, extra, message):
+    if message is None:  # --rollout with --config
+        args = [*_config_args(experiment_path, _write_config(tmp_path), tmp_path), *extra]
+        message = "--rollout needs --agent"
+    else:
+        args = [*_run_args(experiment_path, tmp_path), *extra]
+    assert main(args) == 2
+    assert message in capsys.readouterr().err
+
+
+def test_each_trial_gets_an_empty_session_and_a_copy_of_the_memory(tmp_path):
+    from strands_evals.cli import _harness
+
+    memory = tmp_path / "memories"
+    memory.mkdir()
+    (memory / "note.md").write_text("remember this")
+    trial = _harness._fresh_state(
+        {"session": {"id": "fixed"}, "memory": {"dir": "memories"}}, tmp_path, tmp_path / "trial"
+    )
+    assert trial["session"] == {"id": "fixed", "dir": str(tmp_path / "trial" / "session")}
+    assert trial["memory"] == {"dir": str(tmp_path / "trial" / "memory")}
+    assert (tmp_path / "trial" / "memory" / "note.md").read_text() == "remember this"
+    assert _harness._fresh_state({"session": False, "memory": False}, tmp_path, tmp_path / "t2") == {
+        "session": False,
+        "memory": False,
+    }
+
+
+def test_apply_lists_a_key_active_on_one_side_as_inactive(experiment_path, tmp_path, capsys):
+    assert main(_run_args(experiment_path, tmp_path)) == 0
+    root = _only_run(tmp_path)
+    result = OptimizationResult.from_file(root / "result.json")
+    assert result.best.values["manager"] == "summary"  # every sliding window is over the token limit
+    capsys.readouterr()
+    assert main(["optimize", "apply", str(root), "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "  manager: 'window' -> 'summary'\n" in out
+    assert "  manager.window.window_size: 40 -> (inactive)\n" in out

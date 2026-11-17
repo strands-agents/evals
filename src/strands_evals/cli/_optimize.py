@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import sys
@@ -33,12 +34,15 @@ from ..optimization import (
     Pareto,
     Reflection,
     Search,
+    Space,
     Split,
     TunableFactory,
     WeightedSum,
 )
 from ..optimization.declaration.files import _write_text_atomically
 from ._entrypoint import EntryPointError, import_attr, resolve_custom_evaluators
+
+logger = logging.getLogger(__name__)
 
 CLI_FILE = "cli.json"
 SCHEMA_VERSION = 1
@@ -48,10 +52,18 @@ _CONSTRAINT = re.compile(r"^\s*(?P<metric>[^<>=\s][^<>=]*?)\s*(?P<op><=|>=)\s*(?
 
 @dataclass(frozen=True)
 class Inputs:
-    """What `optimize run` was given, as `cli.json` stores it; specs are kept as typed and parsed again on load."""
+    """What `optimize run` was given, as `cli.json` stores it; specs are kept as typed and parsed again on load.
+
+    Exactly one of `agent` (a `MODULE:ATTR` tunable factory) and `config` (a portable config's absolute path, with
+    its sha256, its `--tune` specs, and the strands-harness version) is set.
+    """
 
     experiment_file: str
-    agent: str
+    agent: str | None = None
+    config: str | None = None
+    config_sha256: str | None = None
+    tune: list[str] = field(default_factory=list)
+    harness_version: str | None = None
     custom_evaluators: list[str] = field(default_factory=list)
     rollout: str | None = None
     environment: str | None = None
@@ -204,28 +216,60 @@ def build_objective(inputs: Inputs) -> Objective | None:
     return objectives[0] if len(objectives) == 1 else WeightedSum(*objectives)
 
 
-def build_search(factory: TunableFactory, reflection_model: str | None) -> Search | None:
+def build_search(space: Space, reflection_model: str | None) -> Search | None:
     """The default search, with `Reflection(model=...)` on the text keys when `--reflection-model` is given."""
     if reflection_model is None:
         return None
-    names = list(dict.fromkeys(info.name for info in factory.space.params() if info.kind == "text"))
+    names = list(dict.fromkeys(info.name for info in space.params() if info.kind == "text"))
     if not names:
-        raise ValueError("--reflection-model is set, but the factory declares no text to rewrite")
+        raise ValueError("--reflection-model is set, but nothing tuned is text")
     return Search([Block(Reflection(model=reflection_model), *names)])
 
 
 def agent_arguments(inputs: Inputs) -> dict[str, Any]:
     """What `Optimizer` and `Optimizer.resume` take about the agent and the goal, built from `inputs`."""
+    goal: dict[str, Any] = {
+        "experiment": load_experiment(inputs),
+        "objective": build_objective(inputs),
+        "constraints": [parse_constraint(spec) for spec in inputs.constraints],
+    }
+    if inputs.config is not None:
+        from . import _harness  # needs strands-harness, in the `optimization` extra
+
+        config = Path(inputs.config)
+        markers, tuned = _harness.declare(config, inputs.tune)
+        _harness.warn_host_tools(config)
+        space = Space(markers)
+        return {
+            **goal,
+            "build_task": _harness.build_task(config, tuned),
+            "space": markers,
+            "search": build_search(space, inputs.reflection_model),
+        }
+    assert inputs.agent is not None
     factory = load_factory(inputs.agent)
     return {
-        "experiment": load_experiment(inputs),
+        **goal,
         "factory": factory,
         "rollout_fn": import_attr(inputs.rollout) if inputs.rollout else None,
         "environment": import_attr(inputs.environment) if inputs.environment else None,
-        "objective": build_objective(inputs),
-        "constraints": [parse_constraint(spec) for spec in inputs.constraints],
-        "search": build_search(factory, inputs.reflection_model),
+        "search": build_search(factory.space, inputs.reflection_model),
     }
+
+
+def check_harness_version(inputs: Inputs) -> None:
+    """Warn when the installed strands-harness isn't the run's: a 0.x release may rename config keys."""
+    if inputs.config is None:
+        return
+    from . import _harness
+
+    installed = _harness.harness_version()
+    if installed != inputs.harness_version:
+        logger.warning(
+            "run=<%s>, now=<%s> | strands-harness version differs from the run's; a 0.x release may change config keys",
+            inputs.harness_version,
+            installed,
+        )
 
 
 def print_iteration(record: IterationRecord) -> None:
@@ -279,7 +323,20 @@ def plan_apply(run_dir: Path, candidate: str | None) -> Plan:
     result = OptimizationResult.from_file(result_path)
     view = result.best if candidate is None else _find(result, candidate)
     saved = {entry["key"]: entry for entry in read_run_json(run_dir)["space"]}
-    space = load_factory(load_inputs(run_dir).agent).space
+    inputs = load_inputs(run_dir)
+    check_harness_version(inputs)
+    tuned: list[Any] = []
+    if inputs.config is not None:
+        from . import _harness
+
+        config = Path(inputs.config)
+        if _harness.file_sha256(config) != inputs.config_sha256:
+            raise ValueError(f"changed since the run: {config}; nothing written")
+        markers, tuned = _harness.declare(config, inputs.tune)
+        space = Space(markers)
+    else:
+        assert inputs.agent is not None
+        space = load_factory(inputs.agent).space
     current = {info.key: info for info in space.params()}
     if set(saved) != set(current):
         raise ValueError("the factory's declaration changed since the run; nothing written")
@@ -293,7 +350,13 @@ def plan_apply(run_dir: Path, candidate: str | None) -> Plan:
     before = space._render_files(result.baseline.values)
     after = space._render_files(view.values)
     files = {path: text for path, text in after.items() if before.get(path) != text}
-    return Plan(view.number, view.id, view.diff(), files, view.changed_values())
+    by_hand = view.changed_values()
+    if inputs.config is not None and by_hand:  # the config is the CLI's: its choices are written there too
+        config = Path(inputs.config).resolve()
+        text = files.get(config, config.read_text(encoding="utf-8"))
+        files[config] = _harness.apply_choices(config, text, tuned, view.values)
+        by_hand = {}
+    return Plan(view.number, view.id, view.diff(), files, by_hand)
 
 
 def write_files(files: dict[Path, str]) -> None:

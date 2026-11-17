@@ -37,9 +37,28 @@ def _run(args: argparse.Namespace) -> int:
     from ...optimization import Budget, FinalPick, Optimizer
     from .. import _optimize
 
+    error = _check_agent_flags(args)
+    if error is not None:
+        emit_error(error)
+        return EXIT_BAD_INPUT
+    config = Path(args.config).resolve() if args.config is not None else None
+    harness: dict[str, Any] = {}
+    if config is not None:
+        from .. import _harness  # needs strands-harness, in the `optimization` extra
+
+        if not config.is_file():
+            emit_error(f"--config {args.config}: no such file")
+            return EXIT_BAD_INPUT
+        harness = {
+            "config": str(config),
+            "config_sha256": _harness.file_sha256(config),
+            "tune": args.tune or [],
+            "harness_version": _harness.harness_version(),
+        }
     inputs = _optimize.Inputs(
         experiment_file=str(Path(args.experiment_file).resolve()),
         agent=args.agent,
+        **harness,
         custom_evaluators=args.custom_evaluator or [],
         rollout=args.rollout,
         environment=args.environment,
@@ -82,6 +101,17 @@ def _run(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _check_agent_flags(args: argparse.Namespace) -> str | None:
+    """`--tune` goes with `--config`; `--rollout` and `--environment` with `--agent`."""
+    if args.config is None and args.tune:
+        return "--tune needs --config (with --agent, declare what may change with @tunable)"
+    if args.config is not None:
+        given = [flag for flag, value in (("--rollout", args.rollout), ("--environment", args.environment)) if value]
+        if given:
+            return f"{', '.join(given)} needs --agent: with --config, each trial runs the configured harness"
+    return None
+
+
 def _resume(args: argparse.Namespace) -> int:
     from ...optimization import Budget, Optimizer
     from .. import _optimize
@@ -93,6 +123,7 @@ def _resume(args: argparse.Namespace) -> int:
     except ValueError as error:
         emit_error(str(error))
         return EXIT_BAD_INPUT
+    _optimize.check_harness_version(inputs)
     with _optimize.working_directory(saved["workdir"]):
         try:
             budget = None
@@ -150,9 +181,9 @@ def _apply(args: argparse.Namespace) -> int:
     if plan.by_hand:
         out.write("numbers and choices live in your code; edit them by hand:\n")
         for key, sides in plan.by_hand.items():
-            old = sides.get("old", "(inactive)")
-            new = sides.get("new", "(inactive)")
-            out.write(f"  {key}: {old!r} -> {new!r}\n")
+            old = repr(sides["old"]) if "old" in sides else "(inactive)"
+            new = repr(sides["new"]) if "new" in sides else "(inactive)"
+            out.write(f"  {key}: {old} -> {new}\n")
     return EXIT_OK
 
 
@@ -162,18 +193,34 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
         parents=[parent],
         help="search for a better configuration of a tunable agent",
         description=(
-            "Load an Experiment (its cases and evaluators), resolve --agent to a @tunable factory, and run the "
+            "Load an Experiment (its cases and evaluators), take the agent from --agent (a @tunable factory) or "
+            "--config (a strands-harness portable config), and run the "
             "optimizer: the search on the train cases, the champion picked on validation, and the champion "
             "compared with the baseline on the test cases. Writes the run folder (events, best.diff, "
             "best.values.json, result.json, cli.json); nothing in your project is changed until `optimize apply`."
         ),
     )
     parser.add_argument("experiment_file", metavar="EXPERIMENT_FILE", help="path to a serialized Experiment JSON file")
-    parser.add_argument(
+    agent = parser.add_mutually_exclusive_group(required=True)
+    agent.add_argument(
         "--agent",
         metavar="MODULE:ATTR",
-        required=True,
         help="a tunable factory (@tunable or tunable(fn, inject=...)), as 'module:attr' or 'path/to/file.py:attr'",
+    )
+    agent.add_argument(
+        "--config",
+        metavar="PATH",
+        help="a strands-harness portable config (JSON); its instructions are tuned, plus each --tune",
+    )
+    parser.add_argument(
+        "--tune",
+        metavar="PATH[=JSON_LIST]",
+        action="append",
+        default=None,
+        help=(
+            "with --config, repeatable: a dotted config path to tune, as text (e.g. 'subagents.0.instructions', "
+            "or 'skills' for its skill folder) or, with =JSON_LIST, as a choice (e.g. 'effort=[\"low\",\"high\"]')"
+        ),
     )
     parser.add_argument("--rollout", metavar="MODULE:ATTR", default=None, help="a custom rollout_fn")
     parser.add_argument("--environment", metavar="MODULE:ATTR", default=None, help="an environment(case) function")

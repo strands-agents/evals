@@ -100,3 +100,7 @@ def prompt_agent(prompt, temperature=0.3):
     return Agent(model=model, system_prompt=prompt, callback_handler=None)
 """
 """An `agent.py` with a prompt file, written into a test's project folder (a file marker reads its file at import)."""
+
+
+world = World(0.25, None)
+"""A scripted model instance for portable configs, referenced as `modelModule`."""
