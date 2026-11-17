@@ -13,10 +13,10 @@ from typing import Any
 
 from scipy import stats
 
-from ..types.optimization import CandidateScores, PairedComparison, ValidationReport, Values
+from ..types.optimization import CandidateScores, Estimate, PairedComparison, ValidationReport, Values, near
 from .score_model.protocols import Fit
-from .score_model.ranking import LowerBound, Mean, PickRule, assess, label_candidate, pareto_front, rank
-from .scoring.objectives import Criteria, measured_metrics
+from .score_model.ranking import Assessment, LowerBound, Mean, PickRule, assess, label_candidate, pareto_front, rank
+from .scoring.objectives import AtMost, Criteria, measured_metrics
 
 TEST_LEVEL = 0.90  # the test report's interval level (report only), matching the 90% effects
 PARETO_MIN_FINALISTS = 5  # under Pareto, max(n_finalists, this) front members go to validation; the reserves use it too
@@ -64,22 +64,71 @@ class FinalPick:
 
 
 def choose_finalists(
-    ranking: Sequence[str], baseline_id: str, n: int, *, front: Sequence[str] | None = None
+    ranking: Sequence[str],
+    baseline_id: str,
+    n: int,
+    *,
+    assessments: Mapping[str, Assessment],
+    train: Mapping[str, CandidateScores],
+    criteria: Criteria,
+    n_validation_cases: int,
+    front: Sequence[str] | None = None,
 ) -> list[str]:
-    """The first `n` of the search ranking, baseline excluded; fewer -> all of them; none -> `[]`.
+    """The first `n` of the search ranking, baseline excluded, those holding every constraint with margin first.
+
+    A feasible candidate holds a constraint with margin when it still meets it after allowing for how far
+    its mean over the validation cases can differ from its mean over the train cases (`_holds_with_margin`),
+    so a candidate whose train mean is close to a bound, or whose train cases are spread out, comes after
+    those with margin. Each group keeps the ranking order. Without constraints, or when no candidate has
+    margin, this is the ranking's first `n`. Fewer -> all of them; none -> `[]`.
 
     Takes the ranked ids, not a `SelectionContext`, so this module doesn't import `selection/`. Under a
-    `Pareto` objective the first `n` of `front` instead; an empty front (nothing feasible on train) gives
-    `[]`, so the baseline ships.
+    `Pareto` objective the pool is `front` instead, ordered the same way; an empty front (nothing feasible
+    on train) gives `[]`, so the baseline ships.
 
     Args:
         ranking: Every eligible candidate in ranking order (feasible first, then by objective).
         baseline_id: Left out; it is always measured on validation anyway.
         n: `FinalPick.n_finalists`, or `max(n_finalists, PARETO_MIN_FINALISTS)` under `Pareto`.
+        assessments: Candidate id -> its assessment in the search ranking; every pool member has one.
+        train: Candidate id -> its train scores; every pool member has them.
+        criteria: The constraints and the feasibility threshold.
+        n_validation_cases: The number of validation cases the finalists will be measured on.
         front: Under `Pareto`, `pareto_front` over the search assessments, in ranking order; None otherwise.
     """
-    pool = ranking if front is None else front
-    return [c for c in pool if c != baseline_id][:n]
+    pool = [c for c in (ranking if front is None else front) if c != baseline_id]
+    margin = {c for c in pool if _holds_with_margin(assessments[c], train[c], criteria, n_validation_cases)}
+    return [*(c for c in pool if c in margin), *(c for c in pool if c not in margin)][:n]
+
+
+def _holds_with_margin(
+    assessment: Assessment, scores: CandidateScores, criteria: Criteria, n_validation_cases: int
+) -> bool:
+    """Feasible on train, and every constraint met at `criteria.feasibility_threshold` with room for new cases.
+
+    Each constraint is judged as `assess` judges it under a fit (`ranking.py`): at the threshold's quantile
+    against the bound, a value at the bound up to float noise met. The estimate judged has the ranking's
+    mean of the metric (the fit's mean, else the measured train mean) and the sd of the difference between
+    a mean over the train cases and one over the validation cases: the stdev of the candidate's per-case
+    train means times `sqrt(1 / train cases + 1 / validation cases)`, counting the train cases with a value
+    of the metric. Fewer than 2 such cases show no spread, so the constraint has no margin.
+    """
+    if not assessment.is_feasible:
+        return False
+    threshold = criteria.feasibility_threshold
+    for constraint in criteria.constraints:
+        metric = constraint.metric
+        case_means = [case[metric] for case in scores.metrics_by_case.values() if metric in case]
+        if len(case_means) < 2:
+            return False
+        mean = assessment.estimates[metric].mean if assessment.is_from_fit else statistics.fmean(case_means)
+        sd = statistics.stdev(case_means) * math.sqrt(1 / len(case_means) + 1 / n_validation_cases)
+        at_most = isinstance(constraint, AtMost)
+        judged = Estimate(mean=mean, sd=sd).quantile(threshold if at_most else 1 - threshold)
+        met = judged <= constraint.bound if at_most else judged >= constraint.bound
+        if not (met or near(judged, constraint.bound)):
+            return False
+    return True
 
 
 def pick(

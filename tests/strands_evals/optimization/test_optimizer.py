@@ -1128,6 +1128,44 @@ async def test_a_finalist_failing_a_constraint_on_validation_cannot_ship(tmp_pat
     assert result.test is None and result.test_reason == "no test cases"
 
 
+async def test_the_finalists_are_the_candidates_meeting_a_constraint_with_margin(tmp_path):
+    experiment = _experiment(n=33, evaluators=[Temperature()])
+    split = Split(train=experiment.cases[:30], validation=experiment.cases[30:33])
+    # Temperature 0.5 is grounded on 22 of the 30 train cases (0.73, above the floor) and 1 of the 3 validation
+    # cases; 1.0 everywhere; the baseline (0.0) nowhere.
+    met_at_half = {case.name for case in [*split.train[:22], *split.validation[:1]]}
+
+    class Grounded(Evaluator):
+        async def evaluate_async(self, evaluation_case):
+            output = evaluation_case.actual_output
+            met = output == "1.0" or (output == "0.5" and evaluation_case.name in met_at_half)
+            return [EvaluationOutput(score=float(met), test_pass=met, reason="g")]
+
+    blocks = [Block(Scripted({"temperature": 0.5}, {"temperature": 1.0}), "temperature"), Block(Scripted(), "manager")]
+    optimizer = _optimizer(
+        Experiment(cases=experiment.cases, evaluators=[Temperature(), Grounded(name="Grounded")]),
+        rollout_fn=_temperature_rollout,
+        search=Search(blocks, schedule=Joint()),
+        max_workers=64,
+        proposals_per_iteration=1,
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=2),
+        objective=Minimize("Temperature"),
+        constraints=[AtLeast("Grounded", 0.5)],
+        final_pick=FinalPick(n_finalists=1),
+        score_model=_Sequence(),  # no fit: the search ranks and the pick decides by measured means
+        split=split,
+    )
+    result = await optimizer.run_async()
+    by_temperature = {v.values["temperature"]: v.id for v in result.candidates.values()}
+    # 0.5 ranks first on train (feasible and cheaper), but with 3 validation cases 0.73 - 1.28 * 0.45 *
+    # sqrt(1/30 + 1/3) = 0.38 < 0.5 (with 30 it would be 0.58), so the one finalist is 1.0, which meets the floor
+    # on every case.
+    finalists = next(e for e in _events(optimizer) if e["event"] == "finalists")
+    assert finalists["candidate_ids"] == [by_temperature[1.0]]
+    assert result.best.values["temperature"] == 1.0
+
+
 async def test_validation_and_test_runs_never_reach_the_search(tmp_path):
     seen = []
 

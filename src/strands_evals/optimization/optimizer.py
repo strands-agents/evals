@@ -87,9 +87,10 @@ class Optimizer:
 
     Each iteration the schedule plans a step, selection picks a parent, proposers propose, every candidate is
     scored on train, and the score model is refitted. There is no champion during the run: after the search
-    stops, the top finalists and the baseline are measured on validation, a fresh fit picks the champion
-    (only a candidate meeting every constraint ships, else the baseline), and the champion is compared with
-    the baseline on test, reported only.
+    stops, the finalists (the top of the ranking, those meeting every constraint with margin first) and the
+    baseline are measured on validation, a fresh fit picks the champion (only a candidate meeting every
+    constraint ships, else the baseline), and the champion is compared with the baseline on test, reported
+    only.
 
     Pass either `factory` (a `TunableFactory`, positionally as in `Optimizer(experiment, create_agent)` or
     by keyword) or `build_task=` with `space=`. `environment=` and `rollout_fn=` work only with `factory=`.
@@ -654,7 +655,16 @@ class Optimizer:
             n, front = self._final_pick.n_finalists, None
             if criteria.is_pareto:
                 n, front = max(n, PARETO_MIN_FINALISTS), pareto_front(assessments, ranking)
-            finalists = choose_finalists(ranking, baseline, n, front=front)
+            finalists = choose_finalists(
+                ranking,
+                baseline,
+                n,
+                assessments=assessments,
+                train=self._train,
+                criteria=criteria,
+                n_validation_cases=len(self._case_split.validation),
+                front=front,
+            )
             run.events.append("finalists", iteration=self._iteration, candidate_ids=finalists)
         if resumed is not None and resumed.validation is not None:
             report = resumed.validation
