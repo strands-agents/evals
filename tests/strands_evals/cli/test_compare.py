@@ -1,9 +1,12 @@
 """Tests for `strands-evals compare`."""
 
+import builtins
 import json
 import subprocess
 import sys
+from io import StringIO
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -13,8 +16,14 @@ from strands_evals.evaluators import Equals
 from strands_evals.types.evaluation_report import EvaluationReport
 
 
-def _write_report(path: Path, delta: float) -> None:
-    scores = [0.2 + index * 0.05 + delta for index in range(6)]
+def _write_report(
+    path: Path,
+    delta: float,
+    *,
+    case_count: int = 6,
+    evaluator: str = "correctness",
+) -> None:
+    scores = [0.2 + index * 0.05 + delta for index in range(case_count)]
     report = EvaluationReport(
         overall_score=sum(scores) / len(scores),
         scores=scores,
@@ -22,11 +31,11 @@ def _write_report(path: Path, delta: float) -> None:
             {
                 "name": f"case-{index}",
                 "input": f"input-{index}",
-                "evaluator": "correctness",
+                "evaluator": evaluator,
             }
-            for index in range(6)
+            for index in range(case_count)
         ],
-        test_passes=[True] * 6,
+        test_passes=[True] * case_count,
         detailed_results=[[] for _ in scores],
     )
     path.write_text(report.model_dump_json(), encoding="utf-8")
@@ -132,6 +141,58 @@ def test_compare_rich_output(tmp_path: Path, capsys):
     assert "correctness" in output
 
 
+def test_compare_rich_output_preserves_values_at_narrow_width(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    baseline = tmp_path / "baseline.json"
+    candidate = tmp_path / "candidate.json"
+    _write_report(baseline, 0.0, evaluator="HelpfulnessEvaluator")
+    _write_report(candidate, 0.1, evaluator="HelpfulnessEvaluator")
+    monkeypatch.setenv("COLUMNS", "80")
+
+    exit_code = main(
+        [
+            "--rich",
+            "compare",
+            "--baseline",
+            str(baseline),
+            "--candidate",
+            str(candidate),
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "…" not in output
+    assert "[0.1000, 0.1000]" in output
+    assert "0.03125" in output
+    assert "improved" in output
+
+
+def test_compare_rich_output_treats_evaluator_names_as_text(tmp_path: Path, capsys):
+    baseline = tmp_path / "baseline.json"
+    candidate = tmp_path / "candidate.json"
+    _write_report(baseline, 0.0, evaluator="score[/v2]")
+    _write_report(candidate, 0.1, evaluator="score[/v2]")
+
+    exit_code = main(
+        [
+            "--rich",
+            "compare",
+            "--baseline",
+            str(baseline),
+            "--candidate",
+            str(candidate),
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "score[/v2]" in output
+
+
 def test_compare_output_file_is_json(tmp_path: Path):
     baseline = tmp_path / "baseline.json"
     candidate = tmp_path / "candidate.json"
@@ -213,6 +274,28 @@ def test_compare_unequal_report_counts_return_bad_input(tmp_path: Path, capsys):
     assert "--baseline and --candidate" in error
 
 
+def test_compare_invalid_report_identifies_trial_and_source(tmp_path: Path, capsys):
+    baseline = tmp_path / "baseline.json"
+    candidate = tmp_path / "candidate.json"
+    _write_report(baseline, 0.0)
+    candidate.write_text("{broken", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "compare",
+            "--baseline",
+            str(baseline),
+            "--candidate",
+            str(candidate),
+        ]
+    )
+    error = capsys.readouterr().err
+
+    assert exit_code == 2
+    assert "trial 0" in error
+    assert str(candidate) in error
+
+
 def test_compare_supports_lower_is_better(tmp_path: Path, capsys):
     baseline = tmp_path / "baseline.json"
     candidate = tmp_path / "candidate.json"
@@ -236,6 +319,141 @@ def test_compare_supports_lower_is_better(tmp_path: Path, capsys):
     assert exit_code == 0
     assert payload["verdict"] == "improved"
     assert payload["evaluator_summaries"][0]["higher_is_better"] is False
+
+
+def test_compare_rejects_unknown_lower_is_better_name(tmp_path: Path, capsys):
+    baseline = tmp_path / "baseline.json"
+    candidate = tmp_path / "candidate.json"
+    _write_report(baseline, 0.0)
+    _write_report(candidate, -0.1)
+
+    exit_code = main(
+        [
+            "compare",
+            "--baseline",
+            str(baseline),
+            "--candidate",
+            str(candidate),
+            "--lower-is-better",
+            "correctnes",
+        ]
+    )
+    error = capsys.readouterr().err
+
+    assert exit_code == 2
+    assert "--lower-is-better names unknown evaluators" in error
+    assert "correctnes" in error
+    assert "correctness" in error
+
+
+def test_compare_passes_statistical_options(tmp_path: Path, capsys):
+    baseline = tmp_path / "baseline.json"
+    candidate = tmp_path / "candidate.json"
+    _write_report(baseline, 0.0, case_count=5)
+    _write_report(candidate, 0.1, case_count=5)
+
+    exit_code = main(
+        [
+            "--json",
+            "compare",
+            "--baseline",
+            str(baseline),
+            "--candidate",
+            str(candidate),
+            "--confidence-level",
+            "0.9",
+            "--minimum-effect",
+            "0.05",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    summary = payload["evaluator_summaries"][0]
+
+    assert exit_code == 0
+    assert summary["confidence_level"] == 0.9
+    assert summary["minimum_effect"] == 0.05
+    assert summary["verdict"] == "improved"
+
+
+def test_compare_reads_report_from_stdin(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    baseline = tmp_path / "baseline.json"
+    candidate = tmp_path / "candidate.json"
+    _write_report(baseline, 0.0)
+    _write_report(candidate, 0.1)
+    monkeypatch.setattr(sys, "stdin", StringIO(baseline.read_text(encoding="utf-8")))
+
+    exit_code = main(
+        [
+            "--json",
+            "compare",
+            "--baseline",
+            "-",
+            "--candidate",
+            str(candidate),
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["verdict"] == "improved"
+
+
+def test_compare_missing_optional_dependencies_returns_bad_input(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    baseline = tmp_path / "baseline.json"
+    candidate = tmp_path / "candidate.json"
+    _write_report(baseline, 0.0)
+    _write_report(candidate, 0.1)
+    original_import = builtins.__import__
+
+    def import_without_comparison(
+        name: str,
+        globals: dict[str, object] | None = None,
+        locals: dict[str, object] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> Any:
+        if name.endswith("experimental.comparison"):
+            raise ImportError("missing comparison extra")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_comparison)
+
+    exit_code = main(
+        [
+            "compare",
+            "--baseline",
+            str(baseline),
+            "--candidate",
+            str(candidate),
+        ]
+    )
+    error = capsys.readouterr().err
+
+    assert exit_code == 2
+    assert "missing comparison extra" in error
+
+
+def test_compare_help_marks_command_experimental_and_documents_stdin(capsys):
+    with pytest.raises(SystemExit) as root_exit:
+        main(["--help"])
+    root_help = capsys.readouterr().out
+
+    with pytest.raises(SystemExit) as compare_exit:
+        main(["compare", "--help"])
+    compare_help = capsys.readouterr().out
+
+    assert root_exit.value.code == 0
+    assert "experimentally compare paired evaluation reports" in root_help
+    assert compare_exit.value.code == 0
+    assert "or - for stdin" in compare_help
 
 
 def test_compare_accepts_experiment_reports(tmp_path: Path, capsys):

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.table import Table
+from rich.text import Text
 
 from ...types.evaluation_report import EvaluationReport
 from .._common import EXIT_BAD_INPUT, EXIT_OK, emit_error, resolve_format
@@ -30,22 +31,51 @@ def _load_reports(paths: list[str], excluded_indices: set[int]) -> list[Evaluati
                     detailed_results=[],
                 )
             )
-        else:
-            reports.append(EvaluationReport.model_validate_json(read_text_input(path)))
+            continue
+
+        try:
+            report = EvaluationReport.model_validate_json(read_text_input(path))
+        except (OSError, ValueError) as error:
+            source = "stdin" if path == "-" else path
+            raise ValueError(f"invalid report at trial {index}, source={source!r}: {error}") from error
+        reports.append(report)
     return reports
 
 
 def _render_result(result: PairedComparisonResult) -> None:
     console = Console()
     trial_label = "trial" if result.trial_count == 1 else "trials"
-    table = Table(title=f"Comparison: {result.verdict.replace('_', ' ')} ({result.trial_count} {trial_label})")
-    table.add_column("Evaluator", no_wrap=True)
-    table.add_column("Cases", justify="right")
-    table.add_column("Changed", justify="right")
-    table.add_column("Delta", justify="right")
-    table.add_column("CI", justify="right")
-    table.add_column("Adj. p", justify="right")
-    table.add_column("Verdict")
+    title = f"Comparison: {result.verdict.replace('_', ' ')} ({result.trial_count} {trial_label})"
+    if console.width < 100:
+        console.print(Text(title, style="bold"))
+        for summary in result.evaluator_summaries:
+            interval = (
+                f"[{summary.confidence_lower:.4f}, {summary.confidence_upper:.4f}]"
+                if summary.confidence_lower is not None and summary.confidence_upper is not None
+                else "N/A"
+            )
+            adjusted_p = f"{summary.adjusted_p_value:.4g}" if summary.adjusted_p_value is not None else "N/A"
+            details = Table.grid(padding=(0, 1))
+            details.add_column(style="bold", no_wrap=True)
+            details.add_column(overflow="fold")
+            details.add_row("Evaluator", Text(summary.evaluator))
+            details.add_row("Cases", str(summary.case_count))
+            details.add_row("Changed", str(summary.changed_case_count))
+            details.add_row("Delta", f"{summary.mean_delta:+.4f}")
+            details.add_row("CI", interval)
+            details.add_row("Adj. p", adjusted_p)
+            details.add_row("Verdict", summary.verdict.replace("_", " "))
+            console.print(details)
+        return
+
+    table = Table(title=title)
+    table.add_column("Evaluator", overflow="fold")
+    table.add_column("Cases", justify="right", no_wrap=True)
+    table.add_column("Changed", justify="right", no_wrap=True)
+    table.add_column("Delta", justify="right", no_wrap=True)
+    table.add_column("CI", justify="right", no_wrap=True)
+    table.add_column("Adj. p", justify="right", no_wrap=True)
+    table.add_column("Verdict", overflow="fold")
 
     for summary in result.evaluator_summaries:
         interval = (
@@ -55,7 +85,7 @@ def _render_result(result: PairedComparisonResult) -> None:
         )
         adjusted_p = f"{summary.adjusted_p_value:.4g}" if summary.adjusted_p_value is not None else "N/A"
         table.add_row(
-            summary.evaluator,
+            Text(summary.evaluator),
             str(summary.case_count),
             str(summary.changed_case_count),
             f"{summary.mean_delta:+.4f}",
@@ -83,7 +113,10 @@ def _run(args: argparse.Namespace) -> int:
             lower_is_better=args.lower_is_better,
         )
     except (ImportError, ValueError) as error:
-        emit_error(str(error), debug=getattr(args, "debug", False), exc=error)
+        message = str(error)
+        if message.startswith("lower_is_better "):
+            message = f"--lower-is-better {message.removeprefix('lower_is_better ')}"
+        emit_error(message, debug=getattr(args, "debug", False), exc=error)
         return EXIT_BAD_INPUT
 
     if args.output is not None or resolve_format(args) == "json":
@@ -125,7 +158,7 @@ def add_subparser(
     parser = subparsers.add_parser(
         "compare",
         parents=[parent],
-        help="statistically compare paired evaluation reports",
+        help="experimentally compare paired evaluation reports",
         description=(
             "Experimental: compare baseline and candidate EvaluationReport JSON files. "
             "Cases are the statistical unit; repeated trials only reduce per-case noise. "
@@ -137,14 +170,14 @@ def add_subparser(
         action="append",
         required=True,
         metavar="REPORT",
-        help="baseline EvaluationReport JSON file; repeat once per trial",
+        help="baseline EvaluationReport JSON file, or - for stdin; repeat once per trial",
     )
     parser.add_argument(
         "--candidate",
         action="append",
         required=True,
         metavar="REPORT",
-        help="candidate EvaluationReport JSON file; repeat once per trial",
+        help="candidate EvaluationReport JSON file, or - for stdin; repeat once per trial",
     )
     parser.add_argument(
         "--corrupted-trial",
