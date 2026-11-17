@@ -603,9 +603,18 @@
     <div class="sgroup" id="sgroup-opt" hidden>
       <button class="sec" data-sec="optimization" id="sec-opt" hidden>Optimization</button>
       <div class="tabs">
+        <!-- A tuning run is not one answer with an appendix, which is what a single Results tab
+             made it: the result, the search that produced it, the configurations it tried, the
+             knobs it was given and the trade-off between goals are five questions, and each was
+             a drawer under the answer to the first. One tab each, in the order they are asked.
+             Trade-off is the exception — it only exists for a run with two goals or more. -->
         <button class="tab" data-view="opt-runs" data-sec="optimization" hidden>Runs</button>
         <button class="tab" data-view="opt-setup" data-sec="optimization" hidden>Setup</button>
-        <button class="tab" data-view="opt-results" data-sec="optimization" hidden>Results</button>
+        <button class="tab" data-view="opt-overview" data-sec="optimization" hidden>Overview</button>
+        <button class="tab" data-view="opt-progress" data-sec="optimization" hidden>Progress</button>
+        <button class="tab" data-view="opt-candidates" data-sec="optimization" hidden>Candidates</button>
+        <button class="tab" data-view="opt-tunables" data-sec="optimization" hidden>Tunables</button>
+        <button class="tab" data-view="opt-trade" data-sec="optimization" data-multi hidden>Trade-off</button>
       </div>
     </div>
   </nav>
@@ -754,43 +763,92 @@
         <summary>How the search was run<span class="path" id="opt-mech-sum"></span></summary>
         <dl class="kv wide" id="opt-mech-kv"></dl>
       </details>
-
-      <!-- What it was allowed to change: the declared space, which is the only place a knob the
-           search never touched appears at all. A key is listed whether or not any candidate used
-           it, because "never changed" is a finding about the search and `changed_keys` cannot
-           state it. -->
-      <div id="opt-space-wrap" hidden>
-        <h3 class="chead2">What it could change</h3>
-        <p class="sub" id="opt-space-sub"></p>
-        <div class="scroll">
-          <table class="rep">
-            <thead><tr>
-              <th style="width:30%">Key</th><th style="width:22%">Range</th>
-              <th style="width:16%">Default</th><th style="width:14%">Candidates</th><th>Only when</th>
-            </tr></thead>
-            <tbody id="opt-space-rows"></tbody>
-          </table>
-        </div>
-        <p class="optnote" id="opt-space-note"></p>
-      </div>
     </section>
 
-    <!-- ── Optimization · Results ──
-         What came out: the held-out comparison, the configuration to take away, every candidate,
-         and then the search itself in drawers. -->
-    <section class="view" id="v-opt-results">
-      <h2>Results</h2>
+    <!-- ── Optimization · Overview ──
+         What came out: the held-out comparison and the configuration to take away. Everything
+         that is an account of HOW it got there is a tab of its own now — under one Results tab
+         they were drawers, and a drawer is still the same page, so the answer arrived with five
+         folded topics stacked under it. -->
+    <section class="view" id="v-opt-overview">
+      <h2>Overview</h2>
       <p class="sub" id="opt-sub"></p>
       <!-- One line of method, because no figure below is readable without it: what was tuned and
            over how many cases. The account of how the splits were used is on Setup. -->
       <p class="sub methodline" id="opt-method-sum"></p>
 
+      <!-- The best feasible objective is in this row rather than over it as a hero number: the
+           result below is a difference with an interval around it, and a big bare value above it
+           reads as the finding when it is only the best score the search happened to see. -->
+      <div class="stats" id="opt-stats"></div>
+
       <!-- What the run is for: the result, then the thing you take away from it. -->
       <div class="result" id="opt-result"></div>
       <div class="winner" id="opt-winner"></div>
+      <p class="optnote" id="opt-note"></p>
 
-      <!-- Every config it tried, browsable like the Report tab's cases: a candidate IS an eval run. -->
-      <h3 class="chead2">Candidates tried</h3>
+      <!-- What the run cost and how its trials went: spend per iteration and how every trial
+           ended. Still a drawer, and still one rather than two: nobody arrives at a tuning run
+           asking what it cost, but the question is asked of the same run, and two folds made it
+           read as two topics with the trial count in one and the spend it counts in the other. -->
+      <details class="drawer" id="opt-cost">
+        <summary>What it cost<span class="path" id="opt-cost-sum"></span></summary>
+        <div class="charts" id="opt-usage-wrap">
+          <div class="chart wide">
+            <div class="chead">
+              <h3>Spend by iteration</h3>
+              <select id="opt-usage-pick" aria-label="Usage measure to chart"></select>
+            </div>
+            <p class="cap" id="opt-usage-cap"></p>
+            <div id="opt-usage-chart"></div>
+          </div>
+        </div>
+        <div class="charts">
+          <div class="chart">
+            <h3>Trial outcomes</h3>
+            <p class="cap" id="opt-status-cap"></p>
+            <div id="opt-status-chart"></div>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <!-- ── Optimization · Progress ──
+         How the search got there, which is a different question from what it found: one mark per
+         proposal in the order they were made, and the rollouts it spent getting them. -->
+    <section class="view" id="v-opt-progress">
+      <h2>Progress</h2>
+      <p class="sub">What the search did, in the order it did it &mdash; <span id="opt-search-sum"></span>.</p>
+      <!-- One chart and one picker for the objective and every metric. They are the same shape —
+           a value per candidate in search order — and they are read one at a time, so a panel
+           each drew the same picture twice, the second with a picker that already knew how to
+           switch series. -->
+      <div class="charts">
+        <div class="chart wide">
+          <div class="chead">
+            <h3 id="opt-series-head">Objective by candidate</h3>
+            <select id="opt-series-pick" aria-label="Series to chart"></select>
+          </div>
+          <p class="cap" id="opt-series-cap"></p>
+          <div id="opt-series-chart"></div>
+          <div class="legend" id="opt-series-legend"></div>
+        </div>
+      </div>
+      <!-- The budget is the other thing that advances: cumulative rollouts against the ceiling,
+           which is what says whether the run stopped because it was done or because it ran out. -->
+      <div class="charts">
+        <div class="chart">
+          <h3>Rollouts spent</h3>
+          <p class="cap" id="opt-budget-cap"></p>
+          <div id="opt-budget-chart"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Optimization · Candidates ──
+         Every config it tried, browsable like the Report tab's cases: a candidate IS an eval run. -->
+    <section class="view" id="v-opt-candidates">
+      <h2>Candidates</h2>
       <p class="sub" id="opt-cand-sub"></p>
       <div class="ctl">
         <input class="find" id="opt-find" placeholder="Search candidates, settings and rationales" autocomplete="off">
@@ -814,52 +872,35 @@
           <tbody id="opt-cands"></tbody>
         </table>
       </div>
+    </section>
 
-      <!-- How it got there, and then the diagnostics for when the result is surprising. -->
-      <details class="drawer" id="opt-search">
-        <summary>How the search got there<span class="path" id="opt-search-sum"></span></summary>
-        <!-- The best feasible objective sits in this row rather than over it as a hero number: the
-             result above is a difference with an interval around it, and a big bare value next to
-             it reads as the finding when it is only the best score the search happened to see. -->
-        <div class="stats" id="opt-stats"></div>
-        <!-- One chart and one picker for the objective and every metric. They are the same shape —
-             a value per candidate in search order — and they are read one at a time, so two panels
-             drew the same picture twice, the second with a picker that already knew how to switch
-             series. -->
-        <div class="charts">
-          <div class="chart wide">
-            <div class="chead">
-              <h3 id="opt-series-head">Objective by candidate</h3>
-              <select id="opt-series-pick" aria-label="Series to chart"></select>
-            </div>
-            <p class="cap" id="opt-series-cap"></p>
-            <div id="opt-series-chart"></div>
-            <div class="legend" id="opt-series-legend"></div>
-          </div>
+    <!-- ── Optimization · Tunables ──
+         The knobs, which is one subject in two halves: what each was allowed to be, declared in
+         `run.json`, and what the fit beside the log says each one did. The space is the only
+         account of the keys that exist as against the ones some candidate happened to move, and
+         the effects are the only place anything says a KEY did something rather than a candidate.
+         Neither is on Overview, because both are answers about the search rather than about the
+         champion the search returned. -->
+    <section class="view" id="v-opt-tunables">
+      <h2>Tunables</h2>
+      <p class="sub" id="opt-space-sub"></p>
+      <div id="opt-space-wrap" hidden>
+        <div class="scroll">
+          <table class="rep">
+            <thead><tr>
+              <th style="width:30%">Key</th><th style="width:22%">Range</th>
+              <th style="width:16%">Default</th><th style="width:14%">Candidates</th><th>Only when</th>
+            </tr></thead>
+            <tbody id="opt-space-rows"></tbody>
+          </table>
         </div>
-      </details>
-      <!-- Two goals or more: what one cost the other. Hidden for a single-goal run, which has a
-           best value and so nothing to trade off. -->
-      <details class="drawer" id="opt-tradeoff" hidden>
-        <summary>What one goal cost another<span class="path" id="opt-to-sum"></span></summary>
-        <div class="charts">
-          <div class="chart wide">
-            <div class="chead">
-              <h3 id="opt-to-head">Goals against each other</h3>
-              <select id="opt-to-x" aria-label="Goal on the x axis"></select>
-              <select id="opt-to-y" aria-label="Goal on the y axis"></select>
-            </div>
-            <p class="cap" id="opt-to-cap"></p>
-            <div id="opt-to-chart"></div>
-            <div class="legend" id="opt-to-legend"></div>
-            <p class="cap" id="opt-to-stats"></p>
-          </div>
-        </div>
-      </details>
+      </div>
+      <p class="optnote" id="opt-space-note"></p>
       <!-- Which setting moved the metric, from `effects.json` — an estimate fitted to every trial
            in the run, so it answers what the candidate table cannot: a candidate differs from the
            baseline in several places at once, and its score says nothing about which of them did
-           the work. Hidden for a run with no effects model beside it. -->
+           the work. A drawer, and hidden entirely for a run with no model beside it, because it is
+           the one thing on these tabs that is not read off the log. -->
       <details class="drawer" id="opt-effects" hidden>
         <summary>Which setting moved the metric<span class="path" id="opt-eff-sum"></span></summary>
         <div class="charts">
@@ -874,36 +915,34 @@
           </div>
         </div>
       </details>
-      <!-- What the run cost and how its trials went: spend per iteration, the rollouts against the
-           budget, and how every trial ended. One drawer, because two of them made one question —
-           what did this cost — read as two topics, and the rollout count was in the second while
-           the spend it is a count of was in the first. -->
-      <details class="drawer" id="opt-cost">
-        <summary>What it cost<span class="path" id="opt-cost-sum"></span></summary>
-        <div class="charts" id="opt-usage-wrap">
+    </section>
+
+    <!-- ── Optimization · Trade-off ──
+         Two goals or more: what one cost the other. The tab does not exist for a single-goal run,
+         which has a best value and so nothing to trade off — an empty tab would be the page
+         offering a question this run cannot be asked. -->
+    <section class="view" id="v-opt-trade">
+      <h2>Trade-off</h2>
+      <!-- The tab is hidden for a single-goal run, but a link saved with it in the hash is not,
+           so the one state the tab has nothing to draw for says so rather than showing a heading
+           over nothing. -->
+      <p class="sub" id="opt-to-none" hidden></p>
+      <div id="opt-tradeoff" hidden>
+        <p class="sub">What one goal cost the other: <span id="opt-to-sum"></span></p>
+        <div class="charts">
           <div class="chart wide">
             <div class="chead">
-              <h3>Spend by iteration</h3>
-              <select id="opt-usage-pick" aria-label="Usage measure to chart"></select>
+              <h3 id="opt-to-head">Goals against each other</h3>
+              <select id="opt-to-x" aria-label="Goal on the x axis"></select>
+              <select id="opt-to-y" aria-label="Goal on the y axis"></select>
             </div>
-            <p class="cap" id="opt-usage-cap"></p>
-            <div id="opt-usage-chart"></div>
+            <p class="cap" id="opt-to-cap"></p>
+            <div id="opt-to-chart"></div>
+            <div class="legend" id="opt-to-legend"></div>
+            <p class="cap" id="opt-to-stats"></p>
           </div>
         </div>
-        <div class="charts">
-          <div class="chart">
-            <h3>Rollouts spent</h3>
-            <p class="cap" id="opt-budget-cap"></p>
-            <div id="opt-budget-chart"></div>
-          </div>
-          <div class="chart">
-            <h3>Trial outcomes</h3>
-            <p class="cap" id="opt-status-cap"></p>
-            <div id="opt-status-chart"></div>
-          </div>
-        </div>
-      </details>
-      <p class="optnote" id="opt-note"></p>
+      </div>
     </section>
   </main>
 </div>
@@ -3392,11 +3431,15 @@
      it rather than tracked beside it, which is one less piece of state to get out of step. */
   const SECTION_OF = {
     runs: 'evals', experiment: 'evals', report: 'evals',
-    'opt-runs': 'optimization', 'opt-setup': 'optimization', 'opt-results': 'optimization',
+    'opt-runs': 'optimization', 'opt-setup': 'optimization', 'opt-overview': 'optimization',
+    'opt-progress': 'optimization', 'opt-candidates': 'optimization', 'opt-tunables': 'optimization',
+    'opt-trade': 'optimization',
   };
-  /* `tab=optimization` was one view before it became three. Landing a saved link on the result is
-     what it meant, and silently showing nothing would be the alternative. */
-  const VIEW_ALIAS = { optimization: 'opt-results' };
+  /* Two older spellings of this section, both of which mean "the result": `tab=optimization` from
+     when it was a single view, and `opt-results` from when the result and every account of the
+     search shared one tab. A saved link lands on what it was looking at; showing nothing would be
+     the alternative. */
+  const VIEW_ALIAS = { optimization: 'opt-overview', 'opt-results': 'opt-overview' };
 
   function show(view, opts) {
     view = VIEW_ALIAS[view] || view;
@@ -3412,8 +3455,14 @@
       experiment: (expMeta && expMeta.path) || 'no experiment loaded',
       report: (repMeta && repMeta.path) || 'no report loaded',
       'opt-runs': ROOT || folderLabel || 'no folder opened',
+      /* Setup and Tunables are the record the run was given; everything else on this section is
+         derived from the log it appended to, which is the file the path bar should name. */
       'opt-setup': (run && (run.dir === '.' ? 'run.json' : run.dir + '/run.json')) || 'no optimizer run loaded',
-      'opt-results': (run && run.events_path) || 'no optimizer run loaded',
+      'opt-tunables': (run && (run.dir === '.' ? 'run.json' : run.dir + '/run.json')) || 'no optimizer run loaded',
+      'opt-overview': (run && run.events_path) || 'no optimizer run loaded',
+      'opt-progress': (run && run.events_path) || 'no optimizer run loaded',
+      'opt-candidates': (run && run.events_path) || 'no optimizer run loaded',
+      'opt-trade': (run && run.events_path) || 'no optimizer run loaded',
     }[view];
     $('path').textContent = where;
     if (!opts || !opts.silent) writeHash(view);
@@ -3636,7 +3685,7 @@
     $('rep-borrowed').hidden = false;
     $('rep-borrowed').innerHTML = what
       + '<button class="btn" data-act="unborrow">'
-      + (repDisplaced && repDisplaced.meta ? 'Back to this run&rsquo;s report' : 'Back to Results')
+      + (repDisplaced && repDisplaced.meta ? 'Back to this run&rsquo;s report' : 'Back to Candidates')
       + '</button>';
   }
 
@@ -3645,8 +3694,9 @@
     repDisplaced = null;
     $('rep-borrowed').hidden = true;
     $('rep-borrowed').innerHTML = '';
-    // Nothing was displaced, so there is no report to go back to — only the panel that sent us.
-    if (!had || !had.meta) { clearReport(); return show('opt-results'); }
+    /* Nothing was displaced, so there is no report to go back to — only the tab that sent us,
+       which is Candidates: the jump is made from a candidate's row. */
+    if (!had || !had.meta) { clearReport(); return show('opt-candidates'); }
     loadReport(had.meta, had.doc);
     show('report');
   }
@@ -4492,7 +4542,7 @@
     /* What the run achieved. Same precedence as the result card below, which is the point: `test`
        is the held-out split and `picked` the validation split the search chose on, so a list that
        preferred the other one would label the same run's result more strongly than its own
-       Results tab does. */
+       Overview does. */
     const endReport = endReports.test || endReports.picked || null;
     const objective = endReport && endReport.objective;
     return {
@@ -4641,7 +4691,7 @@
           continue;
         }
         /* The same hold-aside for the two files a run writes beside its log: `effects.json`, which
-           the Results tab plots, and `best.values.json`, which is the champion's diff for review
+           the Tunables tab plots, and `best.values.json`, which is the champion's diff for review
            and says nothing this page does not read from the log. Held rather than skipped, because
            whether they belong to a run depends on a sibling that may not have been read yet — and
            reported below if no run turned up. */
@@ -6428,7 +6478,7 @@
     // Closed, the drawer still says which goals are in it — that is what decides whether to open it.
     $('opt-to-sum').textContent = many
       ? `${d.goals.length} goals`
-      : d.goals.map(g => `${g.metric} ${g.dir === 'min' ? '↓' : '↑'}`).join(' · ');
+      : d.goals.map(g => `${g.metric} ${g.dir === 'min' ? '↓' : '↑'}`).join(' against ');
     $('opt-to-cap').textContent = 'One mark per candidate, both axes turned so better is up and to '
       + 'the right: a mark above and right of another beats it on both goals. The step line is the '
       + 'edge of what ' + (stated
@@ -6474,6 +6524,7 @@
       $('opt-source').hidden = true;
       $('opt-mech').hidden = true;
       $('opt-tradeoff').hidden = true;
+      $('opt-to-none').hidden = true;
       $('opt-effects').hidden = true;
       $('opt-space-wrap').hidden = true;
       $('opt-cost').hidden = true;
@@ -6544,9 +6595,14 @@
     ).join('') + (d.champion ? '<span><i style="background:var(--accent)"></i>champion</span>' : '')
       + '<span><i class="ln"></i>best feasible so far</span>';
 
-    /* A run with one goal has a best value and the chart above says what it is. With two or more
-       there is no such number, so the trade-off between them is the only honest answer. */
+    /* A run with one goal has a best value and Progress charts it. With two or more there is no
+       such number, so the trade-off between them is the only honest answer — and that is the whole
+       of a tab which therefore only exists for those runs. */
     $('opt-tradeoff').hidden = d.goals.length < 2;
+    $('opt-to-none').hidden = d.goals.length >= 2;
+    $('opt-to-none').textContent = d.goals.length >= 2 ? ''
+      : `This run optimized one goal${d.goals.length ? ` — ${d.goals[0].metric} — ` : ', '}`
+        + 'so it has a best value rather than a trade-off. Progress charts it by candidate.';
     if (d.goals.length >= 2) renderTradeoff(d);
 
     /* Which setting moved the metric, when the run has a model of that beside it. */
@@ -6619,7 +6675,7 @@
     if (d.isPareto) {
       notes.push(d.goals.length >= 2
         ? 'This run uses a Pareto objective, so a single best value understates it: its front is '
-          + 'under "What one goal cost another".'
+          + 'on the Trade-off tab.'
         : 'This run uses a Pareto objective, so a single best value understates it — and '
           + `${d.goals.length ? 'only one of its goals was' : 'none of its goals were'} measured, `
           + 'so there is no trade-off to plot.');
@@ -6679,7 +6735,7 @@
      The figure is the objective's delta, which is the only quantity on this page whose direction
      is known, so it is the only one that can be coloured without guessing. And the colour follows
      the *interval*, not the delta: a run whose interval straddles zero has shown nothing, however
-     large its gap, so colouring the gap would have the list promising what the Results tab then
+     large its gap, so colouring the gap would have the list promising what Overview then
      takes back. Same four readings as the verdict there, in two words each. */
   function runResultCell(r) {
     const res = r.result, o = res && res.objective;
@@ -6713,7 +6769,12 @@
        anything. Both names go, leaving the three tabs on their own, which is how a folder of plain
        experiments reads exactly as it did before there was an optimizer at all. */
     $('sections').classList.toggle('lonely', !any);
-    app.querySelectorAll('.tab[data-sec="optimization"]').forEach(t => { t.hidden = !any; });
+    /* Every tab but one. Trade-off is a question only a run with two measured goals can be asked,
+       so for a single-goal run the tab is not there to click rather than there and empty — the
+       same rule the drawer it replaced was hidden by. */
+    app.querySelectorAll('.tab[data-sec="optimization"]').forEach(t => {
+      t.hidden = !any || (t.dataset.multi !== undefined && !(OPT && OPT.goals.length >= 2));
+    });
 
     $('opt-runs-sub').textContent = any
       ? 'Each one is a directory holding a run.json and the events.jsonl the run appended to.'
@@ -6748,8 +6809,8 @@
     const i = Number(tr.dataset.optRun);
     /* Already selected: just go to the result. Re-reading the log would be work for no change,
        and the point of the click is the answer, not the selection. */
-    if (i === optSel) return show('opt-results');
-    selectOptimizerRun(i).then(() => show('opt-results'));
+    if (i === optSel) return show('opt-overview');
+    selectOptimizerRun(i).then(() => show('opt-overview'));
   };
 
   /* ── Setup ──
@@ -6814,7 +6875,7 @@
     if (f.scoreModel) mech.push(['Score model', esc(f.scoreModel)]);
     if (c.agent_failure_score) mech.push(['A failed agent scores', esc(c.agent_failure_score)]);
     if (c.workdir) mech.push(['Started in', mono(c.workdir)]);
-    /* The run id names the directory, which the Runs list and the Results subtitle both say — so
+    /* The run id names the directory, which the Runs list and Overview's subtitle both say — so
        it is here as the record's own field rather than as the page telling anyone which run. */
     mech.push(['Run id', mono(c.run_id || run.run_id)]);
 
@@ -6861,10 +6922,20 @@
   function renderOptimizerSpace(d) {
     const space = d.space || [];
     $('opt-space-wrap').hidden = !space.length;
-    if (!space.length) return;
     const total = d.points.length;
-    $('opt-space-sub').textContent = `${plural(space.length, 'key')} the optimizer could set, as `
-      + 'run.json declares them. A key with no candidate behind it was never varied.';
+    /* Its own tab now, so a record from before the field existed needs a sentence rather than a
+       blank page: the keys the log went on to change are named on Setup, which is all such a
+       record can say about what the search was allowed to do. */
+    $('opt-space-sub').textContent = space.length
+      ? `${plural(space.length, 'key')} the optimizer could set, as run.json declares them. `
+        + 'A key with no candidate behind it was never varied.'
+      : 'This run.json declares no search space — it was written before the field existed. Setup '
+        + 'names the keys the log changed, which is as close as the record gets.';
+    if (!space.length) {
+      $('opt-space-note').textContent = '';
+      $('opt-space-note').className = 'optnote';
+      return;
+    }
     $('opt-space-rows').innerHTML = space.map(r => {
       const block = r.block ? ` <span class="tag">${esc(r.block)}</span>` : '';
       /* "0 of 11" rather than a dash: the key was declared and the search left it alone, which is

@@ -1,4 +1,5 @@
-/* The Optimization section — Runs, Setup, Results — driven from the committed fixture run.
+/* The Optimization section — Runs, Setup, Overview, Progress, Candidates, Tunables, Trade-off —
+ * driven from the committed fixture run.
  *
  * The numbers here are *derived* — best-so-far, the budget curve, the status breakdown —
  * so the way they can be wrong is to be plausible. The assertions below are written against the
@@ -40,16 +41,18 @@ const errs = [];                              // for the pages built inside a bl
 const p = await page();                       // no fetch -> standalone
 const { $, $$, text, click, openFolder } = p;
 
-/* Nearly every assertion below reads the Results panel, and clicking a tab switches to its section
-   as well as its view — so one helper stands in for "show me this run's result". */
-const openResults = q => q.click('.tab[data-view="opt-results"]');
+/* Nearly every assertion below reads the result, and clicking a tab switches to its section as
+   well as its view — so one helper stands in for "show me this run's result". It is Overview
+   now: the result was one tab with the search, the candidates, the knobs and the trade-off folded
+   into drawers under it, and those are five questions rather than an appendix to one answer. */
+const openResults = q => q.click('.tab[data-view="opt-overview"]');
 
 /* ── the Optimization section only exists when there is a run behind it ──
    A folder of plain experiments must look exactly as it did before there was an optimizer: one
    group of tabs, none of the optimizer's three among them, and no section name over them. */
 ok($('#sec-opt').hidden === true, 'Optimization section hidden with no optimizer run');
 ok($$('.tab[data-sec="optimization"]').every(t => t.hidden),
-  'and so are all three of its tabs');
+  'and so is every one of its tabs');
 ok($('#sections').classList.contains('lonely'),
   'and the section names with them, since one section is not a choice');
 
@@ -57,8 +60,15 @@ await openFolder({ 'demo/run.json': CONFIG, 'demo/events.jsonl': EVENTS, 'demo/e
   ...TRANSCRIPTS });
 ok($('#sec-opt').hidden === false, 'the section appears once a run directory is read');
 ok(!$('#sections').classList.contains('lonely'), 'and now both sections are named above their tabs');
-ok($$('.tab[data-sec="optimization"]').map(t => t.textContent).join() === 'Runs,Setup,Results',
-  'with its own three panels — not Evals\' three renamed, since Setup is read where Experiment is edited',
+/* One tab per question a tuning run is asked, which is the shape the optimization explorer on
+   `poshinchen/evals` arrived at and the one this page now uses: the run list, the record, the
+   result, the search, the configurations, the knobs, the trade-off. Not Evals' tabs renamed —
+   Setup is read where Experiment is edited — and not one Results tab with the other five folded
+   into drawers under it, which is what the section was and which made five questions read as an
+   appendix to one answer. */
+ok($$('.tab[data-sec="optimization"]').map(t => t.textContent).join()
+  === 'Runs,Setup,Overview,Progress,Candidates,Tunables,Trade-off',
+  'a tab per question a tuning run is asked',
   $$('.tab[data-sec="optimization"]').map(t => t.textContent).join());
 /* Including the transcripts: a run's own storage is not a document the picker failed to classify,
    and eighty of them in the "could not use" list would bury the one file that really is unusable. */
@@ -69,10 +79,13 @@ await click('#sec-opt');
 ok($('#v-opt-runs').classList.contains('on'), 'the section opens on its run list');
 /* Its three tabs sit under its own name, and Evals' three stay under theirs: crossing sections
    moves the highlight, it does not swap one row of tabs for another. */
-ok($$('#sgroup-opt .tab').map(t => t.dataset.view).join() === 'opt-runs,opt-setup,opt-results',
-  'under the Optimization heading, its own three tabs', $$('#sgroup-opt .tab').map(t => t.dataset.view).join());
+ok($$('#sgroup-opt .tab').map(t => t.dataset.view).join()
+  === 'opt-runs,opt-setup,opt-overview,opt-progress,opt-candidates,opt-tunables,opt-trade',
+  'under the Optimization heading, all of its own tabs',
+  $$('#sgroup-opt .tab').map(t => t.dataset.view).join());
 ok($$('.tab:not([hidden])').map(t => t.dataset.view).join()
-  === 'runs,experiment,report,opt-runs,opt-setup,opt-results',
+  === 'runs,experiment,report,opt-runs,opt-setup,opt-overview,opt-progress,opt-candidates,'
+  + 'opt-tunables,opt-trade',
   'with Evals\' three still on the page beside them',
   $$('.tab:not([hidden])').map(t => t.dataset.view).join());
 ok($$('.sec.on').map(s => s.dataset.sec).join() === 'optimization'
@@ -114,7 +127,7 @@ ok(/iterations/.test(runRow[0].children[4].textContent), 'and why it stopped',
 
 // A run row opens the result, because the result is what the click is asking for.
 await click(runRow[0]);
-ok($('#v-opt-results').classList.contains('on'), 'clicking a run goes to its result');
+ok($('#v-opt-overview').classList.contains('on'), 'clicking a run goes to its result');
 ok(text('#path') === 'demo/events.jsonl', 'the path bar names the log', text('#path'));
 ok(/support-tuning-20261110-091500-7af3e1/.test(text('#opt-sub')), 'names the run', text('#opt-sub'));
 ok(/stopped: iterations/.test(text('#opt-sub')), 'reports the stop reason', text('#opt-sub'));
@@ -366,13 +379,16 @@ ok(stats.includes('Champion=c10'), 'champion read from the end-phase report', st
 ok(stats.includes('Rollouts=64 / 240'), 'rollouts are the iterations\' own tally against the budget', stats.join(' '));
 ok(stats.length === 4, 'four figures over the charts, not every number the run produced', stats.join(' '));
 
-/* The rest is diagnostics, so it starts folded away — the page opens on the result and the
-   objective. What is inside each drawer is summarised on the fold, including the scored-against-
-   unscored split that used to compete for space in the headline. */
-ok(['#opt-search', '#opt-cost'].every(id => $(id).open === false),
-  'the search and cost drawers start closed');
+/* Cost is the one thing still folded under the result. It is the same run's question, but it is
+   not the question anyone arrives with, and it is one drawer rather than two because that is one
+   question: see below. */
+ok($('#opt-cost').open === false, 'the cost drawer starts closed');
+/* How far the search went is a line over the Progress charts rather than a fold over them: it was
+   the summary on a `Search progress` drawer, and a tab whose whole subject is the search has
+   nothing to fold that away from. */
 ok(/11 proposals over 6 iterations/.test(text('#opt-search-sum')),
-  'the search drawer says how much work is folded inside it', text('#opt-search-sum'));
+  'Progress says how much search it is charting', text('#opt-search-sum'));
+ok(!$('#opt-search'), 'and the drawer that used to hold those charts is gone with it');
 /* Spend and trials were a drawer each — "Cost per iteration" and "Trial outcomes and rollouts" —
    so a reader deciding whether to open either read two folds to find they answered one question,
    with the rollout count in the second and the spend it counts in the first. */
@@ -1117,10 +1133,11 @@ ok(text('#opt-note') === '', 'no warnings for a clean log', text('#opt-note'));
   await openResults(q2);
   await q2.click(q2.$$('#opt-cands tr.case').find(r => /c10/.test(r.textContent)));
   await q2.click('#opt-cands [data-open]');
-  ok(/Back to Results/.test(q2.text('#rep-borrowed')),
-    'with no report of its own, the way back is to the run', q2.text('#rep-borrowed'));
+  ok(/Back to Candidates/.test(q2.text('#rep-borrowed')),
+    'with no report of its own, the way back is the tab the jump was made from',
+    q2.text('#rep-borrowed'));
   await q2.click('#rep-borrowed [data-act="unborrow"]');
-  ok(q2.$('#v-opt-results').classList.contains('on'), 'and it goes there');
+  ok(q2.$('#v-opt-candidates').classList.contains('on'), 'and it goes there');
   ok(q2.text('#rep-count') === '', 'leaving no half-loaded report behind it', q2.text('#rep-count'));
   errs.push(...q.errs, ...q2.errs);
 }
@@ -1780,12 +1797,19 @@ const byId = q => Object.fromEntries(marksOf(q).map(m => [m.id, m]));
 
 const pOne = await goalPage('Maximize(Quality)');
 ok(pOne.$('#opt-tradeoff').hidden === true,
-  'a run with one goal has a best value and nothing to trade off, so there is no such drawer');
+  'a run with one goal has a best value and nothing to trade off, so there is no such chart');
+ok(pOne.$('.tab[data-view="opt-trade"]').hidden === true, 'and no tab offering it either');
+/* The tab is hidden, but a link that names it in the hash is not, so the one run this tab has
+   nothing to draw for says why rather than showing a heading over an empty page. */
+ok(/one goal — Quality — so it has a best value/.test(pOne.text('#opt-to-none')),
+  'and the tab itself says so, for anyone who arrives by link', pOne.text('#opt-to-none'));
 
 const pTwo = await goalPage('Pareto(Maximize(Quality), Minimize(tokens))');
-ok(pTwo.$('#opt-tradeoff').hidden === false, 'two goals, and the drawer is there');
-ok(pTwo.text('#opt-to-sum') === 'Quality ↑ · tokens ↓',
-  'named by its goals and the direction each wants, so the drawer can be judged shut',
+ok(pTwo.$('#opt-tradeoff').hidden === false, 'two goals, and the chart is there');
+ok(pTwo.$('.tab[data-view="opt-trade"]').hidden === false, 'with the tab offered for it');
+ok(pTwo.$('#opt-to-none').hidden === true, 'and nothing saying there is nothing to trade');
+ok(pTwo.text('#opt-to-sum') === 'Quality ↑ against tokens ↓',
+  'named by its goals and the direction each wants, since the chart turns both axes by them',
   pTwo.text('#opt-to-sum'));
 ok(pTwo.$('#opt-to-x').hidden && pTwo.$('#opt-to-y').hidden,
   'with no axis pickers, since two goals are one pair and there is nothing to pick');
@@ -1835,8 +1859,8 @@ ok(two.c3.x < two.c2.x && two.c3.y > two.c2.y,
   'and a candidate the front beats on both goals sits inside it',
   `c3 ${two.c3.x},${two.c3.y} against c2 ${two.c2.x},${two.c2.y}`);
 
-ok(/front is under "What one goal cost another"/.test(pTwo.text('#opt-note')),
-  'the Pareto note sends the reader to that chart — it used to point out of the page entirely',
+ok(/front is on the Trade-off tab/.test(pTwo.text('#opt-note')),
+  'the Pareto note names the tab holding that front — it used to point out of the page entirely',
   pTwo.text('#opt-note'));
 
 /* Three goals and up: the recorded set is a front over more dimensions than a plane has, so the
@@ -1934,14 +1958,14 @@ await openResults(p6);
 const first = p6.text('#opt-sub');
 ok(/support-tuning/.test(first), 'the first run is the one open to begin with', first);
 /* The row that is open is marked, because otherwise the only way to tell which of two runs the
-   Results tab is showing is to read the id out of the subtitle and compare it by eye. */
+   other tabs are showing is to read the id out of the subtitle and compare it by eye. */
 await p6.click('.tab[data-view="opt-runs"]');
 ok(rows6()[0].classList.contains('on') && !rows6()[1].classList.contains('on'),
    'and its row says so');
 await p6.click(rows6()[1]);
 ok(p6.text('#opt-sub') !== first, 'picking the other run changes the view', p6.text('#opt-sub'));
 ok(/second-run/.test(p6.text('#opt-sub')), 'and names it', p6.text('#opt-sub'));
-ok(p6.$('#v-opt-results').classList.contains('on'),
+ok(p6.$('#v-opt-overview').classList.contains('on'),
    'and lands on its result rather than leaving the reader on the list');
 await p6.click('.tab[data-view="opt-runs"]');
 ok(!rows6()[0].classList.contains('on') && rows6()[1].classList.contains('on'),

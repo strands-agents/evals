@@ -44,14 +44,15 @@ const errs = [];
   errs.push(...p.errs);
 }
 
-/* ── a link saved when Optimization was one view ──
-   `tab=optimization` named the whole of it before it became Runs, Setup and Results. The result
-   is what that link was looking at, so that is where it still lands, rather than at a view name
+/* ── links saved under names the section has since stopped using ──
+   `tab=optimization` named the whole of it before it was split into tabs, and `tab=opt-results`
+   named the one tab that held the result and everything about it. Both were looking at the
+   result, so both land on Overview, which is where the result is now — rather than at a view name
    this page no longer has and a silent fall back to the run list. */
-{
-  const p = await page({ url: 'http://127.0.0.1/?x=1#tab=optimization' });
-  ok(p.$('#v-opt-results').classList.contains('on'), 'an old link lands on the result');
-  ok(/tab=opt-results/.test(p.window.location.hash), 'and is rewritten to the view it found',
+for (const [saved, label] of [['optimization', 'the section'], ['opt-results', 'its Results tab']]) {
+  const p = await page({ url: `http://127.0.0.1/?x=1#tab=${saved}` });
+  ok(p.$('#v-opt-overview').classList.contains('on'), `a link saved as ${label} lands on the result`);
+  ok(/tab=opt-overview/.test(p.window.location.hash), 'and is rewritten to the view it found',
     p.window.location.hash);
   errs.push(...p.errs);
 }
