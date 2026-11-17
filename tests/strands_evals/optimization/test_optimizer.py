@@ -1,9 +1,11 @@
 import asyncio
+import dataclasses
 import hashlib
 import json
 import shutil
 import threading
 import warnings
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -1378,6 +1380,96 @@ def test_resume_warns_when_numpy_or_optuna_changed(tmp_path):
     log.write_text("".join(json.dumps(e) + "\n" for e in events))
     with pytest.warns(UserWarning, match=r"optuna 0\.0\.1 -> "):
         _resume(optimizer._run.root)
+
+
+# a proposer serves one optimizer
+
+
+def _user_tpe_search():
+    """A search with a user-made proposer (default blocks get fresh proposers on every resolve)."""
+    return Search([Block(TPE(), "temperature")])
+
+
+async def test_resuming_with_the_stopped_runs_proposers_raises_and_a_new_search_resumes_exactly(tmp_path):
+    uninterrupted = await _default_search(tmp_path / "full", search=_user_tpe_search()).run_async()
+
+    def stop_after_three(record):
+        if record.iteration == 3:
+            raise RuntimeError("callback bug")
+
+    search = _user_tpe_search()
+    stopped = _default_search(tmp_path / "stopped", search=search, on_iteration=stop_after_three)
+    with pytest.raises(RuntimeError, match="callback bug"):
+        await stopped.run_async()
+    root = stopped._run.root
+    log = (root / "events.jsonl").read_text()
+    # Its TPE holds the three iterations' history; resume would replay it on top.
+    with pytest.raises(ValueError, match=r"^TPE \(block 'numbers'\) has already run in another Optimizer"):
+        _resume(root, search=search)
+    assert (root / "events.jsonl").read_text() == log
+    fresh = _user_tpe_search()
+    resumed = await _resume(root, search=fresh).run_async()
+    _assert_same(resumed, uninterrupted)
+    # The resumed optimizer bound its proposers before replaying the history into them.
+    with pytest.raises(ValueError, match="has already run in another Optimizer"):
+        _resume(root, search=fresh)
+
+
+async def test_a_proposer_another_optimizer_ran_with_is_rejected_before_anything_is_written(tmp_path):
+    search = _user_tpe_search()
+    first = _default_search(tmp_path / "first", search=search, budget=Budget(max_iterations=1))
+    second = _default_search(tmp_path / "second", search=search)  # constructing both is fine: neither ran
+    await first.run_async()
+    with pytest.raises(ValueError, match="has already run in another Optimizer"):
+        await second.run_async()
+    assert not (tmp_path / "second").exists()
+    # Another Search holding the same instance is caught at construction.
+    with pytest.raises(ValueError, match="has already run in another Optimizer"):
+        _default_search(tmp_path / "third", search=Search([Block(search.blocks[0].proposer, "temperature")]))
+
+
+async def test_two_optimizers_started_at_once_on_one_search_bind_it_to_one(tmp_path):
+    search = _user_tpe_search()
+    optimizers = [_default_search(tmp_path / str(i), search=search, budget=Budget(max_iterations=1)) for i in range(2)]
+    outcomes = await asyncio.gather(*(o.run_async() for o in optimizers), return_exceptions=True)
+    errors = [o for o in outcomes if isinstance(o, BaseException)]
+    results = [o for o in outcomes if not isinstance(o, BaseException)]
+    assert len(errors) == 1 and isinstance(errors[0], ValueError)
+    assert "has already run in another Optimizer" in str(errors[0])
+    assert len(results) == 1 and results[0].stop_reason == "iterations"
+    assert all(o._run is not None for o in optimizers)  # both passed the first check: the bind checks again
+
+
+async def test_an_optimizer_that_stops_at_setup_leaves_its_proposers_free(tmp_path):
+    search = _user_tpe_search()
+    broken = _quiet(
+        base_dir=tmp_path, search=search, rollout_fn=_rollout(InfrastructureError("sandbox down")), rerun_passes=0
+    )
+    with pytest.raises(RuntimeError, match="unmeasured"):
+        await broken.run_async()
+    fixed = _quiet(base_dir=tmp_path, search=search, rollout_fn=_rollout(), budget=Budget(max_iterations=1))
+    assert (await fixed.run_async()).stop_reason == "iterations"
+
+
+async def test_a_frozen_proposer_is_bound_and_a_copy_of_a_bound_one_is_rejected(tmp_path):
+    @dataclasses.dataclass(frozen=True)
+    class Silent(Proposer):
+        kinds = frozenset({"one_of"})
+
+        async def propose(self, request):
+            return []
+
+        def observe(self, observation):
+            pass
+
+    silent = Silent()
+    unused_copy = deepcopy(silent)
+    await _searching(Block(silent, "temperature"), base_dir=tmp_path / "first").run_async()
+    with pytest.raises(ValueError, match=r"^Silent \(block 'numbers'\) has already run in another Optimizer"):
+        _searching(Block(silent, "temperature"), base_dir=tmp_path / "second")
+    with pytest.raises(ValueError, match="has already run in another Optimizer"):
+        _searching(Block(deepcopy(silent), "temperature"), base_dir=tmp_path / "third")
+    _searching(Block(unused_copy, "temperature"), base_dir=tmp_path / "fourth")
 
 
 # fixes from the gap review and #532

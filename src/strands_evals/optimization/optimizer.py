@@ -80,6 +80,7 @@ from .setup.budget import Budget, BudgetTracker
 from .setup.splits import Split
 
 _DEFAULT_BASE_DIR = Path(".strands-evals/optimization/runs")
+_BINDING = threading.Lock()  # one optimizer at a time checks and binds proposers, across threads
 
 
 class Optimizer:
@@ -140,7 +141,8 @@ class Optimizer:
             space: Declared name -> marker, for `build_task`.
             objective: What to maximize or minimize.
             constraints: Bounds every shipped candidate must meet; during the search they only rank.
-            search: Which proposer changes which variables; None means `Search()`.
+            search: Which proposer changes which variables; None means `Search()`. Its proposers serve this
+                optimizer only (see `Proposer`).
             selection: How the parent is chosen; None means `TopRanked()`.
             score_model: The statistical model of scores (not an LLM); None means `BayesBenchModel()`.
             final_pick: How many finalists go to validation and how the pick values them; None means
@@ -164,13 +166,16 @@ class Optimizer:
             on_iteration: Called with each finished iteration, after its `iteration_end` event; an `async def`
                 callback is awaited, on the optimizer's own event loop under `run()` (use `run_async()` for
                 a callback that awaits something bound to the caller's loop). An error it raises stops the run
-                there and reaches the caller, and `Optimizer.resume` continues from the next iteration.
+                there and reaches the caller, and `Optimizer.resume` continues from the next iteration (pass
+                it a new `Search` built the same way: this one's proposers are bound to this optimizer and may
+                hold the run's history).
 
         Raises:
             TypeError: Conflicting arguments, e.g. `factory` and `build_task` together.
             ValueError: No evaluators and no objective, case or evaluator names not unique, fewer than one
-                train or validation case, a bad `name`, or a budget below the baseline plus the end phase's
-                reserve. (Split shares not summing to 1 are rejected by `Split` itself.)
+                train or validation case, a bad `name`, a budget below the baseline plus the end phase's
+                reserve, or a proposer in `search` that another optimizer has run with. (Split shares not
+                summing to 1 are rejected by `Split` itself.)
         """
         if (factory is None) == (build_task is None):
             raise TypeError(
@@ -253,6 +258,8 @@ class Optimizer:
         self._case_split = self._split.assign(cases, run_seed=seed)
         self._search = search if search is not None else Search()
         self._blocks, self._schedule = self._search.resolve(self._space)
+        self._token = object()  # set on each proposer this optimizer binds (`Proposer._bound_to`)
+        self._bind_proposers(claim=False)
         self._selection = selection if selection is not None else TopRanked()
         self._score_model = score_model if score_model is not None else BayesBenchModel()
         self._final_pick = final_pick if final_pick is not None else FinalPick()
@@ -430,6 +437,7 @@ class Optimizer:
 
         Raises:
             RuntimeError: As `run_async`.
+            ValueError: As `run_async`.
         """
         return _run_in_thread(self.run_async)
 
@@ -445,6 +453,8 @@ class Optimizer:
                 metric has no value on any train case. A `stop` event with
                 reason `"setup"` is written first, and the message names the unmeasured cases or the
                 metric, the trial status counts, and the first error.
+            ValueError: Another optimizer has run with one of the search's proposers; checked before the run
+                directory is created or a `resume` event written, and again when binding them.
         """
         await self._start()
         resumed = self._resumed
@@ -459,8 +469,15 @@ class Optimizer:
         """Set up the run, score the baseline, and write the setup's fit (None: one eligible candidate).
 
         After `resume`, the state the event log holds is restored instead; with no closed iteration (killed
-        before the first ended) only the setup ran, so it runs again on cached trials.
+        before the first ended) only the setup ran, so it runs again on cached trials. The proposers are bound
+        to this optimizer once the baseline is scored (on resume, before the restore replays their history),
+        so a run that stops at setup leaves them free.
+
+        Raises:
+            ValueError: Another optimizer has run with one of the proposers; checked first, before the run
+                directory is created or a `resume` event written, and again when binding them.
         """
+        self._bind_proposers(claim=False)
         self._setup()
         self._propose_lock = asyncio.Lock()
         if self._resumed is not None:
@@ -474,9 +491,11 @@ class Optimizer:
                 code=code_version(),
             )
         if self._resumed is not None and self._resumed.candidates:
+            self._bind_proposers(claim=True)
             self._restore(self._resumed)
             return
         scores = await self._score_baseline()
+        self._bind_proposers(claim=True)
         self._init_state(self._baseline)
         if self._resumed is not None:  # killed in iteration 1: its proposers were already paid
             self._search_cost = self._resumed.search_cost
@@ -491,6 +510,30 @@ class Optimizer:
             candidate_id=self._baseline.id,
             label=label_candidate(scores, assessments.get(self._baseline.id), criteria=self._criteria),
         )
+
+    def _bind_proposers(self, *, claim: bool) -> None:
+        """Check that no other optimizer has run with this one's proposers; with `claim`, then bind them all to
+        this one.
+
+        A proposer may keep what it is told, so an instance serves one optimizer. Every block is checked before
+        any is bound, so a failed check binds none.
+
+        Raises:
+            ValueError: A block's proposer is bound to another optimizer.
+        """
+        with _BINDING:
+            for block, _ in self._blocks:
+                bound_to = block.proposer._bound_to
+                if bound_to is not None and bound_to is not self._token:
+                    kind = type(block.proposer).__name__
+                    raise ValueError(
+                        f"{kind} (block {_block_name(block)!r}) has already run in another Optimizer and may hold "
+                        f"that run's history; give each Optimizer its own proposers, e.g. a new Search with a new "
+                        f"{kind}() in this block (Optimizer.resume replays the run's history into them)"
+                    )
+            if claim:
+                for block, _ in self._blocks:
+                    object.__setattr__(block.proposer, "_bound_to", self._token)  # a frozen dataclass's too
 
     def _init_state(self, baseline: Candidate) -> None:
         """The search's state before anything is scored."""
@@ -1804,7 +1847,8 @@ class Optimizer:
             space: As in `__init__`; must match the run.
             objective: As in `__init__`; must match the run.
             constraints: As in `__init__`; must match the run.
-            search: As in `__init__`; must match the run.
+            search: As in `__init__`; must match the run, with proposers no other optimizer has run with
+                (after an in-process stop, build the `Search` again: the run's history is replayed into it).
             selection: As in `__init__`; must match the run.
             score_model: As in `__init__`; must match the run.
             environment: As in `__init__`.
@@ -1813,8 +1857,9 @@ class Optimizer:
             on_iteration: Called only for iterations run after the resume.
 
         Raises:
-            ValueError: The configuration differs from `run.json`, naming the field; or `budget` can't cover
-                what is already spent plus the validation reserve (when the pick hasn't run yet).
+            ValueError: The configuration differs from `run.json`, naming the field; a proposer in `search`
+                has already run in another optimizer; or `budget` can't cover what is already spent plus the
+                validation reserve (when the pick hasn't run yet).
             RuntimeError: The run stopped at setup (its baseline couldn't be a parent); start a new run.
         """
         run = RunDirectory.open(Path(run_dir))
