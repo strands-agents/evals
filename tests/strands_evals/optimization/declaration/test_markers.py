@@ -310,7 +310,7 @@ def test_choice_labels_default_to_class_names_in_order():
 
 def test_choice_keyword_labels_keep_their_order_and_reach_the_components():
     declared = choice(summary=component(OtherManager), window=component(Manager))
-    assert list(declared.alternatives) == ["summary", "window"]  # the first keyword is the baseline
+    assert list(declared.alternatives) == ["summary", "window"]  # without default=, the first keyword is the baseline
     assert [c.label for c in declared.alternatives.values()] == ["summary", "window"]
 
 
@@ -380,6 +380,25 @@ def test_choice_rejects_a_class_as_a_fixed_value():
 def test_choice_rejects_a_marker_as_a_fixed_value(marker):
     with pytest.raises(TypeError, match="component\\(...\\) or a fixed value"):
         choice(on=component(Manager), off=marker)
+
+
+def test_choice_default_names_the_baseline_and_keeps_the_declared_order():
+    declared = choice(on=component(Manager), off=None, default="off")
+    assert (list(declared.alternatives), declared.default) == (["on", "off"], "off")
+    positional = choice(component(Manager), component(OtherManager), default="OtherManager")
+    assert positional.default == "OtherManager"
+    assert choice(on=component(Manager), off=None).default is None
+
+
+def test_choice_rejects_a_default_that_is_not_a_label():
+    with pytest.raises(TypeError, match=r"must be one of the labels \['on', 'off'\]"):
+        choice(on=component(Manager), off=None, default="none")
+
+
+@pytest.mark.parametrize("alternative", [component(Manager), None], ids=["component", "none"])
+def test_choice_reserves_the_label_default(alternative):
+    with pytest.raises(TypeError, match="no alternative can be labeled 'default'"):
+        choice(other=component(OtherManager), default=alternative)
 
 
 # --- value markers ---

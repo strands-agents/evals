@@ -315,6 +315,21 @@ def test_a_choice_with_a_fixed_value_flattens_only_the_components_keys():
     assert space.complete({"plugin": "off"}) == {"plugin": "off"}
 
 
+def test_a_choices_default_is_the_baseline_and_keeps_the_option_order():
+    space = Space({"plugin": choice(on=component(Window, size=Int(1, 100)), off=None, default="off")})
+    assert (space.param("plugin").default, space.param("plugin").options) == ("off", ("on", "off"))
+    assert space.complete({}) == {"plugin": "off"}
+    assert space.resolve("plugin", space.complete({}), None) is None
+    assert space.complete({"plugin": "on"}) == {"plugin": "on", "plugin.on.size": 40}
+
+
+def test_a_default_listed_second_activates_its_sub_keys():
+    space = Space({"plugin": choice(off=None, on=component(Window, size=Int(1, 100)), default="on")})
+    assert space.is_active("plugin.on.size", {})
+    assert space.complete({}) == {"plugin": "on", "plugin.on.size": 40}
+    assert isinstance(space.resolve("plugin", space.complete({}), None), Window)
+
+
 def test_resolve_builds_a_fresh_component_or_passes_the_fixed_value():
     marker = {"mode": "dense"}
     space = Space({"plugin": choice(on=component(Window, size=Int(1, 100)), off=None, preset=marker)})

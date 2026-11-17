@@ -397,7 +397,8 @@ def _flatten(name: str, marker: Marker) -> list[ParamInfo]:
         return [_text(name, name, marker.default, marker.size_cap, marker.edit_instructions)]
     if isinstance(marker, Choice):
         labels = tuple(marker.alternatives)
-        infos = [ParamInfo(name, name, "choice", labels[0], options=labels)]
+        default = labels[0] if marker.default is None else marker.default
+        infos = [ParamInfo(name, name, "choice", default, options=labels)]
         for label, alternative in marker.alternatives.items():
             if isinstance(alternative, Component):
                 for arg, tunable in alternative.tunable.items():
