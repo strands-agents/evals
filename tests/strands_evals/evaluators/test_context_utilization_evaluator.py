@@ -4,10 +4,13 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from strands import Agent, tool
+from strands.models.model import Model
 from strands.types.exceptions import ContextWindowOverflowException, MaxTokensReachedException, ModelThrottledException
 from tenacity import wait_none
 
 from strands_evals import Case, Experiment
+from strands_evals.eval_task_handler import TracedHandler, eval_task
 from strands_evals.evaluators import ContextUtilizationEvaluator
 from strands_evals.evaluators.context_utilization_evaluator import (
     _JUDGE_RETRY_WAIT,
@@ -453,7 +456,8 @@ def test_repeated_assistant_replies_are_shown_and_counted_once(evaluation_data):
     assert assistant_reply_count == 1
 
 
-def test_a_second_request_and_sub_agent_tasks_in_one_trace_are_shown_where_made():
+def test_each_request_in_one_trace_is_a_turn_of_its_own():
+    # E.g. a conversation run inside Experiment's task span: every agent call shares one trace.
     spans = [
         _agent(0, "Fix the bug", "Fixed it."),
         _tool(1, "read", "bug is in a.py"),
@@ -461,13 +465,17 @@ def test_a_second_request_and_sub_agent_tasks_in_one_trace_are_shown_where_made(
         _agent(3, "Find the test helpers", "They are in conftest.py.", parent="tool-span"),
         _tool(4, "read", "conftest.py has make_client"),
     ]
+    case = _case(_session(spans))
 
-    prompt, _, _ = _render(ContextUtilizationEvaluator(measured_tools=MEASURED), _case(_session(spans)))
+    turns, _ = ContextUtilizationEvaluator(measured_tools=MEASURED)._render(case, case.actual_trajectory)
 
-    assert "<task>\nFix the bug\n</task>" in prompt
-    assert prompt.index("bug is in a.py") < prompt.index("[user] Now add a test") < prompt.index("conftest.py has")
-    assert "[sub-agent task] Find the test helpers" in prompt
-    assert "<final_response>\nAdded the test.\n</final_response>" in prompt
+    assert [turn.number for turn in turns] == [1, 2]
+    assert [[piece.uid for piece in turn.pieces] for turn in turns] == [["S1.1"], ["S2.1"]]
+    first, second = (turn.prompt for turn in turns)
+    assert "<task>\nFix the bug\n</task>" in first and "<final_response>\nFixed it.\n</final_response>" in first
+    assert "conftest.py has" not in first and "[later request 1] Now add a test\n[answer 1] Added the test." in first
+    assert "<task>\nNow add a test\n</task>" in second and "[sub-agent task] Find the test helpers" in second
+    assert "<final_response>\nAdded the test.\n</final_response>" in second
 
 
 def test_a_root_agent_with_a_parent_outside_the_trace_is_the_turn_request():
@@ -495,8 +503,9 @@ def test_two_requests_in_one_trace_with_a_shared_outside_parent_are_both_request
 
     prompt, _, _ = _render(ContextUtilizationEvaluator(), _case(_session(spans)))
 
-    assert "<task>\nFix the bug\n</task>" in prompt
-    assert "[user] Add a test" in prompt and "[sub-agent task] Find helpers" in prompt
+    # Only the first turn gathered anything; the second request is a later turn, not a sub-agent task.
+    assert "<task>\nFix the bug\n</task>" in prompt and "<final_response>\nFixed it.\n</final_response>" in prompt
+    assert "[later request 1] Add a test" in prompt and "[sub-agent task]" not in prompt
 
 
 def test_the_same_reply_in_two_turns_is_shown_in_each():
@@ -516,12 +525,13 @@ def test_the_same_reply_in_two_turns_is_shown_in_each():
     assert assistant_reply_count == 2
 
 
-def test_the_first_answer_is_shown_when_a_second_request_follows_in_one_trace():
+def test_the_first_answer_stays_with_its_turn_when_a_second_request_follows_in_one_trace():
     spans = [_agent(0, "Fix the bug", "Fixed it."), _tool(1, "read", "bug is in a.py"), _agent(2, "Add a test", "")]
 
     prompt, _, _ = _render(ContextUtilizationEvaluator(), _case(_session(spans)))
 
-    assert prompt.index("[answer] Fixed it.") < prompt.index("[user] Add a test")
+    assert "<final_response>\nFixed it.\n</final_response>" in prompt
+    assert "[later request 1] Add a test" in prompt
 
 
 def test_a_first_request_with_no_text_keeps_its_answer():
@@ -529,7 +539,8 @@ def test_a_first_request_with_no_text_keeps_its_answer():
 
     prompt, _, _ = _render(ContextUtilizationEvaluator(), _case(_session(spans)))
 
-    assert "[answer] Fixed it." in prompt and "<final_response>\nAdded it.\n</final_response>" in prompt
+    assert "<final_response>\nFixed it.\n</final_response>" in prompt
+    assert "[later request 1] Add a test\n[answer 1] Added it." in prompt
 
 
 def test_spans_with_naive_and_aware_timestamps_sort_together(evaluation_data):
@@ -763,6 +774,75 @@ def test_content_repeated_in_a_later_turn_is_useful_once(mock_agent_class):
         4,
     )
     assert result.score == pytest.approx(0.5)
+
+
+@tool
+def search_docs(query: str) -> str:
+    """Search the docs.
+
+    Args:
+        query: What to look for.
+    """
+    return f"docs about {query}"
+
+
+class _SearchThenAnswer(Model):
+    """Each agent call: one `search_docs` call, then a text answer."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def get_config(self):
+        return {}
+
+    def update_config(self, **model_config):
+        pass
+
+    async def structured_output(self, output_model, prompt, system_prompt=None, **kwargs):
+        raise NotImplementedError
+        yield
+
+    async def stream(self, messages, tool_specs=None, system_prompt=None, **kwargs):
+        self.calls += 1
+        yield {"messageStart": {"role": "assistant"}}
+        if self.calls % 2:
+            tool_use = {"name": "search_docs", "toolUseId": f"tu_{self.calls}"}
+            yield {"contentBlockStart": {"start": {"toolUse": tool_use}}}
+            yield {"contentBlockDelta": {"delta": {"toolUse": {"input": f'{{"query": "topic {self.calls}"}}'}}}}
+            yield {"contentBlockStop": {}}
+            yield {"messageStop": {"stopReason": "tool_use"}}
+        else:
+            yield {"contentBlockDelta": {"delta": {"text": f"Answer {self.calls // 2}."}}}
+            yield {"contentBlockStop": {}}
+            yield {"messageStop": {"stopReason": "end_turn"}}
+        usage = {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}
+        yield {"metadata": {"usage": usage, "metrics": {"latencyMs": 1}}}
+
+
+@patch(f"{MODULE}.Agent")
+def test_a_conversation_traced_under_experiment_is_judged_turn_by_turn(mock_agent_class):
+    # Real Strands spans: Experiment runs the task inside its task_execution span, so both agent calls
+    # share one trace, and StrandsInMemorySessionMapper (via TracedHandler) maps them to one Trace.
+    judge = AsyncMock(side_effect=[_verdict("S1.1"), _verdict("S2.1")])
+    mock_agent_class.return_value = Mock(invoke_async=judge)  # run_evaluations runs evaluate_async
+    agent = Agent(model=_SearchThenAnswer(), tools=[search_docs], callback_handler=None)
+
+    @eval_task(TracedHandler())
+    def task(case: Case):
+        agent("First question")
+        return str(agent("Second question"))
+
+    experiment = Experiment(cases=[Case(input="First question")], evaluators=[ContextUtilizationEvaluator()])
+    report = experiment.run_evaluations(task)
+
+    [result] = report.detailed_results[0] or pytest.fail(f"evaluator failed: {report.reasons}")
+    assert len(Session.model_validate(report.cases[0]["actual_trajectory"]).traces) == 1
+    assert result.metadata["judge_calls"] == 2
+    first, second = (call.args[0] for call in judge.call_args_list)
+    assert "<task>\nFirst question\n</task>" in first and "docs about topic 1" in first
+    assert "docs about topic 3" not in first and "[later request 1] Second question" in first
+    assert "<task>\nSecond question\n</task>" in second and "docs about topic 3" in second
+    assert result.metadata["useful_ids"] == ["S1.1", "S2.1"]
 
 
 @patch(f"{MODULE}.Agent")
