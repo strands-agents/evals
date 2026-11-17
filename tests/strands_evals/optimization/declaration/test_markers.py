@@ -80,6 +80,65 @@ def test_float_rejects_bad_declarations(make, match):
         make()
 
 
+def test_int_and_float_keep_their_step():
+    assert Int(256, 4096, default=512, step=256).step == 256
+    stepped = Float(0, 1, default=0.5, step=0.1)
+    assert stepped.step == 0.1 and type(stepped.step) is float
+    assert Float(0.05, 0.95, default=0.5, step=0.15).default == 0.5  # 0.05 + 3 * 0.15, as decimals
+    from_ints = Float(0, 10, default=4, step=2)
+    assert (from_ints.min_value, from_ints.max_value, from_ints.default, from_ints.step) == (0.0, 10.0, 4.0, 2.0)
+    assert all(type(v) is float for v in (from_ints.min_value, from_ints.max_value, from_ints.default, from_ints.step))
+    assert Int(1, 10).step is None and Float(0.0, 1.0).step is None
+
+
+def test_an_int_step_of_one_is_no_step():
+    assert Int(1, 9, step=1).step is None
+    assert Int(1, 64, step=1, log=True).log
+
+
+@pytest.mark.parametrize(
+    ("make", "match"),
+    [
+        (lambda: Int(0, 10, step=0), "step must be positive"),
+        (lambda: Int(0, 10, step=True), "step must be positive"),
+        (lambda: Int(0, 10, step=2.0), "step must be positive"),  # type: ignore[arg-type]
+        (lambda: Int(1, 64, step=2, log=True), "step= or log=True, not both"),
+        (lambda: Int(0, 10, step=3), "max_value 10 is not min_value=0 plus a multiple of step=3"),
+        (lambda: Int(0, 9, default=4, step=3), "default 4 is not"),
+        (lambda: Float(0.0, 1.0, step=-0.1), "step must be positive"),
+        (lambda: Float(0.0, 1.0, step=float("nan")), "step must be positive"),
+        (lambda: Float(0.1, 1.0, step=0.1, log=True), "step= or log=True, not both"),
+        (lambda: Float(0.0, 1.0, step=0.3), "max_value 1.0 is not"),
+        (lambda: Float(0.0, 1.0, default=0.25, step=0.1), "default 0.25 is not"),
+        # Declared values must be grid points themselves; a value near one names it.
+        (
+            lambda: Float(0.0, 1.0, default=3 * 0.1, step=0.1),
+            "default 0.30000000000000004 is not .* nearest point is 0.3$",
+        ),
+        (lambda: Float(0.0, 3 * 0.1, step=0.1), "max_value 0.30000000000000004 is not"),
+        (lambda: Float(0.0, 1.0, step=1 / 3), "max_value 1.0 is not .* nearest point is 0.9999999999999999$"),
+        # On the grid as ints, but 2**53 + 1 is stored as the float 2**53, which isn't.
+        (lambda: Float(0, 2**53 + 1, default=0, step=3), "max_value 9007199254740992.0 is not"),
+    ],
+)
+def test_a_bad_step_fails_at_declaration(make, match):
+    with pytest.raises(TypeError, match=match):
+        make()
+
+
+def test_filling_a_default_keeps_the_step_and_checks_the_grid():
+    assert Int(0, 100, step=10)._with_default(40).step == 10
+    assert Float(0.0, 1.0, step=0.1)._with_default(0.7).step == 0.1
+    with pytest.raises(TypeError, match="default 45 is not"):
+        Int(0, 100, step=10)._with_default(45)
+
+
+def test_component_checks_a_constructor_default_against_the_step():
+    assert component(Manager, window_size=Int(0, 96, step=8)).tunable["window_size"].default == 40
+    with pytest.raises(TypeError, match="doesn't fit its marker"):
+        component(Manager, window_size=Int(0, 100, step=25))
+
+
 # --- OneOf ---
 
 

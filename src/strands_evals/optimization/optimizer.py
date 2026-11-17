@@ -337,6 +337,7 @@ class Optimizer:
                 "min_value": info.min_value,
                 "max_value": info.max_value,
                 "log": info.log,
+                "step": info.step,
                 "options": None if info.options is None else list(info.options),
                 "size_cap": info.size_cap,
                 "edit_instructions": text(info.edit_instructions),

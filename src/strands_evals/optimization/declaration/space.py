@@ -26,7 +26,20 @@ from .files import (
     _outer_folders,
     _SkillFile,
 )
-from .markers import _UNSET, Choice, Component, Float, Int, OneOf, TextValue, _default_size_cap, _is_option, choice
+from .markers import (
+    _UNSET,
+    Choice,
+    Component,
+    Float,
+    Int,
+    OneOf,
+    TextValue,
+    _default_size_cap,
+    _grid_index,
+    _grid_value,
+    _is_option,
+    choice,
+)
 from .tools import ToolDescriptions
 
 Marker: TypeAlias = (
@@ -59,7 +72,8 @@ class ParamInfo:
     `component()` takes no nested markers. Text keys can't sit under a `choice()`, so theirs is
     always None.
 
-    `min_value` / `max_value` are the inclusive bounds of an `Int` / `Float`. Fields after `default`
+    `min_value` / `max_value` are the inclusive bounds of an `Int` / `Float`, and `step` its grid
+    (values `min_value + k * step`), or None for any value in the bounds. Fields after `default`
     default to None (`log` to False), so each kind sets only its own.
     """
 
@@ -70,6 +84,7 @@ class ParamInfo:
     min_value: float | None = None
     max_value: float | None = None
     log: bool = False
+    step: float | None = None
     options: tuple[Value, ...] | None = None
     size_cap: int | None = None
     edit_instructions: str | None = None
@@ -173,8 +188,10 @@ class Space:
 
         Keys are taken in declaration order, so a filled choice decides which of its sub-keys are
         active. Unknown keys are kept, so `validate` reports them instead of a typo vanishing. A
-        `Float` value of -0.0 becomes 0.0, and a non-string `JsonField` value is rewritten as its JSON
-        text is written to the file ("0.50" becomes "0.5"), so one agent gets one candidate id.
+        `Float` value of -0.0 becomes 0.0, a stepped `Float` value on its grid becomes the grid point
+        (0.30000000000000004 becomes 0.3; one off the grid is kept for `validate` to report), and a
+        non-string `JsonField` value is rewritten as its JSON text is written to the file ("0.50"
+        becomes "0.5"), so one agent gets one candidate id.
 
         Args:
             values: The candidate's values.
@@ -193,13 +210,20 @@ class Space:
             else:
                 filled = fill(key) if fill is not None else None
                 value = info.default if filled is None else filled[0]
-            # `+ 0.0` turns a Float's -0.0 into 0.0, whatever its source, so both get the same candidate id.
-            completed[key] = value + 0.0 if info.kind == "float" and type(value) is float else value
+            if info.kind == "float" and type(value) is float:
+                # Whatever its source, so equal values get the same candidate id: `+ 0.0` turns -0.0 into 0.0,
+                # and a stepped value on its grid becomes the grid point.
+                value += 0.0
+                if info.step is not None:
+                    low = cast(float, info.min_value)  # numbers always have bounds
+                    index = _grid_index(value, low, info.step)
+                    value = value if index is None else _grid_value(index, low, info.step)
+            completed[key] = value
         completed.update({key: value for key, value in values.items() if key not in self._params})
         return completed
 
     def validate(self, values: Values) -> None:
-        """Check bounds, size caps, formats, active keys, and that nothing is missing.
+        """Check bounds, steps, size caps, formats, active keys, and that nothing is missing.
 
         Types are strict, so equal candidates hash alike: `Int` takes an int (not a bool), `Float` a
         float (not an int), and `OneOf` compares type and value.
@@ -447,6 +471,7 @@ def _number(key: str, name: str, marker: Int | Float, active_when: tuple[str, st
         min_value=marker.min_value,
         max_value=marker.max_value,
         log=marker.log,
+        step=marker.step,
         active_when=active_when,
     )
 
@@ -500,6 +525,8 @@ def _check_value(info: ParamInfo, value: Any) -> str | None:
             return f"{key}: expected {expected.__name__}, got {value!r}"
         if not cast(float, info.min_value) <= value <= cast(float, info.max_value):  # numbers always have bounds
             return f"{key}: {value!r} is outside [{info.min_value!r}, {info.max_value!r}]"
+        if info.step is not None and _grid_index(value, cast(float, info.min_value), info.step) is None:
+            return f"{key}: {value!r} is not min_value={info.min_value!r} plus a multiple of step={info.step!r}"
         return None
     if info.kind in ("one_of", "choice"):
         if not _is_option(value, info.options or ()):

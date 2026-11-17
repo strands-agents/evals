@@ -115,6 +115,16 @@ def test_child_applies_updates_and_keeps_the_rest():
     assert child.inherited == {} and child.defaulted == ()
 
 
+def test_a_stepped_value_near_a_grid_point_is_that_points_candidate():
+    space = Space({"temperature": Float(0.0, 1.0, default=0.3, step=0.1)})
+    baseline = Candidate.baseline(space)
+    near = baseline.child(space, {"temperature": 3 * 0.1}, origin=["numbers"], rationale="")  # 0.30000000000000004
+    assert near.id == baseline.id
+    assert baseline.child(space, {"temperature": 7 * 0.1}, origin=["numbers"], rationale="").values == {
+        "temperature": 0.7
+    }
+
+
 def test_a_changed_choice_drops_old_keys_and_defaults_new_ones():
     space = make_space()
     child = Candidate.baseline(space).child(space, {"manager": "Summary"}, origin=["structure"], rationale="")
