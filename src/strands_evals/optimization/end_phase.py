@@ -1,5 +1,7 @@
 """The end phase decides, once: finalists from the search ranking, the pick on validation, the test report.
 
+`pool_tests` pools the test reports of a rotation's folds.
+
 Imports only `scoring` and `score_model`, never `search` or `selection`: the search proposes, this decides.
 """
 
@@ -13,7 +15,7 @@ from typing import Any
 
 from scipy import stats
 
-from ..types.optimization import CandidateScores, PairedComparison, ValidationReport, Values
+from ..types.optimization import CandidateScores, PairedComparison, PooledTest, TestReport, ValidationReport, Values
 from .score_model.protocols import Fit
 from .score_model.ranking import LowerBound, Mean, PickRule, assess, label_candidate, pareto_front, rank
 from .scoring.objectives import Criteria, measured_metrics
@@ -237,6 +239,114 @@ def paired_ratio(
     return PairedComparison(mean_diff=ratio, ci_low=ratio - half, ci_high=ratio + half, n_cases=n)
 
 
+def paired_differences(candidate: Mapping[str, float], reference: Mapping[str, float]) -> dict[str, float]:
+    """Case name -> candidate - reference, over the cases both measured (the differences `paired_interval`
+    summarizes), sorted by case name.
+
+    Raises:
+        ValueError: A shared case's mean is NaN or infinite.
+    """
+    cases = _shared_cases(candidate, reference, caller="paired_differences")
+    return {c: candidate[c] - reference[c] for c in cases}
+
+
+def pool_tests(
+    reports: Sequence[TestReport],
+    *,
+    train_sizes: Sequence[int],
+    level: float = TEST_LEVEL,
+) -> PooledTest:
+    """Pool the test reports of a rotation's folds over every fold's test cases (see `PooledTest`).
+
+    Args:
+        reports: One per fold, every one against the same baseline; the folds test disjoint cases.
+        train_sizes: Per fold, the number of cases its search and pick saw (train + validation), for the
+            procedure interval.
+        level: Two-sided interval level.
+
+    Returns:
+        The pooled objective and goal-metric differences, each with its procedure interval when there are
+        2 or more folds.
+
+    Raises:
+        ValueError: No reports; `train_sizes` of another length or with a size below 1; reports against
+            different baselines; a report without its per-case differences; a case in more than one report.
+    """
+    if not reports:
+        raise ValueError("pool_tests: no test reports to pool")
+    if len(train_sizes) != len(reports) or any(n < 1 for n in train_sizes):
+        raise ValueError(
+            f"pool_tests: give one train size of at least 1 per report; got {list(train_sizes)} for "
+            f"{len(reports)} reports"
+        )
+    baselines = sorted({r.baseline_id for r in reports})
+    if len(baselines) > 1:
+        raise ValueError(f"pool_tests: the reports compare with different baselines: {baselines}")
+    for i, r in enumerate(reports, 1):
+        lacking = [
+            m for m, compared in r.difference.items() if len(r.difference_by_case.get(m, {})) != compared.n_cases
+        ]
+        if r.objective is not None and len(r.objective_difference_by_case) != r.objective.n_cases:
+            lacking.insert(0, "the objective")
+        if lacking:
+            raise ValueError(f"pool_tests: report {i} has no per-case differences for {', '.join(lacking)}")
+    folds_of: dict[str, int] = {}
+    twice: set[str] = set()
+    for i, r in enumerate(reports):
+        cases = {*r.objective_difference_by_case, *(c for by_case in r.difference_by_case.values() for c in by_case)}
+        for case in cases:
+            if folds_of.setdefault(case, i) != i:
+                twice.add(case)
+    if twice:
+        raise ValueError(f"pool_tests: cases in more than one report: {sorted(twice)}; each fold tests its own cases")
+
+    objective, objective_procedure = None, None
+    if all(r.objective is not None for r in reports):
+        objective, objective_procedure = _pooled(
+            [list(r.objective_difference_by_case.values()) for r in reports], train_sizes, level
+        )
+    difference, procedure = {}, {}
+    for metric in reports[0].difference:
+        if all(metric in r.difference for r in reports):
+            pooled, across = _pooled([list(r.difference_by_case[metric].values()) for r in reports], train_sizes, level)
+            difference[metric] = pooled
+            if across is not None:
+                procedure[metric] = across
+    return PooledTest(
+        n_folds=len(reports),
+        objective=objective,
+        objective_procedure=objective_procedure,
+        difference=difference,
+        procedure=procedure,
+    )
+
+
+def _pooled(
+    per_fold: Sequence[Sequence[float]], train_sizes: Sequence[int], level: float
+) -> tuple[PairedComparison, PairedComparison | None]:
+    """One quantity's per-case differences, one list per fold (none empty), pooled: the stratified difference,
+    and the procedure interval (None with one fold)."""
+    k = len(per_fold)
+    n = sum(len(d) for d in per_fold)
+    mean = sum(sum(d) for d in per_fold) / n
+    if any(len(d) < 2 for d in per_fold):
+        difference = PairedComparison(mean_diff=mean, ci_low=None, ci_high=None, n_cases=n)
+    else:
+        terms = [(len(d) / n) ** 2 * statistics.variance(d) / len(d) for d in per_fold]
+        variance = sum(terms)
+        half = 0.0
+        if variance > 0:
+            df = variance**2 / sum(t * t / (len(d) - 1) for t, d in zip(terms, per_fold, strict=True))
+            half = _t_quantile(level, df) * math.sqrt(variance)
+        difference = PairedComparison(mean_diff=mean, ci_low=mean - half, ci_high=mean + half, n_cases=n)
+    if k < 2:
+        return difference, None
+    estimates = [statistics.fmean(d) for d in per_fold]
+    test_to_train = statistics.fmean(len(d) / size for d, size in zip(per_fold, train_sizes, strict=True))
+    half = _t_quantile(level, k - 1) * math.sqrt((1 / k + test_to_train) * statistics.variance(estimates))
+    return difference, PairedComparison(mean_diff=mean, ci_low=mean - half, ci_high=mean + half, n_cases=n)
+
+
 def _shared_cases(candidate: Mapping[str, float], reference: Mapping[str, float], *, caller: str) -> list[str]:
     """The cases both measured, sorted by name; `ValueError` naming `caller` when a shared mean isn't finite."""
     cases = sorted(set(candidate) & set(reference))
@@ -246,6 +356,6 @@ def _shared_cases(candidate: Mapping[str, float], reference: Mapping[str, float]
     return cases
 
 
-def _t_quantile(level: float, df: int) -> float:
-    """The two-sided `level` quantile of Student's t with `df` degrees of freedom."""
+def _t_quantile(level: float, df: float) -> float:
+    """The two-sided `level` quantile of Student's t with `df` degrees of freedom (not necessarily whole)."""
     return float(stats.t.ppf(0.5 + level / 2, df))

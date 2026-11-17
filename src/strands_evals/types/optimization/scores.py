@@ -108,7 +108,7 @@ class PairedComparison(BaseModel):
     """A paired t-interval on the cases both candidates measured (candidate - reference).
 
     For a ratio, `mean_diff` holds the ratio of means. `ci_low` / `ci_high` are None with one shared case
-    (no interval from one difference).
+    (no interval from one difference); in a `PooledTest`, also when some fold has one shared case.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -195,6 +195,10 @@ class TestReport(BaseModel):
             test case measured by both is left out, as in `difference`.
         missing: Candidate id -> number of test cases with no counted run (left out).
         means: Champion and baseline -> every metric measured on test.
+        objective_difference_by_case: Case name -> champion - baseline objective, over the cases `objective`
+            covers; what `pool_tests` pools. Empty in a report saved without it, which `pool_tests` refuses.
+        difference_by_case: Per goal metric in `difference`, case name -> champion - baseline, over the cases
+            it covers; what `pool_tests` pools. Empty in a report saved without it, which `pool_tests` refuses.
     """
 
     __test__ = False  # not a pytest test class
@@ -208,3 +212,47 @@ class TestReport(BaseModel):
     ratio: dict[str, PairedComparison | None]
     missing: dict[str, int]
     means: dict[str, dict[str, Measured]]
+    objective_difference_by_case: dict[str, float] = {}
+    difference_by_case: dict[str, dict[str, float]] = {}
+
+
+class PooledTest(BaseModel):
+    """Every fold's test report pooled, so its numbers cover every case once (`pool_tests`); report only.
+
+    Each fold compares its champion with the baseline on its own test cases, which no part of that fold's
+    search or pick saw. The per-case differences of every fold are pooled into one mean, every case weighted
+    equally, with two intervals that answer different questions:
+
+    - `difference` (and `objective`): what these folds' champions gained over the baseline. Each fold is a
+      stratum: the variance is `sum_k (n_k / N)^2 s_k^2 / n_k` over the folds' per-case differences, with
+      Welch-Satterthwaite degrees of freedom (`N - k` when the folds have equal sizes and variances). No
+      interval when some fold has fewer than 2 cases; a zero-width one when every difference is equal within
+      its fold, as when every fold ships the baseline.
+    - `procedure` (and `objective_procedure`): what running the optimizer gains, counting that each fold ships
+      a different champion. The variance of the folds' mean differences, corrected for their overlapping
+      training cases (Nadeau and Bengio, 2003): `(1 / k + mean_k(n_test_k / n_train_k)) S^2`, with `k - 1`
+      degrees of freedom. An approximation for k folds, and usually much wider: at the 90% level and k = 4,
+      where `n_test / n_train` is about 1/3, the half-width is about 1.8 x the spread `S` of the folds' means. It
+      has zero width when every fold's mean difference is the same, as when every fold ships the baseline,
+      which with few folds says little.
+
+    The variance of `procedure` is over the folds' unweighted means, while its center is the case-weighted
+    mean; the two agree when the folds have equal sizes. Each fold contributes the cases its `TestReport`
+    compared (a case without a counted run of both arms is left out there), and a metric is pooled only when
+    every fold measured it. Ratios are not pooled.
+
+    Attributes:
+        n_folds: How many test reports were pooled.
+        objective: The objective's pooled difference; None when some fold has none.
+        objective_procedure: The objective's procedure interval; None with one fold or when `objective` is None.
+        difference: Per goal metric, the pooled difference; `n_cases` counts every fold's cases.
+        procedure: Per goal metric in `difference`, the procedure interval; empty with one fold.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    n_folds: int
+    objective: PairedComparison | None
+    objective_procedure: PairedComparison | None
+    difference: dict[str, PairedComparison]
+    procedure: dict[str, PairedComparison]

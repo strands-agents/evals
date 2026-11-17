@@ -1,8 +1,11 @@
 import math
 
 import pytest
+from scipy import stats
 
-from strands_evals.optimization.end_phase import TEST_LEVEL, paired_interval, paired_ratio
+from strands_evals.optimization import pool_tests
+from strands_evals.optimization.end_phase import TEST_LEVEL, paired_differences, paired_interval, paired_ratio
+from strands_evals.types.optimization import TestReport
 
 CANDIDATE = {"a": 0.9, "b": 0.7, "c": 0.8, "d": 0.6, "only-candidate": 0.0}
 REFERENCE = {"a": 0.5, "b": 0.6, "c": 0.4, "d": 0.6, "only-reference": 1.0}
@@ -311,3 +314,128 @@ def test_pick_with_no_finalist_ships_the_baseline():
     )
     assert report.champion_id == "0"
     assert report.reason.startswith("no finalist from the search")
+
+
+# ---- pool_tests: a rotation's test reports pooled --------------------------------------------------------
+
+FOLD_A = {"a": 0.2, "b": 0.5, "c": -0.1}
+FOLD_B = {"d": 0.4, "e": 0.0, "f": 0.3, "g": 0.6}
+
+
+def _report(by_case, *, objective=None, baseline="base", metrics=("m",)):
+    """A test report whose goal metrics (and objective, unless given) have the per-case differences `by_case`."""
+    objective = by_case if objective is None else objective
+    compared = paired_interval(by_case, dict.fromkeys(by_case, 0.0), level=TEST_LEVEL)
+    return TestReport(
+        champion_id="champion",
+        baseline_id=baseline,
+        objective=paired_interval(objective, dict.fromkeys(objective, 0.0), level=TEST_LEVEL),
+        difference=dict.fromkeys(metrics, compared),
+        ratio=dict.fromkeys(metrics),
+        missing={},
+        means={},
+        objective_difference_by_case=dict(objective),
+        difference_by_case={m: dict(by_case) for m in metrics},
+    )
+
+
+def _interval(compared):
+    return (compared.mean_diff, compared.ci_low, compared.ci_high, compared.n_cases)
+
+
+def test_paired_differences_are_what_paired_interval_summarizes():
+    differences = paired_differences(CANDIDATE, REFERENCE)
+    assert list(differences) == ["a", "b", "c", "d"]
+    compared = paired_interval(CANDIDATE, REFERENCE, level=TEST_LEVEL)
+    assert len(differences) == compared.n_cases
+    assert sum(differences.values()) / len(differences) == pytest.approx(compared.mean_diff)
+
+
+def test_the_pooled_difference_is_stratified_by_fold_with_welch_satterthwaite_df():
+    # expected from numpy / scipy: var = sum_k (n_k/N)^2 s_k^2 / n_k, df = var^2 / sum_k (term_k^2 / (n_k - 1))
+    # (4.72 here), half-width t(0.95, df) sqrt(var); the mean is over all 7 cases
+    pooled = pool_tests([_report(FOLD_A), _report(FOLD_B)], train_sizes=[4, 3])
+    assert pooled.n_folds == 2
+    mean, low, high, n = _interval(pooled.difference["m"])
+    assert (mean, n) == (pytest.approx(1.9 / 7), 7)
+    assert (low, high) == (pytest.approx(0.061099645697712396), pytest.approx(0.4817574971594304))
+    assert pooled.objective == pooled.difference["m"]
+
+
+def test_the_procedure_interval_is_the_corrected_variance_of_the_fold_means():
+    # expected from numpy / scipy: S^2 = var([0.2, 0.325]), (1/2 + mean(3/4, 4/3)) S^2, t(0.95, 1); centered on
+    # the pooled mean
+    pooled = pool_tests([_report(FOLD_A), _report(FOLD_B)], train_sizes=[4, 3])
+    mean, low, high, n = _interval(pooled.procedure["m"])
+    assert (mean, n) == (pytest.approx(1.9 / 7), 7)
+    assert (low, high) == (pytest.approx(-0.4214828852398212), pytest.approx(0.9643400280969641))
+    assert pooled.objective_procedure == pooled.procedure["m"]
+    assert pooled.procedure["m"].ci_low < pooled.difference["m"].ci_low
+
+
+def test_folds_of_equal_size_and_variance_give_n_minus_k_df():
+    pooled = pool_tests(
+        [_report({"a": 0.1, "b": 0.2, "c": 0.3}), _report({"d": 0.4, "e": 0.5, "f": 0.6})], train_sizes=[3, 3]
+    )
+    half = stats.t.ppf(0.95, 6 - 2) * math.sqrt(2 * (3 / 6) ** 2 * 0.01 / 3)
+    assert pooled.difference["m"].ci_high - pooled.difference["m"].mean_diff == pytest.approx(half)
+
+
+def test_a_wider_level_gives_wider_pooled_intervals():
+    reports = [_report(FOLD_A), _report(FOLD_B)]
+    narrow = pool_tests(reports, train_sizes=[4, 3], level=0.5)
+    wide = pool_tests(reports, train_sizes=[4, 3], level=0.99)
+    for kind in ("difference", "procedure"):
+        a, b = getattr(narrow, kind)["m"], getattr(wide, kind)["m"]
+        assert b.ci_low < a.ci_low < a.ci_high < b.ci_high
+
+
+def test_one_fold_pools_to_its_own_difference_and_no_procedure():
+    report = _report(FOLD_B)
+    pooled = pool_tests([report], train_sizes=[3])
+    assert _interval(pooled.difference["m"]) == pytest.approx(_interval(report.difference["m"]))
+    assert pooled.procedure == {} and pooled.objective_procedure is None
+
+
+def test_folds_that_all_ship_the_baseline_pool_to_exactly_0():
+    pooled = pool_tests([_report(dict.fromkeys("abc", 0.0)), _report(dict.fromkeys("de", 0.0))], train_sizes=[2, 3])
+    assert _interval(pooled.difference["m"]) == (0.0, 0.0, 0.0, 5)
+    assert _interval(pooled.procedure["m"]) == (0.0, 0.0, 0.0, 5)
+
+
+def test_a_fold_with_one_case_gives_no_difference_interval_but_a_procedure_one():
+    pooled = pool_tests([_report({"a": 0.3}), _report({"b": 0.1, "c": 0.2})], train_sizes=[2, 1])
+    assert _interval(pooled.difference["m"]) == (pytest.approx(0.2), None, None, 3)
+    assert pooled.procedure["m"].ci_low is not None
+
+
+def test_a_metric_or_objective_missing_from_a_fold_is_left_out():
+    first = _report(FOLD_A, metrics=("m", "only-first"))
+    second = _report(FOLD_B).model_copy(update={"objective": None, "objective_difference_by_case": {}})
+    pooled = pool_tests([first, second], train_sizes=[4, 3])
+    assert set(pooled.difference) == set(pooled.procedure) == {"m"}
+    assert pooled.objective is None and pooled.objective_procedure is None
+
+
+@pytest.mark.parametrize(
+    ("reports", "sizes", "match"),
+    [
+        ([], [], "no test reports"),
+        ([_report(FOLD_A)], [4, 3], "one train size of at least 1 per report"),
+        ([_report(FOLD_A)], [0], "one train size of at least 1 per report"),
+        ([_report(FOLD_A), _report(FOLD_B, baseline="other")], [4, 3], r"different baselines: \['base', 'other'\]"),
+        ([_report(FOLD_A), _report({"c": 0.1, "d": 0.2})], [4, 3], r"more than one report: \['c'\]"),
+    ],
+)
+def test_pool_tests_rejects_reports_it_cant_pool(reports, sizes, match):
+    with pytest.raises(ValueError, match=match):
+        pool_tests(reports, train_sizes=sizes)
+
+
+def test_a_saved_report_without_per_case_differences_loads_but_cant_be_pooled():
+    saved = _report(FOLD_A).model_dump(mode="json")
+    del saved["objective_difference_by_case"], saved["difference_by_case"]
+    report = TestReport.model_validate(saved)
+    assert report.objective_difference_by_case == {} and report.difference_by_case == {}
+    with pytest.raises(ValueError, match="report 1 has no per-case differences for the objective, m"):
+        pool_tests([report, _report(FOLD_B)], train_sizes=[4, 3])
