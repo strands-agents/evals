@@ -12,6 +12,7 @@ from pathlib import Path
 
 import botocore.exceptions
 import pytest
+from strands import Agent
 
 from strands_evals import Case
 from strands_evals.evaluators import Evaluator
@@ -61,6 +62,8 @@ from strands_evals.optimization.search.blocks import _saved
 from strands_evals.optimization.selection.top_ranked import TopRanked
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
 from strands_evals.types.optimization import CaseSplit, Estimate, TrialRecord, TrialStatus
+from strands_evals.types.trace import InferenceSpan, Session
+from tests.strands_evals.optimization.scripted_model import ScriptedModel
 
 
 class Score(Evaluator):
@@ -2999,6 +3002,100 @@ async def test_reports_match_experiment_for_a_case_it_failed_on_after_the_task_r
         expected.reasons,
     )
     assert [{k: v for k, v in row.items() if k != "run_index"} for row in report.cases] == expected.cases
+
+
+async def _listing_rollout(agent_factory, case):
+    """Returns its own trajectory, the case and the temperature, so where it is read back can be checked."""
+    _, temperature = agent_factory()
+    return {"output": str(temperature), "trajectory": [case.name, str(temperature)]}
+
+
+async def _agent_rollout(agent_factory, case):
+    """A real agent on a scripted model that answers with the temperature, so each trial has a `Session`."""
+    _, temperature = agent_factory()
+    agent = Agent(model=ScriptedModel([str(temperature)]), callback_handler=None)
+    return str(await agent.invoke_async(case.input)).strip()
+
+
+def _texts(session):
+    """The text of each message the session's last model call was sent or answered."""
+    last = [s for t in session.traces for s in t.spans if isinstance(s, InferenceSpan)][-1]
+    return [block.text for message in last.messages for block in message.content]
+
+
+def _two_step_optimizer(proposer, base_dir, rollout_fn=_listing_rollout):
+    return _optimizer(
+        _experiment(evaluators=[Temperature()]),
+        rollout_fn=rollout_fn,
+        search=Search([Block(proposer, "temperature"), Block(Scripted(), "manager")], schedule=Joint()),
+        budget=Budget(max_iterations=2),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=base_dir,
+    )
+
+
+def _assert_parents_trajectories(requests, train):
+    assert requests
+    for request in requests:
+        temperature = str(request.parent.values["temperature"])
+        assert sorted(t.case_name for t in request.trials) == sorted(train)
+        assert all(t.trajectory == [t.case_name, temperature] for t in request.trials)
+
+
+async def test_trial_records_drop_their_trajectories_and_proposers_read_the_parents_back(tmp_path):
+    proposer = Scripted({"temperature": 0.5}, {"temperature": 1.0})
+    optimizer = _two_step_optimizer(proposer, tmp_path, rollout_fn=_agent_rollout)
+    result = await optimizer.run_async()
+
+    assert all(r.trajectory is None for records in optimizer._records.values() for r in records.values())
+    inputs = {case.name: case.input for case in optimizer._cases}
+    assert proposer.requests
+    for request in proposer.requests:
+        temperature = str(request.parent.values["temperature"])
+        assert sorted(t.case_name for t in request.trials) == sorted(optimizer._case_split.train)
+        assert all(_texts(t.trajectory) == [inputs[t.case_name], temperature] for t in request.trials)
+    # The reports still show each trial's session.
+    rows = result.reports[result.best.id]["test"].cases
+    assert rows and all(_texts(Session.model_validate(r["actual_trajectory"])) == [r["input"], "1.0"] for r in rows)
+
+
+async def test_resume_reads_no_transcript_and_proposers_still_get_the_parents(tmp_path, monkeypatch):
+    original = _two_step_optimizer(Scripted({"temperature": 0.5}, {"temperature": 1.0}), tmp_path / "runs")
+    await original.run_async()
+    # Killed before the second iteration's `draw` event, so the resumed run asks its proposers again instead of
+    # replaying what the killed attempt drew.
+    copy = _killed(
+        original._run.root, tmp_path, lambda events: _index(events, "draw", after=_index(events, "iteration_end")) - 1
+    )
+    # The killed iteration also replaced one of its parent's train trials: the resumed run's proposers must still
+    # get the trial the closed iterations left, not the replacement the run directory's index now holds.
+    events = _events_at(copy)
+    parent = original._iterations[1].parent_id
+    first = next(e for e in events if e["event"] == "trial" and e["record"]["candidate_id"] == parent)
+    (copy / "transcripts" / "0123456789abcdef.json").write_text('["replaced"]')
+    replaced = {**first["record"], "transcript": {"hash": "0123456789abcdef", "format": "list"}}
+    with (copy / "events.jsonl").open("a") as log:
+        log.write(json.dumps({**first, "iteration": 2, "record": replaced}) + "\n")
+    proposer = Scripted({"temperature": 1.0})
+    resumed = Optimizer.resume(
+        copy,
+        experiment=_experiment(evaluators=[Temperature()]),
+        factory=create_agent,
+        rollout_fn=_listing_rollout,
+        search=Search([Block(proposer, "temperature"), Block(Scripted(), "manager")], schedule=Joint()),
+    )
+    read = []
+    load_transcript = resumed._run.load_transcript
+    monkeypatch.setattr(resumed._run, "load_transcript", lambda t: read.append(t) or load_transcript(t))
+
+    await resumed._start()
+    assert read == [] and len(resumed._records) == 2
+    assert all(r.trajectory is None for records in resumed._records.values() for r in records.values())
+    await resumed._run_search()
+    # The parent's train trials are read once, for the resumed iteration's one draw.
+    assert sum(t in resumed._transcripts[parent].values() for t in read) == len(resumed._case_split.train)
+    _assert_parents_trajectories(proposer.requests, resumed._case_split.train)
 
 
 async def test_the_result_reloads_whole_without_the_run_folder_and_summarizes(tmp_path):
