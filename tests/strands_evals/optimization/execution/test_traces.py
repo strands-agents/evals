@@ -3,8 +3,10 @@ from contextlib import contextmanager
 import opentelemetry.trace as trace_api
 import pytest
 from opentelemetry.context import Context
-from strands import Agent
+from opentelemetry.trace import StatusCode
+from strands import Agent, ModelRetryStrategy
 from strands.telemetry.tracer import get_tracer as strands_tracer
+from strands.types.exceptions import ModelThrottledException
 
 from strands_evals.optimization.execution.traces import (
     _FILTERS,
@@ -54,6 +56,16 @@ def _chat(tracer, *, total=15, output=5, model="model-a", **extra):
         attributes["gen_ai.request.model"] = model
     with tracer.start_as_current_span("chat", attributes=attributes):
         pass
+
+
+def _failed_chat(tracer, *, model="failed-model", **extra):
+    """A `chat` span as Strands ends a call that raised: ERROR with the exception recorded, and no usage
+    attributes unless `extra` adds some."""
+    attributes = {"gen_ai.operation.name": "chat", "gen_ai.request.model": model, **extra}
+    with tracer.start_as_current_span("chat", attributes=attributes) as span:
+        error = ModelThrottledException("Too many requests")
+        span.set_status(StatusCode.ERROR, str(error))
+        span.record_exception(error)
 
 
 def _attempt(tracer):
@@ -173,6 +185,66 @@ def test_spans_without_a_model_id_add_no_model(traces, tracer):
     assert usage.models == []
 
 
+def test_calls_that_raised_without_usage_add_nothing(traces, tracer):
+    with _trial(tracer, traces) as trace_id:
+        with _attempt(tracer) as throttled:
+            _failed_chat(tracer)
+            _failed_chat(tracer)
+        with _attempt(tracer) as last:
+            _failed_chat(tracer, model="failed-model")
+            _chat(tracer, total=15, output=5, model="model-a")
+
+    throttled_usage, last_usage = traces.usage(trace_id, _ids(throttled)[1]), traces.usage(trace_id, _ids(last)[1])
+
+    assert (throttled_usage.model_calls, throttled_usage.tokens, throttled_usage.models) == (0, 0, [])
+    assert last_usage.model_calls == 1
+    assert (last_usage.tokens, last_usage.output_tokens) == (15, 5)
+    assert last_usage.models == ["model-a"]
+
+
+def test_calls_that_returned_without_usage_still_count(traces, tracer):
+    with _trial(tracer, traces) as trace_id:
+        with _attempt(tracer) as attempt:
+            with tracer.start_as_current_span("chat", attributes={"gen_ai.operation.name": "chat"}):
+                pass
+
+    usage = traces.usage(trace_id, _ids(attempt)[1])
+
+    assert (usage.model_calls, usage.tokens) == (1, 0)
+
+
+def test_calls_that_raised_after_reporting_usage_still_count(traces, tracer):
+    with _trial(tracer, traces) as trace_id:
+        with _attempt(tracer) as attempt:
+            _failed_chat(tracer, **{"gen_ai.usage.total_tokens": 0})
+            _failed_chat(tracer, **{"gen_ai.usage.output_tokens": 7})
+
+    usage = traces.usage(trace_id, _ids(attempt)[1])
+
+    assert usage.model_calls == 2
+    assert usage.output_tokens == 7
+
+
+async def test_throttled_retries_are_not_model_calls(traces, tracer):
+    throttled = ModelThrottledException("Too many requests")
+    model = ScriptedModel([throttled, throttled, "hello there"])
+    agent = Agent(
+        model=model,
+        callback_handler=None,
+        retry_strategy=ModelRetryStrategy(max_attempts=3, initial_delay=0, max_delay=0),
+    )
+    with _trial(tracer, traces) as trace_id:
+        with _attempt(tracer) as attempt:
+            await agent.invoke_async("hi")
+
+    usage = traces.usage(trace_id, _ids(attempt)[1])
+
+    assert model.calls == 3
+    assert usage.model_calls == 1
+    assert usage.tokens == 15
+    assert usage.models == ["scripted-model"]
+
+
 def test_seconds_come_from_the_rollout_span(traces, tracer):
     with _trial(tracer, traces) as trace_id:
         with _timed(tracer, "attempt case", 100.0, 110.0, **{SPAN_KIND: ATTEMPT_SPAN}) as attempt:
@@ -246,6 +318,7 @@ def test_evaluator_view_reads_judge_usage_errors_and_labels(traces, tracer):
             201.0,
             **{"gen_ai.evaluation.name": "Helpfulness", "gen_ai.evaluation.score.label": "Very helpful"},
         ):
+            _failed_chat(tracer, model="throttled-judge-model")
             _chat(tracer, total=30, output=3, model="judge-model")
         with pytest.raises(ConnectionError):
             with _timed(tracer, "evaluator Broken", 201.0, 202.5, **{"gen_ai.evaluation.name": "Broken"}):

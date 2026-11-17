@@ -216,6 +216,10 @@ def _attempt_seconds(spans: Sequence[ReadableSpan], subtree: Sequence[ReadableSp
     return 0.0
 
 
+# The token counts `_usage` reads; a `chat` span with none of them reported no usage.
+_TOKEN_COUNT_ATTRIBUTES = ("gen_ai.usage.total_tokens", "gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens")
+
+
 def _int_attribute(attributes: Any, *names: str) -> int | None:
     """The first of `names` present, as an int; None when none is."""
     for name in names:
@@ -226,11 +230,18 @@ def _int_attribute(attributes: Any, *names: str) -> int | None:
 
 
 def _usage(spans: Sequence[ReadableSpan], seconds: float) -> Usage:
-    """Usage summed over the `chat` spans: never `invoke_agent` spans, which carry running totals."""
+    """Usage summed over the `chat` spans: never `invoke_agent` spans, which carry running totals.
+
+    A `chat` span that ended in ERROR with no token counts is a call that raised (throttled or failed)
+    and adds nothing, not even a model call.
+    """
     usage = Usage.zero().model_copy(update={"seconds": seconds})
     for span in spans:
         attributes = span.attributes or {}
         if attributes.get("gen_ai.operation.name") != "chat":
+            continue
+        reported = any(name in attributes for name in _TOKEN_COUNT_ATTRIBUTES)
+        if span.status.status_code is StatusCode.ERROR and not reported:
             continue
         output_tokens = _int_attribute(attributes, "gen_ai.usage.output_tokens") or 0
         tokens = _int_attribute(attributes, "gen_ai.usage.total_tokens")
