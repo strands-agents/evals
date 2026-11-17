@@ -2,7 +2,7 @@ import json
 import os
 import re
 import stat
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -11,7 +11,22 @@ from strands_evals.optimization.record import run_directory as run_directory_mod
 from strands_evals.optimization.record.run_directory import SCHEMA_VERSION, RunDirectory
 from strands_evals.types.evaluation import EvaluationOutput
 from strands_evals.types.optimization import AttemptRecord, TrialRecord, TrialStatus, Usage
-from strands_evals.types.trace import Session
+from strands_evals.types.trace import (
+    AgentInvocationSpan,
+    AssistantMessage,
+    InferenceSpan,
+    Session,
+    SpanInfo,
+    TextContent,
+    ToolCall,
+    ToolCallContent,
+    ToolConfig,
+    ToolExecutionSpan,
+    ToolResult,
+    ToolResultContent,
+    Trace,
+    UserMessage,
+)
 
 CONFIG = {"cases": ["a", "b"], "seed": 0}
 
@@ -213,6 +228,125 @@ def test_an_identical_transcript_is_stored_once(tmp_path):
     assert len(list((run.root / "transcripts").iterdir())) == 1
     assert RunDirectory.open(run.root).load_trial("c1", 0, "b").trajectory == ["read", "answer"]
     assert run.load_trial("c1", 0, "c").trajectory is None
+
+
+def _conversation(turns, *, result="x" * 200):
+    """One agent invocation of `turns` tool calls, as captured: each model call's span repeats the conversation so
+    far, then its reply."""
+    start = datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
+
+    def info(span_id, parent="agent"):
+        return SpanInfo(
+            trace_id="t", span_id=span_id, session_id="s", parent_span_id=parent, start_time=start, end_time=start
+        )
+
+    spans = [
+        AgentInvocationSpan(
+            span_info=info("agent", None),
+            user_prompt="help me",
+            agent_response="done",
+            available_tools=[ToolConfig(name="search")],
+        )
+    ]
+    history = [UserMessage(content=[TextContent(text="help me")])]
+    for turn in range(turns):
+        call = ToolCallContent(name="search", arguments={"query": f"q{turn}"}, tool_call_id=f"call{turn}")
+        reply = AssistantMessage(content=[call])
+        spans.append(InferenceSpan(span_info=info(f"chat{turn}"), messages=[*history, reply]))
+        spans.append(
+            ToolExecutionSpan(
+                span_info=info(f"tool{turn}"),
+                tool_call=ToolCall(name="search", arguments=call.arguments, tool_call_id=call.tool_call_id),
+                tool_result=ToolResult(content=result, tool_call_id=call.tool_call_id),
+            )
+        )
+        history += [reply, UserMessage(content=[ToolResultContent(content=result, tool_call_id=call.tool_call_id)])]
+    answer = AssistantMessage(content=[TextContent(text="done")])
+    spans.append(InferenceSpan(span_info=info("chat-last"), messages=[*history, answer]))
+    return Session(session_id="s", traces=[Trace(trace_id="t", session_id="s", spans=spans)])
+
+
+def _transcript_file(run):
+    (path,) = (run.root / "transcripts").iterdir()
+    return path
+
+
+def test_a_session_transcript_stores_each_message_once(tmp_path):
+    run = RunDirectory.create(tmp_path, CONFIG)
+    session = _conversation(3)
+    run.save_trial(_trial("c1", trajectory=session))
+
+    saved = json.loads(_transcript_file(run).read_text())
+    assert len(saved["messages"]) == 8  # the prompt, 3 tool calls and their results, the answer
+    chats = [s for s in saved["session"]["traces"][0]["spans"] if s["span_type"] == "inference"]
+    assert [s["messages"] for s in chats] == [[[0, 2]], [[0, 4]], [[0, 6]], [[0, 8]]]
+
+    loaded = RunDirectory.open(run.root).load_trial("c1", 0, "a").trajectory
+    # What reading the plain dump gives: every span, field, and message, in order.
+    assert loaded == Session.model_validate(json.loads(session.model_dump_json()))
+    first, *_, last = [s for s in loaded.traces[0].spans if isinstance(s, InferenceSpan)]
+    assert all(a is b for a, b in zip(first.messages, last.messages[:2], strict=True))  # one object per message
+    # Saving the loaded session again (as a judge-only re-run does) writes the same file.
+    run.save_trial(_trial("c1", "b", trajectory=loaded))
+    assert run.transcript("c1", 0, "b") == run.transcript("c1", 0, "a")
+    assert len(list((run.root / "transcripts").iterdir())) == 1
+
+
+def test_a_session_transcript_grows_with_the_conversation_not_its_square(tmp_path):
+    sizes = {}
+    for turns in (40, 80):
+        run = RunDirectory.create(tmp_path / str(turns), CONFIG)
+        run.save_trial(_trial("c1", trajectory=_conversation(turns)))
+        sizes[turns] = _transcript_file(run).stat().st_size
+    assert sizes[80] / sizes[40] < 2.1  # every model call repeating the whole conversation would be about 4
+
+
+def test_a_message_repeated_within_a_span_round_trips_in_place(tmp_path):
+    run = RunDirectory.create(tmp_path, CONFIG)
+    start = datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
+    again = UserMessage(content=[TextContent(text="again")])
+    other = AssistantMessage(content=[ToolCallContent(name="search", arguments={}, tool_call_id="1")])
+    span = InferenceSpan(
+        span_info=SpanInfo(session_id="s", start_time=start, end_time=start), messages=[again, other, again]
+    )
+    session = Session(session_id="s", traces=[Trace(trace_id="t", session_id="s", spans=[span])])
+    run.save_trial(_trial("c1", trajectory=session))
+
+    saved = json.loads(_transcript_file(run).read_text())
+    assert len(saved["messages"]) == 2
+    assert saved["session"]["traces"][0]["spans"][0]["messages"] == [[0, 2], [0, 1]]
+    assert run.load_trial("c1", 0, "a").trajectory == Session.model_validate(json.loads(session.model_dump_json()))
+
+
+def test_a_record_reads_back_without_its_trajectory_and_the_transcript_on_its_own(tmp_path):
+    run = RunDirectory.create(tmp_path, CONFIG)
+    record = _trial("c1", trajectory=_conversation(2))
+    run.save_trial(record)
+    run.save_trial(_trial("c1", "b"))
+    reopened = RunDirectory.open(run.root)
+
+    transcript = reopened.transcript("c1", 0, "a")
+    assert transcript == {"hash": _transcript_file(run).stem, "format": "packed_session"}
+    assert reopened.transcript("c1", 0, "b") is None
+    with pytest.raises(KeyError):
+        reopened.transcript("c1", 1, "a")
+    assert reopened.load_transcript(transcript) == reopened.load_trial("c1", 0, "a").trajectory
+
+    _transcript_file(run).unlink()
+    saved = next(e["record"] for e in reopened.events.read() if e["event"] == "trial")
+    stripped = reopened.record_from(saved, load_trajectory=False)  # reads no transcript
+    assert stripped == record.model_copy(update={"trajectory": None})
+
+
+def test_a_session_saved_whole_still_loads_and_an_unknown_format_raises(tmp_path):
+    run = RunDirectory.create(tmp_path, CONFIG)
+    dump = _conversation(2).model_dump(mode="json")
+    (run.root / "transcripts").mkdir()
+    (run.root / "transcripts" / "0123456789abcdef.json").write_text(json.dumps(dump))
+
+    assert run.load_transcript({"hash": "0123456789abcdef", "format": "session"}) == Session.model_validate(dump)
+    with pytest.raises(ValueError, match="unknown format 'tree'"):
+        run.load_transcript({"hash": "0123456789abcdef", "format": "tree"})
 
 
 def test_a_later_trial_event_replaces_the_earlier_one_on_reload(tmp_path):

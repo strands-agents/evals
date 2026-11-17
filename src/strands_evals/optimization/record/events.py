@@ -53,6 +53,8 @@ class EventLog:
       round's opener), else None.
     - `trial`: `record` (`TrialRecord`, its trajectory replaced by `transcript`: `{hash, format}` or None),
       one per trial as soon as it finishes. A later one for the same (candidate, run, case) replaces it.
+      `format` is `packed_session` (a `Session`, each distinct message stored once), `list` (a rollout's
+      own list), or `session` (a whole `Session` dump, as earlier versions saved it).
       Trials of concurrently scored candidates interleave; every other event is written in a fixed order.
     - `score`: `candidate_id`, `split`, `case_names`, `runs`, `rollouts`, `objective_by_run`, `statuses`
       (status -> trial count), `unavailable`.

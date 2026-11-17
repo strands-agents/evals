@@ -12,7 +12,7 @@ import threading
 import opentelemetry.trace as trace_api
 import pytest
 from pydantic import BaseModel
-from strands import Agent
+from strands import Agent, tool
 from strands.types.exceptions import ModelThrottledException
 
 from strands_evals import Case
@@ -28,7 +28,7 @@ from strands_evals.types import EvaluationOutput
 from strands_evals.types.evaluation import NOT_APPLICABLE, EnvironmentState
 from strands_evals.types.optimization import TrialRecord, TrialStatus
 from strands_evals.types.trace import Session
-from tests.strands_evals.optimization.scripted_model import ScriptedModel
+from tests.strands_evals.optimization.scripted_model import ScriptedModel, ToolUse
 
 
 @pytest.fixture(autouse=True)
@@ -560,6 +560,33 @@ async def test_a_score_that_isnt_finite_doesnt_fail_the_save(traces, tmp_path):
 
     assert [r.status for r in records] == [TrialStatus.EVALUATOR_INVALID] * 2
     assert RunDirectory.open(run.root).load_trial("cand", 0, "b") == records[1]
+
+
+@tool
+def lookup(query: str) -> str:
+    """Look the query up."""
+    return f"result for {query}"
+
+
+async def test_a_captured_session_is_saved_with_each_message_once(traces, tmp_path):
+    async def task(case):
+        turns = [ToolUse("lookup", {"query": f"q{i}"}) for i in range(5)] + ["done"]
+        agent = Agent(model=ScriptedModel(turns), tools=[lookup], callback_handler=None)
+        return {"output": str(await agent.invoke_async(case.input))}
+
+    run = RunDirectory.create(tmp_path, {"cases": []})
+    (record,), _ = await _runner(traces, run, _cases("a"), [], rerun_passes=0).run(
+        "cand", task, ["a"], runs=1, allowance=0
+    )
+
+    (path,) = (run.root / "transcripts").iterdir()
+    saved = json.loads(path.read_text())
+    assert len(saved["messages"]) == 12  # the question, 5 tool calls and their results, the answer
+    chats = [s for t in saved["session"]["traces"] for s in t["spans"] if s["span_type"] == "inference"]
+    # Each model call's messages are the conversation so far and its reply: one range of the list.
+    assert [s["messages"] for s in chats] == [[[0, 2 * i + 2]] for i in range(5)] + [[[0, 12]]]
+    loaded = RunDirectory.open(run.root).load_trial("cand", 0, "a")
+    assert loaded.trajectory == Session.model_validate(json.loads(record.trajectory.model_dump_json()))
 
 
 async def test_one_evaluator_failing_leaves_the_trial_completed(traces):
