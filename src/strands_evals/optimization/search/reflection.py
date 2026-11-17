@@ -22,7 +22,7 @@ from typing import Any, ClassVar, cast
 
 from botocore.config import Config as BotocoreConfig
 from strands import Agent, tool
-from strands.agent.conversation_manager import SlidingWindowConversationManager
+from strands.experimental.context_manager import Offload
 from strands.hooks.events import AfterToolCallEvent
 from strands.models.bedrock import BedrockModel
 from strands.models.model import CacheConfig, Model
@@ -273,9 +273,14 @@ class Reflection(Proposer):
                         _confined_shell(work, [traces, versions, work], refused, root, running),
                         _submit_tool(work, submitted, parent, rejected, caps),
                     ],
-                    # Strands' 40-message window, trimmed at the end of each call and on overflow, with the task
-                    # message pinned: a send-back after a long first turn would otherwise go without it.
-                    conversation_manager=SlidingWindowConversationManager(pin_first=1),
+                    # At 85% of the model's context window the oldest messages but the last 4 are elided; the
+                    # first message, the task, is never removed, so a send-back still has it. Tool outputs stay
+                    # whole, nothing calls a model (so `usage` is the whole spend), and with no stash there is no
+                    # retrieval tool: the agent rereads a file through its shell.
+                    context_manager={
+                        "strategies": [Offload.truncate("*").when(utilization=0.85, preserve_recent=4)],
+                        "stash": False,
+                    },
                     callback_handler=None,
                 )
                 agent.add_hook(_cap_tool_output, AfterToolCallEvent)

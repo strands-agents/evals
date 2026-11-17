@@ -18,20 +18,22 @@ from strands_evals.optimization import (
 from strands_evals.optimization.candidate import changed_keys, changed_values, content_id, diff
 
 
-class Window:
-    def __init__(self, size: int = 40):
-        self.size = size
+class Truncate:
+    def __init__(self, keep_recent: int = 40):
+        self.keep_recent = keep_recent
 
 
-class Summary:
-    def __init__(self, ratio: float = 0.3):
-        self.ratio = ratio
+class Summarize:
+    def __init__(self, utilization: float = 0.3):
+        self.utilization = utilization
 
 
 def make_space():
     return Space(
         {
-            "manager": choice(component(Window, size=Int(1, 100)), component(Summary, ratio=Float(0.1, 0.9))),
+            "cm": choice(
+                component(Truncate, keep_recent=Int(1, 100)), component(Summarize, utilization=Float(0.1, 0.9))
+            ),
             "temperature": Float(0.0, 1.0, default=0.7),
             "effort": OneOf("low", "high"),
             "prompt": TextValue(default="You help.\n"),
@@ -95,8 +97,8 @@ def test_the_id_cannot_go_stale():
 def test_baseline_takes_every_default():
     baseline = Candidate.baseline(make_space())
     assert dict(baseline.values) == {
-        "manager": "Window",
-        "manager.Window.size": 40,
+        "cm": "Truncate",
+        "cm.Truncate.keep_recent": 40,
         "temperature": 0.7,
         "effort": "low",
         "prompt": "You help.\n",
@@ -110,27 +112,27 @@ def test_child_applies_updates_and_keeps_the_rest():
     baseline = Candidate.baseline(space)
     child = baseline.child(space, {"temperature": 0.2}, origin=["numbers"], rationale="cooler")
     assert child.values["temperature"] == 0.2
-    assert child.values["manager.Window.size"] == 40
+    assert child.values["cm.Truncate.keep_recent"] == 40
     assert (child.parent_id, child.origin, child.rationale) == (baseline.id, ("numbers",), "cooler")
     assert child.inherited == {} and child.defaulted == ()
 
 
 def test_a_changed_choice_drops_old_keys_and_defaults_new_ones():
     space = make_space()
-    child = Candidate.baseline(space).child(space, {"manager": "Summary"}, origin=["structure"], rationale="")
-    assert "manager.Window.size" not in child.values
-    assert child.values["manager.Summary.ratio"] == 0.3
-    assert child.defaulted == ("manager.Summary.ratio",)
+    child = Candidate.baseline(space).child(space, {"cm": "Summarize"}, origin=["structure"], rationale="")
+    assert "cm.Truncate.keep_recent" not in child.values
+    assert child.values["cm.Summarize.utilization"] == 0.3
+    assert child.defaulted == ("cm.Summarize.utilization",)
 
 
 def test_a_changed_choice_inherits_from_fill():
     space = make_space()
-    sources = {"manager.Summary.ratio": (0.6, "abc123")}
+    sources = {"cm.Summarize.utilization": (0.6, "abc123")}
     child = Candidate.baseline(space).child(
-        space, {"manager": "Summary"}, origin=["structure"], rationale="", fill=sources.get
+        space, {"cm": "Summarize"}, origin=["structure"], rationale="", fill=sources.get
     )
-    assert child.values["manager.Summary.ratio"] == 0.6
-    assert child.inherited == {"manager.Summary.ratio": "abc123"}
+    assert child.values["cm.Summarize.utilization"] == 0.6
+    assert child.inherited == {"cm.Summarize.utilization": "abc123"}
     assert child.defaulted == ()
 
 
@@ -153,7 +155,7 @@ def test_child_validates_the_values_it_stores(tmp_path):
 def test_child_rejects_an_update_to_an_inactive_key():
     space = make_space()
     with pytest.raises(ValueError, match="inactive"):
-        Candidate.baseline(space).child(space, {"manager.Summary.ratio": 0.5}, origin=["numbers"], rationale="")
+        Candidate.baseline(space).child(space, {"cm.Summarize.utilization": 0.5}, origin=["numbers"], rationale="")
 
 
 # changed_keys
@@ -162,8 +164,8 @@ def test_child_rejects_an_update_to_an_inactive_key():
 def test_changed_keys_include_keys_on_one_side_only():
     space = make_space()
     baseline = Candidate.baseline(space)
-    child = baseline.child(space, {"manager": "Summary", "prompt": "New.\n"}, origin=["structure"], rationale="")
-    assert changed_keys(baseline, child) == ["manager", "manager.Summary.ratio", "manager.Window.size", "prompt"]
+    child = baseline.child(space, {"cm": "Summarize", "prompt": "New.\n"}, origin=["structure"], rationale="")
+    assert changed_keys(baseline, child) == ["cm", "cm.Summarize.utilization", "cm.Truncate.keep_recent", "prompt"]
     assert changed_keys(baseline, baseline) == []
 
 
@@ -180,12 +182,12 @@ def test_changed_values_has_one_side_for_a_key_active_on_one_side():
     space = make_space()
     baseline = Candidate.baseline(space)
     child = baseline.child(
-        space, {"manager": "Summary", "temperature": 0.1, "prompt": "New.\n"}, origin=["structure"], rationale=""
+        space, {"cm": "Summarize", "temperature": 0.1, "prompt": "New.\n"}, origin=["structure"], rationale=""
     )
     assert changed_values(space, baseline, child) == {
-        "manager": {"old": "Window", "new": "Summary"},
-        "manager.Window.size": {"old": 40},
-        "manager.Summary.ratio": {"new": 0.3},
+        "cm": {"old": "Truncate", "new": "Summarize"},
+        "cm.Truncate.keep_recent": {"old": 40},
+        "cm.Summarize.utilization": {"new": 0.3},
         "temperature": {"old": 0.7, "new": 0.1},
     }
     assert json.loads(json.dumps(changed_values(space, baseline, child))) == changed_values(space, baseline, child)
@@ -199,10 +201,10 @@ def test_changed_values_is_empty_when_only_text_changed():
 
 
 def test_changed_values_keeps_a_none_value():
-    space = Space({"pin": OneOf(None, 1)})
+    space = Space({"preview": OneOf(None, 1)})
     baseline = Candidate.baseline(space)
-    child = baseline.child(space, {"pin": 1}, origin=["numbers"], rationale="")
-    assert changed_values(space, baseline, child) == {"pin": {"old": None, "new": 1}}
+    child = baseline.child(space, {"preview": 1}, origin=["numbers"], rationale="")
+    assert changed_values(space, baseline, child) == {"preview": {"old": None, "new": 1}}
 
 
 # diff

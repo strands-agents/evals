@@ -482,15 +482,15 @@ class Search:
 
         A variable that is a declared name expands to every key under it that the block's proposer can
         propose; the others are left to other blocks or their kind's default block, so
-        `Block(Thompson(), "manager")` takes the choice and leaves `manager.window.window_size` to "numbers".
+        `Block(Thompson(), "cm")` takes the choice and leaves `cm.truncate.keep_recent` to "numbers".
         Otherwise it must be a flat key. A key named directly (the declared name of a plain marker, or a
         flat key) goes to that block even when another block's declared name reaches it, so
-        `Block(TPE(), "manager")` next to `Block(TPE(), "manager.window.window_size")` gives the first
-        block the rest of `manager`.
+        `Block(TPE(), "cm")` next to `Block(TPE(), "cm.truncate.keep_recent")` gives the first
+        block the rest of `cm`.
         Keys in no block go to their kind's default block, key by key: text/file keys ->
         `Reflection()` ("text"); a `choice()`'s selector key -> `TPE(n_startup_trials=2)` ("structure");
         `int`, `float`, and `one_of` keys, those under a choice's alternatives included -> `TPE()`
-        ("numbers"). So `manager` goes to "structure" and `manager.window.window_size` to "numbers". A
+        ("numbers"). So `cm` goes to "structure" and `cm.truncate.keep_recent` to "numbers". A
         choice key with one option (a bare `component()`) goes to no block, since nothing can change it.
         Default blocks are appended after the user's blocks, in the order their first key is declared, so
         `Search()` is the default search. `Thompson` is never a default block.

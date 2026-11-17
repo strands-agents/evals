@@ -1,6 +1,7 @@
 """Tests for `Reflection.propose`: a scripted model drives the real agent, shell, and submit tool."""
 
 import asyncio
+import json
 import os
 import tempfile
 
@@ -261,20 +262,22 @@ async def test_no_trial_to_learn_from_proposes_nothing():
     assert await reflection.propose(request(trials=[trial("a", status="infrastructure_invalid")])) == []
 
 
-async def test_a_send_back_after_a_long_first_turn_still_has_the_task_message():
-    """The window (40 messages) is trimmed at the end of the first call; the task message is pinned through it."""
+async def test_a_full_context_elides_old_messages_but_keeps_the_task_message():
+    """Past 85% of the context window the oldest messages are elided; the task message stays first through every
+    call, the send-back's included, and the tool outputs that remain are whole."""
 
     class Recording(ScriptedModel):
         def __init__(self, turns):
             super().__init__(turns)
-            self.first_messages = []
+            self.config["context_window_limit"] = 4000  # tokens: a few large reads fill it
+            self.seen = []
 
         async def stream(self, messages, *args, **kwargs):
-            self.first_messages.append(messages[0])
+            self.seen.append([json.dumps(m["content"]) for m in messages])
             async for event in super().stream(messages, *args, **kwargs):
                 yield event
 
-    reads = [ToolUse("shell", {"command": "ls"}) for _ in range(25)]  # 50 messages
+    reads = [ToolUse("shell", {"command": "printf 'y%.0s' $(seq 1500)"}) for _ in range(8)]
     turns = [*reads, write("p.txt", "x" * 80), submit(prompt="p.txt"), "Done."]
     turns += [write("p.txt", "Ask for the number."), submit(prompt="p.txt"), "Shortened."]
     model = Recording(turns)
@@ -282,9 +285,11 @@ async def test_a_send_back_after_a_long_first_turn_still_has_the_task_message():
     reflection._warned = True
     (patch,) = await reflection.propose(request())
     assert patch.updates == {"prompt": "Ask for the number.\n"}
-    task = model.first_messages[0]
-    assert "Write a new version of the parameters" in task["content"][0]["text"]
-    assert model.first_messages[-1] == task  # the send-back's call starts from the task message too
+    task = model.seen[0][0]
+    assert "Write a new version of the parameters" in task
+    assert all(messages[0] == task for messages in model.seen)  # the send-back's call included
+    assert any("elided" in m for messages in model.seen for m in messages)  # the strategy fired
+    assert all("y" * 1500 in m for messages in model.seen for m in messages if "yyyy" in m)  # outputs not cut
 
 
 async def test_the_three_folders_share_one_folder_of_the_call():

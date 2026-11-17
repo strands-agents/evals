@@ -393,29 +393,29 @@ def test_sampled_effects_center_on_the_posterior():
 
 
 # ---- the design -----------------------------------------------------------------------------------------------------
-class Window:
-    def __init__(self, size: int = 10):
-        self.size = size
+class Truncate:
+    def __init__(self, keep_recent: int = 10):
+        self.keep_recent = keep_recent
 
 
-class Summary:
-    def __init__(self, ratio: float = 0.5):
-        self.ratio = ratio
+class Summarize:
+    def __init__(self, utilization: float = 0.5):
+        self.utilization = utilization
 
 
 def test_the_design_lists_factors_inactive_levels_and_omitted_keys():
     space = Space(
         {
-            "cm": choice(window=component(Window, size=Int(2, 40)), off=None),
-            "fixed": component(Summary),
+            "cm": choice(truncate=component(Truncate, keep_recent=Int(2, 40)), off=None),
+            "fixed": component(Summarize),
             "k": Int(1, 9, default=3),
             "prompt": TextValue(default="Be helpful."),
         }
     )
     candidates = {
-        "c0": {"cm": "window", "cm.window.size": 10, "fixed": "Summary", "k": 3, "prompt": "Be helpful."},
-        "c1": {"cm": "off", "fixed": "Summary", "k": 3, "prompt": "Be brief."},
-        "c2": {"cm": "window", "cm.window.size": 30, "fixed": "Summary", "k": 3, "prompt": "Be helpful."},
+        "c0": {"cm": "truncate", "cm.truncate.keep_recent": 10, "fixed": "Summarize", "k": 3, "prompt": "Be helpful."},
+        "c1": {"cm": "off", "fixed": "Summarize", "k": 3, "prompt": "Be brief."},
+        "c2": {"cm": "truncate", "cm.truncate.keep_recent": 30, "fixed": "Summarize", "k": 3, "prompt": "Be helpful."},
     }
     observations = {cid: {"x": [0.5], "y": [0.6]} for cid in candidates}
     fit = _fit(
@@ -423,9 +423,9 @@ def test_the_design_lists_factors_inactive_levels_and_omitted_keys():
     )
     described = design(fit)
     factors = {f["key"]: f for f in described["factors"]}
-    assert factors["cm"] == {"key": "cm", "kind": "choice", "levels": ["window", "off"], "reference": "window"}
-    assert factors["cm.window.size"]["kind"] == "range"
-    assert factors["cm.window.size"]["levels"][-1] == "inactive"
+    assert factors["cm"] == {"key": "cm", "kind": "choice", "levels": ["truncate", "off"], "reference": "truncate"}
+    assert factors["cm.truncate.keep_recent"]["kind"] == "range"
+    assert factors["cm.truncate.keep_recent"]["levels"][-1] == "inactive"
     assert factors["rewritten:text"] == {
         "key": "rewritten:text",
         "kind": "text",
@@ -434,7 +434,11 @@ def test_the_design_lists_factors_inactive_levels_and_omitted_keys():
     }
     assert "fixed" not in factors  # a bare component can never change
     assert described["omitted"] == [{"key": "k", "why": "one value"}]
-    assert {row["level"] for row in effects(fit)} == {"off", "rewritten", *factors["cm.window.size"]["levels"][1:-1]}
+    assert {row["level"] for row in effects(fit)} == {
+        "off",
+        "rewritten",
+        *factors["cm.truncate.keep_recent"]["levels"][1:-1],
+    }
 
 
 class Moded:

@@ -39,7 +39,7 @@ class ScriptedModel(Model):
             raise ValueError("a scripted model needs at least one turn")
         self.turns = list(turns)
         self.usage = usage or {"inputTokens": 10, "outputTokens": 5, "totalTokens": 15}
-        self.config: dict[str, Any] = {"model_id": model_id}
+        self.config: dict[str, Any] = {"model_id": model_id, "context_window_limit": 200_000}
         self.calls = 0
 
     def update_config(self, **model_config: Any) -> None:

@@ -225,9 +225,8 @@ def component(factory: Callable[..., Any], /, **kwargs: Any) -> Component:
 
     `factory` is positional-only, so a constructor kwarg named `factory` can still be passed. An
     `Int` / `Float` / `OneOf` kwarg without `default=` takes the constructor parameter's default
-    (a `OneOf` without one, its first option), e.g.
-    `component(SlidingWindowConversationManager, window_size=Int(4, 40), pin_first=OneOf(None, 1))`
-    (the constructor's defaults, 40 and None, are the baseline). A constructor default of None
+    (a `OneOf` without one, its first option), e.g. `component(ContextManager, stash=OneOf(None, False))`
+    (the constructor's default, None, is the baseline). A constructor default of None
     doesn't count for an `Int` / `Float`: pass `default=`.
 
     The constructor is probed once, here, with its defaults, so its side effects (a client it
@@ -284,7 +283,7 @@ def choice(*alternatives: Component, **labeled: Component | Any) -> Choice:
     """Declare a swap between alternatives; the first is the baseline.
 
     Pass components positionally, labeled by class name, or by keyword, labeled by the keyword:
-    `choice(window=component(...), summary=component(...))`. The keyword form is needed when the same
+    `choice(truncate=component(...), summarize=component(...))`. The keyword form is needed when the same
     class appears twice. A keyword alternative may also be a fixed value, passed through as is:
     `choice(on=component(ToolCallLimiter, max_calls=Int(1, 20)), off=None)`. Labels become key
     segments, so they contain no `.` or `/`. Each component in the result is a copy carrying its
@@ -293,7 +292,7 @@ def choice(*alternatives: Component, **labeled: Component | Any) -> Choice:
     Under `tunable`, the first alternative replaces the wrapped parameter's default, so the plain
     call `fn()` builds it too (unlike `Int` / `Float` / `OneOf` / `TextValue`, which take the
     parameter's default). To keep what production builds as the baseline, list it first, e.g.
-    `choice(off=None, window=component(...))` for a parameter that defaults to None.
+    `choice(off=None, truncate=component(...))` for a parameter that defaults to None.
 
     Args:
         *alternatives: From `component()`, labeled by class name.
@@ -317,10 +316,10 @@ def choice(*alternatives: Component, **labeled: Component | Any) -> Choice:
             )
         label = alternative.label
         if not label.isidentifier() or (label == "partial" and isinstance(alternative.factory, functools.partial)):
-            # "<lambda>" or "partial" would become a key segment, e.g. "manager.<lambda>.size".
+            # "<lambda>" or "partial" would become a key segment, e.g. "cm.<lambda>.keep_recent".
             raise TypeError(
                 f"choice(): a component of {alternative.factory!r} has no usable class name to label it; "
-                "label it by keyword, e.g. choice(window=component(...))"
+                "label it by keyword, e.g. choice(truncate=component(...))"
             )
     for label, alternative in labeled.items():
         if inspect.isclass(alternative):
@@ -440,7 +439,7 @@ def _fill_default(marker: _ValueMarkerT, default: Any, *, where: str, source: st
     Args:
         marker: The marker to fill.
         default: The source's default.
-        where: Error prefix, e.g. `"component(Window)"` or the declared name.
+        where: Error prefix, e.g. `"component(Truncate)"` or the declared name.
         source: What `default` is, e.g. `"the parameter's default"`.
 
     Raises:

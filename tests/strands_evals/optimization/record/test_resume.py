@@ -8,8 +8,8 @@ from strands_evals.optimization.record.run_directory import RunDirectory
 from strands_evals.types.optimization import Patch, Usage
 
 SPACE = [
-    {"key": "cm", "kind": "choice", "options": ["window", "summary"]},
-    {"key": "cm.window.window_size", "kind": "int", "min_value": 4, "max_value": 40},
+    {"key": "cm", "kind": "choice", "options": ["truncate", "summarize"]},
+    {"key": "cm.truncate.keep_recent", "kind": "int", "min_value": 4, "max_value": 40},
     # A file-backed text: run.json keeps its baseline as sha256 + length, never the text.
     {
         "key": "rules",
@@ -309,9 +309,9 @@ def _validation(champion):
         ),
         (
             lambda c: c["space"][1].update(max_value=50),
-            r"^space\['cm\.window\.window_size'\]\.max_value changed: 40 -> 50; pass the run's space",
+            r"^space\['cm\.truncate\.keep_recent'\]\.max_value changed: 40 -> 50; pass the run's space",
         ),
-        (lambda c: c["space"].pop(1), r"^space\['cm\.window\.window_size'\] changed: \{.* -> None"),
+        (lambda c: c["space"].pop(1), r"^space\['cm\.truncate\.keep_recent'\] changed: \{.* -> None"),
         (
             lambda c: c["space"][2]["default"].update(sha256="b" * 64),
             r"^space\['rules'\]\.default\.sha256 changed: 'a{64}' -> 'b{64}'; pass the run's space",

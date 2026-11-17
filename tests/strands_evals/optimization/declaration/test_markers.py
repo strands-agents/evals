@@ -2,28 +2,28 @@ import functools
 
 import pytest
 from strands import tool
-from strands.agent.conversation_manager import SlidingWindowConversationManager
+from strands.experimental.context_manager import ContextManager
 
 from strands_evals.optimization import Float, Int, OneOf, TextValue, choice, component, tool_descriptions
 from strands_evals.optimization.declaration.markers import _default_size_cap, _ValueMarker
 
 
-class Manager:
-    def __init__(self, window_size: int = 40, ratio: float = 0.5, factory: str = "x"):
-        if window_size < 1:
-            raise ValueError("window_size must be positive")
-        self.window_size = window_size
-        self.ratio = ratio
+class Strategy:
+    def __init__(self, keep_recent: int = 40, utilization: float = 0.5, factory: str = "x"):
+        if keep_recent < 1:
+            raise ValueError("keep_recent must be positive")
+        self.keep_recent = keep_recent
+        self.utilization = utilization
         self.factory = factory
 
 
-class OtherManager:
+class OtherStrategy:
     def __init__(self, depth: int = 2):
         self.depth = depth
 
 
-def make_manager(window_size: int = 8) -> Manager:
-    return Manager(window_size=window_size)
+def make_strategy(keep_recent: int = 8) -> Strategy:
+    return Strategy(keep_recent=keep_recent)
 
 
 # --- Int / Float ---
@@ -150,42 +150,42 @@ def test_default_size_cap_is_at_least_2000_and_three_times_the_baseline():
 
 
 def test_component_splits_tunable_and_fixed_kwargs():
-    declared = component(Manager, window_size=Int(1, 100, default=20), factory="kept")
-    assert declared.label == "Manager"
-    assert set(declared.tunable) == {"window_size"}
+    declared = component(Strategy, keep_recent=Int(1, 100, default=20), factory="kept")
+    assert declared.label == "Strategy"
+    assert set(declared.tunable) == {"keep_recent"}
     assert declared.fixed == {"factory": "kept"}
 
 
 def test_component_takes_a_missing_default_from_the_constructor():
-    declared = component(Manager, window_size=Int(1, 100), ratio=Float(0.0, 1.0))
-    assert declared.tunable["window_size"].default == 40
-    assert declared.tunable["ratio"].default == 0.5
+    declared = component(Strategy, keep_recent=Int(1, 100), utilization=Float(0.0, 1.0))
+    assert declared.tunable["keep_recent"].default == 40
+    assert declared.tunable["utilization"].default == 0.5
 
 
 def test_component_accepts_a_plain_function():
-    declared = component(make_manager, window_size=Int(1, 100))
-    assert declared.label == "make_manager"
-    assert declared.tunable["window_size"].default == 8
+    declared = component(make_strategy, keep_recent=Int(1, 100))
+    assert declared.label == "make_strategy"
+    assert declared.tunable["keep_recent"].default == 8
 
 
 def test_component_builds_fresh_instances():
-    declared = component(Manager, window_size=Int(1, 100, default=20))
-    first, second = declared.build({"window_size": 5}), declared.build({"window_size": 5})
+    declared = component(Strategy, keep_recent=Int(1, 100, default=20))
+    first, second = declared.build({"keep_recent": 5}), declared.build({"keep_recent": 5})
     assert first is not second
-    assert first.window_size == 5
+    assert first.keep_recent == 5
 
 
 def test_component_whose_constructor_rejects_its_defaults_fails_at_declaration():
     with pytest.raises(TypeError, match="rejects its own defaults") as raised:
-        component(Manager, window_size=Int(0, 100, default=0))
+        component(Strategy, keep_recent=Int(0, 100, default=0))
     assert isinstance(raised.value.__cause__, ValueError)
 
 
 def test_component_with_an_unknown_kwarg_fails_at_declaration_naming_it():
     with pytest.raises(TypeError, match=r"no keyword arguments named \['no_such_arg'\]"):
-        component(Manager, no_such_arg=1)
+        component(Strategy, no_such_arg=1)
     with pytest.raises(TypeError, match=r"no keyword arguments named \['missing'\]"):
-        component(Manager, missing=Int(1, 5))
+        component(Strategy, missing=Int(1, 5))
 
 
 def test_component_rejects_a_kwarg_named_like_a_star_args_parameter():
@@ -207,7 +207,7 @@ def test_component_without_a_default_anywhere_fails():
 
 def test_component_constructor_default_outside_the_bounds_fails():
     with pytest.raises(TypeError, match="doesn't fit"):
-        component(Manager, window_size=Int(1, 10))
+        component(Strategy, keep_recent=Int(1, 10))
 
 
 @tool
@@ -217,30 +217,30 @@ def lookup(query: str) -> str:
 
 
 def test_component_takes_a_one_of_kwarg_as_tunable():
-    declared = component(Manager, factory=OneOf("x", "y"), ratio=0.2)
+    declared = component(Strategy, factory=OneOf("x", "y"), utilization=0.2)
     assert declared.tunable["factory"].options == ("x", "y")
-    assert declared.fixed == {"ratio": 0.2}
+    assert declared.fixed == {"utilization": 0.2}
     assert declared.build({"factory": "y"}).factory == "y"
 
 
 def test_component_one_of_without_default_takes_the_constructor_default():
-    assert component(Manager, factory=OneOf("y", "x")).tunable["factory"].default == "x"
+    assert component(Strategy, factory=OneOf("y", "x")).tunable["factory"].default == "x"
 
 
-class Pinned:
-    def __init__(self, pin_first):  # no default: a OneOf falls back to its first option
-        self.pin_first = pin_first
+class Previewed:
+    def __init__(self, preview):  # no default: a OneOf falls back to its first option
+        self.preview = preview
 
 
 def test_component_one_of_without_any_default_takes_its_first_option():
-    declared = component(Pinned, pin_first=OneOf(0, 1))
-    assert declared.tunable["pin_first"].default == 0
+    declared = component(Previewed, preview=OneOf(0, 1))
+    assert declared.tunable["preview"].default == 0
 
 
 class Optional:
-    def __init__(self, temperature: float | None = None, pin_first: int | None = None):
+    def __init__(self, temperature: float | None = None, preview: int | None = None):
         self.temperature = temperature
-        self.pin_first = pin_first
+        self.preview = preview
 
 
 @pytest.mark.parametrize("marker", [Int(0, 5), Float(0.0, 1.0)])
@@ -254,23 +254,24 @@ def test_component_number_with_its_own_default_ignores_a_none_constructor_defaul
 
 
 def test_component_one_of_may_take_a_none_constructor_default_as_an_option():
-    assert component(Optional, pin_first=OneOf(None, 1)).tunable["pin_first"].default is None
+    assert component(Optional, preview=OneOf(None, 1)).tunable["preview"].default is None
     with pytest.raises(TypeError, match="doesn't fit"):
-        component(Optional, pin_first=OneOf(0, 1))  # None is not an option: pass default=
+        component(Optional, preview=OneOf(0, 1))  # None is not an option: pass default=
 
 
-def test_component_one_of_on_a_real_conversation_manager():
-    # strands' SlidingWindowConversationManager declares pin_first: int | None = None.
-    declared = component(SlidingWindowConversationManager, window_size=Int(4, 40), pin_first=OneOf(None, 1))
-    assert declared.tunable["window_size"].default == 40
-    assert declared.tunable["pin_first"].default is None
-    pinned = component(SlidingWindowConversationManager, pin_first=OneOf(0, 1, default=0))
-    assert pinned.tunable["pin_first"].default == 0
+def test_component_one_of_on_a_real_context_manager():
+    # strands' ContextManager declares stash: StashConfig | bool | None = None.
+    declared = component(ContextManager, stash=OneOf(None, False))
+    assert declared.tunable["stash"].default is None
+    with pytest.raises(TypeError):
+        component(ContextManager, stash=OneOf(True, False))  # None is not an option: pass default=
+    stashed = component(ContextManager, stash=OneOf(True, False, default=True))
+    assert stashed.tunable["stash"].default is True
 
 
 def test_component_one_of_whose_constructor_default_is_not_an_option_fails():
     with pytest.raises(TypeError, match="doesn't fit"):
-        component(Manager, factory=OneOf("y", "z"))
+        component(Strategy, factory=OneOf("y", "z"))
 
 
 @pytest.mark.parametrize(
@@ -278,18 +279,18 @@ def test_component_one_of_whose_constructor_default_is_not_an_option_fails():
     [
         TextValue(default="x"),
         tool_descriptions(lookup),
-        choice(component(OtherManager)),
-        component(OtherManager),
+        choice(component(OtherStrategy)),
+        component(OtherStrategy),
     ],
 )
 def test_component_rejects_markers_other_than_int_float_and_one_of(marker):
     with pytest.raises(TypeError, match="only Int, Float, and OneOf"):
-        component(Manager, factory=marker)
+        component(Strategy, factory=marker)
 
 
 def test_component_rejects_a_non_callable():
     with pytest.raises(TypeError, match="needs a class or callable"):
-        component("Manager")  # type: ignore[arg-type]
+        component("Strategy")  # type: ignore[arg-type]
 
 
 def test_component_accepts_any_kwarg_when_the_constructor_takes_kwargs():
@@ -303,53 +304,53 @@ def test_component_accepts_any_kwarg_when_the_constructor_takes_kwargs():
 
 
 def test_choice_labels_default_to_class_names_in_order():
-    declared = choice(component(Manager), component(OtherManager))
-    assert list(declared.alternatives) == ["Manager", "OtherManager"]
-    assert [c.label for c in declared.alternatives.values()] == ["Manager", "OtherManager"]
+    declared = choice(component(Strategy), component(OtherStrategy))
+    assert list(declared.alternatives) == ["Strategy", "OtherStrategy"]
+    assert [c.label for c in declared.alternatives.values()] == ["Strategy", "OtherStrategy"]
 
 
 def test_choice_keyword_labels_keep_their_order_and_reach_the_components():
-    declared = choice(summary=component(OtherManager), window=component(Manager))
-    assert list(declared.alternatives) == ["summary", "window"]  # the first keyword is the baseline
-    assert [c.label for c in declared.alternatives.values()] == ["summary", "window"]
+    declared = choice(summarize=component(OtherStrategy), truncate=component(Strategy))
+    assert list(declared.alternatives) == ["summarize", "truncate"]  # the first keyword is the baseline
+    assert [c.label for c in declared.alternatives.values()] == ["summarize", "truncate"]
 
 
 def test_choice_with_the_same_class_twice_needs_keyword_labels():
     with pytest.raises(TypeError, match="keyword"):
-        choice(component(Manager, ratio=0.1), component(Manager, ratio=0.9))
-    declared = choice(low=component(Manager, ratio=0.1), high=component(Manager, ratio=0.9))
+        choice(component(Strategy, utilization=0.1), component(Strategy, utilization=0.9))
+    declared = choice(low=component(Strategy, utilization=0.1), high=component(Strategy, utilization=0.9))
     assert list(declared.alternatives) == ["low", "high"]
 
 
 def test_one_component_can_sit_in_two_choices_under_different_labels():
-    shared = component(Manager)
-    first = choice(window=shared, other=component(OtherManager))
-    second = choice(sliding=shared, other=component(OtherManager))
-    assert first.alternatives["window"].label == "window"
-    assert second.alternatives["sliding"].label == "sliding"
-    assert shared.label == "Manager"
+    shared = component(Strategy)
+    first = choice(truncate=shared, other=component(OtherStrategy))
+    second = choice(truncate=shared, other=component(OtherStrategy))
+    assert first.alternatives["truncate"].label == "truncate"
+    assert second.alternatives["truncate"].label == "truncate"
+    assert shared.label == "Strategy"
 
 
 def test_choice_rejects_mixed_positional_and_keyword_alternatives():
     with pytest.raises(TypeError, match="not both"):
-        choice(component(Manager), other=component(OtherManager))
+        choice(component(Strategy), other=component(OtherStrategy))
 
 
 @pytest.mark.parametrize("label", ["b.c", "b/c", ""])
 def test_choice_rejects_bad_labels(label):
     with pytest.raises(TypeError, match="labels must be non-empty"):
-        choice(**{"a": component(Manager), label: component(OtherManager)})
+        choice(**{"a": component(Strategy), label: component(OtherStrategy)})
 
 
 def test_choice_rejects_non_components():
     with pytest.raises(TypeError, match="at least one alternative"):
         choice()
     with pytest.raises(TypeError, match="positional component"):
-        choice(Manager)  # type: ignore[arg-type]
+        choice(Strategy)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
-    "factory", [lambda size=1: size, functools.partial(Manager, ratio=0.2)], ids=["lambda", "partial"]
+    "factory", [lambda size=1: size, functools.partial(Strategy, utilization=0.2)], ids=["lambda", "partial"]
 )
 def test_choice_needs_a_keyword_label_for_a_lambda_or_partial(factory):
     with pytest.raises(TypeError, match="label it by keyword"):
@@ -359,7 +360,7 @@ def test_choice_needs_a_keyword_label_for_a_lambda_or_partial(factory):
 
 def test_choice_takes_fixed_values_by_keyword_as_is():
     marker = {"mode": "dense"}
-    declared = choice(on=component(Manager), off=None, preset=marker)
+    declared = choice(on=component(Strategy), off=None, preset=marker)
     assert list(declared.alternatives) == ["on", "off", "preset"]
     assert declared.alternatives["on"].label == "on"
     assert declared.alternatives["off"] is None
@@ -368,18 +369,18 @@ def test_choice_takes_fixed_values_by_keyword_as_is():
 
 def test_choice_rejects_a_positional_fixed_value():
     with pytest.raises(TypeError, match="by keyword"):
-        choice(component(Manager), None)  # type: ignore[arg-type]
+        choice(component(Strategy), None)  # type: ignore[arg-type]
 
 
 def test_choice_rejects_a_class_as_a_fixed_value():
-    with pytest.raises(TypeError, match=r"wrap it: component\(Manager, ...\)"):
-        choice(on=Manager, off=None)
+    with pytest.raises(TypeError, match=r"wrap it: component\(Strategy, ...\)"):
+        choice(on=Strategy, off=None)
 
 
-@pytest.mark.parametrize("marker", [Int(1, 5, default=2), OneOf("a", "b"), choice(component(OtherManager))])
+@pytest.mark.parametrize("marker", [Int(1, 5, default=2), OneOf("a", "b"), choice(component(OtherStrategy))])
 def test_choice_rejects_a_marker_as_a_fixed_value(marker):
     with pytest.raises(TypeError, match="component\\(...\\) or a fixed value"):
-        choice(on=component(Manager), off=marker)
+        choice(on=component(Strategy), off=marker)
 
 
 # --- value markers ---
