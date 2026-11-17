@@ -92,8 +92,9 @@ class Proposer(ABC):
         """Called exactly once per patch this proposer returned."""
 
     def evidence(self, evidence: Evidence) -> None:  # noqa: B027 (optional hook, empty on purpose)
-        """Called once per scored candidate another block proposed, except while this block waits for an open
-        `Nested` round's end (then it is told only the round's best); does nothing by default.
+        """Called once for the baseline at setup and once per scored candidate another block proposed, except
+        while this block waits for an open `Nested` round's end (then it is told only the round's best); does
+        nothing by default.
 
         Each call is an `evidence` event, replayed on resume like `observe`.
         """

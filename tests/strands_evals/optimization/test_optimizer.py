@@ -17,6 +17,7 @@ from strands_evals.optimization import (
     AtLeast,
     Block,
     Budget,
+    Evidence,
     FileText,
     FinalPick,
     Float,
@@ -581,6 +582,41 @@ def _names(events, start=0):
     return [e["event"] for e in events[start:] if e["event"] != "trial"]
 
 
+async def test_setup_tells_every_block_the_baseline_as_evidence(tmp_path):
+    structure, numbers = Scripted(), Scripted()
+    optimizer = _searching(
+        Block(structure, "manager"), Block(numbers, "temperature", "manager.Window.size"), base_dir=tmp_path
+    )
+    await optimizer._start()
+    events = _events(optimizer)
+    (label,) = [e["label"] for e in events if e["event"] == "label"]
+    shared = [e for e in events if e["event"] == "evidence"]
+    # After the baseline's fit and label, one `evidence` event per block, which resume replays.
+    assert _names(events)[-4:] == ["fit", "label", "evidence", "evidence"]
+    assert [(e["iteration"], e["block"]) for e in shared] == [(0, "structure"), (0, "numbers")]
+    for proposer, event in zip((structure, numbers), shared, strict=True):
+        (evidence,) = proposer.evidenced
+        assert event["evidence"] == evidence.model_dump(mode="json")
+        assert evidence.candidate_id == optimizer._baseline.id and evidence.origin == ["baseline"]
+        assert evidence.outcome == label["outcome"] == "feasible"
+        assert (evidence.objective, evidence.term_values, evidence.violations) == (0.0, [0.0], [])
+
+
+async def test_tpe_counts_the_baseline_toward_its_startup(tmp_path):
+    optimizer = _searching(
+        Block(TPE(n_startup_trials=1), "temperature"),
+        schedule=Alternate(),
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+    )
+    _, events = await _search(optimizer)
+    # The first ask's study already holds the baseline. Only the first patch is checked: one repeating the
+    # baseline is redrawn.
+    first = next(e for e in events if e["event"] == "observe" and e["block"] == "numbers")
+    assert first["observation"]["patch"]["rationale"] == "TPE: modeled on 1 told trials"
+
+
 async def test_one_iteration_writes_its_events_in_order(tmp_path):
     proposer = Scripted({"temperature": 0.5})
     records = []
@@ -762,7 +798,8 @@ async def test_joint_merges_one_patch_of_every_block_per_candidate(tmp_path):
     assert [r.n for r in numbers.requests] == [1, 1]
     assert [r.parent.values["manager"] for r in numbers.requests] == ["Summary", "Window"]
     assert [o.outcome for o in structure.observed] == ["feasible", "feasible"]
-    assert numbers.evidenced == [] and structure.evidenced == []
+    # Each candidate merges both blocks' patches, so the only evidence is the baseline's.
+    assert [e.candidate_id for e in numbers.evidenced + structure.evidenced] == [optimizer._baseline.id] * 2
 
 
 async def test_a_round_opener_is_told_the_rounds_best_at_its_end(tmp_path):
@@ -785,8 +822,8 @@ async def test_a_round_opener_is_told_the_rounds_best_at_its_end(tmp_path):
     # The round's candidates, opener first, then proposal order: TPE re-values the opener's trial by them.
     round_zero = [p.candidate_id for r in optimizer._iterations[:3] for p in r.proposals]
     assert first.round_candidate_ids == round_zero and first.candidate_id == round_zero[0]
-    # The outer block isn't told the inner candidates as evidence.
-    assert outer.evidenced == []
+    # The outer block is told the baseline as evidence, never the inner candidates.
+    assert [e.candidate_id for e in outer.evidenced] == [optimizer._baseline.id]
 
 
 async def test_every_proposer_calls_spend_counts_on_resume(tmp_path):
@@ -1174,6 +1211,31 @@ async def test_the_default_search_runs_end_to_end_and_observes_every_patch_once(
     assert result.best.values["temperature"] >= result.baseline.values["temperature"]
 
 
+async def test_the_default_structure_block_models_from_its_second_round(tmp_path):
+    optimizer = _optimizer(
+        _experiment(evaluators=[Temperature()]),
+        rollout_fn=_temperature_rollout,
+        max_workers=64,
+        base_dir=tmp_path,
+        # A round uses at most 5 slots (its opener and 4 inner steps of 1), so at least 3 rounds open in 11.
+        budget=Budget(max_iterations=11),
+        proposals_per_iteration=1,
+    )
+    await _search(optimizer)
+    structure = next(block.proposer for block, _ in optimizer._blocks if block.name == "structure")
+    assert isinstance(structure, TPE) and structure.n_startup_trials == 2
+    events = _events(optimizer)
+    (first,) = [e for e in events if e["event"] == "evidence" and e["block"] == "structure"]
+    assert (first["iteration"], first["evidence"]["candidate_id"]) == (0, optimizer._baseline.id)
+    # Each round's opener, observed at its round's end. Its study holds the baseline, then one trial per
+    # closed round, so the startup of 2 ends after the first round (without the baseline, after the second).
+    openers = [
+        e["observation"]["patch"]["rationale"] for e in events if e["event"] == "observe" and e["block"] == "structure"
+    ]
+    assert len(openers) >= 3
+    assert openers == ["TPE: random startup"] + [f"TPE: modeled on {k} told trials" for k in range(2, len(openers) + 1)]
+
+
 # resume
 
 
@@ -1266,6 +1328,26 @@ async def test_a_killed_run_resumes_to_the_same_result_spending_nothing_twice(tm
     assert resumed_optimizer._budget.spent == original_optimizer._budget.spent
     new_trials = sum(1 for e in _events_at(copy) if e["event"] == "trial") - trials_before
     assert new_trials == sum(1 for e in _events(original_optimizer) if e["event"] == "trial") - trials_before
+
+
+async def test_a_run_killed_after_setup_tells_the_baseline_once_on_resume(tmp_path):
+    original_optimizer = _default_search(tmp_path / "runs")
+    original = await original_optimizer.run_async()
+    # Setup's events (the baseline's evidence among them) are written, but no iteration closed.
+    copy = _killed(original_optimizer._run.root, tmp_path, lambda events: _index(events, "select") - 1)
+    resumed_optimizer = _resume(copy)
+    resumed = await resumed_optimizer.run_async()
+    _assert_same(resumed, original)
+    baseline = resumed_optimizer._baseline.id
+    blocks = [block.name for block, _ in resumed_optimizer._blocks]
+    logged = [
+        e["block"] for e in _events_at(copy) if e["event"] == "evidence" and e["evidence"]["candidate_id"] == baseline
+    ]
+    assert logged == blocks * 2  # setup ran again after the resume event
+    state = load_state(RunDirectory.open(copy), config=resumed_optimizer._config())
+    for block in blocks:
+        told = [t for t in state.feedback[block] if isinstance(t, Evidence) and t.candidate_id == baseline]
+        assert len(told) == 1
 
 
 async def test_a_refit_that_raises_on_replay_falls_back_to_measured_means_and_the_resume_goes_on(tmp_path):
