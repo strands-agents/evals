@@ -44,19 +44,40 @@ def test_a_field_that_is_not_json_raises(tmp_path):
     assert log.read() == []
 
 
-def test_a_truncated_last_line_is_dropped_and_cut_on_reopen(tmp_path):
+def test_a_truncated_last_line_is_dropped_and_cut_at_the_next_append(tmp_path):
     path = tmp_path / "events.jsonl"
     log = EventLog(path)
     log.append("config", config={})
     log.append("select", parent_id="a")
     path.write_bytes(path.read_bytes()[:-10])  # killed mid-write
+    cut = path.read_bytes()
 
     assert [e["event"] for e in EventLog(path).read()] == ["config"]
+    assert path.read_bytes() == cut  # opening the log writes nothing
 
     reopened = EventLog(path)
+    assert not reopened.changed()
     reopened.append("select", parent_id="b")
     events = reopened.read()
     assert [e.get("parent_id") for e in events] == [None, "b"]
+    assert not reopened.changed()
+    log.append("stop", reason="budget")  # another writer
+    assert reopened.changed()
+
+
+def test_a_truncated_last_line_another_writer_may_be_finishing_is_never_cut(tmp_path):
+    path = tmp_path / "events.jsonl"
+    EventLog(path).append("config", config={})
+    with path.open("a") as file:
+        file.write('{"event": "sel')  # a writer mid-line
+    stale = EventLog(path)
+    with path.open("a") as file:
+        file.write('ect"}\n')  # ...finishes it after `stale` read the log
+    written = path.read_bytes()
+
+    with pytest.raises(RuntimeError, match="changed since it was read"):
+        stale.append("stop", reason="budget")
+    assert path.read_bytes() == written
 
 
 def test_an_unreadable_complete_last_line_is_dropped(tmp_path):

@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import hashlib
 import json
+import logging
 import re
 import secrets
 import subprocess
+import sys
 import urllib.parse
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from ...types.optimization import TrialRecord, TrialStatus
 from ...types.trace import Session
@@ -20,9 +24,20 @@ from ..candidate import Candidate
 from ..declaration.files import _write_text_atomically
 from .events import EventLog, _encode, closed_events
 
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
+
 SCHEMA_VERSION = 1
 
+logger = logging.getLogger(__name__)
+
 _NAME = re.compile(r"[a-z0-9_-]+")
+_LOCK_NAME = "run.lock"
+# Windows locks are mandatory, so the locked byte sits far past the end of the empty lock file, where reading or
+# copying the file through another handle never touches it.
+_LOCK_OFFSET = 2**30
 
 
 class RunDirectory:
@@ -31,12 +46,15 @@ class RunDirectory:
     `run_id` is `[<name>-]<YYYYMMDD-HHMMSS>-<6 hex>`, the start time in UTC. Layout: `run.json`,
     `events.jsonl` (the only source of truth on resume), `transcripts/<hash>.json` (each trajectory once,
     named by the first 16 hex of the sha256 of its canonical JSON), `effects.json`, the review diffs,
-    `result.json` (the whole result, written last), and `candidates/<id>/optimization_files/` (only when a
-    value reaches the agent as a path). No per-candidate values, trial, or report files.
+    `result.json` (the whole result, written last), `candidates/<id>/optimization_files/` (only when a
+    value reaches the agent as a path), and `run.lock` (empty; made by the first `lock()`). No per-candidate
+    values, trial, or report files.
 
-    One process per run, and nothing enforces it: opening a run that another process is still writing can
-    cut that process's last line (`EventLog` trims a cut-off last line when it opens the log), and the next
-    resume then rejects the log as corrupt.
+    One writer per run. `open` only reads (`EventLog` cuts off a killed write's last line at its first append,
+    not when it opens the log), and a writer calls `lock()` before it appends to a run it opened or created.
+    `lock()` takes an exclusive OS lock on `run.lock`, held until `unlock()` or until the process exits, so a
+    killed run needs no cleanup. A second writer, in another process or in this one, gets a `RuntimeError`; so
+    does one whose log another writer changed after it was read. The lock file is never deleted.
 
     Attributes:
         config: The `config` event's contents (= `run.json`), as read back.
@@ -52,6 +70,7 @@ class RunDirectory:
         self.run_id = root.name
         self.events = events
         self.config = config
+        self._held: BinaryIO | None = None  # the open lock file while this object holds the lock
         # Candidate id -> its latest full (not rescore) propose event; insertion order = display number.
         self._candidates: dict[str, dict[str, Any]] = {}
         # Ids whose latest full propose event was in a killed iteration (dropped on resume).
@@ -133,6 +152,36 @@ class RunDirectory:
                 record = event["record"]
                 run._trials[(record["candidate_id"], record["run_index"], record["case_name"])] = record
         return run
+
+    def lock(self) -> None:
+        """Take the run's write lock without waiting; a no-op while this object holds it.
+
+        On a filesystem that can't lock files, a warning is logged and the run goes on unlocked. A child
+        forked from the holder without exec (`multiprocessing` with the fork start method) shares the lock,
+        so after the holder is killed it stays held until that child exits too.
+
+        Raises:
+            RuntimeError: Another process, or another `RunDirectory` in this one, holds the lock; or
+                `events.jsonl` changed since this object read it or last wrote it, so another writer ran in
+                between and this object's state is stale.
+        """
+        if self._held is not None:
+            return
+        held = _acquire(self.root)
+        if self.events.changed():
+            if held is not None:
+                _release(held)
+            raise RuntimeError(
+                f"run {self.run_id}: events.jsonl changed after it was read, so another writer ran in between;"
+                " resume the run again (Optimizer.resume) to continue it"
+            )
+        self._held = held
+
+    def unlock(self) -> None:
+        """Release the write lock, if this object holds it."""
+        held, self._held = self._held, None
+        if held is not None:
+            _release(held)
 
     def workspace(self, candidate_id: str) -> Path:
         """`<root>/candidates/<id>/optimization_files/`."""
@@ -273,6 +322,48 @@ class RunDirectory:
         """
         text = json.dumps(result, indent=2, default=_encode, ensure_ascii=False, allow_nan=False)
         _write_text_atomically(self.root / "result.json", text + "\n")
+
+
+def _acquire(root: Path) -> BinaryIO | None:
+    """`<root>/run.lock`, open and exclusively locked; None when the filesystem can't lock files.
+
+    Raises:
+        RuntimeError: Another open file holds the lock, in this process or another.
+    """
+    file = (root / _LOCK_NAME).open("a+b")  # opened for writing: NFS grants an exclusive lock only to a writer
+    try:
+        if sys.platform == "win32":
+            file.seek(_LOCK_OFFSET)  # `msvcrt.locking` locks bytes from the current position
+            msvcrt.locking(file.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as error:
+        file.close()
+        if isinstance(error, (BlockingIOError, PermissionError)):  # held: EWOULDBLOCK (flock), EACCES (Windows)
+            raise RuntimeError(
+                f"run {root.name} is open for writing in another process (or a child process it forked), or by"
+                " another Optimizer in this one; wait for it to finish, or stop it, then resume the run"
+            ) from error
+        if error.errno in (errno.ENOLCK, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP):
+            logger.warning(
+                "path=<%s>, error=<%s> | the filesystem can't lock the run | nothing stops a second writer",
+                root,
+                error,
+            )
+            return None
+        raise
+    return file
+
+
+def _release(file: BinaryIO) -> None:
+    """Release a lock `_acquire` took, then close its file."""
+    with contextlib.suppress(OSError):  # closing the file releases the lock too
+        if sys.platform == "win32":
+            file.seek(_LOCK_OFFSET)
+            msvcrt.locking(file.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(file.fileno(), fcntl.LOCK_UN)
+    file.close()
 
 
 def code_version() -> dict[str, Any]:

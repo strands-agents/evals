@@ -488,6 +488,9 @@ class Optimizer:
     async def run_async(self) -> OptimizationResult:
         """Score the baseline, run the search until it stops, then the end phase.
 
+        The run directory is locked (`RunDirectory.lock`) until this returns or raises: a resumed run before its
+        first write, a new run as soon as it is created.
+
         Returns:
             The champion, the validation and test reports, the effects, and the run's costs.
 
@@ -497,21 +500,27 @@ class Optimizer:
                 metric has no value on any train case. A `stop` event with
                 reason `"setup"` is written first, and the message names the unmeasured cases or the
                 metric, the trial status counts, and the first error. Also: this optimizer has already started a
-                run (an Optimizer runs once; continue its run with `Optimizer.resume` and a new `Search`).
+                run (an Optimizer runs once; continue its run with `Optimizer.resume` and a new `Search`); or,
+                before writing to a resumed run, another process or Optimizer is writing it, or wrote to it after
+                `resume` read it.
             ProposerError: A proposer raised. The search stops before the end phase, with the
                 `proposer_error` event and no `stop` event, so `Optimizer.resume` continues it as it would a
                 killed run.
             ValueError: Another optimizer holds one of the search's proposers; checked before the run directory is
                 created or a `resume` event written.
         """
-        await self._start()
-        resumed = self._resumed
-        if resumed is not None and resumed.stop_reason is not None:
-            reason: StopReason = resumed.stop_reason  # the search is over: only the end phase is left
-        else:
-            reason = await self._run_search()
-            self._stop(reason)
-        return await self._end_phase(reason)
+        try:
+            await self._start()
+            resumed = self._resumed
+            if resumed is not None and resumed.stop_reason is not None:
+                reason: StopReason = resumed.stop_reason  # the search is over: only the end phase is left
+            else:
+                reason = await self._run_search()
+                self._stop(reason)
+            return await self._end_phase(reason)
+        finally:
+            if self._run is not None:
+                self._run.unlock()
 
     async def _start(self) -> None:
         """Set up the run, score the baseline, write the setup's fit (None: one eligible candidate), and tell
@@ -1737,14 +1746,15 @@ class Optimizer:
         )
 
     def _setup(self, config: dict[str, Any] | None = None) -> None:
-        """Install trace capture and create the run directory (kept when `resume` already opened one) with `config`
-        (None: `_config()`) as its `run.json`."""
+        """Install trace capture, create the run directory (kept when `resume` already opened one) with `config`
+        (None: `_config()`) as its `run.json`, and lock it."""
         # Before any Experiment is built, so trials' spans are recorded.
         self._traces = TraceCapture()
         if self._run is None:
             self._run = RunDirectory.create(
                 self._base_dir, config if config is not None else self._config(), name=self._name
             )
+        self._run.lock()
         self._split_of: dict[str, SplitName] = {
             name: role for role in SPLIT_NAMES for name in getattr(self._case_split, role)
         }
@@ -1981,8 +1991,10 @@ class Optimizer:
         Pass again what `run.json` can't store: the experiment, the agent (`factory=`, or `build_task=`
         with `space=`), `rollout_fn`, `environment`, the objective, constraints, search, selection, and
         score model. Of those, the cases, the space, the objective, constraints, search, selection, and score
-        model are compared with `run.json` (`ValueError` naming the field); the agent code, `rollout_fn`,
-        `environment`, and the evaluators can't be compared and are the caller's to keep. Everything else
+        model are compared with `run.json` (`ValueError` naming the field). The names of the factory (or
+        `build_task`) and `rollout_fn` are compared too, with a warning when one changed (a module run as
+        `__main__` matches any module name); their code, `environment`, and the evaluators can't be compared and
+        are the caller's to keep. Everything else
         is read from `run.json`, never passed again: the split (with the seed it used), the final pick
         (`FinalPick.from_config`), `runs_per_candidate`, `agent_failure_score`, `feasibility_threshold`, seed,
         `proposals_per_iteration`, and `rerun_passes`. Only `budget`, `max_workers`, and `on_iteration` may differ
@@ -1997,7 +2009,8 @@ class Optimizer:
         run's history, and the proposers that ran the search already hold it. A search a proposer stopped ends
         with what it found when resumed with a `max_iterations` its closed iterations have already used (the
         `ProposerError` message gives the `Budget`).
-        A killed search may get a larger `Budget`, which only moves where it stops. The resumed run proposes what
+        A killed search may get a larger `Budget`, which only moves where it stops; a `budget` that would let a
+        stopped search go further warns that it can't. The resumed run proposes what
         an uninterrupted one would, with two exceptions: near the rollout cap, what the killed iteration spent
         counts from the start, while its trials are reused at no cost, so a step can be cut narrower or the
         search stop a step earlier than without the kill; and a refit that succeeded in the run but raises when
@@ -2005,6 +2018,10 @@ class Optimizer:
         warning. If you changed cases,
         evaluators, judge settings, or agent code, start a new run instead: resuming would mix results from
         the old and new setups.
+
+        `resume` only reads the run directory. `run()` locks it (`RunDirectory.lock`) before it writes, so it
+        raises `RuntimeError` while another process or Optimizer is writing the run, or once one wrote to it
+        after `resume` read it.
 
         Args:
             run_dir: The run directory to reopen.
@@ -2029,7 +2046,8 @@ class Optimizer:
         Raises:
             ValueError: The configuration differs from `run.json`, naming the field; a proposer in `search`
                 is bound to another optimizer; or `budget` can't cover what is already spent plus the
-                validation reserve (when the pick hasn't run yet).
+                validation reserve (when the pick hasn't run yet), unless the test report
+                is saved as done.
             RuntimeError: The run stopped at setup (its baseline couldn't be a parent); start a new run.
         """
         run = RunDirectory.open(Path(run_dir))
@@ -2067,11 +2085,12 @@ class Optimizer:
             on_iteration=on_iteration,
         )
         optimizer._workdir = Path(saved["workdir"])  # diff paths stay relative to where the run started
-        state = load_state(run, config=optimizer._config())
+        config = optimizer._config()
+        state = load_state(run, config=config)
         if state.stop_reason == "setup":
             raise RuntimeError(f"run {run.run_id} stopped at setup, so there is nothing to resume; start a new run")
         tracker = optimizer._budget
-        budget = Budget(**saved["budget"]) if budget is None else budget
+        requested, budget = budget, Budget(**saved["budget"]) if budget is None else budget
         # What the pick still needs: the whole reserve (re-run headroom included) before the finalists exist, else
         # their unrun validation trials.
         if state.validation is not None:
@@ -2088,7 +2107,7 @@ class Optimizer:
                 if run.trial_status(c, index, case) in (None, TrialStatus.INFRASTRUCTURE_INVALID)
             )
         needed = state.spent + left
-        if budget.max_rollouts < needed:
+        if not state.is_test_done and budget.max_rollouts < needed:  # a finished run spends nothing more
             raise ValueError(
                 f"Budget(max_rollouts={budget.max_rollouts}) can't cover the {state.spent} rollouts already spent "
                 f"plus the {left} the validation pick still needs: give max_rollouts >= {needed}"
@@ -2106,8 +2125,54 @@ class Optimizer:
                 UserWarning,
                 stacklevel=2,
             )
+        before, after = saved["agent"], config["agent"]
+        renamed = [
+            f"{key} {before.get(key)!r} -> {name!r}"
+            for key, name in after.items()
+            if not _same_name(before.get(key), name)
+        ]
+        if renamed:
+            warnings.warn(
+                f"resuming run {run.run_id} with a differently named agent ({'; '.join(renamed)}); only the names "
+                "are compared, not the code, so if the agent changed, start a new run instead of mixing results "
+                "from both",
+                UserWarning,
+                stacklevel=2,
+            )
+        if requested is not None and state.stop_reason in ("budget", "iterations"):
+            # The search loop's own stop tests, on the train spend it stopped at, under the given budget.
+            searched = sum(
+                r["rollouts"] + sum(a["rollouts"] for a in r["previous_attempts"])
+                for r in state.trials.values()
+                if r["split"] == "train"
+            )
+            at_stop = BudgetTracker(
+                requested, searched, validation_reserve=tracker.validation_reserve, test_reserve=tracker.test_reserve
+            )
+            per_candidate = len(optimizer._case_split.train) * optimizer._runs_per_candidate
+            cap = requested.max_iterations
+            if (cap is None or cap * optimizer._proposals_per_iteration > _slots_used(state.iterations)) and (
+                at_stop.allowance(phase="train") >= per_candidate
+            ):
+                warnings.warn(
+                    f"budget= would let run {run.run_id} search further, but its search already stopped "
+                    f"({state.stop_reason}) and resume never extends a stopped search: it "
+                    + ("returns the finished result" if state.is_test_done else "only finishes the end phase")
+                    + "; start a new run to search more",
+                    UserWarning,
+                    stacklevel=2,
+                )
         optimizer._run, optimizer._resumed = run, state
         return optimizer
+
+
+def _same_name(saved: str | None, given: str | None) -> bool:
+    """Whether two `module:qualname` names from `run.json`'s `agent` name the same callable. A module run as
+    `__main__` matches any module name: the script that started a run may be imported by name to resume it."""
+    if saved is None or given is None:
+        return saved == given
+    (saved_module, _, saved_name), (given_module, _, given_name) = saved.partition(":"), given.partition(":")
+    return saved_name == given_name and (saved_module == given_module or "__main__" in (saved_module, given_module))
 
 
 def _slots_used(records: Sequence[IterationRecord]) -> int:
