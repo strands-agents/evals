@@ -275,6 +275,13 @@ def test_final_pick_and_split_settings_are_stored():
     assert config["agent"]["rollout_fn"] is None
 
 
+def test_runs_with_different_seeds_get_the_same_split():
+    first, second = _optimizer(seed=0)._config(), _optimizer(seed=1)._config()
+    assert first["split"] == second["split"]
+    assert first["split"]["seed"] == 0
+    assert (first["seed"], second["seed"]) == (0, 1)
+
+
 # the run's setup and the baseline
 
 
@@ -1233,6 +1240,13 @@ def _assert_same(resumed, original, *, rerun=None):
         assert getattr(resumed.validation, field) == getattr(original.validation, field)
     for field in ("champion_id", "objective", "difference", "ratio", "missing"):
         assert getattr(resumed.test, field) == getattr(original.test, field)
+
+
+def test_resume_keeps_the_saved_case_lists(tmp_path):
+    optimizer = _default_search(tmp_path, split=Split(seed=3), seed=3)
+    optimizer._setup()
+    assert set(optimizer._case_split.test) != set(_default_search(tmp_path)._case_split.test)  # not what seed 0 gives
+    assert _resume(optimizer._run.root)._case_split == optimizer._case_split
 
 
 @pytest.mark.parametrize(

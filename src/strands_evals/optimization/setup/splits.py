@@ -37,23 +37,27 @@ class Split:
 
     Shares must sum to 1 (`test=None` counts as 0), else `ValueError` naming the sum. Case lists must be
     disjoint and give every case a role. An omitted `test` is 0.3 with shares and no test cases with lists, so
-    `Split(train=train_cases, validation=validation_cases)` works. `seed=None` uses the run seed
-    (`Optimizer(seed=)`), as `TPE` and `Thompson` do, so two runs with different seeds get different splits;
-    `run.json` stores the seed used.
+    `Split(train=train_cases, validation=validation_cases)` works. `seed` seeds the shuffle that assigns cases
+    by share (unused with case lists). It is independent of `Optimizer(seed=)`, so runs over the same cases with
+    different run seeds get the same split and can be compared case by case. Pass another `seed` for another
+    split; `run.json` stores the seed and the case lists.
     """
 
     train: float | Sequence[Case] = 0.4
     validation: float | Sequence[Case] = 0.3
     test: float | Sequence[Case] | None = _DEFAULT_TEST
-    seed: int | None = None
+    seed: int = 0
 
     def __post_init__(self) -> None:
-        """Resolve an omitted `test`, then check the shares sum to 1 and lists aren't mixed with shares.
+        """Check the seed, resolve an omitted `test`, then check the shares sum to 1 and aren't mixed with lists.
 
         Raises:
+            TypeError: `seed` is not an int.
             ValueError: Shares mixed with lists, a share outside 0 to 1, a train or validation share of 0,
                 shares not summing to 1, a listed case without a name, or a case listed more than once.
         """
+        if not isinstance(self.seed, int) or isinstance(self.seed, bool):
+            raise TypeError(f"Split(seed=...) must be an int, got {self.seed!r}")
         if self.test is _DEFAULT_TEST:
             object.__setattr__(self, "test", 0.3 if _is_number(self.train) else None)
         given = [v for v in (self.train, self.validation, self.test) if v is not None]
@@ -88,17 +92,16 @@ class Split:
         if twice:
             raise ValueError(f"Split: cases listed more than once: {sorted(twice)}")
 
-    def assign(self, cases: Sequence[Case], *, run_seed: int) -> CaseSplit:
+    def assign(self, cases: Sequence[Case]) -> CaseSplit:
         """Assign every case a role.
 
-        With shares: sorted by name, shuffled with `random.Random(seed)` (`run_seed` when `seed` is None),
-        counts by largest remainder. With lists: as given, each list in its own order.
+        With shares: sorted by name, shuffled with `random.Random(seed)`, counts by largest remainder, so the
+        same case names and `seed` give the same split. With lists: as given, each list in its own order.
         0 test cases is allowed (no test report); 1 train case warns (the model's case factor drops
         out); 1-4 test cases warn (the test report is noisy).
 
         Args:
             cases: Every case; names are unique and not None.
-            run_seed: The run's seed, used when `seed` is None.
 
         Returns:
             The three case-name lists; every case is in exactly one.
@@ -111,7 +114,7 @@ class Split:
         if len(names) != len(cases) or len(set(names)) != len(names):
             raise ValueError("Split: the cases need unique, non-None names")
         if _is_number(self.train):
-            split = self._by_share(names, self.seed if self.seed is not None else run_seed)
+            split = self._by_share(names)
         else:
             split = self._by_list(names)
         for role in ("train", "validation"):
@@ -133,7 +136,7 @@ class Split:
             )
         return split
 
-    def _by_share(self, names: list[str], seed: int) -> CaseSplit:
+    def _by_share(self, names: list[str]) -> CaseSplit:
         """Deal the cases by share: sorted by name, shuffled with `seed`, counted by largest remainder.
 
         Sorting first makes the split independent of the order the cases came in. Each role gets the floor of
@@ -142,13 +145,12 @@ class Split:
 
         Args:
             names: Every case name, unique.
-            seed: `Split.seed`, or the run seed when it is None.
 
         Returns:
             The cases by role, each in shuffled order; test may be empty.
         """
         order = sorted(names)
-        random.Random(seed).shuffle(order)
+        random.Random(self.seed).shuffle(order)
         n = len(order)
         shares = [float(self.train), float(self.validation), float(self.test or 0.0)]  # type: ignore[arg-type]
         exact = [s * n for s in shares]

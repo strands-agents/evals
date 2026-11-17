@@ -158,7 +158,7 @@ class Optimizer:
             max_workers: Parallel trials, shared by the candidates scored at once.
             rerun_passes: Max re-run passes per scoring call: trials still `infrastructure_invalid` are re-run, and
                 evaluators that failed are re-judged on the saved output (0 rollouts).
-            seed: Seeds the split (unless `Split(seed=)` is set), selection, TPE, and Thompson.
+            seed: Seeds selection, TPE, and Thompson; the split has its own seed (`Split(seed=)`).
             base_dir: Where run directories go.
             name: The run folder's prefix (lowercase letters, digits, `-`, `_`); for reading only.
             on_iteration: Called with each finished iteration, after its `iteration_end` event; an `async def`
@@ -250,7 +250,7 @@ class Optimizer:
             )
 
         self._split = split if split is not None else Split()
-        self._case_split = self._split.assign(cases, run_seed=seed)
+        self._case_split = self._split.assign(cases)
         self._search = search if search is not None else Search()
         self._blocks, self._schedule = self._search.resolve(self._space)
         self._selection = selection if selection is not None else TopRanked()
@@ -382,7 +382,7 @@ class Optimizer:
                 "train": split.train if shares else None,
                 "validation": split.validation if shares else None,
                 "test": split.test if shares else None,
-                "seed": split.seed if split.seed is not None else self._seed,
+                "seed": split.seed,
                 "cases": {
                     "train": list(self._case_split.train),
                     "validation": list(self._case_split.validation),
