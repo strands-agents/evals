@@ -18,6 +18,7 @@ from strands_evals.optimization import (
     OneOf,
     Proposer,
     Reflection,
+    Schedule,
     Search,
     Space,
     TextValue,
@@ -26,7 +27,7 @@ from strands_evals.optimization import (
     component,
     tool_descriptions,
 )
-from strands_evals.optimization.search.blocks import ScheduleContext, Step
+from strands_evals.optimization.search.blocks import ScheduleContext, Step, _plan
 from strands_evals.types.optimization import IterationRecord, ProposalOutcome
 
 
@@ -407,7 +408,8 @@ SUMMARY = {"manager": "Summary", "manager.Summary.ratio": 0.3, "temperature": 0.
 
 
 class History:
-    """A scripted run: plans with the schedule, records what each step saved, and keeps every context."""
+    """A scripted run: plans with the schedule as the optimizer does (`_plan`), records what each step saved, and
+    keeps every context."""
 
     def __init__(self, schedule, blocks, space=None, *, n=4, redraws=3):
         self.space = space or Space({"manager": manager(), "temperature": Float(0.0, 1.0, default=0.7)})
@@ -435,7 +437,7 @@ class History:
             proposals_per_iteration=self.n,
             redraws=self.redraws,
         )
-        step = self.schedule.next(ctx)
+        step = _plan(self.schedule, ctx)
         self.contexts.append(ctx)
         self.steps.append(step)
         return step
@@ -781,6 +783,92 @@ def test_a_joint_step_that_saved_nothing_ends_its_round_early():
     history.save(history.plan(), ("duplicate", "base"))  # Joint's first step saves nothing
 
     assert view(history.plan())[3:5] == ((1,), "opener")
+
+
+class NeverNone(Schedule):
+    """A schedule of your own that never returns None: every block, every step."""
+
+    name = "never_none"
+
+    def next(self, ctx):
+        return Step(tuple(ctx.blocks), ctx.proposals_per_iteration, None, None, "inner", ())
+
+
+@pytest.mark.parametrize("redraws", [0, 3])
+def test_a_schedule_that_never_returns_none_stops_once_its_steps_save_nothing(redraws):
+    blocks = [Block(Fake(), "temperature", name="t"), Block(Fake(), "manager", name="m")]
+    history = History(NeverNone(), blocks, redraws=redraws)
+    history.save(history.plan(), "feasible")
+    limit = (redraws + 2) * 2  # 2 blocks
+    for _ in range(limit):  # no proposer has anything left
+        history.save(history.plan())
+
+    with pytest.warns(UserWarning, match=f"NeverNone.next planned another step after {limit} steps"):
+        assert history.plan() is None
+
+
+@pytest.mark.parametrize(
+    "schedule",
+    [
+        lambda: Nested("structure", NeverNone(), inner_iterations=4),
+        # under Window the round narrows out "summary", so the inner Nested hands its context to NeverNone
+        lambda: Nested("structure", Nested("summary", NeverNone()), inner_iterations=4),
+    ],
+    ids=["inner", "behind a narrowed-out Nested"],
+)
+def test_a_schedule_that_never_returns_none_inside_a_round_ends_only_the_round(schedule):
+    history = History(schedule(), blocks4())
+    history.save(history.plan(), "feasible")  # the opener keeps Window: the round holds window and temp
+    for _ in range((3 + 2) * 2):
+        step = history.plan()
+        assert step.round == (0,) and [b.name for b in step.blocks] == ["window", "temp"]
+        history.save(step, ("duplicate", "base"))
+
+    with pytest.warns(UserWarning, match="after 10 steps"):
+        assert view(history.plan())[3:5] == ((1,), "opener")  # the round is over, not the search
+
+
+class Delegating(Schedule):
+    """A schedule of your own that plans whatever `Nested(structure, Alternate())` plans."""
+
+    name = "delegating"
+
+    def next(self, ctx):
+        return Nested("structure", Alternate()).next(ctx)
+
+
+def test_a_schedule_of_your_own_that_delegates_to_nested_is_not_cut_short():
+    history = History(
+        Delegating(), [Block(Fake(), "manager", name="structure"), Block(Fake(), "temperature", name="t")]
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        steps = history.run(lambda step, i: ["feasible"] if i == 0 else [("duplicate", "base")] * step.n_candidates)
+
+    # After the first opener: 1 inner step, then redraws + 1 empty rounds of an opener and 1 inner step. That is 9
+    # steps in a row that saved nothing, (redraws + 2) x 2 blocks - 1, so the 10th plan is Nested's own None.
+    assert steps[-1] is None and len(history.past) == 1 + 1 + 4 * 2
+
+
+def test_the_built_in_schedules_run_past_the_allowance_for_a_schedule_of_your_own():
+    space = two_structures(temperature=Float(0.0, 1.0, default=0.5))
+    blocks = [
+        Block(Fake(), "manager", name="a"),
+        Block(Fake(), "router", name="b"),
+        Block(Fake(), "temperature", name="t"),
+    ]
+    history = History(Nested("a", Nested("b", Joint(), inner_iterations=2), inner_iterations=3), blocks, space)
+    history.values["base"] = TWO_BASE
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        steps = history.run(lambda step, i: ["feasible"] if i == 0 else [("duplicate", "base")] * step.n_candidates)
+
+    # After the first opener, every step repeats the baseline: 8 steps finish the round's inner rounds, then each
+    # of the redraws + 1 empty outer rounds is an opener and 8 inner steps. That is 44 steps in a row that saved
+    # nothing, past the (redraws + 2) x 3 blocks = 15 a schedule of your own gets.
+    assert steps[-1] is None and len(history.past) == 1 + 8 + 4 * 9
 
 
 TWO_BASE = {

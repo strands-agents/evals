@@ -72,7 +72,7 @@ from .score_model.protocols import Fit, FitData, ScoreModel
 from .score_model.ranking import Assessment, Mean, assess, label_candidate, pareto_front, rank, round_to_sd
 from .scoring.metrics import USAGE_METRICS, MetricRegistry
 from .scoring.objectives import Constraint, Criteria, Objective, Pareto, WeightedSum, measured_metrics, score
-from .search.blocks import Block, ScheduleContext, Search, Step
+from .search.blocks import Block, ScheduleContext, Search, Step, _plan
 from .search.proposer import ProposalRequest, Proposer
 from .selection.base import Selection, SelectionContext
 from .selection.top_ranked import TopRanked
@@ -589,7 +589,8 @@ class Optimizer:
                 return "budget"
             self._iteration += 1
             ranking, assessments = self._rank()
-            step = self._schedule.next(
+            step = _plan(
+                self._schedule,
                 ScheduleContext(
                     past=list(self._iterations),
                     blocks=blocks,
@@ -601,7 +602,7 @@ class Optimizer:
                     run_ranking=ranking,
                     proposals_per_iteration=self._proposals_per_iteration,
                     redraws=self._search.redraws,
-                )
+                ),
             )
             self._close_rounds(step, ranking, assessments)
             if step is None:
@@ -631,7 +632,7 @@ class Optimizer:
         messages = {
             "budget": "the rollout budget left after the end phase's reserve can't score another candidate",
             "iterations": f"used Budget(max_iterations={cap})'s candidate slots ({cap} steps' worth)",
-            "exhausted": "the schedule has nothing left to try",
+            "exhausted": "the schedule has nothing left to try, or its steps stopped saving candidates",
             "proposer_error": "a proposer raised; see the proposer_error event",
         }
         self._run.events.append("stop", iteration=self._iteration, reason=reason, message=messages.get(reason, ""))
