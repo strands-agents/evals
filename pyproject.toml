@@ -74,10 +74,12 @@ claude = [
     "openinference-instrumentation-claude-agent-sdk>=0.1.8,<0.2.0",
 ]
 # Optimizer (strands_evals.optimization)
+# strands-agents>=1.57.2 for `AnthropicModel` `totalTokens` that include cache tokens, which `Usage.tokens` reads.
 optimization = [
     "numpy>=1.26.0,<3.0.0",
     "scipy>=1.11.0,<2.0.0",
     "optuna>=5.0.0,<6.0.0",
+    "strands-agents>=1.57.2",
 ]
 
 [tool.ruff]
