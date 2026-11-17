@@ -1,18 +1,20 @@
 """What `strands-evals optimize` builds from its flags: the `Optimizer` and `cli.json`.
 
 `cli.json` holds the inputs of `optimize run`, as given, so `resume RUN_DIR` rebuilds the same experiment, agent,
-objective, constraints, and search from the run folder alone.
+objective, constraints, search, selection, score model, and progress callback from the run folder alone. A flag that
+takes an object takes `MODULE:ATTR` (`import_attr`), checked against the type the `Optimizer` expects.
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
 import re
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -24,6 +26,7 @@ from ..optimization import (
     AtMost,
     Block,
     Constraint,
+    FinalPick,
     IterationRecord,
     Maximize,
     Minimize,
@@ -32,7 +35,9 @@ from ..optimization import (
     Optimizer,
     Pareto,
     Reflection,
+    ScoreModel,
     Search,
+    Selection,
     Space,
     Split,
     TunableFactory,
@@ -53,12 +58,15 @@ _CONSTRAINT = re.compile(r"^\s*(?P<metric>[^<>=\s][^<>=]*?)\s*(?P<op><=|>=)\s*(?
 class Inputs:
     """What `optimize run` was given, as `cli.json` stores it; specs are kept as typed and parsed again on load.
 
-    Exactly one of `agent` (a `MODULE:ATTR` tunable factory) and `config` (a portable config's absolute path, with
-    its sha256, its `--tune` specs, and the strands-harness version) is set.
+    Exactly one agent route is set: `agent` (a `MODULE:ATTR` tunable factory), `build_task` with `space` (two
+    `MODULE:ATTR`s), or `config` (a portable config's absolute path, with its sha256, its `--tune` specs, and the
+    strands-harness version). `objective` and `constraints` hold specs or `MODULE:ATTR`s, as typed.
     """
 
     experiment_file: str
     agent: str | None = None
+    build_task: str | None = None
+    space: str | None = None
     config: str | None = None
     config_sha256: str | None = None
     tune: list[str] = field(default_factory=list)
@@ -70,6 +78,10 @@ class Inputs:
     pareto: bool = False
     constraints: list[str] = field(default_factory=list)
     reflection_model: str | None = None
+    search: str | None = None
+    selection: str | None = None
+    score_model: str | None = None
+    on_iteration: str | None = None
 
 
 def save_inputs(run_dir: Path, inputs: Inputs) -> Path:
@@ -120,6 +132,11 @@ def working_directory(path: str | Path) -> Iterator[None]:
 # Parsing flags; a bad value raises `ValueError` (exit 2).
 
 
+def is_objective_spec(spec: str) -> bool:
+    """`maximize:...` / `minimize:...`, or a value without `:` (a malformed spec); anything else is `MODULE:ATTR`."""
+    return spec.partition(":")[0] in ("maximize", "minimize") or ":" not in spec
+
+
 def parse_objective(spec: str) -> Maximize | Minimize:
     """`maximize:METRIC[:weight=X][:scale=X]` or `minimize:...`."""
     direction, _, rest = spec.partition(":")
@@ -144,6 +161,19 @@ def parse_objective(spec: str) -> Maximize | Minimize:
         raise ValueError(f"--objective '{spec}': {error}") from error
 
 
+def parse_constraints(spec: str) -> list[Constraint]:
+    """A `--constraint`: `METRIC<=X` / `METRIC>=X`, or `MODULE:ATTR` naming a constraint or a list of them (a value
+    with `<`, `>`, or `=` is a spec)."""
+    if any(char in spec for char in "<>="):
+        return [parse_constraint(spec)]
+    target = load_hook(spec, "--constraint", (AtMost, AtLeast, list, tuple), "a constraint (AtMost or AtLeast)")
+    targets = list(target) if isinstance(target, (list, tuple)) else [target]
+    wrong = [type(item).__name__ for item in targets if not isinstance(item, (AtMost, AtLeast))]
+    if wrong:
+        raise EntryPointError(f"--constraint '{spec}' holds a {wrong[0]}, not a constraint (AtMost or AtLeast)")
+    return targets
+
+
 def parse_constraint(spec: str) -> Constraint:
     """`METRIC<=X` (`AtMost`) or `METRIC>=X` (`AtLeast`)."""
     match = _CONSTRAINT.match(spec)
@@ -158,7 +188,10 @@ def parse_constraint(spec: str) -> Constraint:
 
 
 def parse_split(spec: str) -> Split:
-    """`TRAIN,VALIDATION,TEST` shares; a test share of 0 means no test cases."""
+    """`TRAIN,VALIDATION,TEST` shares (a test share of 0 means no test cases), or `MODULE:ATTR` naming a `Split`
+    (case lists, a split seed)."""
+    if ":" in spec:
+        return load_hook(spec, "--split", Split, "a Split")  # type: ignore[no-any-return]
     parts = spec.split(",")
     try:
         shares = [float(part) for part in parts]
@@ -192,6 +225,15 @@ def load_experiment(inputs: Inputs) -> Experiment:
     return Experiment.from_file(inputs.experiment_file, custom_evaluators=custom)
 
 
+def load_hook(spec: str, flag: str, kind: Any, what: str) -> Any:
+    """`flag`'s `MODULE:ATTR` target, which must be an instance of `kind` (a type, a tuple of types, or a union), or
+    callable when `kind` is None; `what` names the expected kind in the error."""
+    target = import_attr(spec)
+    if not (callable(target) if kind is None else isinstance(target, kind)):
+        raise EntryPointError(f"{flag} '{spec}' is a {type(target).__name__}, not {what}")
+    return target
+
+
 def load_factory(spec: str) -> TunableFactory:
     """The `--agent` target, which must be a `TunableFactory`."""
     target = import_attr(spec)
@@ -204,7 +246,24 @@ def load_factory(spec: str) -> TunableFactory:
 
 
 def build_objective(inputs: Inputs) -> Objective | None:
-    """None (the default objective), one objective, a `WeightedSum`, or with `--pareto` a `Pareto`."""
+    """None (the default objective), one objective, a `WeightedSum`, or with `--pareto` a `Pareto`; or the whole
+    objective from one `--objective MODULE:ATTR`."""
+    hooks = [spec for spec in inputs.objective if not is_objective_spec(spec)]
+    if hooks:
+        try:
+            objective = load_hook(
+                hooks[0], "--objective", Objective, "an objective (Maximize, Minimize, WeightedSum, Pareto)"
+            )
+        except EntryPointError as error:
+            raise ValueError(
+                f"--objective must be maximize:METRIC or minimize:METRIC (optionally :weight=X / :scale=X), "
+                f"or MODULE:ATTR naming an objective: {error}"
+            ) from error
+        if len(inputs.objective) > 1 or inputs.pareto:
+            raise ValueError(
+                "--objective MODULE:ATTR names the whole objective: give it alone, with no other --objective, --pareto"
+            )
+        return objective  # type: ignore[no-any-return]
     objectives = [parse_objective(spec) for spec in inputs.objective]
     if inputs.pareto:
         if len(objectives) < 2:
@@ -215,8 +274,14 @@ def build_objective(inputs: Inputs) -> Objective | None:
     return objectives[0] if len(objectives) == 1 else WeightedSum(*objectives)
 
 
-def build_search(space: Space, reflection_model: str | None) -> Search | None:
-    """The default search, with `Reflection(model=...)` on the text keys when `--reflection-model` is given."""
+def build_search(space: Space, inputs: Inputs) -> Search | None:
+    """`--search`'s `Search`; else the default search, with `Reflection(model=...)` on the text keys when
+    `--reflection-model` is given."""
+    if inputs.search is not None:
+        if inputs.reflection_model is not None:
+            raise ValueError("--search and --reflection-model: set the model in the search's Reflection(model=...)")
+        return load_hook(inputs.search, "--search", Search, "a Search")  # type: ignore[no-any-return]
+    reflection_model = inputs.reflection_model
     if reflection_model is None:
         return None
     names = list(dict.fromkeys(info.name for info in space.params() if info.kind == "text"))
@@ -226,11 +291,20 @@ def build_search(space: Space, reflection_model: str | None) -> Search | None:
 
 
 def agent_arguments(inputs: Inputs) -> dict[str, Any]:
-    """What `Optimizer` and `Optimizer.resume` take about the agent and the goal, built from `inputs`."""
-    goal: dict[str, Any] = {
+    """What `Optimizer` and `Optimizer.resume` take about the agent, the goal, the search, the selection, the score
+    model, and progress, built from `inputs`."""
+    rollout = (
+        load_hook(inputs.rollout, "--rollout", None, "a rollout_fn(agent_factory, case)") if inputs.rollout else None
+    )
+    common: dict[str, Any] = {
         "experiment": load_experiment(inputs),
         "objective": build_objective(inputs),
-        "constraints": [parse_constraint(spec) for spec in inputs.constraints],
+        "constraints": [c for spec in inputs.constraints for c in parse_constraints(spec)],
+        "selection": load_hook(inputs.selection, "--selection", Selection, "a Selection") if inputs.selection else None,
+        "score_model": (
+            load_hook(inputs.score_model, "--score-model", ScoreModel, "a ScoreModel") if inputs.score_model else None
+        ),
+        "on_iteration": progress(inputs.on_iteration),
     }
     if inputs.config is not None:
         from . import _harness  # needs strands-harness, in the `optimization` extra
@@ -238,22 +312,47 @@ def agent_arguments(inputs: Inputs) -> dict[str, Any]:
         config = Path(inputs.config)
         markers, tuned = _harness.declare(config, inputs.tune)
         _harness.warn_host_tools(config)
-        space = Space(markers)
         return {
-            **goal,
-            "build_task": _harness.build_task(config, tuned),
+            **common,
+            "build_task": _harness.build_task(config, tuned, rollout),
             "space": markers,
-            "search": build_search(space, inputs.reflection_model),
+            "search": build_search(Space(markers), inputs),
         }
+    if inputs.build_task is not None:
+        assert inputs.space is not None
+        build = load_hook(inputs.build_task, "--build-task", None, "a function build_task(ctx) returning a task")
+        space = load_hook(inputs.space, "--space", Mapping, "a mapping of declared names to markers")
+        return {**common, "build_task": build, "space": space, "search": build_search(Space(space), inputs)}
     assert inputs.agent is not None
     factory = load_factory(inputs.agent)
+    environment = inputs.environment
     return {
-        **goal,
+        **common,
         "factory": factory,
-        "rollout_fn": import_attr(inputs.rollout) if inputs.rollout else None,
-        "environment": import_attr(inputs.environment) if inputs.environment else None,
-        "search": build_search(factory.space, inputs.reflection_model),
+        "rollout_fn": rollout,
+        "environment": load_hook(environment, "--environment", None, "an environment(case)") if environment else None,
+        "search": build_search(factory.space, inputs),
     }
+
+
+def progress(spec: str | None) -> Callable[[IterationRecord], Any]:
+    """The `on_iteration` callback: the CLI's progress line, then `--on-iteration`'s callback (awaited when async)."""
+    if spec is None:
+        return print_iteration
+    user = load_hook(spec, "--on-iteration", None, "a callable taking an IterationRecord")
+
+    async def on_iteration(record: IterationRecord) -> None:
+        print_iteration(record)
+        result = user(record)
+        if inspect.isawaitable(result):
+            await result
+
+    return on_iteration
+
+
+def load_final_pick(spec: str) -> FinalPick:
+    """`--final-pick`'s `FinalPick`."""
+    return load_hook(spec, "--final-pick", FinalPick, "a FinalPick")  # type: ignore[no-any-return]
 
 
 def check_harness_version(inputs: Inputs) -> None:

@@ -58,6 +58,8 @@ def _run(args: argparse.Namespace) -> int:
     inputs = _optimize.Inputs(
         experiment_file=str(Path(args.experiment_file).resolve()),
         agent=args.agent,
+        build_task=args.build_task,
+        space=args.space,
         **harness,
         custom_evaluators=args.custom_evaluator or [],
         rollout=args.rollout,
@@ -66,6 +68,10 @@ def _run(args: argparse.Namespace) -> int:
         pareto=args.pareto,
         constraints=args.constraint_specs or [],
         reflection_model=args.reflection_model,
+        search=args.search,
+        selection=args.selection,
+        score_model=args.score_model,
+        on_iteration=args.on_iteration,
     )
     settings = _given(
         args,
@@ -86,9 +92,11 @@ def _run(args: argparse.Namespace) -> int:
             settings["agent_failure_score"] = _optimize.parse_agent_failure_score(args.agent_failure_score)
         if budget:
             settings["budget"] = Budget(**budget)
-        if args.n_finalists is not None:
+        if args.final_pick is not None:
+            settings["final_pick"] = _optimize.load_final_pick(args.final_pick)
+        elif args.n_finalists is not None:
             settings["final_pick"] = FinalPick(n_finalists=args.n_finalists)
-        optimizer = Optimizer(**_optimize.agent_arguments(inputs), **settings, on_iteration=_optimize.print_iteration)
+        optimizer = Optimizer(**_optimize.agent_arguments(inputs), **settings)
     except (TypeError, ValueError) as error:
         emit_error(str(error))
         return EXIT_BAD_INPUT
@@ -102,13 +110,21 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def _check_agent_flags(args: argparse.Namespace) -> str | None:
-    """`--tune` goes with `--config`; `--rollout` and `--environment` with `--agent`."""
+    """Flags that need another flag, or exclude one: `--tune` goes with `--config`; `--build-task` with `--space`;
+    `--rollout` with `--agent` or `--config`; `--environment` with `--agent`; `--final-pick` replaces
+    `--n-finalists`, `--search` replaces `--reflection-model`."""
     if args.config is None and args.tune:
-        return "--tune needs --config (with --agent, declare what may change with @tunable)"
-    if args.config is not None:
-        given = [flag for flag, value in (("--rollout", args.rollout), ("--environment", args.environment)) if value]
-        if given:
-            return f"{', '.join(given)} needs --agent: with --config, each trial runs the configured harness"
+        return "--tune needs --config (with --agent or --space, declare what may change with markers)"
+    if (args.build_task is None) != (args.space is None):
+        return "--build-task and --space go together: the task builder and the space it reads values from"
+    if args.build_task is not None and args.rollout:
+        return "--rollout doesn't go with --build-task: the task build_task returns is the rollout"
+    if args.environment and args.agent is None:
+        return "--environment needs --agent: it passes resources to the factory's parameters"
+    if args.final_pick is not None and args.n_finalists is not None:
+        return "--final-pick and --n-finalists: set n_finalists in the FinalPick"
+    if args.search is not None and args.reflection_model is not None:
+        return "--search and --reflection-model: set the model in the search's Reflection(model=...)"
     return None
 
 
@@ -131,11 +147,7 @@ def _resume(args: argparse.Namespace) -> int:
                 given = _given(args, "max_rollouts", "max_iterations")
                 budget = Budget(**{**saved["budget"], **given})
             optimizer = Optimizer.resume(
-                run_dir,
-                **_optimize.agent_arguments(inputs),
-                budget=budget,
-                max_workers=args.max_workers,
-                on_iteration=_optimize.print_iteration,
+                run_dir, **_optimize.agent_arguments(inputs), budget=budget, max_workers=args.max_workers
             )
         except (TypeError, ValueError) as error:
             emit_error(str(error))
@@ -151,10 +163,10 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
         parents=[parent],
         help="search for a better configuration of a tunable agent",
         description=(
-            "Load an Experiment (its cases and evaluators), take the agent from --agent (a @tunable factory) or "
-            "--config (a strands-harness portable config), and run the "
-            "optimizer: the search on the train cases, the champion picked on validation, and the champion "
-            "compared with the baseline on the test cases. Writes the run folder (events, best.diff, "
+            "Load an Experiment (its cases and evaluators), take the agent from --agent (a @tunable factory), "
+            "--build-task with --space (your task builder and its space), or --config (a strands-harness portable "
+            "config), and run the optimizer: the search on the train cases, the champion picked on validation, "
+            "and the champion compared with the baseline on the test cases. Writes the run folder (events, best.diff, "
             "best.values.json, result.json, cli.json); nothing in your project is changed."
         ),
     )
@@ -166,9 +178,17 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
         help="a tunable factory (@tunable or tunable(fn, inject=...)), as 'module:attr' or 'path/to/file.py:attr'",
     )
     agent.add_argument(
+        "--build-task",
+        metavar="MODULE:ATTR",
+        help="a build_task(ctx) returning the candidate's task(case); needs --space",
+    )
+    agent.add_argument(
         "--config",
         metavar="PATH",
         help="a strands-harness portable config (JSON); its instructions are tuned, plus each --tune",
+    )
+    parser.add_argument(
+        "--space", metavar="MODULE:ATTR", default=None, help="with --build-task: a mapping of declared names to markers"
     )
     parser.add_argument(
         "--tune",
@@ -176,12 +196,19 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
         action="append",
         default=None,
         help=(
-            "with --config, repeatable: a dotted config path to tune, as text (e.g. 'subagents.0.instructions', "
-            "or 'skills' for its skill folder) or, with =JSON_LIST, as a choice (e.g. 'effort=[\"low\",\"high\"]')"
+            "with --config, repeatable: a dotted config path to tune, as text (e.g. 'description', or "
+            "'skills' for its skill folder) or, with =JSON_LIST, as a choice (e.g. 'effort=[\"low\",\"high\"]')"
         ),
     )
-    parser.add_argument("--rollout", metavar="MODULE:ATTR", default=None, help="a custom rollout_fn")
-    parser.add_argument("--environment", metavar="MODULE:ATTR", default=None, help="an environment(case) function")
+    parser.add_argument(
+        "--rollout",
+        metavar="MODULE:ATTR",
+        default=None,
+        help="a rollout_fn(agent_factory, case); with --config, agent_factory builds a fresh harness",
+    )
+    parser.add_argument(
+        "--environment", metavar="MODULE:ATTR", default=None, help="with --agent: an environment(case) function"
+    )
     parser.add_argument(
         "--custom-evaluator",
         metavar="MODULE:CLASS",
@@ -194,23 +221,45 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
     goal.add_argument(
         "--objective",
         dest="objective_specs",
-        metavar="{maximize,minimize}:METRIC[:weight=X][:scale=X]",
+        metavar="{maximize,minimize}:METRIC[:weight=X][:scale=X] | MODULE:ATTR",
         action="append",
         default=None,
-        help="repeatable; several are combined as a weighted sum (or a Pareto front with --pareto)",
+        help=(
+            "repeatable; several are combined as a weighted sum (or a Pareto front with --pareto); "
+            "MODULE:ATTR names a whole objective, given alone"
+        ),
     )
     goal.add_argument("--pareto", action="store_true", help="combine the --objective's as a Pareto front")
     goal.add_argument(
         "--constraint",
         dest="constraint_specs",
-        metavar="METRIC<=X|METRIC>=X",
+        metavar="METRIC<=X | METRIC>=X | MODULE:ATTR",
         action="append",
         default=None,
-        help="repeatable, e.g. 'tokens<=4000'",
+        help="repeatable, e.g. 'tokens<=4000'; MODULE:ATTR names a constraint or a list of them",
+    )
+
+    objects = parser.add_argument_group("objects from your code (MODULE:ATTR; default: the Optimizer's)")
+    objects.add_argument("--search", metavar="MODULE:ATTR", default=None, help="a Search: blocks, proposers, schedule")
+    objects.add_argument("--selection", metavar="MODULE:ATTR", default=None, help="a Selection choosing each parent")
+    objects.add_argument("--score-model", metavar="MODULE:ATTR", default=None, help="a ScoreModel")
+    objects.add_argument(
+        "--final-pick", metavar="MODULE:ATTR", default=None, help="a FinalPick (finalists and the pick rule)"
+    )
+    objects.add_argument(
+        "--on-iteration",
+        metavar="MODULE:ATTR",
+        default=None,
+        help="a callback (sync or async) called with each IterationRecord, after the progress line",
     )
 
     settings = parser.add_argument_group("settings (default: the Optimizer's)")
-    settings.add_argument("--split", default=None, metavar="TRAIN,VALIDATION,TEST", help="shares; test 0 = none")
+    settings.add_argument(
+        "--split",
+        default=None,
+        metavar="TRAIN,VALIDATION,TEST | MODULE:ATTR",
+        help="shares (test 0 = none), or a Split (case lists, a split seed)",
+    )
     settings.add_argument("--seed", type=int, default=None, metavar="N")
     settings.add_argument("--max-rollouts", type=int, default=None, metavar="N")
     settings.add_argument("--max-iterations", type=int, default=None, metavar="N")

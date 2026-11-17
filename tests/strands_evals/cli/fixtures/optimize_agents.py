@@ -13,8 +13,26 @@ from strands import Agent
 from strands.agent.conversation_manager import SlidingWindowConversationManager, SummarizingConversationManager
 from strands.models import Model
 
+from strands_evals import Case
 from strands_evals.evaluators import Evaluator
-from strands_evals.optimization import Float, Int, choice, component, tunable
+from strands_evals.optimization import (
+    TPE,
+    AtMost,
+    BayesBenchModel,
+    Block,
+    FinalPick,
+    Float,
+    Int,
+    IterationRecord,
+    LowerBound,
+    Maximize,
+    Search,
+    Split,
+    TopRanked,
+    choice,
+    component,
+    tunable,
+)
 from strands_evals.types import EvaluationOutput
 
 EXACT = "Give the exact answer."
@@ -88,3 +106,77 @@ def plain_agent():
 
 world = World(0.25, None)
 """A scripted model instance for portable configs, referenced as `modelModule`."""
+
+
+# Objects for the `MODULE:ATTR` flags.
+
+
+class FirstRanked(TopRanked):
+    """`TopRanked` under another name, so a test can see a `--selection` reached the run."""
+
+    name = "first_ranked"
+
+
+class Scores(BayesBenchModel):
+    """`BayesBenchModel` under another name, so a test can see a `--score-model` reached the run."""
+
+    name = "scores"
+
+
+first_ranked = FirstRanked()
+scores = Scores()
+search = Search([Block(TPE(n_startup_trials=1), "temperature")])
+final_pick = FinalPick(n_finalists=2, rule=LowerBound(q=0.2))
+split = Split(  # matched to the experiment's cases by name
+    train=[Case(name=f"q{i:02d}", input="") for i in range(8)],
+    validation=[Case(name=f"q{i:02d}", input="") for i in range(8, 14)],
+    test=[Case(name=f"q{i:02d}", input="") for i in range(14, 20)],
+)
+objective = Maximize("Correct")
+constraints = [AtMost("tokens", 450)]
+
+ITERATIONS: list[int] = []
+
+
+async def record_iteration(record: IterationRecord) -> None:
+    """An async `--on-iteration` callback."""
+    ITERATIONS.append(record.iteration)
+
+
+# The `--build-task` + `--space` route: the same agent as `manager_agent`, declared without a factory.
+
+space = {
+    "manager": choice(
+        window=component(SlidingWindowConversationManager, window_size=Int(4, 40)),
+        summary=component(SummarizingConversationManager, summary_ratio=Float(0.1, 0.8)),
+    ),
+    "temperature": Float(0.0, 1.0, default=0.9),
+}
+
+
+def build_task(ctx):
+    """One task per candidate; a fresh agent per trial."""
+
+    async def task(case):
+        manager = ctx.resolve("manager")
+        agent = Agent(
+            model=World(ctx.values["temperature"], manager),
+            conversation_manager=manager,
+            system_prompt=EXACT,
+            callback_handler=None,
+        )
+        return {"output": str(await agent.invoke_async(case.input))}
+
+    return task
+
+
+# A `--rollout` for the `--config` route.
+
+ROLLOUTS: list[str] = []
+
+
+async def harness_rollout(agent_factory, case):
+    """Builds the trial's harness through `agent_factory`, as the default does, and records the case."""
+    ROLLOUTS.append(case.name)
+    agent = agent_factory()
+    return {"output": str(await agent.invoke_async(case.input))}

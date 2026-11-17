@@ -3,7 +3,8 @@
 The space comes from the config's paths (`instructions`, plus every `--tune`): a text field is a `JsonField` on the
 config, a `skills` path a `SkillLibrary`, a choice a `OneOf`. Each candidate's values are set at their paths in a copy
 of the config held in memory; each trial builds a fresh harness from it, with its own empty session folder and a copy
-of the configured memory folder, so no trial sees another's state.
+of the configured memory folder, so no trial sees another's state. A `--rollout` runs each trial instead of the
+default `invoke_async(case.input)`, given a factory that builds such a fresh harness.
 """
 
 from __future__ import annotations
@@ -28,7 +29,8 @@ from strands_harness import (
 from strands_harness.defaults import DEFAULT_MEMORY_DIR
 
 from ..case import Case
-from ..optimization import BuildContext, JsonField, Marker, OneOf, SkillLibrary
+from ..optimization import BuildContext, JsonField, Marker, OneOf, RolloutFn, SkillLibrary
+from ..optimization.execution.rollout import _call
 
 logger = logging.getLogger(__name__)
 
@@ -124,8 +126,15 @@ def warn_host_tools(config_path: Path) -> None:
         )
 
 
-def build_task(config_path: Path, tuned: list[Tuned]) -> Callable[[BuildContext], Callable[[Case], Any]]:
-    """`build_task` for `Optimizer`: a candidate's values set at their paths, a fresh harness per trial."""
+def build_task(
+    config_path: Path, tuned: list[Tuned], rollout_fn: RolloutFn | None = None
+) -> Callable[[BuildContext], Callable[[Case], Any]]:
+    """`build_task` for `Optimizer`: a candidate's values set at their paths, a fresh harness per trial.
+
+    Without `rollout_fn`, each trial is `invoke_async(case.input)` on one harness. With it, each trial is
+    `rollout_fn(make_harness, case)`, where every `make_harness()` call builds a fresh harness from the candidate's
+    config, sharing the trial's session and memory folders; a sync `rollout_fn` runs in a worker thread.
+    """
     raw = read_config(config_path)
     base_dir = config_path.parent
 
@@ -135,11 +144,16 @@ def build_task(config_path: Path, tuned: list[Tuned]) -> Callable[[BuildContext]
             value = ctx.resolve(item.name)
             _set(config, item.path, str(value) if item.kind == "skills" else value)
 
-        async def task(case: Case) -> dict[str, Any]:
+        async def task(case: Case) -> Any:
             with tempfile.TemporaryDirectory(prefix="strands-evals-trial-") as folder:
                 trial = _fresh_state(config, base_dir, Path(folder))
-                agent = create_harness(**harness_agent_kwargs_from_config(trial, base_dir=base_dir))
-                result = await agent.invoke_async(case.input)
+
+                def make_harness() -> Any:
+                    return create_harness(**harness_agent_kwargs_from_config(trial, base_dir=base_dir))
+
+                if rollout_fn is not None:
+                    return await _call(rollout_fn, make_harness, case)
+                result = await make_harness().invoke_async(case.input)
             return {"output": str(result)}
 
         return task
