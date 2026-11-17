@@ -34,7 +34,8 @@ class BuildContext:
     Attributes:
         values: The candidate's typed flat values.
         resolve: `resolve(name)` returns what the factory path would pass for that declared name:
-            a fresh component, a value, or a path inside the candidate's copy.
+            a fresh component, a value, a path inside the candidate's copy, or what a `CustomMarker`
+            resolves its value to with the run's artifact store.
         workspace: The candidate's copy of the file-backed folders
             (`<run>/candidates/<id>/optimization_files/`), or None when the space has no
             file-backed values. Lets a config-defined agent load the whole edited file, e.g. the
@@ -110,11 +111,13 @@ class TunableFactory:
         }
         return self._fn(*args, **kwargs, **resolved)
 
-    def validate(self, values: Values) -> None:
-        """Same as `self.space.validate(values)`; raises `ValueError`."""
-        self.space.validate(values)
+    def validate(self, values: Values, *, artifacts: Path | None = None) -> None:
+        """Same as `self.space.validate(values, artifacts=artifacts)`; raises `ValueError`."""
+        self.space.validate(values, artifacts=artifacts)
 
-    def bind(self, values: Values, *, workspace: Path | None = None) -> Callable[..., Any]:
+    def bind(
+        self, values: Values, *, workspace: Path | None = None, artifacts: Path | None = None
+    ) -> Callable[..., Any]:
         """Return a factory that builds fresh components with `values` bound on every call.
 
         Fills missing keys with defaults but drops nothing (an inactive key raises `ValueError`), and
@@ -137,6 +140,9 @@ class TunableFactory:
         Args:
             values: The candidate's values.
             workspace: Where to write the candidate's file copy; None outside a run.
+            artifacts: The run's artifact store (`<run>/artifacts/`), passed to each `CustomMarker`'s
+                `check_value` and `resolve`; None outside a run. To build a run's result whose values
+                name stored files, pass `artifacts=result.run_dir / "artifacts"`.
 
         Returns:
             A factory that builds fresh components on every call.
@@ -147,14 +153,14 @@ class TunableFactory:
         """
         # complete() last, for its canonical values; an inactive key it drops stays for validate to report.
         bound_values = {**values, **self.space.complete(values)}
-        self.space.validate(bound_values)
+        self.space.validate(bound_values, artifacts=artifacts)
         temp: _TempCopy | None = None
         if self.space._copies_files:
             if workspace is None:
                 temp = _TempCopy()
                 workspace = temp.directory
             self.space.create_candidate_copy(bound_values, workspace)
-        return _BoundFactory(self, bound_values, workspace, {}, temp)
+        return _BoundFactory(self, bound_values, workspace, {}, temp, artifacts)
 
 
 class _TempCopy:
@@ -207,12 +213,14 @@ class _BoundFactory:
         workspace: Path | None,
         resources: Mapping[str, Any],
         temp: _TempCopy | None = None,
+        artifacts: Path | None = None,
     ):
         self._factory = factory
         self._values = values
         self._workspace = workspace
         self._resources = resources
         self._temp = temp  # held so the temp copy lives as long as any factory built from this bind()
+        self._artifacts = artifacts
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Build with the bound values; `kwargs` go to the function's non-tunable parameters."""
@@ -232,7 +240,10 @@ class _BoundFactory:
             for name, value in self._resources.items()
             if name in factory._accepted and name not in kwargs  # a call kwarg wins, as passed explicitly
         }
-        resolved = {name: factory.space.resolve(name, self._values, self._workspace) for name in factory._names}
+        resolved = {
+            name: factory.space.resolve(name, self._values, self._workspace, artifacts=self._artifacts)
+            for name in factory._names
+        }
         try:
             # Checked before the call, so a TypeError raised inside the function stays the agent's.
             factory._signature.bind(**resolved, **resources, **kwargs)
@@ -259,7 +270,14 @@ class _BoundFactory:
         dropped = sorted(name for name in resources if name not in self._factory._accepted)
         if dropped:
             logger.debug("factory=<%s>, resources=<%s> | factory does not declare them", self._factory._label, dropped)
-        return _BoundFactory(self._factory, self._values, self._workspace, {**self._resources, **resources}, self._temp)
+        return _BoundFactory(
+            self._factory,
+            self._values,
+            self._workspace,
+            {**self._resources, **resources},
+            self._temp,
+            self._artifacts,
+        )
 
 
 @overload

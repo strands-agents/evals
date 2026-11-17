@@ -24,10 +24,14 @@ from strands_evals.optimization import (
     Thompson,
     choice,
     component,
+    register_kind,
     tool_descriptions,
 )
+from strands_evals.optimization.declaration.space import _RESERVED_KINDS
+from strands_evals.optimization.search import blocks as blocks_module
 from strands_evals.optimization.search.blocks import ScheduleContext, Step
 from strands_evals.types.optimization import IterationRecord, ProposalOutcome
+from tests.strands_evals.optimization.note_kind import Note, NoteWriter
 
 
 class Window:
@@ -194,6 +198,72 @@ def test_a_flat_key_is_one_variable_and_keeps_declaration_order():
 def test_resolve_rejects_bad_blocks(blocks, message):
     with pytest.raises(ValueError, match=message):
         Search(blocks).resolve(full_space())
+
+
+@pytest.fixture
+def empty_registry(monkeypatch):
+    """A registry of custom kinds empty for the test, so registrations don't outlive it."""
+    monkeypatch.setattr(blocks_module, "_KIND_PROPOSERS", {})
+
+
+def test_a_registered_custom_kind_gets_a_default_block_named_after_it(empty_registry):
+    register_kind("note", NoteWriter)
+    space = Space({"note": Note("seed"), "temperature": Float(0.0, 1.0, default=0.5), "other": Note("other")})
+
+    resolved, schedule = Search().resolve(space)
+
+    assert names(resolved) == [("note", "NoteWriter", ["note", "other"]), ("numbers", "TPE", ["temperature"])]
+    assert shape(schedule) == "joint"
+    writer = NoteWriter()
+    resolved, _ = Search([Block(writer, "other")]).resolve(space)  # a block naming a key still wins
+    assert names(resolved) == [
+        ("note", "NoteWriter", ["other"]),
+        ("note 2", "NoteWriter", ["note"]),
+        ("numbers", "TPE", ["temperature"]),
+    ]
+    assert resolved[0][0].proposer is writer and resolved[1][0].proposer is not writer
+
+
+def test_a_custom_kind_with_no_block_and_no_default_proposer_raises(empty_registry):
+    space = Space({"note": Note("seed"), "temperature": Float(0.0, 1.0, default=0.5)})
+    with pytest.raises(ValueError, match=r"\['note'\] are of the custom kind 'note', which no block holds"):
+        Search().resolve(space)
+    resolved, _ = Search([Block(NoteWriter(), "note")]).resolve(space)  # unnamed: named after its kind
+    assert names(resolved) == [("note", "NoteWriter", ["note"]), ("numbers", "TPE", ["temperature"])]
+    with pytest.raises(ValueError, match=r"note \(note\), which TPE can't propose"):
+        Search([Block(TPE(), "note")]).resolve(space)
+
+
+def test_an_unnamed_block_mixing_a_custom_kind_with_another_is_a_block(empty_registry):
+    class Both(Fake):
+        kinds = frozenset({"note", "text"})
+
+    space = Space({"note": Note("seed"), "prompt": TextValue(default="Be brief.")})
+    resolved, _ = Search([Block(Both(), "note", "prompt")]).resolve(space)
+    assert [block.name for block, _ in resolved] == ["block"]
+
+
+def test_the_reserved_kinds_hold_every_default_blocks_name():
+    assert set(blocks_module._GROUPS) | {"block"} <= _RESERVED_KINDS
+
+
+def test_register_kind_rejects_reserved_kinds_and_checks_what_it_makes(empty_registry):
+    for kind in ("text", "numbers", "block"):
+        with pytest.raises(ValueError, match="is reserved"):
+            register_kind(kind, NoteWriter)
+    with pytest.raises(TypeError, match="non-empty string"):
+        register_kind("", NoteWriter)
+    with pytest.raises(TypeError, match="must be callable"):
+        register_kind("note", NoteWriter())
+    space = Space({"note": Note("seed")})
+    register_kind("note", TPE)
+    with pytest.raises(TypeError, match=r"made a TPE, which can't propose 'note'"):
+        Search().resolve(space)
+    register_kind("note", lambda: "writer")
+    with pytest.raises(TypeError, match="made 'writer', which is not a Proposer"):
+        Search().resolve(space)
+    register_kind("note", NoteWriter)  # registering again replaces the proposer
+    assert names(Search().resolve(space)[0]) == [("note", "NoteWriter", ["note"])]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Reflection needs Linux or macOS")

@@ -1155,7 +1155,7 @@ def _guard(
         if value == parent.get(key):
             continue
         try:
-            request.space.validate({**parent, key: value})
+            request.space.validate({**parent, key: value}, artifacts=request.artifacts)
         except ValueError as error:
             dropped[key] = str(error)
             continue

@@ -31,8 +31,9 @@ class RunDirectory:
     `run_id` is `[<name>-]<YYYYMMDD-HHMMSS>-<6 hex>`, the start time in UTC. Layout: `run.json`,
     `events.jsonl` (the only source of truth on resume), `transcripts/<hash>.json` (each trajectory once,
     named by the first 16 hex of the sha256 of its canonical JSON), `effects.json`, the review diffs,
-    `result.json` (the whole result, written last), and `candidates/<id>/optimization_files/` (only when a
-    value reaches the agent as a path). No per-candidate values, trial, or report files.
+    `result.json` (the whole result, written last), `candidates/<id>/optimization_files/` (only when a
+    value reaches the agent as a path), and `artifacts/` (the files or code custom kinds' values name, written
+    by their proposers). No per-candidate values, trial, or report files.
 
     One process per run, and nothing enforces it: opening a run that another process is still writing can
     cut that process's last line (`EventLog` trims a cut-off last line when it opens the log), and the next
@@ -133,6 +134,11 @@ class RunDirectory:
                 record = event["record"]
                 run._trials[(record["candidate_id"], record["run_index"], record["case_name"])] = record
         return run
+
+    @property
+    def artifacts(self) -> Path:
+        """`<root>/artifacts/`, the run's artifact store; not created until a proposer stores something there."""
+        return self.root / "artifacts"
 
     def workspace(self, candidate_id: str) -> Path:
         """`<root>/candidates/<id>/optimization_files/`."""

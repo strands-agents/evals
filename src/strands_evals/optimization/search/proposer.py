@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, ClassVar
 
 from ...types.optimization import CandidateScores, CandidateSummary, Evidence, Observation, Patch, TrialRecord
@@ -46,6 +47,12 @@ class ProposalRequest:
             and `proposer_usage` (any other name raises `ValueError`). `proposer_usage` (`usage=` a `Usage`) is
             a `propose` call's model spend that isn't on any patch it returns (in one event or several): each
             token is reported once, on a returned patch's `usage` or in such an event, never both.
+        artifacts: The run's artifact store, `<run>/artifacts/` (not created until something is stored): where a
+            proposer of a custom kind (`CustomMarker`) stores the files or code its values name. Name a value by
+            its content's hash and its path relative to the store (e.g. `notes/<sha256>`), so equal content is one
+            value and the run directory can be moved, and write each file under a temporary name, then rename it
+            into place, so a run killed mid-write leaves no partial file under a value's name. None when the
+            request is built outside a run.
     """
 
     space: Space
@@ -62,6 +69,7 @@ class ProposalRequest:
     redraw: int
     criteria: Criteria
     log: Callable[..., None]
+    artifacts: Path | None = None
 
 
 class Proposer(ABC):
@@ -70,7 +78,8 @@ class Proposer(ABC):
     An ABC because users subclass it.
 
     Attributes:
-        kinds: The variable types it can propose.
+        kinds: The kinds of keys it can propose: built-in kinds ("int", "float", "one_of", "choice",
+            "text") or custom kinds (`CustomMarker.kind`).
         concurrent: True when it keeps no state between proposals (Reflection): the optimizer makes a
             request's n proposals as n `propose` calls with n=1 at once, Patches kept in call order. False:
             one `propose` call with n in a single-block step, else one n=1 call per slot (structural blocks

@@ -21,6 +21,7 @@ from strands_evals.optimization.score_model.design import design
 from strands_evals.optimization.score_model.effects import effects, effects_json
 from strands_evals.optimization.score_model.protocols import FitData
 from strands_evals.types.optimization import CandidateScores
+from tests.strands_evals.optimization.note_kind import Note, note_value
 
 # ---- a world with known effects -------------------------------------------------------------------------------------
 SPACE = Space(
@@ -435,6 +436,29 @@ def test_the_design_lists_factors_inactive_levels_and_omitted_keys():
     assert "fixed" not in factors  # a bare component can never change
     assert described["omitted"] == [{"key": "k", "why": "one value"}]
     assert {row["level"] for row in effects(fit)} == {"off", "rewritten", *factors["cm.window.size"]["levels"][1:-1]}
+
+
+def test_a_custom_kinds_values_are_a_rewritten_factor_like_text():
+    space = Space({"note": Note("seed"), "k": Int(1, 9, default=3)})
+    candidates = {
+        "c0": {"note": note_value("seed"), "k": 3},
+        "c1": {"note": note_value("second"), "k": 5},
+        "c2": {"note": note_value("third"), "k": 3},
+    }
+    observations = {cid: {"x": [0.5], "y": [0.6]} for cid in candidates}
+    fit = _fit(
+        candidates, observations, ["x", "y"], space=space, text_blocks={"note": ["note"]}, ranges={"score": (0, 1)}
+    )
+    factors = {f["key"]: f for f in design(fit)["factors"]}
+    assert factors["rewritten:note"] == {
+        "key": "rewritten:note",
+        "kind": "text",
+        "levels": ["default", "rewritten"],
+        "reference": "default",
+    }
+    assert "note" not in factors  # never a level per value, and never binned as a number
+    unblocked = _fit(candidates, observations, ["x", "y"], space=space, text_blocks={}, ranges={"score": (0, 1)})
+    assert [f["key"] for f in design(unblocked)["factors"]] == ["k"]
 
 
 class Moded:

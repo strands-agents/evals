@@ -954,9 +954,9 @@ class Optimizer:
         return FitData(
             space=self._space,
             text_blocks={
-                _block_name(block): [k for k in keys if self._space.param(k).kind == "text"]
+                _block_name(block): [k for k in keys if self._space.param(k).written]
                 for block, keys in self._blocks
-                if any(self._space.param(k).kind == "text" for k in keys)
+                if any(self._space.param(k).written for k in keys)
             },
             candidates={c: self._candidates[c].values for c in ids},
             cases=list(getattr(self._case_split, split)),
@@ -1294,6 +1294,7 @@ class Optimizer:
                 redraw=redraw,
                 criteria=self._criteria,
                 log=log,
+                artifacts=run.artifacts,
             )
 
         try:
@@ -1346,6 +1347,7 @@ class Optimizer:
         self, parent: Candidate, patches: Mapping[str, Patch], fill: Callable[[str], tuple[Value, str] | None]
     ) -> _Draw:
         """One proposal from each block's patch: the candidate, or the reason it is invalid."""
+        assert self._run is not None
         keys = dict((_block_name(b), set(k)) for b, k in self._blocks)
         updates: dict[str, Value] = {}
         for block, patch in patches.items():
@@ -1360,6 +1362,7 @@ class Optimizer:
                 origin=list(patches),
                 rationale="\n".join(p.rationale for p in patches.values() if p.rationale),
                 fill=fill,
+                artifacts=self._run.artifacts,
             )
         except ValueError as error:
             return _Draw(dict(patches), None, str(error))
@@ -1579,9 +1582,10 @@ class Optimizer:
         """
         if self._factory is None:
             return None
+        assert self._run is not None
         try:
             # bind() copies path-backed files into a temp folder: in a worker thread, so other trials keep running.
-            built = (await asyncio.to_thread(self._factory.bind, candidate.values))()
+            built = (await asyncio.to_thread(self._factory.bind, candidate.values, artifacts=self._run.artifacts))()
             if inspect.isawaitable(built):
                 await built
         except _FactoryArgumentError:
@@ -1599,12 +1603,12 @@ class Optimizer:
         nothing; later reads don't wait.
         """
         assert self._run is not None
-        workspace = self._run.workspace(candidate.id)
+        workspace, artifacts = self._run.workspace(candidate.id), self._run.artifacts
         values, space = candidate.values, self._space
         if space._copies_files:
             await asyncio.to_thread(space.create_candidate_copy, values, workspace)
         if self._factory is not None:
-            bound = self._factory.bind(values, workspace=workspace)  # the copy exists: bind returns at once
+            bound = self._factory.bind(values, workspace=workspace, artifacts=artifacts)  # the copy exists: no wait
             return make_task(bound, self._rollout_fn or default_rollout, self._environment)
         assert self._build_task is not None
 
@@ -1622,7 +1626,9 @@ class Optimizer:
                         copied = True
             return workspace
 
-        return self._build_task(BuildContext(values, lambda name: space.resolve(name, values, workspace), copy))
+        return self._build_task(
+            BuildContext(values, lambda name: space.resolve(name, values, workspace, artifacts=artifacts), copy)
+        )
 
     async def _score(
         self,

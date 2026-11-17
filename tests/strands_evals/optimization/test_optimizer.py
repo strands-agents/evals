@@ -43,15 +43,19 @@ from strands_evals.optimization import (
     WeightedSum,
     choice,
     component,
+    register_kind,
     tunable,
 )
+from strands_evals.optimization.candidate import content_id
 from strands_evals.optimization.declaration.space import Space
 from strands_evals.optimization.optimizer import _slots_used
 from strands_evals.optimization.record.resume import load_state
 from strands_evals.optimization.record.run_directory import RunDirectory
+from strands_evals.optimization.search import blocks as blocks_module
 from strands_evals.optimization.search.blocks import _saved
 from strands_evals.optimization.selection.top_ranked import TopRanked
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
+from tests.strands_evals.optimization.note_kind import Note, NoteWriter, note_value
 
 
 class Score(Evaluator):
@@ -1840,3 +1844,113 @@ async def test_resume_inside_a_two_level_nested_matches_the_uninterrupted_run(tm
         search=_two_structural_search(),
     ).run_async()
     _assert_same(resumed, original, rerun=killed)
+
+
+# a custom kind
+
+
+class NoteLength(Evaluator):
+    """Scores the note the agent was built with (the rollout's output): longer is better."""
+
+    async def evaluate_async(self, evaluation_case):
+        return [EvaluationOutput(score=len(evaluation_case.actual_output) / 100, test_pass=True, reason="n")]
+
+
+async def _note_rollout(agent_factory, case):
+    return agent_factory()
+
+
+def _note_factory(note):
+    @tunable(note=note)
+    def make(note):
+        return note
+
+    return make
+
+
+def _noted(note, **kwargs):
+    kwargs.setdefault("budget", Budget(max_iterations=2))
+    return Optimizer(
+        _experiment(evaluators=[NoteLength()]),
+        _note_factory(note),
+        rollout_fn=_note_rollout,
+        proposals_per_iteration=1,
+        max_workers=64,
+        **kwargs,
+    )
+
+
+@pytest.fixture
+def note_kind(monkeypatch):
+    """`note` registered with `NoteWriter` for the test only."""
+    monkeypatch.setattr(blocks_module, "_KIND_PROPOSERS", {})
+    register_kind("note", NoteWriter)
+
+
+async def test_a_custom_kind_is_proposed_by_its_registered_proposer_and_built_from_the_store(tmp_path, note_kind):
+    note = Note("a note")
+    optimizer = _noted(note, base_dir=tmp_path)
+    result = await optimizer.run_async()
+    store = optimizer._run.root / "artifacts"
+    texts = ["a second note", "a much longer third note"]
+    assert sorted(f"notes/{path.name}" for path in (store / "notes").iterdir()) == sorted(map(note_value, texts))
+    blocks = optimizer._config()["search"]["blocks"]
+    assert blocks == [{"name": "note", "proposer": "NoteWriter", "config": {}, "keys": ["note"]}]
+    # The factory received each note's text: the baseline's from the marker, the others from the store.
+    assert {e["record"]["output"] for e in _events(optimizer) if e["event"] == "trial"} == {"a note", *texts}
+    assert store in note.checked
+    assert result.best.changed_values() == {"note": {"old": note_value("a note"), "new": note_value(texts[1])}}
+    assert "rewritten:note" in {factor["key"] for factor in result.effects["factors"]}
+
+
+async def test_a_build_task_resolves_a_custom_value_with_the_store(tmp_path, note_kind):
+    def build_task(ctx):
+        async def task(case):
+            return ctx.resolve("note")
+
+        return task
+
+    optimizer = Optimizer(
+        _experiment(evaluators=[NoteLength()]),
+        build_task=build_task,
+        space={"note": Note("a note")},
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        base_dir=tmp_path,
+        max_workers=64,
+    )
+    reason, events = await _search(optimizer)
+    assert {e["record"]["output"] for e in events if e["event"] == "trial"} == {"a note", "a second note"}
+
+
+async def test_a_custom_value_its_marker_rejects_is_an_invalid_proposal(tmp_path, note_kind):
+    class Unstored(NoteWriter):
+        async def propose(self, request):
+            return [Patch(updates={"note": note_value("never stored")}, rationale="forgot to store it")]
+
+    optimizer = _noted(Note("a note"), search=Search([Block(Unstored(), "note")], redraws=0), base_dir=tmp_path)
+    reason, events = await _search(optimizer)
+    invalid = [e for e in events if e["event"] == "invalid"]
+    assert reason == "exhausted" and len(invalid) == 1
+    assert invalid[0]["reason"].endswith(f"note: {note_value('never stored')} is not in the artifact store")
+
+
+async def test_a_resumed_run_reads_custom_values_from_its_own_store(tmp_path, note_kind):
+    original = _noted(Note("a note"), base_dir=tmp_path / "runs")
+    await original.run_async()
+    moved = _killed(original._run.root, tmp_path, lambda events: _index(events, "iteration_end"))
+    shutil.rmtree(original._run.root)  # only the moved copy holds the first iteration's note
+    resumed = await Optimizer.resume(
+        moved,
+        experiment=_experiment(evaluators=[NoteLength()]),
+        factory=_note_factory(Note("a note")),
+        rollout_fn=_note_rollout,
+        # Writes only the second iteration's note, so the first one's is read from the moved store.
+        search=Search([Block(NoteWriter("a much longer third note"), "note", name="note")]),
+    ).run_async()
+    assert resumed.stop_reason == "iterations"
+    # Every candidate is a finalist (three, at most `n_finalists`), so the first iteration's is built again.
+    second = content_id({"note": note_value("a second note")})
+    assert second in next(e["candidate_ids"] for e in _events_at(moved) if e["event"] == "finalists")
+    resumed_trials = _events_at(moved)[_index(_events_at(moved), "iteration_end") :]
+    assert "a second note" in {e["record"]["output"] for e in resumed_trials if e["event"] == "trial"}

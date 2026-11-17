@@ -1,6 +1,7 @@
 """Tests for `Reflection.propose`: a scripted model drives the real agent, shell, and submit tool."""
 
 import asyncio
+import dataclasses
 import os
 import tempfile
 
@@ -10,7 +11,9 @@ from strands.types.exceptions import EventLoopException
 from strands_evals.optimization import Criteria, InfrastructureError, Maximize, Reflection, Space, TextValue
 from strands_evals.optimization.candidate import Candidate
 from strands_evals.optimization.search.proposer import ProposalRequest
+from strands_evals.optimization.search.reflection import _guard
 from strands_evals.types.trace import TextContent, ToolResultContent, UserMessage
+from tests.strands_evals.optimization.note_kind import Note, store_note
 from tests.strands_evals.optimization.scripted_model import ScriptedModel, ToolUse
 from tests.strands_evals.optimization.search.test_reflection_evidence import (
     REGISTRY,
@@ -396,3 +399,10 @@ async def test_a_later_slot_raising_logs_the_spend_of_the_patches_never_returned
     assert [e for e, _ in events] == ["proposer_retry"] * 3 + ["proposer_usage"] * 2
     failed, first = usage_events(events)
     assert (failed.tokens, first.tokens) == (0, 45)  # the failing slot's attempts answered nothing; slot 0's patch
+
+
+def test_the_submit_check_reads_the_parents_custom_values_from_the_artifact_store(tmp_path):
+    space = Space({"prompt": TextValue(default="Be helpful.\n", size_cap=60), "note": Note("seed")})
+    parent = {"prompt": "Be helpful.\n", "note": store_note(tmp_path, "a stored note")}
+    proposal = dataclasses.replace(request(keys=("prompt",)), space=space, artifacts=tmp_path)
+    assert _guard(proposal, {"prompt": "Be brief."}, ["prompt"], parent) == ({"prompt": "Be brief."}, {}, [])

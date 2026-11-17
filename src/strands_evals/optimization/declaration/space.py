@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import stat
 import tempfile
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 from typing_extensions import TypeAlias
 
@@ -26,14 +27,41 @@ from .files import (
     _outer_folders,
     _SkillFile,
 )
-from .markers import _UNSET, Choice, Component, Float, Int, OneOf, TextValue, _default_size_cap, _is_option, choice
+from .markers import (
+    _UNSET,
+    Choice,
+    Component,
+    CustomMarker,
+    Float,
+    Int,
+    OneOf,
+    TextValue,
+    _default_size_cap,
+    _is_option,
+    choice,
+)
 from .tools import ToolDescriptions
 
 Marker: TypeAlias = (
-    Int | Float | OneOf | TextValue | Component | Choice | FileText | JsonField | SkillLibrary | ToolDescriptions
+    Int
+    | Float
+    | OneOf
+    | TextValue
+    | Component
+    | Choice
+    | FileText
+    | JsonField
+    | SkillLibrary
+    | ToolDescriptions
+    | CustomMarker
 )
 
-ParamKind = Literal["int", "float", "one_of", "choice", "text"]
+# A key's kind: one of the built-in kinds ("int", "float", "one_of", "choice", "text"), or a `CustomMarker`'s.
+ParamKind: TypeAlias = str
+
+# Names a `CustomMarker.kind` can't take: the built-in kinds, and the names `Search.resolve` gives blocks (a custom
+# kind names its default block).
+_RESERVED_KINDS = frozenset({"int", "float", "one_of", "choice", "text", "structure", "numbers", "block"})
 
 
 @dataclass(frozen=True)
@@ -60,7 +88,9 @@ class ParamInfo:
     always None.
 
     `min_value` / `max_value` are the inclusive bounds of an `Int` / `Float`. Fields after `default`
-    default to None (`log` to False), so each kind sets only its own.
+    default to None (`log` to False), so each kind sets only its own. `marker` is the `CustomMarker`
+    that declared a custom kind's key (so a proposer built with no arguments can read its
+    declaration), else None.
     """
 
     key: str
@@ -75,6 +105,13 @@ class ParamInfo:
     edit_instructions: str | None = None
     active_when: tuple[str, str] | None = None
     source: FileSource | None = None
+    marker: CustomMarker | None = field(default=None, compare=False, repr=False)
+
+    @property
+    def written(self) -> bool:
+        """Whether a model writes this key's values (text and every custom kind), so the score model gives its
+        block a rewritten-or-not factor instead of a level per value."""
+        return self.kind == "text" or self.marker is not None
 
 
 class Space:
@@ -93,9 +130,9 @@ class Space:
         Raises:
             TypeError: No markers, a name that is empty or contains `.` or `/`, an unknown marker
                 type, a marker with no default, a default that fails `validate` (e.g. a text
-                default over its size cap), or two file markers on the same text (a `FileText`'s
-                or a skill's file declared again, or two `JsonField`s on one field or one inside
-                the other).
+                default over its size cap), a `CustomMarker` whose `kind` isn't a string or is
+                reserved, or two file markers on the same text (a `FileText`'s or a skill's file
+                declared again, or two `JsonField`s on one field or one inside the other).
         """
         if not markers:
             raise TypeError("nothing to optimize: declare at least one marker")
@@ -198,14 +235,20 @@ class Space:
         completed.update({key: value for key, value in values.items() if key not in self._params})
         return completed
 
-    def validate(self, values: Values) -> None:
+    def validate(self, values: Values, *, artifacts: Path | None = None) -> None:
         """Check bounds, size caps, formats, active keys, and that nothing is missing.
 
         Types are strict, so equal candidates hash alike: `Int` takes an int (not a bool), `Float` a
-        float (not an int), and `OneOf` compares type and value.
+        float (not an int), and `OneOf` compares type and value. A custom kind's value must be a
+        plain JSON scalar that its marker's `check_value` accepts.
+
+        Args:
+            values: The candidate's values.
+            artifacts: The run's artifact store, passed to `CustomMarker.check_value`; None outside a run.
 
         Raises:
             ValueError: Listing every problem.
+            TypeError: A `CustomMarker.check_value` returned something other than a str or None.
         """
         problems: list[str] = []
         unknown = sorted(key for key in values if key not in self._params)
@@ -219,13 +262,13 @@ class Space:
         if missing:
             problems.append(f"missing: {missing}")
         for key in known:
-            problem = self._problem(self._params[key], values[key])
+            problem = self._problem(self._params[key], values[key], artifacts)
             if problem is not None:
                 problems.append(problem)
         if problems:
             raise ValueError("invalid values: " + "; ".join(problems))
 
-    def resolve(self, name: str, values: Values, workspace: Path | None) -> Any:
+    def resolve(self, name: str, values: Values, workspace: Path | None, *, artifacts: Path | None = None) -> Any:
         """What the factory receives for one declared name: a fresh component, a value, or a path.
 
         - A choice: a new instance of the chosen component, e.g. `Summary(ratio=0.5)`, or the chosen
@@ -235,6 +278,7 @@ class Space:
           when `workspace` is None (the plain call).
         - `SkillLibrary`: the path of the directory inside `workspace`, or the original directory
           when `workspace` is None.
+        - A `CustomMarker`: what its `resolve(value, artifacts)` returns.
         - Any other marker: the value itself, e.g. `0.2` or the prompt text.
 
         `values` must already pass `validate`; nothing is checked here. A component's fixed kwargs
@@ -244,6 +288,7 @@ class Space:
             name: A declared name (`"manager"`), not a flat key (`"manager.Summary.ratio"`).
             values: The candidate's values.
             workspace: The candidate's copy, or None when no value reaches the agent as a path.
+            artifacts: The run's artifact store, or None outside a run.
         """
         if name not in self._markers:
             raise KeyError(f"{name!r} is not a declared name; declared: {list(self._markers)}")
@@ -258,6 +303,8 @@ class Space:
             return marker.build({tool: cast(str, values[f"{name}.{tool}"]) for tool in marker.tools})
         if isinstance(marker, SkillLibrary) or (isinstance(marker, FileText) and marker.as_path):
             return marker.path if workspace is None else workspace / _location_in_copy(self._copy_folders, marker.path)
+        if isinstance(marker, CustomMarker):
+            return marker.resolve(values[name], artifacts)
         return values[name]
 
     def create_candidate_copy(self, values: Values, directory: Path) -> Path:
@@ -363,7 +410,7 @@ class Space:
             texts[info.source.path] = marker._render(str(values[info.key]), text)
         return texts
 
-    def _problem(self, info: ParamInfo, value: Any) -> str | None:
+    def _problem(self, info: ParamInfo, value: Any, artifacts: Path | None = None) -> str | None:
         """A one-line problem with one value, including a file marker's format check, or None.
 
         A file-backed value is checked as `complete` stores it, so a value that passes here also
@@ -371,7 +418,7 @@ class Space:
         """
         if info.key in self._files:
             value = self._files[info.key]._canonical(value)
-        problem = _check_value(info, value)
+        problem = _check_value(info, value, artifacts)
         if problem is None and info.key in self._files:
             format_problem = self._files[info.key]._format_problem(value)
             if format_problem is not None:
@@ -432,6 +479,8 @@ def _flatten(name: str, marker: Marker) -> list[ParamInfo]:
             )
             for relative, member in marker._members.items()
         ]
+    if isinstance(marker, CustomMarker):
+        return [_custom(name, marker)]
     raise TypeError(f"{name}: {type(marker).__name__} can't be declared yet")
 
 
@@ -468,6 +517,20 @@ def _text(
     return ParamInfo(key, name, "text", default, size_cap=cap, edit_instructions=edit_instructions, source=source)
 
 
+def _custom(name: str, marker: CustomMarker) -> ParamInfo:
+    """A `CustomMarker`'s one key, the declared name; its default is checked by `validate`'s rules."""
+    kind = getattr(marker, "kind", None)
+    if not isinstance(kind, str) or not kind:
+        raise TypeError(f"{name}: {type(marker).__name__}.kind must be a non-empty string, got {kind!r}")
+    if kind in _RESERVED_KINDS:
+        raise TypeError(
+            f"{name}: {type(marker).__name__}.kind {kind!r} is reserved; reserved: {sorted(_RESERVED_KINDS)}"
+        )
+    if not hasattr(marker, "default"):
+        raise TypeError(f"{name}: {type(marker).__name__} has no default")
+    return ParamInfo(name, name, kind, marker.default, marker=marker)
+
+
 def _check_no_overlap(
     key: str,
     marker: FileText | JsonField | _SkillFile,
@@ -491,9 +554,11 @@ def _check_no_overlap(
         raise TypeError(f"{key}: {marker.path} is already declared by {other_key}; a whole file's text can't be shared")
 
 
-def _check_value(info: ParamInfo, value: Any) -> str | None:
+def _check_value(info: ParamInfo, value: Any, artifacts: Path | None) -> str | None:
     """A one-line problem with one value, or None; text values are described by length only."""
     key = info.key
+    if info.marker is not None:
+        return _check_custom(info.marker, key, value, artifacts)
     if info.kind in ("int", "float"):
         expected = int if info.kind == "int" else float
         if type(value) is not expected:
@@ -514,6 +579,34 @@ def _check_value(info: ParamInfo, value: Any) -> str | None:
     except UnicodeEncodeError:  # a lone surrogate: no candidate id or file could hold it
         return f"{key}: not valid Unicode text (contains a lone surrogate)"
     return None
+
+
+def _check_custom(marker: CustomMarker, key: str, value: Any, artifacts: Path | None) -> str | None:
+    """A custom kind's value: a plain JSON scalar (candidate ids hash the values as JSON), then its marker's check.
+
+    An exception from `check_value` is the problem, so a failing check makes the proposal invalid.
+
+    Raises:
+        TypeError: `check_value` returned something other than a str or None.
+    """
+    if type(value) not in (str, int, float, bool, type(None)):  # exact types: values are compared by type too
+        return f"{key}: expected str, int, float, bool, or None, got {type(value).__name__}"
+    if isinstance(value, float) and not math.isfinite(value):
+        return f"{key}: {value!r} is not a finite number"
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:  # a lone surrogate: no candidate id could hold it
+            return f"{key}: not valid Unicode text (contains a lone surrogate)"
+    try:
+        problem = marker.check_value(value, artifacts)
+    except Exception as error:  # noqa: BLE001 - a check that fails rejects the value, with its reason
+        return f"{key}: {type(marker).__name__}.check_value raised {type(error).__name__}: {error}"
+    if problem is not None and not isinstance(problem, str):
+        raise TypeError(
+            f"{key}: {type(marker).__name__}.check_value must return a str or None, got {type(problem).__name__}"
+        )
+    return None if problem is None else f"{key}: {problem}"
 
 
 # ---- Private helpers: the candidate copy -------------------------------------
