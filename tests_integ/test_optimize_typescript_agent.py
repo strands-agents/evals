@@ -100,8 +100,11 @@ def _comparable(result: OptimizationResult) -> dict:
         "best": result.best.id,
         "rollouts": result.rollouts_spent,
         "stop": result.stop_reason,
-        "usage": {s: (u.tokens, u.input_tokens, u.model_calls, u.models) for s, u in result.agent_cost.items()},
-        "benchmark": result.benchmark_cost.tokens,
+        "usage": {
+            s: (u.tokens, u.input_tokens, u.model_calls, u.models)
+            for s, u in ((s, a.usage) for s, a in result.cost.agent.items())
+        },
+        "benchmark": sum(u.tokens for u in result.cost.benchmark.values()),
         "validation": validation,
         "rows": [
             {key: value for key, value in row.items() if "seconds" not in key and "run_id" not in key}
@@ -126,6 +129,6 @@ def test_a_typescript_agent_optimizes_as_its_python_twin(project, experiment_pat
     capsys.readouterr()
 
     assert _comparable(from_ts) == _comparable(from_py)
-    assert from_ts.agent_cost["train"].tokens > 0  # a TypeScript trial never reads as free
+    assert from_ts.cost.agent["train"].usage.tokens > 0  # a TypeScript trial never reads as free
     assert "Give the exact answer." in from_ts.best.values["instructions"]
     assert _invocations(from_ts) == _invocations(from_py)  # the trajectory evaluators and Reflection read

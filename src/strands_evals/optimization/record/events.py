@@ -74,7 +74,8 @@ class EventLog:
     - `proposer_retry`, `proposer_error`: `block`, `redraw`, `error_type`, `error`.
     - `proposer_usage`: `block`, `redraw`, `usage` (`Usage`): a `propose` call's spend, written by the proposer
       for spend no returned patch carries, and by the optimizer for the returned patches' `usage` (also in
-      their `observe` events, which `search_cost` doesn't read).
+      their `observe` events, which the result's `cost` doesn't read). The result's `cost` counts every one, a
+      killed iteration's included, as `spent` counts every trial.
     - `screened`: `block`, `key`, `reason`.
     - `resume`: `spent`, `budget`, `code` (`code_version()` of the resuming code: strands-evals version, git commit,
       dirty, numpy and optuna versions).
@@ -94,10 +95,10 @@ class EventLog:
     `previous_attempts`'); candidates, numbers, parents, and rounds from `propose` and `iteration_end`;
     exhausted blocks and iterations from `iteration_end`; history from `select`; open rounds from openers
     with no observe yet; `stop_reason` from the last `stop`; proposer feedback from `observe` / `evidence`;
-    `search_cost` from every `proposer_usage` event, a killed iteration's included; the fit sequence from
-    `fit`; the end phase's progress from `finalists` / `picked` / `test`. Only search events of closed iterations
-    (ended by `iteration_end` or by `stop`) are replayed; trial and `proposer_usage` events are always read, and
-    so is the killed iteration's last `draw`, whose proposals it runs again on instead of asking the proposers.
+    the fit sequence from `fit`; the end phase's progress from `finalists` / `picked` / `test`. Only search
+    events of closed iterations (ended by `iteration_end` or by `stop`) are replayed; trial events are always
+    read, and so is the killed iteration's last `draw`, whose proposals it runs again on instead of asking the
+    proposers.
     """
 
     def __init__(self, path: Path):

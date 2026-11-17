@@ -14,7 +14,6 @@ from ...types.optimization import (
     Patch,
     StopReason,
     TestReport,
-    Usage,
     ValidationReport,
 )
 from .events import _encode, closed_events
@@ -89,8 +88,6 @@ class ResumeState:
         fits: Each `fit` event, in order: fitted ones are refitted, unfitted ones without an error kept the
             previous fit, ones with an error mean no fit in use from there.
         iterations: Rebuilt from the events, so the result covers the whole run.
-        search_cost: Summed from every `proposer_usage` event, closed iterations or not (a killed iteration's
-            proposer calls were paid for, as its trials count in `spent`).
         finalists: Already chosen by the end phase, reused rather than re-ranked.
         validation: The end phase already picked; only the test report is left.
         is_test_done: A `test` event exists, so the end phase is finished (a None `test` is a finished
@@ -121,7 +118,6 @@ class ResumeState:
     open_rounds: list[OpenRound]
     fits: list[FitReplay]
     iterations: list[IterationRecord]
-    search_cost: Usage
     finalists: list[str] | None
     validation: ValidationReport | None
     is_test_done: bool
@@ -182,7 +178,6 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
         open_rounds=[],
         fits=[],
         iterations=[],
-        search_cost=Usage.zero(),
         finalists=None,
         validation=None,
         is_test_done=False,
@@ -208,9 +203,6 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
         if event["event"] == "trial":
             record = event["record"]
             state.trials[(record["candidate_id"], record["run_index"], record["case_name"])] = record
-    for event in events:  # every call's spend, a killed iteration's too, as `spent` counts every trial
-        if event["event"] == "proposer_usage":
-            state.search_cost = state.search_cost + Usage.model_validate(event["usage"])
     for event in closed:
         name = event["event"]
         if name == "propose":

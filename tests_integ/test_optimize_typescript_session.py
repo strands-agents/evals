@@ -127,7 +127,7 @@ def test_optimize_runs_a_two_turn_rollout_over_sessions(project, experiment_path
     # The exact instruction answers 11 of 12 from the second turn; the plain one 4 of 12. Only a search whose
     # every trial really spoke twice to one held agent can see that difference.
     assert "Give the exact answer." in result.best.values["instructions"]
-    assert result.agent_cost["train"].tokens > 0  # the turns' spans landed in the trials
+    assert result.cost.agent["train"].usage.tokens > 0  # the turns' spans landed in the trials
     # The exact instruction answers all but every 10th question; the plain one every 3rd. One conversation
     # never held open would answer nothing at all (`rollout.py` raises when an opening turn answers).
     best_train = result.reports[result.best.id]["train"]

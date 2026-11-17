@@ -69,7 +69,9 @@ def _comparable(result: OptimizationResult) -> dict:
         "best": result.best.id,
         "rollouts": result.rollouts_spent,
         "stop": result.stop_reason,
-        "tokens": {split: (u.tokens, u.model_calls) for split, u in result.agent_cost.items()},
+        "tokens": {
+            split: (u.tokens, u.model_calls) for split, u in ((s, a.usage) for s, a in result.cost.agent.items())
+        },
         "validation": validation,
         "rows": [
             {key: value for key, value in row.items() if not any(word in key for word in volatile)}

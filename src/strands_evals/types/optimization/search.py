@@ -40,8 +40,9 @@ class Patch(BaseModel):
 
     `state` is the proposer's private memory, handed back in `observe` and on resume; it must be
     JSON-serializable (checked with `json.dumps` when the patch arrives). `usage` is the proposer's own
-    model cost, reported in `search_cost` and never counted against the rollout budget. No proposer
-    name: the optimizer knows which block asked, and records it in the candidate's `origin`.
+    model cost, reported under its block in `OptimizationResult.cost` and never counted against the rollout
+    budget. No proposer name: the optimizer knows which block asked, and records it in the candidate's
+    `origin`.
     """
 
     model_config = ConfigDict(frozen=True)

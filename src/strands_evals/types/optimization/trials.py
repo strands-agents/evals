@@ -39,7 +39,7 @@ class Usage(BaseModel):
     (sub-agents), judge spans excluded; every other agent in the attempt (a simulated user) is in
     `benchmark_usage`. On the `build_task` path, or when the factory built something other than a strands
     `Agent` or multi-agent system, every span in the attempt counts. The same type holds `judge_usage`,
-    `benchmark_usage`, `search_cost`, `judge_cost`, `retry_cost`, `benchmark_cost`, and `agent_cost`.
+    `benchmark_usage`, `Patch.usage`, and the run's cost by role and phase (`OptimizationResult.cost`).
 
     Field names differ from `types.trace.TokenUsage` on purpose: they are the user-facing metric names
     (`USAGE_METRICS`), and `input_tokens` here includes cache tokens, which `TokenUsage.input_tokens`
