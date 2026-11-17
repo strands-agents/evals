@@ -172,6 +172,7 @@ class TrialRunner:
         split_of: Mapping[str, SplitName],
         max_workers: int,
         rerun_passes: int,
+        trial_timeout: float | None = None,
     ):
         """Build the runner once per run.
 
@@ -203,6 +204,9 @@ class TrialRunner:
             split_of: Case name -> its split, given once so a record's split can't be wrong.
             max_workers: Parallel trials within one call.
             rerun_passes: Max re-run passes per call (infrastructure re-runs and failed-evaluator re-judges).
+            trial_timeout: Seconds each attempt's task may run before it is cancelled and recorded as an
+                `agent_failure` (`TimeoutError`; `infrastructure_invalid` during the environment's setup); None
+                for no limit.
 
         Raises:
             ValueError: A case without a name, two cases with one name, a case missing from `split_of`,
@@ -235,6 +239,7 @@ class TrialRunner:
         self._split_of = dict(split_of)
         self._max_workers = max_workers
         self._rerun_passes = rerun_passes
+        self._trial_timeout = trial_timeout
 
     def pending(self, candidate_id: str, case_names: Sequence[str], *, runs: int) -> int:
         """Number of (case, run) trials still to run: the real cost of the first passes.
@@ -275,7 +280,8 @@ class TrialRunner:
         Each trial is its own `Experiment` call over one case, so it is saved as soon as that call
         returns. Every trial of the call, all runs included, runs at once under one `max_workers` cap,
         case-major (each case's runs, then the next case's); sync tasks run in the call's own pool of
-        `max_workers` threads, so the cap holds for them too. With `limiter`, that semaphore caps the
+        `max_workers` threads, so the cap holds for them too (under `trial_timeout` the pool also has room for
+        the threads of sync calls a timeout cut short, which run on). With `limiter`, that semaphore caps the
         trials instead, so candidates scored at once share one cap rather than one each. Each trial gets a
         private in-memory store: it captures the task's live output (`Session` included), which the call
         keeps and replays on a judge-only re-run, which runs only the evaluators that failed.
@@ -349,7 +355,12 @@ class TrialRunner:
             elif rejudge and _has_failed_evaluators(saved):
                 jobs.append((key, True))
         touched = {key for key, _ in jobs}  # the re-run passes never touch a trial this call didn't run
-        pool = ThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="trial")
+        threads = self._max_workers
+        if self._trial_timeout is not None:
+            # A sync call a timeout cut short keeps its thread, one at most per agent run; room for them all, so
+            # a trial never waits for a thread while its clock runs. The semaphore still caps running trials.
+            threads += len(jobs) * (self._rerun_passes + 1)
+        pool = ThreadPoolExecutor(max_workers=threads, thread_name_prefix="trial")
         token = _THREAD_POOL.set(pool)
         try:
             spent = await self._pass(call, jobs, pass_index=0)
@@ -372,7 +383,8 @@ class TrialRunner:
             pool.shutdown(wait=False)  # `_pass` raises only after every trial it started has returned
             raise
         else:
-            pool.shutdown()
+            # Not waiting: a sync call a timeout cut short can't be stopped and may still hold a thread.
+            pool.shutdown(wait=False)
         finally:
             # not shut down on a cancel: a trial left running may still need the pool to exit its environment
             _THREAD_POOL.reset(token)
@@ -429,7 +441,9 @@ class TrialRunner:
             token = otel_context.attach(otel_context.Context())  # an outer span can't merge trials into one trace
             try:
                 report = await experiment.run_evaluations_async(
-                    instrument(call.task, log, self._traces), max_workers=1, evaluation_data_store=store
+                    instrument(call.task, log, self._traces, timeout=self._trial_timeout),
+                    max_workers=1,
+                    evaluation_data_store=store,
                 )
             finally:
                 otel_context.detach(token)

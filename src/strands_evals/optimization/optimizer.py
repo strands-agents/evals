@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import inspect
 import json
+import math
 import random
 import statistics
 import threading
@@ -124,6 +125,7 @@ class Optimizer:
         proposals_per_iteration: int = 4,
         max_workers: int = 4,
         rerun_passes: int = 2,
+        trial_timeout: float | None = None,
         seed: int = 0,
         base_dir: str | Path | None = None,
         name: str | None = None,
@@ -158,6 +160,18 @@ class Optimizer:
             max_workers: Parallel trials, shared by the candidates scored at once.
             rerun_passes: Max re-run passes per scoring call: trials still `infrastructure_invalid` are re-run, and
                 evaluators that failed are re-judged on the saved output (0 rollouts).
+            trial_timeout: Seconds one attempt of a trial's task may run (the environment's setup, the rollout,
+                the environment's exit); None means no limit. An attempt still running then is cancelled and, once
+                it has unwound (its environment exited), recorded as an `agent_failure` with `error_type`
+                `TimeoutError`: scored by `agent_failure_score`, not re-run. During the environment's setup it is
+                `infrastructure_invalid` instead, and re-run; during its exit after the rollout returned, the
+                trial keeps its result. Each attempt gets the full time (an `Experiment` throttling retry, an
+                infrastructure re-run). Not bounded: evaluators, a sync `__enter__` (waited for, so the
+                environment can be exited), the environment's exit after a timeout, and a task that catches the
+                cancellation. Any other sync call (a sync `rollout_fn`, `environment`, `__exit__`, or `build_task`
+                task) can't be stopped either: the attempt ends, but the call runs on in its worker thread until
+                it returns, outside `max_workers`, after the environment exited, and with what it spends then
+                not counted; the process waits for it at exit. Give blocking calls their own timeouts too.
             seed: Seeds the split (unless `Split(seed=)` is set), selection, TPE, and Thompson.
             base_dir: Where run directories go.
             name: The run folder's prefix (lowercase letters, digits, `-`, `_`); for reading only.
@@ -200,6 +214,11 @@ class Optimizer:
                 raise TypeError(f"{argument} must be an int, got {number!r}")
             if least is not None and number < least:
                 raise ValueError(f"{argument} must be >= {least}, got {number}")
+        if trial_timeout is not None:
+            if not isinstance(trial_timeout, (int, float)) or isinstance(trial_timeout, bool):
+                raise TypeError(f"trial_timeout must be a number of seconds or None, got {trial_timeout!r}")
+            if not 0 < trial_timeout < math.inf:
+                raise ValueError(f"trial_timeout must be a positive, finite number of seconds, got {trial_timeout}")
         if name is not None and not _NAME.fullmatch(name):
             raise ValueError(f"name={name!r}: use only lowercase letters, digits, '-' and '_'")
         for argument, setting, kind in (
@@ -297,6 +316,7 @@ class Optimizer:
         self._proposals_per_iteration = proposals_per_iteration
         self._max_workers = max_workers
         self._rerun_passes = rerun_passes
+        self._trial_timeout = trial_timeout
         self._seed = seed
         self._name = name
         self._on_iteration = on_iteration
@@ -415,6 +435,7 @@ class Optimizer:
             "final_pick": self._final_pick.config(),
             "proposals_per_iteration": self._proposals_per_iteration,
             "rerun_passes": self._rerun_passes,
+            "trial_timeout": self._trial_timeout,
             "budget": {"max_rollouts": budget.max_rollouts, "max_iterations": budget.max_iterations},
             "max_workers": self._max_workers,
             "agent": {
@@ -471,6 +492,7 @@ class Optimizer:
                 iteration=self._resumed.iteration,
                 spent=self._resumed.spent,
                 budget={"max_rollouts": budget.max_rollouts, "max_iterations": budget.max_iterations},
+                trial_timeout=self._trial_timeout,
                 code=code_version(),
             )
         if self._resumed is not None and self._resumed.candidates:
@@ -1547,6 +1569,7 @@ class Optimizer:
             split_of=self._split_of,
             max_workers=self._max_workers,
             rerun_passes=self._rerun_passes,
+            trial_timeout=self._trial_timeout,
         )
 
     def _setup(self) -> None:
@@ -1770,6 +1793,7 @@ class Optimizer:
         environment: EnvironmentFn | None = None,
         budget: Budget | None = None,
         max_workers: int | None = None,
+        trial_timeout: float | None = None,
         on_iteration: Callable[[IterationRecord], Awaitable[None] | None] | None = None,
     ) -> Optimizer:
         """Reopen a killed run; every saved trial is reused as is.
@@ -1781,8 +1805,8 @@ class Optimizer:
         `environment`, and the evaluators can't be compared and are the caller's to keep. Everything else
         is read from `run.json`, never passed again: the split (with the seed it used), the final pick
         (`FinalPick.from_config`), `runs_per_candidate`, `agent_failure_score`, `feasibility_threshold`, seed,
-        `proposals_per_iteration`, and `rerun_passes`. Only `budget`, `max_workers`, and `on_iteration` may differ
-        (`None` keeps the saved value).
+        `proposals_per_iteration`, and `rerun_passes`. Only `budget`, `max_workers`, `trial_timeout`, and
+        `on_iteration` may differ (`None` keeps the saved value).
 
         Resume continues a run that was killed; it never extends a finished one. Every stop runs the end
         phase, so a finished run only finishes or returns its end phase. To search more, start a new run.
@@ -1810,6 +1834,9 @@ class Optimizer:
             environment: As in `__init__`.
             budget: A new budget for a killed search; None keeps the saved one.
             max_workers: None keeps the saved value.
+            trial_timeout: None keeps the value the run started with, so a saved timeout can't be removed; a
+                new one applies to the trials run after this resume (it is in the `resume` event, not
+                `run.json`, so pass it on every resume), e.g. to get past a trial that never returned.
             on_iteration: Called only for iterations run after the resume.
 
         Raises:
@@ -1846,6 +1873,7 @@ class Optimizer:
             proposals_per_iteration=saved["proposals_per_iteration"],
             max_workers=saved["max_workers"] if max_workers is None else max_workers,
             rerun_passes=saved["rerun_passes"],
+            trial_timeout=saved.get("trial_timeout") if trial_timeout is None else trial_timeout,
             seed=saved["seed"],
             base_dir=run.root.parent,
             name=saved["name"],
