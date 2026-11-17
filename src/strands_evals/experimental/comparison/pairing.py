@@ -22,7 +22,7 @@ class PairedScore(BaseModel):
         delta: Candidate score minus baseline score.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(frozen=True)
 
     case_id: str
     evaluator: str
@@ -31,7 +31,8 @@ class PairedScore(BaseModel):
     baseline_score: float
     candidate_score: float
 
-    @computed_field
+    @computed_field  # type: ignore[prop-decorator]
+    @property
     def delta(self) -> float:
         """Return the candidate-minus-baseline score change."""
         return self.candidate_score - self.baseline_score
@@ -40,10 +41,11 @@ class PairedScore(BaseModel):
 def pair_reports(*, baseline: EvaluationReport, candidate: EvaluationReport) -> list[PairedScore]:
     """Strictly match comparable evaluator scores from two reports.
 
-    Cases are paired by their exact case name when one is present. An unnamed
-    case is paired by a deterministic hash of its input. Evaluator names must
-    also match. Row order, generated session IDs, and task outputs do not
-    affect pairing. Results are sorted by evaluator and case identifier.
+    Cases are paired by their exact case name when one is present; inputs are
+    not compared for named cases. An unnamed case is paired by a deterministic
+    hash of its input. Evaluator names must also match. Row order, generated
+    session IDs, and task outputs do not affect pairing. Results are sorted by
+    evaluator and case identifier.
 
     Rows that are not applicable in both reports are omitted. A mismatch in
     applicability is rejected because the two scores do not represent the same

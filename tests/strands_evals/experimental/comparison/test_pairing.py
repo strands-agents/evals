@@ -93,16 +93,24 @@ def test_paired_score_is_frozen_and_computes_delta():
     assert pair.model_dump()["delta"] == pytest.approx(0.7)
     with pytest.raises(ValidationError):
         pair.candidate_score = 0.1
-    with pytest.raises(ValidationError):
-        PairedScore(
-            case_id="case",
-            evaluator="equals",
-            baseline_index=0,
-            candidate_index=1,
-            baseline_score=0.2,
-            candidate_score=0.9,
-            delta=-5.0,
-        )
+
+
+def test_paired_score_round_trip_recomputes_delta():
+    pair = PairedScore(
+        case_id="case",
+        evaluator="equals",
+        baseline_index=0,
+        candidate_index=1,
+        baseline_score=0.2,
+        candidate_score=0.9,
+    )
+
+    payload = pair.model_dump()
+    payload["delta"] = -5.0
+    restored = PairedScore.model_validate(payload)
+
+    assert restored.delta == pytest.approx(0.7)
+    assert PairedScore.model_validate_json(pair.model_dump_json()) == pair
 
 
 def test_unnamed_cases_are_paired_by_input_regardless_of_order():
