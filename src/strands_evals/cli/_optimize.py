@@ -236,8 +236,20 @@ def load_experiment(inputs: Inputs) -> Experiment:
 
 
 def load_hook(spec: str, flag: str, kind: Any, what: str) -> Any:
-    """`flag`'s `MODULE:ATTR` target, which must be an instance of `kind` (a type, a tuple of types, or a union), or
-    callable when `kind` is None; `what` names the expected kind in the error."""
+    """Import `flag`'s `MODULE:ATTR` target and check its type.
+
+    Args:
+        spec: `pkg.module:attr` or `path/to/file.py:attr`, resolved by `import_attr`.
+        flag: The flag's name, for the error (`"--search"`).
+        kind: What the target must be an instance of: a type, a tuple of types, or a union; None means callable.
+        what: The expected kind in words, for the error (`"a Search"`).
+
+    Returns:
+        The imported target.
+
+    Raises:
+        EntryPointError: `spec` can't be imported, or the target isn't of `kind` (a `ValueError`, so exit 2).
+    """
     target = import_attr(spec)
     if not (callable(target) if kind is None else isinstance(target, kind)):
         raise EntryPointError(f"{flag} '{spec}' is a {type(target).__name__}, not {what}")
@@ -301,8 +313,22 @@ def build_search(space: Space, inputs: Inputs) -> Search | None:
 
 
 def agent_arguments(inputs: Inputs) -> dict[str, Any]:
-    """What `Optimizer` and `Optimizer.resume` take about the agent, the goal, the search, the selection, the score
-    model, and progress, built from `inputs`."""
+    """Build the `Optimizer` / `Optimizer.resume` arguments that `cli.json` records, shared by `run` and `resume`.
+
+    Args:
+        inputs: The run's inputs, from the flags (`run`) or `cli.json` (`resume`).
+
+    Returns:
+        Keyword arguments for `Optimizer` and `Optimizer.resume`: always `experiment`, `objective`, `constraints`,
+        `selection`, `score_model`, `on_iteration`, `search`; then the agent route's own: `factory`, `rollout_fn`,
+        `environment` for `--agent`; `build_task`, `space` for `--build-task` and for `--config` (whose
+        `build_task` is `_harness.build_task`). Settings `run.json` stores (split, final pick, budget, ...) aren't
+        here: `run` adds them, `resume` reads them from `run.json`.
+
+    Raises:
+        ValueError: A spec or hook is invalid (`EntryPointError` included), or `--config`'s `--tune` is.
+        TypeError: The space holds something that isn't a marker.
+    """
     rollout = (
         load_hook(inputs.rollout, "--rollout", None, "a rollout_fn(agent_factory, case)") if inputs.rollout else None
     )
@@ -436,9 +462,14 @@ def apply_run_file(path: Path, parser: argparse.ArgumentParser, args: argparse.N
     (`experiment`, `config`, `base_dir`) and path-form `MODULE:ATTR`s resolve against the file's folder; dotted
     modules import from the working directory, as on the command line.
 
+    Args:
+        path: The run file.
+        parser: The `run` subparser; its arguments give the file's keys and their types.
+        args: The parsed command line, filled in place: a flag already given there is left as is.
+
     Raises:
-        ValueError: The file can't be read or parsed, has an unknown key, a value of the wrong type, or no
-            `experiment`.
+        ValueError: The file can't be read or parsed, has an unknown key, a value of the wrong type, a misplaced
+            or bad section, or no `experiment`.
     """
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))

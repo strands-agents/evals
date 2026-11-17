@@ -34,6 +34,8 @@ def _given(args: argparse.Namespace, *names: str) -> dict[str, Any]:
 
 
 def _run(args: argparse.Namespace) -> int:
+    """`optimize run`: read a run file if given, check the flags, build the `Optimizer`, run it, and print the
+    result; `cli.json` is written as soon as the run folder exists. Returns the exit code (2 on bad input)."""
     from ...optimization import Budget, FinalPick, Optimizer
     from .. import _optimize
 
@@ -144,6 +146,8 @@ def _check_agent_flags(args: argparse.Namespace) -> str | None:
 
 
 def _resume(args: argparse.Namespace) -> int:
+    """`optimize resume`: rebuild the inputs from `cli.json`, reopen the run with `Optimizer.resume` in its working
+    directory, and print the result. Returns the exit code (2 on bad input)."""
     from ...optimization import Budget, Optimizer
     from .. import _optimize
 

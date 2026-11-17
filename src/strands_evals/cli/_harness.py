@@ -66,7 +66,15 @@ def read_config(path: Path) -> dict[str, Any]:
 
 
 def declare(config_path: Path, tune: list[str]) -> tuple[dict[str, Marker], list[Tuned]]:
-    """The space and the tuned paths: `instructions` (unless a `--tune` names it), then each `--tune` in order.
+    """Declare a portable config's space: `instructions` (unless a `--tune` names it), then each `--tune` in order.
+
+    Args:
+        config_path: The portable config (JSON).
+        tune: The `--tune` specs: `PATH` (a text field, or `skills`) or `PATH=JSON_LIST` (a choice).
+
+    Returns:
+        `(markers, tuned)`: the space, declared name -> marker (`JsonField`, `SkillLibrary`, or `OneOf`), and for
+        each name where its value goes in the config (`Tuned`: name, path, kind), which `build_task` reads.
 
     Raises:
         ValueError: A path the config doesn't have, a text path that isn't a string, a bad choice list or one
@@ -133,7 +141,17 @@ def build_task(
 
     Without `rollout_fn`, each trial is `invoke_async(case.input)` on one harness. With it, each trial is
     `rollout_fn(make_harness, case)`, where every `make_harness()` call builds a fresh harness from the candidate's
-    config, sharing the trial's session and memory folders; a sync `rollout_fn` runs in a worker thread.
+    config, sharing the trial's session and memory folders; a sync `rollout_fn` runs in a worker thread. Every
+    harness gets `callback_handler=None` unless the config's kwargs give one.
+
+    Args:
+        config_path: The portable config, read once; its folder is the harness's `base_dir`.
+        tuned: Where each declared name's value goes in the config, from `declare`.
+        rollout_fn: `--rollout`, or None for the default trial.
+
+    Returns:
+        The `build_task` for `Optimizer(build_task=..., space=...)`: called once per candidate with its
+        `BuildContext`, it returns that candidate's `task(case)`.
     """
     raw = read_config(config_path)
     base_dir = config_path.parent
