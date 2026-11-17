@@ -59,7 +59,7 @@ class Truncate:
 class Summarize:
     """Summarize old messages once the window is `utilization` full."""
 
-    utilization: float = 0.5
+    utilization: float = 0.3
 
     def config(self) -> dict:
         return {"strategies": [Offload.summarize("*").when(utilization=self.utilization, preserve_recent=4)]}
@@ -237,7 +237,8 @@ class AddInstruction(Proposer):
 def test_a_weakened_prompt_file_is_improved_into_a_diff_on_the_real_file(tmp_path, monkeypatch):
     project = tmp_path / "project"
     project.mkdir()
-    (project / "prompt.md").write_text("You answer questions.\n")
+    # Bytes, so the file holds `\n` on every OS: the scripted model's draws depend on the prompt's exact text.
+    (project / "prompt.md").write_bytes(b"You answer questions.\n")
     monkeypatch.chdir(project)  # diff paths are shown relative to the working directory
 
     @tunable(prompt=FileText("prompt.md"), temperature=Float(0.0, 1.0, default=0.3))
