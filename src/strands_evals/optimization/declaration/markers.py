@@ -31,9 +31,9 @@ class _ValueMarker(_Marker):
 
     Without `default=`, `tunable` fills in the wrapped function's parameter default, so `fn()` and the
     baseline build the same agent (`component()` likewise takes the constructor parameter's default
-    for an `Int` / `Float` / `OneOf` kwarg). With neither, `tunable`, `component()`, or `Space` raises
-    `TypeError`, which is always the case under `build_task`'s `space=` (no function). Only `OneOf`
-    falls back further, to its first option.
+    for an `Int` / `Float` / `OneOf` / `TextValue` kwarg). With neither, `tunable`, `component()`, or
+    `Space` raises `TypeError`, which is always the case under `build_task`'s `space=` (no function).
+    Only `OneOf` falls back further, to its first option.
 
     Attributes:
         default: The baseline value; None (`OneOf`: unset, since None can be an option) until filled in.
@@ -181,7 +181,8 @@ class Component(_Marker):
     Attributes:
         factory: The class or callable to construct.
         fixed: Constructor kwargs passed through as is.
-        tunable: Constructor kwargs declared as `Int` / `Float` / `OneOf`, each with a default.
+        tunable: Constructor kwargs declared as `Int` / `Float` / `OneOf` / `TextValue`, each with a
+            default, or as a `Choice` (a nested `component()` is stored as a one-alternative choice).
         label: The alternative's label inside a `choice()`; the class name by default.
     """
 
@@ -189,7 +190,7 @@ class Component(_Marker):
         self,
         factory: Callable[..., Any],
         fixed: dict[str, Any],
-        tunable: dict[str, Int | Float | OneOf],
+        tunable: dict[str, Int | Float | OneOf | TextValue | Choice],
         label: str | None = None,
     ):
         self.factory = factory
@@ -221,32 +222,47 @@ class Choice(_Marker):
 
 
 def component(factory: Callable[..., Any], /, **kwargs: Any) -> Component:
-    """Declare one constructible alternative; `Int`/`Float`/`OneOf` kwargs are tunable, others pass through.
+    """Declare one constructible alternative; marker kwargs are tunable, others pass through.
 
     `factory` is positional-only, so a constructor kwarg named `factory` can still be passed. An
-    `Int` / `Float` / `OneOf` kwarg without `default=` takes the constructor parameter's default
-    (a `OneOf` without one, its first option), e.g.
+    `Int` / `Float` / `OneOf` / `TextValue` kwarg without `default=` takes the constructor
+    parameter's default (a `OneOf` without one, its first option), e.g.
     `component(SlidingWindowConversationManager, window_size=Int(4, 40), pin_first=OneOf(None, 1))`
     (the constructor's defaults, 40 and None, are the baseline). A constructor default of None
-    doesn't count for an `Int` / `Float`: pass `default=`.
+    doesn't count for an `Int` / `Float` / `TextValue`: pass `default=`.
+
+    A kwarg may also be a `choice()` or another `component()`, to any depth; a nested component
+    counts as a one-alternative choice, as at the top level. Its keys extend the alternative's:
+    `manager=choice(summary=component(SummarizingConversationManager,
+    summarization_agent=component(Agent, system_prompt=TextValue(default="Summarize."))), off=None)`
+    gives `manager`, `manager.summary.summarization_agent` (the one alternative, "Agent"), and
+    `manager.summary.summarization_agent.Agent.system_prompt`, active only while `manager` is
+    `summary`. As under `tunable`, a nested choice's first alternative is the baseline, whatever
+    the constructor's own default. Each build constructs the nested components afresh.
 
     The constructor is probed once, here, with its defaults, so its side effects (a client it
-    creates) run at declaration and the probed instance is discarded. A positional label comes from
-    the factory's `__name__`, so a lambda or a `functools.partial` must be labeled by keyword in
-    `choice()`.
+    creates) run at declaration and the probed instance is discarded. The probe passes each nested
+    choice its first alternative, so the components on that path are constructed again for each
+    `component()` above them, and another alternative first reaches this constructor when a
+    candidate chooses it. A positional label comes from the factory's `__name__`, so a lambda or a
+    `functools.partial` must be labeled by keyword in `choice()`.
 
     Other kwargs pass through as is, so every build gets the same objects: build stateful ones (an
-    `Agent`, a client) inside the factory, or they are shared across trials.
+    `Agent`, a client) inside the factory or as a nested `component()`, or they are shared across
+    trials.
 
     Args:
         factory: The class or callable to construct.
-        **kwargs: Constructor arguments; `Int` / `Float` / `OneOf` markers among them are tunable.
+        **kwargs: Constructor arguments; `Int` / `Float` / `OneOf` / `TextValue` markers and nested
+            `choice()` / `component()` declarations among them are tunable.
 
     Raises:
         TypeError: A kwarg the constructor doesn't take (when its signature can be read), the
-            constructor rejects its own defaults (the exception is chained), an `Int` / `Float` kwarg
-            has no default anywhere (a constructor default of None counts as none), a default that
-            doesn't fit its marker, or another marker (`TextValue`, a nested component or choice) is
+            constructor rejects its own defaults (the exception is chained), an `Int` / `Float` /
+            `TextValue` kwarg has no default anywhere (a constructor default of None counts as none),
+            a default that doesn't fit its marker, a tunable kwarg's name contains `.` or `/`, a
+            nested component that `choice()` can't label (a lambda or a `functools.partial`: wrap it
+            in a keyword `choice()`), or another marker (`tool_descriptions`, a file marker) is
             passed as a kwarg.
     """
     if not callable(factory):
@@ -264,17 +280,24 @@ def component(factory: Callable[..., Any], /, **kwargs: Any) -> Component:
         if unknown:
             raise TypeError(f"component({name}): no keyword arguments named {unknown}")
     for key, value in kwargs.items():
-        if isinstance(value, (Int, Float, OneOf)):
+        if isinstance(value, _Marker) and ("." in key or "/" in key):
+            # The name is a key segment: "a.B.c" would read as the kwarg `a`, its alternative `B`, and its kwarg `c`.
+            raise TypeError(f"component({name}): a tunable argument's name must contain no '.' or '/', got {key!r}")
+        if isinstance(value, (Int, Float, OneOf, TextValue)):
             result.tunable[key] = _with_constructor_default(name, key, value, parameters)
+        elif isinstance(value, Choice):
+            result.tunable[key] = value
+        elif isinstance(value, Component):
+            result.tunable[key] = choice(value)  # a one-alternative choice, as `Space` treats a bare component
         elif isinstance(value, _Marker):
             raise TypeError(
-                f"component({name}): {key}= is a {type(value).__name__}; "
-                "only Int, Float, and OneOf arguments are tunable"
+                f"component({name}): {key}= is a {type(value).__name__}; only Int, Float, OneOf, TextValue, "
+                "choice(), and component() arguments are tunable"
             )
         else:
             result.fixed[key] = value
     try:
-        result.build({key: marker.default for key, marker in result.tunable.items()})
+        result.build({key: _baseline(marker) for key, marker in result.tunable.items()})
     except Exception as error:
         raise TypeError(f"component({name}): the constructor rejects its own defaults: {error}") from error
     return result
@@ -408,9 +431,23 @@ def _parameters(factory: Callable[..., Any]) -> dict[str, inspect.Parameter] | N
         return None
 
 
+def _baseline(marker: Int | Float | OneOf | TextValue | Choice) -> Any:
+    """What a component's tunable kwarg is at the baseline.
+
+    A value marker's default, or a choice's first alternative: a component built with its own
+    kwargs' baselines, or a fixed value as is.
+    """
+    if not isinstance(marker, Choice):
+        return marker.default
+    alternative = next(iter(marker.alternatives.values()))
+    if not isinstance(alternative, Component):
+        return alternative
+    return alternative.build({key: _baseline(inner) for key, inner in alternative.tunable.items()})
+
+
 def _with_constructor_default(
-    name: str, key: str, marker: Int | Float | OneOf, parameters: dict[str, inspect.Parameter] | None
-) -> Int | Float | OneOf:
+    name: str, key: str, marker: Int | Float | OneOf | TextValue, parameters: dict[str, inspect.Parameter] | None
+) -> Int | Float | OneOf | TextValue:
     """`marker` with a missing default taken from the constructor parameter `key`; raises `TypeError`.
 
     A `OneOf` with neither takes its first option, so every returned marker has a default.

@@ -366,3 +366,52 @@ def test_a_build_context_can_be_built_by_hand(tmp_path):
     assert BuildContext({}, lambda name: None).workspace is None
     assert BuildContext({}, lambda name: None, tmp_path).workspace == tmp_path
     assert BuildContext({}, lambda name: None, lambda: tmp_path).workspace == tmp_path
+
+
+# --- nested components ---
+
+
+@tunable(
+    conversation_manager=choice(
+        window=component(SlidingWindowConversationManager, window_size=Int(4, 200)),
+        summary=component(
+            SummarizingConversationManager,
+            summary_ratio=Float(0.1, 0.8),
+            summarization_agent=component(
+                Agent, model=StubModel(), system_prompt=TextValue(default="Summarize."), callback_handler=None
+            ),
+        ),
+    )
+)
+def make_summarized_agent(conversation_manager=None):
+    return Agent(model=StubModel(), conversation_manager=conversation_manager, callback_handler=None)
+
+
+def test_a_nested_component_builds_a_fresh_summarizer_agent_with_the_candidates_prompt():
+    prompt_key = "conversation_manager.summary.summarization_agent.Agent.system_prompt"
+    assert make_summarized_agent.space.param(prompt_key).active_when == (
+        "conversation_manager.summary.summarization_agent",
+        "Agent",
+    )
+    bound = make_summarized_agent.bind({"conversation_manager": "summary", prompt_key: "Keep every order id."})
+    first, second = bound().conversation_manager, bound().conversation_manager
+    assert isinstance(first, SummarizingConversationManager)
+    assert first.summarization_agent.system_prompt == "Keep every order id."
+    assert first.summarization_agent is not second.summarization_agent
+    assert isinstance(make_summarized_agent().conversation_manager, SlidingWindowConversationManager)
+
+
+@tunable(
+    conversation_manager=component(
+        SummarizingConversationManager, summarization_system_prompt=TextValue(default="Summarize the facts.")
+    )
+)
+def make_prompted_manager(conversation_manager=None):
+    return conversation_manager
+
+
+def test_a_text_value_under_a_component_reaches_its_constructor():
+    key = "conversation_manager.SummarizingConversationManager.summarization_system_prompt"
+    assert make_prompted_manager.space.param(key).kind == "text"
+    assert make_prompted_manager().summarization_system_prompt == "Summarize the facts."
+    assert make_prompted_manager.bind({key: "Keep the ids."})().summarization_system_prompt == "Keep the ids."

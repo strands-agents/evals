@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import hashlib
 import json
 import logging
@@ -105,6 +106,10 @@ class Reflection(Proposer):
     objective instead (a median split). A goal with no bounded metric also ranks them: each reward is
     the objectives' mid-ranks in [0, 1], weighted, compared against `success_threshold` (a median split only at
     0.5).
+
+    The agent sees and rewrites only the block's texts active under the parent's choices (a `TextValue` under
+    an alternative the parent didn't choose is left out); with none active, `propose` returns `[]` without
+    running it.
 
     Each `propose` call (n=1) runs one agent (`concurrent = True`). The agent is retried 3 times, each
     failure logged as `proposer_retry`, then the last error is raised; nothing submitted, or every value
@@ -213,14 +218,20 @@ class Reflection(Proposer):
 
     async def _propose_one(self, request: ProposalRequest) -> Patch | None:
         """One agent over fresh folders: the evidence, the conversation (with its send-backs), then the guardrails.
-        None when there is nothing to learn from, nothing usable was submitted, or every value was dropped.
+        None when none of the block's texts is active under the parent, there is nothing to learn from, nothing usable
+        was submitted, or every value was dropped.
 
         The call's three folders (`traces`, `versions`, `work`) are made inside one temp folder of its own, which the
         shell lets the agent name: a model that `cd`s to the folder holding them, or reads `../versions/...` from
         `work`, is not refused. Writing the evidence and the guardrails run in a worker thread, so concurrent calls
         keep streaming; a shell command still running when the call ends (cancelled) is killed before its folders are
         removed."""
-        keys = list(request.keys)
+        # A text under an alternative the parent didn't choose isn't the agent's to rewrite: the space drops it.
+        block_keys = list(request.keys)
+        keys = [k for k in block_keys if request.space.is_active(k, request.parent.values)]
+        if not keys:
+            return None
+        request = dataclasses.replace(request, keys=keys)
         parent = dict(request.parent.values)
         running: set[subprocess.Popen[bytes]] = set()
         with tempfile.TemporaryDirectory(prefix="reflection_") as root, contextlib.ExitStack() as cleanup:
@@ -296,7 +307,8 @@ class Reflection(Proposer):
                     raise failure
                 request.log("proposer_retry", error_type=type(failure).__name__, error=str(failure)[:2000])
             self.refused.extend(refused)
-            updates, dropped, screened = await asyncio.to_thread(_guard, request, params or {}, keys, parent)
+            # The block's keys, so a submitted text inactive under the parent is dropped saying so.
+            updates, dropped, screened = await asyncio.to_thread(_guard, request, params or {}, block_keys, parent)
             for key in screened:
                 request.log("screened", key=key, reason=dropped[key])
         if not updates:
@@ -1043,7 +1055,8 @@ def _write_versions(folder: str, request: ProposalRequest, goal_metrics: Sequenc
     """One folder per measured version, in `request.candidates` order, named by its rank (`rank-001-version-26`,
     `unranked-version-5`): `version.md` holds its results (each goal metric as `_shown`, and whether it meets
     the limits as the ranking assessed it) and other values, and each of the block's texts is a file of its own
-    (`_text_files`) holding the text alone, so a copy of a version's text is the text and nothing else. Returns the
+    (`_text_files`) holding the text alone, so a copy of a version's text is the text and nothing else; a text the
+    version leaves out (under an alternative it didn't choose) is listed as not used and has no file. Returns the
     versions table's rows."""
     keys = list(request.keys)
     by_id = {c.candidate_id: c for c in request.candidates}
@@ -1083,8 +1096,10 @@ def _write_versions(folder: str, request: ProposalRequest, goal_metrics: Sequenc
             lines += ["", "## Other values", json.dumps(others, indent=1, default=str)]
         lines += ["", "## Its texts, each in its own file in this folder (the text alone)"]
         for k in keys:
-            text = c.values.get(k)
-            value = "" if text is None else str(text)
+            if k not in c.values:  # under an alternative this version didn't choose: no file, unlike an empty text
+                lines.append(f"- {k}: not used by this version")
+                continue
+            value = str(c.values[k])
             lines.append(f"- {k}: `{files[k]}` ({len(value):,} characters)")
             with open(os.path.join(path, files[k]), "w", encoding="utf-8") as f:
                 f.write(value)
@@ -1132,8 +1147,8 @@ def _guard(
     keys the leakage screen dropped (for the caller to log as `screened`; this runs in a worker thread).
 
     In order: a key outside the block is dropped; a value equal to the parent's is left out (nothing to change); a
-    value `space.validate` refuses (over its `size_cap`, a `SKILL.md` that changes its `name`, invalid JSON) is
-    dropped; a value that leaks a shown train trial (`_leak`) is dropped.
+    value `space.validate` refuses (over its `size_cap`, a `SKILL.md` that changes its `name`, invalid JSON, a text
+    inactive under the parent's choices) is dropped; a value that leaks a shown train trial (`_leak`) is dropped.
     """
     shown = [
         t

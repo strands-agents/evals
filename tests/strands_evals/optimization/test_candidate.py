@@ -264,6 +264,24 @@ def test_diff_heads_non_file_text_with_its_key_and_never_shows_numbers(project):
     )
 
 
+class Prompted:
+    def __init__(self, prompt: str = "Summarize."):
+        self.prompt = prompt
+
+
+def test_a_text_under_a_switched_choice_is_inherited_and_diffed_against_no_text():
+    space = Space({"manager": choice(off=None, summary=component(Prompted, prompt=TextValue()))})
+    baseline = Candidate.baseline(space)
+    child = baseline.child(
+        space, {"manager": "summary"}, origin=["structure"], rationale="", fill=lambda key: ("Keep ids.\n", "abc123")
+    )
+    assert child.values == {"manager": "summary", "manager.summary.prompt": "Keep ids.\n"}
+    assert child.inherited == {"manager.summary.prompt": "abc123"}
+    added = "--- manager.summary.prompt\n+++ manager.summary.prompt\n@@ -0,0 +1 @@\n+Keep ids.\n"
+    assert diff(space, baseline, child, root=Path.cwd()) == added  # the baseline uses no such text
+    assert changed_values(space, baseline, child) == {"manager": {"old": "off", "new": "summary"}}
+
+
 @pytest.mark.parametrize("separator", ["\f", "\v", "\r", "\x85", "\u2028"])
 def test_diff_splits_lines_only_at_newlines(separator):
     space = Space({"notes": TextValue(default=f"one{separator}still one\nend\n")})

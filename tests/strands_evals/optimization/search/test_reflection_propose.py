@@ -7,8 +7,18 @@ import tempfile
 import pytest
 from strands.types.exceptions import EventLoopException
 
-from strands_evals.optimization import Criteria, InfrastructureError, Maximize, Reflection, Space, TextValue
+from strands_evals.optimization import (
+    Criteria,
+    InfrastructureError,
+    Maximize,
+    Reflection,
+    Space,
+    TextValue,
+    choice,
+    component,
+)
 from strands_evals.optimization.candidate import Candidate
+from strands_evals.optimization.search import reflection as reflection_module
 from strands_evals.optimization.search.proposer import ProposalRequest
 from strands_evals.types.trace import TextContent, ToolResultContent, UserMessage
 from tests.strands_evals.optimization.scripted_model import ScriptedModel, ToolUse
@@ -30,16 +40,16 @@ SPACE = Space(
 )
 
 
-def request(*, n=1, keys=("prompt", "tone"), trials=None, events=None):
+def request(*, n=1, keys=("prompt", "tone"), trials=None, events=None, space=SPACE):
     criteria = Criteria(Maximize("Score"), [], REGISTRY)
     trials = trials or [
         trial("order-123", score=0.2, output="I could not find the order you asked about, sorry."),
         trial("b", score=0.9),
     ]
-    parent = Candidate.baseline(SPACE)
+    parent = Candidate.baseline(space)
     log = events.append if events is not None else None
     return ProposalRequest(
-        space=SPACE,
+        space=space,
         keys=list(keys),
         parent=parent,
         trials=trials,
@@ -100,6 +110,52 @@ async def test_the_first_proposal_warns_that_the_shell_is_not_a_sandbox():
     with pytest.warns(UserWarning, match="not a sandbox") as caught:
         await propose(["Nothing to change."], warn=True)
     assert caught[0].filename.endswith("reflection.py")  # not asyncio's: the coroutine's caller is the event loop
+
+
+class Summarizer:
+    def __init__(self, prompt: str = "Summarize."):
+        self.prompt = prompt
+
+
+# The baseline leaves the summarizer off, so its prompt is inactive.
+CHOICE_SPACE = Space(
+    {
+        "prompt": TextValue(default="Be helpful.\n", size_cap=60),
+        "manager": choice(off=None, summary=component(Summarizer, prompt=TextValue(size_cap=60))),
+    }
+)
+
+
+async def test_a_text_inactive_under_the_parent_is_neither_shown_nor_proposed(monkeypatch):
+    shown = []
+    task_message = reflection_module.task_message
+
+    def recording(**kwargs):
+        shown.append([v.name for v in kwargs["variables"]])
+        return task_message(**kwargs)
+
+    monkeypatch.setattr(reflection_module, "task_message", recording)
+    turns = [
+        write("p.txt", "Be helpful. Ask for the order number."),
+        write("s.txt", "Keep the order ids."),
+        submit(prompt="p.txt", **{"manager.summary.prompt": "s.txt"}),
+        "Rewrote both.",
+    ]
+    reflection = Reflection(ScriptedModel(turns))
+    reflection._warned = True
+    keys = ("prompt", "manager.summary.prompt")
+    (patch,) = await reflection.propose(request(keys=keys, space=CHOICE_SPACE))
+    assert shown == [["prompt"]]
+    assert patch.updates == {"prompt": "Be helpful. Ask for the order number.\n"}
+    assert "inactive under the chosen alternatives" in patch.state["dropped"]["manager.summary.prompt"]
+
+
+async def test_no_agent_runs_when_none_of_the_blocks_texts_is_active():
+    model = ScriptedModel(["Nothing to change."])
+    reflection = Reflection(model)
+    reflection._warned = True
+    assert await reflection.propose(request(keys=("manager.summary.prompt",), space=CHOICE_SPACE)) == []
+    assert model.calls == 0
 
 
 async def test_nothing_submitted_or_nothing_changed_proposes_nothing():

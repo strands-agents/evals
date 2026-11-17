@@ -291,6 +291,24 @@ def test_a_combination_counts_once_by_the_keys_active_under_it():
     assert ("manager.window.pin" in third.updates) == (third.updates["manager"] == "window")
 
 
+class Holder:
+    def __init__(self, inner=None):
+        self.inner = inner
+
+
+def test_combinations_follow_a_chain_of_nested_choices():
+    nested = choice(a=component(Window, pin=OneOf(0, 1)), b=None)
+    space = Space({"manager": choice(off=None, on=component(Holder, inner=nested))})
+    keys = ["manager", "manager.on.inner", "manager.on.inner.a.pin"]
+    patches = propose(Thompson(), request(space, keys, n=4))
+    assert sorted(sorted(p.updates.items()) for p in patches) == [
+        [("manager", "off")],
+        [("manager", "on"), ("manager.on.inner", "a"), ("manager.on.inner.a.pin", 0)],
+        [("manager", "on"), ("manager.on.inner", "a"), ("manager.on.inner.a.pin", 1)],
+        [("manager", "on"), ("manager.on.inner", "b")],
+    ]
+
+
 def test_options_python_compares_equal_stay_apart():
     space = Space({"flag": OneOf(1, True, default=1)})
     measured = space.complete({"flag": 1})

@@ -346,3 +346,173 @@ def test_a_components_one_of_kwarg_is_a_one_of_key_under_its_alternative():
 def test_resolve_takes_declared_names_not_flat_keys():
     with pytest.raises(KeyError):
         make_space().resolve("manager.Window.size", BASELINE, None)
+
+
+# --- nested components and choices ---
+
+
+class Helper:
+    def __init__(self, system_prompt: str = "You summarize.", turns: int = 3):
+        self.system_prompt = system_prompt
+        self.turns = turns
+
+
+class Summarizer:
+    def __init__(self, prompt: str = "Summarize.", helper: object = None):
+        self.prompt = prompt
+        self.helper = helper
+
+
+class Holder:
+    def __init__(self, manager: object = None, k: int = 1):
+        self.manager = manager
+        self.k = k
+
+
+def nested_space():
+    manager = choice(
+        window=component(Window, size=Int(1, 100)),
+        summary=component(
+            Summarizer, prompt=TextValue(size_cap=40), helper=component(Helper, system_prompt=TextValue())
+        ),
+        off=None,
+    )
+    return Space({"holder": component(Holder, manager=manager, k=Int(1, 5)), "prompt": TextValue(default="You help.")})
+
+
+MANAGER_KEY = "holder.Holder.manager"
+HELPER_KEY = f"{MANAGER_KEY}.summary.helper"
+HELPER_PROMPT_KEY = f"{HELPER_KEY}.Helper.system_prompt"
+
+NESTED_BASELINE = {
+    "holder": "Holder",
+    MANAGER_KEY: "window",
+    f"{MANAGER_KEY}.window.size": 40,
+    "holder.Holder.k": 1,
+    "prompt": "You help.",
+}
+
+SUMMARY = {
+    "holder": "Holder",
+    MANAGER_KEY: "summary",
+    f"{MANAGER_KEY}.summary.prompt": "Summarize.",
+    HELPER_KEY: "Helper",
+    HELPER_PROMPT_KEY: "You summarize.",
+    "holder.Holder.k": 1,
+    "prompt": "You help.",
+}
+
+
+def test_nested_markers_flatten_with_every_condition_before_the_keys_it_decides():
+    space = nested_space()
+    assert [(p.key, p.kind, p.active_when) for p in space.params()] == [
+        ("holder", "choice", None),
+        (MANAGER_KEY, "choice", ("holder", "Holder")),
+        (f"{MANAGER_KEY}.window.size", "int", (MANAGER_KEY, "window")),
+        (f"{MANAGER_KEY}.summary.prompt", "text", (MANAGER_KEY, "summary")),
+        (HELPER_KEY, "choice", (MANAGER_KEY, "summary")),
+        (HELPER_PROMPT_KEY, "text", (HELPER_KEY, "Helper")),
+        ("holder.Holder.k", "int", ("holder", "Holder")),
+        ("prompt", "text", None),
+    ]
+    assert space.param(MANAGER_KEY).options == ("window", "summary", "off")
+    assert space.param(HELPER_KEY).options == ("Helper",)  # a nested component: a one-alternative choice
+    assert all(p.name == "holder" for p in space.params()[:-1])
+
+
+def test_a_text_value_under_an_alternative_keeps_its_default_and_size_cap():
+    space = nested_space()
+    prompt = space.param(f"{MANAGER_KEY}.summary.prompt")
+    assert (prompt.default, prompt.size_cap, prompt.source) == ("Summarize.", 40, None)
+    assert space.param(HELPER_PROMPT_KEY).size_cap == 2000  # the derived cap
+
+
+def test_a_nested_key_is_active_only_when_every_choice_above_it_selects_its_way():
+    space = nested_space()
+    assert not space.is_active(HELPER_PROMPT_KEY, NESTED_BASELINE)
+    assert space.is_active(HELPER_PROMPT_KEY, SUMMARY)
+    # The helper's own choice says "Helper", but the manager above it is off.
+    assert not space.is_active(HELPER_PROMPT_KEY, {**SUMMARY, MANAGER_KEY: "off"})
+
+
+def test_complete_follows_a_switched_outer_choice_through_the_nested_keys():
+    space = nested_space()
+    assert space.complete({}) == NESTED_BASELINE
+    assert space.complete({MANAGER_KEY: "summary"}) == SUMMARY
+    assert space.complete({**SUMMARY, MANAGER_KEY: "off"}) == {
+        "holder": "Holder",
+        MANAGER_KEY: "off",
+        "holder.Holder.k": 1,
+        "prompt": "You help.",
+    }
+    asked = []
+
+    def fill(key):
+        asked.append(key)
+        return ("Keep the ids.", "abc123") if key == HELPER_PROMPT_KEY else None
+
+    assert space.complete({**NESTED_BASELINE, MANAGER_KEY: "summary"}, fill=fill)[HELPER_PROMPT_KEY] == "Keep the ids."
+    assert asked == [f"{MANAGER_KEY}.summary.prompt", HELPER_KEY, HELPER_PROMPT_KEY]
+
+
+def test_validate_reports_nested_keys_that_are_inactive_missing_or_invalid():
+    space = nested_space()
+    space.validate(SUMMARY)
+    with pytest.raises(ValueError, match=rf"inactive under the chosen alternatives: \['{HELPER_PROMPT_KEY}'\]"):
+        space.validate({**NESTED_BASELINE, HELPER_PROMPT_KEY: "x"})
+    missing = {k: v for k, v in SUMMARY.items() if k != HELPER_PROMPT_KEY}
+    with pytest.raises(ValueError, match=rf"missing: \['{HELPER_PROMPT_KEY}'\]"):
+        space.validate(missing)
+    with pytest.raises(ValueError, match="over the size_cap of 40"):
+        space.validate({**SUMMARY, f"{MANAGER_KEY}.summary.prompt": "x" * 41})
+
+
+def test_resolve_builds_nested_components_afresh_on_every_call():
+    space = nested_space()
+    values = {**SUMMARY, f"{MANAGER_KEY}.summary.prompt": "Recap.", HELPER_PROMPT_KEY: "Keep the ids."}
+    first, second = space.resolve("holder", values, None), space.resolve("holder", values, None)
+    assert isinstance(first, Holder) and isinstance(first.manager, Summarizer)
+    assert (first.manager.prompt, first.manager.helper.system_prompt, first.manager.helper.turns) == (
+        "Recap.",
+        "Keep the ids.",
+        3,
+    )
+    assert first.manager is not second.manager and first.manager.helper is not second.manager.helper
+    assert space.resolve("holder", NESTED_BASELINE, None).manager.size == 40
+    assert space.resolve("holder", space.complete({MANAGER_KEY: "off"}), None).manager is None
+
+
+def test_validate_reports_a_missing_or_unknown_outer_choice_on_a_nested_space():
+    space = nested_space()
+    without_manager = {k: v for k, v in NESTED_BASELINE.items() if k != MANAGER_KEY}
+    with pytest.raises(ValueError, match=rf"missing: \['{MANAGER_KEY}'\]"):
+        space.validate(without_manager)
+    with pytest.raises(ValueError, match="is not one of") as raised:
+        space.validate({**NESTED_BASELINE, MANAGER_KEY: "lru"})
+    assert "inactive under the chosen alternatives" in str(raised.value)  # no alternative is chosen
+
+
+def test_a_nested_text_default_over_its_size_cap_fails_at_declaration():
+    with pytest.raises(TypeError, match="over the size_cap of 5"):
+        Space({"s": component(Summarizer, prompt=TextValue(size_cap=5))})
+
+
+def test_one_choice_under_two_kwargs_gives_each_its_own_keys():
+    shared = choice(window=component(Window, size=Int(1, 100)), off=None)
+    space = Space({"holder": component(Summarizer, prompt=shared, helper=shared)})
+    assert [p.key for p in space.params()] == [
+        "holder",
+        "holder.Summarizer.prompt",
+        "holder.Summarizer.prompt.window.size",
+        "holder.Summarizer.helper",
+        "holder.Summarizer.helper.window.size",
+    ]
+    values = space.complete({"holder.Summarizer.helper": "off"})
+    built = space.resolve("holder", values, None)
+    assert isinstance(built.prompt, Window) and built.helper is None
+
+
+def test_a_nested_choice_of_fixed_values_is_a_choice_key_alone():
+    space = Space({"holder": component(Holder, manager=choice(small="s", large="l"))})
+    assert [p.key for p in space.params()] == ["holder", "holder.Holder.manager"]
+    assert space.resolve("holder", space.complete({"holder.Holder.manager": "large"}), None).manager == "l"

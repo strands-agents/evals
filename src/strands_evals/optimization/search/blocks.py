@@ -655,8 +655,8 @@ def _is_structural(info: ParamInfo) -> bool:
 
 
 def _selectors(space: Space, key: str) -> list[str]:
-    """The choice keys with 2+ options `key` exists under, innermost first (a one-option choice, a bare
-    `component()`, is always active, so nothing depends on it)."""
+    """The choice keys with 2+ options `key` exists under, innermost first (a one-option choice, a bare or
+    nested `component()`, never changes, so nothing depends on it; the choices above it still count)."""
     out = []
     condition = space.param(key).active_when
     while condition is not None:

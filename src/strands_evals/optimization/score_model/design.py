@@ -71,7 +71,9 @@ class _Factor:
 
     def level(self, values: Values) -> str:
         if self.kind == "text":
-            return "default" if all(values.get(k) == self.defaults.get(k) for k in self.text_keys) else "rewritten"
+            # A text the space leaves out (under an alternative not chosen) isn't rewritten.
+            rewritten = any(k in values and values[k] != self.defaults.get(k) for k in self.text_keys)
+            return "rewritten" if rewritten else "default"
         if self.key not in values:
             return _INACTIVE
         value = values[self.key]

@@ -4,7 +4,17 @@ import pytest
 from strands import tool
 from strands.agent.conversation_manager import SlidingWindowConversationManager
 
-from strands_evals.optimization import Float, Int, OneOf, TextValue, choice, component, tool_descriptions
+from strands_evals.optimization import (
+    Choice,
+    FileText,
+    Float,
+    Int,
+    OneOf,
+    TextValue,
+    choice,
+    component,
+    tool_descriptions,
+)
 from strands_evals.optimization.declaration.markers import _default_size_cap, _ValueMarker
 
 
@@ -273,18 +283,88 @@ def test_component_one_of_whose_constructor_default_is_not_an_option_fails():
         component(Manager, factory=OneOf("y", "z"))
 
 
-@pytest.mark.parametrize(
-    "marker",
-    [
-        TextValue(default="x"),
-        tool_descriptions(lookup),
-        choice(component(OtherManager)),
-        component(OtherManager),
-    ],
-)
-def test_component_rejects_markers_other_than_int_float_and_one_of(marker):
-    with pytest.raises(TypeError, match="only Int, Float, and OneOf"):
-        component(Manager, factory=marker)
+def test_component_rejects_tool_descriptions_and_file_markers_as_kwargs(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("Be helpful.")
+    for marker in (tool_descriptions(lookup), FileText(tmp_path / "AGENTS.md")):
+        with pytest.raises(TypeError, match=r"only Int, Float, OneOf, TextValue, choice\(\), and component\(\)"):
+            component(Manager, factory=marker)
+
+
+def test_component_rejects_a_tunable_kwarg_whose_name_would_split_into_key_segments():
+    def build(**kwargs):
+        return kwargs
+
+    for name in ("a.B.c", "skills/x"):
+        with pytest.raises(TypeError, match="must contain no '.' or '/'"):
+            component(build, **{name: Int(1, 5, default=2)})
+    assert component(build, **{"a.B.c": 1}).fixed == {"a.B.c": 1}  # a fixed kwarg is no key
+
+
+class Summarizer:
+    def __init__(self, prompt: str = "Summarize.", inner: object = None, ratio: float = 0.3):
+        self.prompt = prompt
+        self.inner = inner
+        self.ratio = ratio
+
+
+def test_component_takes_a_text_value_kwarg_with_the_constructors_default():
+    declared = component(Summarizer, prompt=TextValue(size_cap=50, edit_instructions="be brief"))
+    marker = declared.tunable["prompt"]
+    assert isinstance(marker, TextValue)
+    assert (marker.default, marker.size_cap, marker.edit_instructions) == ("Summarize.", 50, "be brief")
+    assert component(Summarizer, prompt=TextValue(default="Recap.")).tunable["prompt"].default == "Recap."
+
+
+def test_component_text_value_whose_constructor_default_is_none_or_not_text_fails_at_component():
+    with pytest.raises(TypeError, match="default for inner= is None; pass default="):
+        component(Summarizer, inner=TextValue())
+    with pytest.raises(TypeError, match="doesn't fit its marker"):
+        component(Summarizer, ratio=TextValue())  # the constructor's default is 0.3
+
+
+def test_component_stores_a_nested_component_as_a_one_alternative_choice():
+    declared = component(Summarizer, inner=component(OtherManager, depth=Int(1, 5)))
+    nested = declared.tunable["inner"]
+    assert isinstance(nested, Choice)
+    assert list(nested.alternatives) == ["OtherManager"]
+    assert nested.alternatives["OtherManager"].tunable["depth"].default == 2
+
+
+def test_component_takes_a_nested_choice_as_is():
+    inner = choice(deep=component(OtherManager, depth=Int(1, 5)), off=None)
+    assert component(Summarizer, inner=inner).tunable["inner"] is inner
+
+
+def test_component_probes_its_constructor_with_nested_components_at_their_baseline():
+    built = []
+
+    class Recording(Summarizer):
+        def __init__(self, inner: object = None, **kwargs):
+            super().__init__(inner=inner, **kwargs)
+            built.append(self)
+
+    component(Recording, inner=choice(deep=component(OtherManager, depth=Int(1, 5, default=4)), off=None))
+    assert isinstance(built[-1].inner, OtherManager) and built[-1].inner.depth == 4
+    component(Recording, inner=choice(off=None, deep=component(OtherManager)))
+    assert built[-1].inner is None  # the first alternative is the baseline, a fixed value as is
+
+
+def test_component_whose_constructor_rejects_a_nested_baseline_fails_at_declaration():
+    class Typed:
+        def __init__(self, inner: object = None):
+            if not isinstance(inner, Summarizer):
+                raise ValueError("inner must be a Summarizer")
+            self.inner = inner
+
+    with pytest.raises(TypeError, match="rejects its own defaults"):
+        component(Typed, inner=choice(off=None, on=component(Summarizer)))
+
+
+def test_component_rejects_a_nested_lambda_component_unless_labeled_by_keyword():
+    with pytest.raises(TypeError, match="label it by keyword"):
+        component(Summarizer, inner=component(lambda: OtherManager()))
+    labeled = component(Summarizer, inner=choice(other=component(lambda: OtherManager())))
+    assert list(labeled.tunable["inner"].alternatives) == ["other"]
 
 
 def test_component_rejects_a_non_callable():

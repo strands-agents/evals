@@ -437,6 +437,41 @@ def test_the_design_lists_factors_inactive_levels_and_omitted_keys():
     assert {row["level"] for row in effects(fit)} == {"off", "rewritten", *factors["cm.window.size"]["levels"][1:-1]}
 
 
+class Prompted:
+    def __init__(self, prompt: str = "Summarize.", helper: object = None):
+        self.prompt = prompt
+        self.helper = helper
+
+
+def test_a_text_under_an_alternative_not_chosen_is_not_a_rewrite():
+    space = Space(
+        {
+            "cm": choice(
+                window=component(Window, size=Int(2, 40)),
+                summary=component(Prompted, prompt=TextValue(), helper=choice(off=None, on=component(Window))),
+            )
+        }
+    )
+    summary = {"cm": "summary", "cm.summary.prompt": "Summarize.", "cm.summary.helper": "off"}
+    candidates = {
+        "c0": {"cm": "window", "cm.window.size": 10},
+        "c1": {"cm": "window", "cm.window.size": 30},
+        "c2": summary,
+        "c3": {**summary, "cm.summary.helper": "on"},
+    }
+    observations = {cid: {"x": [0.5], "y": [0.6]} for cid in candidates}
+    blocks = {"text": ["cm.summary.prompt"]}
+    fit = _fit(candidates, observations, ["x", "y"], space=space, text_blocks=blocks, ranges={"score": (0, 1)})
+    factors = {f["key"]: f for f in design(fit)["factors"]}
+    assert "rewritten:text" not in factors  # no candidate rewrote the prompt; the window ones leave it out
+    assert factors["cm.summary.helper"]["levels"] == ["off", "on", "inactive"]  # a nested choice is a factor too
+    rewritten = {**candidates, "c4": {**summary, "cm.summary.prompt": "Keep the ids."}}
+    observations["c4"] = {"x": [0.5], "y": [0.6]}
+    layout = _fit(rewritten, observations, ["x", "y"], space=space, text_blocks=blocks, ranges={"score": (0, 1)}).design
+    (text,) = layout.texts
+    assert [text.level(v) for v in rewritten.values()] == ["default", "default", "default", "default", "rewritten"]
+
+
 class Moded:
     def __init__(self, mode: str = "active"):
         self.mode = mode

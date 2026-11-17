@@ -187,6 +187,26 @@ def test_a_key_inactive_under_the_parents_choices_is_not_proposed():
     assert propose(TPE(), request(space, ["manager.window.size"], parent=parent)) == []
 
 
+class Holder:
+    def __init__(self, manager: object = None):
+        self.manager = manager
+
+
+def test_nested_keys_are_drawn_only_under_every_choice_above_them():
+    inner = choice(window=component(Window, size=Int(2, 40)), summary=component(Summary, ratio=Float(0.1, 0.9)))
+    space = Space({"agent": component(Holder, manager=choice(on=component(Holder, manager=inner), off=None))})
+    outer, middle = "agent.Holder.manager", "agent.Holder.manager.on.manager"
+    keys = [p.key for p in space.params() if p.key != "agent"]  # "agent" has one alternative
+    patches = propose(TPE(), request(space, keys, n=16))
+    assert {p.updates[outer] for p in patches} == {"on", "off"}
+    for patch in patches:
+        on = patch.updates[outer] == "on"
+        assert (middle in patch.updates) == on
+        assert (f"{middle}.window.size" in patch.updates) == (on and patch.updates[middle] == "window")
+        assert (f"{middle}.summary.ratio" in patch.updates) == (on and patch.updates[middle] == "summary")
+        Candidate.baseline(space).child(space, patch.updates, origin=["tpe"], rationale="")  # raises on an inactive key
+
+
 def test_options_python_compares_equal_stay_apart():
     space = Space({"flag": OneOf(1, True, default=1)})
     patches = [p for seed in range(4) for p in propose(TPE(), request(space, ["flag"], n=4, seed=seed))]
