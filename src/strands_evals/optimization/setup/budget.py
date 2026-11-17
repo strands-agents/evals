@@ -21,11 +21,22 @@ class Budget:
     max_iterations: int | None = None
 
     def __post_init__(self) -> None:
-        """`max_rollouts` >= 1 and `max_iterations` None or >= 1, else `ValueError`."""
+        """`max_rollouts` an int >= 1 and `max_iterations` None or an int >= 1.
+
+        Raises:
+            TypeError: `max_rollouts` is not an int, or `max_iterations` is neither None nor an int. A bool is
+                rejected for both.
+            ValueError: Either is below 1.
+        """
+        if isinstance(self.max_rollouts, bool) or not isinstance(self.max_rollouts, int):
+            raise TypeError(f"Budget: max_rollouts must be an int, got {self.max_rollouts!r}")
         if self.max_rollouts < 1:
             raise ValueError(f"Budget: max_rollouts must be at least 1, got {self.max_rollouts}")
-        if self.max_iterations is not None and self.max_iterations < 1:
-            raise ValueError(f"Budget: max_iterations must be None or at least 1, got {self.max_iterations}")
+        if self.max_iterations is not None:
+            if isinstance(self.max_iterations, bool) or not isinstance(self.max_iterations, int):
+                raise TypeError(f"Budget: max_iterations must be None or an int, got {self.max_iterations!r}")
+            if self.max_iterations < 1:
+                raise ValueError(f"Budget: max_iterations must be None or at least 1, got {self.max_iterations}")
 
 
 class BudgetTracker:
