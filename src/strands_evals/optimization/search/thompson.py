@@ -12,9 +12,10 @@ from typing import Any, ClassVar
 import numpy as np
 
 from ...types.optimization import Observation, Patch, Value, Values
+from ..candidate import Candidate
 from ..declaration.space import ParamKind
 from ..score_model.protocols import MetricModel
-from ..scoring.objectives import AtMost, Criteria, Maximize, Minimize, Pareto, WeightedSum
+from ..scoring.objectives import AtMost, Constraint, Criteria, Maximize, Minimize, Pareto, WeightedSum
 from .proposer import ProposalRequest, Proposer
 
 
@@ -37,7 +38,10 @@ class Thompson(Proposer):
     from the best-ranked eligible candidate that has them, else their defaults, as `Candidate.child` does),
     so a draw scores the candidate the patch would create. It proposes the best fresh combination (not measured with the
     parent's other values, nor proposed and not yet observed, so a step's proposals differ) that meets the
-    drawn constraints, else the one that misses them least (each miss over its metric model's `unit`).
+    drawn constraints, else the one that misses them least (each miss over its metric model's `unit`). A
+    relative constraint compares with the baseline (`Candidate.baseline`) under the same draw, a ratio as the
+    value against `bound` times the baseline's; unlike the ranking, the fit is used even when it wasn't fitted
+    on the baseline or puts the baseline's mean at or below 0.
     With no fit or any metric flagged, a fresh combination at random. With
     none fresh, every combination is a choice: the draw's best measured one is a duplicate, which the
     optimizer redraws, and a `Nested` opener opens its round on, so Thompson keeps choosing which structure
@@ -128,6 +132,9 @@ class Thompson(Proposer):
 
         objective = request.criteria.objective
         objectives = objective.objectives if isinstance(objective, (WeightedSum, Pareto)) else (objective,)
+        constraints = request.criteria.constraints
+        relative = {c.metric for c in constraints if c.compare != "absolute"}
+        baseline = Candidate.baseline(space).values if relative else {}
         patches: list[Patch] = []
         for _ in range(request.n):
             fresh = [j for j, i in enumerate(ids) if i not in measured and i not in proposed]
@@ -140,14 +147,15 @@ class Thompson(Proposer):
                 weights = (
                     rng.dirichlet(np.ones(len(objectives))) if self.random_weights and len(objectives) > 1 else None
                 )
+                # The baseline under the same draw, so a relative constraint compares paired values.
+                reference = {m: float(fit.metrics[m].value_under(effects[m][None, :], baseline)[0]) for m in relative}
                 scores, misses = [], []
                 for template in templates:
                     drawn = {m: float(fit.metrics[m].value_under(e[None, :], template)[0]) for m, e in effects.items()}
                     scores.append(_score(drawn, weights, objectives, fit.metrics, request.criteria))
                     miss = 0.0
-                    for c in request.criteria.constraints:
-                        over = drawn[c.metric] - c.bound if isinstance(c, AtMost) else c.bound - drawn[c.metric]
-                        miss += max(over, 0.0) / fit.metrics[c.metric].unit
+                    for c in constraints:
+                        miss += max(_over(c, drawn, reference), 0.0) / fit.metrics[c.metric].unit
                     misses.append(miss)
                 feasible = [j for j in choices if misses[j] == 0.0]
                 pool = feasible or [min(choices, key=lambda j: misses[j])]
@@ -180,6 +188,23 @@ def _agrees(values: Values, ref: Mapping[str, Value], *, partial: bool) -> bool:
     """`values` hold `ref`'s values, typed (`1` is not `True`); `partial`: only the keys both have."""
     shared = [k for k in ref if k in values] if partial else list(ref)
     return _key(values, shared) == _key(ref, shared)
+
+
+def _over(constraint: Constraint, drawn: Mapping[str, float], baseline: Mapping[str, float]) -> float:
+    """How far a template's drawn value misses a constraint, in the metric's units (> 0 when missed).
+
+    A relative constraint compares with the baseline's value under the same draw (`baseline`); a ratio as the
+    value against `bound` times the baseline's, the same test as their ratio against `bound` when the
+    baseline's value is > 0, without dividing by a draw near 0, and with the miss still in the metric's units.
+    """
+    if constraint.compare == "absolute":
+        limit = constraint.bound
+    elif constraint.compare == "difference":
+        limit = baseline[constraint.metric] + constraint.bound
+    else:
+        limit = baseline[constraint.metric] * constraint.bound
+    value = drawn[constraint.metric]
+    return value - limit if isinstance(constraint, AtMost) else limit - value
 
 
 def _score(

@@ -3,7 +3,8 @@
 Shared by `TopRanked`, the finalists, inheritance fill, `Nested`'s round best, the order of
 `ProposalRequest.candidates`, and the candidate label (`label_candidate`). Here, left of
 `selection/` and `end_phase.py`, so neither imports the other. Without a fit, after a refit that raised
-(until one succeeds), and while any metric is flagged, every candidate is assessed by measured means.
+(until one succeeds), while any metric is flagged, and, with a relative constraint, while the fit leaves out
+the baseline or can't give a ratio, every candidate is assessed by measured means.
 """
 
 from __future__ import annotations
@@ -48,15 +49,17 @@ class Assessment:
             missing evaluator term).
         is_feasible: Every constraint has P(met) >= `criteria.feasibility_threshold` under the fit, or is
             met on measured means.
-        violations: Per constraint, <= 0 when met: the metric's quantile at
-            `criteria.feasibility_threshold` (`AtMost`) or at 1 minus it (`AtLeast`) against the limit, or the
-            measured mean against the limit (0 when equal up to float noise, infinite when the metric was never
-            measured).
+        violations: Per constraint, <= 0 when met: the quantile at `criteria.feasibility_threshold` (`AtMost`)
+            or at 1 minus it (`AtLeast`) of what the constraint limits (the metric, or its difference from or
+            ratio to the baseline's) against the limit, or that value by measured means
+            (`Criteria.constraint_values`) against the limit (0 when equal up to float noise, infinite when it
+            has no value, e.g. the metric was never measured).
         total_violation: The sum of the positive violations (0 when feasible); what "least violation" ranks by.
         p_met: Per constraint; empty when assessed by measured means.
         estimates: Per goal metric, `fit.estimates(values, candidate)`; empty when assessed by measured means.
-        is_from_fit: False when assessed by measured means (no fit, the last refit raised, any metric flagged, or
-            the candidate not in the fit).
+        is_from_fit: False when assessed by measured means (no fit, the last refit raised, any metric flagged,
+            the candidate not in the fit, or, with a relative constraint, the baseline not in the fit or a ratio
+            the fit can't give).
     """
 
     candidate_id: str
@@ -109,6 +112,7 @@ def assess(
     values: Mapping[str, Values],
     measured: Mapping[str, CandidateScores],
     rule: PickRule,
+    baseline: str | None = None,
 ) -> dict[str, Assessment]:
     """Assess each candidate from the fit, or from measured means without a usable one.
 
@@ -119,19 +123,39 @@ def assess(
     The fit is used for a candidate it was fitted on, unless any metric is flagged; every other candidate is
     assessed by its measured means (`is_from_fit` False).
 
+    A relative constraint (`compare="difference"` or `"ratio"`) compares with `baseline` on the same split:
+    under the fit, its metric model's paired `difference` / `ratio` against the baseline's values; by
+    measured means, `Criteria.constraint_values` against the baseline's scores in `measured`. The baseline
+    against itself is exactly 0 for a difference and 1 for a ratio. With a relative constraint, the fit is
+    used only when it was fitted on the baseline (else it would judge against a prediction, not the
+    baseline's measurements) and, for a ratio, puts the baseline's mean above 0.
+
     Args:
         ids: The candidates to assess.
         fit: The fit, or None.
         criteria: The objective, constraints, and feasibility threshold.
-        values: Candidate id -> values.
-        measured: Candidate id -> its scores on the fitted split.
+        values: Candidate id -> values; with a relative constraint, the baseline's too.
+        measured: Candidate id -> its scores on the fitted split; with a relative constraint, the baseline's too.
         rule: How an objective term's estimate becomes a number.
+        baseline: The baseline's id; needed only when a constraint is relative.
+
+    Raises:
+        ValueError: A constraint is relative and `baseline` is None.
     """
+    relative = [c for c in criteria.constraints if c.compare != "absolute"]
+    if relative and baseline is None:
+        raise ValueError(f"{relative[0]} compares with the baseline: pass assess(baseline=)")
     objective = criteria.objective
     parts = (objective,) if isinstance(objective, (Maximize, Minimize)) else objective.objectives
     maximized = {o.metric: isinstance(o, Maximize) for o in parts}
     threshold = criteria.feasibility_threshold
     usable = fit is not None and not fit.flagged
+    if usable and fit is not None and baseline is not None and relative:
+        usable = baseline in fit.candidates
+        if usable and any(c.compare == "ratio" for c in relative):
+            reference = fit.estimates(values[baseline], baseline)
+            usable = all(reference[c.metric].mean > 0 for c in relative if c.compare == "ratio")
+    baseline_cases = measured[baseline].metrics_by_case if relative and baseline is not None else None
     out: dict[str, Assessment] = {}
     for candidate_id in ids:
         if usable and fit is not None and candidate_id in fit.candidates:
@@ -141,13 +165,17 @@ def assess(
                 estimate = estimates[metric]
                 value = estimate.mean if isinstance(rule, Mean) else estimate.quantile(rule.q if is_max else 1 - rule.q)
                 point[metric] = round_to_sd(value, estimate.sd)
-            # Each constraint judged at the required probability: the value its metric stays below (AtMost) or
-            # above (AtLeast) with probability `threshold`.
-            judged: list[float | None] = [
-                estimates[c.metric].quantile(threshold if isinstance(c, AtMost) else 1 - threshold)
+            limited = [
+                estimates[c.metric] if baseline is None else _limited(c, fit, estimates, values, candidate_id, baseline)
                 for c in criteria.constraints
             ]
-            p = {str(c): p_met(c, estimates[c.metric]) for c in criteria.constraints}
+            # Each constraint judged at the required probability: the value what it limits stays below (AtMost)
+            # or above (AtLeast) with probability `threshold`; a ratio the fit can't give is unmet.
+            judged: list[float | None] = [
+                None if e is None else e.quantile(threshold if isinstance(c, AtMost) else 1 - threshold)
+                for c, e in zip(criteria.constraints, limited, strict=True)
+            ]
+            p = {str(c): 0.0 if e is None else p_met(c, e) for c, e in zip(criteria.constraints, limited, strict=True)}
             objective_value = criteria.objective_value(point)
             terms = criteria.terms(point)
             from_fit = True
@@ -158,13 +186,13 @@ def assess(
                 for metric in criteria.goal_metrics
                 if (case_values := [case[metric] for case in scores.metrics_by_case.values() if metric in case])
             }
-            judged = [point.get(c.metric) for c in criteria.constraints]
+            judged = criteria.constraint_values(scores.metrics_by_case, baseline_cases)
             p, estimates = {}, {}
             objective_value = scores.objective
             terms = criteria.terms(point)
             from_fit = False
-        # As `Criteria.unmet_constraints`: a value at its bound up to float noise is met, a constraint never
-        # measured is not.
+        # As `Criteria.unmet_constraints`: a value at its bound up to float noise is met, a constraint with no
+        # value is not.
         violations = tuple(
             math.inf
             if v is None
@@ -251,8 +279,10 @@ def pareto_front(assessments: Mapping[str, Assessment], ids: Sequence[str]) -> l
 
 
 def p_met(constraint: Constraint, value: Estimate) -> float:
-    """P(constraint holds), 0 to 1, under the metric's estimate.
+    """P(constraint holds), 0 to 1, under the estimate of what it limits.
 
+    `value` is the metric's estimate for an absolute constraint, and for a relative one the estimate of its
+    difference from or ratio to the baseline's (`MetricModel.difference` / `ratio`), which `assess` passes.
     Reported in `Assessment.p_met` and the label's reasons; feasibility itself is `assess`'s quantile test
     (the same rule, without the float noise at the bound). With sd 0, 1 when the mean meets the bound (equal up to
     float noise counts), else 0.
@@ -265,11 +295,35 @@ def p_met(constraint: Constraint, value: Estimate) -> float:
     return below if at_most else 1.0 - below
 
 
+def _limited(
+    constraint: Constraint,
+    fit: Fit,
+    estimates: Mapping[str, Estimate],
+    values: Mapping[str, Values],
+    candidate_id: str,
+    baseline: str,
+) -> Estimate | None:
+    """The fit's estimate of what a constraint limits: the metric (`estimates`), or its paired difference from or
+    ratio to the baseline's over the same cases (exactly 0 or 1 for the baseline itself); None for a ratio
+    whose baseline mean the model puts at 0."""
+    if constraint.compare == "absolute":
+        return estimates[constraint.metric]
+    if candidate_id == baseline:
+        return Estimate(mean=0.0 if constraint.compare == "difference" else 1.0, sd=0.0)
+    model = fit.metrics[constraint.metric]
+    if constraint.compare == "difference":
+        return model.difference(
+            values[candidate_id], values[baseline], candidate=candidate_id, reference_candidate=baseline
+        )
+    return model.ratio(values[candidate_id], values[baseline], candidate=candidate_id, reference_candidate=baseline)
+
+
 def label_candidate(
     candidate: CandidateScores,
     assessment: Assessment | None,
     *,
     criteria: Criteria,
+    baseline: CandidateScores | None = None,
 ) -> CandidateLabel:
     """The candidate label: `feasible`, `infeasible`, or `ineligible`, as the step's ranking assessed it.
 
@@ -285,7 +339,15 @@ def label_candidate(
         candidate: Its train scores (`SplitScores.train`).
         assessment: Its `Assessment` from the step's ranking right after the refit; None when ineligible.
         criteria: Names the constraints in the reasons; holds the feasibility threshold.
+        baseline: The baseline's scores on the same split, which a relative constraint compares with; needed
+            only when a constraint is relative.
+
+    Raises:
+        ValueError: A constraint is relative and `baseline` is None.
     """
+    relative = [c for c in criteria.constraints if c.compare != "absolute"]
+    if relative and baseline is None:
+        raise ValueError(f"{relative[0]} compares with the baseline: pass label_candidate(baseline=)")
     measured = measured_metrics(candidate, criteria.registry)
     if assessment is None or not candidate.is_eligible:
         unmeasured = sorted(c for c, runs in candidate.objective_by_run.items() if all(v is None for v in runs))
@@ -309,7 +371,9 @@ def label_candidate(
             if v > 0
         ]
     else:
-        unmet = criteria.unmet_constraints(candidate.metrics_by_case)
+        unmet = criteria.unmet_constraints(
+            candidate.metrics_by_case, None if baseline is None else baseline.metrics_by_case
+        )
     return CandidateLabel(
         outcome="infeasible" if unmet else "feasible",
         reason="; ".join(unmet) if unmet else "meets every constraint",

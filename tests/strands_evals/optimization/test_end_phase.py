@@ -83,6 +83,7 @@ def test_the_comparison_is_deterministic():
 
 
 from strands_evals.optimization import (  # noqa: E402
+    AtLeast,
     AtMost,
     Criteria,
     FinalPick,
@@ -311,3 +312,68 @@ def test_pick_with_no_finalist_ships_the_baseline():
     )
     assert report.champion_id == "0"
     assert report.reason.startswith("no finalist from the search")
+
+
+def test_pick_judges_a_relative_constraint_against_the_baseline_on_validation():
+    # Fewest tokens at most 0.05 below the baseline's Helpfulness on validation (0.5 there): "a" is 0.03 below and
+    # ships; "b" is cheaper but 0.1 below.
+    criteria = Criteria(Minimize(TOKENS), [AtLeast(HELP, -0.05, compare="difference")], REGISTRY)
+
+    def scores(candidate_id, help_value, tokens):
+        cases = ("v1", "v2")
+        return CandidateScores(
+            candidate_id=candidate_id,
+            objective_by_case={c: -tokens for c in cases},
+            metrics_by_case={c: {HELP: help_value, TOKENS: tokens} for c in cases},
+            unavailable={},
+            objective_by_run={c: [-tokens] for c in cases},
+            metrics_by_run={c: {HELP: [help_value], TOKENS: [tokens]} for c in cases},
+            objective=-tokens,
+            is_eligible=True,
+            failures=0,
+        )
+
+    validation = {"0": scores("0", 0.5, 1000.0), "a": scores("a", 0.47, 500.0), "b": scores("b", 0.4, 300.0)}
+    report = pick(
+        baseline_id="0",
+        finalist_ids=["b", "a"],
+        validation=validation,
+        fit=None,
+        values=dict.fromkeys(validation, {}),
+        trial_counts=dict.fromkeys(validation, 2),
+        criteria=criteria,
+        rule=Mean(),
+    )
+    assert report.champion_id == "a"
+    assert report.infeasible == {"b": f"{HELP} - baseline >= -0.05: difference -0.1 violates by 0.05"}
+
+
+def test_pick_with_a_validation_baseline_mean_of_0_cannot_judge_a_ratio_and_picks_the_baseline():
+    criteria = Criteria(Maximize(HELP), [AtMost(TOKENS, 1.0, compare="ratio")], REGISTRY)
+
+    def scores(candidate_id, help_value, tokens):
+        return CandidateScores(
+            candidate_id=candidate_id,
+            objective_by_case={"v1": help_value},
+            metrics_by_case={"v1": {HELP: help_value, TOKENS: tokens}},
+            unavailable={},
+            objective_by_run={"v1": [help_value]},
+            metrics_by_run={"v1": {HELP: [help_value], TOKENS: [tokens]}},
+            objective=help_value,
+            is_eligible=True,
+            failures=0,
+        )
+
+    validation = {"0": scores("0", 0.5, 0.0), "a": scores("a", 0.9, 0.0)}
+    report = pick(
+        baseline_id="0",
+        finalist_ids=["a"],
+        validation=validation,
+        fit=None,
+        values=dict.fromkeys(validation, {}),
+        trial_counts=dict.fromkeys(validation, 1),
+        criteria=criteria,
+        rule=Mean(),
+    )
+    undefined = f"{TOKENS} / baseline <= 1: the baseline's mean is 0, so the ratio is undefined"
+    assert report.champion_id == "0" and report.infeasible == {"0": undefined, "a": undefined}
