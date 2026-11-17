@@ -168,7 +168,17 @@ class Optimizer:
                 patch of each of its blocks). The schedule may give a step fewer (`Step.n_candidates`).
             max_workers: Parallel trials, shared by the candidates scored at once.
             rerun_passes: Max re-run passes per scoring call: trials still `infrastructure_invalid` are re-run, and
-                evaluators that failed are re-judged on the saved output (0 rollouts).
+                evaluators that failed are re-judged on the saved output (0 rollouts). A pass that re-runs an agent
+                or an evaluator after an infrastructure failure first waits a jittered 2.5-5 s, doubling each pass
+                up to 30-60 s.
+                Retries inside a model call belong to the model client, which the factory configures. For Bedrock,
+                botocore's `standard` mode retries connection errors, timeouts, 500/502/503/504 responses, and
+                throttling with jittered backoff, but not an error inside a streamed response.
+                `AWS_RETRY_MODE=standard` and `AWS_MAX_ATTEMPTS=10` set it for every client that doesn't set
+                `retries` itself, judges on the default model included. In code, give `BedrockModel`
+                `boto_client_config=botocore.config.Config(retries={"mode": "standard", "total_max_attempts": 10},
+                read_timeout=120)`; it sets the 120 s read timeout only when given no `boto_client_config`. More
+                attempts also mean longer throttling backoff and more retried timeouts.
             seed: Seeds the split (unless `Split(seed=)` is set), selection, TPE, and Thompson.
             base_dir: Where run directories go.
             name: The run folder's prefix (lowercase letters, digits, `-`, `_`); for reading only.
