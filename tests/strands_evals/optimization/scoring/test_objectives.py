@@ -607,9 +607,12 @@ def test_measured_uses_the_runs_when_there_is_a_single_case():
         record("a", 1, scores={"HelpfulnessEvaluator": 0.7}),
         record("a", 2, scores={"HelpfulnessEvaluator": 0.8}),
     ]
-    helpfulness = measured_metrics(score("c1", records, CRITERIA, SPLITS).train, REGISTRY)["HelpfulnessEvaluator"]
+    splits = CaseSplit(train=("a",), validation=("v",), test=())
+    result = measured_metrics(score("c1", records, CRITERIA, splits).train, REGISTRY)
+    helpfulness = result["HelpfulnessEvaluator"]
     assert helpfulness.n == 3
     assert helpfulness.ci95 == pytest.approx((0.7 - 4.3027 * 0.057735, 0.7 + 4.3027 * 0.057735), abs=1e-3)
+    assert result["tokens"].n == 3  # every metric has the runs as its unit
 
 
 def test_measured_has_no_interval_for_one_case_and_one_run():
@@ -617,8 +620,8 @@ def test_measured_has_no_interval_for_one_case_and_one_run():
     assert measured_metrics(score("c1", one, CRITERIA, SPLITS).train, REGISTRY)["HelpfulnessEvaluator"].ci95 is None
 
 
-def test_measured_picks_the_unit_per_metric():
-    # Case b only failed on infrastructure, so Helpfulness has one case: its 3 runs are the units.
+def test_measured_keeps_the_case_as_the_unit_when_another_case_has_no_counted_run():
+    # Case b only failed on infrastructure: the split still has two cases, so Helpfulness has one unit.
     records = [
         record("a", 0, scores={"HelpfulnessEvaluator": 0.6}),
         record("a", 1, scores={"HelpfulnessEvaluator": 0.7}),
@@ -626,8 +629,20 @@ def test_measured_picks_the_unit_per_metric():
         record("b", 0, status=TrialStatus.INFRASTRUCTURE_INVALID),
     ]
     helpfulness = measured_metrics(score("c1", records, CRITERIA, SPLITS).train, REGISTRY)["HelpfulnessEvaluator"]
-    assert helpfulness.n == 3
-    assert helpfulness.ci95 is not None
+    assert helpfulness.mean == pytest.approx(0.7)
+    assert (helpfulness.n, helpfulness.ci95) == (1, None)
+
+
+def test_measured_gives_no_interval_to_a_metric_judged_on_one_of_several_cases():
+    # Helpfulness is N/A on case b; tokens are measured on both cases.
+    records = [
+        *(record("a", run, scores={"HelpfulnessEvaluator": v}, tokens=100) for run, v in enumerate([0.6, 0.7, 0.8])),
+        *(record("b", run, scores={"HelpfulnessEvaluator": NA}, tokens=300) for run in range(3)),
+    ]
+    result = measured_metrics(score("c1", records, CRITERIA, SPLITS).train, REGISTRY)
+    assert result["HelpfulnessEvaluator"].mean == pytest.approx(0.7)
+    assert (result["HelpfulnessEvaluator"].n, result["HelpfulnessEvaluator"].ci95) == (1, None)
+    assert result["tokens"].n == 2 and result["tokens"].ci95 is not None
 
 
 # --- review fixes (PR #502) ---

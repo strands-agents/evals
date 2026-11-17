@@ -75,10 +75,11 @@ class Measured(BaseModel):
     """One metric measured over a split's cases; for reporting only.
 
     Attributes:
-        mean: Mean over the units: the case (its mean over runs), or that case's runs when only one case
-            has a value of the metric.
-        ci95: 95% t-interval over the units, clipped to the metric's range; None when `n < 2`.
-        n: Units with a value: cases, or runs when only one case has a value.
+        mean: Mean over the units. The unit is the same for every metric of a candidate on a split: the
+            case (its mean over runs), or the runs when the split's records cover a single case.
+        ci95: 95% t-interval over the units, clipped to the metric's range; None when `n < 2`, e.g. a
+            metric with a value on only one of several cases.
+        n: Units with a value: cases, or runs when the split's records cover a single case.
     """
 
     model_config = ConfigDict(frozen=True)
