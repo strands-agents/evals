@@ -12,8 +12,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
 
-from ...types.optimization import IterationRecord, Values
+from ...types.optimization import CandidateScores, IterationRecord, Values
 from ..declaration.space import ParamInfo, Space
+from ..scoring.objectives import Criteria
 from .proposer import Proposer
 from .reflection import Reflection
 from .tpe import TPE
@@ -89,6 +90,13 @@ class Step:
         role: `opener` (a round's first step) or `inner` (every other step, including steps outside any
             `Nested`).
         observe_at_round_end: Blocks whose `observe` waits for the round's end (the opener's outer block).
+        criteria: What this step aims at; None means the run's (`ScheduleContext.criteria`). Every candidate's
+            train trials are scored again under it, and the candidates eligible under both it and the run's
+            criteria are ranked by it. That ranking gives the step's possible parents (`parents` filtered to
+            it and put in its order) and the order a proposal inherits keys in, and selection and every
+            `ProposalRequest` see it. What proposers are told (`observe`, `evidence`), the labels, the
+            iteration record, a `Nested` round's best, and the end phase stay on the run's criteria. Build it
+            on `ScheduleContext.criteria`'s registry and settings; the optimizer checks the rules.
     """
 
     blocks: tuple[Block, ...]
@@ -97,6 +105,7 @@ class Step:
     round: tuple[int, ...] | None
     role: Literal["opener", "inner"]
     observe_at_round_end: tuple[str, ...]
+    criteria: Criteria | None = None
 
 
 @dataclass(frozen=True)
@@ -111,14 +120,18 @@ class ScheduleContext:
         space: Narrows blocks to those active under an opener's values.
         values: Candidate id -> values, every saved candidate.
         eligible: Ids eligible now (a re-scored candidate can become eligible later).
-        ranking: Eligible ids in ranking order (the incumbent first); inside a `Nested` round, only the
-            round's own candidates. Never empty: the baseline is eligible (else the run stops at setup), an
-            eligible candidate stays eligible, and a round holds its opener.
+        ranking: Eligible ids in ranking order under the run's criteria (the incumbent first); inside a
+            `Nested` round, only the round's own candidates. Never empty: the baseline is eligible (else the
+            run stops at setup), an eligible candidate stays eligible, and a round holds its opener.
         run_ranking: Every eligible id in ranking order, inside a `Nested` round too; equal to `ranking`
             outside any round. A round orders its candidates by it, since its opener can repeat a candidate
             from an earlier round, which the enclosing round's `ranking` doesn't hold.
         proposals_per_iteration: A step's candidates (an opener's: 1).
         redraws: `Search.redraws`; `Nested` stops after `redraws + 1` rounds in a row measure nothing new.
+        scores: Candidate id -> its train scores under the run's criteria (`CandidateScores`, per case in
+            `metrics_by_case` and `objective_by_case`), every scored candidate, so a schedule can plan from
+            the evidence; inside a `Nested` round too.
+        criteria: The run's criteria, to build a step's own (`Step.criteria`) on.
     """
 
     past: Sequence[IterationRecord]
@@ -131,6 +144,8 @@ class ScheduleContext:
     run_ranking: Sequence[str]
     proposals_per_iteration: int
     redraws: int
+    scores: Mapping[str, CandidateScores]
+    criteria: Criteria
 
 
 class Schedule(ABC):

@@ -601,8 +601,11 @@ class Optimizer:
                     run_ranking=ranking,
                     proposals_per_iteration=self._proposals_per_iteration,
                     redraws=self._search.redraws,
+                    scores=dict(self._train),
+                    criteria=self._criteria,
                 )
             )
+            criteria = self._criteria if step is None else self._step_criteria(step)
             self._close_rounds(step, ranking, assessments)
             if step is None:
                 return "exhausted"
@@ -611,9 +614,32 @@ class Optimizer:
                 n = min(n, room)  # a last step narrower than the rest
             if step.parents is not None and not step.parents:
                 raise ValueError(f"{type(self._schedule).__name__}.next returned a step with no possible parents")
-            parent_id = self._select(list(step.parents) if step.parents is not None else ranking, assessments)
+            # What the step's parent selection and proposers work from: the run's, or under the step's criteria.
+            scores: Mapping[str, CandidateScores] = self._train
+            step_ranking, step_assessments = ranking, assessments
+            pool = list(step.parents) if step.parents is not None else ranking
+            if criteria is not self._criteria:
+                scores = self._scores_under(criteria)
+                step_ranking, step_assessments = self._rank(criteria, scores)
+                possible = set(pool)
+                pool = [c for c in step_ranking if c in possible]  # in the step's ranking order
+                if not pool:
+                    raise ValueError(
+                        f"{type(self._schedule).__name__}.next returned a step none of whose possible parents is "
+                        "eligible under both its criteria and the run's"
+                    )
+            parent_id = self._select(pool, step_assessments, scores, criteria)
             try:
-                record = await self._step(step, n, self._candidates[parent_id], ranking, assessments)
+                record = await self._step(
+                    step,
+                    n,
+                    self._candidates[parent_id],
+                    step_ranking,
+                    step_assessments,
+                    criteria=criteria,
+                    step_scores=scores,
+                    run_assessments=assessments,
+                )
             except _ProposerFailed:
                 return "proposer_error"
             self._iterations.append(record)
@@ -898,19 +924,83 @@ class Optimizer:
             means={c: measured_metrics(scores[c], registry) for c in ids},
         )
 
-    def _rank(self) -> tuple[list[str], dict[str, Assessment]]:
+    def _rank(
+        self, criteria: Criteria | None = None, scores: Mapping[str, CandidateScores] | None = None
+    ) -> tuple[list[str], dict[str, Assessment]]:
         """Every eligible candidate in ranking order (the fit's estimates, else measured means), and each one's
-        assessment."""
-        eligible = [c for c in self._candidates if self._train[c].is_eligible]
+        assessment.
+
+        With a step's own `criteria` and the train `scores` under it (`_scores_under`), the candidates eligible
+        under both it and the run's criteria, assessed and ranked under it; None: the run's.
+        """
+        criteria = self._criteria if criteria is None else criteria
+        measured = self._train if scores is None else scores
+        eligible = [c for c in self._candidates if self._train[c].is_eligible and measured[c].is_eligible]
         assessments = assess(
             eligible,
             fit=self._fit,
-            criteria=self._criteria,
+            criteria=criteria,
             values={c: self._candidates[c].values for c in eligible},
-            measured=self._train,
+            measured=measured,
             rule=Mean(),
         )
-        return rank(assessments, eligible, is_pareto=self._criteria.is_pareto), assessments
+        return rank(assessments, eligible, is_pareto=criteria.is_pareto), assessments
+
+    def _step_criteria(self, step: Step) -> Criteria:
+        """The criteria `step` works under: its own `Step.criteria`, checked against the run's, else the run's.
+
+        The score model fits the run's goal metrics as the run's criteria score them, so a step's criteria must
+        use only those metrics, on the run's registry, and score a crashed run's evaluator metrics the same. It
+        must also keep the run's `agent_failure_score` and `feasibility_threshold`, which the labels and trial
+        counts read.
+
+        Raises:
+            TypeError: `Step.criteria` is not a `Criteria`.
+            ValueError: It breaks one of those rules.
+        """
+        criteria = step.criteria
+        if criteria is None:
+            return self._criteria
+        run = self._criteria
+        schedule = type(self._schedule).__name__
+        if not isinstance(criteria, Criteria):
+            raise TypeError(f"{schedule}.next returned a step whose criteria is not a Criteria: {criteria!r}")
+        problem = None
+        if criteria.registry is not run.registry:
+            problem = "is built on another registry; build it on ScheduleContext.criteria.registry"
+        elif (criteria.agent_failure_score, criteria.feasibility_threshold) != (
+            run.agent_failure_score,
+            run.feasibility_threshold,
+        ):
+            problem = (
+                f"has agent_failure_score={criteria.agent_failure_score!r} and feasibility_threshold="
+                f"{criteria.feasibility_threshold!r}; the run's are {run.agent_failure_score!r} and "
+                f"{run.feasibility_threshold!r}"
+            )
+        elif outside := [m for m in criteria.goal_metrics if m not in run.goal_metrics]:
+            problem = f"uses {outside}; the score model fits only the run's goal metrics {list(run.goal_metrics)}"
+        elif flipped := [
+            m
+            for m in criteria.goal_metrics
+            if not run.registry.is_usage(m) and criteria.agent_failure_value(m) != run.agent_failure_value(m)
+        ]:
+            problem = (
+                f"scores a crashed run's {flipped} differently from the run's criteria (a goal on them points the "
+                "other way), and the score model fits the run's values"
+            )
+        if problem is not None:
+            raise ValueError(f"{schedule}.next returned a step whose criteria {problem}")
+        return criteria
+
+    def _scores_under(self, criteria: Criteria) -> dict[str, CandidateScores]:
+        """Every scored candidate's train scores under a step's own `criteria`: its train trials scored again."""
+        scores = {}
+        for candidate_id in self._candidates:
+            records = [r for r in self._records[candidate_id].values() if r.split == "train"]
+            train = score(candidate_id, records, criteria, self._case_split).train
+            assert train is not None
+            scores[candidate_id] = train
+        return scores
 
     def _refit(self, *, scored: bool) -> None:
         """Refit on every eligible candidate and write the `fit` event; with nothing new scored, or when the
@@ -964,8 +1054,15 @@ class Optimizer:
             ranges={m: self._criteria.registry.range(m) for m in self._criteria.goal_metrics},
         )
 
-    def _select(self, pool: list[str], assessments: Mapping[str, Assessment]) -> str:
-        """The parent `Selection` chooses among `pool` (the step's possible parents, in ranking order).
+    def _select(
+        self,
+        pool: list[str],
+        assessments: Mapping[str, Assessment],
+        scores: Mapping[str, CandidateScores],
+        criteria: Criteria,
+    ) -> str:
+        """The parent `Selection` chooses among `pool` (the step's possible parents, in ranking order), from
+        the assessments and train scores under the step's `criteria`; the `select` event names a step's own.
 
         Raises:
             ValueError: The strategy named a candidate outside `pool`.
@@ -975,7 +1072,7 @@ class Optimizer:
             SelectionContext(
                 ranking=pool,
                 assessments={c: assessments[c] for c in pool},
-                scores={c: s.objective_by_case for c, s in self._train.items()},
+                scores={c: s.objective_by_case for c, s in scores.items()},
                 values={c: candidate.values for c, candidate in self._candidates.items()},
                 parents={c: candidate.parent_id for c, candidate in self._candidates.items()},
                 trial_counts={c: self._trial_count(c) for c in self._candidates},
@@ -991,7 +1088,12 @@ class Optimizer:
                 f"possible parents {pool}"
             )
         self._history.append(chosen)
-        self._run.events.append("select", iteration=self._iteration, parent_id=chosen, strategy=self._selection.name)
+        aim = {}
+        if criteria is not self._criteria:
+            aim = {"objective": str(criteria.objective), "constraints": [str(c) for c in criteria.constraints]}
+        self._run.events.append(
+            "select", iteration=self._iteration, parent_id=chosen, strategy=self._selection.name, **aim
+        )
         return chosen
 
     def _counted(self, record: TrialRecord) -> bool:
@@ -1009,18 +1111,27 @@ class Optimizer:
         step: Step,
         n: int,
         parent: Candidate,
-        ranking: list[str],
-        assessments: Mapping[str, Assessment],
+        step_ranking: list[str],
+        step_assessments: Mapping[str, Assessment],
+        *,
+        criteria: Criteria,
+        step_scores: Mapping[str, CandidateScores],
+        run_assessments: Mapping[str, Assessment],
     ) -> IterationRecord:
         """Propose `n` candidates (redrawing a slot that is invalid, a duplicate, or empty), score the new
         ones on train at once, refit, label, and tell the proposers; write `iteration_end`.
+
+        `step_ranking`, `step_assessments`, and the train `step_scores` are under the step's `criteria`: what its
+        proposers are asked from (`ProposalRequest`) and the order keys are filled from. What they are told, the
+        labels, and the record are under the run's criteria (`run_assessments` for a duplicate of a measured
+        candidate).
 
         Raises:
             _ProposerFailed: A proposer raised (its `proposer_error` event is written).
         """
         assert self._run is not None
         iteration = self._iteration
-        summaries = self._summaries(ranking, assessments)
+        summaries = self._summaries(step_ranking, step_assessments, criteria, step_scores)
         deferred = set(step.observe_at_round_end)
         outcomes: list[ProposalOutcome] = []
         accepted: list[_Draw] = []  # in proposal order: new candidates, re-scored ones, and same-step twins
@@ -1029,7 +1140,9 @@ class Optimizer:
         for redraw in range(self._search.redraws + 1):
             if need <= 0 or opened is not None:
                 break
-            for draw in await self._draw(step, parent, need, redraw, ranking, assessments, summaries):
+            for draw in await self._draw(
+                step, parent, need, redraw, step_ranking, step_assessments, summaries, criteria, step_scores[parent.id]
+            ):
                 candidate = draw.candidate
                 if (
                     candidate is not None
@@ -1055,7 +1168,7 @@ class Optimizer:
                     continue
                 existing = self._train.get(candidate.id)
                 if existing is not None and existing.is_eligible:
-                    a = assessments.get(candidate.id)
+                    a = run_assessments.get(candidate.id)
                     if step.role == "opener" and deferred & set(draw.patches):
                         for block, patch in draw.patches.items():
                             self._run.events.append(
@@ -1196,8 +1309,11 @@ class Optimizer:
         ranking: list[str],
         assessments: Mapping[str, Assessment],
         summaries: list[CandidateSummary],
+        criteria: Criteria,
+        scores: CandidateScores,
     ) -> list[_Draw]:
-        """Up to `need` proposals on `parent`, each merging one patch of every block of the step.
+        """Up to `need` proposals on `parent`, each merging one patch of every block of the step; `criteria` and
+        `scores` (the parent's train scores under it) go in every request.
 
         One block: its proposer asked once for `need` patches (a concurrent one: `need` calls at once). Several
         blocks: each slot built in turn, structural blocks first (each later block asked for 1 patch on the
@@ -1207,7 +1323,7 @@ class Optimizer:
         fill = self._fill(ranking)
         if len(step.blocks) == 1:
             block = step.blocks[0]
-            patches = await self._ask(block, parent, parent, need, redraw, summaries)
+            patches = await self._ask(block, parent, parent, need, redraw, summaries, criteria, scores)
             return [self._merge(parent, {_block_name(block): p}, fill) for p in patches[:need]]
         order = sorted(step.blocks, key=lambda b: not self._is_structural(b))
         keys = dict((_block_name(b), k) for b, k in self._blocks)
@@ -1225,7 +1341,7 @@ class Optimizer:
             for block in order:
                 if not any(self._space.is_active(k, current.values) for k in keys[_block_name(block)]):
                     continue
-                got = await self._ask(block, parent, current, 1, redraw, summaries)
+                got = await self._ask(block, parent, current, 1, redraw, summaries, criteria, scores)
                 if not got:
                     continue
                 patches[_block_name(block)] = got[0]
@@ -1250,11 +1366,14 @@ class Optimizer:
         n: int,
         redraw: int,
         summaries: list[CandidateSummary],
+        criteria: Criteria,
+        scores: CandidateScores,
     ) -> list[Patch]:
         """`block`'s patches for one request; a non-concurrent proposer proposes under the step's lock.
 
-        `parent` is the step's parent (its train trials and scores go in the request); `request_parent` is
-        what the proposer changes: the parent, or, inside a merged slot, the slot's values so far.
+        `parent` is the step's parent (its train trials go in the request, with `scores`, its train scores
+        under the step's `criteria`); `request_parent` is what the proposer changes: the parent, or, inside a
+        merged slot, the slot's values so far.
 
         Raises:
             _ProposerFailed: The proposer raised, returned more than `n` patches, or a patch whose state isn't
@@ -1283,7 +1402,7 @@ class Optimizer:
                 keys=dict((_block_name(b), k) for b, k in self._blocks)[name],
                 parent=request_parent,
                 trials=[r for r in self._records[parent.id].values() if r.split == "train"],
-                scores=self._train[parent.id],
+                scores=scores,
                 inputs={c: cases[c].input for c in train},
                 # A fit with a flagged metric isn't used for decisions, so proposers don't get it either.
                 fit=self._fit if self._fit is not None and not self._fit.flagged else None,
@@ -1292,7 +1411,7 @@ class Optimizer:
                 iteration=iteration,
                 seed=self._seed,
                 redraw=redraw,
-                criteria=self._criteria,
+                criteria=criteria,
                 log=log,
             )
 
@@ -1382,13 +1501,21 @@ class Optimizer:
         keys = dict((_block_name(b), k) for b, k in self._blocks)[_block_name(block)]
         return any((info := self._space.param(k)).kind == "choice" and len(info.options or ()) >= 2 for k in keys)
 
-    def _summaries(self, ranking: list[str], assessments: Mapping[str, Assessment]) -> list[CandidateSummary]:
-        """Every scored candidate as a proposer sees it: eligible in ranking order, then the ineligible."""
+    def _summaries(
+        self,
+        ranking: list[str],
+        assessments: Mapping[str, Assessment],
+        criteria: Criteria,
+        train: Mapping[str, CandidateScores],
+    ) -> list[CandidateSummary]:
+        """Every scored candidate as a proposer sees it, under the step's `criteria` with the `train` scores
+        under it: those in the ranking in its order, then the rest. `measured` is always the run's, so a crashed
+        run's evaluator metrics count as the labels count them."""
         assert self._run is not None
         position = {c: i + 1 for i, c in enumerate(ranking)}
         out = []
         for c in [*ranking, *(c for c in self._candidates if c not in position)]:
-            candidate, scores, a = self._candidates[c], self._train[c], assessments.get(c)
+            candidate, scores, a = self._candidates[c], train[c], assessments.get(c)
             out.append(
                 CandidateSummary(
                     candidate_id=c,
@@ -1397,7 +1524,7 @@ class Optimizer:
                     values=dict(candidate.values),
                     number=self._run.number(c),
                     measured_objective=scores.objective,
-                    measured=measured_metrics(scores, self._criteria.registry),
+                    measured=measured_metrics(self._train[c], self._criteria.registry),
                     trial_count=self._trial_count(c),
                     failures=0
                     if self._criteria.agent_failure_score is None
@@ -1407,12 +1534,12 @@ class Optimizer:
                         if r.split == "train" and r.status is TrialStatus.AGENT_FAILURE
                     ),
                     ranking_objective=None if a is None else a.objective,
-                    term_values=None if a is None or a.objective is None else self._term_values(c, a),
+                    term_values=None if a is None or a.objective is None else self._term_values(c, a, criteria),
                     rank=position.get(c),
                     estimates={} if a is None else dict(a.estimates),
                     violations=None if a is None else list(a.violations),
                     is_feasible=None if a is None else a.is_feasible,
-                    is_eligible=scores.is_eligible,
+                    is_eligible=c in position,
                     changed_keys=[]
                     if candidate.parent_id is None
                     else changed_keys(self._candidates[candidate.parent_id], candidate),
@@ -1420,9 +1547,10 @@ class Optimizer:
             )
         return out
 
-    def _term_values(self, candidate_id: str, a: Assessment) -> list[float] | None:
-        """Each objective term's raw value (the resolved estimate, else the measured mean), in objective order."""
-        objective = self._criteria.objective
+    def _term_values(self, candidate_id: str, a: Assessment, criteria: Criteria | None = None) -> list[float] | None:
+        """Each objective term's raw value (the resolved estimate, else the measured mean), in objective order,
+        for `criteria`'s objective (None: the run's)."""
+        objective = (self._criteria if criteria is None else criteria).objective
         metrics = [
             d.metric for d in (objective.objectives if isinstance(objective, (WeightedSum, Pareto)) else (objective,))
         ]

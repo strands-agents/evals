@@ -27,13 +27,14 @@ class ProposalRequest:
             values so far (the parent with the earlier blocks' structural patches merged; not yet scored).
         trials: The step's parent's train trial records (Reflection builds its evidence from them); it
             always has them, since every candidate is scored on train.
-        scores: The step's parent's train scores (`SplitScores.train`).
+        scores: The step's parent's train scores (`SplitScores.train`), scored under `criteria` (a crashed
+            run's evaluator values are `criteria.agent_failure_value`'s).
         inputs: Train case name -> `case.input`, for the cases in `trials`. Inputs only: no expected field
             (`expected_output`, `expected_trajectory`, ...) and no `metadata` is ever passed.
         fit: Read-only; None before 2 candidates are eligible, after a refit that raised, or while any
             metric is flagged.
-        candidates: Every scored candidate so far: eligible ones in ranking order, then the ineligible in
-            scoring order. Invalid and duplicate proposals never appear.
+        candidates: Every scored candidate so far, assessed under `criteria`: eligible ones in ranking order,
+            then the ineligible in scoring order. Invalid and duplicate proposals never appear.
         n: How many patches to return: the step's `Step.n_candidates` (at most `proposals_per_iteration`),
             or fewer when the budget can't score them all, on a redraw (only the shortfall), for a
             concurrent proposer (1 per call), or in a step with several blocks (1 per slot).
@@ -41,7 +42,8 @@ class ProposalRequest:
         seed: The run seed.
         redraw: The redraw number within this iteration and block (0 = first ask; `Search.redraws` caps it).
         criteria: Combines per-metric estimates or sampled values into the objective and checks constraints
-            (`criteria.feasibility_threshold` is the P(met) threshold the ranking uses).
+            (`criteria.feasibility_threshold` is the P(met) threshold the ranking uses): the step's own
+            (`Step.criteria`), else the run's.
         log: `log(event, **fields)` writes an event; a proposer may write only `screened`, `proposer_retry`,
             and `proposer_usage` (any other name raises `ValueError`). `proposer_usage` (`usage=` a `Usage`) is
             a `propose` call's model spend that isn't on any patch it returns (in one event or several): each

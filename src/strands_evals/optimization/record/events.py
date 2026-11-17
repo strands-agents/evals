@@ -58,7 +58,8 @@ class EventLog:
       (status -> trial count), `unavailable`.
     - `fit`: `candidates` (ids fitted), `is_fitted`, `error` (when the score model raised), `flagged`,
       `diagnostics`; one per step, `is_fitted=false` also when the step scored nothing new.
-    - `select`: `parent_id`, `strategy`.
+    - `select`: `parent_id`, `strategy`; `objective` and `constraints` (as in `run.json`) for a step with its
+      own criteria (`Step.criteria`).
     - `label`: `candidate_id`, `label` (`CandidateLabel`).
     - `invalid`: `block`, `redraw`, `updates`, `reason` (no candidate).
     - `duplicate`: `block`, `redraw`, `candidate_id` (the existing one); `patch` and `round` for a round's
