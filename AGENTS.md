@@ -53,9 +53,10 @@ strands-evals depends on **`strands-agents`** (the Python SDK) for all LLM inter
 strands-evals/
 │
 ├── .agents/skills/                           # Agent skills (not shipped in the wheel)
-│   └── session-converter/                  # Convert local agent sessions into experiments
+│   └── session-converter/                  # Convert agent sessions into experiments
 │       ├── SKILL.md                          # Locate sessions, extract episodes, write an experiment
-│       └── assets/segmenter.md               # Subagent steps: split sessions into episodes
+│       ├── assets/segmenter.md               # Subagent steps: split sessions into episodes
+│       └── scripts/synthesize_cases.py       # Append synthetic cases in the existing cases' voice
 │
 ├── src/strands_evals/                        # Main package source code
 │   ├── __init__.py                           # Public API exports

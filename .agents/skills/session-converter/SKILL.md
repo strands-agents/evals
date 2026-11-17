@@ -1,12 +1,12 @@
 ---
 name: session-converter
-description: Use when the user wants to turn past agent conversations (Codex, Claude Code, Kiro CLI, Strands CLI, or any other harness) stored in local session files into strands-evals experiments. Locates the relevant session files, extracts their episodes, suggests evaluators, and writes an experiment JSON file. Skip for traces stored in trace providers (CloudWatch, Langfuse, OpenSearch).
+description: Use when the user wants to turn past agent conversations into strands-evals experiments, such as from local harness sessions (Codex, Claude Code, Kiro CLI, Strands CLI, etc.) or traces (Langfuse, CloudWatch, OpenSearch, etc.). Locates the relevant session files, extracts their episodes, suggests evaluators, and writes an experiment JSON file.
 version: 0.1.0
 ---
 
 # session-converter
 
-Converts recorded local agent sessions into a strands-evals experiment.
+Converts recorded agent sessions into a strands-evals experiment.
 
 ## Steps
 
@@ -14,11 +14,12 @@ Converts recorded local agent sessions into a strands-evals experiment.
 
 Ask each question below that the prompt doesn't answer, in one batch, with your harness's question tool if it has one, otherwise as plain-text questions with numbered options, and wait for the answers. If you can't wait for a reply (ex. a non-interactive run), state that you're assuming each question's first option and continue.
 
-**Harnesses.** Ask when the prompt doesn't say which harnesses to search (ex. "my sessions from last week").
+**Source.** Ask when the prompt doesn't say where to find the sessions (ex. "my sessions from last week").
 
-Question: Which agent harnesses' sessions should I include?
-1. All (Recommended): every harness with sessions on this machine (ex. Claude Code, Codex, Kiro CLI, Strands CLI).
-2. Only <current harness>: only sessions from the harness running this skill.
+Question: Where should I look for sessions?
+1. All local harnesses (Recommended): every harness with local session files on this machine (ex. Claude Code, Codex, Kiro CLI, Strands CLI).
+2. Only <current harness>: only local session files from the harness running this skill.
+3. Specific source: a path, URL, or trace provider (ex. Langfuse, CloudWatch, OpenSearch).
 
 **Context-dependent inputs.** A context-dependent input is an episode's opening user message that points at a specific project, file, build, or earlier turn without naming it, so another agent can't tell what it's about (ex. "now do the same for the parser", "why is this test failing?", "what errors does the graph primitive throw?").
 
@@ -36,42 +37,17 @@ Question: Should I check that URLs named in the cases still resolve?
 
 ### 2. Locate sessions
 
-Find every session file on the local filesystem that matches the user's criteria. Don't open whole files to do it: session files can be large, so read metadata, use `ls -t`, `find -newermt`, `grep`, `jq`, or targeted reads. Read the criteria from the prompt:
+For each remote source, a session is every record that shares an id (ex. session id in a trace). Get the ids from the user, or query the provider for the ones matching the prompt's criteria (ex. date range, agent name). Create one download directory with `mktemp -d` and note its path for future steps. If `strands-evals fetch` supports the provider (run `strands-evals fetch --help`), download each session with `strands-evals fetch <provider> --session-id <id> -o <download_dir>/<id>.json <provider-args>`. Otherwise, download each session as JSON to `<download_dir>/<id>.json`. Retry either way on transient errors (ex. rate limits, timeouts, 5xx): make up to 3 attempts, waiting 2 s and then 4 s between them. If no attempts succeeded, surface the error to the user.
 
-- **Harness**: the harnesses named in the prompt or chosen in step 1.
-- **Date range**: resolve relative dates in the user's local time zone; session timestamps are UTC. A session matches if any of its activity falls in the range; mtime alone isn't enough.
-- **Workspace**: "here" means the current working directory; default to all workspaces.
-- **Content**: defer filtering on conversation content to step 3.
+For each local source, collect every session file matching the criteria from the prompt (ex. harness, date range, and workspace). Resolve relative dates to the user's local time zone. Session timestamps are UTC and a session matches if any activity falls in the range. Treat "here" as the current directory and default to all workspaces. Don't open whole files; use `ls -t`, `find -newermt`, `grep`, `jq`, or targeted reads. Defer content filtering to step 3. The following paths are best-effort. If a path is missing or looks different, check the linked doc.
 
-The following session file paths are best-effort and can change between releases. If a path is missing or looks different, check the linked doc.
+- **Claude Code** ([docs](https://code.claude.com/docs/en/claude-directory#application-data)): `~/.claude/projects/<project>/<session_uuid>.jsonl`. `<project>` is the working directory with every non-alphanumeric character replaced by `-`. Pass it to tools as a full path, since a leading `-` parses as an option. Ignore `*.orphaned-*.jsonl`, `*.jsonl.superseded-*`, and `<session_uuid>/subagents/*.jsonl`.
+- **Strands CLI** ([docs](https://github.com/strands-agents/harness-sdk/blob/main/strands-cli/README.md)): `<directory>/<session_id>/scopes/*/*/snapshots/snapshot_latest.json`. `snapshot_latest.json` mtime reflects only the last activity. Use the oldest file under `snapshots/immutable_history/` for the first activity. Find each `<directory>` in `roots[]` of `~/.strands/cli/session-roots.json`, where each entry also names the `workspace` it ran in. The catalog can miss entries, so also check `<workspace>/.agent/sessions`.
+- **Kiro CLI** ([docs](https://kiro.dev/docs/cli/chat/session-management/)): `~/.kiro/sessions/<workspace_hash>/sess_<session_uuid>/messages.jsonl`. Compute the workspace hash instead of scanning all directories: `printf '%s' "<absolute_workspace_path>" | openssl dgst -sha256 -r | cut -c1-16`. Sessions started outside a workspace live under `~/.kiro/sessions/_global/`. Some versions also write a flat store, `~/.kiro/sessions/cli/<session_uuid>.jsonl`, with a `.json` metadata sidecar.
+- **Codex**: `~/.codex/sessions/<year>/<month>/<day>/rollout-<timestamp>-<session_uuid>.jsonl`. Match a workspace against `payload.cwd` in the `session_meta` record. Ignore `~/.codex/history.jsonl` and `~/.codex/state_*.sqlite`.
+- **Other local session**: if the user provided a path, use the specified files and directories. if the user provided a harness name, find the store via the harness's docs or recently modified `*.json` / `*.jsonl` files under its home directory.
 
-**Claude Code** ([docs](https://code.claude.com/docs/en/claude-directory#application-data))
-- Session file: `~/.claude/projects/<project>/<session_uuid>.jsonl`. `<project>` is the working directory with every non-alphanumeric character replaced by `-`. Pass `<project>` to tools as a full path, since a leading `-` parses as an option.
-- Some records include activity times in their `timestamp` field.
-- Ignore `*.orphaned-*.jsonl`, `*.jsonl.superseded-*`, and `<session_uuid>/subagents/*.jsonl`.
-
-**Strands CLI** ([docs](https://github.com/strands-agents/harness-sdk/blob/main/strands-cli/README.md))
-- Session file: `<directory>/<session_id>/scopes/*/*/snapshots/snapshot_latest.json`. Its `createdAt` and mtime show only the last activity.
-- The oldest `snapshots/immutable_history/snapshot_<uuid7>.json` shows the first activity. When that directory is empty, treat the first activity as unknown.
-- To find session directories, read `roots[]` in `~/.strands/cli/session-roots.json`. Each entry has a `directory` (where sessions live) and a `workspace` (the repo it ran in). The catalog is best-effort and can miss entries, so also check `<workspace>/.agent/sessions`.
-
-**Kiro CLI** ([docs](https://kiro.dev/docs/cli/chat/session-management/))
-- Session directory: `~/.kiro/sessions/<workspace_hash>/sess_<session_uuid>/`, holding the conversation in `messages.jsonl` and metadata in `session.json`. The metadata includes `workspacePaths` (on newer versions), `title`, `createdAt`, and `lastModifiedAt`.
-- To search one workspace, compute its hash instead of scanning every directory:
-  ```bash
-  printf '%s' "<absolute_workspace_path>" | openssl dgst -sha256 -r | cut -c1-16
-  ```
-- Sessions started outside a workspace live under `~/.kiro/sessions/_global/`.
-- Some versions also write a flat store: `~/.kiro/sessions/cli/<session_uuid>.jsonl` with a `<session_uuid>.json` metadata sidecar.
-
-**Codex**
-- Session file: `~/.codex/sessions/<year>/<month>/<day>/rollout-<timestamp>-<session_uuid>.jsonl`.
-- Read the `session_meta` record to get `payload.session_id`, `payload.cwd`, and the initial `payload.timestamp`.
-- Match a workspace against `payload.cwd`. `~/.codex/history.jsonl` and `~/.codex/state_*.sqlite` are history and local-state stores, not session transcripts.
-
-**Other harnesses**: find the harness's session store (its docs, or recently modified `*.json` / `*.jsonl` files under its home directory) and apply the same prompt criteria.
-
-List the matching session file paths, grouped by harness. Include their conversation id, harness type, and session timestamp. If nothing matches, say which locations you searched and what criteria you applied and any near misses, then ask the user whether to widen the search.
+List the matching session files grouped by source. Include the conversation id, source type (ex. claude, codex, langfuse), and session timestamp. If nothing matches, say which locations you searched, what criteria you applied, and any near misses, then ask the user whether to widen the search.
 
 ### 3. Process sessions
 
@@ -114,7 +90,7 @@ Write the experiment JSON file to the directory the user gives, defaulting to `.
       "input": "<input>",
       "expected_assertion": "<expected_assertion>",
       "metadata": {
-        "session_file": "<session_file>",
+        "source": "<source>",
         "conversation_id": "<conversation_id>",
         "timestamp": "<timestamp>",
         "episode_index": <episode_index>,
@@ -132,8 +108,8 @@ Write one case per kept episode from step 3, and one evaluator entry per evaluat
 
 - `name`: a short kebab-case phrase generated from the episode's `summary`, unique within the file.
 - `input`: the episode's user input.
-- `session_file`: the file path of the episode's session.
-- `conversation_id`: the conversation id listed for the episode's session file.
+- `source`: the session's harness or trace provider (ex. claude, langfuse).
+- `conversation_id`: the conversation id listed for the episode's session.
 - `timestamp`: the episode timestamp.
 - `episode_index`: the episode's 0-based position among the episodes returned for its session, as an integer.
 - `failure_modes`: the evaluator name of every failure mode assigned to the episode, once each. Use `[]` if it has none.
@@ -170,17 +146,17 @@ Treat cases as duplicates when their inputs make the same request about the same
 
 ### 7. Handoff to human
 
-Report the experiment file path. List each suggested evaluator with its failure mode's episode count out of the cases in the file and one `evidence` quote (redact any secrets in it) and name any modes that appeared but fell below 10%. Say how many secrets you redacted and in which cases, without repeating the values. List each removed duplicate by `name` with the case it duplicated. List each inactionable case by `name` with its reason, and recommend dropping it. Tell the user to run it with `strands-evals run <file> --agent <module>:<factory>`. Then delete the episode files from step 3.
+Report the experiment file path. List each suggested evaluator with its failure mode's episode count out of the cases in the file and one `evidence` quote (redact any secrets in it) and name any modes that appeared but fell below 10%. Say how many secrets you redacted and in which cases, without repeating the values. List each removed duplicate by `name` with the case it duplicated. List each inactionable case by `name` with its reason, and recommend dropping it. Tell the user to run it with `strands-evals run <file> --agent <module>:<factory>`. Then delete the episode files from step 3 and the download directory from step 2.
 
-Ask the user to review the experiment file and whether they want any of the post-generation actions below (drop cases, smoke-test the experiment). Wait for their response. If you can't wait for a reply, keep every case and say which ones you'd drop.
+Ask the user to review the experiment file and whether they want any of the post-generation actions below (drop cases, smoke-test the experiment, synthesize additional cases, add actor profiles). Wait for their response. If you can't wait for a reply, keep every case and say which ones you'd drop.
 
 ## Post-generation
 
-Run these only if the user asks for them after step 7.
+Run these only if the user asks for them after step 7. If one response asks to synthesize additional cases and add actor profiles, synthesize the cases first so the synthetic cases get grouped too.
 
 ### Drop cases
 
-Remove the cases the user names (ex. the inactionable cases from step 6) from the experiment file. Update the `evaluators` using the methodology in step 4 with the cases' `failure_modes` instead of episode files. Then run `strands-evals validate <experiment_file>` again and fix any issues that occur. Report any evaluator that was added or removed, with its new count.
+Remove the cases the user names (ex. the inactionable cases from step 6) from the experiment file. Update the `evaluators` using the methodology in step 4 with the cases' `failure_modes` instead of episode files, excluding synthetic cases (`metadata.synthetic`) from the counts and total. Then run `strands-evals validate <experiment_file>` again and fix any issues that occur. Report any evaluator that was added or removed, with its new count.
 
 ### Smoke-test
 
@@ -197,3 +173,31 @@ strands-evals run <experiment_file> --case 0 --agent "$d/default_agent.py:build_
 ```
 
 Report whether the run completed and each evaluator's result. A failing score is fine here; this tests the file, not the agent. The run errored if the exit code is non-zero (ex. an invalid file) or a `reason` starts with `An error occurred` (ex. missing model credentials) or `Evaluator error` (ex. the judge model is unavailable); report the error. Then delete the temp directory.
+
+### Synthesize additional cases
+
+Ask the user how many cases to add. Write a one-sentence task description of what the agent under test does, based on the experiment's cases. Then append the new cases to the experiment file with [scripts/synthesize_cases.py](scripts/synthesize_cases.py), where `<num_cases>` is the requested number minus the synthetic cases kept so far:
+
+```bash
+python3 <skill_dir>/scripts/synthesize_cases.py <experiment_file> --task-description "<task_description>" --num-cases <num_cases>
+```
+
+If it errors (ex. missing model credentials, `ModuleNotFoundError`), report the error and stop. Then, for each case it appended (named with a UUID, with `metadata` set to `{"synthetic": true}`):
+
+- Rename `name` to a short kebab-case phrase, unique within the file.
+- Write `expected_assertion` from its `input`, in the same style as the existing cases' assertions.
+
+Run step 6 over the new cases, but skip its `evaluators` update after removing duplicates. Remove each new case that duplicates a real case or an earlier synthetic case, or that the actionability check flags. Exclude synthetic cases from the failure mode counts. Repeat from the script run until the kept synthetic cases reach the requested number, stopping early after 3 runs or after a run that keeps no cases. Report how many synthetic cases were kept out of the number requested, how many runs it took, and how many were removed as duplicates and as inactionable.
+
+### Add actor profiles
+
+Read each case's `input` and `expected_assertion`. Group cases whose users share expertise, communication style, and kind of request (ex. "terse maintainer debugging CI"). Put each case in exactly one group, and give each group a short kebab-case label. Generate an actor profile for each group, grounded in the cases' inputs and expected_assertions. Don't add names, emails, secrets, or other personal details.
+
+- `traits.persona`: one sentence on the group's expertise, communication style, and patience.
+- `traits.supplementary_profile`: one sentence on what the group's users are usually working on.
+- `context`: one or two sentences of shared background.
+- `actor_goal`: one sentence on the goal the group's users share, from their side (ex. "Get a failing CI check passing"), based on the group's `expected_assertion`s.
+
+Add the group's profile to each of its cases' `metadata` as `"actor_profile": {"traits": {...}, "context": "<context>", "actor_goal": "<actor_goal>"}` and `{"evaluator_type": "GoalSuccessRateEvaluator"}` to `evaluators` if it isn't there. Run `strands-evals validate <experiment_file>` again. Fix any issues that occur.
+
+List each group's label, case count, and traits, and say whether you added GoalSuccessRateEvaluator. Tell the user the experiment cases now run as multi-turn conversations.
