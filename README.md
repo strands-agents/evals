@@ -685,10 +685,18 @@ The band gates on one rubric question's probability, `p_gate`:
 | Gating question | `p_gate` |
 |---|---|
 | `Noul` | P(true), whatever the expected answer |
-| `Scale`, `Choice` | the most likely option's probability |
+| `Scale` | the most likely level's probability |
+| `Choice` | the most likely option's probability, among options that have a credit |
 
 A case escalates when `low <= p_gate <= high`, or when the gating question does not apply to it.
 A failing fallback fails the case rather than falling back to the rubric.
+
+`p_gate` always equals the `p=` in the row's reason: a `Choice` option with a `None` credit means
+"does not apply", so it is never counted. Every case a gating `Choice` does not apply to goes to the
+fallback, whatever the band. To escalate only those cases, give the band a range that no
+applicable case reaches, such as `Band(question="safety", low=0, high=0.1)`. That is allowed and
+logs a warning. For a `Scale` or a `Choice` with no `None` credit, such a band raises an error,
+because nothing could ever escalate.
 
 "Uncertain" means near the rubric's pass line, not near 0.5. The band must contain the gating
 question's pass line in `p_gate` terms, or the cases where the verdict flips stay on the fast

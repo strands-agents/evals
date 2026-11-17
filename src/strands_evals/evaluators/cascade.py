@@ -5,34 +5,57 @@ the rubric is unsure, so the case goes to the fallback evaluator, usually an LLM
 the fallback's verdict and written reasoning. Every other case keeps the rubric's rows.
 """
 
+import logging
 from collections.abc import Mapping
 from typing import Any, Literal
 
 from .._async import run_async
 from ..types.cascade import _BAND_ADAPTER, Band
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
-from ..types.typed_rubric import Noul, RubricQuestion, Scale
+from ..types.typed_rubric import Choice, Noul, RubricQuestion
 from .evaluator import Evaluator
-from .typed_rubric_evaluator import TypedRubricEvaluator
+from .typed_rubric_evaluator import TypedRubricEvaluator, _answerable_labels, _most_likely
+
+logger = logging.getLogger(__name__)
 
 CascadePath = Literal["fast", "fallback"]
 """Which evaluator resolved a case, as written to each row's `metadata["path"]`."""
 
 
 def _check_band_is_reachable(band: Band, question: RubricQuestion) -> None:
-    """Reject a band that no `p_gate` can fall into, since it would never escalate a case.
+    """Reject, or warn about, a band that no `p_gate` can fall into.
 
-    For a `Scale` or `Choice`, `p_gate` is the most likely option's probability, which is never
-    below 1 / (number of options). A `Noul`'s P(true) can take any value in [0, 1].
+    A `Noul`'s P(true) can take any value in [0, 1], so every band is reachable.
+
+    For a `Scale` or `Choice`, `p_gate` is the highest probability among the answerable options (see
+    `_answerable_labels`), so it is at least 1 / (their number). A band whose high end is below
+    that never escalates an uncertain case, which is a mistake, so it raises.
+
+    A `Choice` with a `None`-credit option is different. A case whose "does not apply" options hold
+    at least half the probability escalates whatever the band is, so a band that the other cases
+    never reach is a valid way to send only those cases to the fallback. The credited options of
+    every other case hold more than half the probability, so `p_gate` is above 0.5 / (their
+    number). A band at or below that only warns.
     """
     if isinstance(question, Noul):
         return
-    option_count = len(question.levels) if isinstance(question, Scale) else len(question.options)
-    floor = 1 / option_count
+    count = len(_answerable_labels(question))
+    if isinstance(question, Choice) and count < len(question.options):
+        bound = 0.5 / count
+        if band.high <= bound:
+            logger.warning(
+                "question_id=<%s>, band_high=<%s>, lowest_reachable=<%s> | band is below every p_gate an "
+                "applicable case can have, so only cases where the question does not apply will escalate",
+                band.question,
+                band.high,
+                bound,
+            )
+        return
+    floor = 1 / count
     if band.high < floor:
         raise ValueError(
             f"escalate_when.high ({band.high}) is below {floor:.4g}, the lowest possible p_gate for "
-            f"question <{band.question}> with {option_count} options, so no case would ever escalate"
+            f"question <{band.question}> with {count} options, so no case would ever escalate"
         )
 
 
@@ -40,10 +63,16 @@ class Cascade(Evaluator[InputT, OutputT]):
     """Answer with a typed rubric, and escalate uncertain cases to a fallback evaluator.
 
     The rubric (`fast`) runs on every case. Its gating question, `escalate_when.question`, gives
-    `p_gate`: P(true) for a `Noul`, the most likely option's probability for a `Scale` or
-    `Choice`. When `p_gate` is inside `escalate_when`, or the gating question does not apply to
-    the case, `fallback` runs and its rows are returned. Otherwise the rubric's rows are returned.
-    Either way the case is scored and labelled by the evaluator whose rows were returned.
+    `p_gate`: P(true) for a `Noul`, and for a `Scale` or `Choice` the probability of the answer the
+    row reports, which is the most likely level, or the most likely option that has a credit. A
+    `None`-credit "does not apply" option is never counted, so `p_gate` always equals the `p=` in
+    the row's reason. When `p_gate` is inside `escalate_when`, or the gating question does not
+    apply to the case, `fallback` runs and its rows are returned. Otherwise the rubric's rows are
+    returned. Either way the case is scored and labelled by the evaluator whose rows were returned.
+
+    A gating `Choice` with a `None`-credit option sends every case it does not apply to to the
+    fallback, whatever the band. A band that no applicable case can reach, such as `[0, 0.1]`, is
+    allowed for it, and logs a warning, so that only those cases escalate.
 
     Each row's `metadata` gains:
 
@@ -101,7 +130,7 @@ class Cascade(Evaluator[InputT, OutputT]):
             TypeError: If `fast` is not a `TypedRubricEvaluator`, or `fallback` is not an
                 `Evaluator` or is a `Cascade`.
             ValueError: If the band is invalid, names a question that is not in the rubric, or can
-                never contain `p_gate` for that question.
+                never contain `p_gate` of a `Scale` or a `Choice` without a `None`-credit option.
         """
         if not isinstance(fast, TypedRubricEvaluator):
             raise TypeError(f"fast must be a TypedRubricEvaluator, got {type(fast).__name__}")
@@ -196,9 +225,11 @@ class Cascade(Evaluator[InputT, OutputT]):
     def _p_gate(self, gate_row: EvaluationOutput) -> float:
         # `TypedRubricEvaluator` has already checked that the distribution is complete and valid.
         probabilities: Mapping[str, float] = gate_row.metadata["probabilities"]  # type: ignore[index]
-        if isinstance(self._fast.questions[self._escalate_when.question], Noul):
+        question = self._fast.questions[self._escalate_when.question]
+        if isinstance(question, Noul):
             return probabilities["true"]
-        return max(probabilities.values())
+        # The same label the row reports as its answer, so `p_gate` matches the row's `p=`.
+        return probabilities[_most_likely(question, probabilities)]
 
     def _tag(self, row: EvaluationOutput, path: CascadePath, p_gate: float, **extra: Any) -> EvaluationOutput:
         metadata = {

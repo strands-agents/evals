@@ -78,6 +78,22 @@ def _sdk_choices(question: RubricQuestion) -> Literal["boolean"] | list[str]:
     return "boolean" if isinstance(question, Noul) else list(_labels(question))
 
 
+def _answerable_labels(question: Scale | Choice) -> tuple[str, ...]:
+    """The labels a row can report as its selected answer.
+
+    That is every `Scale` level, and the `Choice` options that carry a credit: a `None`-credit
+    option means "does not apply", so it is never the answer a row reports.
+    """
+    if isinstance(question, Scale):
+        return question.levels
+    return tuple(label for label, credit in question.options.items() if credit is not None)
+
+
+def _most_likely(question: Scale | Choice, distribution: Mapping[str, float]) -> str:
+    """The answerable label with the highest probability; ties go to declaration order."""
+    return max(_answerable_labels(question), key=distribution.__getitem__)
+
+
 def _score_noul(question: Noul, distribution: Mapping[str, float]) -> _Verdict:
     selected = "true" if distribution["true"] >= distribution["false"] else "false"
     expected = "true" if question.expected else "false"
@@ -89,8 +105,7 @@ def _score_noul(question: Noul, distribution: Mapping[str, float]) -> _Verdict:
 def _score_scale(question: Scale, distribution: Mapping[str, float]) -> _Verdict:
     top = len(question.levels) - 1
     expected_level = sum(index * distribution[level] for index, level in enumerate(question.levels))
-    # `max` keeps the first of tied labels, so ties go to declaration order.
-    selected = max(question.levels, key=distribution.__getitem__)
+    selected = _most_likely(question, distribution)
     reason = f"expected level {expected_level:.2f} of {top}; most likely {selected} (p={distribution[selected]:.2f})"
     # The probabilities may sum to slightly over 1 (within tolerance), which can push the expected
     # level just past the top; clamp that overshoot.
@@ -105,7 +120,7 @@ def _score_choice(question: Choice, distribution: Mapping[str, float]) -> _Verdi
     credited = {label: credit for label, credit in question.options.items() if credit is not None}
     credited_mass = sum(distribution[label] for label in credited)
     expected_credit = sum(distribution[label] * credit for label, credit in credited.items()) / credited_mass
-    selected = max(credited, key=distribution.__getitem__)
+    selected = _most_likely(question, distribution)
     reason = f"expected credit {expected_credit:.2f}; most likely {selected} (p={distribution[selected]:.2f})"
     if not_applicable_mass > 0:
         reason += f"; not applicable mass {not_applicable_mass:.2f}"

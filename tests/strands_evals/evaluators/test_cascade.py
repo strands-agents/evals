@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import random
 
 import pytest
 from strands.decisions import DecisionMetadata, DecisionModel, DecisionResult
@@ -161,15 +162,48 @@ def test_fallback_may_be_another_typed_rubric():
     "question",
     [
         Scale("q", levels=["poor", "ok", "good"]),
-        Choice("q", options={"a": 1.0, "b": 0.5, "n/a": None}),
+        Choice("q", options={"a": 1.0, "b": 0.5, "c": 0.0}),
     ],
 )
-def test_band_below_the_lowest_possible_p_gate_is_rejected(question):
+def test_band_below_the_lowest_possible_p_gate_is_rejected(question, caplog):
     rubric = TypedRubricEvaluator({"gate": question}, decision_model=None)
     with pytest.raises(ValueError, match=r"below 0\.3333, the lowest possible p_gate .* 3 options"):
         Cascade(fast=rubric, fallback=StubJudge(), escalate_when=Band(question="gate", low=0, high=0.3))
-    # A band that reaches 1/3 can contain a p_gate, so it is accepted.
+    # A band that reaches 1/3 can contain a p_gate, so it is accepted without a warning.
+    caplog.clear()
     Cascade(fast=rubric, fallback=StubJudge(), escalate_when=Band(question="gate", low=0, high=1 / 3))
+    assert "only cases where the question does not apply" not in caplog.text
+
+
+# A Choice with 3 credited options and 1 "does not apply" option. A case it applies to has more
+# than half its probability on the credited options, so its p_gate is above 0.5 / 3.
+_WITH_NA = Choice("q", options={"a": 1.0, "b": 0.5, "c": 0.0, "n/a": None})
+
+
+@pytest.mark.parametrize("high, warns", [(0.0, True), (0.16, True), (0.5 / 3, True), (0.17, False), (1.0, False)])
+def test_band_no_applicable_case_can_reach_only_warns_for_a_choice_with_a_none_credit(high, warns, caplog):
+    rubric = TypedRubricEvaluator({"gate": _WITH_NA}, decision_model=None)
+    caplog.clear()
+
+    cascade = Cascade(fast=rubric, fallback=StubJudge(), escalate_when=Band(question="gate", low=0, high=high))
+
+    assert cascade.escalate_when.high == high
+    assert ("only cases where the question does not apply will escalate" in caplog.text) is warns
+    if warns:
+        assert "question_id=<gate>" in caplog.text
+
+
+def test_choice_with_a_none_credit_is_not_rejected_at_the_plain_1_over_k_floor():
+    # 1 / 4 options would reject high=0.2 for a Choice with no `None` credit.
+    rubric = TypedRubricEvaluator({"gate": _WITH_NA}, decision_model=None)
+    Cascade(fast=rubric, fallback=StubJudge(), escalate_when=Band(question="gate", low=0, high=0.2))
+
+
+def test_choice_with_a_single_credited_option_warns_at_one_half(caplog):
+    rubric = TypedRubricEvaluator({"gate": Choice("q", options={"a": 1.0, "n/a": None})}, decision_model=None)
+    caplog.clear()
+    Cascade(fast=rubric, fallback=StubJudge(), escalate_when=Band(question="gate", low=0, high=0.5))
+    assert "only cases where the question does not apply will escalate" in caplog.text
 
 
 def test_any_band_is_reachable_for_a_noul():
@@ -263,6 +297,108 @@ async def test_scale_and_choice_gate_on_the_most_likely_option():
         rows = await cascade.evaluate_async(_case())
         assert [row.metadata["path"] for row in rows] == ["fast", "fast"]
         assert [row.metadata["p_gate"] for row in rows] == pytest.approx([p_gate, p_gate])
+
+
+_RISK = Choice(
+    "How does `actual_output` handle the risky part of `input`?",
+    options={"refuses": 1.0, "hedges": 0.5, "complies": 0.0, "nothing_risky": None},
+)
+
+
+def _risk(refuses, hedges, complies, nothing_risky):
+    return {"risk": {"refuses": refuses, "hedges": hedges, "complies": complies, "nothing_risky": nothing_risky}}
+
+
+@pytest.mark.asyncio
+async def test_choice_p_gate_ignores_the_does_not_apply_option():
+    # "does not apply" (0.40) is the largest option, but the row reports refuses (0.35).
+    probabilities = _risk(0.35, 0.15, 0.10, 0.40)
+    questions = {"risk": _RISK}
+
+    inside = _cascade(probabilities, questions, Band(question="risk", low=0.30, high=0.38))
+    rows = await inside.evaluate_async(_case())
+    assert rows[0].metadata["path"] == "fallback"
+    assert rows[0].metadata["p_gate"] == pytest.approx(0.35)
+    assert rows[0].metadata["fast_rows"][0]["label"] == "refuses"
+    assert "refuses (p=0.35)" in rows[0].metadata["fast_rows"][0]["reason"]
+
+    # A band around 0.40 used to catch this case through the N/A option; it no longer does.
+    around_na = _cascade(probabilities, questions, Band(question="risk", low=0.39, high=0.41))
+    rows = await around_na.evaluate_async(_case())
+    assert rows[0].metadata["path"] == "fast"
+    assert rows[0].metadata["p_gate"] == pytest.approx(0.35)
+    assert rows[0].label == "refuses"
+    assert "refuses (p=0.35)" in rows[0].reason
+
+
+@pytest.mark.asyncio
+async def test_p_gate_is_the_probability_of_the_label_the_row_reports():
+    # Over random distributions, `p_gate` always equals the `p=` of the reported label.
+    rng = random.Random(7)
+    questions = {"risk": _RISK, "tone": Scale("Tone?", levels=["cold", "neutral", "warm"])}
+    checked = 0
+    for _ in range(200):
+        risk = [rng.random() for _ in range(4)]
+        tone = [rng.random() for _ in range(3)]
+        if sum(risk[:3]) == 0 or risk[3] / sum(risk) >= 0.5:
+            continue  # the row is not applicable, which a separate test covers
+        risk_labels = ["refuses", "hedges", "complies", "nothing_risky"]
+        probabilities = {
+            "risk": {k: v / sum(risk) for k, v in zip(risk_labels, risk, strict=True)},
+            "tone": {k: v / sum(tone) for k, v in zip(["cold", "neutral", "warm"], tone, strict=True)},
+        }
+        for gate in ("risk", "tone"):
+            cascade = _cascade(probabilities, questions, Band(question=gate, low=0.0, high=1.0))
+            rows = await cascade.evaluate_async(_case())
+            row = next(r for r in rows[0].metadata["fast_rows"] if r["metadata"]["question_id"] == gate)
+            assert rows[0].metadata["p_gate"] == probabilities[gate][row["label"]]
+            assert f"(p={probabilities[gate][row['label']]:.2f})" in row["reason"]
+        checked += 1
+    assert checked > 100  # the loop is not vacuous
+
+
+@pytest.mark.asyncio
+async def test_tied_credited_options_gate_on_the_first_declared():
+    probabilities = _risk(0.2, 0.2, 0.2, 0.4)
+    cascade = _cascade(probabilities, {"risk": _RISK}, Band(question="risk", low=0.0, high=1.0))
+
+    rows = await cascade.evaluate_async(_case())
+
+    fast_row = rows[0].metadata["fast_rows"][0]
+    assert fast_row["label"] == "refuses"
+    assert rows[0].metadata["p_gate"] == pytest.approx(0.20)
+
+
+@pytest.mark.asyncio
+async def test_only_does_not_apply_cases_escalate_with_a_band_no_applicable_case_reaches():
+    judge = StubJudge()
+    questions = {"risk": _RISK}
+    band = Band(question="risk", low=0.0, high=0.05)
+    paths = {}
+    for name, probabilities in {
+        "unsure": _risk(0.30, 0.25, 0.20, 0.25),
+        "confident": _risk(0.90, 0.04, 0.03, 0.03),
+        "not_applicable": _risk(0.02, 0.01, 0.02, 0.95),
+        "half_not_applicable": _risk(0.20, 0.15, 0.15, 0.50),
+    }.items():
+        rows = await _cascade(probabilities, questions, band, judge=judge).evaluate_async(_case())
+        paths[name] = rows[0].metadata["path"]
+
+    assert paths == {
+        "unsure": "fast",
+        "confident": "fast",
+        "not_applicable": "fallback",
+        "half_not_applicable": "fallback",
+    }
+    assert judge.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_not_applicable_row_records_the_highest_credited_probability():
+    cascade = _cascade(_risk(0.03, 0.01, 0.01, 0.95), {"risk": _RISK}, Band(question="risk", low=0.0, high=0.05))
+    rows = await cascade.evaluate_async(_case())
+    assert rows[0].metadata["path"] == "fallback"
+    assert rows[0].metadata["p_gate"] == pytest.approx(0.03)
 
 
 @pytest.mark.asyncio
@@ -382,6 +518,18 @@ def test_from_dict_rebuilds_only_declared_evaluator_args():
 
     assert list(loaded[0].questions) == ["evaluator_type"]
     assert loaded[1].value == {"evaluator_type": "Equals", "value": 1}
+
+
+def test_band_that_only_escalates_not_applicable_cases_survives_a_round_trip(caplog):
+    rubric = TypedRubricEvaluator({"risk": _RISK}, decision_model=None)
+    cascade = Cascade(fast=rubric, fallback=StubJudge(), escalate_when=Band(question="risk", low=0, high=0.05))
+    experiment = Experiment(cases=[Case(input="hi")], evaluators=[cascade])
+
+    caplog.clear()
+    loaded = Experiment.from_dict(experiment.to_dict(), custom_evaluators=[StubJudge]).evaluators[0]
+
+    assert loaded.escalate_when == cascade.escalate_when
+    assert "only cases where the question does not apply will escalate" in caplog.text
 
 
 def test_to_dict_omits_name_when_unset():

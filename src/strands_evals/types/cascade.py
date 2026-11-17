@@ -18,8 +18,9 @@ class Band:
     """The range of a rubric question's probability that counts as uncertain.
 
     A `Cascade` sends a case to its fallback evaluator when the gating probability `p_gate` of
-    `question` falls inside the band, ends included. `p_gate` is P(true) for a `Noul`, and the
-    most likely option's probability for a `Scale` or `Choice`.
+    `question` falls inside the band, ends included. `p_gate` is P(true) for a `Noul`. For a
+    `Scale` or `Choice` it is the probability of the answer the row reports: the most likely level,
+    or the most likely option that has a credit, ignoring any "does not apply" option.
 
     "Uncertain" means near the rubric's pass line, not near 0.5: the band must contain the gating
     question's pass line in `p_gate` terms, or the cases where the verdict flips never escalate.
