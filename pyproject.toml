@@ -79,6 +79,11 @@ optimization = [
     "scipy>=1.11.0,<2.0.0",
     "optuna>=5.0.0,<6.0.0",
 ]
+# Statistical comparison of paired evaluation reports.
+comparison = [
+    "numpy>=1.26.0,<3.0.0",
+    "scipy>=1.15.0,<2.0.0",
+]
 
 [tool.ruff]
 line-length = 120
@@ -87,7 +92,7 @@ include = ["src/**/*.py", "tests/**/*.py", "tests_integ/**/*.py"]
 [tool.hatch.envs.hatch-test]
 installer = "uv"
 extra-args = ["-n", "auto", "-vv"]
-features = ["otel", "langfuse", "langchain", "opensearch", "adk", "claude", "stickler", "optimization"]
+features = ["otel", "langfuse", "langchain", "opensearch", "adk", "claude", "stickler", "optimization", "comparison"]
 dependencies = [
     "pytest>=8.0.0,<10.0.0",
     "pytest-cov>=7.0.0,<8.0.0",
@@ -128,7 +133,7 @@ prepare = [
 
 [tool.hatch.envs.hatch-static-analysis]
 installer = "uv"
-features = ["otel", "langfuse", "langchain", "opensearch", "stickler", "optimization"]
+features = ["otel", "langfuse", "langchain", "opensearch", "stickler", "optimization", "comparison"]
 dependencies = [
   "mypy>=1.15.0,<3.0.0",
   # PIL is an optional import in types/multimodal.py
