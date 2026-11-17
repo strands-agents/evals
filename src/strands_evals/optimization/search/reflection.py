@@ -16,16 +16,19 @@ import subprocess
 import tempfile
 import time
 import warnings
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar, cast
 
 from botocore.config import Config as BotocoreConfig
-from strands import Agent, tool
+from botocore.exceptions import NoCredentialsError
+from strands import Agent, ModelRetryStrategy, tool
+from strands.agent.agent_result import AgentResult
 from strands.agent.conversation_manager import SlidingWindowConversationManager
 from strands.hooks.events import AfterToolCallEvent
 from strands.models.bedrock import BedrockModel
 from strands.models.model import CacheConfig, Model
+from strands.types.exceptions import MaxTokensReachedException
 from strands.types.tools import AgentTool
 
 from ...types.optimization import CandidateSummary, Observation, Patch, TrialRecord, TrialStatus, Usage, Value
@@ -38,7 +41,9 @@ from ...types.trace import (
     _to_aware_utc,
 )
 from ..declaration.space import ParamKind
+from ..execution.status import classify
 from ..prompt_templates.reflection.reflection_v0 import (
+    CUT_OFF,
     REFUSED,
     SUBMIT_INSTRUCTIONS,
     TextVariable,
@@ -81,7 +86,12 @@ _VERSION_HEADER = re.compile(r"^# Version \d+(?: \(the baseline\))?[ \t]*\r?\n(?
 _DIGEST_CHARS = 20_000
 _DIGEST_FILE = "DIGEST.md"
 
-_ATTEMPTS = 4  # the agent's first try, then 3 retries
+# A model call failing with a transient error is tried up to this many times in all, Strands waiting 4 s before the
+# first retry and twice as long before each next one, at most 240 s: about 8 minutes of waiting between the tries.
+_MODEL_ATTEMPTS = 8
+_RETRY_DELAY = 4
+_MAX_RETRY_DELAY = 240
+_CUT_OFF_RETRIES = 2  # replies cut at the output limit sent back per conversation; the next one is raised
 _RATIONALE_CHARS = 2_000
 _FALLBACK_RATIONALE = "rewritten by Reflection"  # when the agent's first call ends with no text
 _VERBATIM_CHARS = 40  # a run this long copied from a shown trial is a leak
@@ -106,11 +116,15 @@ class Reflection(Proposer):
     the objectives' mid-ranks in [0, 1], weighted, compared against `success_threshold` (a median split only at
     0.5).
 
-    Each `propose` call (n=1) runs one agent (`concurrent = True`). The agent is retried 3 times, each
-    failure logged as `proposer_retry`, then the last error is raised; nothing submitted, or every value
-    dropped, returns `[]`. A returned patch's `usage` holds its call's model spend, every attempt and send-back
-    included; a call that returns nothing after its agent ran, or whose agent fails on every attempt, logs that
-    spend as `proposer_usage`
+    Each `propose` call (n=1) runs one agent conversation (`concurrent = True`). A model call that fails with an
+    error a trial would be re-run for (throttling from any model; with Bedrock, also the service's own errors and a
+    lost connection) is tried again in the same conversation with Strands' exponential backoff, up to 8 tries
+    (about 8 minutes of waiting between them), each such failure logged as `proposer_retry`. A reply cut at the
+    model's output limit is sent back in the same conversation to continue, up to 2 times. Any other error (no
+    access to the model, missing credentials, an invalid model id, a rejected request), or one that outlasts those
+    retries, is raised at once. Nothing submitted, or every value dropped, returns `[]`. A returned patch's `usage`
+    holds its call's model spend, every retry and send-back included; a call that returns nothing after its agent
+    ran, or whose agent raised, logs that spend as `proposer_usage`
     instead (nothing when cancelled). Guardrails run in code after the agent returns,
     including the leakage screen (drop a value that adds a shown case's identifier-like name, or a
     verbatim run of >= 40 characters from a shown trial's input, output, or conversation, that the
@@ -180,8 +194,10 @@ class Reflection(Proposer):
 
         Raises:
             RuntimeError: Running on Windows: the agent's shell needs Linux or macOS.
-            Exception: The agent failed `_ATTEMPTS` times in a row: the last error, whatever it is (a wrong model id
-                or no access to the model fails every attempt, and proposing nothing would hide it).
+            Exception: The agent's error, whatever it is: one not worth retrying (a wrong model id or no access to
+                the model, which proposing nothing would hide), a transient one still failing after 8 tries, or
+                `MaxTokensReachedException` after 2 send-backs. Strands wraps an error after the conversation's
+                first tool call in `EventLoopException` (the error is its `original_exception`).
         """
         if os.name == "nt":
             raise RuntimeError(
@@ -261,40 +277,36 @@ class Reflection(Proposer):
                 work_folder=work,
             )
             caps = {k: request.space.param(k).size_cap for k in keys}
-            usage = Usage.zero()
             refused: list[dict[str, Any]] = []
             rejected: list[dict[str, str]] = []
-            for attempt in range(_ATTEMPTS):
-                submitted: dict[str, str] = {}
-                agent = Agent(
-                    model=self._model(),
-                    system_prompt=prompt + SUBMIT_INSTRUCTIONS,
-                    tools=[
-                        _confined_shell(work, [traces, versions, work], refused, root, running),
-                        _submit_tool(work, submitted, parent, rejected, caps),
-                    ],
-                    # Strands' 40-message window, trimmed at the end of each call and on overflow, with the task
-                    # message pinned: a send-back after a long first turn would otherwise go without it.
-                    conversation_manager=SlidingWindowConversationManager(pin_first=1),
-                    callback_handler=None,
-                )
-                agent.add_hook(_cap_tool_output, AfterToolCallEvent)
-                started = time.monotonic()
-                failure: Exception | None = None
-                try:
-                    params, rationale, revised = await self._converse(agent, message, submitted, caps, rejected)
-                except Exception as error:  # noqa: BLE001 - any failure of the agent is retried, then raised
-                    failure = error
-                finally:  # a cancellation (not an `Exception`) propagates from here, with no event
-                    usage = usage + _agent_usage(agent, time.monotonic() - started, self._model_id())
-                if failure is None:
-                    break
-                if attempt == _ATTEMPTS - 1:
-                    self.refused.extend(refused)
-                    # The agent ran (`usage` is never zero here), and no patch will carry its spend.
-                    request.log("proposer_usage", usage=usage)
-                    raise failure
-                request.log("proposer_retry", error_type=type(failure).__name__, error=str(failure)[:2000])
+            submitted: dict[str, str] = {}
+            agent = Agent(
+                model=self._model(),
+                system_prompt=prompt + SUBMIT_INSTRUCTIONS,
+                tools=[
+                    _confined_shell(work, [traces, versions, work], refused, root, running),
+                    _submit_tool(work, submitted, parent, rejected, caps),
+                ],
+                # Strands' 40-message window, trimmed at the end of each call and on overflow, with the task
+                # message pinned: a send-back after a long first turn would otherwise go without it.
+                conversation_manager=SlidingWindowConversationManager(pin_first=1),
+                retry_strategy=_TransientRetry(
+                    lambda error: request.log(
+                        "proposer_retry", error_type=type(error).__name__, error=str(error)[:2000]
+                    )
+                ),
+                callback_handler=None,
+            )
+            agent.add_hook(_cap_tool_output, AfterToolCallEvent)
+            started = time.monotonic()
+            try:
+                params, rationale, revised = await self._converse(agent, message, submitted, caps, rejected)
+            except Exception:  # a cancellation (not an `Exception`) propagates with no event
+                self.refused.extend(refused)
+                # The agent ran, and no patch will carry its spend.
+                request.log("proposer_usage", usage=_agent_usage(agent, time.monotonic() - started, self._model_id()))
+                raise
+            usage = _agent_usage(agent, time.monotonic() - started, self._model_id())
             self.refused.extend(refused)
             updates, dropped, screened = await asyncio.to_thread(_guard, request, params or {}, keys, parent)
             for key in screened:
@@ -329,12 +341,35 @@ class Reflection(Proposer):
         submission with values over their `size_cap` (`over_limit_message`) or a turn that ended with nothing
         accepted on a refused submission (`REFUSED`); each new submission replaces the values it gives.
 
+        A reply cut at the model's output limit is answered with `CUT_OFF` in the same conversation (Strands has
+        already added the reply, its tool calls replaced by notes), up to `_CUT_OFF_RETRIES` times in all.
+
         Returns:
-            What was submitted (None for nothing), the rationale (the first call's final text, capped at
-            `_RATIONALE_CHARS`; `_FALLBACK_RATIONALE` when it has none), and the lengths sent back to be shortened.
+            What was submitted (None for nothing), the rationale (the first call's final text, after any cut-off
+            send-backs, capped at `_RATIONALE_CHARS`; `_FALLBACK_RATIONALE` when it has none), and the lengths sent
+            back to be shortened.
+
+        Raises:
+            MaxTokensReachedException: A reply was cut at the output limit after `_CUT_OFF_RETRIES` send-backs.
         """
+        cut_offs = 0
+
+        async def send(text: str) -> AgentResult:
+            nonlocal cut_offs
+            while True:
+                try:
+                    return await agent.invoke_async(text)
+                except MaxTokensReachedException as error:
+                    if cut_offs == _CUT_OFF_RETRIES:
+                        raise MaxTokensReachedException(
+                            f"the agent's reply was cut at the model's output limit {cut_offs + 1} times in one "
+                            "conversation; give Reflection a Model built with a higher max_tokens"
+                        ) from error
+                    cut_offs += 1
+                    text = CUT_OFF
+
         before = len(rejected)
-        result = await agent.invoke_async(message)
+        result = await send(message)
         rationale = (str(result).strip() or _FALLBACK_RATIONALE)[:_RATIONALE_CHARS]
         params: dict[str, str] | None = dict(submitted) or None
         submitted.clear()
@@ -352,7 +387,7 @@ class Reflection(Proposer):
             else:
                 break
             before = len(rejected)
-            await agent.invoke_async(text)
+            await send(text)
             if submitted:
                 params = {**(params or {}), **submitted}
                 submitted.clear()
@@ -1219,6 +1254,26 @@ def _leak(value: str, held: Any, names: Sequence[str], sources: Sequence[str]) -
                 if text[i : i + n] in runs:
                     return f"copies {n} characters from a shown trial verbatim: {text[i : i + n]!r}"
     return None
+
+
+class _TransientRetry(ModelRetryStrategy):
+    """Strands' retry of a failed model call, with its exponential backoff (`_MODEL_ATTEMPTS` tries in all), extended
+    from throttling to the other errors a trial is re-run for (`classify`) except missing credentials: the model
+    service's own errors, also inside a streamed response, and a lost connection. Each failure with one of these goes
+    to `on_retry`. Anything else, such as no access to the model or an invalid model id, is raised at once."""
+
+    def __init__(self, on_retry: Callable[[Exception], None]) -> None:
+        super().__init__(max_attempts=_MODEL_ATTEMPTS, initial_delay=_RETRY_DELAY, max_delay=_MAX_RETRY_DELAY)
+        self._on_retry = on_retry
+
+    def is_retryable(self, exception: Exception) -> bool:
+        """Whether the failed model call is tried again after a wait, while tries remain."""
+        retryable = super().is_retryable(exception) or (
+            classify(exception) is TrialStatus.INFRASTRUCTURE_INVALID and not isinstance(exception, NoCredentialsError)
+        )
+        if retryable:
+            self._on_retry(exception)
+        return retryable
 
 
 def _agent_usage(agent: Agent, seconds: float, model_id: str | None) -> Usage:

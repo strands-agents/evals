@@ -151,6 +151,13 @@ def test_refused_message():
     )
 
 
+def test_cut_off_message():
+    assert T.CUT_OFF == (
+        "Your last reply was cut off at the output limit, so any tool call in it did not run. Continue where you "
+        "were, keeping each reply shorter: write a long text to its file in several commands, appending part by part."
+    )
+
+
 def test_over_limit_message():
     assert T.over_limit_message({"prompt": (2500, 2000)}) == (
         "`prompt` is over its limit: `prompt` is 2,500 characters, its limit 2,000 (500 over). A value over its limit "
