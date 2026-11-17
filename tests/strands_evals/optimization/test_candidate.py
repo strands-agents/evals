@@ -16,6 +16,7 @@ from strands_evals.optimization import (
     component,
 )
 from strands_evals.optimization.candidate import changed_keys, changed_values, content_id, diff
+from tests.strands_evals.optimization.note_kind import Note, store_note
 
 
 class Window:
@@ -148,6 +149,18 @@ def test_child_validates_the_values_it_stores(tmp_path):
     # 9 characters as proposed, 22 once written as the file holds it
     with pytest.raises(ValueError, match="over the size_cap of 12"):
         Candidate.baseline(space).child(space, {"tags": "[1,2,3,4]"}, origin=["text"], rationale="")
+
+
+def test_child_checks_a_custom_value_against_the_artifact_store(tmp_path):
+    space = Space({"note": Note("seed")})
+    stored = store_note(tmp_path, "a stored note")
+    child = Candidate.baseline(space).child(space, {"note": stored}, origin=["note"], rationale="", artifacts=tmp_path)
+    assert child.values == {"note": stored}
+    assert changed_values(space, Candidate.baseline(space), child) == {
+        "note": {"old": space.param("note").default, "new": stored}
+    }
+    with pytest.raises(ValueError, match="not in the artifact store"):
+        Candidate.baseline(space).child(space, {"note": stored}, origin=["note"], rationale="")
 
 
 def test_child_rejects_an_update_to_an_inactive_key():

@@ -26,7 +26,8 @@ class FitData:
 
     Attributes:
         space: The declared space.
-        text_blocks: Block name -> its text keys (each block's "rewritten?" factor).
+        text_blocks: Block name -> its written keys (`ParamInfo.written`: text and custom kinds), each block's
+            "rewritten?" factor.
         candidates: Candidate id -> values, in scoring order (baseline first).
         cases: The split's case names (train for the search fit, validation in the end phase).
         scores: Candidate id -> its `CandidateScores` on the split. A model fits the candidates whose

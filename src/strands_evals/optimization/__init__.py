@@ -43,7 +43,7 @@ from ..types.optimization import (
 )
 from .candidate import Candidate
 from .declaration.files import FileText, JsonField, SkillLibrary
-from .declaration.markers import Choice, Component, Float, Int, OneOf, TextValue, choice, component
+from .declaration.markers import Choice, Component, CustomMarker, Float, Int, OneOf, TextValue, choice, component
 from .declaration.space import FileSource, Marker, ParamInfo, ParamKind, Space
 from .declaration.tools import ToolDescriptions, tool_descriptions
 from .declaration.tunable import BuildContext, TunableFactory, tunable
@@ -70,7 +70,7 @@ from .scoring.objectives import (
     Pareto,
     WeightedSum,
 )
-from .search.blocks import Alternate, Block, Joint, Nested, Schedule, ScheduleContext, Search, Step
+from .search.blocks import Alternate, Block, Joint, Nested, Schedule, ScheduleContext, Search, Step, register_kind
 from .search.proposer import ProposalRequest, Proposer
 from .search.reflection import Reflection
 from .search.thompson import Thompson
@@ -99,6 +99,7 @@ __all__ = [
     "Component",
     "Constraint",
     "Criteria",
+    "CustomMarker",
     "EnvironmentFn",
     "Estimate",
     "Evidence",
@@ -175,6 +176,7 @@ __all__ = [
     "design",
     "effects",
     "p_met",
+    "register_kind",
     "tool_descriptions",
     "tunable",
 ]

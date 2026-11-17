@@ -95,19 +95,19 @@ class CandidateView(BaseModel):
         """Unified diff of every changed text against the baseline, for review.
 
         File-backed values on their real paths (relative to the run's working directory), then non-file
-        text values headed by their key. Numbers and choices are in `changed_values()`.
+        text values headed by their key. Numbers, choices, and custom kinds' values are in `changed_values()`.
         """
         return self.diff_text
 
     def changed_values(self) -> dict[str, dict[str, Value]]:
-        """Changed numbers and choices against the baseline: `{key: {"old": ..., "new": ...}}`, one side only
-        for a key active on one side."""
+        """Changed numbers, choices, and custom kinds' values against the baseline: `{key: {"old": ..., "new": ...}}`,
+        one side only for a key active on one side."""
         return {key: dict(sides) for key, sides in self.changed.items()}
 
     def write_diff(self, path: str | Path) -> Path:
         """Write this candidate's changes as the run writes the champion's (`best.diff`), for review.
 
-        `path` gets `diff()`; `path.with_suffix(".values.json")` gets the changed numbers and choices as
+        `path` gets `diff()`; `path.with_suffix(".values.json")` gets `changed_values()`, the other changes, as
         `{key: {"old": ..., "new": ...}}`, with one side only for a key active on one side. Both are always
         written (empty or `{}` when nothing of that kind changed). Applying is the CLI's job.
 

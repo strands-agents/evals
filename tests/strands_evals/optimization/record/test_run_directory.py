@@ -74,6 +74,12 @@ def test_create_writes_run_json_and_the_config_event(tmp_path):
     assert events[0]["config"] == saved == run.config
 
 
+def test_the_artifact_store_is_in_the_run_and_made_only_when_used(tmp_path):
+    run = RunDirectory.create(tmp_path, CONFIG)
+    assert run.artifacts == run.root / "artifacts" and not run.artifacts.exists()
+    assert RunDirectory.open(run.root).artifacts == run.root / "artifacts"
+
+
 @pytest.mark.parametrize("name", ["Quick", "a b", "a.b", "a/b", ""])
 def test_create_rejects_a_bad_name(tmp_path, name):
     with pytest.raises(ValueError, match="lowercase letters"):

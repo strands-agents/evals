@@ -86,6 +86,7 @@ class Candidate:
         origin: Sequence[str],
         rationale: str,
         fill: Callable[[str], tuple[Value, str] | None] | None = None,
+        artifacts: Path | None = None,
     ) -> Candidate:
         """Copy these values, apply `updates`, fill keys the parent lacks, and validate.
 
@@ -100,6 +101,7 @@ class Candidate:
             origin: The names of the blocks whose patches `updates` merges, in proposal order.
             rationale: Why, from the patch.
             fill: Where a key the parent lacks comes from; None means its default.
+            artifacts: The run's artifact store, for a custom kind's `check_value`; None outside a run.
 
         Raises:
             ValueError: The completed values fail `space.validate`, including an update to a key
@@ -119,7 +121,7 @@ class Candidate:
 
         completed = space.complete({**self.values, **updates}, fill=record)
         # Validate what is stored; an update complete() dropped as inactive is added back, so it's reported.
-        space.validate({**updates, **completed})
+        space.validate({**updates, **completed}, artifacts=artifacts)
         return Candidate(
             values=completed,
             parent_id=self.id,
@@ -137,7 +139,7 @@ def diff(space: Space, base: Candidate, other: Candidate, *, root: Path) -> str:
     path relative to `root` (a file outside it is headed by its absolute path, without `a/` / `b/`); a
     `JsonField`'s hunk is on its whole file. Each changed non-file text value follows as a hunk headed
     `--- <key>` / `+++ <key>`. Not promised to apply with `git apply`: the CLI applies a candidate from its
-    values. Numbers and choices never appear (see `changed_values`).
+    values. Numbers, choices, and custom kinds' values never appear (see `changed_values`).
 
     Args:
         space: Maps file-backed keys to their real paths.
@@ -167,19 +169,19 @@ def diff(space: Space, base: Candidate, other: Candidate, *, root: Path) -> str:
 
 
 def changed_values(space: Space, base: Candidate, other: Candidate) -> dict[str, dict[str, Value]]:
-    """Changed numbers and choices, in `best.values.json`'s format.
+    """Changed numbers, choices, and custom kinds' values, in `best.values.json`'s format.
 
     Each changed key maps to `{"old": base value, "new": other value}`; a key active on one side only
     (a sub-key of a switched `choice()`) has only that side's entry, since None is a valid value.
     Text never appears (see `diff`). Keys in declaration order.
 
     Args:
-        space: Tells numbers and choices apart from text.
+        space: Tells text apart from the other kinds.
         base: The candidate compared against, usually the baseline.
         other: The candidate shown.
 
     Returns:
-        Key -> `{"old": ..., "new": ...}` for every changed number or choice; {} when none changed.
+        Key -> `{"old": ..., "new": ...}` for every changed key that isn't text; {} when none changed.
     """
     changed: dict[str, dict[str, Value]] = {}
     for info in space.params():

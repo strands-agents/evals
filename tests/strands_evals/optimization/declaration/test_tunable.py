@@ -9,6 +9,7 @@ from strands.models.model import Model
 
 from strands_evals.optimization import Float, Int, OneOf, TextValue, TunableFactory, choice, component, tunable
 from strands_evals.optimization.declaration.tunable import _FactoryArgumentError
+from tests.strands_evals.optimization.note_kind import Note, note_value, store_note
 
 
 class StubModel(Model):
@@ -224,6 +225,20 @@ def test_a_bad_proposal_dies_at_validation_before_any_agent_is_built():
 def test_bind_rejects_a_key_inactive_under_the_chosen_alternative():
     with pytest.raises(ValueError, match="inactive"):
         make_agent.bind({"manager.Summary.ratio": 0.5})
+
+
+def test_bind_checks_and_resolves_a_custom_value_with_the_artifact_store(tmp_path):
+    factory = tunable(lambda note: note, inject={"note": Note("seed")})
+    stored = store_note(tmp_path, "a stored note")
+    assert factory() == "seed"  # the plain call: the default, with no store
+    bound = factory.bind({"note": stored}, artifacts=tmp_path)
+    assert bound() == "a stored note"
+    assert bound._with_resources({"sandbox": "box"})() == "a stored note"
+    factory.validate({"note": stored}, artifacts=tmp_path)
+    for check in (factory.bind, factory.validate):
+        with pytest.raises(ValueError, match="not in the artifact store"):
+            check({"note": stored})
+    assert factory.bind({"note": note_value("seed")})() == "seed"
 
 
 # --- arguments to the bound factory: call kwargs and resources ---

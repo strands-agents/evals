@@ -6,6 +6,7 @@ from strands.agent.conversation_manager import SlidingWindowConversationManager
 
 from strands_evals.optimization import Float, Int, OneOf, TextValue, choice, component, tool_descriptions
 from strands_evals.optimization.declaration.markers import _default_size_cap, _ValueMarker
+from tests.strands_evals.optimization.note_kind import Note
 
 
 class Manager:
@@ -393,3 +394,10 @@ def test_value_markers_fill_a_default_into_a_copy(marker, default):
     filled = marker._with_default(default)
     assert type(filled) is type(marker) and filled.default == default
     assert marker.default is not default  # the declared marker is left unfilled
+
+
+def test_a_custom_marker_is_declared_only_at_the_top_level():
+    with pytest.raises(TypeError, match="only Int, Float, and OneOf arguments are tunable"):
+        component(Manager, factory=Note("seed"))
+    with pytest.raises(TypeError, match="an alternative is a component"):
+        choice(on=component(Manager), note=Note("seed"))

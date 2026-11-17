@@ -5,8 +5,10 @@ from __future__ import annotations
 import functools
 import inspect
 import math
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
-from typing import Any, TypeVar, cast
+from pathlib import Path
+from typing import Any, ClassVar, TypeVar, cast
 
 from ...types.optimization import Value
 
@@ -170,6 +172,68 @@ class TextValue(_ValueMarker):
 
     def _with_default(self, default: Any) -> TextValue:
         return TextValue(default=default, size_cap=self.size_cap, edit_instructions=self.edit_instructions)
+
+
+class CustomMarker(_Marker, ABC):
+    """Base of a marker for a kind of value defined outside the package, e.g. a program a proposer writes.
+
+    Subclass it to declare a new kind. The marker declares one key, its declared name, of kind `kind`.
+    Its values are plain JSON scalars (`Value`); a value that stands for a file or code names it in the
+    run's artifact store (`<run>/artifacts/`), relative to the store (e.g. `notes/<sha256>`), so a run
+    directory can be moved. A value must name its content: two candidates with equal values are
+    duplicates and share cached trials, so the file behind a value never changes once stored.
+
+    A model writes the values of every custom kind: no sampler proposes them (`TPE` and `Thompson`
+    propose only their own kinds), and the score model gives their block a rewritten-or-not factor, as
+    it does for text. Their proposer is the one a `Block` names, else the one `register_kind` gave the
+    kind. Custom markers are declared at the top level only: `component()` and `choice()` reject them.
+
+    `check_value` and `resolve` can run at the same time in several threads, so keep both thread-safe.
+    `check_value` runs several times per proposal, some of them on the optimizer's event loop, and
+    `resolve` once per agent built (every trial), so keep both cheap: cache what they load.
+
+    `artifacts` is None outside a run: when `Space` checks `default` at declaration, in the plain call
+    `fn()`, and in `bind()` without `artifacts=`. In a run, the baseline is checked and built before
+    anything is stored, so `default` must pass `check_value` and `resolve` without its content in the
+    store (e.g. the marker holds it).
+
+    Attributes:
+        kind: The kind's name, also its default block's name; not a built-in kind ("int", "float",
+            "one_of", "choice", "text") or a name `Search.resolve` gives blocks ("structure", "numbers",
+            "block").
+        default: The baseline value; must pass `check_value(default, None)`.
+    """
+
+    kind: ClassVar[str]
+    default: Value
+
+    @abstractmethod
+    def check_value(self, value: Value, artifacts: Path | None) -> str | None:
+        """Why `value` can't be this key's value, in one line, or None when it can.
+
+        A problem makes the proposal invalid (never measured); so does an exception, reported as the
+        problem. Returning anything but a str or None raises `TypeError` in `Space.validate`, which
+        stops the run.
+
+        Args:
+            value: A plain JSON scalar (`Space` checks that first).
+            artifacts: The run's artifact store, or None outside a run.
+
+        Returns:
+            The problem, or None.
+        """
+
+    def resolve(self, value: Value, artifacts: Path | None) -> Any:
+        """What the factory receives for `value`; the value itself by default.
+
+        Args:
+            value: A value that passed `check_value`.
+            artifacts: The run's artifact store, or None outside a run.
+
+        Returns:
+            What the factory receives, e.g. an object built from the stored file.
+        """
+        return value
 
 
 class Component(_Marker):

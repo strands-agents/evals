@@ -5,7 +5,7 @@
 1. the intercept, each choice (`OneOf`, `choice()`) by its option and each number binned at the quantiles of the
    values fitted (an "inactive" level where the space leaves the key out), with main effects and pairwise
    interactions (`bayesbench.Encoder`);
-2. each text block (the texts one proposer rewrites together) by whether it is rewritten;
+2. each text block (the texts, or custom kinds' values, one proposer rewrites together) by whether it is rewritten;
 3. each number's linear trend over its values (their logarithms for a log-scale one), standardized, so a value
    anywhere in its bin is predicted along the trend rather than at the bin's;
 4. each fitted candidate's own effect (the first fitted one, the baseline when it is eligible, is the reference),
@@ -43,10 +43,10 @@ def design(fit: Fit) -> dict[str, Any]:
     """The factors and omitted keys of a `BayesBenchModel` fit; both lists empty for another model's fit.
 
     `{"factors": [{key, kind ("choice" | "range" | "text"), levels, reference}], "omitted": [{key, why}]}`.
-    Levels are a choice's options, a number's bins as "(low, high]", or "default" / "rewritten" for a text
-    block (key `rewritten:<block name>`), plus an "inactive" level for a key that exists only under some
-    choices. Omitted keys are left out of the design: "one value" when every fitted candidate has the same
-    value of a number, "never active" when no fitted candidate has the key.
+    Levels are a choice's options, a number's bins as "(low, high]", or "default" / "rewritten" for a block
+    of text or of a custom kind's values (key `rewritten:<block name>`), plus an "inactive" level for a key
+    that exists only under some choices. Omitted keys are left out of the design: "one value" when every
+    fitted candidate has the same value of a number, "never active" when no fitted candidate has the key.
 
     Args:
         fit: The fit to describe.
@@ -118,7 +118,7 @@ class _Design:
 
         Args:
             space: The declared space.
-            text_blocks: Block name -> its text keys.
+            text_blocks: Block name -> its written keys (text and custom kinds).
             candidates: The fitted candidates' values, in scoring order (the baseline first when it is
                 eligible).
             cases: The split's case names.
@@ -131,7 +131,7 @@ class _Design:
         for info in infos.values():
             key = info.key
             # A one-option choice (a bare component()) can never change, so it isn't a factor.
-            if key in in_texts or info.kind == "text" or (info.kind == "choice" and len(info.options or ()) < 2):
+            if key in in_texts or info.written or (info.kind == "choice" and len(info.options or ()) < 2):
                 continue
             present = [v[key] for v in fitted if key in v]
             absent = [_INACTIVE] if any(key not in v for v in fitted) else []

@@ -2,7 +2,18 @@ import pytest
 from strands import tool
 from strands.tools.tools import PythonAgentTool
 
-from strands_evals.optimization import Float, Int, OneOf, Space, TextValue, choice, component, tool_descriptions
+from strands_evals.optimization import (
+    CustomMarker,
+    Float,
+    Int,
+    OneOf,
+    Space,
+    TextValue,
+    choice,
+    component,
+    tool_descriptions,
+)
+from tests.strands_evals.optimization.note_kind import Note, note_value, store_note
 
 
 class Window:
@@ -346,3 +357,101 @@ def test_a_components_one_of_kwarg_is_a_one_of_key_under_its_alternative():
 def test_resolve_takes_declared_names_not_flat_keys():
     with pytest.raises(KeyError):
         make_space().resolve("manager.Window.size", BASELINE, None)
+
+
+# --- custom kinds ---
+
+
+def test_a_custom_marker_declares_one_key_of_its_kind():
+    note = Note("Be brief.")
+    space = make_space(note=note)
+    info = space.param("note")
+    assert (info.key, info.name, info.kind, info.default) == ("note", "note", "note", note_value("Be brief."))
+    assert info.marker is note and info.active_when is None and info.source is None
+    assert space.complete({})["note"] == note_value("Be brief.")
+    assert note.checked == [None]  # the default, checked at declaration without a store
+    assert [p.key for p in space.params() if p.written] == ["prompt", "note"]  # text and every custom kind
+
+
+class Kindless(CustomMarker):
+    default = "x"
+
+    def check_value(self, value, artifacts):
+        return None
+
+
+@pytest.mark.parametrize(
+    ("kind", "message"),
+    [
+        (None, "Kindless.kind must be a non-empty string, got None"),
+        ("", "must be a non-empty string"),
+        (3, "must be a non-empty string"),
+        ("text", "kind 'text' is reserved"),
+        ("choice", "is reserved"),
+        ("numbers", "is reserved"),  # a default block's name: a custom kind names its default block
+    ],
+)
+def test_a_custom_kind_must_be_a_name_of_its_own(kind, message):
+    marker = Kindless() if kind is None else type("Kindless", (Kindless,), {"kind": kind})()
+    with pytest.raises(TypeError, match=message):
+        Space({"x": marker})
+
+
+def test_a_custom_default_that_fails_its_check_fails_at_declaration():
+    note = Note("seed")
+    note.default = "draft"
+    with pytest.raises(TypeError, match="invalid default: note: expected notes/<hash>, got 'draft'"):
+        Space({"note": note})
+
+
+def test_validate_gives_check_value_the_artifact_store(tmp_path):
+    note = Note("seed")
+    space = Space({"note": note})
+    stored = store_note(tmp_path, "a stored note")
+    space.validate({"note": stored}, artifacts=tmp_path)
+    assert note.checked[-1] == tmp_path
+    with pytest.raises(ValueError, match=f"note: {stored} is not in the artifact store"):
+        space.validate({"note": stored})
+    with pytest.raises(ValueError, match="not in the artifact store"):
+        space.validate({"note": note_value("never stored")}, artifacts=tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        (["notes/a"], "expected str, int, float, bool, or None, got list"),
+        (float("nan"), "is not a finite number"),
+        ("notes/\ud800", "lone surrogate"),
+        (type("Tag", (str,), {})("notes/a"), "expected str, int, float, bool, or None, got Tag"),
+    ],
+)
+def test_a_custom_value_is_a_json_scalar_before_its_marker_sees_it(value, message):
+    note = Note("seed")
+    space = Space({"note": note})
+    with pytest.raises(ValueError, match=message):
+        space.validate({"note": value})
+    assert note.checked == [None]  # only the declaration's check of the default
+
+
+class Fragile(Note):
+    def check_value(self, value, artifacts):
+        if value == "notes/raise":
+            raise RuntimeError("store unreadable")
+        if value == "notes/bool":
+            return False
+        return super().check_value(value, artifacts)
+
+
+def test_a_check_value_that_raises_is_the_values_problem():
+    space = Space({"note": Fragile("seed")})
+    with pytest.raises(ValueError, match="note: Fragile.check_value raised RuntimeError: store unreadable"):
+        space.validate({"note": "notes/raise"})
+    with pytest.raises(TypeError, match="must return a str or None, got bool"):
+        space.validate({"note": "notes/bool"})
+
+
+def test_resolve_gives_what_the_marker_resolves_with_the_artifact_store(tmp_path):
+    space = Space({"note": Note("seed")})
+    stored = store_note(tmp_path, "a stored note")
+    assert space.resolve("note", {"note": stored}, None, artifacts=tmp_path) == "a stored note"
+    assert space.resolve("note", space.complete({}), None) == "seed"  # the default needs no store

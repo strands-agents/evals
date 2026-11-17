@@ -8,12 +8,12 @@ from __future__ import annotations
 import dataclasses
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
 
 from ...types.optimization import IterationRecord, Values
-from ..declaration.space import ParamInfo, Space
+from ..declaration.space import _RESERVED_KINDS, ParamInfo, Space
 from .proposer import Proposer
 from .reflection import Reflection
 from .tpe import TPE
@@ -29,7 +29,7 @@ class Block:
         proposer: Proposes values for these variables.
         variables: The declared names or keys as given.
         name: The name given, else None: `Search.resolve` returns a copy named after the kind of keys it
-            holds ("structure", "numbers", "text", else "block"), made unique among the search's blocks
+            holds ("structure", "numbers", "text", a custom kind, else "block"), made unique among the search's blocks
             ("numbers 2"), and leaves this block unchanged. It keys `observe` events and the resume state,
             so it must be stable across resume: the same search over the same space always gets the same
             names.
@@ -490,17 +490,19 @@ class Search:
         Keys in no block go to their kind's default block, key by key: text/file keys ->
         `Reflection()` ("text"); a `choice()`'s selector key -> `TPE(n_startup_trials=2)` ("structure");
         `int`, `float`, and `one_of` keys, those under a choice's alternatives included -> `TPE()`
-        ("numbers"). So `manager` goes to "structure" and `manager.window.window_size` to "numbers". A
-        choice key with one option (a bare `component()`) goes to no block, since nothing can change it.
-        Default blocks are appended after the user's blocks, in the order their first key is declared, so
-        `Search()` is the default search. `Thompson` is never a default block.
+        ("numbers"); a custom kind's keys -> a fresh instance of the proposer `register_kind` gave the kind
+        (named after the kind). So `manager` goes to "structure" and `manager.window.window_size` to
+        "numbers". A choice key with one option (a bare `component()`) goes to no block, since nothing can
+        change it. Default blocks are appended after the user's blocks, in the order their first key is
+        declared, so `Search()` is the default search. `Thompson` is never a default block.
 
         Every block gets a name: an unnamed one is named after the kind of keys it holds ("structure" for
-        `choice()` selectors only, "numbers" for `int` / `float` / `one_of` only, "text" for text only,
-        else "block"); the default blocks after their kind. A name already taken gets the next free number
-        ("numbers 2", "numbers 3"), your named blocks first, then your unnamed ones in order, then the
-        defaults. The returned blocks are copies holding the names (sharing your proposers); your blocks
-        and schedule are not changed, so the same search resolves the same way every time.
+        `choice()` selectors only, "numbers" for `int` / `float` / `one_of` only, "text" for text only, the
+        custom kind for one custom kind's keys only, else "block"); the default blocks after their kind. A
+        name already taken gets the next free number ("numbers 2", "numbers 3"), your named blocks first,
+        then your unnamed ones in order, then the defaults. The returned blocks are copies holding the names
+        (sharing your proposers); your blocks and schedule are not changed, so the same search resolves the
+        same way every time.
 
         The schedule is `self.schedule`, else the default built over every resolved block, defaults
         included: one `Nested` per structural block (one holding a choice key with 2+ options), outermost
@@ -517,7 +519,10 @@ class Search:
                 `TPE`), naming the key and the block; or a `Nested` (given, or in `within`) whose
                 outer block is an unnamed `Block` not in this search, is outside its scope, or has keys that
                 exist only under a choice in one of its inner blocks; or, for the default schedule,
-                structural blocks whose choices depend on each other in a cycle.
+                structural blocks whose choices depend on each other in a cycle; or a custom kind's key that
+                no block holds, when `register_kind` gave the kind no proposer.
+            TypeError: The proposer `register_kind` gave a kind made something other than a `Proposer`, or
+                one that can't propose the kind.
         """
         params = space.params()
         order = {info.key: i for i, info in enumerate(params)}
@@ -575,7 +580,8 @@ class Search:
             name = block.name
             if name is None:
                 kinds = {space.param(key).kind for key in ordered}
-                name = unique(next((g for g, ks in _GROUPS.items() if kinds <= ks), "block"))
+                custom = next(iter(kinds)) if len(kinds) == 1 and space.param(ordered[0]).marker is not None else None
+                name = unique(custom or next((g for g, ks in _GROUPS.items() if kinds <= ks), "block"))
             names[id(block)] = name
             resolved.append((Block(block.proposer, *block.variables, name=name), ordered))
         owner = {key for _, keys in resolved for key in keys}
@@ -583,7 +589,9 @@ class Search:
         for info in params:
             if info.key in owner:
                 continue
-            if info.kind == "text":
+            if info.marker is not None:
+                defaults.setdefault(info.kind, []).append(info.key)
+            elif info.kind == "text":
                 defaults.setdefault("text", []).append(info.key)
             elif info.kind == "choice":
                 if _is_structural(info):
@@ -591,9 +599,12 @@ class Search:
             else:
                 defaults.setdefault("numbers", []).append(info.key)
         for group, keys in defaults.items():
-            proposer: Proposer = (
-                Reflection() if group == "text" else TPE(n_startup_trials=2) if group == "structure" else TPE()
-            )
+            if group in _GROUPS:
+                proposer: Proposer = (
+                    Reflection() if group == "text" else TPE(n_startup_trials=2) if group == "structure" else TPE()
+                )
+            else:
+                proposer = _custom_default(group, keys)
             name = unique(group)
             logger.info(
                 "block=<%s>, proposer=<%s>, keys=<%s> | added a default block", name, type(proposer).__name__, keys
@@ -616,6 +627,57 @@ _GROUPS: dict[str, frozenset[str]] = {
     "numbers": frozenset({"int", "float", "one_of"}),
     "text": frozenset({"text"}),
 }  # the kinds of keys a block may hold to be named after its group
+
+
+# Custom kind -> what makes its default block's proposer (`register_kind`).
+_KIND_PROPOSERS: dict[str, Callable[[], Proposer]] = {}
+
+
+def register_kind(kind: str, proposer: Callable[[], Proposer]) -> None:
+    """Give a custom kind (`CustomMarker.kind`) its default proposer.
+
+    `Search.resolve` puts the kind's keys that no block holds in one default block named after the kind,
+    proposed by a fresh `proposer()`, as it gives text keys to `Reflection()`. A `Block` naming a key
+    still wins. The registry is per process, and `Optimizer(...)` and `Optimizer.resume(...)` resolve the
+    search when they are built, so register the kind before either. Registering a kind again replaces its
+    proposer.
+
+    Args:
+        kind: The custom kind; not a built-in kind or a name `Search.resolve` gives blocks.
+        proposer: Called with no arguments, once per resolve that needs it, e.g. the proposer class.
+
+    Raises:
+        TypeError: `kind` isn't a non-empty string, or `proposer` isn't callable.
+        ValueError: `kind` is reserved (a built-in kind, or "structure", "numbers", "block").
+    """
+    if not isinstance(kind, str) or not kind:
+        raise TypeError(f"register_kind(kind=...) must be a non-empty string, got {kind!r}")
+    if kind in _RESERVED_KINDS:
+        raise ValueError(f"register_kind: {kind!r} is reserved; reserved: {sorted(_RESERVED_KINDS)}")
+    if not callable(proposer):
+        raise TypeError(f"register_kind({kind!r}, proposer=...) must be callable, e.g. a Proposer class")
+    if kind in _KIND_PROPOSERS:
+        logger.info("kind=<%s> | replaced the default proposer of a custom kind", kind)
+    _KIND_PROPOSERS[kind] = proposer
+
+
+def _custom_default(kind: str, keys: Sequence[str]) -> Proposer:
+    """A fresh default proposer for a custom kind's keys that no block holds; raises when there is none."""
+    make = _KIND_PROPOSERS.get(kind)
+    if make is None:
+        raise ValueError(
+            f"{keys} are of the custom kind {kind!r}, which no block holds and which has no default proposer; "
+            f"put them in a Block, or give the kind one with register_kind({kind!r}, ...)"
+        )
+    proposer = make()
+    if not isinstance(proposer, Proposer):
+        raise TypeError(f"register_kind({kind!r}, ...) made {proposer!r}, which is not a Proposer")
+    if kind not in proposer.kinds:
+        raise TypeError(
+            f"register_kind({kind!r}, ...) made a {type(proposer).__name__}, which can't propose {kind!r} "
+            f"(its kinds: {sorted(proposer.kinds)})"
+        )
+    return proposer
 
 
 def _name(block: Block) -> str:
