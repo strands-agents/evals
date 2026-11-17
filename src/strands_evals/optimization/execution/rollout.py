@@ -224,6 +224,8 @@ def instrument(task: TaskFn, log: TrialLog, traces: TraceCapture) -> TaskFn:
     `completed` with no usage and no trajectory. A rollout-returned `trajectory` that is not None wins;
     a returned dict without one gets a copy with the `Session` added, never the dict itself changed;
     a non-dict return becomes `{"output": value, "trajectory": session}`. No agent spans -> trajectory None.
+    An attempt that raises returns nothing, so `TrialRunner` builds an `agent_failure` record's `Session`
+    from the attempt's spans itself.
     Attempts `Experiment` retried on throttling go into `TrialLogEntry.previous_attempts`. An
     `InfrastructureError` raised from another error records that error's type and message.
 

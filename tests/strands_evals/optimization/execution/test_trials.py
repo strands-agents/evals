@@ -12,7 +12,7 @@ import threading
 import opentelemetry.trace as trace_api
 import pytest
 from pydantic import BaseModel
-from strands import Agent
+from strands import Agent, tool
 from strands.types.exceptions import ModelThrottledException
 
 from strands_evals import Case
@@ -27,8 +27,8 @@ from strands_evals.optimization.setup.budget import BudgetTracker
 from strands_evals.types import EvaluationOutput
 from strands_evals.types.evaluation import NOT_APPLICABLE, EnvironmentState
 from strands_evals.types.optimization import TrialRecord, TrialStatus
-from strands_evals.types.trace import Session
-from tests.strands_evals.optimization.scripted_model import ScriptedModel
+from strands_evals.types.trace import AgentInvocationSpan, InferenceSpan, Session, ToolExecutionSpan
+from tests.strands_evals.optimization.scripted_model import ScriptedModel, ToolUse
 
 
 @pytest.fixture(autouse=True)
@@ -609,8 +609,79 @@ async def test_an_agent_failure_is_recorded_without_evaluations(traces):
     assert records[0].status is TrialStatus.AGENT_FAILURE
     assert records[0].error_type == "ValueError"
     assert records[0].evaluations == {}
+    assert records[0].trajectory is None  # no agent ran, so there is no conversation to keep
     assert evaluator.calls == 0
     assert spent == 1  # agent failures aren't re-run
+
+
+@tool
+def lookup(page: int) -> str:
+    """Read one page."""
+    return f"page {page}"
+
+
+def _tool_calls(session):
+    """(arguments, result) of each tool call in a one-trace `Session`, in order."""
+    spans = session.traces[0].spans
+    return [(s.tool_call.arguments, s.tool_result.content) for s in spans if isinstance(s, ToolExecutionSpan)]
+
+
+@pytest.mark.parametrize("pages", [[], [1, 2]])  # the model raises on its first call, or after two tool calls
+async def test_an_agent_failure_keeps_its_conversation_as_trajectory(traces, tmp_path, pages):
+    async def task(case):
+        model = ScriptedModel([*(ToolUse("lookup", {"page": p}) for p in pages), ValueError("refused")])
+        await Agent(model=model, tools=[lookup], callback_handler=None).invoke_async(case.input)
+
+    run = RunDirectory.create(tmp_path, {"cases": []})
+    records, _ = await _runner(traces, run, _cases("a"), [Fixed()]).run("cand", task, ["a"], runs=1, allowance=1)
+
+    record = records[0]
+    assert record.status is TrialStatus.AGENT_FAILURE
+    assert record.output is None
+    assert isinstance(record.trajectory, Session)
+    spans = record.trajectory.traces[0].spans
+    assert [s.user_prompt for s in spans if isinstance(s, AgentInvocationSpan)] == ["question a"]
+    assert _tool_calls(record.trajectory) == [({"page": p}, f"page {p}") for p in pages]
+    # the failed model call is kept with everything it was sent: the prompt, then each tool call and result
+    assert max(len(s.messages) for s in spans if isinstance(s, InferenceSpan)) == 1 + 2 * len(pages)
+    assert RunDirectory.open(run.root).load_trial("cand", 0, "a") == record
+
+
+async def test_an_agent_failure_after_a_throttled_attempt_keeps_only_the_last_attempts_conversation(traces):
+    tries = []
+
+    async def task(case):
+        tries.append(case.name)
+        page = len(tries)
+        if page == 1:  # one tool call, then the task raises on throttling, so Experiment runs it again
+            model = ScriptedModel([ToolUse("lookup", {"page": page}), "done"])
+            await Agent(model=model, tools=[lookup], callback_handler=None).invoke_async(case.input)
+            raise ModelThrottledException("slow down")
+        model = ScriptedModel([ToolUse("lookup", {"page": page}), ValueError("refused")])
+        await Agent(model=model, tools=[lookup], callback_handler=None).invoke_async(case.input)
+
+    records, _ = await _runner(traces, MemoryCache(), _cases("a"), [Fixed()]).run(
+        "cand", task, ["a"], runs=1, allowance=1
+    )
+
+    record = records[0]
+    assert record.status is TrialStatus.AGENT_FAILURE
+    assert record.previous_attempts[0].status is TrialStatus.INFRASTRUCTURE_INVALID
+    assert _tool_calls(record.trajectory) == [({"page": 2}, "page 2")]
+
+
+async def test_an_infrastructure_failure_keeps_no_trajectory(traces):
+    async def task(case):
+        model = ScriptedModel([ToolUse("lookup", {"page": 1}), "done"])
+        await Agent(model=model, tools=[lookup], callback_handler=None).invoke_async(case.input)
+        raise InfrastructureError("sandbox down")
+
+    records, _ = await _runner(traces, MemoryCache(), _cases("a"), [Fixed()], rerun_passes=0).run(
+        "cand", task, ["a"], runs=1, allowance=1
+    )
+
+    assert records[0].status is TrialStatus.INFRASTRUCTURE_INVALID
+    assert records[0].trajectory is None  # it runs again (a re-run pass or a resumed run), which replaces it
 
 
 # attempts and re-run passes
