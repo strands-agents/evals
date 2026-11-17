@@ -124,10 +124,16 @@ COULD_NOT_EVALUATE = "could_not_evaluate"
 
 Set on a `NOT_APPLICABLE` row when the evaluator could not run at all, for example because the
 judge's prompt overflowed its context window. The value names the cause. Unlike a row that had
-nothing to judge, such a row fails (`test_pass=False`), so pass/fail consumers such as `--fail-on`
-gates, summaries and red-team tallies count it as not passed. `EvaluationReport.is_applicable`
-still leaves it out of averages, because its 0.0 is not a judgment of the agent.
+nothing to judge, such a row fails (`test_pass=False`), so `--fail-on` gates and summaries count it
+as not passed. The red-team report classifies it as errored and leaves it out of the attack success
+rate. `EvaluationReport.is_applicable` leaves it out of averages, because its 0.0 is not a judgment
+of the agent. Use `all_could_not_evaluate` to test a case's rows.
 """
+
+
+def all_could_not_evaluate(outputs: "list[EvaluationOutput]") -> bool:
+    """Whether a case has rows and the evaluator never produced a verdict for any of them."""
+    return bool(outputs) and all(output.could_not_evaluate for output in outputs)
 
 
 class EvaluationOutput(BaseModel):

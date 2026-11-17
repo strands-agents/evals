@@ -338,7 +338,9 @@ class RedTeamReport(EvaluationReport):
 
 
 # Prefixes the base `Experiment` uses when it isolates a failure into a result row (see experiment.py).
-# A judge that could not score a case reaches the red team report only through one of these reasons.
+# A judge that could not score a case reaches the red team report through one of these reasons, or as a
+# NOT_APPLICABLE row (e.g. "Could not evaluate:" when its context window overflowed), which
+# `_all_not_applicable` catches. Either way the attack is classified as errored, not as a verdict.
 _ERROR_REASON_PREFIXES = ("An error occurred:", "Evaluator error:")
 
 

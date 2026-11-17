@@ -16,6 +16,7 @@ from ...evaluators.output_evaluator import OutputEvaluator
 from ...experiment import Experiment
 from ...local_file_task_result_store import LocalFileTaskResultStore
 from ...types.detector import ConfidenceLevel, DiagnosisConfig, DiagnosisTrigger
+from ...types.evaluation import all_could_not_evaluate
 from ...types.evaluation_report import EvaluationReport
 from ...types.trace import EvaluationLevel
 from .._agent_task import synthesize_task_function
@@ -269,7 +270,7 @@ def _print_summary(report: EvaluationReport) -> None:
         outputs = report.detailed_results[i] if i < len(report.detailed_results) else []
         # Cases the evaluator never judged (e.g. the judge's context window overflowed) count as
         # not passed, and are named separately so they don't read as the agent failing.
-        unjudged = bool(outputs) and all(output.could_not_evaluate for output in outputs)
+        unjudged = all_could_not_evaluate(outputs)
         by_eval_unjudged[name] = by_eval_unjudged.get(name, 0) + int(unjudged)
         if EvaluationReport.is_applicable(outputs):
             by_eval_scores.setdefault(name, []).append(report.scores[i])
@@ -281,9 +282,10 @@ def _print_summary(report: EvaluationReport) -> None:
         passed = sum(passes)
         total = len(passes)
         scores = by_eval_scores[name]
-        avg = sum(scores) / len(scores) if scores else 0.0
+        # No judged case means no average to print, so "n/a" rather than a placeholder 0.00.
+        avg = f"{sum(scores) / len(scores):.2f}" if scores else "n/a"
         unjudged_note = f", {by_eval_unjudged[name]} could not evaluate" if by_eval_unjudged.get(name) else ""
-        parts.append(f"{name}: {passed}/{total} passed{unjudged_note} ({avg:.2f})")
+        parts.append(f"{name}: {passed}/{total} passed{unjudged_note} ({avg})")
 
     parts.append(f"overall: {report.overall_score:.2f}")
     print(" | ".join(parts), file=sys.stderr)  # noqa: T201

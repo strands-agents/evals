@@ -4,6 +4,8 @@ from rich.prompt import Prompt
 from rich.table import Table
 from rich.tree import Tree
 
+from ..types.evaluation import all_could_not_evaluate
+
 console = Console()
 
 
@@ -17,12 +19,8 @@ def _pass_rate_text(items: dict) -> str:
     cases = list(items.values())
     passed = sum(1 for case in cases if case["details"]["test_pass"])
     rate = passed / len(cases) if cases else 0.0
-    unjudged = sum(
-        1
-        for case in cases
-        if (outputs := case.get("detailed_results") or []) and all(output.could_not_evaluate for output in outputs)
-    )
-    return f"Pass Rate: {rate}" + (f" ({unjudged} could not evaluate)" if unjudged else "")
+    unjudged = sum(1 for case in cases if all_could_not_evaluate(case.get("detailed_results") or []))
+    return f"Pass Rate: {rate:.2f}" + (f" ({unjudged} could not evaluate)" if unjudged else "")
 
 
 class CollapsibleTableReportDisplay:

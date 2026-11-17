@@ -14,19 +14,24 @@ def _unjudged() -> EvaluationOutput:
 
 def test_pass_rate_counts_every_case():
     items = {0: _case(True, [EvaluationOutput(score=1.0, test_pass=True)]), 1: _case(False, [])}
-    assert _pass_rate_text(items) == "Pass Rate: 0.5"
+    assert _pass_rate_text(items) == "Pass Rate: 0.50"
 
 
 def test_unjudged_case_counts_as_not_passed_and_is_named():
     """Matches the CLI summary ("1/2 passed, 1 could not evaluate") and `--fail-on=any`."""
     items = {0: _case(True, [EvaluationOutput(score=1.0, test_pass=True)]), 1: _case(False, [_unjudged()])}
-    assert _pass_rate_text(items) == "Pass Rate: 0.5 (1 could not evaluate)"
+    assert _pass_rate_text(items) == "Pass Rate: 0.50 (1 could not evaluate)"
 
 
 def test_case_with_nothing_to_judge_still_counts_as_passed():
     declined = EvaluationOutput(score=0.0, test_pass=True, reason="no skill invoked", label=NOT_APPLICABLE)
-    assert _pass_rate_text({0: _case(True, [declined])}) == "Pass Rate: 1.0"
+    assert _pass_rate_text({0: _case(True, [declined])}) == "Pass Rate: 1.00"
 
 
 def test_empty_report_has_zero_pass_rate():
-    assert _pass_rate_text({}) == "Pass Rate: 0.0"
+    assert _pass_rate_text({}) == "Pass Rate: 0.00"
+
+
+def test_pass_rate_is_rounded_like_the_overall_score():
+    items = {i: _case(i < 2, [EvaluationOutput(score=1.0, test_pass=i < 2)]) for i in range(3)}
+    assert _pass_rate_text(items) == "Pass Rate: 0.67"

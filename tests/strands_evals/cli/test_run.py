@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from strands_evals.cli.commands.run import _display_expanded, _print_summary
+from strands_evals.cli.commands.run import EXIT_FAILURES, _decide_exit_code, _display_expanded, _print_summary
 from strands_evals.cli.main import main
 from strands_evals.types import COULD_NOT_EVALUATE, NOT_APPLICABLE, EvaluationOutput
 from strands_evals.types.evaluation_report import EvaluationReport
@@ -806,7 +806,7 @@ def test_summary_reports_zero_when_every_case_is_not_applicable(capsys):
     _print_summary(report)
 
     summary = capsys.readouterr().err
-    assert "SkillInstructionFollowingEvaluator: 1/1 passed (0.00)" in summary
+    assert "SkillInstructionFollowingEvaluator: 1/1 passed (n/a)" in summary
     assert "overall: 0.00" in summary
 
 
@@ -941,8 +941,6 @@ def _report_with_one_unjudged_case() -> EvaluationReport:
 
 def test_fail_on_any_fails_when_a_judge_could_not_evaluate():
     """A case nothing judged must not pass `--fail-on=any`."""
-    from strands_evals.cli.commands.run import EXIT_FAILURES, _decide_exit_code
-
     assert _decide_exit_code(_report_with_one_unjudged_case(), ("any", None)) == EXIT_FAILURES
 
 
@@ -955,3 +953,14 @@ def test_summary_counts_unjudged_cases_as_not_passed_and_names_them(capsys):
     summary = capsys.readouterr().err
     assert "HelpfulnessEvaluator: 1/2 passed, 1 could not evaluate (1.00)" in summary
     assert "overall: 1.00" in summary
+
+
+def test_summary_prints_na_when_every_case_was_unjudged(capsys):
+    """An evaluator with no judged case has no average, so it prints "n/a" rather than "(0.00)"."""
+    report = _report_with_one_unjudged_case()
+    report.cases, report.scores, report.test_passes = report.cases[1:], report.scores[1:], report.test_passes[1:]
+    report.reasons, report.detailed_results = report.reasons[1:], report.detailed_results[1:]
+
+    _print_summary(report)
+
+    assert "HelpfulnessEvaluator: 0/1 passed, 1 could not evaluate (n/a)" in capsys.readouterr().err

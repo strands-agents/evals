@@ -17,6 +17,7 @@ from .evaluation import (
     Interaction,
     OutputT,
     TaskOutput,
+    all_could_not_evaluate,
 )
 from .evaluation_report import ReportT
 from .multimodal import AnyMediaData, ImageData, MultimodalInput, resolve_image_bytes
@@ -25,6 +26,7 @@ from .typed_rubric import Choice, Noul, RubricQuestion, Scale
 
 __all__ = [
     "COULD_NOT_EVALUATE",
+    "all_could_not_evaluate",
     "NOT_APPLICABLE",
     "EnvironmentState",
     "Interaction",
