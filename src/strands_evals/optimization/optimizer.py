@@ -6,12 +6,16 @@ import asyncio
 import hashlib
 import inspect
 import json
+import logging
 import random
+import shutil
 import statistics
+import tempfile
 import threading
 import warnings
 from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -79,7 +83,12 @@ from .selection.top_ranked import TopRanked
 from .setup.budget import Budget, BudgetTracker
 from .setup.splits import Split
 
+logger = logging.getLogger(__name__)
+
 _DEFAULT_BASE_DIR = Path(".strands-evals/optimization/runs")
+
+# The build check closes what the factory built with the first of these methods that its type defines.
+_CLOSE_METHODS = ("aclose", "close", "cleanup")
 
 
 class Optimizer:
@@ -133,7 +142,10 @@ class Optimizer:
 
         Args:
             experiment: Supplies the cases and evaluators; it is never run itself.
-            factory: The `@tunable` agent factory. Pass this or `build_task`.
+            factory: The `@tunable` agent factory. Pass this or `build_task`. It is also called once for each new
+                candidate before its trials, to check that the agent builds; what that call returns is then
+                closed with its `aclose()`, `close()` or `cleanup()` method, if it has one, so return a new object
+                from every call.
             rollout_fn: Runs one case with a fresh agent; defaults to building the agent and invoking it
                 on `case.input`.
             build_task: Returns the task for one candidate, from a `BuildContext`; needs `space`.
@@ -1576,18 +1588,32 @@ class Optimizer:
         resources and no call kwargs, so a factory that needs a resource from `environment` or a kwarg only the
         rollout passes can't be built here and isn't checked (its trials run as usual). On the `build_task` path
         the agent is built inside the task, so nothing is checked.
+
+        What the factory returns is closed (`_close_built`) before this returns. Path-backed files are copied into
+        a temp folder that the check makes and then removes, after the close.
         """
         if self._factory is None:
             return None
+        root: Path | None = None
+        built: Any = None
         try:
-            # bind() copies path-backed files into a temp folder: in a worker thread, so other trials keep running.
-            built = (await asyncio.to_thread(self._factory.bind, candidate.values))()
-            if inspect.isawaitable(built):
-                await built
+            if self._space._copies_files:
+                root = Path(tempfile.mkdtemp(prefix="strands-evals-candidate-"))
+            workspace = None if root is None else root / "optimization_files"
+            # bind() copies path-backed files into `workspace`, in a worker thread so other trials keep running.
+            bound = await _to_thread_shielded(self._factory.bind, candidate.values, workspace=workspace)
+            made = bound()
+            built = await made if inspect.isawaitable(made) else made
         except _FactoryArgumentError:
             return None
         except Exception as error:  # noqa: BLE001 - any failure to build makes the candidate invalid
             return f"the agent can't be built: {type(error).__name__}: {error}"
+        finally:
+            try:
+                await _close_built(built, candidate.id)
+            finally:
+                if root is not None:
+                    await _to_thread_shielded(shutil.rmtree, root, ignore_errors=True)
         return None
 
     async def _task_for(self, candidate: Candidate) -> TaskFn:
@@ -1919,6 +1945,48 @@ async def _gather_or_cancel(awaitables: Sequence[Any]) -> list[Any]:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
+
+
+async def _to_thread_shielded(fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+    """`asyncio.to_thread(fn, *args, **kwargs)`, but a cancellation waits for `fn` to return before it propagates.
+
+    A worker thread can't be stopped, so this keeps the caller's cleanup (removing a folder `fn` writes into)
+    from starting before `fn` returns, and a call still queued for a thread is never dropped. A second
+    cancellation during that wait propagates at once, so the caller's cleanup may then start before `fn` returns.
+    """
+    running = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kwargs))
+    try:
+        return await asyncio.shield(running)
+    except asyncio.CancelledError:
+        with suppress(Exception):
+            await asyncio.shield(running)
+        raise
+
+
+async def _close_built(built: Any, candidate_id: str) -> None:
+    """Close what the build check built, with the first of `_CLOSE_METHODS` that its type defines.
+
+    Of these, a Strands `Agent` defines only `cleanup()`, which removes the agent from its tool providers (an MCP
+    client stops when its last consumer is removed). Only a method the type defines counts, so a `__getattr__`
+    proxy such as a `MagicMock`, or an attribute set on the instance alone, is never called. The method runs on
+    the event loop, where the factory ran, and an awaitable it returns is awaited. A dict, list or tuple defines
+    none of these methods, so nothing in it is closed, since its values may be resources the factory shares
+    across agents. An error while closing is logged as a warning and doesn't change the result of the check.
+    """
+    method = next((name for name in _CLOSE_METHODS if callable(getattr(type(built), name, None))), None)
+    if method is None:
+        return
+    try:
+        result = getattr(built, method)()
+        if inspect.isawaitable(result):
+            await result
+    except Exception as error:  # noqa: BLE001 - a failed close doesn't make the candidate invalid
+        logger.warning(
+            "candidate_id=<%s>, method=<%s>, error=<%s> | failed to close the agent built by the build check",
+            candidate_id,
+            method,
+            error,
+        )
 
 
 class _ProposerFailed(Exception):
