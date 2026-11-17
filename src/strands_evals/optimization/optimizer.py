@@ -99,6 +99,15 @@ class Optimizer:
     Build the agent inside `task`, never in `build_task` itself: an agent shared across cases and
     runs carries conversation state from one trial into the next, so every trial must build its
     own. The factory path enforces this; `build_task` can't.
+
+    A model that makes its own `boto3.Session` (`BedrockModel()` does) reads the AWS config files and
+    resolves credentials again on every attempt. With many trials at once that can run the process out of
+    file descriptors or overload the credential provider, so build one `boto3.Session` up front and pass
+    it to every model (`BedrockModel(boto_session=session)`). A session is not thread-safe: when the agent
+    is built in a worker thread (a sync `rollout_fn` or task), build its models under a lock. Each model
+    still opens its own connections, so a high `max_workers` may also need a higher open-file limit
+    (`ulimit -n`). The credential and "Too many open files" errors this causes are
+    `infrastructure_invalid` and re-run, not scored.
     """
 
     def __init__(

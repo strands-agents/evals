@@ -2,6 +2,7 @@ import asyncio
 import copy
 import datetime
 import enum
+import errno
 import gc
 import json
 import logging
@@ -11,6 +12,7 @@ import threading
 
 import opentelemetry.trace as trace_api
 import pytest
+from botocore.exceptions import CredentialRetrievalError, ProfileNotFound
 from pydantic import BaseModel
 from strands import Agent
 from strands.types.exceptions import ModelThrottledException
@@ -19,7 +21,7 @@ from strands_evals import Case
 from strands_evals.evaluators import Evaluator
 from strands_evals.optimization import Budget, InfrastructureError, TextValue, tunable
 from strands_evals.optimization.declaration.tunable import _FactoryArgumentError
-from strands_evals.optimization.execution.rollout import make_task
+from strands_evals.optimization.execution.rollout import default_rollout, make_task
 from strands_evals.optimization.execution.traces import TraceCapture
 from strands_evals.optimization.execution.trials import TrialRunner, _EvaluatorProxy, _TrialState
 from strands_evals.optimization.record.run_directory import RunDirectory
@@ -664,6 +666,36 @@ async def test_an_infrastructure_failure_is_re_run_within_the_allowance(traces):
     assert record.previous_attempts[0].rollouts == 1
     assert record.previous_attempts[0].pass_index == 0
     assert record.rollouts + sum(a.rollouts for a in record.previous_attempts) == spent
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError(errno.EMFILE, "Too many open files"),
+        ProfileNotFound(profile="bedrock"),
+        CredentialRetrievalError(provider="assume-role", error_msg="metadata service timed out"),
+    ],
+    ids=["OSError-EMFILE", "ProfileNotFound", "CredentialRetrievalError"],
+)
+async def test_a_factory_that_runs_out_of_files_or_credentials_is_re_run(traces, error):
+    built = []
+
+    def factory():
+        built.append(error)
+        if len(built) == 1:
+            raise error
+        return Agent(model=ScriptedModel(["answer"]), callback_handler=None)
+
+    records, spent = await _runner(traces, MemoryCache(), _cases("a"), [Fixed()]).run(
+        "cand", make_task(factory, default_rollout), ["a"], runs=1, allowance=2
+    )
+
+    record = records[0]
+    assert record.status is TrialStatus.COMPLETED
+    assert spent == 2
+    assert [(a.status, a.error_type) for a in record.previous_attempts] == [
+        (TrialStatus.INFRASTRUCTURE_INVALID, type(error).__name__)
+    ]
 
 
 async def test_an_exhausted_allowance_leaves_the_trial_infrastructure_invalid(traces):

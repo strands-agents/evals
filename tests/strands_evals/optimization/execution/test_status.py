@@ -1,4 +1,5 @@
 import asyncio
+import errno
 
 import botocore.exceptions as botocore_errors
 import pytest
@@ -30,6 +31,14 @@ CASES = [
         botocore_errors.EndpointConnectionError(endpoint_url="https://x"), INFRASTRUCTURE, id="EndpointConnectionError"
     ),
     pytest.param(botocore_errors.NoCredentialsError(), INFRASTRUCTURE, id="NoCredentialsError"),
+    pytest.param(
+        botocore_errors.CredentialRetrievalError(provider="assume-role", error_msg="metadata service timed out"),
+        INFRASTRUCTURE,
+        id="CredentialRetrievalError",
+    ),
+    pytest.param(botocore_errors.ProfileNotFound(profile="bedrock"), INFRASTRUCTURE, id="ProfileNotFound"),
+    pytest.param(OSError(errno.EMFILE, "Too many open files"), INFRASTRUCTURE, id="OSError-EMFILE"),
+    pytest.param(OSError(errno.ENFILE, "Too many open files in system"), INFRASTRUCTURE, id="OSError-ENFILE"),
     pytest.param(botocore_errors.ReadTimeoutError(endpoint_url="https://x"), INFRASTRUCTURE, id="ReadTimeoutError"),
     pytest.param(botocore_errors.ResponseStreamingError(error="reset"), INFRASTRUCTURE, id="ResponseStreamingError"),
     pytest.param(
@@ -50,6 +59,8 @@ CASES = [
     pytest.param(ValueError("bad output"), AGENT, id="ValueError"),
     pytest.param(asyncio.TimeoutError(), AGENT, id="user-deadline"),
     pytest.param(KeyError("missing"), AGENT, id="KeyError"),
+    pytest.param(OSError(errno.ENOENT, "No such file or directory"), AGENT, id="OSError-ENOENT"),
+    pytest.param(OSError("no errno"), AGENT, id="OSError-no-errno"),
 ]
 
 
