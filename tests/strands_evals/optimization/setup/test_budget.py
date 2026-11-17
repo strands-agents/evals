@@ -1,7 +1,9 @@
+import itertools
+
 import pytest
 
 from strands_evals.optimization import Budget
-from strands_evals.optimization.setup.budget import BudgetTracker
+from strands_evals.optimization.setup.budget import BudgetTracker, affordable_finalists, end_phase_reserves
 
 
 def make_tracker(max_rollouts=100, spent=0, validation_reserve=20, test_reserve=10):
@@ -92,3 +94,44 @@ def test_the_default_budget_is_500_rollouts_and_no_iteration_cap():
 def test_bad_budgets_raise(kwargs):
     with pytest.raises(ValueError):
         Budget(**kwargs)
+
+
+def test_end_phase_reserves():
+    # The finalists and the baseline on validation; the champion and the baseline on test, or every finalist.
+    assert end_phase_reserves(3, validation=6, test=5, test_finalists=False) == (24, 10)
+    assert end_phase_reserves(3, validation=6, test=5, test_finalists=True) == (24, 20)
+    assert end_phase_reserves(3, validation=6, test=0, test_finalists=True) == (24, 0)
+
+
+@pytest.mark.parametrize("test_finalists", [False, True])
+def test_affordable_finalists_is_the_most_the_search_can_score(test_finalists):
+    for max_rollouts, train, validation, test, most in itertools.product(
+        range(1, 160), (1, 3, 8), (1, 2, 6), (0, 2, 6), (1, 3, 5)
+    ):
+        sizes = {"validation": validation, "test": test, "test_finalists": test_finalists}
+        # What the search may spend beside the baseline and the reserve for f finalists.
+        room = {f: max_rollouts - train - sum(end_phase_reserves(f, **sizes)) for f in range(1, most + 1)}
+        found = affordable_finalists(max_rollouts, train=train, most=most, **sizes)
+        case = (max_rollouts, train, validation, test, most)
+        # The most finalists whose reserve leaves the search that many candidates, else 1.
+        assert found == max((f for f in room if room[f] >= f * train), default=1), case
+        # Never fewer finalists or search candidates than reserving for all `most` finalists allows.
+        candidates = max(0, room[most]) // train
+        assert found >= min(most, candidates), case
+        assert max(0, room[found]) // train >= candidates, case
+
+
+@pytest.mark.parametrize("test_finalists", [False, True])
+def test_affordable_finalists_fit_in_what_the_search_left(test_finalists):
+    sizes = {"train": 8, "validation": 6, "test": 6, "most": 5, "test_finalists": test_finalists}
+    for max_rollouts, spent in itertools.product(range(40, 160), range(0, 120)):
+        found = affordable_finalists(max_rollouts, **sizes, spent=spent)
+        reserve = sum(end_phase_reserves(found, validation=6, test=6, test_finalists=test_finalists))
+        # The reserve fits beside what is spent unless even one finalist's doesn't; never more than from scratch.
+        assert found == 1 or spent + reserve <= max_rollouts, (max_rollouts, spent)
+        assert found <= affordable_finalists(max_rollouts, **sizes)
+        # A search spends at most what its own reserve leaves, so that much spent changes nothing.
+        before = affordable_finalists(max_rollouts, **sizes)
+        held = sum(end_phase_reserves(before, validation=6, test=6, test_finalists=test_finalists))
+        if spent <= max_rollouts - held:
+            assert found == before, (max_rollouts, spent)

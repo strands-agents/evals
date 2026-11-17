@@ -29,7 +29,8 @@ class FinalPick:
     Only a candidate meeting every constraint ships (no `unmet="closest"`). `rule` is `Mean()` or
     `LowerBound(q)` to ship cautiously; the search's ranking always uses `Mean()`. Read back from
     `run.json` on resume (`from_config`), never passed again. Under a `Pareto` objective up to
-    `max(n_finalists, PARETO_MIN_FINALISTS)` front members go to validation.
+    `max(n_finalists, PARETO_MIN_FINALISTS)` front members go to validation. A budget whose search can't score
+    that many candidates validates fewer (`setup.budget.affordable_finalists`).
     """
 
     n_finalists: int = 3
@@ -75,7 +76,8 @@ def choose_finalists(
     Args:
         ranking: Every eligible candidate in ranking order (feasible first, then by objective).
         baseline_id: Left out; it is always measured on validation anyway.
-        n: `FinalPick.n_finalists`, or `max(n_finalists, PARETO_MIN_FINALISTS)` under `Pareto`.
+        n: `FinalPick.n_finalists`, or `max(n_finalists, PARETO_MIN_FINALISTS)` under `Pareto`; fewer when the
+            budget can't reserve for that many.
         front: Under `Pareto`, `pareto_front` over the search assessments, in ranking order; None otherwise.
     """
     pool = ranking if front is None else front

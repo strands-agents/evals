@@ -76,10 +76,11 @@ from .search.blocks import Block, ScheduleContext, Search, Step
 from .search.proposer import ProposalRequest, Proposer
 from .selection.base import Selection, SelectionContext
 from .selection.top_ranked import TopRanked
-from .setup.budget import Budget, BudgetTracker
+from .setup.budget import FEW_ITERATIONS, Budget, BudgetTracker, affordable_finalists, end_phase_reserves
 from .setup.splits import Split
 
 _DEFAULT_BASE_DIR = Path(".strands-evals/optimization/runs")
+_SMALL_SEARCH = r"Budget\(max_rollouts=\d+\) leaves the search "  # the start of `_warn_on_a_small_search`'s message
 
 
 class Optimizer:
@@ -144,7 +145,7 @@ class Optimizer:
             selection: How the parent is chosen; None means `TopRanked()`.
             score_model: The statistical model of scores (not an LLM); None means `BayesBenchModel()`.
             final_pick: How many finalists go to validation and how the pick values them; None means
-                `FinalPick(n_finalists=3)`.
+                `FinalPick(n_finalists=3)`. A budget whose search can't score that many candidates validates fewer.
             split: Train / validation / test; None means `Split(train=0.4, validation=0.3, test=0.3)`.
             budget: Rollout and iteration caps; None means `Budget()`.
             runs_per_candidate: Times every candidate is scored on each case.
@@ -257,18 +258,11 @@ class Optimizer:
         self._score_model = score_model if score_model is not None else BayesBenchModel()
         self._final_pick = final_pick if final_pick is not None else FinalPick()
 
+        self._runs_per_candidate = runs_per_candidate
+        self._proposals_per_iteration = proposals_per_iteration
         budget = budget if budget is not None else Budget()
-        train, validation, test = (
-            len(self._case_split.train),
-            len(self._case_split.validation),
-            len(self._case_split.test),
-        )
-        finalists = self._final_pick.n_finalists
-        if self._criteria.is_pareto:
-            finalists = max(finalists, PARETO_MIN_FINALISTS)
-        validation_reserve = (finalists + 1) * validation * runs_per_candidate
-        # Champion and baseline; under Pareto every front member.
-        test_reserve = ((finalists + 1) if self._criteria.is_pareto else 2) * test * runs_per_candidate
+        train = len(self._case_split.train)
+        validation_reserve, test_reserve = self._reserves_for(self._most_finalists())
         needed = train * runs_per_candidate + validation_reserve + test_reserve
         if budget.max_rollouts < needed:
             raise ValueError(
@@ -276,15 +270,10 @@ class Optimizer:
                 f"{runs_per_candidate} runs) plus the end phase's reserve ({validation_reserve} validation, "
                 f"{test_reserve} test): give max_rollouts >= {needed}"
             )
-        iteration = proposals_per_iteration * train * runs_per_candidate
-        if budget.max_rollouts < needed + iteration:
-            warnings.warn(
-                f"Budget(max_rollouts={budget.max_rollouts}) leaves less than one iteration ({iteration} rollouts) "
-                f"after the baseline and the end phase's reserve; give max_rollouts >= {needed + iteration} to search",
-                UserWarning,
-                stacklevel=2,
-            )
+        # The full reserve must fit; the one held back covers only the finalists the search can produce.
+        self._n_finalists, validation_reserve, test_reserve = self._reserves(budget)
         self._budget = BudgetTracker(budget, validation_reserve=validation_reserve, test_reserve=test_reserve)
+        self._warn_on_a_small_search()
 
         self._experiment = experiment
         self._cases = cases
@@ -293,8 +282,6 @@ class Optimizer:
         self._build_task = build_task
         self._rollout_fn = rollout_fn
         self._environment = environment
-        self._runs_per_candidate = runs_per_candidate
-        self._proposals_per_iteration = proposals_per_iteration
         self._max_workers = max_workers
         self._rerun_passes = rerun_passes
         self._seed = seed
@@ -308,6 +295,66 @@ class Optimizer:
         # Candidate id -> (case name, run index) -> its trial record, as scored this process.
         self._records: dict[str, dict[tuple[str, int], TrialRecord]] = {}
         self._rollouts: dict[tuple[str, SplitName], int] = {}  # a _score call's spend, until its event
+
+    def _most_finalists(self) -> int:
+        """The finalists the end phase validates when the budget allows: `n_finalists`, under `Pareto` at least
+        `PARETO_MIN_FINALISTS`."""
+        n = self._final_pick.n_finalists
+        return max(n, PARETO_MIN_FINALISTS) if self._criteria.is_pareto else n
+
+    def _reserves_for(self, finalists: int) -> tuple[int, int]:
+        """`end_phase_reserves` for `finalists` finalists on this run's split."""
+        runs = self._runs_per_candidate
+        return end_phase_reserves(
+            finalists,
+            validation=len(self._case_split.validation) * runs,
+            test=len(self._case_split.test) * runs,
+            test_finalists=self._criteria.is_pareto,
+        )
+
+    def _reserves(self, budget: Budget, spent: int = 0) -> tuple[int, int, int]:
+        """The finalists `budget` can reserve for after `spent` rollouts (`affordable_finalists`), and their
+        validation and test reserves."""
+        runs = self._runs_per_candidate
+        finalists = affordable_finalists(
+            budget.max_rollouts,
+            train=len(self._case_split.train) * runs,
+            validation=len(self._case_split.validation) * runs,
+            test=len(self._case_split.test) * runs,
+            most=self._most_finalists(),
+            test_finalists=self._criteria.is_pareto,
+            spent=spent,
+        )
+        validation_reserve, test_reserve = self._reserves_for(finalists)
+        return finalists, validation_reserve, test_reserve
+
+    def _warn_on_a_small_search(self) -> None:
+        """Warn when the budget leaves the search fewer than `FEW_ITERATIONS` iterations (`max_iterations` when
+        lower), or the end phase room for fewer finalists than `_most_finalists()` (or than the iteration cap's
+        candidates, when fewer); the warning names a budget that gives both."""
+        budget = self._budget.budget
+        per_candidate = len(self._case_split.train) * self._runs_per_candidate
+        width = self._proposals_per_iteration
+        held = self._budget.validation_reserve + self._budget.test_reserve
+        candidates = (budget.max_rollouts - per_candidate - held) // per_candidate
+        cap = budget.max_iterations
+        iterations = FEW_ITERATIONS if cap is None else min(FEW_ITERATIONS, cap)
+        # The iteration cap bounds the candidates, so the finalists too.
+        wanted = self._most_finalists() if cap is None else min(self._most_finalists(), cap * width)
+        if candidates >= iterations * width and self._n_finalists >= wanted:
+            return
+        enough = per_candidate + sum(self._reserves_for(wanted)) + max(iterations * width, wanted) * per_candidate
+        steps = candidates * 10 // width / 10  # rounded down, so "3.0 iterations" is never fewer than 3
+        short = self._n_finalists < wanted
+        cut = f", and the end phase room to validate {self._n_finalists} of {wanted} finalists" if short else ""
+        goal = f"{iterations} iteration{'' if iterations == 1 else 's'}" + (f" and {wanted} finalists" if short else "")
+        warnings.warn(
+            f"Budget(max_rollouts={budget.max_rollouts}) leaves the search {candidates} "
+            f"candidate{'' if candidates == 1 else 's'} ({steps:.1f} iterations of {width}) after the baseline and "
+            f"the end phase's reserve{cut}; give max_rollouts >= {enough} for {goal}",
+            UserWarning,
+            stacklevel=3,
+        )
 
     def _config(self) -> dict[str, Any]:
         """`run.json`'s contents but `schema_version` and `code` (added by `RunDirectory.create`).
@@ -651,10 +698,8 @@ class Optimizer:
             finalists = resumed.finalists
         else:
             ranking, assessments = self._rank()
-            n, front = self._final_pick.n_finalists, None
-            if criteria.is_pareto:
-                n, front = max(n, PARETO_MIN_FINALISTS), pareto_front(assessments, ranking)
-            finalists = choose_finalists(ranking, baseline, n, front=front)
+            front = pareto_front(assessments, ranking) if criteria.is_pareto else None
+            finalists = choose_finalists(ranking, baseline, self._n_finalists, front=front)
             run.events.append("finalists", iteration=self._iteration, candidate_ids=finalists)
         if resumed is not None and resumed.validation is not None:
             report = resumed.validation
@@ -1786,7 +1831,9 @@ class Optimizer:
 
         Resume continues a run that was killed; it never extends a finished one. Every stop runs the end
         phase, so a finished run only finishes or returns its end phase. To search more, start a new run.
-        A killed search may get a larger `Budget`, which only moves where it stops. The resumed run proposes what
+        A killed search may get a larger `Budget`, which moves where it stops and, when the saved one was too small
+        for every finalist, how many finalists the end phase validates; a smaller one can cut the finalists, with
+        no warning (the small-search warning comes only from `__init__`). The resumed run proposes what
         an uninterrupted one would, with two exceptions: near the rollout cap, what the killed iteration spent
         counts from the start, while its trials are reused at no cost, so a step can be cut narrower or the
         search stop a step earlier than without the kill; and a refit that succeeded in the run but raises when
@@ -1814,7 +1861,8 @@ class Optimizer:
 
         Raises:
             ValueError: The configuration differs from `run.json`, naming the field; or `budget` can't cover
-                what is already spent plus the validation reserve (when the pick hasn't run yet).
+                what is already spent plus the validation reserve (when the pick hasn't run yet) and, when the
+                run was killed before its baseline finished, the baseline's unrun train trials.
             RuntimeError: The run stopped at setup (its baseline couldn't be a parent); start a new run.
         """
         run = RunDirectory.open(Path(run_dir))
@@ -1825,43 +1873,62 @@ class Optimizer:
             given = sorted(name for name in cases if name is not None)
             raise ValueError(f"cases changed: {saved['cases']!r} -> {given!r}; start a new run to change them")
         lists = {role: [cases[name] for name in names] for role, names in saved["split"]["cases"].items()}
-        optimizer = cls(
-            experiment,
-            factory,
-            rollout_fn=rollout_fn,
-            build_task=build_task,
-            space=space,
-            objective=objective,
-            constraints=constraints,
-            search=search,
-            selection=selection,
-            score_model=score_model,
-            final_pick=FinalPick.from_config(saved["final_pick"]),
-            split=Split(train=lists["train"], validation=lists["validation"], test=lists["test"] or None),
-            budget=Budget(**saved["budget"]),
-            runs_per_candidate=saved["runs_per_candidate"],
-            agent_failure_score=saved["agent_failure_score"],
-            feasibility_threshold=saved["feasibility_threshold"],
-            environment=environment,
-            proposals_per_iteration=saved["proposals_per_iteration"],
-            max_workers=saved["max_workers"] if max_workers is None else max_workers,
-            rerun_passes=saved["rerun_passes"],
-            seed=saved["seed"],
-            base_dir=run.root.parent,
-            name=saved["name"],
-            on_iteration=on_iteration,
-        )
+        with warnings.catch_warnings():
+            # The saved budget's small-search warning was shown when the run started.
+            warnings.filterwarnings("ignore", message=_SMALL_SEARCH, category=UserWarning)
+            optimizer = cls(
+                experiment,
+                factory,
+                rollout_fn=rollout_fn,
+                build_task=build_task,
+                space=space,
+                objective=objective,
+                constraints=constraints,
+                search=search,
+                selection=selection,
+                score_model=score_model,
+                final_pick=FinalPick.from_config(saved["final_pick"]),
+                split=Split(train=lists["train"], validation=lists["validation"], test=lists["test"] or None),
+                budget=Budget(**saved["budget"]),
+                runs_per_candidate=saved["runs_per_candidate"],
+                agent_failure_score=saved["agent_failure_score"],
+                feasibility_threshold=saved["feasibility_threshold"],
+                environment=environment,
+                proposals_per_iteration=saved["proposals_per_iteration"],
+                max_workers=saved["max_workers"] if max_workers is None else max_workers,
+                rerun_passes=saved["rerun_passes"],
+                seed=saved["seed"],
+                base_dir=run.root.parent,
+                name=saved["name"],
+                on_iteration=on_iteration,
+            )
         optimizer._workdir = Path(saved["workdir"])  # diff paths stay relative to where the run started
         state = load_state(run, config=optimizer._config())
         if state.stop_reason == "setup":
             raise RuntimeError(f"run {run.run_id} stopped at setup, so there is nothing to resume; start a new run")
-        tracker = optimizer._budget
         budget = Budget(**saved["budget"]) if budget is None else budget
+        unrun = 0  # the baseline's train trials still to run: with no closed iteration it is scored again first
+        if not state.candidates:
+            baseline_id = Candidate.baseline(optimizer._space).id
+            unrun = sum(
+                1
+                for case in optimizer._case_split.train
+                for index in range(optimizer._runs_per_candidate)
+                if run.trial_status(baseline_id, index, case) in (None, TrialStatus.INFRASTRUCTURE_INVALID)
+            )
+        searched = unrun + sum(
+            saved_trial["rollouts"] + sum(attempt["rollouts"] for attempt in saved_trial["previous_attempts"])
+            for saved_trial in run._trials.values()
+            if saved_trial["split"] == "train"
+        )
+        # The reserves for the budget in effect, as if the run had started with it, within what the search left;
+        # with the saved budget, the run's own (a search never spends into its reserve).
+        optimizer._n_finalists, validation_reserve, test_reserve = optimizer._reserves(budget, searched)
         # What the pick still needs: the whole reserve before the finalists exist, else their unrun validation trials.
         if state.validation is not None:
             left = 0
         elif state.finalists is None:
-            left = tracker.validation_reserve
+            left = validation_reserve
         else:
             ids = [state.candidates[0], *state.finalists]
             left = sum(
@@ -1871,14 +1938,17 @@ class Optimizer:
                 for index in range(optimizer._runs_per_candidate)
                 if run.trial_status(c, index, case) in (None, TrialStatus.INFRASTRUCTURE_INVALID)
             )
-        needed = state.spent + left
+        needed = state.spent + unrun + left
         if budget.max_rollouts < needed:
+            still = f"the {left} the validation pick still needs"
+            if unrun:
+                still = f"the {unrun} the baseline still needs on train and {still}"
             raise ValueError(
                 f"Budget(max_rollouts={budget.max_rollouts}) can't cover the {state.spent} rollouts already spent "
-                f"plus the {left} the validation pick still needs: give max_rollouts >= {needed}"
+                f"plus {still}: give max_rollouts >= {needed}"
             )
         optimizer._budget = BudgetTracker(
-            budget, state.spent, validation_reserve=tracker.validation_reserve, test_reserve=tracker.test_reserve
+            budget, state.spent, validation_reserve=validation_reserve, test_reserve=test_reserve
         )
         code = code_version()
         changed = [p for p in ("numpy", "optuna") if saved.get("code", {}).get(p) != code[p]]
