@@ -73,9 +73,10 @@ OVER_LIMIT = (
 )
 
 # Sent in the same conversation when the agent's turn ended with nothing accepted and its last submission refused
-# (a value carrying a version's header): `refusal` is what the submit tool answered.
+# (a name that isn't a parameter, an empty file, or a value carrying a version's header): `refusal` is what the submit
+# tool answered.
 REFUSED = (
-    "{refusal}\n\nYour turn ended with nothing submitted. Fix the file(s) in your working folder and submit again with "
+    "{refusal}\n\nYour turn ended with nothing submitted. Fix what is described above and submit again with "
     "submit_optimized_params."
 )
 

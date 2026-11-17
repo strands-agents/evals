@@ -9,7 +9,9 @@ from strands.types.exceptions import EventLoopException
 
 from strands_evals.optimization import Criteria, InfrastructureError, Maximize, Reflection, Space, TextValue
 from strands_evals.optimization.candidate import Candidate
+from strands_evals.optimization.search import reflection as reflection_module
 from strands_evals.optimization.search.proposer import ProposalRequest
+from strands_evals.optimization.search.reflection import _guard
 from strands_evals.types.trace import TextContent, ToolResultContent, UserMessage
 from tests.strands_evals.optimization.scripted_model import ScriptedModel, ToolUse
 from tests.strands_evals.optimization.search.test_reflection_evidence import (
@@ -211,13 +213,89 @@ async def test_a_value_copying_a_shown_tool_result_is_screened():
     assert events[0][1]["reason"].startswith("copies 40 characters from a shown trial verbatim")
 
 
-async def test_a_key_outside_the_block_is_dropped():
-    turns = [write("p.txt", "Be brief."), write("t.txt", "warm"), submit(prompt="p.txt", tone="t.txt"), "Done."]
+async def test_a_name_outside_the_block_is_refused_and_can_be_resubmitted_in_the_same_turn():
+    turns = [
+        write("p.txt", "Be brief."),
+        write("t.txt", "warm"),
+        submit(prompt="p.txt", tone="t.txt"),  # `tone` is in the space, not in this block: nothing is taken
+        submit(prompt="p.txt"),
+        "Done.",
+    ]
     reflection = Reflection(ScriptedModel(turns))
     reflection._warned = True
     (patch,) = await reflection.propose(request(keys=("prompt",)))
     assert patch.updates == {"prompt": "Be brief.\n"}
-    assert patch.state["dropped"] == {"tone": "not one of this block's keys"}
+    assert patch.state["dropped"] == {}
+    (rejected,) = patch.state["rejected"]
+    assert rejected["name"] == "tone" and rejected["reason"].startswith("not one of the parameters to rewrite")
+
+
+async def test_a_wrong_name_is_sent_back_and_the_resubmission_taken():
+    turns = [write("p.txt", "Be brief."), submit(system_prompt="p.txt"), "Submitted.", submit(prompt="p.txt"), "Fixed."]
+    (patch,), _, _ = await propose(turns)
+    assert patch.updates == {"prompt": "Be brief.\n"}
+    assert patch.state["rejected"][0]["name"] == "system_prompt"
+
+
+EMPTY_FILE = [ToolUse("shell", {"command": ": > p.txt"}), submit(prompt="p.txt"), "Submitted."]
+
+
+async def test_an_empty_file_is_never_proposed():
+    patches, events, _ = await propose(EMPTY_FILE, over_limit_retries=0)
+    assert patches == []
+    assert [e for e, _ in events] == ["proposer_usage"]
+
+
+async def test_an_empty_file_is_sent_back_and_the_rewrite_taken():
+    turns = [*EMPTY_FILE, write("p.txt", "Be brief."), submit(prompt="p.txt"), "Fixed."]
+    (patch,), _, _ = await propose(turns)
+    assert patch.updates == {"prompt": "Be brief.\n"}
+    assert patch.state["rejected"][0]["name"] == "prompt"
+
+
+def test_the_guard_drops_a_key_outside_the_block():
+    """The submit tool refuses such a name first; the guard drops one that reaches it anyway."""
+    updates, dropped, screened = _guard(request(keys=("prompt",)), {"tone": "warm"}, ["prompt"], {})
+    assert (updates, dropped, screened) == ({}, {"tone": "not one of this block's keys"}, [])
+
+
+def fail_on_deep_prompt(monkeypatch, check):
+    """Make one of the guard's checks raise `RecursionError` for a prompt starting with `[[[`, as `Space.validate`
+    does on deeply nested JSON or YAML: `check` is "validate" or "leak" (the leakage screen)."""
+    if check == "validate":
+        validate = Space.validate
+
+        def failing_validate(self, values):
+            if str(values.get("prompt", "")).startswith("[[["):
+                raise RecursionError("maximum recursion depth exceeded")
+            validate(self, values)
+
+        monkeypatch.setattr(Space, "validate", failing_validate)
+    else:
+        leak = reflection_module._leak
+
+        def failing_leak(value, *args):
+            if value.startswith("[[["):
+                raise RecursionError("maximum recursion depth exceeded")
+            return leak(value, *args)
+
+        monkeypatch.setattr(reflection_module, "_leak", failing_leak)
+
+
+@pytest.mark.parametrize("check", ["validate", "leak"])
+async def test_a_value_that_cannot_be_checked_is_dropped_and_the_others_kept(monkeypatch, caplog, check):
+    fail_on_deep_prompt(monkeypatch, check)
+    turns = [write("p.txt", "[[[1]]]"), write("t.txt", "warm"), submit(prompt="p.txt", tone="t.txt"), "Done."]
+    (patch,), events, _ = await propose(turns)
+    assert patch.updates == {"tone": "warm"}
+    reason = "could not be checked: RecursionError: maximum recursion depth exceeded"
+    assert patch.state["dropped"] == {"prompt": reason}
+    assert events == []
+    (record,) = [r for r in caplog.records if r.name == reflection_module.__name__]
+    assert record.levelname == "WARNING" and record.exc_info is not None and record.exc_info[0] is RecursionError
+    assert record.getMessage() == (
+        "key=<prompt>, error_type=<RecursionError> | dropped a submitted value that could not be checked"
+    )
 
 
 async def test_a_refused_shell_command_is_kept_with_its_proposal():
@@ -353,6 +431,28 @@ async def test_a_patch_carries_its_calls_spend_and_logs_none():
     (patch,), events, _ = await propose(turns)
     assert [e for e, _ in events] == ["proposer_retry"]
     assert patch.usage.tokens == 4 * 15  # the failed attempt's call and the successful attempt's three
+
+
+async def test_a_value_that_cannot_be_checked_logs_the_calls_spend_instead_of_raising(monkeypatch):
+    fail_on_deep_prompt(monkeypatch, "validate")
+    patches, events, _ = await propose([write("p.txt", "[[[1]]]"), submit(prompt="p.txt"), "Done."])
+    assert patches == []
+    (usage,) = usage_events(events)
+    assert usage.tokens == 3 * 15
+
+
+async def test_guardrails_that_raise_log_the_calls_spend_then_raise(monkeypatch):
+    def unreadable(trajectory):
+        raise RuntimeError("unreadable trajectory")
+
+    monkeypatch.setattr(reflection_module, "_message_text", unreadable)
+    reflection = Reflection(ScriptedModel([write("p.txt", "Be brief."), submit(prompt="p.txt"), "Done."]))
+    reflection._warned = True
+    events = []
+    with pytest.raises(RuntimeError, match="unreadable trajectory"):
+        await reflection.propose(request(events=events))
+    (usage,) = usage_events(events)
+    assert events == [("proposer_usage", {"usage": usage})] and usage.tokens == 3 * 15
 
 
 async def test_nothing_to_learn_from_logs_no_spend():
