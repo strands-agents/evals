@@ -31,6 +31,17 @@ def _is_number(value: object) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def _counts(n: int, shares: Sequence[float]) -> list[int]:
+    """`n` dealt by `shares` (summing to 1) by largest remainder: each count is the floor of share x n, and the
+    cases left over go to the largest fractional parts (earlier shares win ties), so the counts sum to `n`."""
+    exact = [s * n for s in shares]
+    counts = [math.floor(x) for x in exact]
+    by_remainder = sorted(range(len(shares)), key=lambda i: exact[i] - counts[i], reverse=True)
+    for i in by_remainder[: n - sum(counts)]:
+        counts[i] += 1
+    return counts
+
+
 @dataclass(frozen=True, kw_only=True)
 class Split:
     """Shares or explicit case lists, not a mix; train searches, validation picks, test reports.
@@ -133,6 +144,63 @@ class Split:
             )
         return split
 
+    def folds(self, cases: Sequence[Case]) -> list[Split]:
+        """Rotation: `k = 1 / test` splits whose test cases together are every case exactly once.
+
+        The cases are sorted by name, shuffled with `random.Random(seed)` (0 when `seed` is None, since the folds
+        are dealt before any run has a seed), and dealt into k parts whose sizes differ by at most 1. Fold i
+        tests on part i. Its other cases, taken from part i + 1 onward (wrapping around), go first to validation
+        and then to train, counted by largest remainder in the ratio of the `validation` and `train` shares.
+        Pass each fold to its own `Optimizer(split=fold)` and run them with `rotate`, which pools their test
+        reports.
+
+        Args:
+            cases: Every case; names are unique and not None.
+
+        Returns:
+            The k folds as case lists, in part order.
+
+        Raises:
+            ValueError: Case lists instead of shares; a test share whose inverse isn't a whole number of 2 or
+                more; fewer cases than folds; a fold that would get 0 train or 0 validation cases; a missing
+                or repeated case name.
+        """
+        if not _is_number(self.train):
+            raise ValueError("Split.folds needs shares: case lists already fix every case's role")
+        train, validation, test = float(self.train), float(self.validation), float(self.test or 0.0)  # type: ignore[arg-type]
+        k = round(1 / test) if test > 0 else 0
+        if k < 2 or abs(1 / test - k) > 1e-6:
+            raise ValueError(
+                f"Split.folds needs a test share of 1/k for a whole number k >= 2, got {self._describe()}; "
+                "e.g. Split(train=0.5, validation=0.25, test=0.25) for 4 folds"
+            )
+        names = [case.name for case in cases if case.name is not None]
+        if len(names) != len(cases) or len(set(names)) != len(names):
+            raise ValueError("Split: the cases need unique, non-None names")
+        if len(names) < k:
+            raise ValueError(f"Split.folds: {len(names)} cases can't make {k} folds")
+        order = sorted(names)
+        random.Random(self.seed if self.seed is not None else 0).shuffle(order)
+        parts = [order[i::k] for i in range(k)]
+        by_name = {case.name: case for case in cases}
+        folds = []
+        for i in range(k):
+            rest = [name for j in range(1, k) for name in parts[(i + j) % k]]
+            _, n_validation = _counts(len(rest), [train / (train + validation), validation / (train + validation)])
+            fold = Split(
+                train=[by_name[name] for name in rest[n_validation:]],
+                validation=[by_name[name] for name in rest[:n_validation]],
+                test=[by_name[name] for name in parts[i]],
+            )
+            for role in ("train", "validation"):
+                if not getattr(fold, role):
+                    raise ValueError(
+                        f"Split.folds: {self._describe()} gives fold {i + 1} 0 {role} cases of {len(names)}; "
+                        "at least 1 is needed"
+                    )
+            folds.append(fold)
+        return folds
+
     def _by_share(self, names: list[str], seed: int) -> CaseSplit:
         """Deal the cases by share: sorted by name, shuffled with `seed`, counted by largest remainder.
 
@@ -151,12 +219,7 @@ class Split:
         random.Random(seed).shuffle(order)
         n = len(order)
         shares = [float(self.train), float(self.validation), float(self.test or 0.0)]  # type: ignore[arg-type]
-        exact = [s * n for s in shares]
-        counts = [math.floor(x) for x in exact]
-        by_remainder = sorted(range(3), key=lambda i: exact[i] - counts[i], reverse=True)
-        for i in by_remainder[: n - sum(counts)]:
-            counts[i] += 1
-        n_train, n_validation = counts[0], counts[1]
+        n_train, n_validation, _ = _counts(n, shares)
         return CaseSplit(
             train=tuple(order[:n_train]),
             validation=tuple(order[n_train : n_train + n_validation]),

@@ -1052,6 +1052,10 @@ async def test_the_end_phase_ships_the_best_finalist_and_writes_the_run_files(tm
     test = result.test
     assert (test.champion_id, test.baseline_id) == (result.best.id, result.baseline_id)
     assert test.objective.mean_diff == pytest.approx(1.0) and test.objective.n_cases == 6
+    # Each test case's difference, what pool_tests pools.
+    every_case = pytest.approx(dict.fromkeys(sorted(optimizer._case_split.test), 1.0))
+    assert test.objective_difference_by_case == every_case
+    assert test.difference_by_case == {"Temperature": every_case}
     assert test.ratio == {"Temperature": None}  # the baseline's mean is 0
     assert test.missing == {result.best.id: 0, result.baseline_id: 0}
     assert result.rollouts_spent == optimizer._budget.spent == 8 * 3 + 6 * 3 + 6 * 2

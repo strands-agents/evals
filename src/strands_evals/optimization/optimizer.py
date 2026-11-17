@@ -47,6 +47,7 @@ from .end_phase import (
     TEST_LEVEL,
     FinalPick,
     choose_finalists,
+    paired_differences,
     paired_interval,
     paired_ratio,
     pick,
@@ -308,6 +309,8 @@ class Optimizer:
         # Candidate id -> (case name, run index) -> its trial record, as scored this process.
         self._records: dict[str, dict[tuple[str, int], TrialRecord]] = {}
         self._rollouts: dict[tuple[str, SplitName], int] = {}  # a _score call's spend, until its event
+        # Caps this run's trials together with other runs' (set by `rotate`); None: each scoring call has its own.
+        self._limiter: asyncio.Semaphore | None = None
 
     def _config(self) -> dict[str, Any]:
         """`run.json`'s contents but `schema_version` and `code` (added by `RunDirectory.create`).
@@ -874,7 +877,7 @@ class Optimizer:
         baseline = self._baseline.id
         registry = self._criteria.registry
         mine, theirs = scores[candidate_id], scores[baseline]
-        difference, ratio = {}, {}
+        difference, ratio, by_case = {}, {}, {}
         for metric in self._criteria.goal_metrics:
             a = {case: m[metric] for case, m in mine.metrics_by_case.items() if metric in m}
             b = {case: m[metric] for case, m in theirs.metrics_by_case.items() if metric in m}
@@ -882,6 +885,7 @@ class Optimizer:
             if compared is None:
                 continue
             difference[metric] = compared
+            by_case[metric] = paired_differences(a, b)
             low, _ = registry.range(metric)
             ratio[metric] = paired_ratio(a, b, level=TEST_LEVEL) if low is not None and low >= 0 else None
         ids = list(dict.fromkeys([candidate_id, baseline]))
@@ -896,6 +900,8 @@ class Optimizer:
             ratio=ratio,
             missing={c: len(set(self._case_split.test) - measured[c]) for c in ids},
             means={c: measured_metrics(scores[c], registry) for c in ids},
+            objective_difference_by_case=paired_differences(mine.objective_by_case, theirs.objective_by_case),
+            difference_by_case=by_case,
         )
 
     def _rank(self) -> tuple[list[str], dict[str, Assessment]]:
@@ -1664,16 +1670,16 @@ class Optimizer:
         """Score `(candidate, rejudge, pending trials)` entries on `split` at once and write their `score` events
         in entry order.
 
-        The calls share one `max_workers` semaphore, so that many trials run at once however many candidates
-        the step has, and each gets its pending trials plus an even share of what the phase's allowance leaves
-        for re-runs (earlier entries get the remainder), so the run is the same whatever finishes first. The
-        caller guarantees the first passes fit.
+        The calls share one `max_workers` semaphore (under `rotate`, the one every fold shares), so that many
+        trials run at once however many candidates the step has, and each gets its pending trials plus an even
+        share of what the phase's allowance leaves for re-runs (earlier entries get the remainder), so the run
+        is the same whatever finishes first. The caller guarantees the first passes fit.
         """
         if not entries:
             return []
         count = len(entries)
         spare = max(0, self._budget.allowance(phase=split) - sum(pending for _, _, pending in entries))
-        limiter = asyncio.Semaphore(self._max_workers)
+        limiter = self._limiter if self._limiter is not None else asyncio.Semaphore(self._max_workers)
         results = await _gather_or_cancel(
             [
                 self._score(
@@ -1717,7 +1723,9 @@ class Optimizer:
         assert self._run is not None
         baseline = self._baseline = Candidate.baseline(self._space)
         self._run.save_candidate(baseline, changed_keys=[], round=None, role=None)
-        scores = await self._score(baseline, "train", allowance=self._budget.allowance(phase="train"))
+        scores = await self._score(
+            baseline, "train", allowance=self._budget.allowance(phase="train"), limiter=self._limiter
+        )
         self._score_event(baseline, "train", scores)
         records = list(self._records[baseline.id].values())
         measured = {metric for metrics in scores.metrics_by_case.values() for metric in metrics}

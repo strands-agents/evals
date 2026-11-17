@@ -29,6 +29,7 @@ from ..types.optimization import (
     ObservationOutcome,
     PairedComparison,
     Patch,
+    PooledTest,
     ProposalOutcome,
     Range,
     SplitName,
@@ -47,11 +48,12 @@ from .declaration.markers import Choice, Component, Float, Int, OneOf, TextValue
 from .declaration.space import FileSource, Marker, ParamInfo, ParamKind, Space
 from .declaration.tools import ToolDescriptions, tool_descriptions
 from .declaration.tunable import BuildContext, TunableFactory, tunable
-from .end_phase import FinalPick
+from .end_phase import FinalPick, pool_tests
 from .execution.rollout import EnvironmentFn, RolloutFn, TaskFn
 from .execution.status import InfrastructureError
 from .optimizer import Optimizer
 from .result import CandidateView, Grain, OptimizationResult
+from .rotation import RotationResult, rotate, rotate_async
 from .score_model.bayesbench import BayesBenchModel
 from .score_model.design import design
 from .score_model.effects import effects
@@ -137,12 +139,14 @@ __all__ = [
     "Pareto",
     "Patch",
     "PickRule",
+    "PooledTest",
     "ProposalOutcome",
     "ProposalRequest",
     "Proposer",
     "Range",
     "Reflection",
     "RolloutFn",
+    "RotationResult",
     "Schedule",
     "ScheduleContext",
     "ScoreModel",
@@ -175,6 +179,9 @@ __all__ = [
     "design",
     "effects",
     "p_met",
+    "pool_tests",
+    "rotate",
+    "rotate_async",
     "tool_descriptions",
     "tunable",
 ]

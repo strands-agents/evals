@@ -186,3 +186,103 @@ def test_duplicate_or_missing_case_names_raise():
         Split().assign([*make_cases(5), Case(name="case-00", input="again")], run_seed=0)
     with pytest.raises(ValueError, match="unique, non-None names"):
         Split().assign([*make_cases(5), Case(input="unnamed")], run_seed=0)
+
+
+def test_a_tie_in_the_largest_remainder_goes_to_the_earlier_role():
+    # 10 x (0.5, 0.25, 0.25) = (5, 2.5, 2.5): floors (5, 2, 2), the one left goes to validation, not test
+    split = Split(train=0.5, validation=0.25, test=0.25).assign(make_cases(10), run_seed=0)
+    assert (len(split.train), len(split.validation), len(split.test)) == (5, 3, 2)
+
+
+def _names(cases):
+    return [case.name for case in cases]
+
+
+@pytest.mark.parametrize(("n", "test", "k"), [(10, 0.25, 4), (12, 0.25, 4), (7, 0.5, 2), (9, 1 / 3, 3)])
+def test_folds_test_every_case_exactly_once_and_give_each_fold_every_case(n, test, k):
+    cases = make_cases(n)
+    validation = (1 - test) / 3
+    folds = Split(train=1 - test - validation, validation=validation, test=test).folds(cases)
+    assert len(folds) == k
+    tested = [name for fold in folds for name in _names(fold.test)]
+    assert sorted(tested) == _names(cases)
+    sizes = sorted(len(fold.test) for fold in folds)
+    assert sizes[-1] - sizes[0] <= 1
+    for fold in folds:
+        roles = [*_names(fold.train), *_names(fold.validation), *_names(fold.test)]
+        assert sorted(roles) == _names(cases)
+        assert fold.train and fold.validation
+
+
+def test_each_fold_deals_its_other_cases_in_the_ratio_of_validation_to_train():
+    # 10 cases in 4 parts of 3, 3, 2, 2; validation : train = 1 : 2 of the rest, by largest remainder
+    folds = Split(train=0.5, validation=0.25, test=0.25).folds(make_cases(10))
+    assert [(len(f.train), len(f.validation), len(f.test)) for f in folds] == [
+        (5, 2, 3),
+        (5, 2, 3),
+        (5, 3, 2),
+        (5, 3, 2),
+    ]
+
+
+def test_with_equal_parts_each_fold_validates_on_the_next_part():
+    folds = Split(train=0.5, validation=0.25, test=0.25).folds(make_cases(12))
+    for i, fold in enumerate(folds):
+        assert _names(fold.validation) == _names(folds[(i + 1) % 4].test)
+
+
+def test_folds_are_cases_from_the_experiment_that_assign_takes_as_given():
+    cases = make_cases(8)
+    for fold in Split(train=0.5, validation=0.25, test=0.25).folds(cases):
+        assert all(any(case is given for given in cases) for case in [*fold.train, *fold.validation, *fold.test])
+        assigned = fold.assign(cases, run_seed=99)
+        assert assigned.model_dump() == {
+            "train": tuple(_names(fold.train)),
+            "validation": tuple(_names(fold.validation)),
+            "test": tuple(_names(fold.test)),
+        }
+
+
+def test_folds_follow_the_seed_not_the_case_order_and_seed_none_is_0():
+    cases = make_cases(12)
+    split = Split(train=0.5, validation=0.25, test=0.25, seed=5)
+    assert split.folds(cases) == split.folds(list(reversed(cases)))
+    assert split.folds(cases) != Split(train=0.5, validation=0.25, test=0.25, seed=6).folds(cases)
+    assert Split(train=0.5, validation=0.25, test=0.25).folds(cases) == Split(
+        train=0.5, validation=0.25, test=0.25, seed=0
+    ).folds(cases)
+
+
+@pytest.mark.parametrize(
+    ("split", "match"),
+    [
+        (Split(), "test share of 1/k for a whole number k >= 2.*test=0.3"),
+        (Split(train=0.5, validation=0.5, test=None), "test share of 1/k"),
+        (Split(train=0.6, validation=0.25, test=0.15), "test share of 1/k"),
+        (Split(train=0.25, validation=0.15, test=0.6), "test share of 1/k"),
+    ],
+)
+def test_folds_need_a_test_share_of_1_over_k(split, match):
+    with pytest.raises(ValueError, match=match):
+        split.folds(make_cases(10))
+
+
+def test_folds_need_shares():
+    cases = make_cases(4)
+    with pytest.raises(ValueError, match="needs shares"):
+        Split(train=cases[:2], validation=cases[2:3], test=cases[3:]).folds(cases)
+
+
+def test_folds_need_a_case_per_fold_and_a_train_and_a_validation_case_in_each():
+    with pytest.raises(ValueError, match="3 cases can't make 4 folds"):
+        Split(train=0.5, validation=0.25, test=0.25).folds(make_cases(3))
+    # 4 cases, 4 folds: each fold's 3 other cases x 0.05 / 0.75 rounds to 0 validation cases, or to 0 train ones
+    with pytest.raises(ValueError, match="gives fold 1 0 validation cases of 4"):
+        Split(train=0.7, validation=0.05, test=0.25).folds(make_cases(4))
+    with pytest.raises(ValueError, match="gives fold 1 0 train cases of 4"):
+        Split(train=0.05, validation=0.7, test=0.25).folds(make_cases(4))
+
+
+def test_folds_need_unique_case_names():
+    with pytest.raises(ValueError, match="unique, non-None names"):
+        Split(train=0.5, validation=0.25, test=0.25).folds([*make_cases(5), Case(name="case-00", input="again")])
