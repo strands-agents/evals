@@ -1,5 +1,8 @@
+from types import SimpleNamespace
+
 import pytest
 
+import strands_evals.experimental.comparison.summary as summary_module
 from strands_evals.experimental.comparison import PairedScore, summarize_pairs
 
 
@@ -170,6 +173,118 @@ def test_equal_magnitude_changes_use_exact_sign_test(
     )[0]
 
     assert summary.wilcoxon_p_value == pytest.approx(expected_p_value)
+
+
+def test_small_tied_sample_uses_exact_distribution(monkeypatch: pytest.MonkeyPatch):
+    def fail_wilcoxon(*args: object, **kwargs: object) -> None:
+        pytest.fail("tied samples within the cutoff must not use scipy's approximation")
+
+    monkeypatch.setattr(summary_module, "wilcoxon", fail_wilcoxon)
+
+    summary = summarize_pairs(
+        [
+            _pair(case_id="case-a", evaluator="correctness", baseline=0.0, candidate=1.0),
+            _pair(case_id="case-b", evaluator="correctness", baseline=0.0, candidate=1.0),
+            _pair(case_id="case-c", evaluator="correctness", baseline=0.0, candidate=-2.0),
+        ]
+    )[0]
+
+    assert summary.wilcoxon_p_value == 1.0
+
+
+def test_small_tied_permutation_test_matches_exact_result():
+    deltas = [1.0] * 4 + [2.0] * 3 + [3.0] * 2 + [-1.0] * 2 + [-2.0] * 2 + [-3.0]
+
+    summary = summarize_pairs(
+        [
+            _pair(
+                case_id=f"case-{index}",
+                evaluator="correctness",
+                baseline=0.0,
+                candidate=delta,
+            )
+            for index, delta in enumerate(deltas)
+        ]
+    )[0]
+
+    assert summary.wilcoxon_p_value == pytest.approx(0.4012451171875)
+
+
+def test_exact_tied_distribution_fixes_near_binary_false_positive():
+    deltas = [1.0] * 5 + [-1.0] * 14 + [0.5]
+
+    summary = summarize_pairs(
+        [
+            _pair(
+                case_id=f"case-{index}",
+                evaluator="correctness",
+                baseline=0.0,
+                candidate=delta,
+            )
+            for index, delta in enumerate(deltas)
+        ]
+    )[0]
+
+    assert summary.wilcoxon_p_value == pytest.approx(0.063568115234375)
+
+
+def test_exact_tied_distribution_includes_cutoff(monkeypatch: pytest.MonkeyPatch):
+    changed_counts: list[int] = []
+
+    def fake_exact(changed: list[float]) -> float:
+        changed_counts.append(len(changed))
+        return 0.5
+
+    monkeypatch.setattr(summary_module, "_exact_tied_wilcoxon_p_value", fake_exact)
+    deltas = [1.0] * 499 + [-2.0]
+
+    summary = summarize_pairs(
+        [
+            _pair(
+                case_id=f"case-{index}",
+                evaluator="correctness",
+                baseline=0.0,
+                candidate=delta,
+            )
+            for index, delta in enumerate(deltas)
+        ]
+    )[0]
+
+    assert summary.wilcoxon_p_value == 0.5
+    assert changed_counts == [500]
+
+
+def test_large_tied_sample_uses_deterministic_approximation(monkeypatch: pytest.MonkeyPatch):
+    methods: list[str] = []
+
+    def fake_wilcoxon(
+        values: list[float],
+        *,
+        alternative: str,
+        method: str,
+    ) -> SimpleNamespace:
+        assert len(values) == 501
+        assert alternative == "two-sided"
+        methods.append(method)
+        return SimpleNamespace(pvalue=0.5)
+
+    monkeypatch.setattr(summary_module, "wilcoxon", fake_wilcoxon)
+    deltas = [1.0] * 500 + [-2.0]
+
+    summary = summarize_pairs(
+        [
+            _pair(
+                case_id=f"case-{index}",
+                evaluator="correctness",
+                baseline=0.0,
+                candidate=delta,
+            )
+            for index, delta in enumerate(deltas)
+        ]
+    )[0]
+
+    assert summary.wilcoxon_p_value == 0.5
+    assert methods == ["approx"]
 
 
 def test_rejects_duplicate_case_evaluator_rows():

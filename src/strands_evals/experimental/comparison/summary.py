@@ -5,13 +5,15 @@ from collections import defaultdict
 from collections.abc import Sequence
 from statistics import fmean, stdev
 
+import numpy as np
 from pydantic import BaseModel
 from scipy import stats
-from scipy.stats import PermutationMethod, binomtest, false_discovery_control, wilcoxon
+from scipy.stats import binomtest, false_discovery_control, rankdata, wilcoxon
 
 from .pairing import PairedScore
 
 _DELTA_DECIMAL_PLACES = 12
+_EXACT_TIED_MAX_CHANGES = 500
 
 
 class EvaluatorSummary(BaseModel):
@@ -54,11 +56,12 @@ def summarize_pairs(
     complete paired cases. Each `(evaluator, case_id)` pair may appear only once
     so that duplicate rows are not treated as independent evidence. Deltas are
     rounded before analysis so mathematically equivalent score changes receive
-    the same rank. Equal-magnitude changes use an exact sign test, and other
-    tied changes use a deterministic permutation Wilcoxon test. The adjusted
-    p-values control false discovery across the evaluators in this call. A
-    workflow comparing several candidates must recompute the correction over
-    the full set of candidate/evaluator tests before selecting a winner.
+    the same rank. Equal-magnitude changes use an exact sign test. Other tied
+    changes use the exact Wilcoxon signed-rank distribution through 500 changes
+    and the deterministic normal approximation for larger samples. The
+    adjusted p-values control false discovery across the evaluators in this
+    call. A workflow comparing several candidates must recompute the correction
+    over the full set of candidate/evaluator tests before selecting a winner.
 
     Args:
         pairs: Aggregated paired case scores.
@@ -140,9 +143,23 @@ def _wilcoxon_p_value(deltas: list[float]) -> float:
         positive_count = sum(delta > 0.0 for delta in changed)
         return float(binomtest(positive_count, len(changed), p=0.5, alternative="two-sided").pvalue)
 
-    method: str | PermutationMethod
     if len(set(magnitudes)) < len(magnitudes):
-        method = PermutationMethod(n_resamples=99_999, rng=0)
-    else:
-        method = "auto"
-    return float(wilcoxon(changed, alternative="two-sided", method=method).pvalue)
+        if len(changed) <= _EXACT_TIED_MAX_CHANGES:
+            return _exact_tied_wilcoxon_p_value(changed)
+        return float(wilcoxon(changed, alternative="two-sided", method="approx").pvalue)
+    return float(wilcoxon(changed, alternative="two-sided", method="auto").pvalue)
+
+
+def _exact_tied_wilcoxon_p_value(changed: list[float]) -> float:
+    doubled_ranks = [round(2 * rank) for rank in rankdata([abs(delta) for delta in changed])]
+    total_rank = sum(doubled_ranks)
+    distribution = np.zeros(total_rank + 1)
+    distribution[0] = 1.0
+    for rank in doubled_ranks:
+        shifted = np.zeros_like(distribution)
+        shifted[rank:] = distribution[:-rank]
+        distribution = (distribution + shifted) / 2
+
+    positive_rank = sum(rank for rank, delta in zip(doubled_ranks, changed, strict=True) if delta > 0.0)
+    extreme = np.abs(2 * np.arange(total_rank + 1) - total_rank) >= abs(2 * positive_rank - total_rank)
+    return float(min(1.0, distribution[extreme].sum()))

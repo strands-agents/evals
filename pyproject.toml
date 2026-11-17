@@ -80,7 +80,10 @@ optimization = [
     "optuna>=5.0.0,<6.0.0",
 ]
 # Statistical comparison of paired evaluation reports.
-comparison = ["scipy>=1.15.0,<2.0.0"]
+comparison = [
+    "numpy>=1.26.0,<3.0.0",
+    "scipy>=1.15.0,<2.0.0",
+]
 
 [tool.ruff]
 line-length = 120
