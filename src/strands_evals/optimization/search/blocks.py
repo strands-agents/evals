@@ -487,8 +487,8 @@ class Search:
         flat key) goes to that block even when another block's declared name reaches it, so
         `Block(TPE(), "manager")` next to `Block(TPE(), "manager.window.window_size")` gives the first
         block the rest of `manager`.
-        Keys in no block go to their kind's default block, key by key: text/file keys ->
-        `Reflection()` ("text"); a `choice()`'s selector key -> `TPE(n_startup_trials=2)` ("structure");
+        Keys in no block go to their kind's default block, key by key: text/file keys and `SkillLibrary`
+        keys -> `Reflection()` ("text"); a `choice()`'s selector key -> `TPE(n_startup_trials=2)` ("structure");
         `int`, `float`, and `one_of` keys, those under a choice's alternatives included -> `TPE()`
         ("numbers"). So `manager` goes to "structure" and `manager.window.window_size` to "numbers". A
         choice key with one option (a bare `component()`) goes to no block, since nothing can change it.
@@ -583,7 +583,7 @@ class Search:
         for info in params:
             if info.key in owner:
                 continue
-            if info.kind == "text":
+            if info.kind in ("text", "skills"):
                 defaults.setdefault("text", []).append(info.key)
             elif info.kind == "choice":
                 if _is_structural(info):
@@ -614,7 +614,7 @@ class Search:
 _GROUPS: dict[str, frozenset[str]] = {
     "structure": frozenset({"choice"}),
     "numbers": frozenset({"int", "float", "one_of"}),
-    "text": frozenset({"text"}),
+    "text": frozenset({"text", "skills"}),
 }  # the kinds of keys a block may hold to be named after its group
 
 

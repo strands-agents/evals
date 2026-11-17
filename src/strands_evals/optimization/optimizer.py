@@ -40,6 +40,7 @@ from ..types.optimization import (
     Values,
 )
 from .candidate import Candidate, changed_keys
+from .declaration.files import SkillLibrary
 from .declaration.space import Marker, Space
 from .declaration.tunable import BuildContext, TunableFactory, _FactoryArgumentError
 from .end_phase import (
@@ -169,8 +170,10 @@ class Optimizer:
         Raises:
             TypeError: Conflicting arguments, e.g. `factory` and `build_task` together.
             ValueError: No evaluators and no objective, case or evaluator names not unique, fewer than one
-                train or validation case, a bad `name`, or a budget below the baseline plus the end phase's
-                reserve. (Split shares not summing to 1 are rejected by `Split` itself.)
+                train or validation case, a bad `name`, a budget below the baseline plus the end phase's
+                reserve, or `base_dir` inside a `SkillLibrary`'s folder (outside a `.strands-evals` folder,
+                which a library leaves out, the runs would change the library). (Split shares not summing
+                to 1 are rejected by `Split` itself.)
         """
         if (factory is None) == (build_task is None):
             raise TypeError(
@@ -303,6 +306,12 @@ class Optimizer:
         self._workdir = Path.cwd().resolve()
         # Resolved now, so a later change of working directory doesn't move the runs.
         self._base_dir = (self._workdir / (base_dir if base_dir is not None else _DEFAULT_BASE_DIR)).resolve()
+        for library in self._space._files.values():
+            if isinstance(library, SkillLibrary) and library._holds(self._base_dir):
+                raise ValueError(
+                    f"base_dir {self._base_dir} is inside the SkillLibrary at {library.path}, so the runs would "
+                    "become part of the library; put them elsewhere, or in a .strands-evals folder"
+                )
         self._run: RunDirectory | None = None  # created by run_async; set by resume
         self._resumed: ResumeState | None = None  # set by resume: what the event log already holds
         # Candidate id -> (case name, run index) -> its trial record, as scored this process.
@@ -344,6 +353,7 @@ class Optimizer:
                 "source": None
                 if info.source is None
                 else {"path": str(info.source.path), "pointer": info.source.pointer, "as_path": info.source.as_path},
+                **({"only": _library_only(self._space, info.name)} if info.kind == "skills" else {}),
             }
             for info in self._space.params()
         ]
@@ -954,9 +964,9 @@ class Optimizer:
         return FitData(
             space=self._space,
             text_blocks={
-                _block_name(block): [k for k in keys if self._space.param(k).kind == "text"]
+                _block_name(block): [k for k in keys if self._space.param(k).kind in ("text", "skills")]
                 for block, keys in self._blocks
-                if any(self._space.param(k).kind == "text" for k in keys)
+                if any(self._space.param(k).kind in ("text", "skills") for k in keys)
             },
             candidates={c: self._candidates[c].values for c in ids},
             cases=list(getattr(self._case_split, split)),
@@ -1103,6 +1113,7 @@ class Optimizer:
             first_of[candidate.id] = draw
             rescore = candidate.id in self._train
             deferred_patches = {b: p for b, p in draw.patches.items() if b in deferred}
+            self._space._save_versions(candidate.values, self._run.artifacts)
             self._run.save_candidate(
                 candidate,
                 changed_keys=changed_keys(parent, candidate),
@@ -1716,6 +1727,7 @@ class Optimizer:
         """
         assert self._run is not None
         baseline = self._baseline = Candidate.baseline(self._space)
+        self._space._save_versions(baseline.values, self._run.artifacts)
         self._run.save_candidate(baseline, changed_keys=[], round=None, role=None)
         scores = await self._score(baseline, "train", allowance=self._budget.allowance(phase="train"))
         self._score_event(baseline, "train", scores)
@@ -1813,8 +1825,10 @@ class Optimizer:
             on_iteration: Called only for iterations run after the resume.
 
         Raises:
-            ValueError: The configuration differs from `run.json`, naming the field; or `budget` can't cover
-                what is already spent plus the validation reserve (when the pick hasn't run yet).
+            ValueError: The configuration differs from `run.json`, naming the field; `budget` can't cover
+                what is already spent plus the validation reserve (when the pick hasn't run yet); or a
+                skill-library version a saved candidate holds is missing from `<run>/artifacts/skills/`, or
+                changed since the run wrote it.
             RuntimeError: The run stopped at setup (its baseline couldn't be a parent); start a new run.
         """
         run = RunDirectory.open(Path(run_dir))
@@ -1855,6 +1869,8 @@ class Optimizer:
         state = load_state(run, config=optimizer._config())
         if state.stop_reason == "setup":
             raise RuntimeError(f"run {run.run_id} stopped at setup, so there is nothing to resume; start a new run")
+        for candidate_id in state.candidates:  # each skill-library version they hold, read back into its library
+            optimizer._space._load_versions(run.load_candidate(candidate_id).values, run.artifacts)
         tracker = optimizer._budget
         budget = Budget(**saved["budget"]) if budget is None else budget
         # What the pick still needs: the whole reserve before the finalists exist, else their unrun validation trials.
@@ -1892,6 +1908,13 @@ class Optimizer:
             )
         optimizer._run, optimizer._resumed = run, state
         return optimizer
+
+
+def _library_only(space: Space, name: str) -> list[str] | None:
+    """The skills a `SkillLibrary`'s `only=` names, as `run.json` stores them; None when it tunes every skill."""
+    library = space.marker(name)
+    assert isinstance(library, SkillLibrary)
+    return None if library.only is None else list(library.only)
 
 
 def _slots_used(records: Sequence[IterationRecord]) -> int:

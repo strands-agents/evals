@@ -19,6 +19,7 @@ from strands_evals.optimization import (
     Proposer,
     Reflection,
     Search,
+    SkillLibrary,
     Space,
     TextValue,
     Thompson,
@@ -153,6 +154,17 @@ def test_default_search_assigns_every_key_by_kind():
     assert resolved[0][0].proposer.n_startup_trials == 2
     assert resolved[1][0].proposer.n_startup_trials == 4
     assert shape(schedule) == ("nested", "structure", "alternate")
+
+
+def test_a_skill_library_goes_to_the_default_text_block(tmp_path):
+    (tmp_path / "skills").mkdir()
+    space = Space({"prompt": TextValue(default="Be brief."), "skills": SkillLibrary(tmp_path / "skills")})
+
+    resolved, _ = Search().resolve(space)
+
+    assert names(resolved) == [("text", "Reflection", ["prompt", "skills"])]
+    with pytest.raises(ValueError, match=r"skills \(skills\), which TPE can't propose"):
+        Search([Block(TPE(), "skills")]).resolve(space)
 
 
 def test_a_bare_component_goes_to_no_block():

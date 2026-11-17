@@ -36,6 +36,7 @@ from strands_evals.optimization import (
     Schedule,
     ScoreModel,
     Search,
+    SkillLibrary,
     Split,
     Step,
     TextValue,
@@ -1840,3 +1841,116 @@ async def test_resume_inside_a_two_level_nested_matches_the_uninterrupted_run(tm
         search=_two_structural_search(),
     ).run_async()
     _assert_same(resumed, original, rerun=killed)
+
+
+# skill libraries
+
+
+class AddSkill(Proposer):
+    """Adds one skill to the parent's library version per patch."""
+
+    kinds = frozenset({"skills"})
+
+    async def propose(self, request):
+        library = request.space.marker("skills")
+        parent = str(request.parent.values["skills"])
+        name = f"skill{len(library.files(parent))}"
+        text = f"---\nname: {name}\ndescription: {name} rules\n---\nDo it.\n"
+        return [Patch(updates={"skills": library.revise(parent, {f"{name}/SKILL.md": text})}, rationale=f"add {name}")]
+
+    def observe(self, observation):
+        pass
+
+
+def _skills_factory(folder):
+    @tunable(skills=SkillLibrary(folder))
+    def make(skills):
+        return skills
+
+    return make
+
+
+async def _count_skills(agent_factory, case):
+    """A tenth of the number of skills the agent's library holds, so a larger library scores higher."""
+    return str(len([p for p in Path(agent_factory()).iterdir() if (p / "SKILL.md").is_file()]) / 10)
+
+
+def _skills_search():
+    return Search([Block(AddSkill(), "skills")], schedule=Joint())
+
+
+def _skills_optimizer(folder, base_dir):
+    return Optimizer(
+        _experiment(evaluators=[Temperature()]),
+        _skills_factory(folder),
+        rollout_fn=_count_skills,
+        search=_skills_search(),
+        budget=Budget(max_iterations=3),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=base_dir,
+    )
+
+
+async def test_a_run_from_an_empty_library_stores_each_version_and_a_resume_reads_them_back(tmp_path):
+    folder = tmp_path / "skills"
+    folder.mkdir()  # every skill is one the run adds
+    original_optimizer = _skills_optimizer(folder, tmp_path / "runs")
+    original = await original_optimizer.run_async()
+    root = original_optimizer._run.root
+    proposed = {
+        e["values"]["skills"] for e in _events(original_optimizer) if e["event"] == "propose" and not e["rescore"]
+    }
+    assert len(proposed) == 4  # the baseline and one new version per iteration
+    assert sorted(p.name for p in (root / "artifacts" / "skills").iterdir()) == sorted(
+        v[len("skills/") :] for v in proposed
+    )
+    assert sorted(p.name for p in (root / "artifacts" / original.best.values["skills"]).iterdir()) == [
+        "skill0",
+        "skill1",
+        "skill2",
+    ]
+    assert "+name: skill2\n" in original.best.diff()
+    assert json.loads((root / "run.json").read_text())["space"][0]["only"] is None
+
+    copy = _killed(root, tmp_path, lambda events: _index(events, "score", after=_index(events, "iteration_end", nth=2)))
+    (folder / "README.md").write_text("Changed since the run.\n")
+    with pytest.raises(ValueError, match=r"space\['skills'\]\.default changed"):
+        Optimizer.resume(
+            copy,
+            experiment=_experiment(evaluators=[Temperature()]),
+            factory=_skills_factory(folder),
+            search=_skills_search(),
+        )
+    (folder / "README.md").unlink()
+    resumed = Optimizer.resume(
+        copy,
+        experiment=_experiment(evaluators=[Temperature()]),
+        factory=_skills_factory(folder),  # a new library, as a new process declares it
+        rollout_fn=_count_skills,
+        search=_skills_search(),
+    )
+    result = await resumed.run_async()
+    assert result.best.values == original.best.values and result.best.diff() == original.best.diff()
+    assert result.candidates == original.candidates
+
+
+def test_run_json_records_the_skills_only_names(tmp_path):
+    folder = tmp_path / "skills"
+    (folder / "triage").mkdir(parents=True)
+    (folder / "triage" / "SKILL.md").write_text("---\nname: triage\ndescription: Sort.\n---\nSort.\n")
+
+    @tunable(skills=SkillLibrary(folder, only=["triage"]))
+    def make(skills):
+        return skills
+
+    optimizer = Optimizer(_experiment(evaluators=[Temperature()]), make, rollout_fn=_count_skills, base_dir=tmp_path)
+    assert optimizer._config()["space"][0]["only"] == ["triage"]  # so a resume with another only= is rejected
+
+
+def test_runs_inside_a_skill_library_are_refused_unless_it_leaves_them_out(tmp_path):
+    folder = tmp_path / "skills"
+    folder.mkdir()
+    with pytest.raises(ValueError, match="base_dir .* is inside the SkillLibrary"):
+        _skills_optimizer(folder, folder / "runs")
+    assert _skills_optimizer(folder, folder / ".strands-evals" / "runs")

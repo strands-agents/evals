@@ -135,7 +135,8 @@ def diff(space: Space, base: Candidate, other: Candidate, *, root: Path) -> str:
 
     File-backed values are hunks on their real files, headed `--- a/<path>` / `+++ b/<path>` with the
     path relative to `root` (a file outside it is headed by its absolute path, without `a/` / `b/`); a
-    `JsonField`'s hunk is on its whole file. Each changed non-file text value follows as a hunk headed
+    `JsonField`'s hunk is on its whole file, and a `SkillLibrary`'s on each text file its version adds,
+    changes, or removes (a binary file isn't shown). Each changed non-file text value follows as a hunk headed
     `--- <key>` / `+++ <key>`. Not promised to apply with `git apply`: the CLI applies a candidate from its
     values. Numbers and choices never appear (see `changed_values`).
 
@@ -171,7 +172,7 @@ def changed_values(space: Space, base: Candidate, other: Candidate) -> dict[str,
 
     Each changed key maps to `{"old": base value, "new": other value}`; a key active on one side only
     (a sub-key of a switched `choice()`) has only that side's entry, since None is a valid value.
-    Text never appears (see `diff`). Keys in declaration order.
+    Text and skill-library versions never appear (see `diff`). Keys in declaration order.
 
     Args:
         space: Tells numbers and choices apart from text.
@@ -183,7 +184,7 @@ def changed_values(space: Space, base: Candidate, other: Candidate) -> dict[str,
     """
     changed: dict[str, dict[str, Value]] = {}
     for info in space.params():
-        if info.kind == "text":
+        if info.kind in ("text", "skills"):
             continue
         before, after = base.values.get(info.key, _ABSENT), other.values.get(info.key, _ABSENT)
         if _same(before, after):

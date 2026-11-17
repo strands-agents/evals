@@ -2,13 +2,17 @@ import asyncio
 import gc
 import json
 import os
+import re
+import shutil
 import stat
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from strands.vended_plugins.skills import Skill
 
 from strands_evals.optimization import FileText, JsonField, SkillLibrary, Space, TextValue, tunable
-from strands_evals.optimization.declaration.files import _location_in_copy, _write_text_atomically
+from strands_evals.optimization.candidate import Candidate, changed_values, diff
+from strands_evals.optimization.declaration.files import _check_layout, _location_in_copy, _write_text_atomically
 from strands_evals.optimization.declaration.tunable import _KEPT_UNTIL_EXIT
 
 
@@ -643,41 +647,345 @@ def library(tmp_path):
     return skills
 
 
-def test_skill_library_members_are_each_skills_skill_md(library):
+def loaded_skills(path):
+    """The skills a strict Strands runtime loads from `path`: name -> skill."""
+    return {skill.name: skill for skill in Skill.from_directory(path, strict=True)}
+
+
+def test_a_skill_library_is_one_key_whose_value_is_its_version(library):
+    marker = SkillLibrary(library)
+    space = Space({"skills": marker})
+    (info,) = space.params()
+    assert (info.key, info.name, info.kind) == ("skills", "skills", "skills")
+    assert info.default == marker.default and re.fullmatch(r"skills/[0-9a-f]{16}", marker.default)
+    assert info.source.path == library.resolve() and info.source.as_path is True
+    assert info.size_cap is None
+    assert marker.files(marker.default) == {
+        "README.md": b"Our skills.\n",
+        "billing/skill.md": skill_text("billing", "Answer billing questions.").encode(),
+        "triage/SKILL.md": skill_text("triage", "Sort incoming tickets.").encode(),
+        "triage/references/levels.md": b"P0 to P3\n",
+    }  # every file; the empty notes/ folder holds none
+    assert space.marker("skills") is marker
+
+
+def test_a_version_is_named_by_its_content(library, tmp_path):
+    marker = SkillLibrary(library)
+    twin = tmp_path / "twin"
+    shutil.copytree(library, twin)
+    assert SkillLibrary(twin).default == marker.default  # the same files: the same version
+    edited = marker.revise(marker.default, {"README.md": "Ours.\n"})
+    assert edited != marker.default
+    assert marker.revise(edited, {"README.md": "Our skills.\n"}) == marker.default
+    assert marker.add(twin) == marker.default
+
+
+def test_an_empty_folder_is_the_empty_library_and_a_skill_can_be_added(tmp_path):
+    empty = tmp_path / "skills"
+    empty.mkdir()
+    marker = SkillLibrary(empty)
+    assert marker.files(marker.default) == {}
+
+    @tunable(skills=marker)
+    def make(skills):
+        return _Agent(skills)
+
+    agent = make.bind({})()  # the temp copy lives as long as the agent
+    assert list(agent.path.iterdir()) == []  # the factory still gets a folder
+    added = marker.revise(marker.default, {"refunds/SKILL.md": skill_text("refunds", "Refund rules.")})
+    agent = make.bind({"skills": added})()
+    assert set(loaded_skills(agent.path)) == {"refunds"}
+
+
+def test_a_version_adds_retires_and_renames_skills(library):
+    marker = SkillLibrary(library)
+    space = Space({"skills": marker})
+    base = Candidate.baseline(space)
+    refunds = skill_text("refunds", "Refund rules.")
+    versions = {
+        "added": marker.revise(base.values["skills"], {"refunds/SKILL.md": refunds}),
+        "retired": marker.revise(base.values["skills"], {"billing/skill.md": None}),
+        "renamed": marker.revise(
+            base.values["skills"],
+            {
+                "triage/SKILL.md": None,
+                "triage/references/levels.md": None,
+                "router/SKILL.md": skill_text("router", "Route."),
+            },
+        ),
+    }
+    expected = {
+        "added": {"billing", "refunds", "triage"},
+        "retired": {"triage"},
+        "renamed": {"billing", "router"},
+    }
+    for label, value in versions.items():
+        child = base.child(space, {"skills": value}, origin=["skills"], rationale="")
+        workspace = library.parent / "runs" / label / "optimization_files"
+        space.create_candidate_copy(child.values, workspace)
+        assert set(loaded_skills(space.resolve("skills", child.values, workspace))) == expected[label]
+
+
+def test_a_new_skill_is_named_after_its_folder(library):
+    marker = SkillLibrary(library)
+    with pytest.raises(
+        ValueError, match="refunds/SKILL.md: the frontmatter name must be its folder's name, 'refunds', got 'money'"
+    ):
+        marker.revise(marker.default, {"refunds/SKILL.md": skill_text("money", "Refund rules.")})
+
+
+def test_a_declared_skill_may_change_anything_but_its_name(library):
+    marker = SkillLibrary(library)
+    space = Space({"skills": marker})
+    edited = marker.revise(marker.default, {"triage/SKILL.md": skill_text("triage", "Sort and route.", "New.\n")})
+    space.validate({"skills": edited})
+    with pytest.raises(ValueError, match="triage/SKILL.md: the frontmatter name must stay 'triage', got 'router'"):
+        marker.revise(marker.default, {"triage/SKILL.md": skill_text("router", "Route tickets.")})
+    with pytest.raises(ValueError, match="triage/SKILL.md: SKILL.md must start with --- frontmatter"):
+        marker.revise(marker.default, {"triage/SKILL.md": "No frontmatter.\n"})
+
+
+def test_a_new_skill_sharing_a_declared_skills_name_fails(library):
+    (library / "faq").mkdir()
+    (library / "faq" / "SKILL.md").write_text(skill_text("help", "Answer FAQs."), newline="")  # named unlike its folder
+    marker = SkillLibrary(library)
+    with pytest.raises(ValueError, match="faq and help both name their skill 'help'"):
+        marker.revise(marker.default, {"help/SKILL.md": skill_text("help", "Help.")})
+
+
+def test_a_value_that_is_no_stored_version_fails_validation(library):
     space = Space({"skills": SkillLibrary(library)})
-    infos = space.params()
-    assert [info.key for info in infos] == ["skills/billing/skill.md", "skills/triage/SKILL.md"]
-    triage = space.param("skills/triage/SKILL.md")
-    assert triage.kind == "text"
-    assert triage.name == "skills"
-    assert triage.default == skill_text("triage", "Sort incoming tickets.")
-    assert triage.source.path == library.resolve() / "triage" / "SKILL.md"
-    assert triage.source.as_path is True
-    assert triage.size_cap == 2000
+    with pytest.raises(KeyError, match="'faq' is not a declared name"):
+        space.marker("faq")
+    with pytest.raises(ValueError, match="skills: 'skills/0000000000000000' is not a version of this library"):
+        space.validate({"skills": "skills/0000000000000000"})
+    with pytest.raises(ValueError, match="skills: expected a library version"):
+        space.validate({"skills": 3})
+    with pytest.raises(KeyError, match="add\\(<run>/artifacts/<value>\\)"):
+        space.marker("skills").files("skills/0000000000000000")
 
 
-def test_a_library_that_is_itself_a_skill_has_one_member(library):
-    space = Space({"triage": SkillLibrary(library / "triage")})
-    assert [info.key for info in space.params()] == ["triage/SKILL.md"]
+@pytest.mark.parametrize(
+    ("changes", "problem"),
+    [
+        ({"../outside.md": "x"}, "can't have an empty, '.', or '..' part"),
+        ({"triage/../../x": "x"}, "'..' part"),
+        ({"/etc/x": "x"}, "must be relative"),
+        ({"triage\\x.md": "x"}, "must be relative"),
+        ({"triage//x.md": "x"}, "empty"),
+        ({"": "x"}, "non-empty str"),
+        ({".git/config": "x"}, "can't hold '.git'"),
+        ({"triage/__pycache__/x.pyc": b"x"}, "can't hold '__pycache__'"),
+        ({"faq/SKILL.md": None}, "not a file of"),
+        ({"triage/SKILL.md/x": "x"}, "triage/SKILL.md is a file and a folder"),
+        ({"Triage/notes.md": "x"}, "differ only in case"),
+        ({"triage/SKILL.MD": "x"}, "differ only in case"),
+        ({"triage/references": "x"}, "triage/references is a file and a folder"),
+        ({"notes/a\nb.md": "x"}, "can't hold a control character"),
+    ],
+)
+def test_revise_takes_only_plain_paths_inside_the_library(library, changes, problem):
+    marker = SkillLibrary(library)
+    with pytest.raises(ValueError, match=re.escape(problem)):
+        marker.revise(marker.default, changes)
+    assert marker.revise(marker.default, {}) == marker.default
 
 
-def test_only_tunes_the_named_skills_with_the_same_keys(library):
-    space = Space({"skills": SkillLibrary(library, only=["triage"])})
-    assert [info.key for info in space.params()] == ["skills/triage/SKILL.md"]
+@pytest.mark.skipif(
+    os.path.normcase("A") == "a" or os.path.exists(__file__.upper()), reason="needs a case-sensitive disk"
+)
+def test_names_differing_only_in_case_from_the_declaration_dont_block_other_changes(library):
+    (library / "readme.md").write_text("lower\n", newline="")
+    marker = SkillLibrary(library)
+    assert marker.revise(marker.default, {"triage/references/more.md": "x"}) != marker.default
+    assert marker.revise(marker.default, {"README.md": "Edited.\n", "readme.md": None}) != marker.default
+
+
+def test_only_an_added_path_is_checked_for_case_and_file_folder_conflicts():
+    _check_layout({"README.md", "readme.md", "a/x"}, ["a/x"])  # an old conflict blocks nothing
+    _check_layout({"README.md", "readme.md"}, [])  # an edit adds no path
+    with pytest.raises(ValueError, match="readme.md and README.md differ only in case"):
+        _check_layout({"README.md", "readme.md"}, ["readme.md"])
+    with pytest.raises(ValueError, match="a is a file and a folder"):
+        _check_layout({"a", "a/x"}, ["a/x"])
+    with pytest.raises(ValueError, match="a is a file and a folder"):
+        _check_layout({"a", "a/x"}, ["a"])
+
+
+def test_every_way_of_making_a_version_lists_its_files_in_one_order(library):
+    marker = SkillLibrary(library)
+    one = marker.revise(marker.revise(marker.default, {"b.md": "b"}), {"a.md": "a"})
+    other = marker.revise(marker.revise(marker.default, {"a.md": "a"}), {"b.md": "b"})
+    assert one == other
+    assert list(marker.files(one)) == sorted(marker.files(one))
+
+
+def test_revise_takes_text_bytes_or_none(library):
+    marker = SkillLibrary(library)
+    with pytest.raises(TypeError, match="content must be str, bytes, or None"):
+        marker.revise(marker.default, {"README.md": 3})
+    value = marker.revise(marker.default, {"logo.png": b"\x89PNG"})
+    assert marker.files(value)["logo.png"] == b"\x89PNG"
+
+
+def test_a_version_keeps_the_declared_shape(library):
+    marker = SkillLibrary(library)
+    with pytest.raises(ValueError, match="SKILL.md at the library's root would make the folder one skill"):
+        marker.revise(marker.default, {"SKILL.md": skill_text("all", "Everything.")})
+    single = SkillLibrary(library / "triage")
+    with pytest.raises(ValueError, match="a single skill's version must keep its SKILL.md"):
+        single.revise(single.default, {"SKILL.md": None})
+
+
+def test_a_single_skills_text_is_its_skill_md(library):
+    marker = SkillLibrary(library / "triage")
+    assert [info.key for info in Space({"triage": marker}).params()] == ["triage"]
+    assert marker._texts(marker.default) == {"SKILL.md": skill_text("triage", "Sort incoming tickets.")}
+
+
+def test_the_library_is_read_once_at_declaration(library):
+    @tunable(skills=SkillLibrary(library))
+    def make(skills):
+        return _Agent(skills)
+
+    (library / "triage" / "SKILL.md").write_text(skill_text("triage", "Changed on disk."), newline="")
+    (library / "late.md").write_text("Added after.\n", newline="")
+    agent = make.bind({})()
+    copy = agent.path
+    assert (copy / "triage" / "SKILL.md").read_text() == skill_text("triage", "Sort incoming tickets.")
+    assert not (copy / "late.md").exists()
+    assert make().path == library.resolve()  # the plain call: the original folder, as it is now
+
+
+def test_a_snapshot_leaves_out_tool_and_run_folders(library):
+    for junk in (".git/HEAD", "triage/__pycache__/x.pyc", ".DS_Store", ".strands-evals/optimization/runs/r1/run.json"):
+        (library / junk).parent.mkdir(parents=True, exist_ok=True)
+        (library / junk).write_text("x", newline="")
+    marker = SkillLibrary(library)
+    assert sorted(marker.files(marker.default)) == [
+        "README.md",
+        "billing/skill.md",
+        "triage/SKILL.md",
+        "triage/references/levels.md",
+    ]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need extra rights on Windows")
+def test_symlinks_are_followed_into_the_version(library, tmp_path):
+    (tmp_path / "shared" / "faq").mkdir(parents=True)
+    (tmp_path / "shared" / "faq" / "SKILL.md").write_text(skill_text("faq", "Answer FAQs."), newline="")
+    (library / "faq").symlink_to(os.path.join("..", "shared", "faq"))  # relative, out of the library
+    (library / "notes" / "triage.md").symlink_to(library / "triage" / "SKILL.md")  # absolute, inside it
+    marker = SkillLibrary(library)
+    files = marker.files(marker.default)
+    assert files["faq/SKILL.md"] == skill_text("faq", "Answer FAQs.").encode()
+    assert files["notes/triage.md"] == files["triage/SKILL.md"]  # a file of its own in the version
+    edited = marker.revise(marker.default, {"faq/SKILL.md": skill_text("faq", "Answer FAQs briefly.")})
+
+    @tunable(skills=marker)
+    def make(skills):
+        return _Agent(skills)
+
+    agent = make.bind({"skills": edited})()
+    copy = agent.path
+    assert loaded_skills(copy)["faq"].description == "Answer FAQs briefly."
+    assert not (copy / "faq").is_symlink()
+    assert (tmp_path / "shared" / "faq" / "SKILL.md").read_text() == skill_text("faq", "Answer FAQs.")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need extra rights on Windows")
+def test_a_symlink_loop_or_a_broken_symlink_fails_at_declaration(library, tmp_path):
+    (library / "triage" / "again").symlink_to(library)
+    with pytest.raises(TypeError, match=r"again is a symlink to a folder it is in"):
+        SkillLibrary(library)
+    (library / "triage" / "again").unlink()
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    (tmp_path / "a" / "to-b").symlink_to(tmp_path / "b")
+    (tmp_path / "b" / "to-a").symlink_to(tmp_path / "a")
+    (library / "notes" / "a").symlink_to(tmp_path / "a")  # a -> b -> a -> ...
+    with pytest.raises(TypeError, match=r"to-a is a symlink to a folder it is in"):
+        SkillLibrary(library)
+    (library / "notes" / "a").unlink()
+    (library / "triage" / "gone.md").symlink_to(library / "missing.md")
+    with pytest.raises(TypeError, match=r"can't read .*gone\.md"):
+        SkillLibrary(library)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need extra rights on Windows")
+def test_two_links_to_one_folder_are_two_copies_of_it(library):
+    (library / "notes" / "one").symlink_to(library / "triage" / "references")
+    (library / "notes" / "two").symlink_to(library / "triage" / "references")
+    files = SkillLibrary(library).files(SkillLibrary(library).default)
+    assert files["notes/one/levels.md"] == files["notes/two/levels.md"] == b"P0 to P3\n"
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs named pipes")
+def test_a_named_pipe_fails_at_declaration(library):
+    os.mkfifo(library / "notes" / "pipe")
+    with pytest.raises(TypeError, match="pipe is not a file"):
+        SkillLibrary(library)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX permission bits")
+def test_an_executable_keeps_its_mode_in_the_version_and_the_copy(library):
+    script = library / "triage" / "run.sh"
+    script.write_text("#!/bin/sh\necho hi\n", newline="")
+    script.chmod(0o755)
+    marker = SkillLibrary(library)
+
+    @tunable(skills=marker)
+    def make(skills):
+        return _Agent(skills)
+
+    edited = marker.revise(marker.default, {"triage/run.sh": "#!/bin/sh\necho bye\n"})  # still executable
+    agent = make.bind({"skills": edited})()
+    copy = agent.path
+    assert os.access(copy / "triage" / "run.sh", os.X_OK)
+    assert not os.access(copy / "triage" / "SKILL.md", os.X_OK)
+    script.chmod(0o644)
+    assert SkillLibrary(library).default != marker.default  # the mode is part of the version
+    space = Space({"skills": marker})
+    artifacts = library.parent / "run" / "artifacts"
+    space._save_versions({"skills": edited}, artifacts)
+    fresh = Space({"skills": SkillLibrary(library)})
+    fresh._load_versions({"skills": edited}, artifacts)  # read back with its mode: the same version
+    assert fresh.marker("skills").files(edited) == marker.files(edited)
+    script.chmod(0o755)
+    only = SkillLibrary(library, only=["billing"])
+    flipped = library.parent / "flipped"
+    shutil.copytree(library, flipped)
+    (flipped / "triage" / "run.sh").chmod(0o644)  # the same bytes, another mode
+    with pytest.raises(ValueError, match=r"triage/run.sh: only billing may change"):
+        only.add(flipped)
+
+
+def test_only_lets_a_version_change_only_the_named_skills(library):
+    marker = SkillLibrary(library, only=["triage"])
+    assert marker.only == ("triage",)
+    assert marker._texts(marker.default) == {"triage/SKILL.md": skill_text("triage", "Sort incoming tickets.")}
+    marker.revise(marker.default, {"triage/references/levels.md": "P0 to P4\n"})
+    for changes in (
+        {"billing/skill.md": skill_text("billing", "Answer anything.")},
+        {"faq/SKILL.md": skill_text("faq", "Answer FAQs.")},
+        {"README.md": None},
+    ):
+        with pytest.raises(ValueError, match=r"only triage may change \(only=\)"):
+            marker.revise(marker.default, changes)
 
 
 def test_only_copies_every_skill_and_a_strict_runtime_loads_them(library):
-    skills_module = pytest.importorskip("strands.vended_plugins.skills")
+    marker = SkillLibrary(library, only=("triage",))
 
-    @tunable(skills=SkillLibrary(library, only=("triage",)))
+    @tunable(skills=marker)
     def make(skills):
         return _Agent(skills)
 
     originals = {p: p.read_bytes() for p in library.rglob("*") if p.is_file()}
     edited = skill_text("triage", "Sort tickets by customer impact.", "Ask for the account id first.\n")
-    agent = make.bind({"skills/triage/SKILL.md": edited})()
+    agent = make.bind({"skills": marker.revise(marker.default, {"triage/SKILL.md": edited})})()
     assert agent.path.name == "skills"
-    loaded = {skill.name: skill for skill in skills_module.Skill.from_directory(agent.path, strict=True)}
+    loaded = loaded_skills(agent.path)
     assert set(loaded) == {"billing", "triage"}
     assert loaded["triage"].instructions == "Ask for the account id first."
     assert (agent.path / "billing" / "skill.md").read_bytes() == originals[library / "billing" / "skill.md"]
@@ -687,8 +995,8 @@ def test_only_copies_every_skill_and_a_strict_runtime_loads_them(library):
 
 def test_only_accepts_a_malformed_skill_it_does_not_tune(library):
     (library / "billing" / "skill.md").write_text("No frontmatter.\n", newline="")
-    space = Space({"skills": SkillLibrary(library, only=("triage",))})
-    assert [info.key for info in space.params()] == ["skills/triage/SKILL.md"]
+    marker = SkillLibrary(library, only=("triage",))
+    assert list(marker._texts(marker.default)) == ["triage/SKILL.md"]
 
 
 @pytest.mark.parametrize(
@@ -714,12 +1022,14 @@ def test_only_on_a_single_skill_fails(library):
 
 
 def test_a_single_skill_is_copied_alone_with_its_directory_name(library):
-    @tunable(triage=SkillLibrary(library / "triage"))
+    marker = SkillLibrary(library / "triage")
+
+    @tunable(triage=marker)
     def make(triage):
         return _Agent(triage)
 
     edited = skill_text("triage", "Sort incoming tickets.", "Check the level first.\n")
-    agent = make.bind({"triage/SKILL.md": edited})()  # the temp copy lives as long as the agent
+    agent = make.bind({"triage": marker.revise(marker.default, {"SKILL.md": edited})})()  # lives as long as the agent
     copy = agent.path
     assert copy.name == "triage"  # the runtime checks the directory name against the skill's name
     assert [p.name for p in copy.parent.iterdir()] == ["triage"]  # nothing around it is copied
@@ -730,19 +1040,33 @@ def test_a_single_skill_is_copied_alone_with_its_directory_name(library):
 
 def test_a_run_directory_inside_a_single_skill_is_left_out_of_its_copy(library):
     skill = library / "triage"
-    space = Space({"triage": SkillLibrary(skill)})
+    marker = SkillLibrary(skill)
+    space = Space({"triage": marker})
     workspace = skill / ".strands-evals" / "runs" / "r1" / "candidates" / "abc" / "optimization_files"
-    values = {"triage/SKILL.md": skill_text("triage", "Sort.", "New.\n")}
+    values = {"triage": marker.revise(marker.default, {"SKILL.md": skill_text("triage", "Sort.", "New.\n")})}
     space.create_candidate_copy(values, workspace)
     copy = space.resolve("triage", values, workspace)
     assert copy.name == "triage"
     assert sorted(p.name for p in copy.iterdir()) == ["SKILL.md", "references"]
-    assert (copy / "SKILL.md").read_text() == values["triage/SKILL.md"]
+    assert (copy / "SKILL.md").read_text() == skill_text("triage", "Sort.", "New.\n")
+    assert SkillLibrary(skill).default == marker.default  # the run folder isn't part of the library
 
 
-def test_skill_library_size_cap_and_instructions_apply_to_every_member(library):
-    space = Space({"skills": SkillLibrary(library, size_cap=500, edit_instructions="Keep it short.")})
-    assert {(info.size_cap, info.edit_instructions) for info in space.params()} == {(500, "Keep it short.")}
+def test_skill_library_size_cap_and_instructions_apply_to_every_skill_md(library):
+    marker = SkillLibrary(library, size_cap=500, edit_instructions="Keep it short.")
+    (info,) = Space({"skills": marker}).params()
+    assert (info.size_cap, info.edit_instructions) == (500, "Keep it short.")
+    assert {marker._size_cap(path) for path in marker._texts(marker.default)} == {500}
+    assert SkillLibrary(library)._size_cap("triage/SKILL.md") == 2000
+    assert SkillLibrary(library)._size_cap("refunds/SKILL.md") == 2000  # a new one
+
+
+def test_a_skill_md_over_its_size_cap_fails(library):
+    marker = SkillLibrary(library, size_cap=200)
+    with pytest.raises(ValueError, match="triage/SKILL.md: 2.. characters, over the size_cap of 200"):
+        marker.revise(marker.default, {"triage/SKILL.md": skill_text("triage", "Sort.", "x" * 200)})
+    with pytest.raises(TypeError, match="over the size_cap of 20"):
+        SkillLibrary(library, size_cap=20)
 
 
 @pytest.mark.parametrize("where", ["missing", "README.md"])
@@ -751,47 +1075,19 @@ def test_skill_library_path_must_be_a_directory(library, where):
         SkillLibrary(library / where)
 
 
-def test_a_library_with_no_skill_fails_at_declaration(library):
-    with pytest.raises(TypeError, match="holds no skill"):
-        SkillLibrary(library / "notes")
+def test_a_folder_with_no_skill_is_a_library_with_none(library):
+    marker = SkillLibrary(library / "notes")
+    assert marker.files(marker.default) == {} and marker._texts(marker.default) == {}
 
 
 @pytest.mark.skipif(os.name == "nt", reason="symlinks need extra rights on Windows")
-def test_a_symlinked_skill_directory_fails_at_declaration(library, tmp_path):
-    outside = tmp_path / "shared"
-    outside.mkdir()
-    (outside / "SKILL.md").write_text(skill_text("shared", "Shared."), newline="")
-    (library / "shared").symlink_to(outside)
-    with pytest.raises(TypeError, match="is a symlink"):
+def test_a_skill_md_linked_to_another_skills_is_a_second_skill_of_that_name(library, tmp_path):
+    (library / "router").mkdir()
+    (library / "router" / "SKILL.md").symlink_to(library / "triage" / "SKILL.md")
+    with pytest.raises(TypeError, match="both name their skill 'triage'"):
         SkillLibrary(library)
-
-
-@pytest.mark.skipif(os.name == "nt", reason="symlinks need extra rights on Windows")
-def test_an_untuned_skill_linked_from_outside_the_library_loads_from_the_copy(library, tmp_path):
-    skills_module = pytest.importorskip("strands.vended_plugins.skills")
-    (tmp_path / "shared" / "faq").mkdir(parents=True)
-    (tmp_path / "shared" / "faq" / "SKILL.md").write_text(skill_text("faq", "Answer FAQs."), newline="")
-    (library / "faq").symlink_to(os.path.join("..", "shared", "faq"))  # relative, out of the library
-
-    @tunable(skills=SkillLibrary(library, only=["triage"]))
-    def make(skills):
-        return _Agent(skills)
-
-    agent = make.bind({"skills/triage/SKILL.md": skill_text("triage", "Sort.", "New.\n")})()
-    loaded = {skill.name for skill in skills_module.Skill.from_directory(agent.path, strict=True)}
-    assert loaded == {"billing", "faq", "triage"}  # the same skills as the baseline
-
-
-@pytest.mark.skipif(os.name == "nt", reason="symlinks need extra rights on Windows")
-def test_a_symlink_to_a_tuned_file_leads_to_the_candidates_copy_of_it(library):
-    (library / "notes" / "triage.md").symlink_to(library / "triage" / "SKILL.md")  # absolute
-    space = Space({"skills": SkillLibrary(library)})
-    workspace = library.parent / "run" / "optimization_files"
-    edited = skill_text("triage", "Sort.", "New.\n")
-    space.create_candidate_copy({**space.complete({}), "skills/triage/SKILL.md": edited}, workspace)
-    copy = space.resolve("skills", space.complete({}), workspace)
-    assert (copy / "notes" / "triage.md").read_text() == edited
-    assert (library / "triage" / "SKILL.md").read_text() != edited
+    with pytest.raises(TypeError, match="both name their skill 'triage'"):
+        SkillLibrary(library, only=("triage",))  # untuned, it still shares the tuned skill's name
 
 
 @pytest.mark.parametrize("only", [None, ["triage"], ["billing"]])
@@ -827,24 +1123,16 @@ def test_a_skill_md_without_well_formed_frontmatter_fails_at_declaration(library
 def test_a_skill_md_with_an_unquoted_colon_loads_as_the_runtime_loads_it(library):
     text = skill_text("triage", "Use this skill when: a ticket arrives")
     (library / "triage" / "SKILL.md").write_text(text, newline="")
-    space = Space({"skills": SkillLibrary(library)})
-    space.validate(space.complete({"skills/triage/SKILL.md": skill_text("triage", "Use when: tickets", "New.\n")}))
+    marker = SkillLibrary(library)
+    Space({"skills": marker}).validate(
+        {"skills": marker.revise(marker.default, {"triage/SKILL.md": skill_text("triage", "Use when: tickets")})}
+    )
 
 
 def test_a_skill_md_that_is_not_utf8_fails_at_declaration(library):
     (library / "triage" / "SKILL.md").write_bytes(b"\xff\xfe")
     with pytest.raises(TypeError, match="not UTF-8"):
         SkillLibrary(library)
-
-
-def test_a_proposed_skill_md_may_change_anything_but_its_name(library):
-    space = Space({"skills": SkillLibrary(library)})
-    values = space.complete({"skills/triage/SKILL.md": skill_text("triage", "Sort and route tickets.", "New steps.\n")})
-    space.validate(values)
-    with pytest.raises(ValueError, match="frontmatter name must stay 'triage', got 'router'"):
-        space.validate({**values, "skills/triage/SKILL.md": skill_text("router", "Route tickets.")})
-    with pytest.raises(ValueError, match="skills/triage/SKILL.md: SKILL.md must start with --- frontmatter"):
-        space.validate({**values, "skills/triage/SKILL.md": "No frontmatter.\n"})
 
 
 def test_the_baseline_skill_md_is_parsed_once(library, monkeypatch):
@@ -858,26 +1146,21 @@ def test_the_baseline_skill_md_is_parsed_once(library, monkeypatch):
     assert parsed.count((library / "triage" / "SKILL.md").read_text()) == 1
 
 
-def test_a_skill_md_over_its_size_cap_fails_validation(library):
-    space = Space({"skills": SkillLibrary(library, size_cap=200)})
-    long = skill_text("triage", "Sort.", "x" * 200)
-    with pytest.raises(ValueError, match="over the size_cap of 200"):
-        space.validate(space.complete({"skills/triage/SKILL.md": long}))
-
-
 def test_a_skill_library_resolves_to_the_original_directory_without_a_workspace(library):
     space = Space({"skills": SkillLibrary(library)})
     assert space.resolve("skills", space.complete({}), None) == library.resolve()
 
 
-def test_bind_passes_the_copy_of_the_library_with_the_candidates_text(library):
-    @tunable(skills=SkillLibrary(library))
+def test_bind_passes_the_copy_of_the_library_with_the_candidates_version(library):
+    marker = SkillLibrary(library)
+
+    @tunable(skills=marker)
     def make(skills):
         return _Agent(skills)
 
     originals = {p: p.read_bytes() for p in library.rglob("*") if p.is_file()}
     edited = skill_text("triage", "Sort incoming tickets.", "Check the level first.\n")
-    bound = make.bind({"skills/triage/SKILL.md": edited})
+    bound = make.bind({"skills": marker.revise(marker.default, {"triage/SKILL.md": edited})})
     copy = bound().path
     assert copy != library.resolve()
     assert (copy / "triage" / "SKILL.md").read_text() == edited
@@ -896,15 +1179,15 @@ def test_the_plain_call_passes_the_original_library(library):
 
 
 def test_a_skills_runtime_sees_the_candidates_edits(library):
-    skills_module = pytest.importorskip("strands.vended_plugins.skills")
+    marker = SkillLibrary(library)
 
-    @tunable(skills=SkillLibrary(library))
+    @tunable(skills=marker)
     def make(skills):
         return _Agent(skills)
 
     edited = skill_text("triage", "Sort tickets by customer impact.", "Ask for the account id first.\n")
-    agent = make.bind({"skills/triage/SKILL.md": edited})()
-    loaded = {skill.name: skill for skill in skills_module.Skill.from_directory(agent.path)}
+    agent = make.bind({"skills": marker.revise(marker.default, {"triage/SKILL.md": edited})})()
+    loaded = loaded_skills(agent.path)
     assert set(loaded) == {"billing", "triage"}
     assert loaded["triage"].description == "Sort tickets by customer impact."
     assert loaded["triage"].instructions == "Ask for the account id first."
@@ -912,9 +1195,10 @@ def test_a_skills_runtime_sees_the_candidates_edits(library):
 
 
 def test_a_file_text_on_a_reference_inside_the_library_shares_its_copy(library, tmp_path_factory):
+    marker = SkillLibrary(library)
     space = Space(
         {
-            "skills": SkillLibrary(library),
+            "skills": marker,
             "levels": FileText(library / "triage" / "references" / "levels.md", as_path=True),
         }
     )
@@ -925,36 +1209,36 @@ def test_a_file_text_on_a_reference_inside_the_library_shares_its_copy(library, 
     skills_copy = space.resolve("skills", values, workspace)
     assert space.resolve("levels", values, workspace) == skills_copy / "triage" / "references" / "levels.md"
     assert (skills_copy / "triage" / "references" / "levels.md").read_text() == "P0 to P4\n"
+    for changes in ({"triage/references/levels.md": "P9\n"}, {"triage/references/levels.md": None}):
+        with pytest.raises(ValueError, match="triage/references/levels.md is declared by levels"):
+            space.validate({**values, "skills": marker.revise(marker.default, changes)})
+
+
+def test_a_file_text_beside_a_library_copies_its_folder_but_never_the_librarys(tmp_path):
+    (tmp_path / "skills" / "triage").mkdir(parents=True)
+    (tmp_path / "skills" / "triage" / "SKILL.md").write_text(skill_text("triage", "Sort."), newline="")
+    (tmp_path / "AGENTS.md").write_text("Be kind.\n", newline="")
+    marker = SkillLibrary(tmp_path / "skills")
+    space = Space({"skills": marker, "agents": FileText(tmp_path / "AGENTS.md", as_path=True)})
+    (tmp_path / "skills" / "triage" / "SKILL.md").write_text("Changed on disk.\n", newline="")
+    workspace = tmp_path / "out" / "optimization_files"
+    values = space.complete({})
+    space.create_candidate_copy(values, workspace)
+    skills_copy = space.resolve("skills", values, workspace)
+    assert skills_copy.parent == space.resolve("agents", values, workspace).parent
+    assert (skills_copy / "triage" / "SKILL.md").read_text() == skill_text("triage", "Sort.")  # the version's
 
 
 def test_a_skill_md_declared_again_fails_at_declaration(library):
     with pytest.raises(TypeError, match="already declared"):
         Space({"skills": SkillLibrary(library), "triage": FileText(library / "triage" / "SKILL.md")})
     with pytest.raises(TypeError, match="already declared"):
+        Space({"triage": FileText(library / "triage" / "SKILL.md"), "skills": SkillLibrary(library)})
+    with pytest.raises(TypeError, match="already declared"):
         Space({"skills": SkillLibrary(library), "triage": SkillLibrary(library / "triage")})
-
-
-@pytest.mark.skipif(os.name == "nt", reason="symlinks need extra rights on Windows")
-@pytest.mark.parametrize("linked_to", ["another skill's", "an undeclared file"])
-def test_a_skill_md_that_is_a_symlink_fails_at_declaration(library, tmp_path, linked_to):
-    if linked_to == "an undeclared file":
-        target = tmp_path / "shared.md"
-        target.write_text(skill_text("router", "Route tickets."), newline="")
-    else:
-        target = library / "triage" / "SKILL.md"
-    (library / "router").mkdir()
-    (library / "router" / "SKILL.md").symlink_to(target)
-    with pytest.raises(TypeError, match=r"router[/\\]SKILL.md is a symlink"):
-        SkillLibrary(library)
-    with pytest.raises(TypeError, match="is a symlink"):
-        SkillLibrary(library / "router")
-    if linked_to == "another skill's":  # untuned, it is a second skill named triage
-        with pytest.raises(TypeError, match="both name their skill 'triage'"):
-            SkillLibrary(library, only=("triage",))
-    else:  # untuned, it is only copied
-        assert [info.key for info in Space({"s": SkillLibrary(library, only=("triage",))}).params()] == [
-            "s/triage/SKILL.md"
-        ]
+    with pytest.raises(TypeError, match="already declared"):
+        Space({"triage": SkillLibrary(library / "triage"), "skills": SkillLibrary(library)})
+    assert Space({"skills": SkillLibrary(library, only=["billing"]), "t": FileText(library / "triage" / "SKILL.md")})
 
 
 @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="needs POSIX permissions, not as root")
@@ -965,7 +1249,7 @@ def test_an_unreadable_folder_fails_at_declaration(library):
     locked.chmod(0o000)
     try:
         with pytest.raises(TypeError, match=r"can't read .*locked .*every candidate's copy needs"):
-            SkillLibrary(library, only=("triage",))  # untuned too: the copy holds every folder
+            SkillLibrary(library, only=("triage",))  # untuned too: every version holds every file
     finally:
         locked.chmod(0o755)
 
@@ -980,16 +1264,70 @@ def test_an_unreadable_untuned_skill_md_fails_at_declaration(library):
         (library / "billing" / "skill.md").chmod(0o644)
 
 
-def test_a_skill_edit_diffs_on_its_real_file(library):
-    from strands_evals.optimization.candidate import Candidate, diff
-
-    space = Space({"skills": SkillLibrary(library)})
+def test_a_library_version_diffs_on_its_real_files(library):
+    marker = SkillLibrary(library)
+    space = Space({"skills": marker})
     base = Candidate.baseline(space)
-    edited = skill_text("triage", "Sort incoming tickets.", "Check the level first.\n")
-    other = base.child(space, {"skills/triage/SKILL.md": edited}, origin=["text"], rationale="")
+    value = marker.revise(
+        marker.default,
+        {
+            "triage/SKILL.md": skill_text("triage", "Sort incoming tickets.", "Check the level first.\n"),
+            "billing/skill.md": None,
+            "refunds/SKILL.md": skill_text("refunds", "Refund rules."),
+            "logo.png": b"\x89PNG\xff",
+        },
+    )
+    other = base.child(space, {"skills": value}, origin=["text"], rationale="")
     text = diff(space, base, other, root=library.parent)
-    assert text.startswith("--- a/skills/triage/SKILL.md\n+++ b/skills/triage/SKILL.md\n")
+    assert "--- a/skills/triage/SKILL.md\n+++ b/skills/triage/SKILL.md\n" in text
     assert "-Do the thing.\n+Check the level first.\n" in text
+    assert "--- a/skills/billing/skill.md\n+++ b/skills/billing/skill.md\n@@ -1,6 +0,0 @@\n" in text  # removed
+    assert "--- a/skills/refunds/SKILL.md\n+++ b/skills/refunds/SKILL.md\n@@ -0,0 +1,6 @@\n" in text  # added
+    assert "logo.png" not in text  # a binary file isn't shown
+    assert changed_values(space, base, other) == {}
+
+
+def test_a_stored_version_reads_back_in_a_new_process(library, tmp_path):
+    marker = SkillLibrary(library)
+    space = Space({"skills": marker})
+    value = marker.revise(marker.default, {"refunds/SKILL.md": skill_text("refunds", "Refund rules.")})
+    artifacts = tmp_path / "run" / "artifacts"
+    space._save_versions({"skills": value}, artifacts)
+    space._save_versions({"skills": value}, artifacts)  # once
+    assert sorted(p.name for p in (artifacts / "skills").iterdir()) == [value.split("/")[1]]
+    fresh = Space({"skills": SkillLibrary(library)})  # what a new process declares
+    with pytest.raises(ValueError, match="is not a version of this library"):
+        fresh.validate({"skills": value})
+    fresh._load_versions({"skills": value}, artifacts)
+    fresh.validate({"skills": value})
+    assert fresh.marker("skills").files(value) == marker.files(value)
+    (artifacts / value / "refunds" / "SKILL.md").write_text("Edited by hand.\n", newline="")
+    again = Space({"skills": SkillLibrary(library)})
+    with pytest.raises(ValueError, match="doesn't hold the version it is named for"):
+        again._load_versions({"skills": value}, artifacts)
+    with pytest.raises(ValueError, match="is missing"):
+        again._load_versions({"skills": "skills/0123456789abcdef"}, artifacts)
+    with pytest.raises(ValueError, match="'skills/../..' is not a skill-library version's value"):
+        again._load_versions({"skills": "skills/../.."}, artifacts)
+    empty = Space({"skills": SkillLibrary(library / "notes")})
+    empty._save_versions(empty.complete({}), artifacts)
+    Space({"skills": SkillLibrary(library / "notes")})._load_versions(empty.complete({}), artifacts)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need extra rights on Windows")
+def test_a_link_to_the_library_beside_it_stays_a_link_into_its_copy(tmp_path):
+    (tmp_path / "skills" / "triage").mkdir(parents=True)
+    (tmp_path / "skills" / "triage" / "SKILL.md").write_text(skill_text("triage", "Sort."), newline="")
+    (tmp_path / "AGENTS.md").write_text("Be kind.\n", newline="")
+    (tmp_path / "linked").symlink_to(tmp_path / "skills")
+    marker = SkillLibrary(tmp_path / "skills")
+    space = Space({"skills": marker, "agents": FileText(tmp_path / "AGENTS.md", as_path=True)})
+    workspace = tmp_path / "out" / "optimization_files"
+    values = {"skills": marker.revise(marker.default, {"triage/SKILL.md": skill_text("triage", "Sort fast.")})}
+    space.create_candidate_copy(space.complete(values), workspace)
+    linked = space.resolve("agents", space.complete(values), workspace).parent / "linked"
+    assert linked.is_symlink()
+    assert (linked / "triage" / "SKILL.md").read_text() == skill_text("triage", "Sort fast.")
 
 
 # _write_text_atomically

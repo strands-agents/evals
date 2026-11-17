@@ -131,7 +131,11 @@ class _Design:
         for info in infos.values():
             key = info.key
             # A one-option choice (a bare component()) can never change, so it isn't a factor.
-            if key in in_texts or info.kind == "text" or (info.kind == "choice" and len(info.options or ()) < 2):
+            if (
+                key in in_texts
+                or info.kind in ("text", "skills")
+                or (info.kind == "choice" and len(info.options or ()) < 2)
+            ):
                 continue
             present = [v[key] for v in fitted if key in v]
             absent = [_INACTIVE] if any(key not in v for v in fitted) else []
