@@ -82,11 +82,12 @@ class EventLog:
 
     Resume reads: `spent` from the trial events (the last per key: its `rollouts` plus its
     `previous_attempts`'); candidates, numbers, parents, and rounds from `propose` and `iteration_end`;
-    exhausted blocks and iterations from `iteration_end`; history from `select`; open rounds from openers
-    with no observe yet; `stop_reason` from the last `stop`; proposer feedback from `observe` / `evidence`;
-    `search_cost` from every `proposer_usage` event, a killed iteration's included; the fit sequence from
-    `fit`; the end phase's progress from `finalists` / `picked` / `test`. Only search events of closed iterations
-    (ended by `iteration_end` or by `stop`) are replayed; trial and `proposer_usage` events are always read.
+    exhausted blocks, iterations, and the patience count (from `best_after`) from `iteration_end`; history
+    from `select`; open rounds from openers with no observe yet; `stop_reason` from the last `stop`; proposer
+    feedback from `observe` / `evidence`; `search_cost` from every `proposer_usage` event, a killed
+    iteration's included; the fit sequence from `fit`; the end phase's progress from `finalists` / `picked` /
+    `test`. Only search events of closed iterations (ended by `iteration_end` or by `stop`) are replayed; trial
+    and `proposer_usage` events are always read.
     """
 
     def __init__(self, path: Path):
