@@ -2,6 +2,7 @@ import asyncio
 import random
 from collections import Counter
 
+import numpy as np
 import pytest
 
 from strands_evals.optimization import (
@@ -333,6 +334,82 @@ def test_a_combination_is_scored_at_the_parents_values_outside_the_block():
     reqs = (request(space, ["option"], fit=fit, candidates=summaries, iteration=i) for i in range(10))
     counts = Counter(propose(Thompson(), req)[0].updates["option"] for req in reqs)
     assert counts["r"] >= 8
+
+
+# A choice whose summary option has its own key, and a temperature outside it. True means, in ranking order: the
+# parent; summary's best candidate, which moved its ratio to 0.15 (+0.30) and temperature to 0.4 (-0.20) together;
+# summary's first candidate, at the parent's temperature with the default ratio; window at 0.4; summary at 0.4 with the
+# default ratio.
+# The effects are kept moderate because a much larger gain measured in one candidate is fitted partly as that
+# candidate's own effect, which a draw leaves out.
+MANAGER_SPACE = Space(
+    {
+        "manager": choice(window=component(Window), summary=component(Summary, ratio=OneOf(0.15, 0.5))),
+        "temperature": OneOf(0.4, 0.7, default=0.7),
+    }
+)
+TUNED = ({"manager": "summary", "manager.summary.ratio": 0.15, "temperature": 0.4}, {"A": 0.50})
+HISTORY = [
+    ({"manager": "window", "temperature": 0.7}, {"A": 0.55}),
+    TUNED,
+    ({"manager": "summary", "temperature": 0.7}, {"A": 0.40}),
+    ({"manager": "window", "temperature": 0.4}, {"A": 0.35}),
+    ({"manager": "summary", "temperature": 0.4}, {"A": 0.20}),
+]
+
+
+def test_a_combination_is_scored_with_the_keys_it_makes_active_filled_as_its_patch_fills_them():
+    # Both choices are measured at the parent's temperature, so neither is fresh. The patch {"manager": "summary"}
+    # creates ratio 0.15 (from the best-ranked candidate that has a ratio) at temperature 0.7, about 0.70, which beats
+    # the parent (0.55). Scored at summary's first candidate (0.40) or at its best one (0.50) instead, it would lose.
+    # Without that best one, the ratio filled is the default (about 0.40) and the parent's choice wins.
+    def counts(truths):
+        fit, summaries = world(MANAGER_SPACE, truths)
+        parent = Candidate(summaries[0].values, None, ("baseline",), "")
+        reqs = (
+            request(MANAGER_SPACE, ["manager"], fit=fit, candidates=summaries, parent=parent, iteration=i)
+            for i in range(20)
+        )
+        return Counter(propose(Thompson(), req)[0].updates["manager"] for req in reqs)
+
+    assert counts(HISTORY)["summary"] >= 16
+    assert counts([t for t in HISTORY if t is not TUNED])["window"] >= 16
+
+
+def test_each_combination_is_scored_at_the_candidate_its_patch_would_create():
+    class Recording:
+        unit = 1.0
+
+        def __init__(self):
+            self.scored = []
+
+        def sample_effects(self, n, rng):
+            return np.zeros((n, 1))
+
+        def value_under(self, effects, values):
+            self.scored.append(dict(values))
+            return np.zeros(len(effects))
+
+    class Fit:
+        flagged = []
+
+        def __init__(self, model):
+            self.metrics = {"A": model}
+
+    summaries = [summary(content_id(v), v) for v in (MANAGER_SPACE.complete(partial) for partial, _ in HISTORY)]
+    parent = Candidate(summaries[0].values, None, ("baseline",), "")
+    model = Recording()
+    propose(Thompson(), request(MANAGER_SPACE, ["manager"], fit=Fit(model), candidates=summaries, parent=parent))
+
+    def fill(key):  # as the optimizer fills, from the best-ranked candidate that has the key (all are eligible here)
+        return next(((s.values[key], s.candidate_id) for s in summaries if key in s.values), None)
+
+    children = [
+        dict(parent.child(MANAGER_SPACE, {"manager": m}, origin=("thompson",), rationale="", fill=fill).values)
+        for m in ("window", "summary")
+    ]
+    assert model.scored == children
+    assert model.scored[1]["manager.summary.ratio"] == 0.15  # from summary's best candidate, not its first
 
 
 def test_nothing_to_propose_when_no_block_key_is_active():
