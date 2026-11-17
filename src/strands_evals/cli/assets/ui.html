@@ -362,6 +362,14 @@
   table.rtab .num { font-family: var(--font-mono, ui-monospace, Menlo, monospace); }
   table.rtab .arrow { color: var(--ink3); padding-right: 8px; }
   table.rtab .ci { color: var(--ink3); font-size: 11.5px; }
+  /* The metrics the run was not aiming at. A fold rather than a drawer: three rows of a table
+     already on screen, not a topic of their own. */
+  button.rmore {
+    appearance: none; font: inherit; font-size: 12px; cursor: pointer;
+    margin: 9px 0 0; padding: 0; border: 0; background: none;
+    color: var(--ink2); text-decoration: underline; text-underline-offset: 3px;
+  }
+  button.rmore:hover { color: var(--ink1); }
   .delta.up { color: var(--good); }
   .delta.down { color: var(--bad); }
   .delta.flat { color: var(--ink3); }
@@ -737,6 +745,15 @@
            rather than asserting the pair. -->
       <p class="sub source" id="opt-source" hidden></p>
       <dl class="kv wide" id="opt-setup-kv"></dl>
+      <!-- The rest of the record, folded: how the search picked parents, which surrogate scored
+           the candidates, how a failed agent was scored, and where it ran. Each is a real field of
+           `run.json` and belongs on a page that calls itself the record — but none of them is
+           read on the way to a result, and in the list above they outnumbered the four lines that
+           are. -->
+      <details class="drawer" id="opt-mech" hidden>
+        <summary>How the search was run<span class="path" id="opt-mech-sum"></span></summary>
+        <dl class="kv wide" id="opt-mech-kv"></dl>
+      </details>
 
       <!-- What it was allowed to change: the declared space, which is the only place a knob the
            search never touched appears at all. A key is listed whether or not any candidate used
@@ -5636,10 +5653,12 @@
     }
 
     const r = d.result;
+    const c = d.config || {};
+    const f = d.facts || {};
     const label = r.heldOut
       ? `Held out · ${plural(r.cases || 0, 'test case')} kept out of the search`
       : 'Validation split · the search chose on these cases, so this is weaker evidence';
-    const rows = r.metrics.map(m => {
+    const row = m => {
       const delta = m.before != null && m.after != null ? m.after - m.before : null;
       const ci = m.diff && typeof m.diff.ci_low === 'number'
         ? `[${fine(m.diff.ci_low)}, ${fine(m.diff.ci_high)}]` : '';
@@ -5649,7 +5668,30 @@
         + `<td class="arrow">→</td><td class="num">${m.after == null ? '—' : esc(fine(m.after))}</td>`
         + `<td class="num delta flat">${delta == null ? '' : (delta > 0 ? '+' : '') + esc(fine(delta))}</td>`
         + `<td class="ci">${esc(ci)}</td><td class="num ci">${esc(ratio)}</td></tr>`;
-    }).join('');
+    };
+    /* What the run was aiming at: the goals the objective expression states, and the metrics the
+       constraints name. A report carries every metric the evaluators produced, and the rest of
+       them are what the champion happened to also do — on this run, three rows of `+0` and a
+       four-decimal `-0.0004` around the two rows that were the point. They are kept, because an
+       unchanged cost is a finding about the champion, and folded, because the reader scanning for
+       the result cannot tell which rows those are until they have read all of them.
+
+       A report whose metrics the config names none of is left whole: an empty table with a fold
+       under it saying "six others" is the page hiding its own answer. */
+    const aimed = new Set([...(f.goalMetrics || []), ...(f.goals || []).map(g => g.metric)]);
+    for (const con of (c.constraints || [])) {
+      const named = String(con).match(/[A-Za-z_][\w.]*/);
+      if (named) aimed.add(named[0]);
+    }
+    const lead = r.metrics.filter(m => aimed.has(m.metric));
+    const rest = lead.length ? r.metrics.filter(m => !aimed.has(m.metric)) : [];
+    const table = `<table class="rtab"><tbody>${(lead.length ? lead : r.metrics).map(row).join('')}</tbody>`
+      + (rest.length ? `<tbody class="rest" id="opt-rest" hidden>${rest.map(row).join('')}</tbody>` : '')
+      + '</table>'
+      + (rest.length
+        ? `<button class="rmore" data-act="opt-rest">+ ${plural(rest.length, 'metric')} `
+          + 'the run was not aiming at</button>'
+        : '');
 
     /* The interval is the verdict. A run whose interval straddles zero has not shown an
        improvement, however much the best-so-far curve climbed on the training split.
@@ -5694,7 +5736,7 @@
         + ' there is nothing here to compare them against.';
     }
 
-    return `<p class="rlabel">${esc(label)}</p><table class="rtab"><tbody>${rows}</tbody></table>`
+    return `<p class="rlabel">${esc(label)}</p>${table}`
       + resultStrip(d)
       + `<p class="verdict">${verdict}</p>`;
   }
@@ -6426,10 +6468,11 @@
         : 'No optimizer run directory in this folder. One is a run.json with an events.jsonl beside it.';
       ['opt-series-chart', 'opt-series-legend', 'opt-budget-chart', 'opt-status-chart',
         'opt-usage-chart', 'opt-to-chart', 'opt-to-legend', 'opt-result', 'opt-winner', 'opt-cands',
-        'opt-explain', 'opt-method-sum', 'opt-setup-kv']
+        'opt-explain', 'opt-method-sum', 'opt-setup-kv', 'opt-mech-kv']
         .forEach(id => { $(id).innerHTML = ''; });
       $('opt-setup-sub').textContent = '';
       $('opt-source').hidden = true;
+      $('opt-mech').hidden = true;
       $('opt-tradeoff').hidden = true;
       $('opt-effects').hidden = true;
       $('opt-space-wrap').hidden = true;
@@ -6444,8 +6487,12 @@
     /* Which run, and whether it finished. The proposal, iteration and trial counts used to be
        here too, and they are already on the drawer summaries below that hold the charts of them —
        saying them twice on one screen made the run read as busier than it is. */
-    $('opt-sub').textContent = run.run_id
-      + (d.stop ? ` · stopped: ${d.stop.reason}${d.stop.message ? ` (${d.stop.message})` : ''}` : ' · still running');
+    /* The reason, not the message. A real record's message explains the reason to whoever wrote
+       the budget — "used Budget(max_iterations=6)'s candidate slots (6 steps' worth)" — and
+       nested in parentheses after the word it restates, it was the longest line on the tab and
+       said no more than `iterations`. It is on hover, where the curious can still have it. */
+    $('opt-sub').textContent = run.run_id + (d.stop ? ` · stopped: ${d.stop.reason}` : ' · still running');
+    $('opt-sub').title = (d.stop && d.stop.message) || '';
 
     /* A few figures, because the page answers one question first: did it get better, and what
        won. Scored-against-not-scored and the trial tally are diagnostics, so they label the
@@ -6711,18 +6758,29 @@
   function renderOptimizerSetup(d, run) {
     const c = d.config || {};
     const f = d.facts || configFacts(c);
-    const rows = [];
+    /* Two lists: what the run was told to achieve, and the machinery it was told to use. The
+       second is folded, because a reader arriving here wants the objective, the cases and the
+       budget, and six rows of surrogate and selection names in front of them read as a settings
+       dump rather than as a brief. */
+    const rows = [], mech = [];
     const mono = v => `<span class="mono">${esc(v)}</span>`;
 
     rows.push(['Objective', c.objective ? mono(c.objective) : '<span class="empty">none recorded</span>']);
     if (f.isPareto) rows.push(['Shape', 'a Pareto front, so there is no single best value']);
-    if (f.goalMetrics.length) rows.push(['Goal metrics', f.goalMetrics.map(esc).join(', ')]);
+    /* Only the goals the objective expression does not state for itself. `Maximize(Correct)` with
+       a `Goal metrics: Correct` under it is the same fact twice, one line apart. What is left is
+       the case the row exists for: a goal over an expression — `Maximize(Helpfulness - 0.01 *
+       tokens)` — names no metric the page can attribute, and then the declared goals are the only
+       statement of which metrics this run was about. */
+    const unnamed = f.goalMetrics.filter(m => !f.goals.some(g => g.metric === m));
+    if (unnamed.length) rows.push(['Goal metrics', unnamed.map(esc).join(', ')]);
+    /* The feasibility threshold is a property of the constraints, not a fact of its own: on its
+       own line it was a bare `0.9` whose subject was the row above it. */
+    const feasible = c.feasibility_threshold != null
+      ? `<span class="path">met by ${esc(c.feasibility_threshold)} of the cases to count</span>` : '';
     rows.push(['Constraints', (c.constraints || []).length
-      ? c.constraints.map(x => mono(x)).join('<br>')
+      ? c.constraints.map(x => mono(x)).join('<br>') + (feasible ? `<br>${feasible}` : '')
       : '<span class="empty">none</span>']);
-    if (c.feasibility_threshold != null) {
-      rows.push(['Feasible at', `${esc(c.feasibility_threshold)} of the cases passing the constraints`]);
-    }
 
     /* The split is the method, so it is spelled out rather than summarised: which sizes, and the
        seed, because the same seed over the same cases is what makes two runs comparable. */
@@ -6740,27 +6798,33 @@
     ].filter(Boolean);
     rows.push(['Budget', limits.length ? limits.join(' · ') : '<span class="empty">none set</span>']);
 
-    if (f.blocks.length) rows.push(['Tunable blocks', f.blocks.map(esc).join(', ')]);
-    /* Only when there is no space table under this list. With one, every key is a row there with
-       the count of candidates that changed it, and this line would be the same answer again in a
-       form that cannot say which keys never moved. */
-    if (!d.space.length && d.explain.tuned.length) {
-      rows.push(['Actually varied', d.explain.tuned.map(k => mono(k)).join(', ')]);
+    /* Both of these only when there is no space table under this list. With one, every key is a
+       row there carrying its block and the count of candidates that changed it, and these two
+       lines would be the same answers again in a form that cannot say which keys never moved. */
+    if (!d.space.length) {
+      if (f.blocks.length) rows.push(['Tunable blocks', f.blocks.map(esc).join(', ')]);
+      if (d.explain.tuned.length) rows.push(['Actually varied', d.explain.tuned.map(k => mono(k)).join(', ')]);
     }
     const pick = c.final_pick || {};
     if (pick.n_finalists != null || f.pickRule) {
-      rows.push(['Final pick', [pick.n_finalists != null ? `${plural(pick.n_finalists, 'finalist')}` : null,
+      mech.push(['Final pick', [pick.n_finalists != null ? `${plural(pick.n_finalists, 'finalist')}` : null,
         f.pickRule ? esc(f.pickRule) : null].filter(Boolean).join(' · ')]);
     }
-    if (f.selection) rows.push(['Parents chosen by', esc(f.selection)]);
-    if (f.scoreModel) rows.push(['Score model', esc(f.scoreModel)]);
-    if (c.agent_failure_score) rows.push(['A failed agent scores', esc(c.agent_failure_score)]);
-    if (c.workdir) rows.push(['Started in', mono(c.workdir)]);
-    rows.push(['Run id', mono(c.run_id || run.run_id)]);
+    if (f.selection) mech.push(['Parents chosen by', esc(f.selection)]);
+    if (f.scoreModel) mech.push(['Score model', esc(f.scoreModel)]);
+    if (c.agent_failure_score) mech.push(['A failed agent scores', esc(c.agent_failure_score)]);
+    if (c.workdir) mech.push(['Started in', mono(c.workdir)]);
+    /* The run id names the directory, which the Runs list and the Results subtitle both say — so
+       it is here as the record's own field rather than as the page telling anyone which run. */
+    mech.push(['Run id', mono(c.run_id || run.run_id)]);
 
-    $('opt-setup-kv').innerHTML = rows.map(([k, v]) =>
+    const list = pairs => pairs.map(([k, v]) =>
       `<dt>${esc(k)}</dt><dd${/^(Objective|Constraints|Started in|Run id)$/.test(k) ? ' class="m"' : ''}>${v}</dd>`
     ).join('');
+    $('opt-setup-kv').innerHTML = list(rows);
+    $('opt-mech-kv').innerHTML = list(mech);
+    $('opt-mech').hidden = !mech.length;
+    $('opt-mech-sum').textContent = plural(mech.length, 'setting');
     renderOptimizerSpace(d);
   }
 
@@ -6840,6 +6904,18 @@
       return !!done;
     } catch { return false; }
   }
+
+  /* Shown and hidden here rather than re-rendered: the card is rebuilt from the log, and a
+     re-render would close the rows the click just opened. */
+  $('opt-result').onclick = e => {
+    if (!e.target.closest('[data-act="opt-rest"]')) return;
+    const rest = $('opt-rest'), btn = $('opt-result').querySelector('.rmore');
+    rest.hidden = !rest.hidden;
+    const n = rest.querySelectorAll('tr').length;
+    btn.textContent = rest.hidden
+      ? `+ ${plural(n, 'metric')} the run was not aiming at`
+      : `− ${plural(n, 'metric')} the run was not aiming at`;
+  };
 
   $('opt-winner').onclick = async e => {
     const act = e.target.closest('[data-act]');

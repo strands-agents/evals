@@ -122,6 +122,15 @@ ok(/stopped: iterations/.test(text('#opt-sub')), 'reports the stop reason', text
    figures twice on one screen, which read as a busier run rather than as a clearer one. */
 ok(!/11 proposals/.test(text('#opt-sub')) && !/82 trials/.test(text('#opt-sub')),
   'and does not repeat the counts the drawers below already carry', text('#opt-sub'));
+/* The reason, not the message beside it. A real record's message is written for whoever set the
+   budget — "used Budget(max_iterations=6)'s candidate slots (6 steps' worth)" — and nested in
+   parentheses after the word it restates it was the longest line on the tab, saying no more than
+   `iterations` did. It is on the title instead, so nothing is actually dropped. */
+ok(!/reached max_iterations/.test(text('#opt-sub')),
+  'without the message restating it, which is the longest line the subtitle used to carry',
+  text('#opt-sub'));
+ok($('#opt-sub').title === 'reached max_iterations=6',
+  'the message is on hover rather than gone', $('#opt-sub').title);
 ok(/11 proposals over 6 iterations/.test(text('#opt-search-sum')),
   'the search drawer counts proposals and iterations', text('#opt-search-sum'));
 
@@ -146,6 +155,11 @@ const kv = Object.fromEntries($$('#opt-setup-kv dt').map((dt, i) =>
   [dt.textContent, $$('#opt-setup-kv dd')[i].textContent.replace(/\s+/g, ' ').trim()]));
 ok(/WeightedSum/.test(kv.Objective || ''), 'the objective it scored against', kv.Objective);
 ok(/tokens <= 4000/.test(kv.Constraints || ''), 'the constraints it had to satisfy', kv.Constraints);
+/* The feasibility threshold is a property of the constraints, not a fact of its own: on its own
+   row it was a bare `0.9` whose subject was the row above it. */
+ok(/met by 0.9 of the cases/.test(kv.Constraints || '') && !('Feasible at' in kv),
+  'and how much of the split has to meet them, on that row rather than as another one',
+  `${kv.Constraints} / ${Object.keys(kv).join()}`);
 ok(/8 train · 4 validation · 3 test/.test(kv.Cases || '') && /seed 20261110/.test(kv.Cases || ''),
   'the splits and the seed that made them, which is what makes two runs comparable', kv.Cases);
 ok(/240 rollouts/.test(kv.Budget || '') && /6 iterations/.test(kv.Budget || ''),
@@ -1357,6 +1371,45 @@ ok(!/flattering/.test(said(pNoBase)), 'and does not hedge a gap it never compute
 ok(!pVal.$('#opt-result .rstrip') && !pNoBase.$('#opt-result .rstrip'),
   'and a validation report, which carries no intervals, gets no picture of them either');
 
+/* ── the metrics the run was not aiming at ──
+   A report carries every metric the evaluators produced. On a run with one goal and one
+   constraint the rest are what the champion happened to also do, and they are the rows that made
+   this card a six-row table with the two that matter somewhere inside it. They are kept — an
+   unchanged cost is a finding about the champion — and folded, since the reader scanning for the
+   result cannot tell which rows those are until they have read all of them. */
+{
+  const q = await page();
+  await q.openFolder({
+    'a/run.json': { run_id: 'aimed', objective: 'Maximize(H)', constraints: ['tokens <= 500'] },
+    'a/events.jsonl': resultLog(testReport(
+      { mean_diff: 0.1, ci_low: 0.02, ci_high: 0.18, n_cases: 6 },
+      { c1: { H: { mean: 0.6 }, tokens: { mean: 420 }, seconds: { mean: 0.002 }, model_calls: { mean: 1 } },
+        c0: { H: { mean: 0.5 }, tokens: { mean: 470 }, seconds: { mean: 0.002 }, model_calls: { mean: 1 } } })),
+  });
+  await openResults(q);
+  const shown = () => q.$$('#opt-result .rtab tbody:not([hidden]) tr').map(r => r.children[0].textContent);
+  ok(shown().join() === 'H,tokens',
+    'the open table is the goal the objective states and the metric the constraint names',
+    shown().join());
+  ok(/\+ 2 metrics the run was not aiming at/.test(q.text('#opt-result .rmore')),
+    'with the others counted on a fold rather than dropped', q.text('#opt-result .rmore'));
+  await q.click('#opt-result .rmore');
+  ok(shown().join() === 'H,tokens,seconds,model_calls', 'which opens onto them', shown().join());
+  ok(/^−/.test(q.text('#opt-result .rmore')), 'and closes again', q.text('#opt-result .rmore'));
+  /* Only when there is something to lead with. A report whose metrics the config names none of
+     would otherwise be an empty table with a fold under it holding the whole answer. */
+  const r2 = await page();
+  await r2.openFolder({
+    'b/run.json': { run_id: 'unnamed-goals', objective: 'Maximize(score)' },
+    'b/events.jsonl': resultLog(testReport({ mean_diff: 0.1, ci_low: 0.02, ci_high: 0.18, n_cases: 6 })),
+  });
+  await openResults(r2);
+  ok(!r2.$('#opt-result .rmore') && r2.$$('#opt-result .rtab tr').length === 1,
+    'a report the config names no metric of is shown whole, with no fold',
+    r2.text('#opt-result .rtab'));
+  errs.push(...q.errs, ...r2.errs);
+}
+
 /* ── the same readings in the runs list, which is where a reader meets them first ──
    The list is one line per run and the card is a paragraph, so the list is the one that can be
    read too generously. These pages are the verdict cases above, re-read in the row: the row may
@@ -1553,13 +1606,18 @@ await pRec.openFolder({
   'rec/events.jsonl': EVENTS,
 });
 await pRec.click('.tab[data-view="opt-setup"]');
-const rkv = Object.fromEntries(pRec.$$('#opt-setup-kv dt').map((dt, i) =>
-  [dt.textContent, pRec.$$('#opt-setup-kv dd')[i].textContent.replace(/\s+/g, ' ').trim()]));
-ok(rkv['Goal metrics'] === 'Helpfulness, tokens',
-  'the goal metrics are the objective-role keys of `metrics`, and a constraint-only metric is not one of them',
-  rkv['Goal metrics']);
-ok(rkv['Tunable blocks'] === 'text, numbers',
-  'the tunable blocks are the names inside `search.blocks`', rkv['Tunable blocks']);
+/* Both lists, because the brief is the half a reader arrives for and the machinery is folded
+   under it — a row read under the wrong name is missing from the page whichever list it was in. */
+const kvOf = (q, sel) => Object.fromEntries(q.$$(`${sel} dt`).map((dt, i) =>
+  [dt.textContent, q.$$(`${sel} dd`)[i].textContent.replace(/\s+/g, ' ').trim()]));
+const rkv = { ...kvOf(pRec, '#opt-setup-kv'), ...kvOf(pRec, '#opt-mech-kv') };
+/* The goal metrics are not a row here: this objective states both of them itself, and the row
+   exists for the objective that does not. Which is also the duplication the list was carrying —
+   `Maximize(Correct)` with `Goal metrics: Correct` a line under it. */
+ok(!('Goal metrics' in rkv),
+  'an objective that names its own goals gets no second row restating them', Object.keys(rkv).join());
+ok(!('Tunable blocks' in rkv),
+  'nor do the blocks, which the space table tags each key with', Object.keys(rkv).join());
 ok(/each case run 2 times/.test(rkv.Repeats || ''),
   'repeats are read from `runs_per_candidate`', rkv.Repeats);
 ok(/Pareto front/.test(rkv.Shape || ''),
@@ -1573,6 +1631,40 @@ ok(rkv['Parents chosen by'] === 'top_ranked',
   'and the parent selection is stated, which only the written record carries', rkv['Parents chosen by']);
 ok(rkv['Run id'] === 'rec',
   'a record with no `run_id` is named by its directory rather than left blank', rkv['Run id']);
+/* And where each of those landed. The objective, the constraints, the cases and the budget are
+   what the run was told to achieve; the surrogate, the selection rule, the working directory and
+   the run's own id are how it was told to go about it, and in one list the second set outnumbered
+   the first. So the brief is open and the machinery is a fold — the record is all still here. */
+ok(Object.keys(kvOf(pRec, '#opt-setup-kv')).join() === 'Objective,Shape,Constraints,Cases,Repeats,Budget',
+  'the open list is the brief: what it was told to achieve, and nothing about how',
+  Object.keys(kvOf(pRec, '#opt-setup-kv')).join());
+ok(pRec.$('#opt-mech').hidden === false && /6 settings/.test(pRec.text('#opt-mech-sum')),
+  'with the machinery folded under it, counted on the fold', pRec.text('#opt-mech-sum'));
+ok(pRec.$('#opt-mech').open === false, 'and closed, since no result above needs it read',
+  String(pRec.$('#opt-mech').open));
+
+/* The objective the goal-metrics row exists for: a goal over an expression names no metric the
+   page can attribute, so the declared goals are the only statement of what the run was about. */
+{
+  const q = await page();
+  await q.openFolder({
+    'x/run.json': JSON.stringify({
+      ...written,
+      objective: 'Maximize(Helpfulness - 0.01 * tokens)',
+      metrics: {
+        Helpfulness: { kind: 'evaluator', roles: ['objective'] },
+        tokens: { kind: 'usage', roles: ['objective', 'constraint'] },
+        Latency: { kind: 'usage', roles: ['constraint'] },
+      },
+    }),
+    'x/events.jsonl': EVENTS,
+  });
+  await q.click('.tab[data-view="opt-setup"]');
+  ok(kvOf(q, '#opt-setup-kv')['Goal metrics'] === 'Helpfulness, tokens',
+    'the goal metrics are the objective-role keys of `metrics`, and a constraint-only metric is '
+    + 'not one of them', kvOf(q, '#opt-setup-kv')['Goal metrics']);
+  errs.push(...q.errs);
+}
 const recRow = pRec.$$('#opt-runs-rows tr[data-opt-run]');
 ok(recRow.length === 1 && /10 candidates/.test(recRow[0].textContent),
   'and the run still lists, which is what silently fails when a field is read under one name',
@@ -1622,6 +1714,9 @@ ok(tagOf('temperature') === null,
   ok(/system_prompt/.test(nkv['Actually varied'] || ''),
     'and the keys the log changed are listed instead, which is all such a record can say',
     nkv['Actually varied']);
+  ok(nkv['Tunable blocks'] === 'instructions, tools',
+    'and the blocks come back too, which the table had been tagging each key with',
+    nkv['Tunable blocks']);
   errs.push(...q.errs);
 }
 

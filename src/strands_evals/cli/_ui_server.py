@@ -1042,4 +1042,3 @@ def server_url(server: _Server) -> str:
     if ":" in str(shown) and not str(shown).startswith("["):
         shown = f"[{shown}]"
     return f"http://{shown}:{port}/?t={server.config.token}"
-
