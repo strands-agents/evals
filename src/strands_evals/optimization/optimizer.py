@@ -76,7 +76,7 @@ from .search.blocks import Block, ScheduleContext, Search, Step
 from .search.proposer import ProposalRequest, Proposer
 from .selection.base import Selection, SelectionContext
 from .selection.top_ranked import TopRanked
-from .setup.budget import Budget, BudgetTracker
+from .setup.budget import Budget, BudgetTracker, end_phase_reserve
 from .setup.splits import Split
 
 _DEFAULT_BASE_DIR = Path(".strands-evals/optimization/runs")
@@ -157,7 +157,8 @@ class Optimizer:
                 patch of each of its blocks). The schedule may give a step fewer (`Step.n_candidates`).
             max_workers: Parallel trials, shared by the candidates scored at once.
             rerun_passes: Max re-run passes per scoring call: trials still `infrastructure_invalid` are re-run, and
-                evaluators that failed are re-judged on the saved output (0 rollouts).
+                evaluators that failed are re-judged on the saved output (0 rollouts). The end phase's reserves
+                include room for these re-runs (`end_phase_reserve`).
             seed: Seeds the split (unless `Split(seed=)` is set), selection, TPE, and Thompson.
             base_dir: Where run directories go.
             name: The run folder's prefix (lowercase letters, digits, `-`, `_`); for reading only.
@@ -266,15 +267,16 @@ class Optimizer:
         finalists = self._final_pick.n_finalists
         if self._criteria.is_pareto:
             finalists = max(finalists, PARETO_MIN_FINALISTS)
-        validation_reserve = (finalists + 1) * validation * runs_per_candidate
+        validation_reserve = end_phase_reserve(finalists + 1, validation * runs_per_candidate, rerun_passes)
         # Champion and baseline; under Pareto every front member.
-        test_reserve = ((finalists + 1) if self._criteria.is_pareto else 2) * test * runs_per_candidate
+        test_arms = (finalists + 1) if self._criteria.is_pareto else 2
+        test_reserve = end_phase_reserve(test_arms, test * runs_per_candidate, rerun_passes)
         needed = train * runs_per_candidate + validation_reserve + test_reserve
         if budget.max_rollouts < needed:
             raise ValueError(
                 f"Budget(max_rollouts={budget.max_rollouts}) can't cover the baseline ({train} train cases x "
                 f"{runs_per_candidate} runs) plus the end phase's reserve ({validation_reserve} validation, "
-                f"{test_reserve} test): give max_rollouts >= {needed}"
+                f"{test_reserve} test, re-run headroom included): give max_rollouts >= {needed}"
             )
         iteration = proposals_per_iteration * train * runs_per_candidate
         if budget.max_rollouts < needed + iteration:
@@ -642,7 +644,9 @@ class Optimizer:
         `result.json`.
 
         After `resume`, each of E1, E3 (with E2), and E4 that the event log already holds is reused as saved, so a
-        finished run only rewrites its files.
+        finished run only rewrites its files. A test report that measured nothing for a reason a resume can
+        change (infrastructure failures, or a budget that can't afford it) writes no `test` event, so `resume`
+        runs it again.
         """
         assert self._run is not None
         run, criteria, baseline = self._run, self._criteria, self._baseline.id
@@ -663,8 +667,9 @@ class Optimizer:
         if resumed is not None and resumed.is_test_done:
             test, test_reason, front_test = resumed.test, resumed.test_reason, resumed.front_test
         else:
-            test, test_reason, front_test = await self._test(report)
-            run.events.append("test", iteration=self._iteration, report=test, reason=test_reason, front=front_test)
+            test, test_reason, front_test, final = await self._test(report)
+            if final:
+                run.events.append("test", iteration=self._iteration, report=test, reason=test_reason, front=front_test)
         return self._finish(stop_reason, finalists, report, test, test_reason, front_test)
 
     async def _pick(self, finalists: Sequence[str]) -> ValidationReport:
@@ -796,7 +801,8 @@ class Optimizer:
         }
 
     async def _score_split(self, ids: Sequence[str], split: SplitName) -> list[CandidateScores]:
-        """Score already-measured candidates on an end-phase split at once (the reserves cover the first passes)."""
+        """Score already-measured candidates on an end-phase split at once (the reserves cover the first passes
+        and each arm's re-run headroom)."""
         runner = self._runner()
         cases = list(getattr(self._case_split, split))
         return await self._score_together(
@@ -804,17 +810,22 @@ class Optimizer:
             split,
         )
 
-    async def _test(self, report: ValidationReport) -> tuple[TestReport | None, str | None, dict[str, TestReport]]:
+    async def _test(
+        self, report: ValidationReport
+    ) -> tuple[TestReport | None, str | None, dict[str, TestReport], bool]:
         """E4: the champion and the baseline on test (and under `Pareto` every validated front member), report only.
 
         Returns:
             The champion's report (None when skipped: no test cases, the budget, or no completed test trial
-            of the champion or the baseline), why it or some front members were skipped, and under
-            `Pareto` each tested front member's report.
+            of the champion or the baseline), why it or some front members were skipped, under `Pareto`
+            each tested front member's report, and whether the outcome is final. It isn't when the report
+            was skipped for the budget, or when each of the champion and the baseline with no completed test
+            trial still has one left `infrastructure_invalid`: a resume can then still produce the report,
+            and the reason names the `max_rollouts` that affords every arm's remaining trials.
         """
         cases = list(self._case_split.test)
         if not cases:
-            return None, "no test cases", {}
+            return None, "no test cases", {}, True
         baseline, champion = self._baseline.id, report.champion_id
         front = report.front if self._criteria.is_pareto else []
         runner = self._runner()
@@ -826,7 +837,12 @@ class Optimizer:
         total = sum(pending[c] for c in chosen)
         if not self._budget.can_afford(total, phase="test"):
             allowance = self._budget.allowance(phase="test")
-            return None, f"the test report needs {total} rollouts, {allowance} are left", {}
+            needed = self._budget.spent + sum(pending.values())
+            reason = (
+                f"the test report needs {total} rollouts, {allowance} are left; resume with max_rollouts >= "
+                f"{needed} to run it" + (" with every front member" if len(pending) > len(chosen) else "")
+            )
+            return None, reason, {}, False
         skipped = []
         for c in pending:
             if c in chosen:
@@ -852,7 +868,17 @@ class Optimizer:
         ]
         if champion in failed or baseline in failed:
             arm = "the baseline" if baseline in failed else "the champion"
-            return None, f"every test trial of {arm} failed, so there is nothing to compare", {}
+            # Trials left `infrastructure_invalid` are what a resume runs again (`TrialRunner.pending`).
+            left = {c: runner.pending(c, cases, runs=self._runs_per_candidate) for c in pending}
+            if all(left[c] for c in (champion, baseline) if c in failed):
+                n = left[baseline if baseline in failed else champion]
+                needed = self._budget.spent + sum(left.values())
+                reason = (
+                    f"every test trial of {arm} failed, {n} on infrastructure; resume with max_rollouts >= "
+                    f"{needed} to run them again"
+                )
+                return None, reason, {}, False
+            return None, f"every test trial of {arm} failed, so there is nothing to compare", {}, True
         reports = {
             c: self._test_report(c, scores)
             for c in dict.fromkeys([champion, *front])
@@ -866,7 +892,7 @@ class Optimizer:
         if failed:
             numbers = ", ".join(str(self._run.number(c)) for c in failed)
             reasons.append(f"every test trial of front members {numbers} failed")
-        return reports[champion], "; ".join(reasons) or None, {c: reports[c] for c in front if c in reports}
+        return reports[champion], "; ".join(reasons) or None, {c: reports[c] for c in front if c in reports}, True
 
     def _test_report(self, candidate_id: str, scores: Mapping[str, CandidateScores]) -> TestReport:
         """`candidate_id` against the baseline per test case (paired t-interval at `TEST_LEVEL`); the baseline
@@ -1785,7 +1811,10 @@ class Optimizer:
         (`None` keeps the saved value).
 
         Resume continues a run that was killed; it never extends a finished one. Every stop runs the end
-        phase, so a finished run only finishes or returns its end phase. To search more, start a new run.
+        phase, so a finished run only finishes or returns its end phase. A test report that measured nothing
+        for a reason a resume can change (trials left `infrastructure_invalid`, or a budget that couldn't
+        afford it) isn't saved as done, so resuming that run runs the test again. To search more, start a
+        new run.
         A killed search may get a larger `Budget`, which only moves where it stops. The resumed run proposes what
         an uninterrupted one would, with two exceptions: near the rollout cap, what the killed iteration spent
         counts from the start, while its trials are reused at no cost, so a step can be cut narrower or the
@@ -1808,7 +1837,9 @@ class Optimizer:
             selection: As in `__init__`; must match the run.
             score_model: As in `__init__`; must match the run.
             environment: As in `__init__`.
-            budget: A new budget for a killed search; None keeps the saved one.
+            budget: A new budget for a killed search, or for a test report that wasn't saved as done (its reason
+                names the `max_rollouts` it needs); None keeps the one in `run.json`, the first run's, so pass a
+                larger budget again on every later resume.
             max_workers: None keeps the saved value.
             on_iteration: Called only for iterations run after the resume.
 
@@ -1857,7 +1888,8 @@ class Optimizer:
             raise RuntimeError(f"run {run.run_id} stopped at setup, so there is nothing to resume; start a new run")
         tracker = optimizer._budget
         budget = Budget(**saved["budget"]) if budget is None else budget
-        # What the pick still needs: the whole reserve before the finalists exist, else their unrun validation trials.
+        # What the pick still needs: the whole reserve (re-run headroom included) before the finalists exist, else
+        # their unrun validation trials.
         if state.validation is not None:
             left = 0
         elif state.finalists is None:
