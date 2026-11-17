@@ -18,10 +18,12 @@ from ...telemetry.config import StrandsEvalsTelemetry
 from ...types.optimization import Usage
 from ...types.trace import Session
 
-# Set on the spans `rollout.py` opens, so they are found by kind, never by a name an agent could share.
+# Set on the spans `rollout.py` and the optimizer's build check open, so they are told apart by kind, never by a name
+# an agent could share.
 SPAN_KIND = "strands_evals.optimization.span"
 ATTEMPT_SPAN = "attempt"
 ROLLOUT_SPAN = "rollout"
+BUILD_CHECK_SPAN = "build_check"
 
 
 @dataclass(frozen=True)

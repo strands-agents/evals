@@ -1,13 +1,20 @@
 import asyncio
+import contextlib
 import hashlib
+import inspect
 import json
+import logging
 import shutil
 import threading
 import warnings
 from pathlib import Path
 
 import pytest
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
+import strands_evals.optimization.optimizer as optimizer_module
 from strands_evals import Case
 from strands_evals.evaluators import Evaluator
 from strands_evals.experiment import Experiment
@@ -46,6 +53,7 @@ from strands_evals.optimization import (
     tunable,
 )
 from strands_evals.optimization.declaration.space import Space
+from strands_evals.optimization.execution.traces import BUILD_CHECK_SPAN, SPAN_KIND
 from strands_evals.optimization.optimizer import _slots_used
 from strands_evals.optimization.record.resume import load_state
 from strands_evals.optimization.record.run_directory import RunDirectory
@@ -696,17 +704,93 @@ async def test_a_candidate_whose_agent_cant_be_built_is_invalid_and_costs_nothin
     assert optimizer._budget.spent == 16  # the baseline and the 0.5 candidate, nothing for the one that can't build
 
 
-async def test_a_factory_needing_a_resource_is_not_build_checked(tmp_path):
-    @tunable(temperature=OneOf(0.0, 0.5, 1.0))
-    def sandboxed(temperature, sandbox):
+def _sandbox(entered, exited, *, asynchronous=False):
+    """An environment yielding `{"sandbox": "box"}` from a sync or an async context manager; records each case."""
+
+    @contextlib.contextmanager
+    def sync(case):
+        entered.append(case.name)
+        try:
+            yield {"sandbox": "box"}
+        finally:
+            exited.append(case.name)
+
+    @contextlib.asynccontextmanager
+    async def async_(case):
+        entered.append(case.name)
+        try:
+            yield {"sandbox": "box"}
+        finally:
+            exited.append(case.name)
+
+    return async_ if asynchronous else sync
+
+
+async def _awaiting_rollout(agent_factory, case):
+    built = agent_factory()
+    if inspect.isawaitable(built):
+        built = await built
+    return str(built[1])
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_a_factory_taking_a_resource_is_built_in_its_environment_before_any_rollout(tmp_path, asynchronous):
+    entered, exited = [], []
+
+    def build(temperature, sandbox):
+        if temperature == 1.0:
+            raise ValueError("temperature 1.0 is not supported")
         return (sandbox, temperature)
+
+    async def build_async(temperature, sandbox):
+        return build(temperature, sandbox)
+
+    sandboxed = tunable(build_async if asynchronous else build, inject={"temperature": OneOf(0.0, 0.5, 1.0)})
+    proposer = Scripted({"temperature": 1.0}, {"temperature": 0.5})
+    optimizer = Optimizer(
+        _experiment(evaluators=[Temperature()]),
+        sandboxed,
+        rollout_fn=_awaiting_rollout,
+        environment=_sandbox(entered, exited, asynchronous=asynchronous),
+        search=Search([Block(proposer, "temperature")], schedule=Joint()),
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path,
+    )
+    await _search(optimizer)
+    assert [o.outcome for o in proposer.observed] == ["invalid", "feasible"]
+    assert proposer.observed[0].reason == "the agent can't be built: ValueError: temperature 1.0 is not supported"
+    assert optimizer._budget.spent == 16  # the baseline and the 0.5 candidate, nothing for the one that can't build
+    # 8 baseline trials, then one check per new candidate in the first train case, then the 0.5 candidate's 8 trials.
+    first_train_case = optimizer._case_split.train[0]
+    assert len(entered) == 18 and entered[8:10] == [first_train_case, first_train_case]
+    assert sorted(exited) == sorted(entered)  # the environment is exited when the factory raises too
+
+
+@pytest.mark.parametrize("fault", ["environment", "factory", "factory without environment"])
+async def test_an_infrastructure_fault_in_the_build_check_leaves_the_candidate_to_its_trials(tmp_path, fault):
+    calls = {"environment": 0, "factory": 0}
+
+    @tunable(temperature=OneOf(0.0, 0.5, 1.0))
+    def sandboxed(temperature, sandbox=None):
+        calls["factory"] += 1
+        if fault.startswith("factory") and calls["factory"] == 9:  # the check: after the 8 baseline trials
+            raise InfrastructureError("sandbox not ready")
+        return (sandbox, temperature)
+
+    def environment(case):
+        calls["environment"] += 1
+        if fault == "environment" and calls["environment"] == 9:
+            raise ConnectionError("sandbox service unavailable")
+        return {"sandbox": "box"}
 
     proposer = Scripted({"temperature": 0.5})
     optimizer = Optimizer(
         _experiment(evaluators=[Temperature()]),
         sandboxed,
         rollout_fn=_temperature_rollout,
-        environment=lambda case: {"sandbox": "box"},
+        environment=None if fault == "factory without environment" else environment,
         search=Search([Block(proposer, "temperature")], schedule=Joint()),
         budget=Budget(max_iterations=1),
         proposals_per_iteration=1,
@@ -715,6 +799,288 @@ async def test_a_factory_needing_a_resource_is_not_build_checked(tmp_path):
     )
     await _search(optimizer)
     assert [o.outcome for o in proposer.observed] == ["feasible"]
+    assert optimizer._budget.spent == 16
+
+
+async def test_a_factory_needing_a_kwarg_only_the_rollout_passes_turns_the_build_check_off(tmp_path):
+    entered = []
+
+    @tunable(temperature=OneOf(0.0, 0.5, 1.0))
+    def needs_callback(temperature, callback, sandbox):
+        return (sandbox, temperature)
+
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory(callback=print)
+        return str(temperature)
+
+    def environment(case):
+        entered.append(case.name)
+        return {"sandbox": "box"}
+
+    proposer = Scripted({"temperature": 0.5}, {"temperature": 1.0})
+    optimizer = Optimizer(
+        _experiment(evaluators=[Temperature()]),
+        needs_callback,
+        rollout_fn=rollout,
+        environment=environment,
+        search=Search([Block(proposer, "temperature")], schedule=Joint()),
+        budget=Budget(max_iterations=2),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path,
+    )
+    await _search(optimizer)
+    assert [o.outcome for o in proposer.observed] == ["feasible", "feasible"]
+    assert len(entered) == 8 + 1 + 8 + 8  # one check, for the first candidate only
+
+
+class _AsyncCallRollout:
+    async def __call__(self, agent_factory, case):
+        return await _temperature_rollout(agent_factory, case)
+
+
+def _sync_rollout(agent_factory, case):
+    return str(agent_factory()[1])
+
+
+@pytest.mark.parametrize(
+    "rollout, synchronous",
+    [(_temperature_rollout, False), (_AsyncCallRollout(), False), (_sync_rollout, True)],
+    ids=["async", "async-call", "sync"],
+)
+async def test_the_build_check_builds_on_the_thread_a_trial_builds_on(tmp_path, rollout, synchronous):
+    threads = []
+
+    @tunable(temperature=OneOf(0.0, 0.5, 1.0))
+    def recording(temperature, sandbox):
+        threads.append(threading.get_ident())
+        return (sandbox, temperature)
+
+    proposer = Scripted({"temperature": 0.5})
+    optimizer = Optimizer(
+        _experiment(evaluators=[Temperature()]),
+        recording,
+        rollout_fn=rollout,
+        environment=lambda case: {"sandbox": "box"},
+        search=Search([Block(proposer, "temperature")], schedule=Joint()),
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path,
+    )
+    await _search(optimizer)
+    loop_thread = threading.get_ident()
+    assert len(threads) == 17  # 8 baseline trials, the check, 8 trials
+    assert (threads[8] == loop_thread) is (not synchronous)
+    assert (threads[0] == loop_thread) is (not synchronous)
+
+
+@pytest.mark.parametrize("max_workers, overlap", [(64, 2), (1, 1)])
+async def test_a_steps_build_checks_run_at_once_up_to_max_workers(tmp_path, monkeypatch, max_workers, overlap):
+    running, most = 0, 0
+
+    async def check(self, candidate):
+        nonlocal running, most
+        running += 1
+        most = max(most, running)
+        await asyncio.sleep(0.01)
+        running -= 1
+        return "too hot" if candidate.values["temperature"] == 1.0 else None
+
+    monkeypatch.setattr(Optimizer, "_build_error", check)
+    proposer = Scripted({"temperature": 0.5}, {"temperature": 1.0})
+    optimizer = _searching(
+        Block(proposer, "temperature"),
+        schedule=Joint(),
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=2,
+        max_workers=max_workers,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)  # max_workers=1 runs a step in batches
+        await _search(optimizer)
+    assert most == overlap
+    observed = {o.patch.updates["temperature"]: (o.outcome, o.reason) for o in proposer.observed}
+    assert observed[1.0] == ("invalid", "too hot") and observed[0.5][0] == "feasible"
+
+
+async def test_a_same_step_twin_that_cant_be_built_is_checked_once(tmp_path):
+    hot = []
+
+    @tunable(temperature=OneOf(0.0, 0.5, 1.0))
+    def picky(temperature):
+        if temperature == 1.0:
+            hot.append(temperature)
+            raise ValueError("temperature 1.0 is not supported")
+        return (None, temperature)
+
+    proposer = Scripted({"temperature": 1.0}, {"temperature": 1.0}, {"temperature": 0.5})
+    optimizer = Optimizer(
+        _experiment(evaluators=[Temperature()]),
+        picky,
+        rollout_fn=_temperature_rollout,
+        search=Search([Block(proposer, "temperature")], schedule=Joint()),
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=2,
+        max_workers=64,
+        base_dir=tmp_path,
+    )
+    await _search(optimizer)
+    assert [o.outcome for o in proposer.observed] == ["invalid", "invalid", "feasible"]
+    assert len(hot) == 1
+
+
+async def test_the_build_check_runs_in_its_own_span_and_logs_what_it_rejects(tmp_path, monkeypatch, caplog):
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(optimizer_module, "get_tracer", lambda: provider.get_tracer("test"))
+
+    @tunable(temperature=OneOf(0.0, 0.5, 1.0))
+    def picky(temperature):
+        if temperature == 1.0:
+            raise ValueError("temperature 1.0 is not supported")
+        return (None, temperature)
+
+    proposer = Scripted({"temperature": 1.0}, {"temperature": 0.5})
+    optimizer = Optimizer(
+        _experiment(evaluators=[Temperature()]),
+        picky,
+        rollout_fn=_temperature_rollout,
+        search=Search([Block(proposer, "temperature")], schedule=Joint()),
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path,
+    )
+    with caplog.at_level(logging.WARNING, logger="strands_evals.optimization.optimizer"):
+        await _search(optimizer)
+    spans = exporter.get_finished_spans()
+    assert [span.attributes[SPAN_KIND] for span in spans] == [BUILD_CHECK_SPAN, BUILD_CHECK_SPAN]
+    assert all(span.parent is None for span in spans)
+    rejected = [r.getMessage() for r in caplog.records if r.name == "strands_evals.optimization.optimizer"]
+    assert len(rejected) == 1 and "temperature 1.0 is not supported" in rejected[0]
+
+
+async def test_a_build_task_that_raises_makes_the_candidate_invalid_instead_of_stopping_the_run(tmp_path):
+    built = []
+
+    def build_task(ctx):
+        built.append(ctx.values["temperature"])
+        if ctx.values["temperature"] == 1.0:
+            raise ValueError("temperature 1.0 is not supported")
+
+        async def task(case):
+            return str(ctx.values["temperature"])
+
+        return task
+
+    proposer = Scripted({"temperature": 1.0}, {"temperature": 0.5})
+    optimizer = Optimizer(
+        _experiment(evaluators=[Temperature()]),
+        build_task=build_task,
+        space={"temperature": OneOf(0.0, 0.5, 1.0)},
+        search=Search([Block(proposer, "temperature")], schedule=Joint()),
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path,
+    )
+    _, events = await _search(optimizer)
+    assert [o.outcome for o in proposer.observed] == ["invalid", "feasible"]
+    assert proposer.observed[0].reason == "the task can't be built: ValueError: temperature 1.0 is not supported"
+    assert optimizer._budget.spent == 16
+    assert built == [0.0, 1.0, 0.5, 0.5]  # the baseline's scoring; a check per new candidate; the 0.5 one's scoring
+    assert len([e for e in events if e["event"] == "propose"]) == 2  # the baseline and the 0.5 candidate
+
+
+async def test_a_build_task_infrastructure_error_in_the_build_check_leaves_the_candidate_to_its_scoring(tmp_path):
+    built = []
+
+    def build_task(ctx):
+        built.append(ctx.values["temperature"])
+        if built == [0.0, 0.5]:  # the 0.5 candidate's check
+            raise InfrastructureError("config service unavailable")
+
+        async def task(case):
+            return str(ctx.values["temperature"])
+
+        return task
+
+    proposer = Scripted({"temperature": 0.5})
+    optimizer = Optimizer(
+        _experiment(evaluators=[Temperature()]),
+        build_task=build_task,
+        space={"temperature": OneOf(0.0, 0.5, 1.0)},
+        search=Search([Block(proposer, "temperature")], schedule=Joint()),
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path,
+    )
+    await _search(optimizer)
+    assert [o.outcome for o in proposer.observed] == ["feasible"]
+    assert built == [0.0, 0.5, 0.5]
+
+
+def _prompt_task(ctx):
+    """Reads the candidate's copy in `build_task` itself; raises for the prompt "bad"."""
+    prompt = json.loads(next(ctx.workspace.rglob("agent.json")).read_text())["prompt"]
+    if prompt == "bad":
+        raise ValueError("prompt rejected")
+
+    async def task(case):
+        return prompt
+
+    return task
+
+
+async def test_a_build_task_invalid_in_the_build_check_leaves_no_copy(tmp_path):
+    config = tmp_path / "agent.json"
+    config.write_text(json.dumps({"prompt": "Be brief."}) + "\n")
+    proposer = Scripted({"prompt": "bad"}, {"prompt": "Be kind."})
+    optimizer = Optimizer(
+        _experiment(),
+        build_task=_prompt_task,
+        space={"prompt": JsonField(config, "/prompt")},
+        search=Search([Block(proposer, "prompt")], schedule=Joint()),
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path / "runs",
+    )
+    _, events = await _search(optimizer)
+    assert [o.outcome for o in proposer.observed] == ["invalid", "feasible"]
+    saved = {e["candidate_id"] for e in events if e["event"] == "propose"}
+    assert {path.name for path in (optimizer._run.root / "candidates").iterdir()} == saved
+
+
+async def test_a_copy_failing_in_the_build_check_stops_the_run(tmp_path, monkeypatch):
+    config = tmp_path / "agent.json"
+    config.write_text(json.dumps({"prompt": "Be brief."}) + "\n")
+    real = Space.create_candidate_copy
+
+    def failing(self, values, directory):
+        if values["prompt"] != "Be brief.":
+            raise OSError("No space left on device")
+        return real(self, values, directory)
+
+    monkeypatch.setattr(Space, "create_candidate_copy", failing)
+    optimizer = Optimizer(
+        _experiment(),
+        build_task=_prompt_task,
+        space={"prompt": JsonField(config, "/prompt")},
+        search=Search([Block(Scripted({"prompt": "Be kind."}), "prompt")], schedule=Joint()),
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path / "runs",
+    )
+    await optimizer._start()
+    with pytest.raises(OSError, match="No space left on device"):
+        await optimizer._run_search()
+    assert len([e for e in _events(optimizer) if e["event"] == "propose"]) == 1  # the baseline only
 
 
 async def test_a_proposer_that_raises_stops_the_run(tmp_path):

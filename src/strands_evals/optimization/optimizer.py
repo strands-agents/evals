@@ -6,7 +6,9 @@ import asyncio
 import hashlib
 import inspect
 import json
+import logging
 import random
+import shutil
 import statistics
 import threading
 import warnings
@@ -17,8 +19,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .._async import run_async as _run_in_thread
+from ..case import Case
 from ..evaluators.evaluator import Evaluator
 from ..experiment import Experiment
+from ..telemetry import get_tracer
 from ..types.optimization import (
     SPLIT_NAMES,
     CandidateScores,
@@ -52,7 +56,8 @@ from .end_phase import (
     pick,
 )
 from .execution.rollout import EnvironmentFn, RolloutFn, TaskFn, default_rollout, make_task
-from .execution.traces import TraceCapture
+from .execution.status import classify
+from .execution.traces import BUILD_CHECK_SPAN, SPAN_KIND, TraceCapture
 from .execution.trials import TrialRunner
 from .record.events import closed_events
 from .record.resume import OpenRound, ResumeState, load_state
@@ -79,6 +84,8 @@ from .selection.top_ranked import TopRanked
 from .setup.budget import Budget, BudgetTracker
 from .setup.splits import Split
 
+logger = logging.getLogger(__name__)
+
 _DEFAULT_BASE_DIR = Path(".strands-evals/optimization/runs")
 
 
@@ -95,10 +102,14 @@ class Optimizer:
     by keyword) or `build_task=` with `space=`. `environment=` and `rollout_fn=` work only with `factory=`.
     `objective=None` maximizes the mean of every evaluator's score, as a plain eval run reports it.
 
-    `build_task(ctx)` is called once per candidate and returns the `Experiment` task, `task(case)`.
-    Build the agent inside `task`, never in `build_task` itself: an agent shared across cases and
-    runs carries conversation state from one trial into the next, so every trial must build its
-    own. The factory path enforces this; `build_task` can't.
+    `build_task(ctx)` returns the `Experiment` task, `task(case)`. It is called each time a candidate is
+    scored, and once before a new candidate's first rollout, to check it: a candidate whose `build_task`
+    raises in that call is invalid, redrawn at no cost, as one whose factory raises is (an
+    `InfrastructureError` or a failed file copy aside). Build the agent inside `task`, never in `build_task`
+    itself: an agent shared across cases and runs carries conversation state from one trial into the next,
+    so every trial must build its own. The factory path enforces this; `build_task` can't. To have a
+    candidate's values checked before its rollouts, validate them in `build_task` (or resolve a component
+    there and discard it).
     """
 
     def __init__(
@@ -152,7 +163,10 @@ class Optimizer:
                 worst end), a number, or None (missing data).
             feasibility_threshold: The P(met) threshold a constraint needs to count as met (not a fraction of cases);
                 held by `Criteria`.
-            environment: Per-attempt resources passed to the factory by name.
+            environment: Per-attempt resources passed to the factory by name. Also called once for each new
+                candidate, with the first train case, to build its agent before any rollout: a factory that
+                raises there makes the candidate invalid, unless it raises `InfrastructureError` (e.g. for a
+                resource that isn't ready), which leaves the candidate to its trials.
             proposals_per_iteration: Candidates per step, its full width (a step's candidates merge one
                 patch of each of its blocks). The schedule may give a step fewer (`Step.n_candidates`).
             max_workers: Parallel trials, shared by the candidates scored at once.
@@ -308,6 +322,7 @@ class Optimizer:
         # Candidate id -> (case name, run index) -> its trial record, as scored this process.
         self._records: dict[str, dict[tuple[str, int], TrialRecord]] = {}
         self._rollouts: dict[tuple[str, SplitName], int] = {}  # a _score call's spend, until its event
+        self._build_check = True  # off once a check gets a `_FactoryArgumentError` (`_build_error`)
 
     def _config(self) -> dict[str, Any]:
         """`run.json`'s contents but `schema_version` and `code` (added by `RunDirectory.create`).
@@ -1029,17 +1044,13 @@ class Optimizer:
         for redraw in range(self._search.redraws + 1):
             if need <= 0 or opened is not None:
                 break
-            for draw in await self._draw(step, parent, need, redraw, ranking, assessments, summaries):
+            draws = await self._draw(step, parent, need, redraw, ranking, assessments, summaries)
+            build_errors = await self._build_errors(draws, accepted)
+            for draw in draws:
                 candidate = draw.candidate
-                if (
-                    candidate is not None
-                    and candidate.id not in self._train
-                    and all(d.candidate is None or d.candidate.id != candidate.id for d in accepted)
-                ):
-                    error = await self._build_error(candidate)
-                    if error is not None:
-                        draw = _Draw(draw.patches, None, error)
-                        candidate = None
+                if candidate is not None and candidate.id in build_errors:
+                    draw = _Draw(draw.patches, None, build_errors[candidate.id])
+                    candidate = None
                 if candidate is None:
                     for block, patch in draw.patches.items():
                         self._run.events.append(
@@ -1568,41 +1579,124 @@ class Optimizer:
                 stacklevel=3,
             )
 
+    async def _build_errors(self, draws: Sequence[_Draw], accepted: Sequence[_Draw]) -> dict[str, str]:
+        """Candidate id -> why it can't be built (`_build_error`), for the draws' new candidates that can't.
+
+        A candidate already scored, or accepted earlier in the step, isn't checked; a same-step twin is checked
+        once. The checks run concurrently, at most `max_workers` at a time, since each may set up an environment.
+        """
+        new: dict[str, Candidate] = {}
+        for draw in draws:
+            candidate = draw.candidate
+            if (
+                candidate is not None
+                and candidate.id not in self._train
+                and all(d.candidate is None or d.candidate.id != candidate.id for d in accepted)
+            ):
+                new.setdefault(candidate.id, candidate)
+        limiter = asyncio.Semaphore(self._max_workers)
+
+        async def check(candidate: Candidate) -> str | None:
+            async with limiter:
+                return await self._build_error(candidate)
+
+        errors = await _gather_or_cancel([check(candidate) for candidate in new.values()])
+        return {candidate_id: error for candidate_id, error in zip(new, errors, strict=True) if error is not None}
+
     async def _build_error(self, candidate: Candidate) -> str | None:
-        """Why the candidate's agent can't be built, else None: the factory is called once, before any rollout.
+        """Why the candidate can't be built, else None: built once, before any of its rollouts.
 
         A candidate whose factory raises (a constructor rejecting a combination of values) is invalid, redrawn
-        at no cost, instead of every trial being an `agent_failure` scored at the worst end. Built with no
-        resources and no call kwargs, so a factory that needs a resource from `environment` or a kwarg only the
-        rollout passes can't be built here and isn't checked (its trials run as usual). On the `build_task` path
-        the agent is built inside the task, so nothing is checked.
+        at no cost, instead of every trial being an `agent_failure` scored at the worst end. The agent is built
+        as a trial builds it, inside a `build check` span: with `environment`, in the environment set up for the
+        first train case, with its resources; on the event loop under an async `rollout_fn` (the default) and in
+        a worker thread under a sync one (a sync function returning a coroutine counts as sync). No call kwargs
+        are passed. On the `build_task` path, `build_task` is called and its task discarded: what `build_task`
+        does itself is checked, what the task builds in each trial isn't.
+
+        Not invalid, so the candidate is scored as usual:
+        - an error `classify` makes `infrastructure_invalid` (an environment that fails to set up, an
+          `InfrastructureError` from the factory or `build_task`): it says nothing about the candidate. Its
+          trials re-run it; `build_task` is called again when the candidate is scored, and stops the run if it
+          raises then;
+        - a `_FactoryArgumentError` (the factory needs a kwarg only the rollout passes, or the environment
+          gives no mapping): every candidate would fail the same way, so the check is off for the rest of
+          the run.
+
+        Raises:
+            Exception: Whatever ended the check, when making the candidate's file copy failed during it (the
+                `build_task` path): the run stops, as it does when the copy fails while scoring.
         """
-        if self._factory is None:
+        if not self._build_check:
             return None
+        assert self._run is not None
+        case = next(c for c in self._cases if c.name == self._case_split.train[0])
+        folder = self._run.workspace(candidate.id).parent  # the check writes it only on the build_task path
+        made_folder = not folder.exists()
+        copy_errors: list[Exception] = []
         try:
-            # bind() copies path-backed files into a temp folder: in a worker thread, so other trials keep running.
-            built = (await asyncio.to_thread(self._factory.bind, candidate.values))()
-            if inspect.isawaitable(built):
-                await built
-        except _FactoryArgumentError:
+            with get_tracer().start_as_current_span(
+                f"build check {candidate.id}", attributes={SPAN_KIND: BUILD_CHECK_SPAN}
+            ):
+                if self._factory is None:
+                    await self._task_for(candidate, copy_errors=copy_errors)
+                else:
+                    # bind() copies path-backed files into a temp folder: in a worker thread, off the event loop.
+                    bound = await asyncio.to_thread(self._factory.bind, candidate.values)
+                    rollout = self._rollout_fn
+                    on_loop = (
+                        rollout is None
+                        or inspect.iscoroutinefunction(rollout)
+                        or inspect.iscoroutinefunction(type(rollout).__call__)  # an object with an async __call__
+                    )
+                    build = _build_on_loop if on_loop else _build_in_thread
+                    await make_task(bound, build, self._environment)(case)
+        except _FactoryArgumentError as error:
+            self._build_check = False
+            logger.debug("error=<%s> | candidates can't be built before their rollouts, build check off", error)
             return None
-        except Exception as error:  # noqa: BLE001 - any failure to build makes the candidate invalid
-            return f"the agent can't be built: {type(error).__name__}: {error}"
+        except Exception as error:  # noqa: BLE001 - any other failure to build makes the candidate invalid
+            if copy_errors:
+                raise
+            if classify(error) is TrialStatus.INFRASTRUCTURE_INVALID:
+                logger.debug("candidate=<%s>, error=<%s> | build check failed on infrastructure", candidate.id, error)
+                return None
+            if self._factory is None and made_folder:
+                # The copy build_task made for a candidate that is never saved.
+                await asyncio.to_thread(shutil.rmtree, folder, ignore_errors=True)
+            built = "task" if self._factory is None else "agent"
+            reason = f"the {built} can't be built: {type(error).__name__}: {error}"
+            logger.warning("candidate=<%s>, reason=<%s> | candidate is invalid", candidate.id, reason)
+            return reason
         return None
 
-    async def _task_for(self, candidate: Candidate) -> TaskFn:
+    async def _task_for(self, candidate: Candidate, *, copy_errors: list[Exception] | None = None) -> TaskFn:
         """The candidate's task, not yet instrumented; file-backed values copied into its workspace first.
 
         When a value reaches the agent as a path (`as_path=True`, `SkillLibrary`), the copy is made at once, in a
         worker thread so concurrent trials keep running. Otherwise, on the `build_task` path, the first read of
         `BuildContext.workspace` makes it, in the reading thread, so a `build_task` that never reads it copies
         nothing; later reads don't wait.
+
+        Args:
+            candidate: The candidate.
+            copy_errors: Collects each error that making the copy raised, so the build check can tell a failed
+                copy from a candidate that can't be built.
         """
         assert self._run is not None
         workspace = self._run.workspace(candidate.id)
         values, space = candidate.values, self._space
+        failures = copy_errors if copy_errors is not None else []
+
+        def make_copy() -> None:
+            try:
+                space.create_candidate_copy(values, workspace)
+            except Exception as error:
+                failures.append(error)
+                raise
+
         if space._copies_files:
-            await asyncio.to_thread(space.create_candidate_copy, values, workspace)
+            await asyncio.to_thread(make_copy)
         if self._factory is not None:
             bound = self._factory.bind(values, workspace=workspace)  # the copy exists: bind returns at once
             return make_task(bound, self._rollout_fn or default_rollout, self._environment)
@@ -1618,7 +1712,7 @@ class Optimizer:
             if not copied:
                 with lock:  # one copy per candidate, however many trials read it first
                     if not copied:
-                        space.create_candidate_copy(values, workspace)
+                        make_copy()
                         copied = True
             return workspace
 
@@ -1906,6 +2000,19 @@ def _slots_used(records: Sequence[IterationRecord]) -> int:
         elif any(p.outcome not in ("invalid", "duplicate") for p in record.proposals):
             used += record.n_candidates
     return used
+
+
+async def _build_on_loop(agent_factory: Callable[..., Any], case: Case) -> None:
+    """The build check's rollout under an async `rollout_fn`: build the agent on the event loop, as the trial does."""
+    built = agent_factory()
+    if inspect.isawaitable(built):
+        await built
+
+
+def _build_in_thread(agent_factory: Callable[..., Any], case: Case) -> Any:
+    """The build check's rollout under a sync `rollout_fn`: build the agent in a worker thread, as the trial does
+    (what an async factory returns is awaited by the caller)."""
+    return agent_factory()
 
 
 async def _gather_or_cancel(awaitables: Sequence[Any]) -> list[Any]:

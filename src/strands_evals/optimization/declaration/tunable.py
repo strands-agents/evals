@@ -24,7 +24,7 @@ _KEYWORD_KINDS = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEY
 
 @dataclass(frozen=True)
 class BuildContext:
-    """What `Optimizer(build_task=...)` receives, once per candidate.
+    """What `Optimizer(build_task=...)` receives for a candidate.
 
     The optimizer builds it. To test a `build_task` on its own, build one with the workspace given
     positionally: `BuildContext(values, resolve, path)` (the field is private: `workspace` is the
