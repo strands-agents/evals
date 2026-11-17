@@ -129,7 +129,8 @@ class OptimizationResult(BaseModel):
 
     Attributes:
         run_id: The run folder's name.
-        run_dir: The run folder; it may not exist on another machine, and nothing here reads it.
+        run_dir: The run folder; it may not exist on another machine, and nothing here reads it. The
+            trajectories that `reports` and the case rows name by hash are in its `transcripts/`.
         baseline_id: The baseline's id.
         candidates: Every candidate of the run's closed iterations by id, in display-number order (a killed
             iteration's candidate that the resumed run didn't propose again is left out).
@@ -157,8 +158,12 @@ class OptimizationResult(BaseModel):
         judge_cost: Judge usage per trial's last attempt, as `agent_cost` counts the agent's.
         retry_cost: Agent and judge usage in earlier attempts (`TrialRecord.previous_attempts`).
         reports: Candidate id -> split -> the `EvaluationReport` `Experiment` would have returned for those
-            trials (every run's rows, each tagged with `run_index`; failed trials as `Experiment`'s score-0
-            rows), for every candidate and split it has trials on. Display only: nothing in the run reads it.
+            trials (every run's rows, each tagged with `run_index` and `transcript`; failed trials as
+            `Experiment`'s score-0 rows), for every candidate and split it has trials on. Trajectories are
+            referenced, not inlined: `actual_trajectory` is None (a failed trial's row has no such key), and
+            `transcript` is the hash the case rows give, None when the row's trial record holds no trajectory;
+            read one from `run_dir / "transcripts" / f"{hash}.json"`. So
+            `display(include_actual_trajectory=True)` shows None. Display only: nothing in the run reads it.
         rows: Every grain's rows (`to_rows`), computed when the result was built.
     """
 
@@ -336,9 +341,10 @@ class OptimizationResult(BaseModel):
         return cls.model_validate(data)
 
     def to_file(self, path: str | Path) -> Path:
-        """Write `to_dict()` as JSON to `path`; returns `path`."""
+        """Write `to_dict()` as compact JSON (no indentation) to `path`; returns `path`."""
         path = Path(path)
-        _write_text_atomically(path, json.dumps(self.to_dict(), indent=2, ensure_ascii=False, allow_nan=False) + "\n")
+        text = json.dumps(self.to_dict(), separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+        _write_text_atomically(path, text + "\n")
         return path
 
     @classmethod
@@ -593,15 +599,10 @@ def _case_rows(
         evaluators: Every evaluator's name, for the per-evaluator columns.
     """
     scores: dict[tuple[str, str], Mapping[str, Any]] = {}
-    transcripts: dict[tuple[str, int, str], str | None] = {}
     for event in events:
         if event["event"] == "score":
             scores[(event["candidate_id"], event["split"])] = event
-        elif event["event"] == "trial":
-            saved = event["record"]
-            transcript = saved.get("transcript")
-            key = (saved["candidate_id"], saved["run_index"], saved["case_name"])
-            transcripts[key] = None if transcript is None else transcript["hash"]
+    transcripts = _transcripts(events)
     rows = []
     for candidate_id, view in candidates.items():
         trials = records.get(candidate_id, {})
@@ -643,14 +644,40 @@ def _case_rows(
                         **{metric: getattr(usage, metric) for metric in USAGE_METRICS},
                         judge_tokens=sum(u.tokens for u in record.judge_usage.values()),
                         output=record.output,
-                        transcript=transcripts.get((candidate_id, index, case_name)),
+                        transcript=_record_transcript(transcripts, record),
                     )
                     row["models"] = list(usage.models)  # a copy, not the record's list
                     rows.append(row)
     return rows
 
 
+def _transcripts(events: Sequence[Mapping[str, Any]]) -> dict[tuple[str, int, str], str | None]:
+    """(candidate id, run index, case name) -> the last `trial` event's transcript hash; None without one."""
+    transcripts: dict[tuple[str, int, str], str | None] = {}
+    for event in events:
+        if event["event"] == "trial":
+            saved = event["record"]
+            transcript = saved.get("transcript")
+            key = (saved["candidate_id"], saved["run_index"], saved["case_name"])
+            transcripts[key] = None if transcript is None else transcript["hash"]
+    return transcripts
+
+
+def _record_transcript(transcripts: Mapping[tuple[str, int, str], str | None], record: TrialRecord) -> str | None:
+    """The hash of `record`'s transcript, from `_transcripts`; None when `record` holds no trajectory.
+
+    After a resume, a trial's last `trial` event can be a killed iteration's re-run while the record kept is
+    the failed one the closed iterations left, so a record without a trajectory names none. A record that
+    holds a trajectory is never run again, only judged again with its trajectory kept, so its last event
+    names that trajectory.
+    """
+    if record.trajectory is None:
+        return None
+    return transcripts.get((record.candidate_id, record.run_index, record.case_name))
+
+
 def _reports(
+    events: Sequence[Mapping[str, Any]],
     records: Mapping[str, Mapping[tuple[str, int], TrialRecord]],
     *,
     cases: Sequence[Case],
@@ -663,15 +690,21 @@ def _reports(
     (`agent_failure`, `infrastructure_invalid`) gets a score-0 row per evaluator with `Experiment`'s reason
     ("An error occurred: <error>") and the case itself as the row; an evaluator in `evaluator_errors` gets a
     score-0 row with "Evaluator error: <exception type>" (the record keeps only the type). Each row is tagged
-    `evaluator`, `evaluator_type`, and `run_index`. So `overall_score` is what a plain eval run of the same
-    trials reports.
+    `evaluator`, `evaluator_type`, `run_index`, and `transcript`. So `overall_score` is what a plain eval run
+    of the same trials reports.
+
+    Trajectories are referenced, not inlined: `actual_trajectory` is None (a failed trial's row has no such
+    key, as in `Experiment`), and `transcript` is the hash of the trial's `<run>/transcripts/<hash>.json`
+    (None when the record holds no trajectory), as in the case rows.
 
     Args:
+        events: The closed events (`closed_events`), for each trial's transcript.
         records: Candidate id -> (case name, run index) -> its last trial record.
         cases: The experiment's cases.
         evaluators: The experiment's evaluators, in its order.
         split: The run's split, for the case order.
     """
+    transcripts = _transcripts(events)
     by_name = {case.name: case for case in cases}
     out: dict[str, dict[SplitName, EvaluationReport]] = {}
     for candidate_id, trials in records.items():
@@ -692,7 +725,12 @@ def _reports(
                 name, type_name = evaluator.get_name(), evaluator.get_type_name()
                 for record in ordered:
                     case = by_name[record.case_name]
-                    tag = {"evaluator": name, "evaluator_type": type_name, "run_index": record.run_index}
+                    tag = {
+                        "evaluator": name,
+                        "evaluator_type": type_name,
+                        "run_index": record.run_index,
+                        "transcript": _record_transcript(transcripts, record),
+                    }
                     if record.status in (TrialStatus.AGENT_FAILURE, TrialStatus.INFRASTRUCTURE_INVALID):
                         rows.append({**case.model_dump(), **tag})
                         scores.append(0.0)
@@ -707,7 +745,7 @@ def _reports(
                         expected_output=case.expected_output,
                         expected_assertion=case.expected_assertion,
                         expected_trajectory=case.expected_trajectory,
-                        actual_trajectory=record.trajectory,
+                        actual_trajectory=None,  # referenced by the `transcript` tag
                         metadata=case.metadata,
                         actual_interactions=record.interactions,
                         expected_interactions=case.expected_interactions,

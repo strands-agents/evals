@@ -31,8 +31,9 @@ class RunDirectory:
     `run_id` is `[<name>-]<YYYYMMDD-HHMMSS>-<6 hex>`, the start time in UTC. Layout: `run.json`,
     `events.jsonl` (the only source of truth on resume), `transcripts/<hash>.json` (each trajectory once,
     named by the first 16 hex of the sha256 of its canonical JSON), `effects.json`, the review diffs,
-    `result.json` (the whole result, written last), and `candidates/<id>/optimization_files/` (only when a
-    value reaches the agent as a path). No per-candidate values, trial, or report files.
+    `result.json` (the whole result, written last; it names transcripts by hash), and
+    `candidates/<id>/optimization_files/` (only when a value reaches the agent as a path). No per-candidate
+    values, trial, or report files.
 
     One process per run, and nothing enforces it: opening a run that another process is still writing can
     cut that process's last line (`EventLog` trims a cut-off last line when it opens the log), and the next
@@ -267,11 +268,12 @@ class RunDirectory:
         _write_text_atomically(path.with_name(f"{path.name}.values.json"), text + "\n")
 
     def save_result(self, result: Mapping[str, Any]) -> None:
-        """`<root>/result.json`: the whole `OptimizationResult` (`to_dict()`), written last, after the diffs.
+        """`<root>/result.json`: the whole `OptimizationResult` (`to_dict()`) as compact JSON (no indentation),
+        written last, after the diffs.
 
         Derived from the events, so a resumed finished run rewrites it; never read on resume.
         """
-        text = json.dumps(result, indent=2, default=_encode, ensure_ascii=False, allow_nan=False)
+        text = json.dumps(result, separators=(",", ":"), default=_encode, ensure_ascii=False, allow_nan=False)
         _write_text_atomically(self.root / "result.json", text + "\n")
 
 

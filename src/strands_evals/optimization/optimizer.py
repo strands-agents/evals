@@ -754,7 +754,13 @@ class Optimizer:
             search_cost=self._search_cost,
             judge_cost=judge_cost,
             retry_cost=retry_cost,
-            reports=_reports(self._records, cases=self._cases, evaluators=self._evaluators, split=self._case_split),
+            reports=_reports(
+                closed_events(run.events.read()),
+                self._records,
+                cases=self._cases,
+                evaluators=self._evaluators,
+                split=self._case_split,
+            ),
             rows=self._rows(views, finalists, report),
         )
         data = result.to_dict()

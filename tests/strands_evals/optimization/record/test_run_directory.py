@@ -256,7 +256,8 @@ def test_effects_diffs_and_the_result_are_written(tmp_path):
     run.save_result({"run_id": run.run_id, "split": ("train",)})
     run.save_result({"run_id": run.run_id, "split": ("train", "test")})  # a resumed finished run rewrites it
 
-    assert json.loads((run.root / "result.json").read_text()) == {"run_id": run.run_id, "split": ["train", "test"]}
+    # Compact: no indentation, no spaces after separators.
+    assert (run.root / "result.json").read_text() == f'{{"run_id":"{run.run_id}","split":["train","test"]}}\n'
 
     assert json.loads((run.root / "effects.json").read_text()) == {"effects": [], "reason": "no fit"}
     assert (run.root / "best.diff").read_text() == "--- prompt\n"
