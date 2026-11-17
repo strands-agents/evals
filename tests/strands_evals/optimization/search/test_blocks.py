@@ -526,14 +526,72 @@ def test_joint_proposes_every_block_until_a_step_saves_nothing():
     assert history.replays(Joint)
 
 
+@pytest.mark.parametrize("schedule", [Joint, Alternate])
+def test_one_block_continues_after_invalid_only_steps_until_redraws_plus_one_in_a_row(schedule):
+    space = Space({"temperature": Float(0.0, 1.0, default=0.7)})
+    history = History(schedule(), [Block(Fake(), "temperature", name="t")], space, n=1, redraws=2)
+    # 2 invalid-only steps (each slot drawn redraws + 1 times), then a saved candidate restarts the count; then
+    # 3 in a row (redraws + 1) end it
+    script = ["invalid", "invalid", "feasible", "invalid", "invalid", "invalid"]
+
+    steps = history.run(lambda step, i: ["invalid"] * 3 if script[i] == "invalid" else [script[i]])
+
+    assert [view(s) for s in steps] == [(["t"], 1, None, None, "inner", ())] * 6 + [None]
+    assert history.replays(schedule)
+
+
+@pytest.mark.parametrize(
+    "last",
+    [[("duplicate", "base")], ["invalid", ("duplicate", "base")], []],
+    ids=["a duplicate", "invalid and a duplicate", "nothing proposed"],
+)
+def test_joint_ends_after_invalid_steps_at_one_that_repeated_or_proposed_nothing(last):
+    history = History(Joint(), [Block(Fake(), "temperature", name="t")], n=1)
+    history.save(history.plan(), "invalid")
+    history.save(history.plan(), *last)
+
+    assert history.plan() is None
+
+
+def test_joint_with_no_redraws_ends_after_one_invalid_only_step():
+    history = History(Joint(), [Block(Fake(), "temperature", name="t")], n=1, redraws=0)
+    history.save(history.plan(), "invalid")
+
+    assert history.plan() is None
+
+
 def test_alternate_rotates_and_ends_after_a_cycle_of_misses():
     history = History(Alternate(), [Block(Fake(), "temperature", name="t"), Block(Fake(), "manager", name="m")])
-    script = {0: ["feasible"], 1: ["invalid"], 2: ["feasible"], 3: ["invalid"], 4: [("duplicate", "base")]}
+    script = {0: ["feasible"], 1: ["invalid"], 2: ["feasible"], 3: [("duplicate", "base")], 4: [("duplicate", "base")]}
 
     steps = history.run(lambda step, i: script[i])
 
     assert [view(s)[0] if s else None for s in steps] == [["t"], ["m"], ["t"], ["m"], ["t"], None]
     assert history.replays(Alternate)
+
+
+def test_alternate_continues_while_its_cycles_of_misses_hold_an_invalid_only_step():
+    history = History(
+        Alternate(), [Block(Fake(), "temperature", name="t"), Block(Fake(), "manager", name="m")], redraws=1
+    )
+    # t repeats a measured candidate and m proposes only invalid patches: each cycle of misses holds an
+    # invalid-only step, so it ends after redraws + 1 cycles (4 steps) that saved nothing, not after 1
+    script = {0: ["feasible"], 1: ["invalid"], 2: [("duplicate", "base")], 3: ["invalid"], 4: [("duplicate", "base")]}
+
+    steps = history.run(lambda step, i: script[i])
+
+    assert [view(s)[0] if s else None for s in steps] == [["t"], ["m"], ["t"], ["m"], ["t"], None]
+    assert history.replays(Alternate)
+
+
+def test_alternate_ends_at_a_later_cycle_of_misses_that_holds_no_invalid_only_step():
+    history = History(Alternate(), [Block(Fake(), "temperature", name="t"), Block(Fake(), "manager", name="m")])
+    # the cycle of m's invalid-only step and t's repeat doesn't end it; the next cycle, two repeats, does
+    script = {0: ["feasible"], 1: ["invalid"], 2: [("duplicate", "base")], 3: [("duplicate", "base")]}
+
+    steps = history.run(lambda step, i: script[i])
+
+    assert [view(s)[0] if s else None for s in steps] == [["t"], ["m"], ["t"], ["m"], None]
 
 
 def nested_history(**kwargs):
@@ -779,6 +837,32 @@ def test_a_joint_step_that_saved_nothing_ends_its_round_early():
     history = History(Nested("structure", Joint(), inner_iterations=4), blocks4())
     history.save(history.plan(), "feasible")  # the opener; the round has room for 16 more
     history.save(history.plan(), ("duplicate", "base"))  # Joint's first step saves nothing
+
+    assert view(history.plan())[3:5] == ((1,), "opener")
+
+
+def test_an_invalid_only_inner_step_neither_ends_its_round_nor_uses_its_room():
+    history = History(Nested("structure", Joint(), inner_iterations=1), blocks4(), redraws=1)
+    history.save(history.plan(), "feasible")  # the opener; the round has room for 4 more
+    history.save(history.plan(), "invalid")  # Joint's first step proposes only invalid patches
+
+    step = history.plan()
+    assert view(step)[1] == 4 and view(step)[3:5] == ((0,), "inner")
+    history.save(step, "invalid")  # redraws + 1 invalid-only steps in a row: Joint, and so the round, ends
+
+    assert view(history.plan())[3:5] == ((1,), "opener")
+
+
+def test_an_alternate_round_continues_past_a_cycle_of_misses_that_holds_an_invalid_only_step():
+    history = nested_history(redraws=1)
+    history.save(history.plan(), ("feasible", SUMMARY))  # c1: the round's inner blocks are summary and temp
+    history.save(history.plan(), "invalid")
+    history.save(history.plan(), ("duplicate", "c1"))
+
+    step = history.plan()  # a cycle of misses, one of them invalid-only: the round goes on
+    assert view(step) == (["summary"], 4, ("c1",), (0,), "inner", ())
+    history.save(step, "invalid")
+    history.save(history.plan(), ("duplicate", "c1"))  # redraws + 1 cycles of misses end the round
 
     assert view(history.plan())[3:5] == ((1,), "opener")
 
