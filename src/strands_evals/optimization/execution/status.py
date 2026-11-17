@@ -21,9 +21,12 @@ from ...utils import is_throttling_error
 
 
 class InfrastructureError(Exception):
-    """Raise from a rollout or environment to mark the trial `infrastructure_invalid`.
+    """Raise from a rollout, an environment, or a tool to mark the trial `infrastructure_invalid`.
 
-    The trial is re-run, never scored, e.g. when a sandbox failed to start.
+    The trial is re-run, never scored, e.g. when a sandbox failed to start. Strands hands a tool's
+    exception to the model as an error result, so for a tool of an `Agent` the factory returns, `make_task`
+    stops the agent before its next model call and ends the attempt with this error. On the `build_task`
+    path the task builds its own agents, so the task has to raise it.
     """
 
 
@@ -68,12 +71,16 @@ def classify(error: BaseException) -> TrialStatus:
        `internalserverexception`, `serviceunavailableexception`, `modelstreamerrorexception`,
        `modelnotreadyexception`, `throttlingexception` -> `INFRASTRUCTURE_INVALID`.
     6. Anything else -> `AGENT_FAILURE`, a user's own deadline (`asyncio.TimeoutError`) included, so a
-       slow agent never sheds its hard cases by being re-run.
+       slow agent never sheds its hard cases by being re-run; but see `make_task` below for a deadline
+       that passes after an agent's model call failed on infrastructure.
 
-    Only these two come from an exception: `make_task` raises an environment setup error as
-    `InfrastructureError` (rule 2) whatever its type, and `TrialRunner` sets `EVALUATOR_INVALID` when every
-    evaluator is in `evaluator_errors`. Under `agent_failure_score="worst"` an infrastructure failure misread as
-    `AGENT_FAILURE` would score the worst end instead of being re-run.
+    Only these two come from an exception. `make_task` raises three failures as `InfrastructureError`
+    (rule 2): an environment setup error whatever its type, an `InfrastructureError` a tool raised (which
+    Strands would hand to the model), and a deadline that passed after an agent's last model call failed
+    on infrastructure and before it started another (e.g. while it waited to retry a throttled call).
+    `TrialRunner` sets `EVALUATOR_INVALID` when every evaluator is in `evaluator_errors`. Under
+    `agent_failure_score="worst"` an infrastructure failure misread as `AGENT_FAILURE` would score the
+    worst end instead of being re-run.
     """
     cause = error
     while isinstance(cause, EventLoopException) and cause.original_exception is not None:

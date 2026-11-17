@@ -1,15 +1,18 @@
 import asyncio
+import concurrent.futures
 import contextvars
 import logging
 import threading
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 
 import opentelemetry.trace as trace_api
 import pytest
 from opentelemetry.context import Context
 from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
 from opentelemetry.sdk.trace.sampling import ALWAYS_OFF
-from strands import Agent
+from strands import Agent, ModelRetryStrategy, tool
+from strands.hooks import AfterModelCallEvent, AfterToolCallEvent
+from strands.tools.executors import SequentialToolExecutor
 from strands.types.exceptions import EventLoopException, ModelThrottledException
 
 from strands_evals import Case, Experiment
@@ -26,7 +29,7 @@ from strands_evals.optimization.execution.traces import TraceCapture
 from strands_evals.types import EvaluationOutput
 from strands_evals.types.optimization import TrialStatus
 from strands_evals.types.trace import AgentInvocationSpan, Session
-from tests.strands_evals.optimization.scripted_model import ScriptedModel
+from tests.strands_evals.optimization.scripted_model import ScriptedModel, ToolUse
 
 
 @pytest.fixture
@@ -84,18 +87,20 @@ async def test_default_rollout_builds_a_fresh_agent_each_time():
 # make_task
 
 
-async def test_make_task_without_environment_passes_the_factory():
-    seen = []
+async def test_make_task_without_environment_builds_with_the_factory():
+    calls = []
+
+    def factory(**kwargs):
+        calls.append(kwargs)
+        return {"built": True}
 
     async def rollout(agent_factory, case):
-        seen.append(agent_factory)
-        return {"output": case.input}
+        return {"output": agent_factory(mode=case.input)}
 
-    factory = _agent_factory()
     out = await make_task(factory, rollout)(_case(text="hello"))
 
-    assert out == {"output": "hello"}
-    assert seen == [factory]
+    assert out == {"output": {"built": True}}  # what isn't an Agent comes back as is
+    assert calls == [{"mode": "hello"}]
 
 
 async def test_make_task_runs_a_sync_rollout():
@@ -528,6 +533,304 @@ async def test_a_sync_task_is_instrumented(traces):
 
     assert out["output"] == "ABC"
     assert log.records()["case-1"].status is TrialStatus.COMPLETED
+
+
+# infrastructure failures inside the agent
+
+
+@tool
+def run_in_sandbox(cmd: str) -> str:
+    """Run a command in the case's sandbox."""
+    raise InfrastructureError("the sandbox is gone")
+
+
+def _sandbox_model():
+    return ScriptedModel([ToolUse("run_in_sandbox", {"cmd": "ls"}), "it failed, so the answer is 42"])
+
+
+def _sandbox_agent_factory(model, tools=(run_in_sandbox,)):
+    def build():
+        return Agent(model=model, tools=list(tools), callback_handler=None)
+
+    return build
+
+
+async def _deadline_at(agent, case, moment, error=asyncio.TimeoutError):
+    """Invoke the agent; when `moment` is set first, cancel it and raise `error`, as a rollout's
+    `asyncio.wait_for` deadline passing then would."""
+    invocation = asyncio.ensure_future(agent.invoke_async(case.input))
+    reached = asyncio.ensure_future(moment.wait())
+    await asyncio.wait([invocation, reached], return_when=asyncio.FIRST_COMPLETED)
+    if invocation.done():
+        reached.cancel()
+        return {"output": str(invocation.result())}
+    invocation.cancel()
+    with suppress(asyncio.CancelledError):
+        await invocation
+    raise error()
+
+
+class _Stalls(ScriptedModel):
+    """A model call that never returns; with `throttle_first`, the first call is throttled."""
+
+    def __init__(self, throttle_first=False):
+        super().__init__(["unused"])
+        self.throttle_first = throttle_first
+        self.started = asyncio.Event()
+
+    async def stream(self, messages, tool_specs=None, system_prompt=None, **kwargs):
+        self.calls += 1
+        if self.throttle_first and self.calls == 1:
+            raise ModelThrottledException("slow down")
+        self.started.set()
+        await asyncio.Event().wait()
+        yield {}  # pragma: no cover
+
+
+def _sync_rollout(agent_factory, case):
+    return {"output": str(agent_factory()(case.input))}
+
+
+@pytest.mark.parametrize("rollout", [default_rollout, _sync_rollout], ids=["async", "sync"])
+async def test_an_infrastructure_error_in_a_tool_ends_the_attempt_as_infrastructure(rollout, traces):
+    log = TrialLog()
+    model = _sandbox_model()
+    task = make_task(_sandbox_agent_factory(model), rollout)
+
+    with pytest.raises(InfrastructureError):
+        await _run(instrument(task, log, traces), _case(), traces)
+
+    entry = log.records()["case-1"]
+    assert entry.status is TrialStatus.INFRASTRUCTURE_INVALID
+    assert (entry.error_type, entry.error) == ("InfrastructureError", "the sandbox is gone")
+    assert model.calls == 1  # stopped before its next model call
+
+
+async def test_another_tool_error_still_goes_to_the_model():
+    @tool
+    def parse(text: str) -> str:
+        """Parse the text."""
+        raise ValueError("not a number")
+
+    model = ScriptedModel([ToolUse("parse", {"text": "x"}), "it isn't a number"])
+    out = await make_task(_sandbox_agent_factory(model, [parse]), default_rollout)(_case())
+
+    assert out["output"].strip() == "it isn't a number"
+    assert model.calls == 2
+
+
+async def test_a_tool_infrastructure_error_survives_another_call_in_the_same_turn():
+    @tool
+    def list_files() -> str:
+        """List the files of the case."""
+        return "a.txt"
+
+    model = ScriptedModel([[ToolUse("run_in_sandbox", {"cmd": "ls"}), ToolUse("list_files")], "done"])
+
+    def build():  # in order, so the successful call's result comes after the failed one's
+        tools = [run_in_sandbox, list_files]
+        return Agent(model=model, tools=tools, tool_executor=SequentialToolExecutor(), callback_handler=None)
+
+    with pytest.raises(InfrastructureError):
+        await make_task(build, default_rollout)(_case())
+
+    assert model.calls == 1
+
+
+@pytest.mark.parametrize("then", ["returns", "raises"])
+async def test_a_tool_infrastructure_error_wins_over_what_the_rollout_does_after_it(then):
+    async def rollout(agent_factory, case):
+        try:
+            await agent_factory().invoke_async(case.input)
+        except Exception as error:
+            if then == "raises":
+                raise RuntimeError("the agent crashed") from error
+        return {"output": "recovered"}
+
+    task = make_task(_sandbox_agent_factory(_sandbox_model()), rollout)
+
+    with pytest.raises(InfrastructureError, match="the sandbox is gone"):
+        await task(_case())
+
+
+async def test_a_setup_error_wins_over_a_tool_infrastructure_error(traces):
+    async def rollout(agent_factory, case):
+        with suppress(Exception):
+            await agent_factory(model=_sandbox_model()).invoke_async(case.input)
+        return {"output": agent_factory(model=_sandbox_model(), sandbox="box")}  # takes no `sandbox`
+
+    log = TrialLog()
+    task = instrument(make_task(_sandbox_agent.bind({}), rollout), log, traces)
+
+    with pytest.raises(_FactoryArgumentError):
+        await _run(task, _case(), traces)
+
+    assert isinstance(log.setup_error, _FactoryArgumentError)
+
+
+async def test_a_tool_infrastructure_error_keeps_its_own_cause(traces):
+    class SandboxGone(InfrastructureError):
+        pass
+
+    @tool
+    def connect() -> str:
+        """Connect to the case's sandbox."""
+        raise SandboxGone("no sandbox") from ConnectionRefusedError("refused")
+
+    log = TrialLog()
+    task = make_task(_sandbox_agent_factory(ScriptedModel([ToolUse("connect"), "done"]), [connect]), default_rollout)
+
+    with pytest.raises(SandboxGone):
+        await _run(instrument(task, log, traces), _case(), traces)
+
+    entry = log.records()["case-1"]
+    assert entry.status is TrialStatus.INFRASTRUCTURE_INVALID
+    assert (entry.error_type, entry.error) == ("ConnectionRefusedError", "refused")
+
+
+async def test_a_tool_call_a_hook_retries_successfully_completes():
+    tries = []
+
+    @tool
+    def restart_then_run() -> str:
+        """Run a command once the sandbox is back."""
+        tries.append(len(tries))
+        if len(tries) == 1:
+            raise InfrastructureError("sandbox restarting")
+        return "ok"
+
+    def retry_once(event: AfterToolCallEvent) -> None:
+        if event.exception is not None and len(tries) == 1:
+            event.retry = True
+
+    def build():
+        model = ScriptedModel([ToolUse("restart_then_run"), "done"])
+        agent = Agent(model=model, tools=[restart_then_run], callback_handler=None)
+        agent.hooks.add_callback(AfterToolCallEvent, retry_once)
+        return agent
+
+    out = await make_task(build, default_rollout)(_case())
+
+    assert out["output"].strip() == "done"
+    assert tries == [0, 1]
+
+
+async def test_an_agent_the_factory_returns_again_starts_the_next_attempt_clean():
+    model = ScriptedModel([ToolUse("run_in_sandbox", {"cmd": "ls"}), "second answer"])
+    agent = Agent(model=model, tools=[run_in_sandbox], callback_handler=None)
+    task = make_task(lambda: agent, default_rollout)
+
+    with pytest.raises(InfrastructureError):
+        await task(_case())
+    out = await task(_case())
+
+    assert out["output"].strip() == "second answer"
+
+
+async def test_an_async_factorys_agent_gets_the_hooks():
+    model = _sandbox_model()
+
+    async def build():
+        return Agent(model=model, tools=[run_in_sandbox], callback_handler=None)
+
+    async def rollout(agent_factory, case):
+        agent = await agent_factory()
+        return {"output": str(await agent.invoke_async(case.input))}
+
+    with pytest.raises(InfrastructureError):
+        await make_task(build, rollout)(_case())
+
+    assert model.calls == 1
+
+
+@tunable(system_prompt=TextValue(default="be brief"))
+def _sandbox_agent(system_prompt, model):
+    return Agent(model=model, system_prompt=system_prompt, tools=[run_in_sandbox], callback_handler=None)
+
+
+async def test_the_environment_exits_with_the_tools_infrastructure_error():
+    exits = []
+
+    @contextmanager
+    def environment(case):
+        try:
+            yield {"model": _sandbox_model()}
+        except BaseException as error:
+            exits.append(error)
+            raise
+
+    with pytest.raises(InfrastructureError) as raised:
+        await make_task(_sandbox_agent.bind({}), default_rollout, environment)(_case())
+
+    assert exits == [raised.value]
+
+
+@pytest.mark.parametrize(
+    "deadline",
+    [asyncio.TimeoutError, TimeoutError, concurrent.futures.TimeoutError],
+    ids=["asyncio", "builtin", "concurrent.futures"],
+)
+async def test_a_deadline_while_the_agent_waits_out_throttling_is_infrastructure(deadline, traces):
+    log = TrialLog()
+    throttled = asyncio.Event()
+
+    def build():
+        return Agent(
+            model=ScriptedModel([ModelThrottledException("slow down"), "answer"]),
+            retry_strategy=ModelRetryStrategy(max_attempts=3, initial_delay=30, max_delay=30),
+            callback_handler=None,
+        )
+
+    async def rollout(agent_factory, case):
+        agent = agent_factory()
+        agent.hooks.add_callback(AfterModelCallEvent, lambda event: throttled.set())  # set before the retry wait
+        return await _deadline_at(agent, case, throttled, deadline)
+
+    with pytest.raises(InfrastructureError) as raised:
+        await _run(instrument(make_task(build, rollout), log, traces), _case(), traces)
+
+    assert isinstance(raised.value.__cause__, ModelThrottledException)
+    entry = log.records()["case-1"]
+    assert entry.status is TrialStatus.INFRASTRUCTURE_INVALID
+    assert (entry.error_type, entry.error) == ("ModelThrottledException", "slow down")
+
+
+async def test_a_deadline_after_an_unretried_infrastructure_failure_is_infrastructure():
+    stalls = _Stalls()
+
+    def build(model):
+        return Agent(model=model, retry_strategy=ModelRetryStrategy(max_attempts=1), callback_handler=None)
+
+    async def rollout(agent_factory, case):
+        with suppress(ModelThrottledException):  # the first agent's call failed and wasn't retried
+            await agent_factory(ScriptedModel([ModelThrottledException("slow down")])).invoke_async(case.input)
+        return await _deadline_at(agent_factory(stalls), case, stalls.started)
+
+    with pytest.raises(InfrastructureError) as raised:
+        await make_task(build, rollout)(_case())
+
+    assert isinstance(raised.value.__cause__, ModelThrottledException)
+
+
+@pytest.mark.parametrize("throttle_first", [False, True], ids=["no throttling", "after a throttled call"])
+async def test_a_deadline_during_a_model_call_stays_an_agent_failure(throttle_first, traces):
+    log = TrialLog()
+    model = _Stalls(throttle_first=throttle_first)
+
+    def build():
+        retry = ModelRetryStrategy(max_attempts=3, initial_delay=0, max_delay=0)
+        return Agent(model=model, retry_strategy=retry, callback_handler=None)
+
+    async def rollout(agent_factory, case):
+        return await _deadline_at(agent_factory(), case, model.started)
+
+    with pytest.raises(asyncio.TimeoutError):
+        await _run(instrument(make_task(build, rollout), log, traces), _case(), traces)
+
+    entry = log.records()["case-1"]
+    assert entry.status is TrialStatus.AGENT_FAILURE
+    assert entry.error_type == "TimeoutError"
+    assert model.calls == (2 if throttle_first else 1)
 
 
 # Through Experiment

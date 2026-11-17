@@ -7,11 +7,15 @@ import contextvars
 import functools
 import inspect
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from concurrent.futures import Executor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from contextlib import AbstractAsyncContextManager, AbstractContextManager, suppress
 from dataclasses import dataclass, field
 from typing import Any
+
+from strands import Agent
+from strands.hooks import AfterModelCallEvent, AfterToolCallEvent, BeforeModelCallEvent, HookProvider, HookRegistry
 
 from ...case import Case
 from ...telemetry import get_tracer
@@ -33,6 +37,9 @@ EnvironmentFn = Callable[
 # asyncio's shared pool holds at most min(32, cpus + 4) threads, which would cap the sync trials running
 # at once. None (outside a `TrialRunner` call) -> that shared pool.
 _THREAD_POOL: contextvars.ContextVar[Executor | None] = contextvars.ContextVar("trial_thread_pool", default=None)
+
+# What a rollout's own deadline raises: `asyncio.wait_for`, `Future.result(timeout=)`; one class from Python 3.11 on.
+_DEADLINE_ERRORS = (TimeoutError, asyncio.TimeoutError, FuturesTimeoutError)
 
 
 @dataclass
@@ -111,8 +118,9 @@ def make_task(
 ) -> TaskFn:
     """Wrap a rollout as a task: per-attempt environment, then `rollout_fn` inside a `rollout` span.
 
-    `rollout_fn` receives `agent_factory._with_resources(resources)` (without `environment`,
-    `agent_factory` itself): `default_rollout` calls it with no arguments; a custom rollout may pass the
+    `rollout_fn` receives a factory that builds with `agent_factory._with_resources(resources)` (without
+    `environment`, with `agent_factory`) and adds the attempt's hooks to every `strands.Agent` it returns
+    (see `_rollout`): `default_rollout` calls it with no arguments; a custom rollout may pass the
     factory function's non-tunable kwargs. A setup error, never a trial status, raises
     `_FactoryArgumentError`: an environment that gives no mapping, a resource or kwarg named like a
     declared marker, a call kwarg the function doesn't accept, or a required parameter left unsupplied.
@@ -175,9 +183,132 @@ def make_task(
 
 
 async def _rollout(rollout_fn: RolloutFn, agent_factory: Callable[..., Any], case: Case) -> Any:
-    """Run `rollout_fn` inside the `rollout` span, whose duration is `Usage.seconds`."""
+    """Run `rollout_fn` inside the `rollout` span, whose duration is `Usage.seconds`.
+
+    `rollout_fn` gets `agent_factory` wrapped so that every `Agent` it builds gets this attempt's
+    `_AttemptHooks`. Two failures inside the agent then end the attempt as infrastructure:
+
+    - A tool raised `InfrastructureError`, which Strands would hand to the model as an error result: every
+      agent of the attempt stops before its next model call, and the attempt raises that error, whatever
+      the rollout returned or raised after it (a setup error, `_FactoryArgumentError`, still wins). A later
+      result of the same tool call that isn't an `InfrastructureError` (a hook retried it) clears it.
+    - The rollout's own deadline (`TimeoutError`) passed after an agent's last model call failed on
+      infrastructure (`classify`) and before it started another, e.g. while `ModelRetryStrategy` slept
+      after throttling: raised as `InfrastructureError` from that model call's error, so the trial records
+      the throttling. Any other deadline, e.g. one that passes during a model call, stays the rollout's
+      `TimeoutError`.
+    """
+    hooks = _AttemptHooks()
     with get_tracer().start_as_current_span(f"rollout {case.name}", attributes={SPAN_KIND: ROLLOUT_SPAN}):
-        return await _call(rollout_fn, agent_factory, case)
+        failure: Exception | None = None
+        try:
+            result = await _call(rollout_fn, _adding_hooks(agent_factory, hooks), case)
+        except _FactoryArgumentError:
+            raise
+        except Exception as error:
+            failure = error
+        finally:
+            hooks.close()
+        # Raised outside the `except`, so the tool's error doesn't gain the rollout's error as its context.
+        tool_error = hooks.tool_error()
+        if tool_error is not None:
+            raise tool_error
+        if failure is None:
+            return result
+        failed_call = hooks.failed_call()
+        if isinstance(failure, _DEADLINE_ERRORS) and failed_call is not None:
+            raise InfrastructureError(
+                f"the rollout's deadline passed after a model call failed on infrastructure: {failed_call}"
+            ) from failed_call
+        raise failure
+
+
+class _AttemptHooks(HookProvider):
+    """The hooks `_rollout` adds to every `Agent` the factory builds during one attempt.
+
+    Every callback is sync and only records or raises. They do nothing once the attempt is over
+    (`close`), since a hook can't be removed from an agent the factory might return again; such an agent
+    keeps one set of idle callbacks per earlier attempt.
+    """
+
+    def __init__(self) -> None:
+        # (id(agent), toolUseId) -> the error; a later result for the same call (a hook retried it) clears it
+        self._tool_errors: dict[tuple[int, str], InfrastructureError] = {}
+        # id(agent) -> its last model call's infrastructure error, until the agent's next model call starts
+        self._failed_calls: dict[int, Exception] = {}
+        self._closed = False
+
+    def register_hooks(self, registry: HookRegistry, **kwargs: Any) -> None:
+        """Register the three callbacks.
+
+        After* callbacks of one order run in reverse registration order, so `_after_model_call` runs
+        before the agent's retry strategy (registered when the agent was built) sleeps.
+        """
+        registry.add_callback(AfterToolCallEvent, self._after_tool_call)
+        registry.add_callback(BeforeModelCallEvent, self._before_model_call)
+        registry.add_callback(AfterModelCallEvent, self._after_model_call)
+
+    def close(self) -> None:
+        """End the attempt: every callback does nothing from now on."""
+        self._closed = True
+
+    def tool_error(self) -> InfrastructureError | None:
+        """The first `InfrastructureError` a tool raised that no retry cleared, else None."""
+        return next(iter(self._tool_errors.values()), None)
+
+    def failed_call(self) -> Exception | None:
+        """The infrastructure error of an agent's last model call when it has started none since, else None."""
+        return next(iter(self._failed_calls.values()), None)
+
+    def _after_tool_call(self, event: AfterToolCallEvent) -> None:
+        if self._closed:
+            return
+        key = (id(event.agent), str(event.tool_use.get("toolUseId")))
+        if isinstance(event.exception, InfrastructureError):
+            self._tool_errors[key] = event.exception
+        else:
+            self._tool_errors.pop(key, None)
+
+    def _before_model_call(self, event: BeforeModelCallEvent) -> None:
+        if self._closed:
+            return
+        tool_error = self.tool_error()
+        if tool_error is not None:
+            raise tool_error
+        self._failed_calls.pop(id(event.agent), None)
+
+    def _after_model_call(self, event: AfterModelCallEvent) -> None:
+        if self._closed:
+            return
+        if event.exception is not None and classify(event.exception) is TrialStatus.INFRASTRUCTURE_INVALID:
+            self._failed_calls[id(event.agent)] = event.exception
+        else:
+            self._failed_calls.pop(id(event.agent), None)
+
+
+def _adding_hooks(agent_factory: Callable[..., Any], hooks: _AttemptHooks) -> Callable[..., Any]:
+    """`agent_factory`, but every `Agent` it returns (or its coroutine returns) gets `hooks`; anything else
+    it builds is returned as is."""
+
+    def build(*args: Any, **kwargs: Any) -> Any:
+        built = agent_factory(*args, **kwargs)
+        if inspect.iscoroutine(built):
+            return _add_hooks_when_built(built, hooks)
+        _add_hooks(built, hooks)
+        return built
+
+    return build
+
+
+async def _add_hooks_when_built(built: Coroutine[Any, Any, Any], hooks: _AttemptHooks) -> Any:
+    agent = await built
+    _add_hooks(agent, hooks)
+    return agent
+
+
+def _add_hooks(built: Any, hooks: _AttemptHooks) -> None:
+    if isinstance(built, Agent):
+        built.hooks.add_hook(hooks)
 
 
 async def _exit_environment(
