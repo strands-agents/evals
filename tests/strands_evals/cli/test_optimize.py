@@ -1,30 +1,17 @@
-"""Tests for ``strands-evals optimize``: run, resume, apply, on scripted agents (no network)."""
+"""Tests for ``strands-evals optimize``: run and resume, on scripted agents (no network)."""
 
 from __future__ import annotations
 
 import json
 import shutil
-import sys
 from pathlib import Path
 
 import pytest
 
 from strands_evals import Case, Experiment
-from strands_evals.cli import _optimize
-from strands_evals.cli._entrypoint import import_attr
 from strands_evals.cli.main import main
-from strands_evals.optimization import (
-    AtMost,
-    Block,
-    Budget,
-    Maximize,
-    OptimizationResult,
-    Optimizer,
-    Patch,
-    Proposer,
-    Search,
-)
-from tests.strands_evals.cli.fixtures.optimize_agents import EXACT, PROMPT_AGENT, Correct
+from strands_evals.optimization import OptimizationResult, Patch, Proposer
+from tests.strands_evals.cli.fixtures.optimize_agents import EXACT, Correct
 
 AGENTS = "tests.strands_evals.cli.fixtures.optimize_agents"
 CORRECT = f"{AGENTS}:Correct"
@@ -158,7 +145,7 @@ def test_resume_needs_cli_json(tmp_path, capsys):
     assert "has no cli.json" in capsys.readouterr().err
 
 
-# apply
+# --config: a strands-harness portable config
 
 
 class AddInstruction(Proposer):
@@ -178,91 +165,6 @@ class AddInstruction(Proposer):
 
     def observe(self, observation):
         pass
-
-
-@pytest.fixture
-def finished_prompt_run(experiment_path, tmp_path, monkeypatch):
-    """A finished run that improves `prompt.md`, started from Python with the inputs the CLI would have saved."""
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "prompt.md").write_text("You answer questions.\n")
-    (project / "agent.py").write_text(PROMPT_AGENT)
-    monkeypatch.chdir(project)
-    spec = "./agent.py:prompt_agent"
-    result = Optimizer(
-        Experiment.from_file(str(experiment_path), custom_evaluators=[Correct]),
-        import_attr(spec),
-        objective=Maximize("Correct"),
-        constraints=[AtMost("tokens", 450)],
-        search=Search([Block(AddInstruction(), "prompt")]),
-        budget=Budget(max_iterations=6),
-        proposals_per_iteration=2,
-        max_workers=40,
-        base_dir=tmp_path / "runs",
-    ).run()
-    inputs = _optimize.Inputs(experiment_file=str(experiment_path), agent=spec, custom_evaluators=[CORRECT])
-    _optimize.save_inputs(result.run_dir, inputs)
-    _forget_agent_modules()  # `apply` is a new process: it must read the files as they are now
-    assert result.improved
-    return project, result
-
-
-def _forget_agent_modules() -> None:
-    for name in [name for name in sys.modules if name.startswith("_strands_evals_cli_agent_")]:
-        del sys.modules[name]
-
-
-def test_apply_writes_the_champions_file_and_lists_numbers_to_edit(finished_prompt_run, capsys, monkeypatch):
-    project, result = finished_prompt_run
-    monkeypatch.chdir(project.parent)  # apply runs in the run's working directory, wherever it is called from
-    assert main(["optimize", "apply", str(result.run_dir), "--yes"]) == 0
-    out = capsys.readouterr().out
-    assert (project / "prompt.md").read_text() == result.best.values["prompt"]
-    assert f"+{EXACT}" in out and f"wrote {project / 'prompt.md'}" in out
-    if "temperature" in result.best.changed_values():
-        assert "edit them by hand" in out and "temperature:" in out
-
-
-def test_apply_dry_run_writes_nothing(finished_prompt_run, capsys):
-    project, result = finished_prompt_run
-    assert main(["optimize", "apply", str(result.run_dir), "--dry-run"]) == 0
-    assert "dry run: nothing written" in capsys.readouterr().out
-    assert (project / "prompt.md").read_text() == "You answer questions.\n"
-
-
-def test_apply_refuses_a_file_changed_since_the_run(finished_prompt_run, capsys):
-    project, result = finished_prompt_run
-    (project / "prompt.md").write_text("Edited by hand.\n")
-    assert main(["optimize", "apply", str(result.run_dir), "--yes"]) == 2
-    assert "changed since the run" in capsys.readouterr().err
-    assert (project / "prompt.md").read_text() == "Edited by hand.\n"
-
-
-def test_apply_asks_unless_yes(finished_prompt_run, capsys, monkeypatch):
-    project, result = finished_prompt_run
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
-    assert main(["optimize", "apply", str(result.run_dir)]) == 2
-    assert "pass --yes" in capsys.readouterr().err
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda _: "n")
-    assert main(["optimize", "apply", str(result.run_dir)]) == 0
-    assert (project / "prompt.md").read_text() == "You answer questions.\n"
-
-
-def test_apply_the_baseline_by_number_changes_nothing(finished_prompt_run, capsys):
-    _, result = finished_prompt_run
-    assert main(["optimize", "apply", str(result.run_dir), "--candidate", "0"]) == 0
-    assert "nothing to apply" in capsys.readouterr().out
-
-
-def test_apply_needs_a_finished_run(finished_prompt_run, capsys):
-    _, result = finished_prompt_run
-    (result.run_dir / "result.json").unlink()
-    assert main(["optimize", "apply", str(result.run_dir)]) == 2
-    assert "the run hasn't finished" in capsys.readouterr().err
-
-
-# --config: a strands-harness portable config
 
 
 def _write_config(folder: Path, **extra) -> Path:
@@ -310,7 +212,7 @@ def scripted_text_proposer(monkeypatch):
     monkeypatch.setattr("strands_evals.optimization.search.blocks.Reflection", AddInstruction)
 
 
-def test_config_run_tunes_instructions_and_a_choice_then_apply_writes_both(
+def test_config_run_tunes_instructions_and_a_choice(
     experiment_path, tmp_path, monkeypatch, capsys, scripted_text_proposer
 ):
     project = tmp_path / "project"
@@ -328,24 +230,6 @@ def test_config_run_tunes_instructions_and_a_choice_then_apply_writes_both(
     assert saved["config"] == str(config.resolve()) and saved["agent"] is None
     assert saved["tune"] == ['effort=["auto","low"]'] and saved["harness_version"]
     assert not (project / ".agent").exists()  # every trial's session and memory lived in its own temp folder
-    capsys.readouterr()
-
-    assert main(["optimize", "apply", str(root), "--yes"]) == 0
-    written = json.loads(config.read_text())
-    assert written["instructions"] == result.best.values["instructions"]
-    assert written["effort"] == result.best.values["effort"]
-    assert "edit them by hand" not in capsys.readouterr().out  # the config is the CLI's: choices are written too
-
-
-def test_apply_refuses_a_config_changed_since_the_run(
-    experiment_path, tmp_path, monkeypatch, capsys, scripted_text_proposer
-):
-    config = _write_config(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    assert main(_config_args(experiment_path, config, tmp_path)) == 0
-    config.write_text(config.read_text().replace('"qa"', '"renamed"'))
-    assert main(["optimize", "apply", str(_only_run(tmp_path)), "--yes"]) == 2
-    assert "changed since the run" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -412,13 +296,11 @@ def test_each_trial_gets_an_empty_session_and_a_copy_of_the_memory(tmp_path):
     }
 
 
-def test_apply_lists_a_key_active_on_one_side_as_inactive(experiment_path, tmp_path, capsys):
+def test_best_values_json_shows_a_key_active_on_one_side(experiment_path, tmp_path):
     assert main(_run_args(experiment_path, tmp_path)) == 0
     root = _only_run(tmp_path)
     result = OptimizationResult.from_file(root / "result.json")
     assert result.best.values["manager"] == "summary"  # every sliding window is over the token limit
-    capsys.readouterr()
-    assert main(["optimize", "apply", str(root), "--dry-run"]) == 0
-    out = capsys.readouterr().out
-    assert "  manager: 'window' -> 'summary'\n" in out
-    assert "  manager.window.window_size: 40 -> (inactive)\n" in out
+    values = json.loads((root / "best.values.json").read_text())
+    assert values["manager"] == {"old": "window", "new": "summary"}
+    assert values["manager.window.window_size"] == {"old": 40}

@@ -1,4 +1,4 @@
-"""`strands-evals optimize` — search for a better agent configuration, resume a killed search, apply a result."""
+"""`strands-evals optimize` — search for a better agent configuration, or resume a killed search."""
 
 from __future__ import annotations
 
@@ -145,48 +145,6 @@ def _resume(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _apply(args: argparse.Namespace) -> int:
-    from .. import _optimize
-
-    run_dir = Path(args.run_dir).resolve()
-    try:
-        workdir = _optimize.read_run_json(run_dir)["workdir"]
-        with _optimize.working_directory(workdir):
-            plan = _optimize.plan_apply(run_dir, args.candidate)
-    except ValueError as error:
-        emit_error(str(error))
-        return EXIT_BAD_INPUT
-
-    out = sys.stdout
-    if not plan.files and not plan.by_hand:
-        out.write(f"candidate {plan.candidate_number} changes nothing against the baseline: nothing to apply\n")
-        return EXIT_OK
-    out.write(f"candidate {plan.candidate_number} ({plan.candidate_id})\n")
-    if plan.diff:
-        out.write(plan.diff if plan.diff.endswith("\n") else plan.diff + "\n")
-    if args.dry_run:
-        out.write("dry run: nothing written\n")
-    elif plan.files:
-        if not args.yes:
-            if not sys.stdin.isatty():
-                emit_error("stdin is not a terminal: pass --yes to write the files above, or --dry-run")
-                return EXIT_BAD_INPUT
-            answer = input(f"Write {len(plan.files)} file(s)? [y/N] ")
-            if answer.strip().lower() not in ("y", "yes"):
-                out.write("nothing written\n")
-                return EXIT_OK
-        _optimize.write_files(plan.files)
-        for path in plan.files:
-            out.write(f"wrote {path}\n")
-    if plan.by_hand:
-        out.write("numbers and choices live in your code; edit them by hand:\n")
-        for key, sides in plan.by_hand.items():
-            old = repr(sides["old"]) if "old" in sides else "(inactive)"
-            new = repr(sides["new"]) if "new" in sides else "(inactive)"
-            out.write(f"  {key}: {old} -> {new}\n")
-    return EXIT_OK
-
-
 def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentParser) -> None:
     parser = subparsers.add_parser(
         "run",
@@ -197,7 +155,7 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
             "--config (a strands-harness portable config), and run the "
             "optimizer: the search on the train cases, the champion picked on validation, and the champion "
             "compared with the baseline on the test cases. Writes the run folder (events, best.diff, "
-            "best.values.json, result.json, cli.json); nothing in your project is changed until `optimize apply`."
+            "best.values.json, result.json, cli.json); nothing in your project is changed."
         ),
     )
     parser.add_argument("experiment_file", metavar="EXPERIMENT_FILE", help="path to a serialized Experiment JSON file")
@@ -275,8 +233,8 @@ def add_subparser(subparsers: argparse._SubParsersAction, parent: argparse.Argum
     parser = subparsers.add_parser(
         "optimize",
         parents=[parent],
-        help="search for a better agent configuration, resume a search, or apply its result",
-        description="Search for a better configuration of a tunable agent, resume a killed search, or apply a result.",
+        help="search for a better agent configuration, or resume a search",
+        description="Search for a better configuration of a tunable agent, or resume a killed search.",
     )
     commands = parser.add_subparsers(dest="optimize_command", metavar="SUBCOMMAND")
     commands.required = True
@@ -293,19 +251,4 @@ def add_subparser(subparsers: argparse._SubParsersAction, parent: argparse.Argum
     resume.add_argument("--max-iterations", type=int, default=None, metavar="N")
     resume.add_argument("--max-workers", type=int, default=None, metavar="N")
     resume.set_defaults(func=_resume)
-
-    apply = commands.add_parser(
-        "apply",
-        parents=[parent],
-        help="write a finished run's champion (or another candidate) into your files",
-        description=(
-            "Write a candidate's text values into the original files, after confirmation. Refuses when a tuned "
-            "file or the declaration changed since the run. Numbers and choices are printed for you to edit."
-        ),
-    )
-    apply.add_argument("run_dir", metavar="RUN_DIR")
-    apply.add_argument("--candidate", metavar="ID_OR_NUMBER", default=None, help="default: the champion")
-    apply.add_argument("--dry-run", action="store_true", help="print what would change; write nothing")
-    apply.add_argument("--yes", action="store_true", help="write without asking")
-    apply.set_defaults(func=_apply)
     return parser

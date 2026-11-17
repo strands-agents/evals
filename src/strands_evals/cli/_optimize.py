@@ -1,13 +1,12 @@
-"""What `strands-evals optimize` builds from its flags: the `Optimizer`, `cli.json`, and applying a result.
+"""What `strands-evals optimize` builds from its flags: the `Optimizer` and `cli.json`.
 
-`cli.json` holds the inputs of `optimize run`, as given, so `resume RUN_DIR` and `apply RUN_DIR` rebuild the same
-experiment, agent, objective, constraints, and search from the run folder alone.
+`cli.json` holds the inputs of `optimize run`, as given, so `resume RUN_DIR` rebuilds the same experiment, agent,
+objective, constraints, and search from the run folder alone.
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -290,89 +289,3 @@ async def drive(optimizer: Optimizer, on_folder: Callable[[Path], None]) -> Opti
     if optimizer.run_dir is not None:
         on_folder(optimizer.run_dir)
     return await task
-
-
-# Applying a result.
-
-
-@dataclass(frozen=True)
-class Plan:
-    """What `apply` would do: the files to write, and the numbers and choices to edit by hand."""
-
-    candidate_number: int
-    candidate_id: str
-    diff: str
-    files: dict[Path, str]
-    by_hand: dict[str, dict[str, Any]]
-
-
-def plan_apply(run_dir: Path, candidate: str | None) -> Plan:
-    """Work out what applying `candidate` (an id or a display number; default the champion) writes.
-
-    Must run in the run's working directory (`working_directory`), so the factory reads the files as they are now.
-
-    Raises:
-        ValueError: The run hasn't finished (no `result.json`), `candidate` names no candidate, or the
-            declaration or a tuned file changed since the run.
-    """
-    result_path = run_dir / "result.json"
-    if not result_path.is_file():
-        raise ValueError(
-            f"{run_dir} has no result.json: the run hasn't finished; run `strands-evals optimize resume {run_dir}`"
-        )
-    result = OptimizationResult.from_file(result_path)
-    view = result.best if candidate is None else _find(result, candidate)
-    saved = {entry["key"]: entry for entry in read_run_json(run_dir)["space"]}
-    inputs = load_inputs(run_dir)
-    check_harness_version(inputs)
-    tuned: list[Any] = []
-    if inputs.config is not None:
-        from . import _harness
-
-        config = Path(inputs.config)
-        if _harness.file_sha256(config) != inputs.config_sha256:
-            raise ValueError(f"changed since the run: {config}; nothing written")
-        markers, tuned = _harness.declare(config, inputs.tune)
-        space = Space(markers)
-    else:
-        assert inputs.agent is not None
-        space = load_factory(inputs.agent).space
-    current = {info.key: info for info in space.params()}
-    if set(saved) != set(current):
-        raise ValueError("the factory's declaration changed since the run; nothing written")
-    changed = [
-        str(info.source.path if info.source is not None else key)
-        for key, info in current.items()
-        if info.kind == "text" and saved[key]["default"]["sha256"] != _sha256(str(info.default))
-    ]
-    if changed:
-        raise ValueError(f"changed since the run: {', '.join(changed)}; nothing written")
-    before = space._render_files(result.baseline.values)
-    after = space._render_files(view.values)
-    files = {path: text for path, text in after.items() if before.get(path) != text}
-    by_hand = view.changed_values()
-    if inputs.config is not None and by_hand:  # the config is the CLI's: its choices are written there too
-        config = Path(inputs.config).resolve()
-        text = files.get(config, config.read_text(encoding="utf-8"))
-        files[config] = _harness.apply_choices(config, text, tuned, view.values)
-        by_hand = {}
-    return Plan(view.number, view.id, view.diff(), files, by_hand)
-
-
-def write_files(files: dict[Path, str]) -> None:
-    """Write each file in place, atomically."""
-    for path, text in files.items():
-        _write_text_atomically(path, text)
-
-
-def _find(result: OptimizationResult, candidate: str) -> Any:
-    if candidate in result.candidates:
-        return result.candidates[candidate]
-    matches = [view for view in result.candidates.values() if str(view.number) == candidate]
-    if not matches:
-        raise ValueError(f"--candidate '{candidate}' is neither a candidate id nor a display number of this run")
-    return matches[0]
-
-
-def _sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()

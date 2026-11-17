@@ -25,7 +25,7 @@ class World(Model):
 
     def __init__(self, temperature: float, manager: object) -> None:
         self.temperature, self.manager = temperature, manager
-        self.config = {"model_id": "scripted-world"}
+        self.config = {"model_id": "scripted-world", "context_window_limit": 200_000}
 
     def update_config(self, **config):
         self.config.update(config)
@@ -84,22 +84,6 @@ def manager_agent(manager=None, temperature=0.9):
 def plain_agent():
     """Not tunable: `optimize run` rejects it."""
     return Agent(model=World(0.25, None), callback_handler=None)
-
-
-PROMPT_AGENT = """\
-from strands import Agent
-from strands.agent.conversation_manager import SummarizingConversationManager
-
-from strands_evals.optimization import FileText, Float, tunable
-from tests.strands_evals.cli.fixtures.optimize_agents import World
-
-
-@tunable(prompt=FileText("prompt.md"), temperature=Float(0.0, 1.0, default=0.3))
-def prompt_agent(prompt, temperature=0.3):
-    model = World(temperature, SummarizingConversationManager())
-    return Agent(model=model, system_prompt=prompt, callback_handler=None)
-"""
-"""An `agent.py` with a prompt file, written into a test's project folder (a file marker reads its file at import)."""
 
 
 world = World(0.25, None)

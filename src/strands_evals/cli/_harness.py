@@ -51,7 +51,7 @@ def harness_version() -> str:
 
 
 def file_sha256(path: Path) -> str:
-    """sha256 of the config file's bytes, recorded in `cli.json` and checked by `apply`."""
+    """sha256 of the config file's bytes, recorded in `cli.json`."""
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
@@ -145,15 +145,6 @@ def build_task(config_path: Path, tuned: list[Tuned]) -> Callable[[BuildContext]
         return task
 
     return build
-
-
-def apply_choices(config_path: Path, text: str, tuned: list[Tuned], values: dict[str, Any]) -> str:
-    """`text` (the config's) with each tuned choice set to its value in `values`, formatted as `JsonField` writes."""
-    config = json.loads(text)
-    for item in tuned:
-        if item.kind == "choice":
-            _set(config, item.path, values[item.name])
-    return json.dumps(config, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
 
 
 def _fresh_state(config: dict[str, Any], base_dir: Path, folder: Path) -> dict[str, Any]:
