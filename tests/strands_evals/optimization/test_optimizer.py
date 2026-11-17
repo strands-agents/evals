@@ -52,6 +52,7 @@ from strands_evals.optimization.record.run_directory import RunDirectory
 from strands_evals.optimization.search.blocks import _saved
 from strands_evals.optimization.selection.top_ranked import TopRanked
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
+from strands_evals.types.optimization import Estimate
 
 
 class Score(Evaluator):
@@ -938,7 +939,7 @@ async def test_a_validation_fit_of_none_says_the_model_returned_no_fit(tmp_path)
 
 
 class _FlaggedFit:
-    """A fit whose held-out check flagged a metric; nothing may decide with it."""
+    """A fit whose held-out check flagged its only goal metric; nothing may decide with it."""
 
     flagged = ["Temperature"]
     diagnostics: dict = {}
@@ -979,6 +980,60 @@ async def test_a_flagged_fit_reaches_no_proposer_and_no_selection(tmp_path):
     assert optimizer._fit is not None and optimizer._fit.flagged  # kept, but used by nothing
     assert proposer.requests and all(r.fit is None for r in proposer.requests)
     assert seen and all(fit is None for fit in seen)
+
+
+class _GroundedFlagged:
+    """A fit of `Temperature` (the temperature plus 0.25) and `Grounded` (0.0, though every run scores 1.0) whose
+    held-out check flagged `Grounded`."""
+
+    flagged = ["Grounded"]
+    diagnostics: dict = {}
+    metrics: dict = {}
+
+    def __init__(self, candidates):
+        self.candidates = frozenset(candidates)
+
+    def estimates(self, values, candidate=None):
+        return {
+            "Temperature": Estimate(mean=values["temperature"] + 0.25, sd=0.01),
+            "Grounded": Estimate(mean=0.0, sd=0.01),
+        }
+
+
+class _FlagsGrounded(ScoreModel):
+    name = "flags_grounded"
+
+    def fit(self, data, *, previous=None):
+        return _GroundedFlagged(c for c in data.candidates if data.scores[c].is_eligible)
+
+
+async def test_a_flagged_metric_is_told_by_its_measured_mean_and_the_others_by_the_fit(tmp_path):
+    class Grounded(Evaluator):
+        async def evaluate_async(self, evaluation_case):
+            return [EvaluationOutput(score=1.0, test_pass=True, reason="g")]
+
+    proposer = Scripted({"temperature": 0.5})
+    optimizer = _optimizer(
+        _experiment(evaluators=[Temperature(), Grounded(name="Grounded")]),
+        rollout_fn=_temperature_rollout,
+        search=Search([Block(proposer, "temperature"), Block(Scripted(), "manager")], schedule=Alternate()),
+        max_workers=64,
+        proposals_per_iteration=1,
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=1),
+        objective=WeightedSum(Minimize("Temperature"), Maximize("Grounded")),
+        constraints=[AtLeast("Grounded", 0.5)],
+        score_model=_FlagsGrounded(),
+    )
+    await _search(optimizer)
+    (request,) = proposer.requests
+    (baseline,) = request.candidates
+    assert baseline.estimates == {"Temperature": Estimate(mean=0.25, sd=0.01)}
+    assert baseline.term_values == [0.25, 1.0]  # Temperature from the fit (raw, though minimized), Grounded measured
+    assert baseline.ranking_objective == pytest.approx(0.875) and baseline.is_feasible
+    (observation,) = proposer.observed
+    assert observation.term_values == [0.75, 1.0] and observation.objective == pytest.approx(0.625)
+    assert observation.outcome == "feasible"  # Grounded >= 0.5 judged on the measured 1.0, not the fit's 0.0
 
 
 async def test_a_model_that_returns_none_keeps_the_fit_in_use(tmp_path):

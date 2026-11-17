@@ -46,11 +46,13 @@ class CandidateSummary(BaseModel):
             `agent_failure_score=None`, which doesn't count them), so `trial_count - failures` completed: how a
             proposer tells a version that crashed from one that scored low.
         ranking_objective: What the ranking used when the request was built (`Assessment.objective`): the
-            fit's resolved estimate, or `measured_objective` without a usable fit.
+            objective over the fit's resolved estimates (a flagged metric's measured mean instead), or
+            `measured_objective` without a usable fit.
         term_values: Each objective term's raw value under that ranking, as `Observation.term_values`;
             None for an ineligible candidate.
         rank: Position in that ranking, 1 = best; None for an ineligible candidate.
-        estimates: Per goal metric from the fit; empty when assessed by measured means.
+        estimates: Per goal metric the fit judged (a flagged metric is left out); empty when assessed by
+            measured means.
         violations: Per constraint, <= 0 when met (`Assessment.violations`); None for an ineligible
             candidate, which has no assessment.
         is_feasible: Meets every constraint as the ranking assessed it; None for an ineligible candidate.

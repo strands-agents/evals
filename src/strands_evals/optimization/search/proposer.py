@@ -31,7 +31,7 @@ class ProposalRequest:
         inputs: Train case name -> `case.input`, for the cases in `trials`. Inputs only: no expected field
             (`expected_output`, `expected_trajectory`, ...) and no `metadata` is ever passed.
         fit: Read-only; None before 2 candidates are eligible, after a refit that raised, or while any
-            metric is flagged.
+            metric is flagged (`candidates` then still hold the unflagged metrics' estimates).
         candidates: Every scored candidate so far: eligible ones in ranking order, then the ineligible in
             scoring order. Invalid and duplicate proposals never appear.
         n: How many patches to return: the step's `Step.n_candidates` (at most `proposals_per_iteration`),

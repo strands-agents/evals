@@ -94,7 +94,7 @@ from strands_evals.optimization import (  # noqa: E402
     Pareto,
 )
 from strands_evals.optimization.end_phase import choose_finalists, pick  # noqa: E402
-from strands_evals.types.optimization import CandidateScores  # noqa: E402
+from strands_evals.types.optimization import CandidateScores, Estimate  # noqa: E402
 
 HELP = "HelpfulnessEvaluator"
 TOKENS = "tokens"
@@ -311,3 +311,52 @@ def test_pick_with_no_finalist_ships_the_baseline():
     )
     assert report.champion_id == "0"
     assert report.reason.startswith("no finalist from the search")
+
+
+class _TokensFlagged:
+    """A validation fit that predicts 500 tokens for everyone, flagged on tokens."""
+
+    flagged = [TOKENS]
+    diagnostics: dict = {}
+    metrics: dict = {}
+
+    def __init__(self, helpfulness):
+        self.helpfulness = helpfulness
+        self.candidates = frozenset(helpfulness)
+
+    def estimates(self, values, candidate=None):
+        return {HELP: Estimate(mean=self.helpfulness[candidate], sd=0.01), TOKENS: Estimate(mean=500.0, sd=1.0)}
+
+
+def test_pick_judges_a_flagged_metric_by_its_measured_mean_and_the_others_by_the_fit():
+    criteria = Criteria(Maximize(HELP), [AtMost(TOKENS, 1000)], REGISTRY)
+
+    def scores(candidate_id, help_value, tokens):
+        cases = ("v1", "v2")
+        return CandidateScores(
+            candidate_id=candidate_id,
+            objective_by_case={c: help_value for c in cases},
+            metrics_by_case={c: {HELP: help_value, TOKENS: tokens} for c in cases},
+            unavailable={},
+            objective_by_run={c: [help_value] for c in cases},
+            metrics_by_run={c: {HELP: [help_value], TOKENS: [tokens]} for c in cases},
+            objective=help_value,
+            is_eligible=True,
+            failures=0,
+        )
+
+    validation = {"0": scores("0", 0.9, 800.0), "a": scores("a", 0.5, 1200.0), "b": scores("b", 0.6, 900.0)}
+    report = pick(
+        baseline_id="0",
+        finalist_ids=["a", "b"],
+        validation=validation,
+        fit=_TokensFlagged({"0": 0.6, "a": 0.8, "b": 0.7}),
+        values={c: {} for c in validation},
+        trial_counts={c: 2 for c in validation},
+        criteria=criteria,
+        rule=Mean(),
+    )
+    # Helpfulness from the fit ("b" beats the baseline); tokens measured, so "a" misses the limit the fit says it meets.
+    assert report.champion_id == "b" and report.objectives == {"0": 0.6, "a": 0.8, "b": 0.7}
+    assert report.infeasible == {"a": "tokens <= 1000: mean 1200 violates by 200"}
+    assert report.estimates["a"] == {HELP: Estimate(mean=0.8, sd=0.01)}

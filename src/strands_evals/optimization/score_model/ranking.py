@@ -3,7 +3,8 @@
 Shared by `TopRanked`, the finalists, inheritance fill, `Nested`'s round best, the order of
 `ProposalRequest.candidates`, and the candidate label (`label_candidate`). Here, left of
 `selection/` and `end_phase.py`, so neither imports the other. Without a fit, after a refit that raised
-(until one succeeds), and while any metric is flagged, every candidate is assessed by measured means.
+(until one succeeds), and while every goal metric is flagged, every candidate is assessed by measured means;
+while only some are, each flagged metric is judged by its measured mean and the rest by the fit.
 """
 
 from __future__ import annotations
@@ -40,8 +41,9 @@ class Assessment:
     """One candidate as the ranking sees it.
 
     Attributes:
-        objective: `Criteria.objective_value` over each goal metric's resolved estimate, or the measured
-            objective (`CandidateScores.objective`) when assessed by measured means.
+        objective: `Criteria.objective_value` over each goal metric's resolved estimate (a flagged metric's
+            measured mean instead), or the measured objective (`CandidateScores.objective`) when assessed by
+            measured means.
         terms: `Criteria.terms` over the same values (oriented, the rule applied, resolved): what
             `pareto_front` compares and the `Pareto` tie-break reads; None when `objective` is None or any
             objective's metric is unmeasured (`objective` can still be set then: `objective_value` drops a
@@ -49,14 +51,17 @@ class Assessment:
         is_feasible: Every constraint has P(met) >= `criteria.feasibility_threshold` under the fit, or is
             met on measured means.
         violations: Per constraint, <= 0 when met: the metric's quantile at
-            `criteria.feasibility_threshold` (`AtMost`) or at 1 minus it (`AtLeast`) against the limit, or the
-            measured mean against the limit (0 when equal up to float noise, infinite when the metric was never
-            measured).
+            `criteria.feasibility_threshold` (`AtMost`) or at 1 minus it (`AtLeast`) against the limit, or, for a
+            flagged metric or when assessed by measured means, the measured mean against the limit (0 when equal
+            up to float noise, infinite when the metric was never measured).
         total_violation: The sum of the positive violations (0 when feasible); what "least violation" ranks by.
-        p_met: Per constraint; empty when assessed by measured means.
-        estimates: Per goal metric, `fit.estimates(values, candidate)`; empty when assessed by measured means.
-        is_from_fit: False when assessed by measured means (no fit, the last refit raised, any metric flagged, or
-            the candidate not in the fit).
+        p_met: Per constraint the fit judged (its metric not flagged); empty when assessed by measured means.
+        estimates: Per goal metric the fit judged, `fit.estimates(values, candidate)` without the flagged
+            metrics; empty when assessed by measured means. A goal metric missing here was judged by its
+            measured mean.
+        is_from_fit: True when the fit judged at least one goal metric (`estimates` is not empty); False when
+            assessed by measured means alone (no fit, the last refit raised, every goal metric flagged, a
+            flagged name that isn't a goal metric, or the candidate not in the fit).
     """
 
     candidate_id: str
@@ -116,8 +121,11 @@ def assess(
     `Criteria.objective_value`; constraints are unaffected (P(met) >= `criteria.feasibility_threshold`),
     and measured means ignore it. Required: the search passes `Mean()`, the final pick `FinalPick.rule`.
 
-    The fit is used for a candidate it was fitted on, unless any metric is flagged; every other candidate is
-    assessed by its measured means (`is_from_fit` False).
+    The fit is used for a candidate it was fitted on, metric by metric: a flagged metric is judged by its
+    measured mean over the cases, in the objective and in the constraints alike, and the others by the fit. A
+    flagged metric's mean is not resolved by `round_to_sd()`, and its constraint is judged at the mean, without
+    the `feasibility_threshold` margin. Every other candidate is assessed by its measured means (`is_from_fit`
+    False), and so is every candidate when every goal metric is flagged or a flagged name isn't a goal metric.
 
     Args:
         ids: The candidates to assess.
@@ -131,38 +139,34 @@ def assess(
     parts = (objective,) if isinstance(objective, (Maximize, Minimize)) else objective.objectives
     maximized = {o.metric: isinstance(o, Maximize) for o in parts}
     threshold = criteria.feasibility_threshold
-    usable = fit is not None and not fit.flagged
+    # The goal metrics the fit judges: the unflagged ones; none when a flagged name isn't a goal metric, since
+    # that flag can't be traced to the metric it concerns.
+    by_fit: list[str] = []
+    if fit is not None and set(fit.flagged) <= set(criteria.goal_metrics):
+        by_fit = [m for m in criteria.goal_metrics if m not in fit.flagged]
     out: dict[str, Assessment] = {}
     for candidate_id in ids:
-        if usable and fit is not None and candidate_id in fit.candidates:
-            estimates = fit.estimates(values[candidate_id], candidate_id)
-            point = {}
-            for metric, is_max in maximized.items():
+        estimates: dict[str, Estimate] = {}
+        if by_fit and fit is not None and candidate_id in fit.candidates:
+            fitted = fit.estimates(values[candidate_id], candidate_id)
+            estimates = {m: fitted[m] for m in by_fit}
+        # Every other goal metric is judged by its measured mean, in the objective and the constraints alike.
+        by_mean = [m for m in criteria.goal_metrics if m not in estimates]
+        point = _measured_means(measured[candidate_id], by_mean) if by_mean else {}
+        for metric, is_max in maximized.items():
+            if metric in estimates:
                 estimate = estimates[metric]
                 value = estimate.mean if isinstance(rule, Mean) else estimate.quantile(rule.q if is_max else 1 - rule.q)
                 point[metric] = round_to_sd(value, estimate.sd)
-            # Each constraint judged at the required probability: the value its metric stays below (AtMost) or
-            # above (AtLeast) with probability `threshold`.
-            judged: list[float | None] = [
-                estimates[c.metric].quantile(threshold if isinstance(c, AtMost) else 1 - threshold)
-                for c in criteria.constraints
-            ]
-            p = {str(c): p_met(c, estimates[c.metric]) for c in criteria.constraints}
-            objective_value = criteria.objective_value(point)
-            terms = criteria.terms(point)
-            from_fit = True
-        else:
-            scores = measured[candidate_id]
-            point = {
-                metric: statistics.fmean(case_values)
-                for metric in criteria.goal_metrics
-                if (case_values := [case[metric] for case in scores.metrics_by_case.values() if metric in case])
-            }
-            judged = [point.get(c.metric) for c in criteria.constraints]
-            p, estimates = {}, {}
-            objective_value = scores.objective
-            terms = criteria.terms(point)
-            from_fit = False
+        # A constraint the fit judges is judged at the required probability: the value its metric stays below
+        # (AtMost) or above (AtLeast) with probability `threshold`.
+        judged = [
+            estimates[c.metric].quantile(threshold if isinstance(c, AtMost) else 1 - threshold)
+            if c.metric in estimates
+            else point.get(c.metric)
+            for c in criteria.constraints
+        ]
+        objective_value = criteria.objective_value(point) if estimates else measured[candidate_id].objective
         # As `Criteria.unmet_constraints`: a value at its bound up to float noise is met, a constraint never
         # measured is not.
         violations = tuple(
@@ -176,15 +180,25 @@ def assess(
         out[candidate_id] = Assessment(
             candidate_id=candidate_id,
             objective=objective_value,
-            terms=terms if objective_value is not None else None,
+            terms=criteria.terms(point) if objective_value is not None else None,
             is_feasible=all(v <= 0 for v in violations),
             violations=violations,
             total_violation=sum((v for v in violations if v > 0), 0.0),
-            p_met=p,
+            p_met={str(c): p_met(c, estimates[c.metric]) for c in criteria.constraints if c.metric in estimates},
             estimates=estimates,
-            is_from_fit=from_fit,
+            is_from_fit=bool(estimates),
         )
     return out
+
+
+def _measured_means(scores: CandidateScores, metrics: Sequence[str]) -> dict[str, float]:
+    """The mean of each of `metrics` over the cases that have a value for it; one no case has a value for is left
+    out."""
+    return {
+        metric: statistics.fmean(case_values)
+        for metric in metrics
+        if (case_values := [case[metric] for case in scores.metrics_by_case.values() if metric in case])
+    }
 
 
 def rank(
@@ -275,8 +289,8 @@ def label_candidate(
 
     A label recorded in the event log, never a filter; train data only.
 
-    Feasibility is the ranking's own: P(met) >= `criteria.feasibility_threshold` under the fit,
-    measured means without a fit or while any metric is flagged, so the label always matches how the loop
+    Feasibility is the ranking's own, per constraint: P(met) >= `criteria.feasibility_threshold` under the
+    fit, the measured mean for a flagged metric or without a fit, so the label always matches how the loop
     treated the candidate. A snapshot: later refits can change how the ranking sees it. An infeasible
     candidate stays a possible parent, ranked after the feasible ones; an ineligible one is out of the fit
     and the parents until it is scored again and its unmeasured trials succeed.
@@ -301,15 +315,14 @@ def label_candidate(
             is_from_fit=False,
             measured=measured,
         )
-    if assessment.is_from_fit:
-        threshold = criteria.feasibility_threshold
-        unmet = [
-            f"{c}: P(met) {assessment.p_met[str(c)]:.2g} < {threshold:g}"
-            for c, v in zip(criteria.constraints, assessment.violations, strict=True)
-            if v > 0
-        ]
-    else:
-        unmet = criteria.unmet_constraints(candidate.metrics_by_case)
+    threshold = criteria.feasibility_threshold
+    unmet = [
+        f"{c}: P(met) {assessment.p_met[str(c)]:.2g} < {threshold:g}"
+        if str(c) in assessment.p_met
+        else _unmet_by_mean(c, v)
+        for c, v in zip(criteria.constraints, assessment.violations, strict=True)
+        if v > 0
+    ]
     return CandidateLabel(
         outcome="infeasible" if unmet else "feasible",
         reason="; ".join(unmet) if unmet else "meets every constraint",
@@ -319,3 +332,11 @@ def label_candidate(
         is_from_fit=assessment.is_from_fit,
         measured=measured,
     )
+
+
+def _unmet_by_mean(constraint: Constraint, violation: float) -> str:
+    """The sentence `Criteria.unmet_constraints` gives for a constraint its measured mean misses by `violation`."""
+    if math.isinf(violation):
+        return f"{constraint}: never measured"
+    mean = constraint.bound + violation if isinstance(constraint, AtMost) else constraint.bound - violation
+    return f"{constraint}: mean {mean:.4g} violates by {violation:.4g}"

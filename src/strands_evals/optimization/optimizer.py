@@ -7,7 +7,6 @@ import hashlib
 import inspect
 import json
 import random
-import statistics
 import threading
 import warnings
 from collections import Counter
@@ -69,9 +68,9 @@ from .result import (
 from .score_model.bayesbench import BayesBenchModel
 from .score_model.effects import effects_json
 from .score_model.protocols import Fit, FitData, ScoreModel
-from .score_model.ranking import Assessment, Mean, assess, label_candidate, pareto_front, rank, round_to_sd
+from .score_model.ranking import Assessment, Mean, assess, label_candidate, pareto_front, rank
 from .scoring.metrics import USAGE_METRICS, MetricRegistry
-from .scoring.objectives import Constraint, Criteria, Objective, Pareto, WeightedSum, measured_metrics, score
+from .scoring.objectives import Constraint, Criteria, Maximize, Objective, Pareto, WeightedSum, measured_metrics, score
 from .search.blocks import Block, ScheduleContext, Search, Step
 from .search.proposer import ProposalRequest, Proposer
 from .selection.base import Selection, SelectionContext
@@ -899,8 +898,8 @@ class Optimizer:
         )
 
     def _rank(self) -> tuple[list[str], dict[str, Assessment]]:
-        """Every eligible candidate in ranking order (the fit's estimates, else measured means), and each one's
-        assessment."""
+        """Every eligible candidate in ranking order (the fit's estimates, else measured means, metric by metric),
+        and each one's assessment."""
         eligible = [c for c in self._candidates if self._train[c].is_eligible]
         assessments = assess(
             eligible,
@@ -1285,7 +1284,7 @@ class Optimizer:
                 trials=[r for r in self._records[parent.id].values() if r.split == "train"],
                 scores=self._train[parent.id],
                 inputs={c: cases[c].input for c in train},
-                # A fit with a flagged metric isn't used for decisions, so proposers don't get it either.
+                # A proposer can read any metric from the fit, so a fit with a flagged metric isn't passed on.
                 fit=self._fit if self._fit is not None and not self._fit.flagged else None,
                 candidates=summaries,
                 n=count,
@@ -1407,7 +1406,7 @@ class Optimizer:
                         if r.split == "train" and r.status is TrialStatus.AGENT_FAILURE
                     ),
                     ranking_objective=None if a is None else a.objective,
-                    term_values=None if a is None or a.objective is None else self._term_values(c, a),
+                    term_values=None if a is None or a.objective is None else self._term_values(a),
                     rank=position.get(c),
                     estimates={} if a is None else dict(a.estimates),
                     violations=None if a is None else list(a.violations),
@@ -1420,17 +1419,13 @@ class Optimizer:
             )
         return out
 
-    def _term_values(self, candidate_id: str, a: Assessment) -> list[float] | None:
-        """Each objective term's raw value (the resolved estimate, else the measured mean), in objective order."""
+    def _term_values(self, a: Assessment) -> list[float] | None:
+        """`a.terms` as raw values (each `Minimize` term negated back), in objective order; None when `a.terms` is."""
+        if a.terms is None:
+            return None
         objective = self._criteria.objective
-        metrics = [
-            d.metric for d in (objective.objectives if isinstance(objective, (WeightedSum, Pareto)) else (objective,))
-        ]
-        if a.is_from_fit:
-            return [round_to_sd(a.estimates[m].mean, a.estimates[m].sd) for m in metrics]
-        by_case = self._train[candidate_id].metrics_by_case.values()
-        means = [[case[m] for case in by_case if m in case] for m in metrics]
-        return None if any(not v for v in means) else [statistics.fmean(v) for v in means]
+        parts = objective.objectives if isinstance(objective, (WeightedSum, Pareto)) else (objective,)
+        return [t if isinstance(d, Maximize) else -t for d, t in zip(parts, a.terms, strict=True)]
 
     def _tell(
         self,
@@ -1455,7 +1450,7 @@ class Optimizer:
             source_id=source_id,
             round_candidate_ids=None if round_candidate_ids is None else list(round_candidate_ids),
             objective=assessment.objective if measured and assessment is not None else None,
-            term_values=self._term_values(source_id or candidate_id, assessment)  # type: ignore[arg-type]
+            term_values=self._term_values(assessment)
             if measured and assessment is not None and assessment.objective is not None
             else None,
             outcome=outcome,
@@ -1475,7 +1470,7 @@ class Optimizer:
             values=dict(candidate.values),
             origin=list(candidate.origin),
             objective=None if a is None else a.objective,
-            term_values=None if a is None or a.objective is None else self._term_values(candidate.id, a),
+            term_values=None if a is None or a.objective is None else self._term_values(a),
             violations=None if a is None else list(a.violations),
             outcome=outcome,
         )

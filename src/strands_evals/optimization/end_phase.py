@@ -97,8 +97,8 @@ def pick(
     """The champion: the first feasible candidate on validation, baseline included; else the baseline.
 
     Feasible = eligible on validation and P(met) >= `criteria.feasibility_threshold` for every
-    constraint (measured means without a fit). Ranked by objective resolved to a tenth of its sd;
-    ties -> most trials, then earlier.
+    constraint (measured means without a fit, and for a flagged metric). Ranked by objective resolved to a
+    tenth of its sd; ties -> most trials, then earlier.
     Under a `Pareto` objective the same champion (the validated front's highest-gain member) plus
     `ValidationReport.front`.
 

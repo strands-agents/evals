@@ -132,9 +132,10 @@ class CandidateLabel(BaseModel):
         reason: One sentence, e.g. "tokens <= 4000: P(met) 0.62 < 0.9".
         unmet_constraints: Each constraint not met, as the ranking assessed it, as a sentence (e.g. "tokens <= 4000:
             P(met) 0.62 < 0.9"); unlike the per-constraint margins elsewhere named `violations`.
-        estimates: Per goal metric (`Assessment.estimates`); empty when `is_from_fit` is False.
-        p_met: Per constraint (`Assessment.p_met`); empty when `is_from_fit` is False.
-        is_from_fit: False when assessed by measured means.
+        estimates: Per goal metric the fit judged (`Assessment.estimates`; a flagged metric is left out);
+            empty when `is_from_fit` is False.
+        p_met: Per constraint the fit judged (`Assessment.p_met`); empty when `is_from_fit` is False.
+        is_from_fit: False when assessed by measured means alone.
         measured: Every metric measured on train, usage included; a metric with no value is left out.
     """
 
@@ -156,10 +157,11 @@ class ValidationReport(BaseModel):
         champion_id: What ships; the baseline's id when nothing feasible beats it.
         front: Under a `Pareto` objective, the validated front (the baseline included when on it), in ranking
             order, so the champion is first unless the front is empty; `[]` otherwise.
-        objectives: Candidate id -> its validation objective under the validation fit, or by measured
-            validation means when `problem` is set; None when it isn't eligible on validation.
-        estimates: Candidate id -> goal metric -> the validation fit's estimate; empty when assessed by
-            measured means.
+        objectives: Candidate id -> its validation objective under the validation fit (a flagged metric's
+            measured mean instead), or by measured validation means when `problem` is set; None when it isn't
+            eligible on validation.
+        estimates: Candidate id -> goal metric -> the validation fit's estimate (a flagged metric is left out);
+            empty when assessed by measured means.
         infeasible: Candidate id -> why it can't ship (a constraint not met on validation, or not
             eligible there).
         measured: Candidate id -> every metric measured on validation.
