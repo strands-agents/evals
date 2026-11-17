@@ -2,8 +2,10 @@ import asyncio
 import gc
 import json
 import os
+import shutil
 import stat
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -289,6 +291,12 @@ def test_as_path_resolves_to_the_copy(project, tmp_path_factory):
 # create_candidate_copy
 
 
+@pytest.fixture(params=["from the originals", "from a snapshot"])
+def snapshot(request, tmp_path_factory):
+    """None (copy from the original folders) or where a snapshot is taken first and copied from."""
+    return None if request.param == "from the originals" else tmp_path_factory.mktemp("snapshots") / "snapshot"
+
+
 def make_space(project):
     return Space(
         {
@@ -308,13 +316,13 @@ def copied(space, workspace, path):
     return workspace / _location_in_copy(space._copy_folders, path.resolve())
 
 
-def test_copy_writes_changed_values_and_never_the_originals(project, tmp_path_factory):
+def test_copy_writes_changed_values_and_never_the_originals(project, tmp_path_factory, snapshot):
     space = make_space(project)
     workspace = tmp_path_factory.mktemp("run") / "optimization_files"
     originals = {p: p.read_bytes() for p in project.rglob("*") if p.is_file()}
     values = {"system": "Changed.\n", "prompt": "Be thorough.", "limits": '{"turns": 9}'}
 
-    space.create_candidate_copy(values, workspace)
+    space.create_candidate_copy(values, workspace, snapshot=snapshot)
 
     assert copied(space, workspace, project / "prompts" / "system.md").read_text() == "Changed.\n"
     document = json.loads(copied(space, workspace, project / "config" / "agent.json").read_text())
@@ -322,13 +330,13 @@ def test_copy_writes_changed_values_and_never_the_originals(project, tmp_path_fa
     assert {p: p.read_bytes() for p in originals} == originals
 
 
-def test_copy_keeps_unchanged_files_byte_for_byte(project, tmp_path_factory):
+def test_copy_keeps_unchanged_files_byte_for_byte(project, tmp_path_factory, snapshot):
     (project / "config" / "agent.json").write_text(
         '{"agent": {"system_prompt": "Be brief.", "limits": {"turns": 4}}}', newline=""
     )
     space = make_space(project)
     workspace = tmp_path_factory.mktemp("run") / "optimization_files"
-    space.create_candidate_copy(space.complete({}), workspace)
+    space.create_candidate_copy(space.complete({}), workspace, snapshot=snapshot)
     copy = copied(space, workspace, project / "config" / "agent.json")
     assert copy.read_bytes() == (project / "config" / "agent.json").read_bytes()
 
@@ -350,7 +358,7 @@ def test_a_workspace_holding_another_candidates_copy_is_refused(project, tmp_pat
     workspace = tmp_path_factory.mktemp("run") / "optimization_files"
     values = {**space.complete({}), "system": "First.\n"}
     space.create_candidate_copy(values, workspace)
-    with pytest.raises(FileExistsError, match="another candidate's copy"):
+    with pytest.raises(FileExistsError, match="a copy of other file-backed values"):
         space.create_candidate_copy({**values, "system": "Second.\n"}, workspace)
     assert copied(space, workspace, project / "prompts" / "system.md").read_text() == "First.\n"
 
@@ -368,8 +376,26 @@ def test_concurrent_copies_into_one_empty_folder_all_succeed(project, tmp_path_f
         assert [p.name for p in workspace.parent.iterdir()] == ["optimization_files"]
 
 
+def test_concurrent_copies_of_other_values_take_one_snapshot(project, tmp_path_factory):
+    space = make_space(project)
+    run = tmp_path_factory.mktemp("run")
+    texts = [f"Prompt {i}.\n" for i in range(8)]
+    with ThreadPoolExecutor(8) as pool:
+        copies = list(
+            pool.map(
+                lambda text: space.create_candidate_copy(
+                    {**space.complete({}), "system": text}, run / text[7], snapshot=run / "snapshot"
+                ),
+                texts,
+            )
+        )
+    for workspace, text in zip(copies, texts, strict=True):
+        assert copied(space, workspace, project / "prompts" / "system.md").read_text() == text
+    assert sorted(p.name for p in run.iterdir()) == sorted(["snapshot", *(text[7] for text in texts)])
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX permission bits")
-def test_a_read_only_source_folder_can_still_be_copied_and_written(tmp_path):
+def test_a_read_only_source_folder_can_still_be_copied_and_written(tmp_path, snapshot):
     prompts = tmp_path / "prompts"
     prompts.mkdir()
     (prompts / "system.md").write_text("You help.\n", newline="")
@@ -377,7 +403,7 @@ def test_a_read_only_source_folder_can_still_be_copied_and_written(tmp_path):
     prompts.chmod(0o555)
     try:
         workspace = tmp_path / "run" / "optimization_files"
-        space.create_candidate_copy({"system": "New.\n"}, workspace)
+        space.create_candidate_copy({"system": "New.\n"}, workspace, snapshot=snapshot)
         assert copied(space, workspace, prompts / "system.md").read_text() == "New.\n"
     finally:
         prompts.chmod(0o755)
@@ -406,7 +432,7 @@ def test_folders_with_the_same_name_do_not_collide(tmp_path):
     assert len(folders(workspace)) == 2
 
 
-def test_a_folder_inside_another_is_copied_once(project, tmp_path_factory):
+def test_a_folder_inside_another_is_copied_once(project, tmp_path_factory, snapshot):
     (project / "prompts" / "nested").mkdir()
     (project / "prompts" / "nested" / "inner.md").write_text("inner", newline="")
     space = Space(
@@ -416,22 +442,26 @@ def test_a_folder_inside_another_is_copied_once(project, tmp_path_factory):
         }
     )
     workspace = tmp_path_factory.mktemp("run") / "optimization_files"
-    space.create_candidate_copy({"system": "S", "inner": "I"}, workspace)
+    space.create_candidate_copy({"system": "S", "inner": "I"}, workspace, snapshot=snapshot)
     (top,) = folders(workspace)
     assert [p.name for p in top.iterdir()] == ["prompts"]  # the copy keeps the folder's name
     assert (top / "prompts" / "nested" / "inner.md").read_text() == "I"
 
 
-def test_a_run_directory_inside_the_source_folder_is_not_copied(tmp_path):
+@pytest.mark.parametrize("snapshotted", [False, True])
+def test_a_run_directory_inside_the_source_folder_is_not_copied(tmp_path, snapshotted):
     (tmp_path / "prompt.md").write_text("You help.", newline="")
     space = Space({"system": FileText(tmp_path / "prompt.md")})
-    workspace = tmp_path / ".strands-evals" / "runs" / "r1" / "candidates" / "abc" / "optimization_files"
-    space.create_candidate_copy({"system": "New."}, workspace)
+    run = tmp_path / ".strands-evals" / "runs" / "r1"
+    workspace = run / "files" / "abc"
+    space.create_candidate_copy(
+        {"system": "New."}, workspace, snapshot=run / "files" / "snapshot" if snapshotted else None
+    )
     folder = copied(space, workspace, tmp_path / "prompt.md").parent
     assert sorted(p.name for p in folder.iterdir()) == ["prompt.md"]
 
 
-def test_a_symlinked_file_is_replaced_not_written_through(tmp_path):
+def test_a_symlinked_file_is_replaced_not_written_through(tmp_path, snapshot):
     real = tmp_path / "real"
     real.mkdir()
     (real / "target.md").write_text("original", newline="")
@@ -444,14 +474,14 @@ def test_a_symlinked_file_is_replaced_not_written_through(tmp_path):
         pytest.skip("symlinks unavailable")
     space = Space({"system": FileText(prompts / "system.md")})
     workspace = tmp_path / "run" / "optimization_files"
-    space.create_candidate_copy({"system": "New."}, workspace)
+    space.create_candidate_copy({"system": "New."}, workspace, snapshot=snapshot)
     # The marker's own file is written in the copy; a symlink sibling stays a symlink.
     assert (workspace / _location_in_copy(space._copy_folders, prompts.resolve() / "link.md")).is_symlink()
     assert (real / "target.md").read_text() == "original"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="symlinks need extra rights on Windows")
-def test_a_relative_symlink_out_of_a_copied_folder_still_leads_to_its_target(tmp_path):
+def test_a_relative_symlink_out_of_a_copied_folder_still_leads_to_its_target(tmp_path, snapshot):
     (tmp_path / "shared").mkdir()
     (tmp_path / "shared" / "common.md").write_text("Common.", newline="")
     prompts = tmp_path / "prompts"
@@ -462,7 +492,7 @@ def test_a_relative_symlink_out_of_a_copied_folder_still_leads_to_its_target(tmp
     workspace = tmp_path / "run" / "optimization_files"
     prompts.chmod(0o555)  # the copied folder is read-only too, so relinking must come after it is made writable
     try:
-        space.create_candidate_copy({"system": "New."}, workspace)
+        space.create_candidate_copy({"system": "New."}, workspace, snapshot=snapshot)
     finally:
         prompts.chmod(0o755)
     link = workspace / _location_in_copy(space._copy_folders, prompts.resolve() / "common.md")
@@ -487,7 +517,7 @@ def test_an_existing_directory_that_is_not_a_copy_fails(project, tmp_path_factor
     assert [p.name for p in workspace.iterdir()] == ["notes.txt"]
 
 
-def test_the_copy_holds_the_values_even_after_the_source_files_changed(project, tmp_path_factory):
+def test_the_copy_holds_the_values_even_after_the_source_files_changed(project, tmp_path_factory, snapshot):
     space = make_space(project)
     baseline = space.complete({})
     (project / "prompts" / "system.md").write_text("Edited after declaration.\n", newline="")
@@ -495,24 +525,181 @@ def test_the_copy_holds_the_values_even_after_the_source_files_changed(project, 
         json.dumps({"agent": {"system_prompt": "Edited.", "limits": {"turns": 99}}}), newline=""
     )
     workspace = tmp_path_factory.mktemp("run") / "optimization_files"
-    space.create_candidate_copy(baseline, workspace)
+    space.create_candidate_copy(baseline, workspace, snapshot=snapshot)
     assert copied(space, workspace, project / "prompts" / "system.md").read_text() == "You help.\n"
     document = json.loads(copied(space, workspace, project / "config" / "agent.json").read_text())
     assert document["agent"] == {"system_prompt": "Be brief.", "limits": {"turns": 4}}
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX permission bits")
-def test_a_written_file_keeps_its_permissions(tmp_path):
+def test_a_written_file_keeps_its_permissions(tmp_path, snapshot):
     script = tmp_path / "scripts" / "run.sh"
     script.parent.mkdir()
     script.write_text("echo hi\n", newline="")
     script.chmod(0o755)
     space = Space({"script": FileText(script, as_path=True)})
     workspace = tmp_path / "run" / "optimization_files"
-    space.create_candidate_copy({"script": "echo bye\n"}, workspace)
+    space.create_candidate_copy({"script": "echo bye\n"}, workspace, snapshot=snapshot)
     copy = copied(space, workspace, script)
     assert copy.read_text() == "echo bye\n"
     assert copy.stat().st_mode & 0o777 == 0o755
+
+
+def test_copies_from_a_snapshot_hold_the_folders_as_the_snapshot_found_them(project, tmp_path_factory):
+    space = Space({"system": FileText(project / "prompts" / "system.md", as_path=True)})
+    run = tmp_path_factory.mktemp("run")
+    first = space.create_candidate_copy({"system": "First.\n"}, run / "a", snapshot=run / "snapshot")
+    (project / "prompts" / "examples.md").write_text("Edited during the run.\n", newline="")
+    (project / "prompts" / "added.md").write_text("Added during the run.\n", newline="")
+    second = space.create_candidate_copy({"system": "Second.\n"}, run / "b", snapshot=run / "snapshot")
+    for copy, text in ((first, "First.\n"), (second, "Second.\n")):
+        system = copied(space, copy, project / "prompts" / "system.md")
+        assert system.read_text() == text
+        assert system.with_name("examples.md").read_text() == "Example A\n"
+        assert not system.with_name("added.md").exists()
+    snapshot = copied(space, run / "snapshot", project / "prompts" / "system.md")
+    assert snapshot.read_text() == "You help.\n"  # the snapshot holds no candidate's value
+    assert sorted(p.name for p in run.iterdir()) == ["a", "b", "snapshot"]
+
+
+def test_a_snapshot_is_taken_once(project, tmp_path_factory):
+    space = make_space(project)
+    snapshot = tmp_path_factory.mktemp("run") / "snapshot"
+    assert space.create_snapshot(snapshot) == snapshot
+    (project / "prompts" / "examples.md").write_text("Edited.\n", newline="")
+    assert space.create_snapshot(snapshot) == snapshot
+    assert copied(space, snapshot, project / "prompts" / "examples.md").read_text() == "Example A\n"
+    with pytest.raises(FileExistsError, match="a copy of other file-backed values"):
+        space.create_candidate_copy(space.complete({}), snapshot)
+    space.create_candidate_copy(space.complete({}), snapshot.parent / "a")
+    with pytest.raises(FileExistsError, match="a copy of other file-backed values"):
+        space.create_snapshot(snapshot.parent / "a")
+
+
+def test_a_copy_from_a_snapshot_needs_no_original_folder(project, tmp_path_factory):
+    space = make_space(project)
+    run = tmp_path_factory.mktemp("run")
+    space.create_candidate_copy(space.complete({}), run / "a", snapshot=run / "snapshot")
+    shutil.rmtree(project / "config")  # its untuned fields now live only in the snapshot
+    shutil.rmtree(project / "prompts")
+    values = {**space.complete({}), "prompt": "Be thorough."}
+    space.create_candidate_copy(values, run / "b", snapshot=run / "snapshot")
+    document = json.loads(copied(space, run / "b", project / "config" / "agent.json").read_text())
+    assert document == {"agent": {"system_prompt": "Be thorough.", "limits": {"turns": 4}, "tags": ["a", "b"]}}
+    assert copied(space, run / "b", project / "prompts" / "examples.md").read_text() == "Example A\n"
+
+
+def test_an_existing_copy_is_returned_without_taking_the_snapshot(project, tmp_path_factory):
+    space = make_space(project)
+    run = tmp_path_factory.mktemp("run")
+    space.create_candidate_copy(space.complete({}), run / "a")
+    space.create_candidate_copy(space.complete({}), run / "a", snapshot=run / "snapshot")
+    assert not (run / "snapshot").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need extra rights on Windows")
+def test_links_in_a_copy_made_from_a_snapshot_lead_into_that_copy(tmp_path):
+    for side in ("a", "b"):
+        (tmp_path / side / "parts").mkdir(parents=True)
+        (tmp_path / side / "p.md").write_text(side, newline="")
+        (tmp_path / side / "parts" / "intro.md").write_text(f"Intro {side}.", newline="")
+    (tmp_path / "a" / "own").symlink_to("parts", target_is_directory=True)  # inside one copied folder
+    (tmp_path / "a" / "other").symlink_to(os.path.join("..", "b", "parts"), target_is_directory=True)  # across two
+    space = Space({"a": FileText(tmp_path / "a" / "p.md"), "b": FileText(tmp_path / "b" / "p.md")})
+    run = tmp_path / "run"
+    for name in ("first", "second"):
+        workspace = space.create_candidate_copy({"a": name, "b": "B"}, run / name, snapshot=run / "snapshot")
+        a = copied(space, workspace, (tmp_path / "a" / "p.md").resolve()).parent
+        b = copied(space, workspace, (tmp_path / "b" / "p.md").resolve()).parent
+        assert (a / "own" / "intro.md").resolve() == (a / "parts" / "intro.md").resolve()
+        assert (a / "other" / "intro.md").resolve() == (b / "parts" / "intro.md").resolve()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need extra rights on Windows")
+def test_a_link_to_something_left_out_of_the_copy_leads_to_the_original(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / ".venv").mkdir(parents=True)
+    (repo / ".venv" / "pyvenv.cfg").write_text("home = /usr/bin\n", newline="")
+    (repo / "AGENTS.md").write_text("Be careful.\n", newline="")
+    (repo / "pyvenv.cfg").symlink_to(os.path.join(".venv", "pyvenv.cfg"))
+    space = Space({"rules": FileText(repo / "AGENTS.md", as_path=True)})
+    workspace = tmp_path / "run" / "copy"
+    space.create_candidate_copy({"rules": "Be brief.\n"}, workspace, snapshot=tmp_path / "run" / "snapshot")
+    link = workspace / _location_in_copy(space._copy_folders, repo.resolve() / "pyvenv.cfg")
+    assert os.readlink(link) == str((repo / ".venv" / "pyvenv.cfg").resolve())
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need extra rights on Windows")
+def test_links_to_folders_are_made_again_as_folder_links(tmp_path, monkeypatch, snapshot):
+    prompts = tmp_path / "prompts"
+    (prompts / "parts").mkdir(parents=True)
+    (prompts / "system.md").write_text("You help.", newline="")
+    (prompts / "parts" / "intro.md").write_text("Intro.", newline="")
+    (prompts / "folder").symlink_to("parts", target_is_directory=True)
+    (prompts / "file.md").symlink_to(os.path.join("parts", "intro.md"))
+    space = Space({"system": FileText(prompts / "system.md")})
+    workspace = tmp_path / "run" / "copy"
+    made = []  # (link name, target_is_directory), in order
+    real = os.symlink
+
+    def symlink(src, dst, target_is_directory=False, **kwargs):
+        if Path(dst).is_relative_to(workspace.parent):
+            made.append((Path(dst).name, target_is_directory))
+        return real(src, dst, target_is_directory, **kwargs)
+
+    monkeypatch.setattr(os, "symlink", symlink)
+    space.create_candidate_copy({"system": "New."}, workspace, snapshot=snapshot)
+    last = dict(made)  # the kind each link was last made with
+    assert last["folder"] is True
+    assert last.get("file.md", False) is False
+
+
+def tree(folder):
+    return sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*"))
+
+
+def test_virtual_environments_are_left_out_of_copies_and_version_control_metadata_is_not(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / ".git" / "objects").mkdir(parents=True)
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n", newline="")
+    (repo / ".venv" / "lib").mkdir(parents=True)
+    (repo / ".venv" / "pyvenv.cfg").write_text("home = /usr/bin\n", newline="")
+    (repo / "tools" / "env" / "bin").mkdir(parents=True)  # a virtual environment under any name, at any depth
+    (repo / "tools" / "env" / "pyvenv.cfg").write_text("home = /usr/bin\n", newline="")
+    (repo / "venv").mkdir()  # named like one, but holds no pyvenv.cfg
+    (repo / "venv" / "notes.md").write_text("Notes.\n", newline="")
+    (repo / "AGENTS.md").write_text("Be careful.\n", newline="")
+    space = Space({"rules": FileText(repo / "AGENTS.md", as_path=True)})
+    for snapshot in (None, tmp_path / "run" / "snapshot"):
+        workspace = tmp_path / "run" / ("originals" if snapshot is None else "snapshotted")
+        space.create_candidate_copy({"rules": "Be brief.\n"}, workspace, snapshot=snapshot)
+        top = copied(space, workspace, repo / "AGENTS.md").parent
+        assert tree(top) == [".git", ".git/HEAD", ".git/objects", "AGENTS.md", "tools", "venv", "venv/notes.md"]
+
+
+def test_a_virtual_environment_holding_a_declared_skill_library_is_copied_whole(tmp_path, snapshot):
+    repo = tmp_path / "repo"
+    skills = repo / ".venv" / "lib" / "pkg" / "skills"
+    (skills / "triage").mkdir(parents=True)
+    (repo / ".venv" / "pyvenv.cfg").write_text("home = /usr/bin\n", newline="")
+    (repo / ".venv" / "lib" / "other.py").write_text("x = 1\n", newline="")
+    (skills / "triage" / "SKILL.md").write_text(skill_text("triage", "Sort tickets."), newline="")
+    (repo / "AGENTS.md").write_text("Be careful.\n", newline="")
+    space = Space({"rules": FileText(repo / "AGENTS.md", as_path=True), "skills": SkillLibrary(skills)})
+    workspace = tmp_path / "run" / "copy"
+    space.create_candidate_copy(space.complete({}), workspace, snapshot=snapshot)
+    top = copied(space, workspace, repo / "AGENTS.md").parent
+    assert tree(top) == [
+        ".venv",
+        ".venv/lib",
+        ".venv/lib/other.py",
+        ".venv/lib/pkg",
+        ".venv/lib/pkg/skills",
+        ".venv/lib/pkg/skills/triage",
+        ".venv/lib/pkg/skills/triage/SKILL.md",
+        ".venv/pyvenv.cfg",
+        "AGENTS.md",
+    ]
 
 
 # bind
@@ -728,12 +915,14 @@ def test_a_single_skill_is_copied_alone_with_its_directory_name(library):
     assert make().path == library.resolve() / "triage"
 
 
-def test_a_run_directory_inside_a_single_skill_is_left_out_of_its_copy(library):
+@pytest.mark.parametrize("snapshotted", [False, True])
+def test_a_run_directory_inside_a_single_skill_is_left_out_of_its_copy(library, snapshotted):
     skill = library / "triage"
     space = Space({"triage": SkillLibrary(skill)})
-    workspace = skill / ".strands-evals" / "runs" / "r1" / "candidates" / "abc" / "optimization_files"
+    run = skill / ".strands-evals" / "runs" / "r1"
+    workspace = run / "files" / "abc"
     values = {"triage/SKILL.md": skill_text("triage", "Sort.", "New.\n")}
-    space.create_candidate_copy(values, workspace)
+    space.create_candidate_copy(values, workspace, snapshot=run / "files" / "snapshot" if snapshotted else None)
     copy = space.resolve("triage", values, workspace)
     assert copy.name == "triage"
     assert sorted(p.name for p in copy.iterdir()) == ["SKILL.md", "references"]
@@ -783,12 +972,12 @@ def test_an_untuned_skill_linked_from_outside_the_library_loads_from_the_copy(li
 
 
 @pytest.mark.skipif(os.name == "nt", reason="symlinks need extra rights on Windows")
-def test_a_symlink_to_a_tuned_file_leads_to_the_candidates_copy_of_it(library):
+def test_a_symlink_to_a_tuned_file_leads_to_the_candidates_copy_of_it(library, snapshot):
     (library / "notes" / "triage.md").symlink_to(library / "triage" / "SKILL.md")  # absolute
     space = Space({"skills": SkillLibrary(library)})
     workspace = library.parent / "run" / "optimization_files"
     edited = skill_text("triage", "Sort.", "New.\n")
-    space.create_candidate_copy({**space.complete({}), "skills/triage/SKILL.md": edited}, workspace)
+    space.create_candidate_copy({**space.complete({}), "skills/triage/SKILL.md": edited}, workspace, snapshot=snapshot)
     copy = space.resolve("skills", space.complete({}), workspace)
     assert (copy / "notes" / "triage.md").read_text() == edited
     assert (library / "triage" / "SKILL.md").read_text() != edited
@@ -911,7 +1100,7 @@ def test_a_skills_runtime_sees_the_candidates_edits(library):
     assert loaded["billing"].description == "Answer billing questions."
 
 
-def test_a_file_text_on_a_reference_inside_the_library_shares_its_copy(library, tmp_path_factory):
+def test_a_file_text_on_a_reference_inside_the_library_shares_its_copy(library, tmp_path_factory, snapshot):
     space = Space(
         {
             "skills": SkillLibrary(library),
@@ -921,7 +1110,7 @@ def test_a_file_text_on_a_reference_inside_the_library_shares_its_copy(library, 
     assert space._copy_folders == (library.resolve(),)
     workspace = tmp_path_factory.mktemp("run") / "optimization_files"
     values = space.complete({"levels": "P0 to P4\n"})
-    space.create_candidate_copy(values, workspace)
+    space.create_candidate_copy(values, workspace, snapshot=snapshot)
     skills_copy = space.resolve("skills", values, workspace)
     assert space.resolve("levels", values, workspace) == skills_copy / "triage" / "references" / "levels.md"
     assert (skills_copy / "triage" / "references" / "levels.md").read_text() == "P0 to P4\n"

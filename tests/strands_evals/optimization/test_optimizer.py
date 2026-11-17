@@ -439,7 +439,7 @@ async def test_build_task_copies_nothing_until_it_reads_the_workspace(tmp_path):
     )
     optimizer._setup()
     await optimizer._score_baseline()
-    assert not (optimizer._run.root / "candidates").exists()
+    assert not (optimizer._run.root / "files").exists()
     trial = next(e for e in _events(optimizer) if e["event"] == "trial")
     assert trial["record"]["output"] == "Be brief."
 
@@ -449,10 +449,10 @@ def _spy_copies(monkeypatch, *, every_call=False):
     threads = []
     real = Space.create_candidate_copy
 
-    def spy(self, values, directory):
+    def spy(self, values, directory, **kwargs):
         if every_call or not self._has_copy(directory, self._copy_key(values)):
             threads.append(threading.get_ident())
-        return real(self, values, directory)
+        return real(self, values, directory, **kwargs)
 
     monkeypatch.setattr(Space, "create_candidate_copy", spy)
     return threads
@@ -503,6 +503,64 @@ async def test_trials_reading_the_workspace_at_once_make_one_copy(tmp_path, monk
     assert len(threads) == 1  # later reads don't even check for the copy
     outputs = {e["record"]["output"] for e in _events(optimizer) if e["event"] == "trial"}
     assert outputs == {"Be brief."}
+
+
+def _prompt_and_notes(tmp_path):
+    prompts = tmp_path / "prompts"
+    prompts.mkdir()
+    (prompts / "system.md").write_text("Be brief.\n")
+    (prompts / "notes.md").write_text("v1\n")
+
+    @tunable(prompt=FileText(prompts / "system.md", as_path=True), retries=Int(0, 5, default=1))
+    def make(prompt, retries):
+        return prompt
+
+    async def rollout(agent_factory, case):
+        prompt = Path(agent_factory())
+        return prompt.read_text() + prompt.with_name("notes.md").read_text()
+
+    return prompts, make, rollout
+
+
+def _outputs(optimizer, candidate_id):
+    return {
+        e["record"]["output"]
+        for e in _events(optimizer)
+        if e["event"] == "trial" and e["record"]["candidate_id"] == candidate_id
+    }
+
+
+async def test_candidates_with_the_same_file_values_share_one_copy_made_from_the_runs_snapshot(tmp_path):
+    prompts, make, rollout = _prompt_and_notes(tmp_path)
+    optimizer = Optimizer(_experiment(), make, rollout_fn=rollout, base_dir=tmp_path / "runs", max_workers=32)
+    optimizer._setup()
+    await optimizer._score_baseline()
+    (prompts / "notes.md").write_text("v2, edited during the run\n")
+    base = optimizer._baseline
+    numbers = base.child(make.space, {"retries": 3}, origin=["retries"], rationale="")
+    text = base.child(make.space, {"prompt": "Be thorough.\n"}, origin=["prompt"], rationale="")
+    for candidate in (numbers, text):
+        await optimizer._score(candidate, "train", allowance=0)
+
+    assert _outputs(optimizer, base.id) == _outputs(optimizer, numbers.id) == {"Be brief.\nv1\n"}
+    assert _outputs(optimizer, text.id) == {"Be thorough.\nv1\n"}  # the notes as the run's first copy found them
+    files = optimizer._run.root / "files"
+    copies = {optimizer._run.file_copy(make.space._copy_key(c.values)).name for c in (base, text)}
+    assert sorted(p.name for p in files.iterdir()) == sorted({"snapshot", *copies})  # none for the numbers-only one
+
+
+async def test_a_resumed_run_copies_from_the_snapshot_its_first_start_took(tmp_path):
+    prompts, make, rollout = _prompt_and_notes(tmp_path)
+    optimizer = Optimizer(_experiment(), make, rollout_fn=rollout, base_dir=tmp_path / "runs", max_workers=32)
+    optimizer._setup()
+    await optimizer._score_baseline()  # killed here: setup ran, no iteration closed
+    (prompts / "notes.md").write_text("v2, edited before the resume\n")
+
+    resumed = Optimizer.resume(optimizer._run.root, experiment=_experiment(), factory=make, rollout_fn=rollout)
+    resumed._setup()
+    text = optimizer._baseline.child(make.space, {"prompt": "Be thorough.\n"}, origin=["prompt"], rationale="")
+    await resumed._score(text, "train", allowance=0)
+    assert _outputs(resumed, text.id) == {"Be thorough.\nv1\n"}
 
 
 def test_setup_warns_when_a_step_runs_in_batches(tmp_path):

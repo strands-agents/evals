@@ -1,4 +1,4 @@
-"""The run directory: `run.json`, the event log, transcripts, effects, and per-candidate file copies."""
+"""The run directory: `run.json`, the event log, transcripts, effects, and the file copies."""
 
 from __future__ import annotations
 
@@ -31,8 +31,10 @@ class RunDirectory:
     `run_id` is `[<name>-]<YYYYMMDD-HHMMSS>-<6 hex>`, the start time in UTC. Layout: `run.json`,
     `events.jsonl` (the only source of truth on resume), `transcripts/<hash>.json` (each trajectory once,
     named by the first 16 hex of the sha256 of its canonical JSON), `effects.json`, the review diffs,
-    `result.json` (the whole result, written last), and `candidates/<id>/optimization_files/` (only when a
-    value reaches the agent as a path). No per-candidate values, trial, or report files.
+    `result.json` (the whole result, written last), and `files/` (only when a value reaches the agent as a
+    path, or a `build_task` reads `BuildContext.workspace`): `files/snapshot/`, the file-backed folders as the
+    run's first copy found them, and `files/<16 hex>/`, one copy made from it per distinct set of file-backed
+    values. No per-candidate values, trial, or report files.
 
     One process per run, and nothing enforces it: opening a run that another process is still writing can
     cut that process's last line (`EventLog` trims a cut-off last line when it opens the log), and the next
@@ -134,9 +136,17 @@ class RunDirectory:
                 run._trials[(record["candidate_id"], record["run_index"], record["case_name"])] = record
         return run
 
-    def workspace(self, candidate_id: str) -> Path:
-        """`<root>/candidates/<id>/optimization_files/`."""
-        return self.root / "candidates" / candidate_id / "optimization_files"
+    def file_copy(self, copy_key: str) -> Path:
+        """`<root>/files/<first 16 hex of copy_key>/`: the copy for one set of file-backed values.
+
+        `copy_key` is the sha256 of those values (`Space._copy_key`), so every candidate holding them shares
+        one copy.
+        """
+        return self.root / "files" / copy_key[:16]
+
+    def file_snapshot(self) -> Path:
+        """`<root>/files/snapshot/`: the file-backed folders as the run's first copy found them."""
+        return self.root / "files" / "snapshot"
 
     def save_candidate(self, candidate: Candidate, **fields: Any) -> int:
         """Append the `propose` event and return the candidate's display number.
