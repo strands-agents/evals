@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import hashlib
 import json
 import logging
@@ -21,7 +22,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, cast
 
 from botocore.config import Config as BotocoreConfig
-from strands import Agent, tool
+from strands import Agent, ModelRetryStrategy, tool
 from strands.agent.conversation_manager import SlidingWindowConversationManager
 from strands.hooks.events import AfterToolCallEvent
 from strands.models.bedrock import BedrockModel
@@ -53,6 +54,10 @@ from .proposer import ProposalRequest, Proposer
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL_ID = "global.anthropic.claude-sonnet-5-5"  # run at temperature 1.0
+# The default output limit per reply of the model Reflection builds, unless Strands knows a lower limit for the model:
+# room to write a block's texts in one reply, and bounded, since Bedrock counts a request's `max_tokens` against the
+# account's tokens-per-minute quota.
+_MAX_TOKENS = 32_000
 
 # A tool result longer than this is cut, with a note telling the agent to read less at once.
 _MAX_TOOL_OUTPUT = 100_000
@@ -135,6 +140,8 @@ class Reflection(Proposer):
         system_prompt: str | None = None,
         success_threshold: float | None = 0.5,
         over_limit_retries: int = 2,
+        max_tokens: int | None = None,
+        retry_strategy: ModelRetryStrategy | None = None,
     ):
         """Configure the proposer agent.
 
@@ -146,11 +153,23 @@ class Reflection(Proposer):
             success_threshold: Reward a trial needs to count as a success; None splits by rank.
             over_limit_retries: How many times a submission with a value over its `size_cap` is sent back to be
                 shortened; 0 drops it at once.
+            max_tokens: The most output tokens per model reply, when Reflection builds the model (`model` is a
+                model id or None). None means 32,000, or the model's output limit when the installed Strands knows
+                it and it is lower; set it for a model whose lower limit Strands doesn't know. A reply that reaches
+                the limit fails that agent run, which is restarted like any other failure. Not allowed with a
+                `Model`: set the limit there.
+            retry_strategy: How the agent retries a model call that fails with a retryable error (a throttle,
+                by default). Copied here, and copied again for every agent run, so concurrent calls never share its
+                state and each run starts with a fresh count. None keeps Strands' default;
+                `ModelRetryStrategy(max_attempts=1)` makes each model call once (the model client's own retries
+                and the agent's 3 restarts still apply).
 
         Raises:
             TypeError: `model` is not a `Model`, a model id, or None, `system_prompt` is not a string,
-                `success_threshold` is not a number or None, or `over_limit_retries` is not an integer.
-            ValueError: `success_threshold` is outside [0, 1], or `over_limit_retries` is below 0.
+                `success_threshold` is not a number or None, `over_limit_retries` is not an integer, `max_tokens`
+                is not an integer or None, or `retry_strategy` is not a `ModelRetryStrategy` or None.
+            ValueError: `success_threshold` is outside [0, 1], `over_limit_retries` is below 0, `max_tokens` is
+                below 1, or `max_tokens` is given with a `Model`.
         """
         if model is not None and not isinstance(model, (Model, str)):
             raise TypeError(f"Reflection(model=...) takes a Model, a model id, or None, not {model!r}")
@@ -167,10 +186,26 @@ class Reflection(Proposer):
             raise TypeError(f"Reflection(over_limit_retries=...) must be an integer, not {over_limit_retries!r}")
         if over_limit_retries < 0:
             raise ValueError(f"Reflection(over_limit_retries=...) must be 0 or more, not {over_limit_retries!r}")
+        if max_tokens is not None:
+            if not isinstance(max_tokens, int) or isinstance(max_tokens, bool):
+                raise TypeError(f"Reflection(max_tokens=...) must be an integer or None, not {max_tokens!r}")
+            if max_tokens < 1:
+                raise ValueError(f"Reflection(max_tokens=...) must be 1 or more, not {max_tokens!r}")
+            if isinstance(model, Model):
+                raise ValueError(
+                    "Reflection(max_tokens=...) applies to the model built from a model id; a Model keeps its own "
+                    "max_tokens: set it on the Model"
+                )
+        if retry_strategy is not None and not isinstance(retry_strategy, ModelRetryStrategy):
+            raise TypeError(
+                f"Reflection(retry_strategy=...) must be a ModelRetryStrategy or None, not {retry_strategy!r}"
+            )
         self.model = model
         self.system_prompt = system_prompt
         self.success_threshold = success_threshold
         self.over_limit_retries = over_limit_retries
+        self.max_tokens = max_tokens
+        self.retry_strategy = copy.deepcopy(retry_strategy)
         self.refused: list[dict[str, Any]] = []
         self._warned = False
 
@@ -266,6 +301,10 @@ class Reflection(Proposer):
             rejected: list[dict[str, str]] = []
             for attempt in range(_ATTEMPTS):
                 submitted: dict[str, str] = {}
+                # A fresh copy for each agent; None is not passed on, since `Agent` reads it as no retries.
+                retries: dict[str, Any] = {}
+                if self.retry_strategy is not None:
+                    retries["retry_strategy"] = copy.deepcopy(self.retry_strategy)
                 agent = Agent(
                     model=self._model(),
                     system_prompt=prompt + SUBMIT_INSTRUCTIONS,
@@ -277,6 +316,7 @@ class Reflection(Proposer):
                     # message pinned: a send-back after a long first turn would otherwise go without it.
                     conversation_manager=SlidingWindowConversationManager(pin_first=1),
                     callback_handler=None,
+                    **retries,
                 )
                 agent.add_hook(_cap_tool_output, AfterToolCallEvent)
                 started = time.monotonic()
@@ -361,10 +401,11 @@ class Reflection(Proposer):
     def _model(self) -> Model:
         """The proposer's model: the given `Model`, else Bedrock at temperature 1.0, streaming, with prompt caching
         (the agent rereads its whole conversation every turn; a cache point covers everything before it, the tool
-        definitions included) and adaptive retries."""
+        definitions included), adaptive retries, and `max_tokens` (by default `_MAX_TOKENS`, or the model's own
+        output limit when Strands knows it and it is lower)."""
         if isinstance(self.model, Model):
             return self.model
-        return BedrockModel(
+        model = BedrockModel(
             model_id=self.model if isinstance(self.model, str) else _DEFAULT_MODEL_ID,
             temperature=1.0,
             streaming=True,
@@ -373,6 +414,12 @@ class Reflection(Proposer):
                 retries={"max_attempts": 3, "mode": "adaptive"}, connect_timeout=256, read_timeout=256
             ),
         )
+        max_tokens = self.max_tokens
+        if max_tokens is None:
+            known = model.get_config().get("max_tokens")  # with none set: the model's output limit, when known
+            max_tokens = _MAX_TOKENS if known is None else min(known, _MAX_TOKENS)
+        model.update_config(max_tokens=max_tokens)
+        return model
 
     def _model_id(self) -> str | None:
         return self.config()["model"]
