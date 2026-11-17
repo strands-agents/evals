@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import threading
 import weakref
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import opentelemetry.trace as trace_api
-from opentelemetry.sdk.trace import Event, ReadableSpan, SpanProcessor
+from opentelemetry.sdk.environment_variables import OTEL_SPAN_EVENT_COUNT_LIMIT
+from opentelemetry.sdk.trace import Event, ReadableSpan, SpanLimits, SpanProcessor
 from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
 from opentelemetry.sdk.util.instrumentation import InstrumentationScope
 from opentelemetry.trace import SpanContext, SpanKind, Status, StatusCode, TraceFlags
@@ -18,6 +21,8 @@ from ...mappers.strands_in_memory_session_mapper import StrandsInMemorySessionMa
 from ...telemetry.config import StrandsEvalsTelemetry
 from ...types.optimization import CANDIDATE_SPAN_KEY, Usage
 from ...types.trace import Session
+
+logger = logging.getLogger(__name__)
 
 # Set on the spans `rollout.py` opens, so they are found by kind, never by a name an agent could share.
 SPAN_KIND = "strands_evals.optimization.span"
@@ -65,6 +70,13 @@ class _TrialSpanFilter(SpanProcessor):
             for trace_id in trace_ids:
                 self._spans.pop(trace_id, None)
 
+    def discard(self, trace_id: str, span_ids: Collection[str]) -> None:
+        """Drop these spans of a trace; the trace stays registered, so its later spans are still kept."""
+        with self._lock:
+            kept = self._spans.get(trace_id)
+            if kept is not None:
+                kept[:] = [span for span in kept if _span_id(span) not in span_ids]
+
     def on_end(self, span: ReadableSpan) -> None:
         if span.context is None:
             return
@@ -82,7 +94,7 @@ _FILTERS_LOCK = threading.Lock()
 
 
 class TraceCapture:
-    """One per run; keeps only spans of registered trial traces.
+    """One per run; keeps only spans of registered trial traces, an attempt's only until it ends.
 
     Trace and span ids are hex strings, as in a `Session` (`format(trace_id, "032x")`,
     `format(span_id, "016x")`).
@@ -93,8 +105,11 @@ class TraceCapture:
         `Experiment` is built.
 
         With no OpenTelemetry SDK tracer provider installed, installs one (`StrandsEvalsTelemetry`) as the
-        global provider; then attaches a span processor keeping only registered traces, so nothing else
-        piles up in memory.
+        global provider, with no limit on the events of a span unless `OTEL_SPAN_EVENT_COUNT_LIMIT` sets
+        one: Strands records each message a model call sends as one event of its span, so OpenTelemetry's
+        default of 128 would drop the start of a long conversation from the trial's `Session`. Then attaches
+        a span processor keeping only registered traces, so nothing else piles up in memory. A provider
+        installed earlier keeps its own limits (`session` warns when they drop messages).
 
         Raises:
             RuntimeError: A global tracer provider that isn't the SDK's is already installed, so spans
@@ -102,7 +117,8 @@ class TraceCapture:
         """
         provider = trace_api.get_tracer_provider()
         if not isinstance(provider, SDKTracerProvider):
-            StrandsEvalsTelemetry()
+            unset = OTEL_SPAN_EVENT_COUNT_LIMIT not in os.environ
+            StrandsEvalsTelemetry(span_limits=SpanLimits(max_events=SpanLimits.UNSET) if unset else SpanLimits())
             provider = trace_api.get_tracer_provider()
         if not isinstance(provider, SDKTracerProvider):
             raise RuntimeError(
@@ -116,13 +132,18 @@ class TraceCapture:
                 provider.add_span_processor(span_filter)
                 _FILTERS[provider] = span_filter
         self._filter = span_filter
+        self._warned_dropped = False
 
     def register(self, trace_id: str) -> None:
         """Keep this trace's spans; spans of unregistered traces are dropped at export."""
         self._filter.register(trace_id)
 
     def session(self, trace_id: str, attempt_span_id: str) -> Session | None:
-        """The attempt's agents as a `Session`, judge spans excluded; None without agent spans.
+        """The attempt's agents as a `Session`, judge spans excluded; None without agent spans (also after
+        `drop_attempt`).
+
+        Warns once per capture when a model call's span dropped events (the tracer provider's span event
+        limit), since that call's messages in the `Session` then start mid-conversation.
 
         Every agent in the attempt is kept. When the attempt's agents are told apart (`_candidate_spans`),
         each span's `metadata[CANDIDATE_SPAN_KEY]` says whether it is the candidate's.
@@ -132,11 +153,24 @@ class TraceCapture:
             attempt_span_id: The attempt's span; only its subtree is read.
         """
         subtree = _subtree(self._filter.spans(trace_id), [attempt_span_id])
+        dropped = sum(
+            span.dropped_events for span in subtree if (span.attributes or {}).get("gen_ai.operation.name") == "chat"
+        )
+        if dropped and not self._warned_dropped:
+            self._warned_dropped = True
+            logger.warning(
+                "trace_id=<%s>, dropped_events=<%d> | the tracer provider's span event limit dropped the oldest "
+                "messages of model calls, so trajectories of trials past the limit start mid-conversation | create "
+                "the provider with span_limits=SpanLimits(max_events=SpanLimits.UNSET), or set "
+                "OTEL_SPAN_EVENT_COUNT_LIMIT before it is created (empty for no limit)",
+                trace_id,
+                dropped,
+            )
         return _session(trace_id, subtree, _candidate_spans(subtree))
 
     def usage(self, trace_id: str, attempt_span_id: str) -> Usage:
         """The candidate's usage in the attempt, judge spans excluded: the last attempt's, or one in
-        `previous_attempts`.
+        `previous_attempts`. Zero after `drop_attempt`, so `instrument` reads it when the attempt ends.
 
         Sums the `chat` spans of the agents the factory built and of everything under them
         (`_candidate_spans`), or of the whole subtree when they can't be told apart; `seconds` is the
@@ -155,7 +189,8 @@ class TraceCapture:
     def benchmark_usage(self, trace_id: str, attempt_span_id: str) -> Usage:
         """The usage of the attempt's other agents: the `chat` spans `usage` leaves out (a simulated user).
 
-        `seconds` is always 0. Zero when the attempt's agents can't be told apart (`_candidate_spans`).
+        `seconds` is always 0. Zero when the attempt's agents can't be told apart (`_candidate_spans`), and
+        after `drop_attempt`, so `instrument` reads it when the attempt ends.
 
         Args:
             trace_id: The trial's trace.
@@ -226,6 +261,20 @@ class TraceCapture:
                     error_type = str(event.attributes.get("exception.type", "Exception")).rsplit(".", 1)[-1]
                     return error_type, str(event.attributes.get("exception.message", ""))
         return None, None
+
+    def drop_attempt(self, trace_id: str, attempt_span_id: str) -> None:
+        """Drop the attempt's span and its subtree, once `usage` and `session` have read them.
+
+        The trace stays registered, so the judge spans that finish afterwards are still kept for
+        `evaluator_view`, until `release`; a span of the attempt that finishes after the drop is kept until
+        then too. Nothing happens to a trace already released.
+
+        Args:
+            trace_id: The trial's trace.
+            attempt_span_id: The attempt's span.
+        """
+        subtree = _subtree(self._filter.spans(trace_id), [attempt_span_id])
+        self._filter.discard(trace_id, {attempt_span_id, *(_span_id(span) for span in subtree)})
 
     def release(self, trace_ids: Iterable[str]) -> None:
         """Drop only these trials' spans."""

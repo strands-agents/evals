@@ -344,9 +344,10 @@ class TrialRunner:
         some) has just those re-judged on its saved output, for 0 rollouts. Without it, cached trials are
         final, so a resumed run calls no judge the uninterrupted run didn't.
 
-        Every trace a trial registered (`TrialLog.trace_ids`, and the evaluator proxies') is released in a
-        `finally` once its record is built, so a setup error, a cancelled attempt, or an exception here
-        leaks no spans; never earlier, since usage and judge spans are read after `Experiment` returns.
+        Each attempt's agent spans are read and dropped when the attempt ends (`instrument`). Every trace a
+        trial registered (`TrialLog.trace_ids`, and the evaluator proxies') is released in a `finally` once
+        its record is built, so a setup error, a cancelled attempt, or an exception here leaks no spans;
+        never earlier, since judge spans are read after `Experiment` returns.
 
         Args:
             candidate_id: The candidate.
@@ -366,6 +367,7 @@ class TrialRunner:
             TypeError: `_FactoryArgumentError` (a resource or kwarg named like a declared marker, a kwarg
                 the factory doesn't accept, or an environment that gave no mapping).
             RuntimeError: Trial spans aren't recorded (an OTel SDK disabled or sampling out).
+            Exception: What reading an ended attempt's spans raised (`TrialLog.setup_error`).
             ValueError: A case name the runner wasn't built with, a case name listed twice, or `runs` < 1.
         """
         if runs < 1:
@@ -551,13 +553,13 @@ class TrialRunner:
                 status=status,
                 error_type=error_type,
                 error=error,
-                usage=self._traces.usage(entry.trace_id, span_id),
+                usage=usage,
                 judge_usage=Usage.zero(),
                 pass_index=pass_index,
                 rollouts=0,  # Experiment's throttling retries aren't counted against the budget
-                benchmark_usage=self._traces.benchmark_usage(entry.trace_id, span_id),
+                benchmark_usage=benchmark_usage,
             )
-            for span_id, status, error_type, error in entry.previous_attempts
+            for usage, benchmark_usage, status, error_type, error in entry.previous_attempts
         ]
         completed = entry.status is TrialStatus.COMPLETED
         evaluations, details, errors, judge_usage = (
@@ -610,10 +612,10 @@ class TrialRunner:
             evaluations=evaluations,
             details=details,
             evaluator_errors=errors,
-            usage=self._traces.usage(entry.trace_id, entry.attempt_span_id),
+            usage=entry.usage,
             judge_usage=judge_usage,
             rollouts=1,
-            benchmark_usage=self._traces.benchmark_usage(entry.trace_id, entry.attempt_span_id),
+            benchmark_usage=entry.benchmark_usage,
         )
 
     def _rejudged(
