@@ -24,7 +24,6 @@ from .files import (
     _ignore_containing,
     _location_in_copy,
     _outer_folders,
-    _SkillFile,
 )
 from .markers import _UNSET, Choice, Component, Float, Int, OneOf, TextValue, _default_size_cap, _is_option, choice
 from .tools import ToolDescriptions
@@ -33,12 +32,12 @@ Marker: TypeAlias = (
     Int | Float | OneOf | TextValue | Component | Choice | FileText | JsonField | SkillLibrary | ToolDescriptions
 )
 
-ParamKind = Literal["int", "float", "one_of", "choice", "text"]
+ParamKind = Literal["int", "float", "one_of", "choice", "text", "skills"]
 
 
 @dataclass(frozen=True)
 class FileSource:
-    """Where a file-backed text value lives."""
+    """Where a file-backed value lives: a `FileText`'s or `JsonField`'s file, or a `SkillLibrary`'s folder."""
 
     path: Path
     pointer: str | None
@@ -56,11 +55,13 @@ class ParamInfo:
     `summary`, `Space.complete` drops `cm.window.window_size` (if it were kept, it would change the
     candidate id without changing the agent) and fills the keys `summary` brings in. Validation,
     TPE, the score model's design, and `Nested` read it too. Conditions are one level deep, since
-    `component()` takes no nested markers. Text keys can't sit under a `choice()`, so theirs is
-    always None.
+    `component()` takes no nested markers. Text and skills keys can't sit under a `choice()`, so theirs
+    is always None.
 
     `min_value` / `max_value` are the inclusive bounds of an `Int` / `Float`. Fields after `default`
-    default to None (`log` to False), so each kind sets only its own.
+    default to None (`log` to False), so each kind sets only its own. A `"skills"` key (a `SkillLibrary`)
+    holds a library version, `"skills/<hash>"`; its `size_cap` and `edit_instructions` apply to each
+    `SKILL.md` in it (`size_cap` None: each one's default cap).
     """
 
     key: str
@@ -94,14 +95,15 @@ class Space:
             TypeError: No markers, a name that is empty or contains `.` or `/`, an unknown marker
                 type, a marker with no default, a default that fails `validate` (e.g. a text
                 default over its size cap), or two file markers on the same text (a `FileText`'s
-                or a skill's file declared again, or two `JsonField`s on one field or one inside
-                the other).
+                file or a tuned skill's `SKILL.md` declared again, two `JsonField`s on one field or
+                one inside the other, or a `SkillLibrary` inside another).
         """
         if not markers:
             raise TypeError("nothing to optimize: declare at least one marker")
         self._markers: dict[str, Marker] = {}
         self._params: dict[str, ParamInfo] = {}
-        self._files: dict[str, FileText | JsonField | _SkillFile] = {}  # file-backed key -> its marker
+        self._files: dict[str, FileText | JsonField | SkillLibrary] = {}  # file-backed key -> its marker
+        self._owned: dict[str, dict[str, str]] = {}  # filled below, once every file marker is known
         for name, marker in markers.items():
             if not isinstance(name, str) or not name or "." in name or "/" in name:
                 raise TypeError(f"declared name {name!r} must be a non-empty string without '.' or '/'")
@@ -110,11 +112,7 @@ class Space:
             if not isinstance(marker, Marker):
                 raise TypeError(f"{name}: {type(marker).__name__} is not a marker")
             self._markers[name] = marker
-            files: dict[str, FileText | JsonField | _SkillFile]
-            if isinstance(marker, SkillLibrary):
-                files = {f"{name}/{relative}": member for relative, member in marker._members.items()}
-            else:
-                files = {name: marker} if isinstance(marker, (FileText, JsonField)) else {}
+            files = {name: marker} if isinstance(marker, (FileText, JsonField, SkillLibrary)) else {}
             for info in _flatten(name, marker):
                 if info.key in files:
                     _check_no_overlap(info.key, files[info.key], self._files)
@@ -126,11 +124,22 @@ class Space:
         # Folders a candidate's copy holds (a SkillLibrary's whole directory); fixed by the declaration,
         # so every copy has one layout.
         self._copy_folders = _outer_folders(
-            m.copied if isinstance(m, _SkillFile) else m.path.parent for m in self._files.values()
+            m.path if isinstance(m, SkillLibrary) else m.path.parent for m in self._files.values()
         )
         self._copies_files = any(
-            isinstance(m, _SkillFile) or (isinstance(m, FileText) and m.as_path) for m in self._files.values()
+            isinstance(m, SkillLibrary) or (isinstance(m, FileText) and m.as_path) for m in self._files.values()
         )
+        # A library's key -> each of its files another file marker declares (path in the library -> that key);
+        # every version keeps those as declared, so the key's value alone says what the copy holds.
+        self._owned = {
+            key: {
+                other.path.relative_to(library.path).as_posix(): other_key
+                for other_key, other in self._files.items()
+                if not isinstance(other, SkillLibrary) and other.path.is_relative_to(library.path)
+            }
+            for key, library in self._files.items()
+            if isinstance(library, SkillLibrary)
+        }
 
     def params(self) -> list[ParamInfo]:
         """Every flat key, in declaration order, a choice before its sub-keys.
@@ -144,6 +153,24 @@ class Space:
         if key not in self._params:
             raise KeyError(f"{key!r} is not a key of this space; keys: {sorted(self._params)}")
         return self._params[key]
+
+    def marker(self, name: str) -> Marker:
+        """The marker declared under `name`.
+
+        A proposer reaches a `SkillLibrary` this way, e.g. `request.space.marker("skills").revise(...)`.
+
+        Args:
+            name: A declared name, not a flat key.
+
+        Returns:
+            The marker; a bare `component()` comes back as the one-option `choice()` it counts as.
+
+        Raises:
+            KeyError: `name` is not a declared name.
+        """
+        if name not in self._markers:
+            raise KeyError(f"{name!r} is not a declared name; declared: {list(self._markers)}")
+        return self._markers[name]
 
     def is_active(self, key: str, values: Values) -> bool:
         """Whether a key is active.
@@ -233,8 +260,8 @@ class Space:
         - `tool_descriptions`: new copies of the tools with the candidate's descriptions.
         - `FileText(as_path=True)`: the path of the file inside `workspace`, or the original path
           when `workspace` is None (the plain call).
-        - `SkillLibrary`: the path of the directory inside `workspace`, or the original directory
-          when `workspace` is None.
+        - `SkillLibrary`: the path of the directory inside `workspace`, which holds the candidate's
+          version, or the original directory when `workspace` is None.
         - Any other marker: the value itself, e.g. `0.2` or the prompt text.
 
         `values` must already pass `validate`; nothing is checked here. A component's fixed kwargs
@@ -264,8 +291,10 @@ class Space:
         """Copy each file-backed value's folder into `directory`, then write every active file-backed key.
 
         Each source folder goes to `directory/<short hash of its original path>/<folder name>/`, so it
-        keeps its name; a folder inside another is copied once, as part of the outer one. Each active
-        key is written by its marker's `write()`, so the copy holds the candidate's values even if a source file changed
+        keeps its name; a folder inside another is copied once, as part of the outer one. A
+        `SkillLibrary`'s folder is never copied: its place holds the candidate's version, written from
+        memory. Then each other active key is written by its marker's `write()`, so the copy holds the
+        candidate's values even if a source file changed
         since declaration; a file that already holds its value keeps the original bytes. Built in a
         temp folder and renamed into place, with a marker file holding the sha256 of its file-backed values,
         so a second call with the same values returns at once and one with other values raises. An
@@ -291,18 +320,31 @@ class Space:
         building = Path(tempfile.mkdtemp(prefix=f".{directory.name}-", dir=directory.parent))
         try:
             destinations = (building.resolve(), directory.resolve())
+            libraries = {k: m for k, m in self._files.items() if isinstance(m, SkillLibrary)}
+            library_folders = tuple(library.path for library in libraries.values())
             for folder in self._copy_folders:
+                if folder in library_folders:
+                    continue
                 shutil.copytree(
-                    folder, building / _folder_in_copy(folder), symlinks=True, ignore=_ignore_containing(destinations)
+                    folder,
+                    building / _folder_in_copy(folder),
+                    symlinks=True,
+                    ignore=_ignore_containing(destinations, library_folders),
                 )
             _make_folders_writable(building)  # a read-only source folder would block the writes below
             for folder in self._copy_folders:
-                _relink(building, folder, self._copy_folders)
+                if folder not in library_folders:
+                    _relink(building, folder, self._copy_folders)
+            for name, library in libraries.items():  # first: a file marker inside a library writes over its file
+                if self.is_active(name, values):
+                    library._write(str(values[name]), building / _location_in_copy(self._copy_folders, library.path))
             for info in self._params.values():
-                if info.source is None or not self.is_active(info.key, values):
+                if info.source is None or info.key in libraries or not self.is_active(info.key, values):
                     continue
                 target = building / _location_in_copy(self._copy_folders, info.source.path)
-                self._files[info.key].write(str(values[info.key]), target)
+                marker = self._files[info.key]
+                assert not isinstance(marker, SkillLibrary)
+                marker.write(str(values[info.key]), target)
             (building / _COPY_MARKER).write_bytes(key.encode("ascii"))  # last: only a finished copy has it
         except BaseException:
             shutil.rmtree(building, ignore_errors=True)
@@ -349,19 +391,53 @@ class Space:
         return True
 
     def _render_files(self, values: Values) -> dict[Path, str]:
-        """Each file-backed file's whole text under `values`, in memory, in declaration order.
+        """Each file-backed file's whole text under `values`, in memory: every UTF-8 file of each library
+        version, then the other keys in declaration order.
 
         Every key on a file is rendered, changed or not, so two candidates' texts of one JSON file are
-        formatted alike and differ only where their values do.
+        formatted alike and differ only where their values do. A library's binary files are left out.
         """
         texts: dict[Path, str] = {}
+        for key, library in self._files.items():
+            if isinstance(library, SkillLibrary) and self.is_active(key, values):
+                for path, data in library.files(str(values[key])).items():
+                    try:
+                        texts[library.path / path] = data.decode("utf-8")
+                    except UnicodeDecodeError:
+                        continue
         for info in self._params.values():
-            if info.source is None or not self.is_active(info.key, values):
+            marker = self._files.get(info.key)
+            if marker is None or isinstance(marker, SkillLibrary) or not self.is_active(info.key, values):
                 continue
-            marker = self._files[info.key]
+            assert info.source is not None
             text = texts.get(info.source.path, marker._original())
             texts[info.source.path] = marker._render(str(values[info.key]), text)
         return texts
+
+    def _save_versions(self, values: Values, artifacts: Path) -> None:
+        """Write each library version in `values` once into `artifacts/skills/<hash>/`, where `_load_versions`
+        reads it back."""
+        for key, library in self._files.items():
+            if isinstance(library, SkillLibrary) and key in values:
+                library._save(str(values[key]), artifacts)
+
+    def _load_versions(self, values: Values, artifacts: Path) -> None:
+        """Store each library version in `values` that this process lacks from `artifacts/skills/<hash>/`.
+
+        Raises:
+            ValueError: A value isn't a version's value, its folder is missing, doesn't hold the version it is
+                named for (it changed since it was written), or holds one that fails its library's checks.
+        """
+        for key, library in self._files.items():
+            if not isinstance(library, SkillLibrary) or key not in values:
+                continue
+            value = str(values[key])
+            if value in library._versions:
+                continue
+            try:
+                library._load(value, artifacts)
+            except ValueError as error:
+                raise ValueError(f"{key}: {error}") from error
 
     def _problem(self, info: ParamInfo, value: Any) -> str | None:
         """A one-line problem with one value, including a file marker's format check, or None.
@@ -376,6 +452,12 @@ class Space:
             format_problem = self._files[info.key]._format_problem(value)
             if format_problem is not None:
                 problem = f"{info.key}: {format_problem}"
+        library = self._files.get(info.key)
+        if problem is None and isinstance(library, SkillLibrary):
+            files, declared = library._version(value).files, library._version(library.default).files
+            for path, owner in self._owned.get(info.key, {}).items():
+                if files.get(path) != declared.get(path):
+                    return f"{info.key}: {path} is declared by {owner}, so every version keeps it as declared"
         return problem
 
 
@@ -421,16 +503,17 @@ def _flatten(name: str, marker: Marker) -> list[ParamInfo]:
         source = FileSource(marker.path, marker.pointer, False)
         return [_text(name, name, marker.default, marker.size_cap, marker.edit_instructions, source)]
     if isinstance(marker, SkillLibrary):
+        source = FileSource(marker.path, None, True)
         return [
-            _text(
-                f"{name}/{relative}",
+            ParamInfo(
                 name,
-                member.default,
-                member.size_cap,
-                member.edit_instructions,
-                FileSource(member.path, None, True),
+                name,
+                "skills",
+                marker.default,
+                size_cap=marker.size_cap,
+                edit_instructions=marker.edit_instructions,
+                source=source,
             )
-            for relative, member in marker._members.items()
         ]
     raise TypeError(f"{name}: {type(marker).__name__} can't be declared yet")
 
@@ -470,14 +553,20 @@ def _text(
 
 def _check_no_overlap(
     key: str,
-    marker: FileText | JsonField | _SkillFile,
-    declared: Mapping[str, FileText | JsonField | _SkillFile],
+    marker: FileText | JsonField | SkillLibrary,
+    declared: Mapping[str, FileText | JsonField | SkillLibrary],
 ) -> None:
-    """Raise `TypeError` if `marker` edits text another declared file marker edits too."""
-    # Every marker's path is already resolved (FileText and JsonField resolve theirs, and a skill's file and
-    # folder are never symlinks), but a case-insensitive file system keeps the casing it was given, so paths
-    # that differ are compared as files too.
+    """Raise `TypeError` if `marker` edits text another declared file marker edits too.
+
+    A `SkillLibrary` overlaps another one it is inside or holds, and a file marker on one of its tuned
+    `SKILL.md` files (Reflection edits those); a file marker on another of its files is allowed.
+    """
+    # Every marker's path is already resolved (FileText, JsonField and SkillLibrary resolve theirs), but a
+    # case-insensitive file system keeps the casing it was given, so paths that differ are compared as files too.
     for other_key, other in declared.items():
+        if isinstance(marker, SkillLibrary) or isinstance(other, SkillLibrary):
+            _check_library_overlap(key, marker, other_key, other)
+            continue
         if other.path != marker.path and not os.path.samefile(other.path, marker.path):
             continue
         if isinstance(marker, JsonField) and isinstance(other, JsonField):
@@ -489,6 +578,25 @@ def _check_no_overlap(
                 "or one is inside the other"
             )
         raise TypeError(f"{key}: {marker.path} is already declared by {other_key}; a whole file's text can't be shared")
+
+
+def _check_library_overlap(
+    key: str,
+    marker: FileText | JsonField | SkillLibrary,
+    other_key: str,
+    other: FileText | JsonField | SkillLibrary,
+) -> None:
+    """`_check_no_overlap` for a pair where at least one is a `SkillLibrary`."""
+    if isinstance(marker, SkillLibrary) and isinstance(other, SkillLibrary):
+        if marker.path.is_relative_to(other.path) or other.path.is_relative_to(marker.path):
+            raise TypeError(f"{key}: {marker.path} is already declared by {other_key}, or holds it")
+        return
+    library, file = (marker, other) if isinstance(marker, SkillLibrary) else (other, marker)
+    assert isinstance(library, SkillLibrary) and not isinstance(file, SkillLibrary)
+    for skill_file in library._texts(library.default):
+        path = library.path / skill_file
+        if file.path == path or (path.exists() and os.path.samefile(file.path, path)):
+            raise TypeError(f"{key}: {path} is already declared by {other_key}; a whole file's text can't be shared")
 
 
 def _check_value(info: ParamInfo, value: Any) -> str | None:
@@ -505,6 +613,8 @@ def _check_value(info: ParamInfo, value: Any) -> str | None:
         if not _is_option(value, info.options or ()):
             return f"{key}: {value!r} is not one of {list(info.options or ())!r}"
         return None
+    if info.kind == "skills":
+        return None if isinstance(value, str) else f"{key}: expected a library version (str), got {value!r}"
     if not isinstance(value, str):
         return f"{key}: expected str, got {type(value).__name__}"
     if info.size_cap is not None and len(value) > info.size_cap:

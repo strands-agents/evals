@@ -7,7 +7,15 @@ import tempfile
 import pytest
 from strands.types.exceptions import EventLoopException
 
-from strands_evals.optimization import Criteria, InfrastructureError, Maximize, Reflection, Space, TextValue
+from strands_evals.optimization import (
+    Criteria,
+    InfrastructureError,
+    Maximize,
+    Reflection,
+    SkillLibrary,
+    Space,
+    TextValue,
+)
 from strands_evals.optimization.candidate import Candidate
 from strands_evals.optimization.search.proposer import ProposalRequest
 from strands_evals.types.trace import TextContent, ToolResultContent, UserMessage
@@ -30,16 +38,16 @@ SPACE = Space(
 )
 
 
-def request(*, n=1, keys=("prompt", "tone"), trials=None, events=None):
+def request(*, n=1, keys=("prompt", "tone"), trials=None, events=None, space=SPACE):
     criteria = Criteria(Maximize("Score"), [], REGISTRY)
     trials = trials or [
         trial("order-123", score=0.2, output="I could not find the order you asked about, sorry."),
         trial("b", score=0.9),
     ]
-    parent = Candidate.baseline(SPACE)
+    parent = Candidate.baseline(space)
     log = events.append if events is not None else None
     return ProposalRequest(
-        space=SPACE,
+        space=space,
         keys=list(keys),
         parent=parent,
         trials=trials,
@@ -396,3 +404,90 @@ async def test_a_later_slot_raising_logs_the_spend_of_the_patches_never_returned
     assert [e for e, _ in events] == ["proposer_retry"] * 3 + ["proposer_usage"] * 2
     failed, first = usage_events(events)
     assert (failed.tokens, first.tokens) == (0, 45)  # the failing slot's attempts answered nothing; slot 0's patch
+
+
+def skill(name, body="Do it.\n"):
+    return f"---\nname: {name}\ndescription: {name} rules\n---\n{body}"
+
+
+@pytest.fixture
+def library(tmp_path):
+    skills = tmp_path / "skills"
+    for name in ("billing", "triage"):
+        (skills / name).mkdir(parents=True)
+        (skills / name / "SKILL.md").write_text(skill(name), newline="")
+    marker = SkillLibrary(skills)
+    return marker, Space({"prompt": TextValue(default="Be helpful.\n", size_cap=60), "skills": marker})
+
+
+async def test_each_skill_md_is_a_text_of_its_own_and_the_patch_holds_the_librarys_new_version(library):
+    marker, space = library
+    turns = [
+        write("t.txt", skill("triage", "Ask for the order number first.")),
+        write("p.txt", "Be brief."),
+        submit(**{"skills/triage/SKILL.md": "t.txt", "prompt": "p.txt"}),
+        "Triage asks first.",
+    ]
+    reflection = Reflection(ScriptedModel(turns))
+    reflection._warned = True
+    (patch,) = await reflection.propose(request(keys=("prompt", "skills"), space=space))
+    assert set(patch.updates) == {"prompt", "skills"}
+    files = marker.files(patch.updates["skills"])
+    assert files["triage/SKILL.md"].decode() == skill("triage", "Ask for the order number first.\n")  # newline kept
+    assert files["billing/SKILL.md"] == skill("billing").encode()
+    space.validate({**Candidate.baseline(space).values, **patch.updates})
+
+
+async def test_a_skill_md_that_renames_its_skill_is_dropped(library):
+    _, space = library
+    turns = [
+        write("t.txt", skill("router")),
+        write("p.txt", "Be brief."),
+        submit(**{"skills/triage/SKILL.md": "t.txt", "prompt": "p.txt"}),
+        "Renamed.",
+    ]
+    reflection = Reflection(ScriptedModel(turns))
+    reflection._warned = True
+    (patch,) = await reflection.propose(request(keys=("prompt", "skills"), space=space))
+    assert patch.updates == {"prompt": "Be brief.\n"}
+    assert "the frontmatter name must stay 'triage', got 'router'" in patch.state["dropped"]["skills/triage/SKILL.md"]
+
+
+async def test_two_skill_mds_of_one_library_land_in_one_version_and_a_bad_one_leaves_the_other(library):
+    marker, space = library
+    turns = [
+        write("t.txt", skill("triage", "Triage first.")),
+        write("b.txt", skill("billing", "Bill second.")),
+        submit(**{"skills/triage/SKILL.md": "t.txt", "skills/billing/SKILL.md": "b.txt"}),
+        "Both.",
+    ]
+    reflection = Reflection(ScriptedModel(turns))
+    reflection._warned = True
+    (patch,) = await reflection.propose(request(keys=("skills",), space=space))
+    files = marker.files(patch.updates["skills"])
+    assert files["triage/SKILL.md"].decode() == skill("triage", "Triage first.\n")
+    assert files["billing/SKILL.md"].decode() == skill("billing", "Bill second.\n")
+
+    turns = [
+        write("t.txt", skill("router")),
+        write("b.txt", skill("billing", "Bill second.")),
+        submit(**{"skills/triage/SKILL.md": "t.txt", "skills/billing/SKILL.md": "b.txt"}),
+        "One renamed.",
+    ]
+    reflection = Reflection(ScriptedModel(turns))
+    reflection._warned = True
+    (patch,) = await reflection.propose(request(keys=("skills",), space=space))
+    files = marker.files(patch.updates["skills"])
+    assert files["triage/SKILL.md"].decode() == skill("triage")  # the parent's
+    assert files["billing/SKILL.md"].decode() == skill("billing", "Bill second.\n")
+    assert list(patch.state["dropped"]) == ["skills/triage/SKILL.md"]
+
+
+async def test_a_library_with_no_skill_to_edit_proposes_nothing(tmp_path):
+    (tmp_path / "skills").mkdir()
+    space = Space({"skills": SkillLibrary(tmp_path / "skills")})
+    model = ScriptedModel(["Nothing to edit."])
+    reflection = Reflection(model)
+    reflection._warned = True
+    assert await reflection.propose(request(keys=("skills",), space=space)) == []
+    assert model.calls == 0

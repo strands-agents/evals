@@ -1,7 +1,9 @@
 """Tests for Reflection's evidence: the trace files, the digest, the rewards, and the versions folder."""
 
+import dataclasses
 import json
 import os
+import shutil
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -12,6 +14,7 @@ from strands_evals.optimization import (
     Maximize,
     MetricRegistry,
     Minimize,
+    SkillLibrary,
     Space,
     TextValue,
     WeightedSum,
@@ -609,6 +612,47 @@ def test_versions_folder_has_one_folder_per_version_with_each_text_alone(folders
     assert (third.rank, third.meets_limits, third.changed) == (None, None, ["prompt"])
     assert evidence.limits == ["tokens <= 150"]
     assert evidence.goal_metrics == ["Score", "tokens"]
+
+
+def test_versions_folder_holds_each_versions_own_skill_md_files(folders, tmp_path):
+    skills = tmp_path / "skills"
+    (skills / "triage").mkdir(parents=True)
+    (skills / "triage" / "SKILL.md").write_text("---\nname: triage\ndescription: Sort.\n---\nSort.\n", newline="")
+    marker = SkillLibrary(skills)
+    space = Space({"skills": marker})
+    baseline = Candidate.baseline(space)
+    refunds = "---\nname: refunds\ndescription: Refunds.\n---\nRefund.\n"
+    added = marker.revise(marker.default, {"refunds/SKILL.md": refunds})
+    child = baseline.child(space, {"skills": added}, origin=["text"], rationale="")
+    req = request(
+        [trial("a", score=0.9)],
+        parent=child,
+        candidates=[summary(child, number=1, rank=1), summary(baseline, number=0, rank=2)],
+        keys=("skills",),
+    )
+    req = dataclasses.replace(req, space=space)
+    evidence = _build_evidence(req, 0.5, *folders)
+    _, versions = folders
+    assert sorted(os.listdir(os.path.join(versions, "rank-001-version-1"))) == [
+        "skills_refunds_SKILL.md.txt",
+        "skills_triage_SKILL.md.txt",
+        "version.md",
+    ]
+    assert sorted(os.listdir(os.path.join(versions, "rank-002-version-0"))) == [
+        "skills_triage_SKILL.md.txt",
+        "version.md",
+    ]
+    with open(os.path.join(versions, "rank-001-version-1", "skills_refunds_SKILL.md.txt")) as f:
+        assert f.read() == refunds
+    assert evidence.versions[0].changed == ["skills/refunds/SKILL.md"]
+    other = baseline.child(
+        space, {"skills": marker.revise(marker.default, {"notes.md": "x"})}, origin=["t"], rationale=""
+    )
+    req = dataclasses.replace(req, candidates=[summary(other, number=2, rank=1), summary(baseline, number=0, rank=2)])
+    req = dataclasses.replace(req, parent=other)
+    for name in os.listdir(versions):
+        shutil.rmtree(os.path.join(versions, name))
+    assert _build_evidence(req, 0.5, *folders).versions[0].changed == ["skills (other files)"]
 
 
 def test_text_file_names():

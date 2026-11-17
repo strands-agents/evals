@@ -37,7 +37,8 @@ from ...types.trace import (
     ToolResultContent,
     _to_aware_utc,
 )
-from ..declaration.space import ParamKind
+from ..declaration.files import SkillLibrary
+from ..declaration.space import ParamKind, Space
 from ..prompt_templates.reflection.reflection_v0 import (
     REFUSED,
     SUBMIT_INSTRUCTIONS,
@@ -93,10 +94,12 @@ class Reflection(Proposer):
     An agent reads the parent's train conversations (built from `request.trials`: a traces folder with
     `DIGEST.md`; of each case only its input, no expected field or metadata) and every measured version
     (`request.candidates`: a versions folder plus a ranked table, re-ranked by the latest refit on every
-    request), then rewrites the block's texts in full. The versions table is its only history; it keeps no
-    record of its own attempts. Its tools are a shell confined by a path check to its own folders (not a
-    sandbox: it runs with this process's environment and network) and a submit tool; tool output is cut at
-    100,000 characters.
+    request), then rewrites the block's texts in full: each text key, and each tuned `SKILL.md` of a
+    `SkillLibrary` key's version as a text of its own, named `<key>/<path in the library>` (e.g.
+    `skills/triage/SKILL.md`; the patch then holds the library's new version). The versions table is its
+    only history; it keeps no record of its own attempts. Its tools are a shell confined by a path check to
+    its own folders (not a sandbox: it runs with this process's environment and network) and a submit tool;
+    tool output is cut at 100,000 characters.
 
     Which of the parent's train trials went well: each trial gets a reward in [0, 1] from the goal's
     bounded metrics (an `agent_failure` gets 0), and a trial succeeds when reward >= `success_threshold`;
@@ -125,7 +128,7 @@ class Reflection(Proposer):
             500 characters, "paths": the paths it named}. Each patch's `state` also holds its own call's first 10.
     """
 
-    kinds: ClassVar[frozenset[ParamKind]] = frozenset({"text"})
+    kinds: ClassVar[frozenset[ParamKind]] = frozenset({"text", "skills"})
     concurrent: ClassVar[bool] = True
 
     def __init__(
@@ -222,6 +225,11 @@ class Reflection(Proposer):
         removed."""
         keys = list(request.keys)
         parent = dict(request.parent.values)
+        texts = _texts(request.space, keys, parent)
+        if not texts:  # e.g. only a library with no skill to edit
+            logger.debug("keys=<%s> | no text to rewrite, proposing nothing", keys)
+            return None
+        shown = {name: text for name, (_, text) in texts.items()}
         running: set[subprocess.Popen[bytes]] = set()
         with tempfile.TemporaryDirectory(prefix="reflection_") as root, contextlib.ExitStack() as cleanup:
 
@@ -251,16 +259,16 @@ class Reflection(Proposer):
                 judged_by_version=evidence.judged_by_version,
                 variables=[
                     TextVariable(
-                        name=k,
-                        value=str(parent.get(k, "")),
-                        edit_instructions=request.space.param(k).edit_instructions,
-                        size_cap=request.space.param(k).size_cap,
+                        name=name,
+                        value=text,
+                        edit_instructions=field.edit_instructions,
+                        size_cap=field.size_cap,
                     )
-                    for k in keys
+                    for name, (field, text) in texts.items()
                 ],
                 work_folder=work,
             )
-            caps = {k: request.space.param(k).size_cap for k in keys}
+            caps = {name: field.size_cap for name, (field, _) in texts.items()}
             usage = Usage.zero()
             refused: list[dict[str, Any]] = []
             rejected: list[dict[str, str]] = []
@@ -271,7 +279,7 @@ class Reflection(Proposer):
                     system_prompt=prompt + SUBMIT_INSTRUCTIONS,
                     tools=[
                         _confined_shell(work, [traces, versions, work], refused, root, running),
-                        _submit_tool(work, submitted, parent, rejected, caps),
+                        _submit_tool(work, submitted, shown, rejected, caps),
                     ],
                     # Strands' 40-message window, trimmed at the end of each call and on overflow, with the task
                     # message pinned: a send-back after a long first turn would otherwise go without it.
@@ -296,9 +304,9 @@ class Reflection(Proposer):
                     raise failure
                 request.log("proposer_retry", error_type=type(failure).__name__, error=str(failure)[:2000])
             self.refused.extend(refused)
-            updates, dropped, screened = await asyncio.to_thread(_guard, request, params or {}, keys, parent)
-            for key in screened:
-                request.log("screened", key=key, reason=dropped[key])
+            updates, dropped, screened = await asyncio.to_thread(_guard, request, params or {}, texts)
+            for name in screened:
+                request.log("screened", key=name, reason=dropped[name])
         if not updates:
             request.log("proposer_usage", usage=usage)  # as above: the agent ran, and no patch carries its spend
             return None
@@ -315,7 +323,7 @@ class Reflection(Proposer):
                 "failing_cases": evidence.failing_cases,
             },
         }
-        return Patch(updates=dict[str, Value](updates), rationale=rationale, state=state, usage=usage)
+        return Patch(updates=_fold(request, texts, updates), rationale=rationale, state=state, usage=usage)
 
     async def _converse(
         self,
@@ -1048,10 +1056,24 @@ def _write_versions(folder: str, request: ProposalRequest, goal_metrics: Sequenc
     keys = list(request.keys)
     by_id = {c.candidate_id: c for c in request.candidates}
     rows = []
-    files = _text_files(keys)
+    shown = {c.candidate_id: _texts(request.space, keys, c.values) for c in request.candidates}
+    names = list(dict.fromkeys(name for texts in shown.values() for name in texts))
+    files = _text_files(names)
     for c in request.candidates:
         parent = by_id.get(c.parent_id) if c.parent_id is not None else None
-        changed = [k for k in keys if parent is not None and c.values.get(k) != parent.values.get(k)]
+        texts = shown[c.candidate_id]
+        if parent is None:
+            changed = []
+        else:
+            before = shown[parent.candidate_id]
+            changed = [name for name in names if _text_of(texts, name) != _text_of(before, name)]
+            changed += [  # a library whose version differs only in files no text shows
+                f"{k} (other files)"
+                for k in keys
+                if request.space.param(k).kind == "skills"
+                and c.values.get(k) != parent.values.get(k)
+                and not any(name.startswith(f"{k}/") for name in changed)
+            ]
         if parent is not None and any(c.values.get(k) != parent.values.get(k) for k in set(c.values) - set(keys)):
             changed.append("other values")
         row = VersionRow(
@@ -1082,11 +1104,9 @@ def _write_versions(folder: str, request: ProposalRequest, goal_metrics: Sequenc
         if others:
             lines += ["", "## Other values", json.dumps(others, indent=1, default=str)]
         lines += ["", "## Its texts, each in its own file in this folder (the text alone)"]
-        for k in keys:
-            text = c.values.get(k)
-            value = "" if text is None else str(text)
-            lines.append(f"- {k}: `{files[k]}` ({len(value):,} characters)")
-            with open(os.path.join(path, files[k]), "w", encoding="utf-8") as f:
+        for name, (_, value) in texts.items():
+            lines.append(f"- {name}: `{files[name]}` ({len(value):,} characters)")
+            with open(os.path.join(path, files[name]), "w", encoding="utf-8") as f:
                 f.write(value)
         with open(os.path.join(path, _VERSION_FILE), "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
@@ -1126,14 +1146,16 @@ def _text_files(names: Sequence[str]) -> dict[str, str]:
 
 
 def _guard(
-    request: ProposalRequest, params: Mapping[str, str], keys: Sequence[str], parent: Mapping[str, Any]
+    request: ProposalRequest, params: Mapping[str, str], texts: Mapping[str, tuple[_Text, str]]
 ) -> tuple[dict[str, str], dict[str, str], list[str]]:
-    """The submitted values that become the patch, why each other one was dropped (the parent's value kept), and the
-    keys the leakage screen dropped (for the caller to log as `screened`; this runs in a worker thread).
+    """The submitted texts that become the patch (by name, as `_texts` names them), why each other one was dropped
+    (the parent's text kept), and the names the leakage screen dropped (for the caller to log as `screened`; this
+    runs in a worker thread).
 
-    In order: a key outside the block is dropped; a value equal to the parent's is left out (nothing to change); a
-    value `space.validate` refuses (over its `size_cap`, a `SKILL.md` that changes its `name`, invalid JSON) is
-    dropped; a value that leaks a shown train trial (`_leak`) is dropped.
+    In order: a name outside the block is dropped; a text equal to the parent's is left out (nothing to change); a
+    text `space.validate` refuses (over its `size_cap`, a `SKILL.md` that changes its `name`, invalid JSON) is
+    dropped, a `SKILL.md` checked as part of its library's new version with the texts kept before it; a text that
+    leaks a shown train trial (`_leak`) is dropped.
     """
     shown = [
         t
@@ -1148,24 +1170,86 @@ def _guard(
     updates: dict[str, str] = {}
     dropped: dict[str, str] = {}
     screened: list[str] = []
-    for key, value in params.items():
-        if key not in keys:
-            dropped[key] = "not one of this block's keys"
+    parent = request.parent.values
+    for name, value in params.items():
+        if name not in texts:
+            dropped[name] = "not one of this block's keys"
             continue
-        if value == parent.get(key):
+        held = texts[name][1]
+        if value == held:
             continue
         try:
-            request.space.validate({**parent, key: value})
+            request.space.validate({**parent, **_fold(request, texts, {**updates, name: value})})
         except ValueError as error:
-            dropped[key] = str(error)
+            dropped[name] = str(error)
             continue
-        leak = _leak(value, parent.get(key), names, sources)
+        leak = _leak(value, held, names, sources)
         if leak is not None:
-            dropped[key] = leak
-            screened.append(key)
+            dropped[name] = leak
+            screened.append(name)
             continue
-        updates[key] = value
+        updates[name] = value
     return updates, dropped, screened
+
+
+@dataclass(frozen=True)
+class _Text:
+    """One text the agent edits: a text key's value, or one tuned `SKILL.md` of a `SkillLibrary` key's version."""
+
+    key: str  # the key it belongs to
+    path: str | None  # the `SKILL.md`'s path in the library; None for a text key
+    size_cap: int | None
+    edit_instructions: str | None
+
+
+def _texts(space: Space, keys: Sequence[str], values: Mapping[str, Any]) -> dict[str, tuple[_Text, str]]:
+    """The texts of `keys` under `values`, as the agent sees them: name -> (what it is, its text).
+
+    A text key is one text named by its key ("" when `values` lacks it); a `SkillLibrary` key is one text per tuned
+    `SKILL.md` of the version it holds, named `<key>/<path in the library>`, e.g. `skills/triage/SKILL.md`.
+    """
+    texts: dict[str, tuple[_Text, str]] = {}
+    for key in keys:
+        info = space.param(key)
+        value = values.get(key)
+        if info.kind != "skills":
+            texts[key] = (_Text(key, None, info.size_cap, info.edit_instructions), "" if value is None else str(value))
+            continue
+        if value is None:
+            continue
+        library = cast(SkillLibrary, space.marker(info.name))
+        for path, text in library._texts(str(value)).items():
+            texts[f"{key}/{path}"] = (_Text(key, path, library._size_cap(path), info.edit_instructions), text)
+    return texts
+
+
+def _text_of(texts: Mapping[str, tuple[_Text, str]], name: str) -> str | None:
+    """The text named `name` in `texts`, or None when that version has none by that name."""
+    found = texts.get(name)
+    return None if found is None else found[1]
+
+
+def _fold(
+    request: ProposalRequest, texts: Mapping[str, tuple[_Text, str]], edited: Mapping[str, str]
+) -> dict[str, Value]:
+    """The patch updates for `edited` (name -> new text, names from `texts`): a text key's new text, and for each
+    `SkillLibrary` key one new version of the parent's holding all of its edited `SKILL.md` files.
+
+    Raises:
+        ValueError: A new version fails its library's checks.
+    """
+    updates: dict[str, Value] = {}
+    changes: dict[str, dict[str, str | bytes | None]] = {}
+    for name, text in edited.items():
+        field = texts[name][0]
+        if field.path is None:
+            updates[field.key] = text
+        else:
+            changes.setdefault(field.key, {})[field.path] = text
+    for key, library_changes in changes.items():
+        library = cast(SkillLibrary, request.space.marker(request.space.param(key).name))
+        updates[key] = library.revise(str(request.parent.values[key]), library_changes)
+    return updates
 
 
 def _message_text(trajectory: Any) -> list[str]:
