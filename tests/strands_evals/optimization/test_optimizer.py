@@ -765,6 +765,61 @@ async def test_joint_merges_one_patch_of_every_block_per_candidate(tmp_path):
     assert numbers.evidenced == [] and structure.evidenced == []
 
 
+class Router:
+    def __init__(self, k=2):
+        self.k = k
+
+
+@tunable(
+    manager=choice(component(Window, size=Int(1, 100)), component(Summary, ratio=Float(0.1, 0.9))),
+    router=choice(router=component(Router, k=Int(1, 5)), off=None),
+)
+def routed(manager, router):
+    return (manager, 0.5)  # the temperature `_temperature_rollout` reads
+
+
+def _routed_joint(blocks, tmp_path):
+    return Optimizer(
+        _experiment(evaluators=[Temperature()]),
+        routed,
+        rollout_fn=_temperature_rollout,
+        search=Search(blocks, schedule=Joint()),
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path,
+    )
+
+
+async def test_joint_asks_a_structural_block_after_the_one_whose_choice_its_keys_exist_under(tmp_path):
+    a = Scripted({"manager": "Summary"})
+    b = Scripted({"router": "off", "manager.Summary.ratio": 0.7})
+    # "b" is listed first, but manager.Summary.ratio exists only under "a"'s choice
+    optimizer = _routed_joint(
+        [Block(b, "router", "manager.Summary.ratio", name="b"), Block(a, "manager", name="a")], tmp_path
+    )
+    await _search(optimizer)
+    # "a" switches the Window baseline to Summary first, so "b" proposes ratio under the slot's structure.
+    assert [r.parent.values["manager"] for r in b.requests] == ["Summary"]
+    (proposal,) = optimizer._iterations[0].proposals
+    assert proposal.origin == ["a", "b"] and proposal.outcome == "feasible"
+    assert optimizer._candidates[proposal.candidate_id].values["manager.Summary.ratio"] == 0.7
+    assert [o.outcome for o in b.observed] == ["feasible"]
+
+
+async def test_joint_asks_two_structural_blocks_in_a_cycle_in_step_order(tmp_path):
+    # each holds a key under the other's choice, so no order suits both: the step's order is kept, without raising
+    a = Scripted({"manager": "Summary"})
+    b = Scripted({"router": "off"})
+    optimizer = _routed_joint(
+        [Block(b, "router", "manager.Summary.ratio", name="b"), Block(a, "manager", "router.router.k", name="a")],
+        tmp_path,
+    )
+    await _search(optimizer)
+    (proposal,) = optimizer._iterations[0].proposals
+    assert proposal.origin == ["b", "a"] and proposal.outcome == "feasible"
+
+
 async def test_a_round_opener_is_told_the_rounds_best_at_its_end(tmp_path):
     outer = Scripted({"manager": "Summary"}, {"manager": "Window"})
     inner = Scripted({"temperature": 0.5}, {"temperature": 1.0})
