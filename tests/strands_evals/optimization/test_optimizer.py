@@ -197,11 +197,6 @@ def test_budget_must_cover_the_baseline_and_the_reserves():
     # 20 cases: 8 train, 6 validation, 6 test; baseline 8 + validation (3 + 1) x 6 + test 2 x 6 = 44.
     with pytest.raises(ValueError, match="max_rollouts >= 44"):
         _optimizer(budget=Budget(max_rollouts=43))
-    with pytest.warns(UserWarning, match=r"less than one iteration \(32 rollouts\)"):
-        _optimizer(budget=Budget(max_rollouts=44))
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        _optimizer(budget=Budget(max_rollouts=76))
     # Twice the runs, twice everything.
     with pytest.raises(ValueError, match="max_rollouts >= 88"):
         _optimizer(budget=Budget(max_rollouts=87), runs_per_candidate=2)
@@ -210,11 +205,67 @@ def test_budget_must_cover_the_baseline_and_the_reserves():
     assert (optimizer._budget.validation_reserve, optimizer._budget.test_reserve) == (4 * 10, 0)
 
 
+def test_a_budget_for_fewer_than_three_iterations_warns():
+    # Three iterations of 4 candidates of 8 rollouts beside the baseline (8) and the reserve (36): 140.
+    message = r"leaves the search 11 candidates \(2\.7 iterations of 4\) after the baseline and the end phase's reserve"
+    with pytest.warns(UserWarning, match=rf"{message}; give max_rollouts >= 140 for 3 iterations$") as caught:
+        _optimizer(budget=Budget(max_rollouts=139))
+    assert caught[0].filename == __file__  # the caller's line
+    # Twice the runs, twice every cost: 16 per candidate, reserve 72.
+    with pytest.warns(UserWarning, match=r"7 candidates \(1\.7 iterations of 4\).*>= 280 for 3 iterations$"):
+        _optimizer(budget=Budget(max_rollouts=200), runs_per_candidate=2)
+    # No test cases: 10 train, reserve 4 x 10 on validation only.
+    with pytest.warns(UserWarning, match=r"5 candidates \(1\.2 iterations of 4\).*>= 170 for 3 iterations$"):
+        _optimizer(budget=Budget(max_rollouts=100), split=Split(train=0.5, validation=0.5, test=None))
+    # One finalist: baseline 8 + reserve 24 leaves nothing to search.
+    with pytest.warns(UserWarning, match=r"leaves the search 0 candidates \(0\.0 iterations of 4\)"):
+        _optimizer(budget=Budget(max_rollouts=32), final_pick=FinalPick(n_finalists=1))
+    # Under an iteration cap below three, that many iterations.
+    with pytest.warns(UserWarning, match=r"3 candidates \(0\.7 iterations of 4\).*>= 76 for 1 iteration$"):
+        _optimizer(budget=Budget(max_rollouts=75, max_iterations=1))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _optimizer(budget=Budget(max_rollouts=140))
+        _optimizer(budget=Budget(max_rollouts=76, max_iterations=1))
+
+
+def test_a_small_budget_reserves_only_the_finalists_its_search_can_score():
+    # Three finalists' reserve (36) leaves Budget(52) one candidate; one finalist's (12 validation, 12 test) two.
+    with pytest.warns(
+        UserWarning,
+        match=r"leaves the search 2 candidates \(0\.5 iterations of 4\) after the baseline and the end phase's "
+        r"reserve, and the end phase room to validate 1 of 3 finalists; give max_rollouts >= 140 for 3 iterations "
+        r"and 3 finalists$",
+    ):
+        optimizer = _optimizer(budget=Budget(max_rollouts=52))
+    assert optimizer._n_finalists == 1
+    assert (optimizer._budget.validation_reserve, optimizer._budget.test_reserve) == (12, 12)
+    # Under an iteration cap of one step of 2, at most 2 finalists can exist.
+    with pytest.warns(UserWarning, match=r"room to validate 1 of 2 finalists; give max_rollouts >= 54 for 1 iteration"):
+        _optimizer(budget=Budget(max_rollouts=52, max_iterations=1), proposals_per_iteration=2)
+    # Under Pareto with 1 candidate per iteration, 5 finalists need 5 candidates, more than 3 iterations.
+    pareto = Pareto(Maximize("Score"), Minimize("tokens", scale=1000))
+    with pytest.warns(UserWarning, match=r"4 of 5 finalists; give max_rollouts >= 120 for 3 iterations and 5"):
+        _optimizer(objective=pareto, budget=Budget(max_rollouts=119), proposals_per_iteration=1)
+    # The suggested budget is enough.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert _optimizer(budget=Budget(max_rollouts=140))._n_finalists == 3
+        _optimizer(budget=Budget(max_rollouts=54, max_iterations=1), proposals_per_iteration=2)
+        _optimizer(objective=pareto, budget=Budget(max_rollouts=120), proposals_per_iteration=1)
+
+
 def test_pareto_reserves_every_front_member():
     objective = Pareto(Maximize("Score"), Minimize("tokens", scale=1000))
     optimizer = _optimizer(objective=objective)
     # max(3, 5) finalists + the baseline, on 6 validation and 6 test cases.
     assert (optimizer._budget.validation_reserve, optimizer._budget.test_reserve) == (36, 36)
+    # Budget(100) can't score 5 candidates beside 5 finalists' reserve (72), but can score 4 beside 4 finalists' (60).
+    with pytest.warns(UserWarning, match=r"leaves the search 4 candidates .* room to validate 4 of 5 finalists"):
+        optimizer = _optimizer(objective=objective, budget=Budget(max_rollouts=100))
+    assert optimizer._n_finalists == 4
+    assert (optimizer._budget.validation_reserve, optimizer._budget.test_reserve) == (30, 30)
+    assert optimizer._budget.allowance() == 40  # the baseline and 4 candidates; 5 finalists' reserve left 28
 
 
 def test_metrics_record_roles_ranges_and_effective_scale():
@@ -636,15 +687,16 @@ async def test_two_slots_of_one_step_with_equal_values_are_scored_once(tmp_path)
 
 
 async def test_a_step_is_cut_to_what_the_budget_can_score(tmp_path):
-    # 44 needed (baseline 8 + reserves 36), so 52 leaves room for one candidate of 8 rollouts, not two.
+    # Baseline 8 + one finalist's reserve 24, so 44 leaves room for one candidate of 8 rollouts, not two.
     proposer = Scripted({"temperature": 0.5}, {"temperature": 1.0})
-    optimizer = _searching(
-        Block(proposer, "temperature"),
-        schedule=Joint(),
-        base_dir=tmp_path,
-        budget=Budget(max_rollouts=52, max_iterations=1),
-        proposals_per_iteration=2,
-    )
+    with pytest.warns(UserWarning, match="leaves the search 1 candidate "):
+        optimizer = _searching(
+            Block(proposer, "temperature"),
+            schedule=Joint(),
+            base_dir=tmp_path,
+            budget=Budget(max_rollouts=44, max_iterations=1),
+            proposals_per_iteration=2,
+        )
     await _search(optimizer)
     # One slot, so the step never proposes a candidate it couldn't score.
     assert optimizer._iterations[0].n_candidates == 1
@@ -997,14 +1049,15 @@ async def test_a_model_that_returns_none_keeps_the_fit_in_use(tmp_path):
 
 
 async def test_the_budget_stops_the_search_before_the_end_phases_reserve(tmp_path):
-    # 44 needed (baseline 8 + reserves 36), so 60 leaves room for two candidates of 8 rollouts.
-    optimizer = _searching(
-        Block(Scripted({"temperature": 0.5}, {"temperature": 1.0}, {"temperature": 0.5}), "temperature"),
-        schedule=Alternate(),
-        base_dir=tmp_path,
-        budget=Budget(max_rollouts=60, max_iterations=None),
-        proposals_per_iteration=1,
-    )
+    # Baseline 8 + two finalists' reserve (18 validation, 12 test), so 60 leaves room for two candidates of 8 rollouts.
+    with pytest.warns(UserWarning, match="room to validate 2 of 3 finalists"):
+        optimizer = _searching(
+            Block(Scripted({"temperature": 0.5}, {"temperature": 1.0}, {"temperature": 0.5}), "temperature"),
+            schedule=Alternate(),
+            base_dir=tmp_path,
+            budget=Budget(max_rollouts=60, max_iterations=None),
+            proposals_per_iteration=1,
+        )
     reason, _ = await _search(optimizer)
     # Iterations: temperature 0.5, the empty manager block, temperature 1.0; then the reserve is all that's left.
     assert reason == "budget" and optimizer._budget.spent == 24 and len(optimizer._iterations) == 3
@@ -1062,6 +1115,24 @@ async def test_the_end_phase_ships_the_best_finalist_and_writes_the_run_files(tm
     assert (root / "best.diff").read_text() == ""  # no text changed
     assert json.loads((root / "effects.json").read_text()) == result.effects
     assert OptimizationResult.from_file(root / "result.json") == result
+
+
+async def test_a_small_budget_validates_only_the_finalists_it_reserved_for(tmp_path):
+    # Budget(52) reserves for one finalist (24), not three (36), so the search scores both candidates of its step.
+    with pytest.warns(UserWarning, match="room to validate 1 of 3 finalists"):
+        optimizer = _searching(
+            Block(Scripted({"temperature": 0.5}, {"temperature": 1.0}), "temperature"),
+            schedule=Joint(),
+            base_dir=tmp_path,
+            budget=Budget(max_rollouts=52),
+            proposals_per_iteration=2,
+        )
+    result = await optimizer.run_async()
+    finalists = next(e for e in _events(optimizer) if e["event"] == "finalists")["candidate_ids"]
+    assert result.stop_reason == "budget" and len(optimizer._train) == 3
+    assert finalists == [result.best.id] and result.best.values["temperature"] == 1.0
+    # Train 8 x 3, then one finalist and the baseline on validation (6 x 2) and on test (6 x 2).
+    assert result.rollouts_spent == 8 * 3 + 6 * 2 + 6 * 2 <= 52
 
 
 async def test_the_baseline_ships_when_nothing_beats_it_and_is_tested_against_itself(tmp_path):
@@ -1483,6 +1554,72 @@ async def test_a_run_killed_during_validation_resumes_with_its_own_budget(tmp_pa
     resumed = await resumed_optimizer.run_async()
     _assert_same(resumed, original)
     assert resumed_optimizer._budget.spent == original_optimizer._budget.spent <= 92
+
+
+async def test_a_larger_budget_on_resume_reserves_for_more_finalists(tmp_path):
+    with pytest.warns(UserWarning, match="room to validate 1 of 3 finalists"):
+        original_optimizer = _default_search(tmp_path / "runs", budget=Budget(max_rollouts=52))
+    await original_optimizer.run_async()
+    root = original_optimizer._run.root
+    copy = _killed(root, tmp_path, lambda events: _index(events, "iteration_end"))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # the small-search warning was shown when the run started
+        _resume(copy)
+        _resume(root)
+        resumed_optimizer = _resume(copy, budget=Budget(max_rollouts=500, max_iterations=6))
+    assert resumed_optimizer._n_finalists == 3
+    assert (resumed_optimizer._budget.validation_reserve, resumed_optimizer._budget.test_reserve) == (24, 12)
+    await resumed_optimizer.run_async()
+    finalists = [e for e in _events_at(copy) if e["event"] == "finalists"][-1]["candidate_ids"]
+    assert len(finalists) == 3
+
+
+async def test_a_larger_budget_on_resume_reserves_only_what_the_search_left(tmp_path):
+    # Under Pareto one more finalist reserves 12 (6 validation, 6 test), more than a candidate's 8 train rollouts.
+    # Budget(99) reserves for 3 finalists (48) and the search spends 48 of the other 51 (the baseline and 5
+    # candidates). From scratch Budget(100) would reserve for 4 (60), more than the 52 left.
+    kwargs = {
+        "experiment": _experiment(evaluators=[Temperature(), Cool()]),
+        "rollout_fn": _temperature_rollout,
+        "objective": Pareto(Maximize("Temperature", weight=2), Maximize("Cool")),
+    }
+    with pytest.warns(UserWarning, match="room to validate 3 of 5 finalists"):
+        original_optimizer = Optimizer(
+            **kwargs,
+            factory=create_agent,
+            budget=Budget(max_rollouts=99),
+            proposals_per_iteration=2,
+            max_workers=64,
+            base_dir=tmp_path / "runs",
+        )
+    original = await original_optimizer.run_async()
+    events = _events_at(original_optimizer._run.root)
+    spent = sum(1 for e in events[: _index(events, "stop")] if e["event"] == "trial")
+    assert original.stop_reason == "budget" and spent == 8 * 6
+    copy = _killed(original_optimizer._run.root, tmp_path, lambda events: _index(events, "stop"))
+    resumed_optimizer = Optimizer.resume(copy, **kwargs, factory=create_agent, budget=Budget(max_rollouts=100))
+    assert resumed_optimizer._n_finalists == 3
+    assert (resumed_optimizer._budget.validation_reserve, resumed_optimizer._budget.test_reserve) == (24, 24)
+    await resumed_optimizer.run_async()
+    assert resumed_optimizer._budget.spent <= 100
+    # Killed again once the finalists exist: the same budget sizes the same reserve.
+    again = _killed(copy, tmp_path / "again", lambda events: _index(events, "finalists"))
+    assert Optimizer.resume(again, **kwargs, factory=create_agent, budget=Budget(max_rollouts=100))._n_finalists == 3
+
+
+async def test_a_resume_before_the_baseline_finished_counts_its_unrun_trials(tmp_path):
+    with pytest.warns(UserWarning, match="room to validate 1 of 3 finalists"):
+        original_optimizer = _default_search(tmp_path / "runs", budget=Budget(max_rollouts=52))
+    await original_optimizer.run_async()
+    # Killed after the baseline's first trial: 1 spent, 7 train trials to run, then one finalist's validation 12.
+    copy = _killed(original_optimizer._run.root, tmp_path, lambda events: _index(events, "trial", nth=1))
+    with pytest.raises(ValueError, match="the 7 the baseline still needs on train and the 12 the validation pick"):
+        _resume(copy, budget=Budget(max_rollouts=19))
+    resumed_optimizer = _resume(copy, budget=Budget(max_rollouts=20))
+    assert resumed_optimizer._n_finalists == 1
+    result = await resumed_optimizer.run_async()
+    # The baseline on train (8), on validation (6) and on test (6): nothing to search, and within the cap.
+    assert result.stop_reason == "budget" and result.rollouts_spent == 20
 
 
 async def test_resume_rebuilds_scores_as_the_closed_iterations_left_them(tmp_path):
