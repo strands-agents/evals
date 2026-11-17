@@ -296,6 +296,23 @@ def test_over_limit_retries_must_be_at_least_0():
         Reflection(over_limit_retries=-1)
 
 
+def test_max_cases_in_config():
+    assert Reflection().config()["max_cases"] is None
+    assert Reflection(max_cases=50).config()["max_cases"] == 50
+
+
+@pytest.mark.parametrize("max_cases", [1.5, True, "2"])
+def test_max_cases_must_be_an_integer_or_none(max_cases):
+    with pytest.raises(TypeError, match=r"max_cases=\.\.\.\) must be an integer or None"):
+        Reflection(max_cases=max_cases)
+
+
+@pytest.mark.parametrize("max_cases", [0, -1])
+def test_max_cases_must_be_at_least_1(max_cases):
+    with pytest.raises(ValueError, match=r"max_cases=\.\.\.\) must be 1 or more"):
+        Reflection(max_cases=max_cases)
+
+
 @pytest.mark.parametrize("threshold", [True, "0.5"])
 def test_success_threshold_must_be_a_number_or_none(threshold):
     with pytest.raises(TypeError, match="success_threshold"):

@@ -1,6 +1,7 @@
 """Tests for `Reflection.propose`: a scripted model drives the real agent, shell, and submit tool."""
 
 import asyncio
+import dataclasses
 import os
 import tempfile
 
@@ -9,6 +10,7 @@ from strands.types.exceptions import EventLoopException
 
 from strands_evals.optimization import Criteria, InfrastructureError, Maximize, Reflection, Space, TextValue
 from strands_evals.optimization.candidate import Candidate
+from strands_evals.optimization.search import reflection as reflection_module
 from strands_evals.optimization.search.proposer import ProposalRequest
 from strands_evals.types.trace import TextContent, ToolResultContent, UserMessage
 from tests.strands_evals.optimization.scripted_model import ScriptedModel, ToolUse
@@ -92,6 +94,7 @@ async def test_a_rewrite_becomes_a_patch_and_its_folders_are_removed(temp_root):
     assert patch.state["trials"] == 2 and patch.state["versions"] == 1
     assert patch.state["digest"]["failing_cases"] == 1 and len(patch.state["digest"]["sha256"]) == 64
     assert patch.state["revised"] == [] and patch.state["dropped"] == {} and patch.state["rejected"] == []
+    assert "sampled_from_cases" not in patch.state
     assert events == []
     assert os.listdir(temp_root) == []
 
@@ -396,3 +399,47 @@ async def test_a_later_slot_raising_logs_the_spend_of_the_patches_never_returned
     assert [e for e, _ in events] == ["proposer_retry"] * 3 + ["proposer_usage"] * 2
     failed, first = usage_events(events)
     assert (failed.tokens, first.tokens) == (0, 45)  # the failing slot's attempts answered nothing; slot 0's patch
+
+
+async def test_with_max_cases_only_the_sampled_cases_are_written_and_screened():
+    """A value naming a case left out of the sample is no leak: the agent never saw that case."""
+    trials = [trial("order-123", score=0.9), trial("b", score=0.2)]
+    turns = [write("p.txt", "If the order is order-123, apologize."), submit(prompt="p.txt"), "Done."]
+    reflection = Reflection(ScriptedModel(turns), max_cases=1)  # one place: the failing case, b
+    reflection._warned = True
+    events = []
+    (patch,) = await reflection.propose(request(trials=trials, events=events))
+    assert patch.updates == {"prompt": "If the order is order-123, apologize.\n"}
+    assert patch.state["trials"] == 1 and patch.state["sampled_from_cases"] == 2
+    assert events == []
+
+
+async def test_each_call_is_numbered_in_order_within_its_iteration_and_redraw(monkeypatch):
+    """Concurrent calls of one step are numbered in the order they were made; a new instance starts again at 0."""
+    numbered = []
+
+    def build_evidence(request, success_threshold, traces, versions, max_cases, call):
+        numbered.append((id(request), max_cases, call))
+        return None  # nothing to learn from: no agent runs
+
+    monkeypatch.setattr(reflection_module, "_build_evidence", build_evidence)
+    first = request()
+    step = [dataclasses.replace(first) for _ in range(3)]
+    redrawn = dataclasses.replace(first, redraw=1)
+    later = dataclasses.replace(first, iteration=2)
+    several = dataclasses.replace(first, iteration=3, n=3)
+    reflection = Reflection(max_cases=5)
+    reflection._warned = True
+    await asyncio.gather(*(reflection.propose(r) for r in step))
+    for r in (redrawn, later, several):
+        await reflection.propose(r)
+    fresh = Reflection(max_cases=5)
+    fresh._warned = True
+    await fresh.propose(first)
+
+    def calls(r):
+        return [call for i, max_cases, call in numbered if i == id(r) and max_cases == 5]
+
+    assert [calls(r) for r in step] == [[0], [1], [2]]
+    assert calls(redrawn) == calls(later) == calls(first) == [0]
+    assert calls(several) == [0, 1, 2]  # one call asked for 3 patches: one sample each

@@ -9,6 +9,7 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import select
 import signal
@@ -91,7 +92,8 @@ class Reflection(Proposer):
     """An agentic, contrastive proposer: complete new text values for its block.
 
     An agent reads the parent's train conversations (built from `request.trials`: a traces folder with
-    `DIGEST.md`; of each case only its input, no expected field or metadata) and every measured version
+    `DIGEST.md`; of each case only its input, no expected field or metadata; with `max_cases`, a sample of the
+    cases, each with all of its conversations) and every measured version
     (`request.candidates`: a versions folder plus a ranked table, re-ranked by the latest refit on every
     request), then rewrites the block's texts in full. The versions table is its only history; it keeps no
     record of its own attempts. Its tools are a shell confined by a path check to its own folders (not a
@@ -135,6 +137,7 @@ class Reflection(Proposer):
         system_prompt: str | None = None,
         success_threshold: float | None = 0.5,
         over_limit_retries: int = 2,
+        max_cases: int | None = None,
     ):
         """Configure the proposer agent.
 
@@ -146,11 +149,20 @@ class Reflection(Proposer):
             success_threshold: Reward a trial needs to count as a success; None splits by rank.
             over_limit_retries: How many times a submission with a value over its `size_cap` is sent back to be
                 shortened; 0 drops it at once.
+            max_cases: The largest number of cases a call writes trace files for; None writes every case. When
+                the parent's trials cover more cases, the call writes a random sample of `max_cases` cases, each
+                with all of its trials: `max_cases // 2` from the cases where every trial succeeded and the rest
+                from the cases with a trial that did not. When one group has too few cases, the other fills the
+                remaining places. The digest and the leakage screen then cover the sampled cases only. Each call
+                draws its own sample, seeded by the run seed, the iteration, the redraw, and the call's position
+                among this instance's calls for that iteration and redraw.
 
         Raises:
             TypeError: `model` is not a `Model`, a model id, or None, `system_prompt` is not a string,
-                `success_threshold` is not a number or None, or `over_limit_retries` is not an integer.
-            ValueError: `success_threshold` is outside [0, 1], or `over_limit_retries` is below 0.
+                `success_threshold` is not a number or None, or `over_limit_retries` or `max_cases` is not an
+                integer (`max_cases` may also be None).
+            ValueError: `success_threshold` is outside [0, 1], `over_limit_retries` is below 0, or `max_cases`
+                is below 1.
         """
         if model is not None and not isinstance(model, (Model, str)):
             raise TypeError(f"Reflection(model=...) takes a Model, a model id, or None, not {model!r}")
@@ -167,12 +179,20 @@ class Reflection(Proposer):
             raise TypeError(f"Reflection(over_limit_retries=...) must be an integer, not {over_limit_retries!r}")
         if over_limit_retries < 0:
             raise ValueError(f"Reflection(over_limit_retries=...) must be 0 or more, not {over_limit_retries!r}")
+        if max_cases is not None:
+            if not isinstance(max_cases, int) or isinstance(max_cases, bool):
+                raise TypeError(f"Reflection(max_cases=...) must be an integer or None, not {max_cases!r}")
+            if max_cases < 1:
+                raise ValueError(f"Reflection(max_cases=...) must be 1 or more, not {max_cases!r}")
         self.model = model
         self.system_prompt = system_prompt
         self.success_threshold = success_threshold
         self.over_limit_retries = over_limit_retries
+        self.max_cases = max_cases
         self.refused: list[dict[str, Any]] = []
         self._warned = False
+        self._step: tuple[int, int] | None = None  # the (iteration, redraw) of the latest call
+        self._step_calls = 0  # how many calls that (iteration, redraw) has had
 
     async def propose(self, request: ProposalRequest) -> list[Patch]:
         """Up to `request.n` patches, one agent each, one after another (the optimizer calls a concurrent proposer
@@ -222,6 +242,11 @@ class Reflection(Proposer):
         removed."""
         keys = list(request.keys)
         parent = dict(request.parent.values)
+        # No await comes before this line, here or in `propose`, so calls started together are numbered in the
+        # order they were made.
+        if (request.iteration, request.redraw) != self._step:
+            self._step, self._step_calls = (request.iteration, request.redraw), 0
+        call, self._step_calls = self._step_calls, self._step_calls + 1
         running: set[subprocess.Popen[bytes]] = set()
         with tempfile.TemporaryDirectory(prefix="reflection_") as root, contextlib.ExitStack() as cleanup:
 
@@ -233,7 +258,9 @@ class Reflection(Proposer):
             traces, versions, work = (os.path.join(root, name) for name in ("traces", "versions", "work"))
             for folder in (traces, versions, work):
                 os.mkdir(folder)
-            evidence = await asyncio.to_thread(_build_evidence, request, self.success_threshold, traces, versions)
+            evidence = await asyncio.to_thread(
+                _build_evidence, request, self.success_threshold, traces, versions, self.max_cases, call
+            )
             if evidence is None:
                 return None
             prompt = (
@@ -296,7 +323,9 @@ class Reflection(Proposer):
                     raise failure
                 request.log("proposer_retry", error_type=type(failure).__name__, error=str(failure)[:2000])
             self.refused.extend(refused)
-            updates, dropped, screened = await asyncio.to_thread(_guard, request, params or {}, keys, parent)
+            updates, dropped, screened = await asyncio.to_thread(
+                _guard, request, params or {}, keys, parent, evidence.shown
+            )
             for key in screened:
                 request.log("screened", key=key, reason=dropped[key])
         if not updates:
@@ -315,6 +344,8 @@ class Reflection(Proposer):
                 "failing_cases": evidence.failing_cases,
             },
         }
+        if evidence.sampled_from is not None:
+            state["sampled_from_cases"] = evidence.sampled_from
         return Patch(updates=dict[str, Value](updates), rationale=rationale, state=state, usage=usage)
 
     async def _converse(
@@ -381,8 +412,8 @@ class Reflection(Proposer):
         """Nothing to keep: the versions table in each request is the history."""
 
     def config(self) -> dict[str, Any]:
-        """Model id, the sha256 of the system prompt (None for the default prompt), `success_threshold`, and
-        `over_limit_retries`."""
+        """Model id, the sha256 of the system prompt (None for the default prompt), `success_threshold`,
+        `over_limit_retries`, and `max_cases`."""
         if isinstance(self.model, str):
             model_id: str | None = self.model
         elif self.model is None:
@@ -395,6 +426,7 @@ class Reflection(Proposer):
             "system_prompt_sha256": prompt,
             "success_threshold": self.success_threshold,
             "over_limit_retries": self.over_limit_retries,
+            "max_cases": self.max_cases,
         }
 
 
@@ -656,6 +688,9 @@ class _Evidence:
         judged_by_version: Goal metrics left out of the reward, judged on whole versions.
         trials: How many trace files were written.
         failing_cases: How many cases the digest lists as not succeeding.
+        shown: The trials written as trace files, which the leakage screen reads.
+        sampled_from: How many cases the parent's trials cover when only a sample of them was written; None when
+            every case was.
     """
 
     versions: list[VersionRow]
@@ -668,24 +703,39 @@ class _Evidence:
     judged_by_version: list[str]
     trials: int
     failing_cases: int
+    shown: list[TrialRecord]
+    sampled_from: int | None
 
 
 def _build_evidence(
-    request: ProposalRequest, success_threshold: float | None, traces_folder: str, versions_folder: str
+    request: ProposalRequest,
+    success_threshold: float | None,
+    traces_folder: str,
+    versions_folder: str,
+    max_cases: int | None = None,
+    call: int = 0,
 ) -> _Evidence | None:
     """Write the parent's train trials (one file each, plus `DIGEST.md`) into `traces_folder` and every measured
     version into `versions_folder`; None when the parent has no trial to learn from (none completed or failed).
 
     Train data only: each trace holds the case's input from `request.inputs`, never its expected output,
     trajectory, interactions, environment state, assertion, or metadata.
+
+    With more cases than `max_cases`, only a sample of them is written (`_sample_cases`), drawn from a generator
+    seeded by the run seed, the iteration, the redraw, and `call`. Rewards are computed over every trial first,
+    so a trial's reward is the same whether it is sampled or not.
     """
     rewards, label_metrics, label_ranked = _rewards(request, success_threshold)
     if not rewards:
         return None
+    threshold = 0.5 if success_threshold is None else success_threshold
+    of_cases = None
+    if max_cases is not None:
+        rng = random.Random(f"{request.seed}:{request.iteration}:{request.redraw}:{call}")
+        rewards, of_cases = _sample_cases(rewards, threshold, max_cases, rng)
     rows = _write_traces(traces_folder, request, rewards)
     digest_file = os.path.join(traces_folder, _DIGEST_FILE)
-    threshold = 0.5 if success_threshold is None else success_threshold
-    text = _digest_text(rows, threshold, _DIGEST_CHARS)
+    text = _digest_text(rows, threshold, _DIGEST_CHARS, of_cases)
     with open(digest_file, "w", encoding="utf-8") as f:
         f.write(text)
     goal = list(request.criteria.goal_metrics)
@@ -700,7 +750,31 @@ def _build_evidence(
         judged_by_version=[m for m in goal if m not in label_metrics],
         trials=len(rewards),
         failing_cases=len({r["case"] for r in rows if r["reward"] < threshold}),
+        shown=[t for t, _, _ in rewards],
+        sampled_from=None if of_cases is None else sum(of_cases),
     )
+
+
+def _sample_cases(
+    rewards: Sequence[tuple[TrialRecord, float, dict[str, Any]]], threshold: float, limit: int, rng: random.Random
+) -> tuple[list[tuple[TrialRecord, float, dict[str, Any]]], tuple[int, int] | None]:
+    """The trials of at most `limit` cases, in their order in `rewards`, and how many cases have a trial whose reward
+    is below `threshold` and how many do not; every trial and None when there are no more than `limit` cases.
+
+    A case is passing when every trial's reward is at least `threshold`, as the digest counts it. `limit // 2`
+    cases are drawn at random from the passing cases and the rest from the others; when a side has too few, the
+    other fills the remaining places. Cases are drawn from lists sorted by name, so the sample doesn't depend on
+    the order of `rewards`.
+    """
+    failing = sorted({t.case_name for t, reward, _ in rewards if reward < threshold})
+    passing = sorted({t.case_name for t, _, _ in rewards} - set(failing))
+    if len(failing) + len(passing) <= limit:
+        return list(rewards), None
+    n_passing = min(limit // 2, len(passing))
+    n_failing = min(limit - n_passing, len(failing))
+    n_passing = limit - n_failing  # at most len(passing): there are more than `limit` cases
+    kept = set(rng.sample(failing, n_failing)) | set(rng.sample(passing, n_passing))
+    return [r for r in rewards if r[0].case_name in kept], (len(failing), len(passing))
 
 
 def _rewards(
@@ -982,12 +1056,18 @@ def _trial_line(r: dict[str, Any], cap: int) -> str:
     return "- " + "; ".join(parts)
 
 
-def _digest_text(rows: Sequence[dict[str, Any]], threshold: float, limit: int) -> str:
+def _digest_text(
+    rows: Sequence[dict[str, Any]], threshold: float, limit: int, of_cases: tuple[int, int] | None = None
+) -> str:
     """The digest of every trace: a header, then every case with a conversation whose reward is below `threshold`
     (each of its conversations: its file, reward, how it ended, the evaluators' reasons, its size; in the short
     form, one line per case naming only its failing files), then the cases where
     every conversation succeeded. Its fields are cut until it fits in `limit` characters; every case that did not
-    succeed is always named (when even their names do not fit, the digest says how many lines are left out)."""
+    succeed is always named (when even their names do not fit, the digest says how many lines are left out).
+
+    `of_cases`: when the rows are a sample of the current version's cases, how many of its cases have a
+    conversation that did not succeed and how many do not; the header then says how many of each the sample holds.
+    """
     by_case: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
         by_case.setdefault(r["case"], []).append(r)
@@ -997,10 +1077,22 @@ def _digest_text(rows: Sequence[dict[str, Any]], threshold: float, limit: int) -
     )
     passing = sorted(c for c in by_case if c not in failing)
     bad = sum(r["reward"] < threshold for r in rows)
+    if of_cases is None:
+        title, sample = f"# Digest: the current version's {len(rows)} conversations, {len(by_case)} cases", ""
+    else:
+        title = (
+            f"# Digest: {len(rows)} of the current version's conversations, {len(by_case)} of its {sum(of_cases)} cases"
+        )
+        sample = (
+            "This folder holds a random sample of the cases, each with all of its conversations: "
+            f"{len(failing)} of the {of_cases[0]} cases with a conversation that did not succeed, and "
+            f"{len(passing)} of the {of_cases[1]} where every conversation succeeded. The counts and lists below "
+            "cover the sampled cases only. "
+        )
     head = [
-        f"# Digest: the current version's {len(rows)} conversations, {len(by_case)} cases",
+        title,
         "",
-        f"{bad} conversations did not succeed (reward below {threshold:g}), in {len(failing)} cases; "
+        f"{sample}{bad} conversations did not succeed (reward below {threshold:g}), in {len(failing)} cases; "
         f"every case where every conversation succeeded: {len(passing)}. Each conversation is a file in this folder: "
         "its messages in `response.messages`, its `reward`, `output` (how it ended) and `metrics`.",
         "",
@@ -1126,20 +1218,19 @@ def _text_files(names: Sequence[str]) -> dict[str, str]:
 
 
 def _guard(
-    request: ProposalRequest, params: Mapping[str, str], keys: Sequence[str], parent: Mapping[str, Any]
+    request: ProposalRequest,
+    params: Mapping[str, str],
+    keys: Sequence[str],
+    parent: Mapping[str, Any],
+    shown: Sequence[TrialRecord],
 ) -> tuple[dict[str, str], dict[str, str], list[str]]:
     """The submitted values that become the patch, why each other one was dropped (the parent's value kept), and the
     keys the leakage screen dropped (for the caller to log as `screened`; this runs in a worker thread).
 
     In order: a key outside the block is dropped; a value equal to the parent's is left out (nothing to change); a
     value `space.validate` refuses (over its `size_cap`, a `SKILL.md` that changes its `name`, invalid JSON) is
-    dropped; a value that leaks a shown train trial (`_leak`) is dropped.
+    dropped; a value that leaks one of `shown`, the trials written as trace files, is dropped (`_leak`).
     """
-    shown = [
-        t
-        for t in request.trials
-        if t.split == "train" and t.status in (TrialStatus.COMPLETED, TrialStatus.AGENT_FAILURE)
-    ]
     names = sorted({t.case_name for t in shown})
     sources = [str(request.inputs.get(name, "")) for name in names]
     for t in shown:

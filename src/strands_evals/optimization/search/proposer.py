@@ -71,10 +71,10 @@ class Proposer(ABC):
 
     Attributes:
         kinds: The variable types it can propose.
-        concurrent: True when it keeps no state between proposals (Reflection): the optimizer makes a
-            request's n proposals as n `propose` calls with n=1 at once, Patches kept in call order. False:
-            one `propose` call with n in a single-block step, else one n=1 call per slot (structural blocks
-            first in each slot); non-concurrent proposers are called one at a time.
+        concurrent: True when one request's proposals don't depend on each other's results (Reflection): the
+            optimizer makes a request's n proposals as n `propose` calls with n=1 at once, Patches kept in call
+            order. False: one `propose` call with n in a single-block step, else one n=1 call per slot (structural
+            blocks first in each slot); non-concurrent proposers are called one at a time.
     """
 
     kinds: ClassVar[frozenset[ParamKind]]
