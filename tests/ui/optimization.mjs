@@ -194,12 +194,12 @@ const spaceRows = () => $$('#opt-space-rows tr')
 ok($('#opt-space-wrap').hidden === false, 'the space table is shown for a record that declares one');
 ok(spaceRows().length === 6, 'a row per declared key, in the order the record declares them',
   spaceRows().length);
-ok(spaceRows()[0] === 'system_prompt/text ≤ 2000 chars/127 characters/10 of 10 7 changes/always',
+ok(spaceRows()[0] === 'system_prompt/text ≤ 2000 chars/127 characters/10 of 10 · 7 changed/always',
   'a text key: its cap, its default as a length rather than the digest beside it, and how many '
   + 'candidates set and changed it', spaceRows()[0]);
-ok(spaceRows()[1] === 'temperature/float 0 – 1/0.7/10 of 10 2 changes/always',
+ok(spaceRows()[1] === 'temperature/float 0 – 1/0.7/10 of 10 · 2 changed/always',
   'a float with its bounds', spaceRows()[1]);
-ok(spaceRows()[2] === 'max_tokens/int 256 – 2048 step 256/1024/10 of 10 1 change/always',
+ok(spaceRows()[2] === 'max_tokens/int 256 – 2048 step 256/1024/10 of 10 · 1 changed/always',
   'an int with the step it moves in', spaceRows()[2]);
 /* The two the table exists for. A key no candidate ever set reads "0 of 11", not a dash: the
    search was offered it and left it alone, which is a measurement and not a missing value. The
@@ -232,7 +232,7 @@ ok(!/varying/.test(why) && !/8 train/.test(why),
    search never saw. That lives in the `test` event, and every figure in this card has a wrong
    neighbour in the log it could have come from instead: the training best (0.671), the validation
    objective (0.658), or a mean over the cases the search chose on. */
-const rtab = () => $$('#opt-result .rtab tr').map(r =>
+const rtab = () => $$('#opt-result .rtab tbody tr').map(r =>
   [...r.children].map(c => c.textContent.replace(/\s+/g, ' ').trim()));
 ok(/^Held out/.test(text('#opt-result .rlabel')), 'the headline is the held-out comparison',
   text('#opt-result .rlabel'));
@@ -309,6 +309,11 @@ ok(/champion against baseline, on the held-out cases/.test(stripNotes),
    does not compare across rows, since a bar invites being measured against its neighbour. */
 ok(/widths do not compare/.test(stripNotes), 'and that a width is not comparable between rows',
   stripNotes);
+/* `tokens` is the run's other goal and has no interval in this report, so it gets no bar. A reader
+   who knows there were two goals and counts one bar is owed the reason rather than left to guess
+   that the picture dropped it. */
+ok(/no interval to draw for tokens/.test(stripNotes),
+  'a goal with nothing to draw is named under the picture', stripNotes);
 ok(!$('#opt-result .rstrip').className.includes('weak'),
   'a held-out result is drawn at full strength');
 
@@ -372,12 +377,22 @@ ok(/could not reach the clipboard/.test(text('#opt-copied')),
    best-ever value read as a second, bolder answer to the same question. */
 const stats = $$('#opt-stats .stat').map(s =>
   s.querySelector('.k').textContent + '=' + s.querySelector('.v').textContent);
-ok(stats.some(s => /^Best feasible objective · c10=0\.67$/.test(s)),
-  'the best feasible objective is c10\'s 0.67, not infeasible c8\'s, and names the candidate',
-  stats.join(' '));
+ok(stats.includes('Best feasible objective=0.67'),
+  'the best feasible objective is c10\'s 0.67, not infeasible c8\'s', stats.join(' '));
 ok(stats.includes('Champion=c10'), 'champion read from the end-phase report', stats.join(' '));
 ok(stats.includes('Rollouts=64 / 240'), 'rollouts are the iterations\' own tally against the budget', stats.join(' '));
 ok(stats.length === 4, 'four figures over the charts, not every number the run produced', stats.join(' '));
+/* Each with the one thing it cannot be read without, on a line of its own under the label: a
+   score with no candidate and no split behind it is not an answer to anything, and run into the
+   label it read as part of it — "0.67Best feasible objective · c10". */
+const notes = $$('#opt-stats .stat').map(s =>
+  s.querySelector('.k').textContent + '/' + (s.querySelector('.n') || {}).textContent);
+ok(notes.includes('Best feasible objective/c10 · on the training split'),
+  'the best score says which candidate scored it and which split it was scored on', notes.join(' '));
+ok(notes.includes('Rollouts/spent of the budget'),
+  'and "64 / 240" says which of the two is the budget', notes.join(' '));
+ok(notes.includes('Champion/the configuration it picked'), 'and the champion what it is',
+  notes.join(' '));
 
 /* Cost is the one thing still folded under the result. It is the same run's question, but it is
    not the question anyone arrives with, and it is one drawer rather than two because that is one
@@ -440,6 +455,21 @@ ok(highest > cy('c8') + 1e-6, 'and stays strictly below c8, which broke a constr
    the running best with 0 instead of null would start the line at the bottom of the axis. */
 ok(Math.abs(ys[0] - cy('c0')) < 1e-6, 'the line starts at the first feasible candidate',
   `line ${ys[0]} vs c0 ${cy('c0')}`);
+
+/* ── the axis under the marks ──
+   The slots used to be labelled "it 0" … "it 5" at the iteration boundaries, which named the groups
+   and left every mark anonymous: a reader looking at the best point had no way to find it in the
+   Candidates table. The candidate is the label now and the iteration is a row under it. */
+const catlabs = () => $$('#opt-series-chart text.catlab').map(t => t.textContent);
+ok(catlabs().join() === 'c0,c1,c2,c3,c4,c5,c6,—,c8,c9,c10',
+  'every proposal is named under its own slot — including the ones with no mark above them, and '
+  + 'the invalid patch that never became a candidate', catlabs().join());
+const itlabs = () => $$('#opt-series-chart text.itlab').map(t => t.textContent);
+ok(itlabs().join() === 'iteration,0,1,2,3,4,5',
+  'with the iterations as a second row, the word once and a number per group', itlabs().join());
+ok($$('#opt-series-chart line.itsep').length === 5,
+  'and a divider where the search turned over to the next iteration',
+  $$('#opt-series-chart line.itsep').length);
 
 // ── the budget chart ──
 const budget = $$('#opt-budget-chart circle').map(c => c.querySelector('title').textContent);
@@ -510,7 +540,11 @@ ok(!help.some(t => /^c4 |^c7 |^c9 /.test(t)),
 ok(help[0] === 'c0 · Helpfulness 0.51', 'the recorded mean, not the average of the trials', help[0]);
 ok(help[1] === 'c1 · Helpfulness 0.55', 'and again where the two round apart', help[1]);
 ok(help[7] === 'c10 · Helpfulness 0.67', 'the champion is measured like any other', help[7]);
-ok(axlab() === 'Helpfulness', 'the axis is labelled with what it shows', axlab());
+/* With the direction the objective states for it, which is the thing a line of a metric does not
+   carry: a token count climbing is progress or regress depending on the goal, and the chart that
+   does not say which leaves the reader to guess from the name. */
+ok(axlab() === 'Helpfulness — higher is better',
+  'the axis is labelled with what it shows and which way its goal wants it', axlab());
 ok(Math.max(...metricTicks()) < 1, 'and scaled to the metric alone, in score units',
   metricTicks().join(' '));
 
@@ -533,7 +567,9 @@ ok(tokenMarks[0] === 'c0 · tokens 3180', 'a metric that is a count keeps its de
 ok(tokenMarks[6] === 'c8 · tokens 4210', 'including the candidate that blew the 4000-token constraint', tokenMarks[6]);
 ok(/infeasible/.test(metricMarks()[6].getAttribute('class')), 'which is marked infeasible here too',
   metricMarks()[6].getAttribute('class'));
-ok(axlab() === 'tokens', 'the axis label follows the picker', axlab());
+ok(axlab() === 'tokens — lower is better',
+  'the axis label follows the picker, direction and all — the same rise that was progress on the '
+  + 'score is a cost here', axlab());
 ok(Math.min(...metricTicks()) > 1000, 'and the axis is in token units', metricTicks().join(' '));
 ok(/mean recorded for tokens/.test(text('#opt-series-cap')), 'as does the caption', text('#opt-series-cap'));
 await pick('#opt-series-pick', 'm:Helpfulness');
@@ -1287,6 +1323,49 @@ ok(!/excluding/.test(pFall.text('#opt-usage-cap')),
   'and with nothing recorded after the last iteration there is no caveat to make',
   pFall.text('#opt-usage-cap'));
 
+/* ── when the candidate ids are digests ──
+   The fixture names candidates `c0`…`c10`; a real optimizer names them with twelve hex characters,
+   which do not fit a slot of the axis and cut to six are neither readable nor recognisable. Then
+   the label falls back to the number the Candidates table numbers the proposal with. */
+const digests = ['a8997951dbcb', 'da69b054a6d3', '2002243454a9', 'b85bcdfd5997',
+  'abbf9531c55d', '610a97189bad', 'dd141fd3c81c', '85e2c6312229'];
+const pIds = await page();
+await pIds.openFolder({
+  'ids/run.json': { run_id: 'digests', objective: 'Maximize(H)' },
+  'ids/events.jsonl': jsonl([
+    { event: 'config', iteration: 0 },
+    ...digests.map((id, i) => iterationEnd(i, [{
+      candidate_id: id, number: i + 1, outcome: 'feasible', objective: 0.3 + i * 0.05,
+    }], 2)),
+  ]),
+});
+await openResults(pIds);
+ok(pIds.$$('#opt-series-chart text.catlab').map(t => t.textContent).join() === '#1,#2,#3,#4,#5,#6,#7,#8',
+  'an id too long for its slot gives way to the proposal number, which the Candidates table shows '
+  + 'beside the id', pIds.$$('#opt-series-chart text.catlab').map(t => t.textContent).join());
+ok(pIds.$$('#opt-series-chart text.vlab').map(t => t.textContent).join() === '#8 · 0.65',
+  'and the flag on the best candidate names it the same way the axis does',
+  pIds.$$('#opt-series-chart text.vlab').map(t => t.textContent).join());
+
+/* Thinned by the width of the labels, not by how many there are: 24 slots are 23px wide and `c10`
+   wants 26, so every other one is dropped. Overlapping labels are not a label. */
+const pMany = await page();
+await pMany.openFolder({
+  'many/run.json': { run_id: 'many', objective: 'Maximize(H)' },
+  'many/events.jsonl': jsonl([
+    { event: 'config', iteration: 0 },
+    ...Array.from({ length: 24 }, (_, i) => iterationEnd(i, [{
+      candidate_id: `c${i}`, number: i, outcome: 'feasible', objective: 0.5,
+    }], 2)),
+  ]),
+});
+await openResults(pMany);
+const manyLabs = pMany.$$('#opt-series-chart text.catlab').map(t => t.textContent);
+ok(manyLabs.join() === 'c0,c2,c4,c6,c8,c10,c12,c14,c16,c18,c20,c22',
+  'and with more candidates than fit, every other slot is labelled rather than all of them '
+  + 'overlapping', manyLabs.join());
+errs.push(...pIds.errs, ...pMany.errs);
+
 /* ── the verdict is the interval, not the gap ──
    A card that only read `mean_diff` would print the same confident headline for a run that
    proved nothing and for one that went backwards. The three logs below differ ONLY in the
@@ -1372,8 +1451,8 @@ ok(/flattering/.test(said(pVal)), 'and the gap is hedged as the selected-on gap 
 ok(/no overall comparison/.test(said(pVal)),
   'a validation report carries no objective difference, and the card says so rather than '
   + 'leaving a half-finished sentence', said(pVal));
-ok(pVal.$$('#opt-result .rtab tr').length === 1
-  && [...pVal.$('#opt-result .rtab tr').children].map(c => c.textContent).join('|') === 'H|0.5|→|0.6|+0.1||',
+ok(pVal.$$('#opt-result .rtab tbody tr').length === 1
+  && [...pVal.$('#opt-result .rtab tbody tr').children].map(c => c.textContent).join('|') === 'H|0.5|→|0.6|+0.1||',
   'it still shows the means it does have — `measured`, which is what a validation report calls them',
   pVal.text('#opt-result .rtab'));
 
@@ -1421,7 +1500,7 @@ ok(!pVal.$('#opt-result .rstrip') && !pNoBase.$('#opt-result .rstrip'),
     'b/events.jsonl': resultLog(testReport({ mean_diff: 0.1, ci_low: 0.02, ci_high: 0.18, n_cases: 6 })),
   });
   await openResults(r2);
-  ok(!r2.$('#opt-result .rmore') && r2.$$('#opt-result .rtab tr').length === 1,
+  ok(!r2.$('#opt-result .rmore') && r2.$$('#opt-result .rtab tbody tr').length === 1,
     'a report the config names no metric of is shown whole, with no fold',
     r2.text('#opt-result .rtab'));
   errs.push(...q.errs, ...r2.errs);
@@ -1525,6 +1604,20 @@ ok(plainBars[0].label === 'latency' && plainBars[0].cls === 'rs-row plain',
 ok(/the objective states no direction for/.test(plainBars[0].title),
   'and says that is why', plainBars[0].title);
 
+/* One row, one number format. Formatted a value at a time, a baseline of 0.1667 against a champion
+   of exactly 1 printed as `0.1667 → 1`: the same quantity two ways, with the reader left to work
+   out that `1` stands for 1.0000. The widest format in the row sets the whole row. */
+const pDp = await stripPage('Maximize(H)', {
+  champion_id: 'c1', baseline_id: 'c0',
+  objective: { mean_diff: 0.8333, ci_low: 0.4975, ci_high: 1.1692, n_cases: 6 },
+  difference: { H: { mean_diff: 0.8333, ci_low: 0.4975, ci_high: 1.1692, n_cases: 6 } },
+  means: { c1: { H: { mean: 1 } }, c0: { H: { mean: 0.1667 } } },
+});
+const dpRow = [...pDp.$$('#opt-result .rtab tbody tr')[0].children]
+  .map(c => c.textContent.replace(/\s+/g, ' ').trim());
+ok(dpRow.slice(1).join(' | ') === '0.1667 | → | 1.0000 | +0.8333 | [0.4975, 1.1692] | ',
+  'every figure in a row carries the decimals the widest of them needs', dpRow.join(' | '));
+
 /* Two cases that agreed exactly give a zero-width interval, which a real run reports for any
    deterministic metric — so this is the common case and not the corner. There is no
    spread to draw. Scaled to its own row a point lands hard against the margin, which reads as "as
@@ -1565,7 +1658,7 @@ ok(pWeak.$('#opt-result .rstrip').className.includes('weak'),
 ok(!/held-out/.test(pWeak.$$('#opt-result .rstrip text.rs-note').map(t => t.textContent).join(' | ')),
   'and does not claim the cases were held out',
   pWeak.$$('#opt-result .rstrip text.rs-note').map(t => t.textContent).join(' | '));
-errs.push(...pMin.errs, ...pPlain.errs, ...pPoint.errs, ...pWeak.errs);
+errs.push(...pMin.errs, ...pPlain.errs, ...pDp.errs, ...pPoint.errs, ...pWeak.errs);
 
 /* `propose.values` is the only copy of a candidate's configuration. A log without it cannot show
    one, and inventing a diff out of `changed_keys` would be making it up. */
@@ -1834,9 +1927,13 @@ ok(pTwo.text('#opt-to-head') === 'tokens against Quality',
 ok(two.c2.y < two.c1.y,
   'fewer tokens is higher up, because the goal says lower is better', `${two.c2.y} vs ${two.c1.y}`);
 ok(two.c1.x > two.c2.x, 'and more Quality is further right', `${two.c1.x} vs ${two.c2.x}`);
-ok(/tokens lower is better/.test(pTwo.$('#opt-to-chart').innerHTML)
-  && /Quality higher is better/.test(pTwo.$('#opt-to-chart').innerHTML),
-  'and each axis says which way is better on it, since the numbers alone no longer say');
+/* In words, both halves of it: what the goal wants of the metric, and where better is on the
+   page. "tokens lower is better ↑" said both at once over an axis whose numbers descend upward,
+   which reads as a contradiction. */
+ok(/fewer tokens is better — upward along this axis/.test(pTwo.$('#opt-to-chart').innerHTML)
+  && /higher Quality is better — rightward along this axis/.test(pTwo.$('#opt-to-chart').innerHTML),
+  'and each axis says which way the goal wants its metric AND which way better is along it, '
+  + 'since the numbers alone no longer say');
 
 ok(two.c1.ringed && two.c2.ringed && !two.c0.ringed && !two.c3.ringed,
   'the front the report named is ringed, and nothing else is',
@@ -1849,7 +1946,7 @@ ok(/champion/.test(two.c1.cls), 'and the champion as the champion', two.c1.cls);
 /* The staircase steps through the front and nothing else, and it is a boundary: it starts at the
    left edge and ends at the bottom, so the region it closes is what the front dominates. */
 const stair = pTwo.$('#opt-to-chart path.front-line').getAttribute('d');
-ok(/^M40,/.test(stair) && /V194$/.test(stair),
+ok(/^M48,/.test(stair) && /V198$/.test(stair),
   'the front line runs in from the left edge and down to the bottom', stair);
 ok(stair.includes(`H${two.c1.x}`) && stair.includes(`H${two.c2.x}`),
   'with a step at each candidate on the front', stair);

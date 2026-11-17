@@ -230,9 +230,12 @@
      a wide black bar where a number belongs — so it is muted to read as an absence instead. */
   .hero .big.none { color: var(--ink3); font-weight: 400; }
   .hero .cap { font-size: 12.5px; color: var(--ink3); margin-top: 7px; }
-  .stats { display: flex; gap: 28px; }
-  .stat .v { font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
-  .stat .k { font-size: 12px; color: var(--ink3); }
+  /* Value over label, one per line. Inline they ran together — "0.67Best feasible objective" —
+     and the row read as one long string of numbers and words rather than four figures. */
+  .stats { display: flex; flex-wrap: wrap; gap: 18px 34px; }
+  .stat .v { display: block; font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+  .stat .k { display: block; font-size: 12px; color: var(--ink3); margin-top: 1px; }
+  .stat .n { display: block; font-size: 11.5px; color: var(--ink3); margin-top: 2px; }
 
   .ctl { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
   .ctl .find { width: 220px; margin: 0; }
@@ -359,6 +362,13 @@
     padding: 5px 14px 5px 0; text-align: left; font-weight: 400; white-space: nowrap;
   }
   table.rtab th { color: var(--ink2); font-weight: 600; }
+  /* Column headings. Without them the row read "0.521 → 0.664 +0.143 [0.061, 0.225] 1.274×",
+     which is five numbers and no statement of what any of them is. */
+  table.rtab thead th {
+    font-size: 11px; letter-spacing: .03em; text-transform: uppercase; color: var(--ink3);
+    font-weight: 600; padding-bottom: 7px; border-bottom: 1px solid var(--hair2);
+  }
+  table.rtab tbody tr:first-child td, table.rtab tbody tr:first-child th { padding-top: 8px; }
   table.rtab .num { font-family: var(--font-mono, ui-monospace, Menlo, monospace); }
   table.rtab .arrow { color: var(--ink3); padding-right: 8px; }
   table.rtab .ci { color: var(--ink3); font-size: 11.5px; }
@@ -374,10 +384,14 @@
   .delta.down { color: var(--bad); }
   .delta.flat { color: var(--ink3); }
   /* The result as a picture: one interval per row against a line at no change. It carries no
-     figures — the table above it has them all — so everything here is the shape of the claim. */
+     figures — the table above it has them all — so everything here is the shape of the claim,
+     plus the one word that says what the shape means. */
   .rstrip { margin: 14px 0 2px; }
   .rstrip.weak { opacity: .6; }
-  .rstrip svg { display: block; width: 100%; height: auto; }
+  /* Capped, unlike the charts, so it draws at about its own size. Stretched the width of the card
+     the three parts of a row — what it is, where its bar falls, what that reads as — ended up a
+     hand's width apart with nothing between them, which is a layout and not a figure. */
+  .rstrip svg { display: block; width: 100%; max-width: 640px; height: auto; }
   .rs-zero { stroke: var(--ink2); stroke-width: 1; opacity: .55; }
   .rs-lab { fill: var(--ink2); font-size: 11.5px; }
   .rs-dir { fill: var(--ink3); }
@@ -393,6 +407,11 @@
   .rs-row.bad .rs-dot { fill: var(--bad); }
   .rs-row.plain .rs-ci { stroke: var(--accent); }
   .rs-row.plain .rs-dot { fill: var(--accent); }
+  /* And the reading, in a word, at the end of each row: the side of the line is what the picture
+     is for, and "which side is which" is exactly what a reader of an unlabelled bar cannot tell. */
+  .rs-read { font-size: 11px; fill: var(--ink3); }
+  .rs-row.good .rs-read { fill: var(--good); }
+  .rs-row.bad .rs-read { fill: var(--bad); }
   .verdict { margin: 13px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--ink2); }
   .verdict b { color: var(--ink1); }
   .winner .wid { font-size: 15px; font-weight: 600; color: var(--ink1); }
@@ -470,8 +489,17 @@
   .chart .empty { font-size: 12px; color: var(--ink3); padding: 18px 0 22px; }
   .ax { stroke: var(--hair); stroke-width: 1; }
   .grid-l { stroke: var(--hair2); stroke-width: 1; }
-  .tick { fill: var(--ink3); font-size: 9.5px; }
-  .axlab { fill: var(--ink3); font-size: 10px; }
+  .tick { fill: var(--ink3); font-size: 10.5px; }
+  .axlab { fill: var(--ink2); font-size: 11px; }
+  /* What is in each slot along the bottom — a candidate id, an iteration number — as against the
+     numbers on a scale. Its own class so a reader of the chart and a reader of the markup can
+     both tell a name from a measurement. */
+  .catlab { fill: var(--ink2); font-size: 10.5px; }
+  .itlab { fill: var(--ink3); font-size: 10px; }
+  .itsep { stroke: var(--hair); stroke-width: 1; stroke-dasharray: 2 3; }
+  /* A figure written on the chart beside the mark it belongs to. Hover is not a label: the one
+     number a reader wants off a chart of candidates is what the best of them scored. */
+  .vlab { fill: var(--ink1); font-size: 10.5px; font-weight: 600; }
   .best { fill: none; stroke: var(--good); stroke-width: 1.75; }
   .metric-line { fill: none; stroke: var(--accent); stroke-width: 1.5; }
   .col { fill: var(--accent); opacity: .75; }
@@ -494,6 +522,10 @@
   .eff-ci { stroke: var(--accent); stroke-width: 2; stroke-linecap: round; }
   .eff-dot { fill: var(--accent); stroke: var(--card); stroke-width: 1.5; }
   .eff-zero { stroke: var(--ink2); stroke-width: 1; opacity: .5; }
+  /* The two things the columns are, said once each: what the line down the middle means, and what
+     the pair of figures on the right is. Unlabelled, the line reads as an axis and the pair as a
+     range. */
+  .eff-foot { fill: var(--ink3); font-size: 10px; }
   .front-line { fill: none; stroke: var(--good); stroke-width: 1.5; opacity: .75; }
   .front-fill { fill: var(--ink1); opacity: .06; }
   .front-ring { fill: none; stroke: var(--good); stroke-width: 1.25; opacity: .7; }
@@ -803,8 +835,11 @@
             <div id="opt-usage-chart"></div>
           </div>
         </div>
+        <!-- Full width like every other chart in the section. In half a grid the same 640-unit
+             drawing is scaled to half the pixels, so its type came out at half the size of the
+             chart above it — two figures on one screen at two different scales. -->
         <div class="charts">
-          <div class="chart">
+          <div class="chart wide">
             <h3>Trial outcomes</h3>
             <p class="cap" id="opt-status-cap"></p>
             <div id="opt-status-chart"></div>
@@ -837,7 +872,7 @@
       <!-- The budget is the other thing that advances: cumulative rollouts against the ceiling,
            which is what says whether the run stopped because it was done or because it ran out. -->
       <div class="charts">
-        <div class="chart">
+        <div class="chart wide">
           <h3>Rollouts spent</h3>
           <p class="cap" id="opt-budget-cap"></p>
           <div id="opt-budget-chart"></div>
@@ -889,7 +924,11 @@
           <table class="rep">
             <thead><tr>
               <th style="width:30%">Key</th><th style="width:22%">Range</th>
-              <th style="width:16%">Default</th><th style="width:14%">Candidates</th><th>Only when</th>
+              <th style="width:14%">Default</th>
+              <!-- Wide enough for "10 of 10 · 7 changed" on one line: wrapped, the figure and
+                   what it counts ended up on two, and every row grew a line for it. -->
+              <th style="width:18%" title="how many candidates set this key, and how many of those
+                moved it off the default">Candidates</th><th>Only when</th>
             </tr></thead>
             <tbody id="opt-space-rows"></tbody>
           </table>
@@ -5263,40 +5302,169 @@
      Hand-rolled SVG on purpose: the page is one file a reader can be handed with no server and
      no network, and a charting library would be larger than everything else in it combined. */
 
-  const W = 640, H = 220, PAD = { t: 10, r: 14, b: 26, l: 40 };
+  /* Room is reserved rather than borrowed: the axis title sits ABOVE the plot in `t`, and `b`
+     holds two rows under it — the numbers or names on the axis, then what they are. Both used to
+     be drawn into the margin the plot was already using, so the title overprinted the top tick
+     and the iteration row overprinted the axis label. */
+  const W = 640, H = 244, PAD = { t: 26, r: 16, b: 46, l: 48 };
   const IN_W = W - PAD.l - PAD.r, IN_H = H - PAD.t - PAD.b;
+  const FLOOR = PAD.t + IN_H;
 
   const svg = inner => `<svg viewBox="0 0 ${W} ${H}" role="img">${inner}</svg>`;
   const nice = v => Number.isInteger(v) ? String(v)
     : Math.abs(v) >= 100 ? String(Math.round(v)) : (Math.round(v * 100) / 100).toFixed(2);
 
-  function yAxis(lo, hi, label) {
-    const span = (hi - lo) || 1;
-    const y = v => PAD.t + IN_H - ((v - lo) / span) * IN_H;
-    let out = `<line class="ax" x1="${PAD.l}" y1="${PAD.t}" x2="${PAD.l}" y2="${PAD.t + IN_H}"/>`;
-    for (let i = 0; i <= 4; i++) {
-      const v = lo + (span * i) / 4, yy = y(v);
-      out += `<line class="grid-l" x1="${PAD.l}" y1="${yy}" x2="${PAD.l + IN_W}" y2="${yy}"/>`
-        + `<text class="tick" x="${PAD.l - 6}" y="${yy + 3}" text-anchor="end">${esc(nice(v))}</text>`;
+  /* ── axis numbers a reader can hold ──
+     Five ticks interpolated across the data gave 0.4975, 0.5612, 0.6249 … — the extremes of the
+     run and four numbers nobody chose, and reading a mark off them meant arithmetic. These are
+     round steps (1, 2, 2.5 or 5 of some power of ten), and the domain is widened out to them, so
+     the first and last tick ARE the ends of the axis and every mark falls between labels that
+     divide evenly. */
+  function niceTicks(lo, hi, want) {
+    if (!(isFinite(lo) && isFinite(hi))) return { lo: 0, hi: 1, step: 0.5, ticks: [0, 0.5, 1] };
+    if (hi <= lo) { const pad = Math.abs(hi) * 0.1 || 1; lo = hi - pad; hi = hi + pad; }
+    /* Divided by the tick count rather than the gaps between them, so the step chosen is the
+       smaller of the two candidates it falls between: a run that spent 240 rollouts gets an axis
+       in fifties to 250 rather than in hundreds to 300, which would have left a fifth of the
+       plot above anything that happened. The number of ticks is what gives, not the fit. */
+    const n = Math.max(2, want || 5);
+    const raw = (hi - lo) / n;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const step = ([1, 2, 2.5, 5, 10].find(m => m * mag >= raw * (1 - 1e-9)) || 10) * mag;
+    const first = Math.floor(lo / step + 1e-9) * step;
+    const last = Math.ceil(hi / step - 1e-9) * step;
+    const ticks = [];
+    for (let i = 0; first + i * step <= last + step * 1e-6; i++) {
+      const v = first + i * step;
+      // Zero printed as "-0" is the kind of detail that makes a chart look like it is guessing.
+      ticks.push(Math.abs(v) < step * 1e-9 ? 0 : v);
     }
-    if (label) out += `<text class="axlab" x="${PAD.l}" y="${PAD.t - 1}">${esc(label)}</text>`;
-    return { y, out };
+    return { lo: first, hi: last, step, ticks };
+  }
+
+  /** How many decimals a step needs, so 0.25 labels as "0.25" and 20000 does not label as "20000.00". */
+  const dpOf = step => {
+    const s = step.toPrecision(12).replace(/0+$/, '');
+    const dot = s.indexOf('.');
+    return dot < 0 || /e/i.test(s) ? 0 : Math.min(6, s.length - dot - 1);
+  };
+  /** A tick label: in the step's own precision, and short for the counts a token axis carries. */
+  const tickText = (v, step) => Math.abs(v) >= 1e4 ? compact(v) : v.toFixed(dpOf(step));
+
+  /* `lo` greater than `hi` runs the axis backwards, which is how a goal that wants a metric lower
+     still reads better upward on the trade-off chart. */
+  function yAxis(lo, hi, label) {
+    const t = niceTicks(Math.min(lo, hi), Math.max(lo, hi), 5);
+    const [from, to] = lo > hi ? [t.hi, t.lo] : [t.lo, t.hi];
+    const span = (to - from) || 1;
+    const y = v => FLOOR - ((v - from) / span) * IN_H;
+    let out = `<line class="ax" x1="${PAD.l}" y1="${PAD.t}" x2="${PAD.l}" y2="${FLOOR}"/>`;
+    for (const v of t.ticks) {
+      const yy = y(v);
+      out += `<line class="grid-l" x1="${PAD.l}" y1="${yy}" x2="${PAD.l + IN_W}" y2="${yy}"/>`
+        + `<text class="tick" x="${PAD.l - 7}" y="${yy + 3.5}" text-anchor="end">`
+        + `${esc(tickText(v, t.step))}</text>`;
+    }
+    // Over the plot and over the numbers both, since it is what the numbers are.
+    if (label) out += `<text class="axlab" x="2" y="${PAD.t - 11}">${esc(label)}</text>`;
+    return { y, out, lo: from, hi: to };
   }
 
   /* The same axis along the bottom. `lo` greater than `hi` runs it backwards, which is how a goal
      that wants a metric lower still reads better to the right. */
   function xAxis(lo, hi, label) {
-    const span = (hi - lo) || 1;
-    const x = v => PAD.l + ((v - lo) / span) * IN_W;
-    let out = `<line class="ax" x1="${PAD.l}" y1="${PAD.t + IN_H}" x2="${PAD.l + IN_W}" y2="${PAD.t + IN_H}"/>`;
-    for (let i = 0; i <= 4; i++) {
-      const v = lo + (span * i) / 4, xx = x(v);
-      out += `<line class="grid-l" x1="${xx}" y1="${PAD.t}" x2="${xx}" y2="${PAD.t + IN_H}"/>`
-        + `<text class="tick" x="${xx}" y="${PAD.t + IN_H + 12}" `
-        + `text-anchor="${i === 0 ? 'start' : i === 4 ? 'end' : 'middle'}">${esc(nice(v))}</text>`;
+    const back = lo > hi;
+    const t = niceTicks(Math.min(lo, hi), Math.max(lo, hi), 5);
+    const [from, to] = back ? [t.hi, t.lo] : [t.lo, t.hi];
+    const span = (to - from) || 1;
+    const x = v => PAD.l + ((v - from) / span) * IN_W;
+    let out = `<line class="ax" x1="${PAD.l}" y1="${FLOOR}" x2="${PAD.l + IN_W}" y2="${FLOOR}"/>`;
+    for (const v of t.ticks) {
+      const xx = x(v);
+      // Anchored by where it landed, not by its place in the list: the list may run right to left.
+      const anchor = xx <= PAD.l + 1 ? 'start' : xx >= PAD.l + IN_W - 1 ? 'end' : 'middle';
+      out += `<line class="grid-l" x1="${xx}" y1="${PAD.t}" x2="${xx}" y2="${FLOOR}"/>`
+        + `<text class="tick" x="${xx}" y="${FLOOR + 14}" text-anchor="${anchor}">`
+        + `${esc(tickText(v, t.step))}</text>`;
     }
-    if (label) out += `<text class="axlab" x="${PAD.l + IN_W}" y="${H - 2}" text-anchor="end">${esc(label)}</text>`;
-    return { x, out };
+    if (label) {
+      out += `<text class="axlab" x="${PAD.l + IN_W / 2}" y="${H - 6}" text-anchor="middle">`
+        + `${esc(label)}</text>`;
+    }
+    return { x, out, lo: from, hi: to };
+  }
+
+  /* ── the bottom of a chart whose x axis is a list, not a scale ──
+     One slot per proposal in the order the search drew them. The slots used to be labelled "it 0"
+     … "it 5" at the iteration boundaries, which named the groups and left every mark anonymous —
+     so a reader looking at the best point had no way to find it in the Candidates table. Now the
+     candidate is the label and the iteration is a row under it, with a divider where it turns
+     over. Labels are thinned rather than overlapped when there are more candidates than fit. */
+  const shortId = id => {
+    const s = String(id == null ? '' : id);
+    return s.length <= 8 ? s : s.slice(0, 6) + '…';
+  };
+
+  /* Nothing here can measure text — the SVG is built as a string, before it is in a document — so
+     label widths are estimated: 10.5px of the page's sans runs about 6.1px a glyph. */
+  const GLYPH = 6.1;
+  const labWidth = s => s.length * GLYPH + 8;
+
+  /** What goes under a mark: the candidate's own name where it fits, else the number the Candidates
+      table numbers it with. A 12-hex-digit id cut to six is neither readable nor recognisable. */
+  function candLabel(p, slot) {
+    const id = String(p.candidate_id == null ? '' : p.candidate_id);
+    const num = p.number == null ? '' : `#${p.number}`;
+    if (id && labWidth(id) <= slot) return id;
+    // Only where it buys room: `#10` is no narrower than `c10`, and swapping one for the other
+    // would rename the candidate for nothing. Labels that still do not fit are thinned instead.
+    if (num && num.length < id.length) return num;
+    // A proposal the optimizer could not turn into a candidate has neither, and its slot is empty
+    // above as well as below: the dash says the slot is accounted for rather than skipped.
+    return (id ? shortId(id) : num) || '—';
+  }
+
+  function candAxis(items, x) {
+    const slot = IN_W / Math.max(1, items.length);
+    const labels = items.map(p => candLabel(p, slot));
+    // Thinned by how wide the labels actually are, not by how many there are: six-character ids fit
+    // twice as densely as twelve-character ones, and either way none of them may overlap.
+    const every = Math.max(1, Math.ceil(labels.reduce((m, s) => Math.max(m, labWidth(s)), 0) / slot));
+    const groups = [];
+    let out = '', lastAt = -every;
+    items.forEach((p, i) => {
+      const last = groups[groups.length - 1];
+      if (last && last.iteration === p.iteration) last.to = i;
+      else groups.push({ iteration: p.iteration, from: i, to: i });
+      if (i - lastAt >= every) {
+        lastAt = i;
+        out += `<text class="catlab" x="${x(i)}" y="${FLOOR + 15}" text-anchor="middle">`
+          + `${esc(labels[i])}</text>`;
+      }
+    });
+    if (groups.length > 1) {
+      // The word once, on the left, and a number per group: "iteration 3" under a slot 40px wide
+      // does not fit, and six of them overlapping is worse than no row at all.
+      out += `<text class="itlab" x="0" y="${FLOOR + 31}">iteration</text>`;
+      groups.forEach((g, gi) => {
+        if (gi) {
+          const mid = (x(g.from) + x(groups[gi - 1].to)) / 2;
+          out += `<line class="itsep" x1="${mid}" y1="${PAD.t}" x2="${mid}" y2="${FLOOR + 22}"/>`;
+        }
+        out += `<text class="itlab" x="${(x(g.from) + x(g.to)) / 2}" y="${FLOOR + 31}" `
+          + `text-anchor="middle">${esc(g.iteration)}</text>`;
+      });
+    }
+    return out;
+  }
+
+  /** A figure written next to a mark, turned inward when the mark is near an edge. */
+  function flag(px, py, label) {
+    const anchor = px > PAD.l + IN_W - 52 ? 'end' : px < PAD.l + 52 ? 'start' : 'middle';
+    const dx = anchor === 'end' ? 4 : anchor === 'start' ? -4 : 0;
+    const dy = py < PAD.t + 14 ? 15 : -9;      // under the mark when there is no room above it
+    return `<text class="vlab" x="${px + dx}" y="${py + dy}" text-anchor="${anchor}">`
+      + `${esc(label)}</text>`;
   }
 
   function objectiveChart(d) {
@@ -5305,25 +5473,33 @@
     }
     const values = d.scored.map(p => p.objective);
     let lo = Math.min(...values), hi = Math.max(...values);
-    const pad = ((hi - lo) || Math.abs(hi) || 1) * 0.15;
+    // Barely any: the axis is rounded out to whole steps below, which is the headroom now.
+    const pad = ((hi - lo) || Math.abs(hi) || 1) * 0.05;
     lo -= pad; hi += pad;
 
     const n = d.proposals.length;
     const x = i => PAD.l + (n === 1 ? IN_W / 2 : (i / (n - 1)) * IN_W);
-    const { y, out: axis } = yAxis(lo, hi, 'objective');
+    const { y, out: axis } = yAxis(lo, hi, 'objective — higher is better');
 
-    let marks = '', xticks = '';
+    let marks = '', best = null;
     d.proposals.forEach((p, i) => {
-      if (p.iteration !== (d.proposals[i - 1] || {}).iteration) {
-        xticks += `<text class="tick" x="${x(i)}" y="${H - 8}" text-anchor="middle">it ${esc(p.iteration)}</text>`;
-      }
       if (p.objective == null) return;    // never plotted as zero: it was not measured
       const cls = p.candidate_id === d.champion ? 'champion'
         : (OUTCOMES.includes(p.outcome) && p.outcome !== 'feasible' && p.outcome !== 'infeasible')
           ? 'ineligible' : p.outcome;
       marks += `<circle class="pt ${esc(cls)}" cx="${x(i)}" cy="${y(p.objective)}" r="4">`
         + `<title>${esc(`${p.candidate_id} · ${p.outcome} · ${nice(p.objective)}`)}</title></circle>`;
+      /* The one figure worth writing on the chart: what the best eligible candidate scored, and
+         which one it was. It is the number the row of stats above leads with, and a reader asked
+         to find it by eye was reading a dot against five interpolated gridlines. */
+      if (p.outcome === 'feasible' && (!best || p.objective > best.p.objective)) {
+        best = { p, px: x(i), py: y(p.objective) };
+      }
     });
+    const xticks = candAxis(d.proposals, x)
+      + (best ? flag(best.px, best.py,
+        // Named the way the axis under it names candidates, so the flag and the tick agree.
+        `${candLabel(best.p, IN_W / Math.max(1, d.proposals.length))} · ${nice(best.p.objective)}`) : '');
 
     /* The best-so-far line is a step, not a slope: nothing improved between two candidates, so
        drawing a diagonal would claim measurements that were never taken. */
@@ -5343,25 +5519,37 @@
     if (!d.iterations.length) return '<div class="empty">No iteration has finished yet.</div>';
     const cap = d.maxRollouts;
     const hi = Math.max(d.spent, cap || 0) || 1;
-    const { y, out: axis } = yAxis(0, hi, 'rollouts');
+    const { y, out: axis } = yAxis(0, hi, 'rollouts run, cumulative');
     const pts = [{ iteration: '', cumulative: 0 }].concat(d.iterations);
     const n = pts.length;
     const x = i => PAD.l + (n === 1 ? 0 : (i / (n - 1)) * IN_W);
 
     const path = pts.map((p, i) => `${i ? 'L' : 'M'}${x(i)},${y(p.cumulative)}`).join(' ');
     const area = `${path} L${x(n - 1)},${y(0)} L${x(0)},${y(0)} Z`;
-    let marks = '', xticks = '';
+    let marks = '';
     d.iterations.forEach((p, i) => {
       marks += `<circle class="pt champion" cx="${x(i + 1)}" cy="${y(p.cumulative)}" r="3">`
         + `<title>${esc(`iteration ${p.iteration}: +${p.rollouts}, ${p.cumulative} total`)}</title></circle>`;
-      xticks += `<text class="tick" x="${x(i + 1)}" y="${H - 8}" text-anchor="middle">${esc(p.iteration)}</text>`;
     });
+    /* The number the chart exists to give: how much of the budget the run actually used. Reading
+       it off the last point against the ceiling was the reader doing the subtraction. */
+    const last = d.iterations[d.iterations.length - 1];
+    const spentFlag = last
+      ? flag(x(d.iterations.length), y(last.cumulative),
+        cap != null ? `${last.cumulative} of ${cap}` : `${last.cumulative}`)
+      : '';
     const capLine = cap != null
       ? `<line class="cap-line" x1="${PAD.l}" y1="${y(cap)}" x2="${PAD.l + IN_W}" y2="${y(cap)}"/>`
-        + `<text class="tick" x="${PAD.l + IN_W}" y="${y(cap) - 4}" text-anchor="end">budget ${esc(cap)}</text>`
+        + `<text class="tick" x="${PAD.l + IN_W}" y="${y(cap) - 5}" text-anchor="end">`
+        + `budget ${esc(cap)}</text>`
       : '';
+    // One slot per iteration, and the word for what they are under them.
+    const xticks = d.iterations.map((p, i) =>
+      `<text class="catlab" x="${x(i + 1)}" y="${FLOOR + 15}" text-anchor="middle">`
+      + `${esc(p.iteration)}</text>`).join('')
+      + `<text class="axlab" x="${PAD.l + IN_W / 2}" y="${H - 6}" text-anchor="middle">iteration</text>`;
     return svg(axis + `<path class="budget-fill" d="${area}"/><path class="budget-line" d="${path}"/>`
-      + capLine + marks + xticks);
+      + capLine + marks + xticks + spentFlag);
   }
 
   /* One metric, one chart, one axis. Several metrics on shared axes would be unreadable the
@@ -5371,24 +5559,27 @@
     const values = d.proposals.map(p => p.measured[metric]).filter(v => v != null);
     if (!values.length) return '<div class="empty">Nothing measured this metric yet.</div>';
     let lo = Math.min(...values), hi = Math.max(...values);
-    const pad = ((hi - lo) || Math.abs(hi) || 1) * 0.15;
+    const pad = ((hi - lo) || Math.abs(hi) || 1) * 0.05;
     lo -= pad; hi += pad;
 
     const n = d.proposals.length;
     const x = i => PAD.l + (n === 1 ? IN_W / 2 : (i / (n - 1)) * IN_W);
-    const { y, out: axis } = yAxis(lo, hi, metric);
+    /* Which way this metric wants to go, when the objective expression says — a chart of a token
+       count that does not say fewer is better is a line a reader has to guess the sense of. For a
+       metric no goal names, the name alone: guessing a direction from it is how a rising cost
+       comes out looking like progress. */
+    const goal = d.goals.find(g => g.metric === metric);
+    const { y, out: axis } = yAxis(lo, hi,
+      goal ? `${metric} — ${goal.dir === 'min' ? 'lower' : 'higher'} is better` : metric);
 
     /* Joined only between consecutive measured candidates. A line drawn across a candidate that
        was never measured would read as a value passing through it. */
-    let marks = '', xticks = '', segments = '', run = [];
+    let marks = '', segments = '', run = [], champ = null;
     const flush = () => {
       if (run.length > 1) segments += `<path class="metric-line" d="${run.join(' ')}"/>`;
       run = [];
     };
     d.proposals.forEach((p, i) => {
-      if (p.iteration !== (d.proposals[i - 1] || {}).iteration) {
-        xticks += `<text class="tick" x="${x(i)}" y="${H - 8}" text-anchor="middle">it ${esc(p.iteration)}</text>`;
-      }
       const v = p.measured[metric];
       if (v == null) { flush(); return; }
       run.push(`${run.length ? 'L' : 'M'}${x(i)},${y(v)}`);
@@ -5396,8 +5587,12 @@
         : p.outcome === 'infeasible' ? 'infeasible' : 'feasible';
       marks += `<circle class="pt ${esc(cls)}" cx="${x(i)}" cy="${y(v)}" r="3.5">`
         + `<title>${esc(`${p.candidate_id} · ${metric} ${nice(v)}`)}</title></circle>`;
+      // What the configuration the run shipped measured, which is the row this chart is read for.
+      if (p.candidate_id === d.champion) champ = { px: x(i), py: y(v), v };
     });
     flush();
+    const xticks = candAxis(d.proposals, x)
+      + (champ ? flag(champ.px, champ.py, `champion · ${nice(champ.v)}`) : '');
     return svg(axis + segments + marks + xticks);
   }
 
@@ -5447,17 +5642,20 @@
     const span = goal => {
       const values = plotted.map(p => p.measured[goal.metric]);
       let lo = Math.min(...values), hi = Math.max(...values);
-      const pad = ((hi - lo) || Math.abs(hi) || 1) * 0.12;
+      const pad = ((hi - lo) || Math.abs(hi) || 1) * 0.04;
       lo -= pad; hi += pad;
       // Better to the right, and better up: a goal that wants less runs its axis backwards.
       return goal.dir === 'min' ? [hi, lo] : [lo, hi];
     };
-    /* Each axis says which way is better on it, because for a goal that wants less the numbers run
-       the other way and a reader who misses that reads the whole chart backwards. */
+    /* Each axis says which way is better ALONG it, because for a goal that wants less the numbers
+       run the other way and a reader who misses that reads the whole chart backwards. The arrow
+       used to carry that on its own — "tokens lower is better ↑" over an axis whose numbers
+       descend upward, which reads as a contradiction and is really two facts jammed together. So
+       both are said in words: what the goal wants of the metric, and where better is on the page. */
     const label = (goal, towards) =>
-      `${goal.metric} ${goal.dir === 'min' ? 'lower' : 'higher'} is better ${towards}`;
-    const { x, out: xax } = xAxis(...span(xg), label(xg, '→'));
-    const { y, out: yax } = yAxis(...span(yg), label(yg, '↑'));
+      `${goal.dir === 'min' ? 'fewer' : 'higher'} ${goal.metric} is better — ${towards} this axis`;
+    const { x, out: xax } = xAxis(...span(xg), label(xg, 'rightward along'));
+    const { y, out: yax } = yAxis(...span(yg), label(yg, 'upward along'));
 
     const on = new Set(frontIds);
     const marks = plotted.map(p => ({
@@ -5527,20 +5725,25 @@
     const lo = Math.min(0, ...rows.map(e => e.ci90[0]));
     const hi = Math.max(0, ...rows.map(e => e.ci90[1]));
     const pad = ((hi - lo) || Math.abs(hi) || 1) * 0.08;
-    const span = (hi + pad) - (lo - pad);
+    const t = niceTicks(lo - pad, hi + pad, 5);
+    const span = (t.hi - t.lo) || 1;
     const left = EFF.lab, right = W - EFF.right;
-    const x = v => left + ((v - (lo - pad)) / span) * (right - left);
-    const height = EFF.head + groups.reduce((n, g) => n + g.rows.length + 1, 0) * EFF.row + 8;
+    const x = v => left + ((v - t.lo) / span) * (right - left);
+    // A row at the bottom for what the vertical line is, which is what every bar is measured from.
+    const floor = EFF.head + groups.reduce((n, g) => n + g.rows.length + 1, 0) * EFF.row + 4;
+    const height = floor + 18;
 
     let ticks = '';
-    for (let i = 0; i <= 4; i++) {
-      const v = (lo - pad) + (span * i) / 4, xx = x(v);
-      ticks += `<line class="grid-l" x1="${xx}" y1="${EFF.head - 4}" x2="${xx}" y2="${height - 6}"/>`
-        + `<text class="tick" x="${xx}" y="${EFF.head - 8}" `
-        + `text-anchor="${i === 0 ? 'start' : i === 4 ? 'end' : 'middle'}">${esc(nice(v))}</text>`;
+    for (const v of t.ticks) {
+      const xx = x(v);
+      const anchor = xx <= left + 1 ? 'start' : xx >= right - 1 ? 'end' : 'middle';
+      ticks += `<line class="grid-l" x1="${xx}" y1="${EFF.head - 4}" x2="${xx}" y2="${floor}"/>`
+        + `<text class="tick" x="${xx}" y="${EFF.head - 8}" text-anchor="${anchor}">`
+        + `${esc(tickText(v, t.step))}</text>`;
     }
-    ticks += `<line class="eff-zero" x1="${x(0)}" y1="${EFF.head - 4}" x2="${x(0)}" y2="${height - 6}"/>`
-      + `<text class="tick" x="${right + 6}" y="${EFF.head - 8}">change · P(better)</text>`;
+    ticks += `<line class="eff-zero" x1="${x(0)}" y1="${EFF.head - 4}" x2="${x(0)}" y2="${floor}"/>`
+      + `<text class="eff-foot" x="${x(0)}" y="${floor + 13}" text-anchor="middle">no change</text>`
+      + `<text class="eff-foot" x="${right + 6}" y="${EFF.head - 8}">change · P(better)</text>`;
 
     let body = '', y = EFF.head;
     for (const g of groups) {
@@ -5571,10 +5774,13 @@
     if (!d.iterations.length) return '<div class="empty">No iteration has finished yet.</div>';
     const values = d.iterations.map(it => it.usage[key] || 0);
     const hi = Math.max(...values) || 1;
-    const { y, out: axis } = yAxis(0, hi, label.toLowerCase());
+    const { y, out: axis } = yAxis(0, hi, `${label.toLowerCase()} spent in that iteration`);
     const n = d.iterations.length;
     const slot = IN_W / n;
     const width = Math.min(34, slot * 0.6);
+    // Every bar's own number, when there is room to write it. Reading a column off gridlines to
+    // find what an iteration cost is work the chart can do for the reader.
+    const labelled = slot > 36;
 
     let bars = '', xticks = '';
     d.iterations.forEach((it, i) => {
@@ -5582,11 +5788,17 @@
       const value = it.usage[key] || 0;
       const top = y(value);
       bars += `<rect class="col" x="${centre - width / 2}" y="${top}" width="${width}" `
-        + `height="${Math.max(0, PAD.t + IN_H - top)}">`
+        + `height="${Math.max(0, FLOOR - top)}">`
         + `<title>${esc(`iteration ${it.iteration}: ${nice(value)} over ${plural(it.usage.trials, 'trial')}`)}`
         + `</title></rect>`;
-      xticks += `<text class="tick" x="${centre}" y="${H - 8}" text-anchor="middle">${esc(it.iteration)}</text>`;
+      if (labelled) {
+        bars += `<text class="vlab" x="${centre}" y="${top - 6}" text-anchor="middle">`
+          + `${esc(compact(value))}</text>`;
+      }
+      xticks += `<text class="catlab" x="${centre}" y="${FLOOR + 15}" text-anchor="middle">`
+        + `${esc(it.iteration)}</text>`;
     });
+    xticks += `<text class="axlab" x="${PAD.l + IN_W / 2}" y="${H - 6}" text-anchor="middle">iteration</text>`;
     return svg(axis + bars + xticks);
   }
 
@@ -5613,7 +5825,7 @@
      dot hard against the right edge of every such row — a drawing that said "as far as this can
      go" about a run whose two cases simply happened to match. When no row has width the picture
      does not appear at all, and the table and the sentence are left to say it in figures. */
-  const RS = { row: 22, head: 20, lab: 104, right: 14, foot: 16 };
+  const RS = { row: 24, head: 22, lab: 112, right: 112, foot: 32 };
   function resultStrip(d) {
     const r = d.result;
     if (!r) return '';
@@ -5646,6 +5858,12 @@
     }
     if (!rows.length) return '';
 
+    /* A goal the run states and this picture has no bar for is named, not silently absent: a reader
+       who knows there were two goals and counts one bar is owed the reason it is one. */
+    const drawn = new Set(rows.map(x => x.label));
+    const missing = ((((d.facts || {}).goals) || []).map(g => g.metric))
+      .filter(m => !drawn.has(m) && r.metrics.some(x => x.metric === m));
+
     const left = RS.lab, right = W - RS.right;
     const zero = (left + right) / 2;
     const half = (right - left) / 2 - 10;
@@ -5668,13 +5886,20 @@
         : kind === 'plain'
           ? 'clear of no change, in a metric the objective states no direction for'
           : kind === 'good' ? 'clear of no change, the way the goal wants' : 'clear of no change, the wrong way';
+      /* And the same reading in a word, at the end of the row. Which side of the line a bar falls
+         on is the whole content of the picture, and it was the one thing it did not say: a reader
+         who did not already know which side was which had a bar and no verdict. */
+      const verdict = crosses ? 'not shown'
+        : kind === 'plain' ? 'changed' : kind === 'good' ? 'better' : 'worse';
       const arrow = row.dir ? `<tspan class="rs-dir"> ${row.dir === 'max' ? '↑' : '↓'}</tspan>` : '';
       body += `<g class="rs-row ${kind}${row.objective ? ' rs-obj' : ''}">`
         + `<title>${esc(`${row.label}: ${signed(row.mean)} [${fine(row.lo)}, ${fine(row.hi)}] — ${reading}`)}`
         + `</title>`
         + `<text class="rs-lab" x="0" y="${cy}" dy="0.32em">${esc(row.label)}${arrow}</text>`
         + `<line class="rs-ci" x1="${x(row.lo)}" y1="${cy}" x2="${x(row.hi)}" y2="${cy}"/>`
-        + `<circle class="rs-dot" cx="${x(row.mean)}" cy="${cy}" r="4"/></g>`;
+        + `<circle class="rs-dot" cx="${x(row.mean)}" cy="${cy}" r="4"/>`
+        + `<text class="rs-read" x="${W - RS.right + 14}" y="${cy}" dy="0.32em">${esc(verdict)}</text>`
+        + '</g>';
     });
 
     /* On a validation split the search chose on these very cases, so the picture is drawn faint to
@@ -5684,11 +5909,15 @@
       + 'against a line at no change">'
       + `<line class="rs-zero" x1="${zero}" y1="${RS.head - 5}" x2="${zero}" y2="${height - RS.foot + 3}"/>`
       + `<text class="rs-note" x="${zero}" y="${RS.head - 9}" text-anchor="middle">no change</text>`
-      /* One caption, on one line, left of everything. Two of them — one each side of the line at
-         no change — read as that line's two axis labels rather than as a note about the chart. */
-      + `<text class="rs-note" x="0" y="${height - 3}">`
+      /* The caption, left of everything and under everything: what is being compared, then what a
+         bar is. Both on one line ran off the edge of the drawing, and either side of the line at
+         no change they read as that line's two axis labels rather than as a note. */
+      + `<text class="rs-note" x="0" y="${height - 17}">`
       + `${r.heldOut ? 'champion against baseline, on the held-out cases' : 'champion against baseline'}`
-      + ' · each bar scaled to itself, so widths do not compare</text>'
+      + `${missing.length ? esc(` · no interval to draw for ${missing.join(', ')}`) : ''}`
+      + '</text>'
+      + `<text class="rs-note" x="0" y="${height - 4}">each bar is the 95% interval of the change,`
+      + ' scaled to its own row — so widths do not compare</text>'
       + body + '</svg></div>';
   }
 
@@ -5708,15 +5937,30 @@
     const label = r.heldOut
       ? `Held out · ${plural(r.cases || 0, 'test case')} kept out of the search`
       : 'Validation split · the search chose on these cases, so this is weaker evidence';
+    /* One row, one number format. `fine` gives each value the decimals that value needs, which set
+       a baseline of 0.1667 beside a champion of 1 — the same quantity printed two ways, and the
+       reader left to work out that 1 means 1.0000. The row's widest format sets all of them. */
+    const rowFmt = vals => {
+      const nums = vals.filter(v => typeof v === 'number' && isFinite(v));
+      if (!nums.length) return fine;
+      if (nums.some(v => Math.abs(v) >= 10)) return nice;     // a token count is not a 4dp figure
+      const dp = Math.max(...nums.map(v => {
+        const dot = String(Number(v.toFixed(4))).indexOf('.');
+        return dot < 0 ? 0 : String(Number(v.toFixed(4))).length - dot - 1;
+      }));
+      return v => v.toFixed(dp);
+    };
     const row = m => {
       const delta = m.before != null && m.after != null ? m.after - m.before : null;
-      const ci = m.diff && typeof m.diff.ci_low === 'number'
-        ? `[${fine(m.diff.ci_low)}, ${fine(m.diff.ci_high)}]` : '';
+      const ciLow = m.diff && typeof m.diff.ci_low === 'number' ? m.diff.ci_low : null;
+      const n = rowFmt([m.before, m.after, delta, ciLow, ciLow == null ? null : m.diff.ci_high]);
+      const ci = ciLow == null ? '' : `[${n(ciLow)}, ${n(m.diff.ci_high)}]`;
+      // The ratio keeps `fine`: it is on its own scale, not the metric's.
       const ratio = m.ratio && typeof m.ratio.mean_diff === 'number' ? `${fine(m.ratio.mean_diff)}×` : '';
       return `<tr><th>${esc(m.metric)}</th>`
-        + `<td class="num">${m.before == null ? '—' : esc(fine(m.before))}</td>`
-        + `<td class="arrow">→</td><td class="num">${m.after == null ? '—' : esc(fine(m.after))}</td>`
-        + `<td class="num delta flat">${delta == null ? '' : (delta > 0 ? '+' : '') + esc(fine(delta))}</td>`
+        + `<td class="num">${m.before == null ? '—' : esc(n(m.before))}</td>`
+        + `<td class="arrow">→</td><td class="num">${m.after == null ? '—' : esc(n(m.after))}</td>`
+        + `<td class="num delta flat">${delta == null ? '' : (delta > 0 ? '+' : '') + esc(n(delta))}</td>`
         + `<td class="ci">${esc(ci)}</td><td class="num ci">${esc(ratio)}</td></tr>`;
     };
     /* What the run was aiming at: the goals the objective expression states, and the metrics the
@@ -5735,7 +5979,15 @@
     }
     const lead = r.metrics.filter(m => aimed.has(m.metric));
     const rest = lead.length ? r.metrics.filter(m => !aimed.has(m.metric)) : [];
-    const table = `<table class="rtab"><tbody>${(lead.length ? lead : r.metrics).map(row).join('')}</tbody>`
+    /* Headed, because the row on its own is five numbers and no statement of what any of them is:
+       "0.521 → 0.664 +0.143 [0.061, 0.225] 1.274×" was asking the reader to infer that the
+       interval belongs to the change and the multiple to the pair before it. The two names are
+       the run's own — the baseline it started from and the champion it picked. */
+    const head = '<thead><tr><th>Metric</th><th>Baseline</th><th></th><th>Champion</th>'
+      + '<th>Change</th><th title="of the change, resampled over the cases">95% interval</th>'
+      + '<th title="champion ÷ baseline">× baseline</th></tr></thead>';
+    const table = `<table class="rtab">${head}<tbody>`
+      + `${(lead.length ? lead : r.metrics).map(row).join('')}</tbody>`
       + (rest.length ? `<tbody class="rest" id="opt-rest" hidden>${rest.map(row).join('')}</tbody>` : '')
       + '</table>'
       + (rest.length
@@ -5793,7 +6045,13 @@
 
   /** `a → b` for short values, a two-line diff for anything long or multi-line. */
   function settingDiff(s) {
-    const show = v => v === undefined ? '(unset)' : typeof v === 'string' ? v : JSON.stringify(v);
+    /* A real optimizer proposes a float as whatever its sampler returned, so `temperature` comes
+       out of the log as 0.6932267914762588. Sixteen digits of it are the sampler's own precision
+       and none of them are a setting anyone chose to read, so it is shown the way every other
+       number on the page is. */
+    const show = v => v === undefined ? '(unset)'
+      : typeof v === 'string' ? v
+        : typeof v === 'number' ? fine(v) : JSON.stringify(v);
     const before = show(s.before), after = show(s.after);
     const long = [before, after].some(v => v.length > 60 || v.includes('\n'));
     if (!s.changed) return `<div class="inline">${esc(after)}</div>`;
@@ -5892,8 +6150,14 @@
       : `${t.matched} of its ${plural(t.split_cases, 'case')} are cases of ${link}.`;
   }
 
-  function optStat(value, key) {
-    return `<div class="stat"><span class="v">${esc(value)}</span><span class="k">${esc(key)}</span></div>`;
+  /* A figure, what it is, and the one qualification it cannot be read without — "0.67" is not an
+     answer to anything until it says which candidate scored it and on which split. The note is a
+     third line rather than more of the label: run together they were one long string of words
+     with a number buried at the front of it. */
+  function optStat(value, key, note, title) {
+    return `<div class="stat"${title ? ` title="${esc(title)}"` : ''}>`
+      + `<span class="v">${esc(value)}</span><span class="k">${esc(key)}</span>`
+      + (note ? `<span class="n">${esc(note)}</span>` : '') + '</div>';
   }
 
   /** Fill a picker, keeping `want` selected if it is still on offer. Returns what ended up chosen. */
@@ -6552,17 +6816,22 @@
        The best feasible objective is one of them rather than a hero number over them. It is not
        the finding — the finding is the difference and its interval, in the card above — and set in
        hero type beside that card it read like a second, bolder answer to the same question. */
-    const champ = d.champion ? d.champion : '—';
+    /* A candidate id can be a twelve-character digest, which at 20px beside three other figures
+       was the widest thing in the row and unreadable as any of them. Shortened, with the whole of
+       it on hover and in the Candidates table. */
     const stats = [
-      optStat(d.best == null ? '—' : fmt(d.best), d.bestCandidate
-        ? `Best feasible objective · ${d.bestCandidate.candidate_id}`
-        : 'Best feasible objective'),
-      optStat(champ, 'Champion'),
-      optStat(d.maxRollouts != null ? `${d.spent} / ${d.maxRollouts}` : String(d.spent), 'Rollouts'),
+      optStat(d.best == null ? '—' : fmt(d.best), 'Best feasible objective',
+        d.bestCandidate ? `${shortId(d.bestCandidate.candidate_id)} · on the training split`
+          : 'on the training split',
+        d.bestCandidate ? `candidate ${d.bestCandidate.candidate_id}` : ''),
+      optStat(d.champion ? shortId(d.champion) : '—', 'Champion',
+        d.champion ? 'the configuration it picked' : 'none picked yet', d.champion || ''),
+      optStat(d.maxRollouts != null ? `${d.spent} / ${d.maxRollouts}` : String(d.spent), 'Rollouts',
+        d.maxRollouts != null ? 'spent of the budget' : 'spent · no budget declared'),
     ];
     // Every trial's tokens, search and end phase together: what the whole run cost.
     const tokens = d.iterations.reduce((sum, it) => sum + (it.usage.tokens || 0), 0) + (d.endPhase.tokens || 0);
-    if (tokens) stats.push(optStat(compact(tokens), 'Tokens'));
+    if (tokens) stats.push(optStat(compact(tokens), 'Tokens', 'over the whole run', String(tokens)));
     $('opt-stats').innerHTML = stats.join('');
 
     // The result and the thing you take away from it, before any account of the search.
@@ -6585,7 +6854,10 @@
     $('opt-series-cap').textContent = metric
       ? `The mean recorded for ${metric} on each candidate it was measured on — the metric itself, `
         + 'not its contribution to the objective.'
-      : 'One mark per proposal in search order. The line is the best feasible objective so far.';
+      : 'One mark per proposal, in the order the search drew them. The candidate it built is under '
+        + 'its mark — by name, or by its number in the Candidates table where the name will not '
+        + 'fit — and the iterations are grouped under those. The line is the best feasible '
+        + 'objective so far, so it steps up where a candidate beat everything before it.';
     $('opt-series-chart').innerHTML = metric ? metricChart(d, metric) : objectiveChart(d);
     /* The legend belongs to the objective: the best-so-far line and the eligibility colours are
        its own. A metric chart carries the same mark colours but no line, so a legend naming one
@@ -6626,9 +6898,12 @@
       $('opt-usage-chart').innerHTML = usageChart(d, unit.key, unit.label);
     }
 
-    $('opt-budget-cap').textContent = d.maxRollouts != null
-      ? `Cumulative, against the ${d.maxRollouts}-rollout budget.`
-      : 'Cumulative. The run config names no budget.';
+    /* What a rollout is, here rather than only in the explainer on Setup: this is the chart whose
+       axis is counted in them, and "64 / 240" means nothing to a reader who has not been told. */
+    $('opt-budget-cap').textContent = 'A rollout is one case run once. '
+      + (d.maxRollouts != null
+        ? `Cumulative, against the ${d.maxRollouts}-rollout budget.`
+        : 'Cumulative. The run config names no budget.');
     $('opt-budget-chart').innerHTML = budgetChart(d);
 
     $('opt-status-cap').textContent = 'Every recorded trial by how it ended. A trial is one case run once.';
@@ -6941,7 +7216,7 @@
       /* "0 of 11" rather than a dash: the key was declared and the search left it alone, which is
          a measurement of the search and not a missing value. */
       const used = `${r.active} of ${total}`
-        + (r.changed ? ` <span class="path">${esc(plural(r.changed, 'change'))}</span>` : '');
+        + (r.changed ? ` <span class="path">· ${r.changed} changed</span>` : '');
       return `<tr><td><span class="mono">${esc(r.key)}</span>${block}</td>`
         + `<td>${esc(domainText(r))}</td><td>${defaultText(r)}</td>`
         + `<td>${used}</td>`
