@@ -219,8 +219,9 @@ class VersionRow:
         is_baseline: Whether it is the baseline.
         changed: What it changed from the version it was built from.
         cells: Each goal metric, formatted, in the table's column order: the fit's estimate and the measured mean
-            (`0.84 (measured 0.9)`), or the measured mean alone.
-        meets_limits: Whether it meets the constraints, as the ranking assessed it; None when unknown.
+            (`0.84 (measured 0.9)`), or the measured mean alone (`0.9 (measured)`).
+        meets_limits: Whether it meets the constraints, as the ranking assessed it (an ineligible version, which the
+            ranking leaves out, on its measured means); None when there are no limits.
         conversations: How many of its conversations completed.
     """
 
@@ -268,6 +269,7 @@ def task_message(
     label_metrics: Sequence[str],
     label_ranked: bool,
     judged_by_version: Sequence[str],
+    feasibility_threshold: float,
     variables: Sequence[TextVariable],
     work_folder: str,
 ) -> str:
@@ -285,6 +287,8 @@ def task_message(
         label_metrics: The metrics a conversation's reward is computed from.
         label_ranked: Whether the reward is a rank among the current version's conversations.
         judged_by_version: Goal metrics left out of the reward, judged on whole versions instead.
+        feasibility_threshold: The P(met) a constraint needs under the fit to count as met
+            (`Criteria.feasibility_threshold`); stated when there are limits.
         variables: The parameters the agent may rewrite.
         work_folder: The agent's working folder.
     """
@@ -293,8 +297,22 @@ def task_message(
     parts.append(
         f"{len(versions)} versions, best first for this study's goal{limits_note}. Each version's results are, for "
         "each metric, the study's estimate of its mean over all of its conversations, which also draws on the "
-        "versions like it, then its measured mean (a version with no estimate shows its measured mean alone). The "
-        "current version (marked ←) is the one whose conversations are in "
+        "versions like it, then its measured mean (a version with no estimate shows its measured mean alone, marked "
+        "`(measured)`). "
+    )
+    if limits:
+        parts.append(
+            f"A limit is met when the study is at least {100 * feasibility_threshold:g}% sure that the version's mean "
+            'is within it, so a version whose estimate is just inside a limit can still show "no". A version with no '
+            "estimate is judged on its measured mean instead, and a limit it has no measurement for counts as "
+            "missed. Versions that meet every limit rank above those that do not. "
+        )
+    if any(v.rank is None for v in versions):
+        parts.append(
+            "A version without a rank (`-`) is missing a result, so its numbers may cover only some of the cases. "
+        )
+    parts.append(
+        "The current version (marked ←) is the one whose conversations are in "
         f"the trajectory folder. Each version's parameters, in full, are in `{versions_folder}`: one folder per "
         "version, named by its rank, with its results in `version.md` and each parameter alone in a file of its own "
         "(`<name>.txt`, listed in `version.md`).\n\n"
