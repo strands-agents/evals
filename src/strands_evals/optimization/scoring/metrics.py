@@ -28,7 +28,7 @@ class MetricRegistry:
 
         An evaluator's range is its optional `score_range` attribute, else `(0.0, 1.0)`; usage metrics are
         `(0, None)`. An infinite end means unbounded, the same as None, so a combined metric still needs
-        `scale=` (an infinite width would make its term always 0).
+        `scale=`, or under `Pareto` takes the baseline's (an infinite width would make its term always 0).
 
         Args:
             evaluators: `get_name()` -> its range.

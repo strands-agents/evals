@@ -1,4 +1,5 @@
 import math
+import warnings
 
 import pytest
 
@@ -128,8 +129,12 @@ def test_combinations_reject_bad_terms(kind):
         kind(Maximize("Stars"), AtMost("tokens", 1))  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="more than once"):
         kind(Maximize("Stars"), Minimize("Stars"))
+
+
+def test_a_weighted_sum_needs_a_scale_for_a_usage_metric_and_a_pareto_does_not():
     with pytest.raises(ValueError, match="scale="):
-        kind(Maximize("Stars"), Minimize("tokens"))
+        WeightedSum(Maximize("Stars"), Minimize("tokens"))
+    assert Pareto(Maximize("Stars"), Minimize("tokens")).objectives[1].scale is None
 
 
 @pytest.mark.parametrize("kind", [WeightedSum, Pareto])
@@ -197,21 +202,65 @@ def test_an_unbounded_evaluator_in_a_combination_needs_a_scale():
 
 
 @pytest.mark.parametrize(
-    ("objective", "range_", "side"),
+    ("objective", "range_", "value"),
     [
-        (Maximize("Open", scale=10), (None, None), "low"),
-        (Maximize("Open", scale=10), (None, 10.0), "low"),
-        (Minimize("Open", scale=10), (0.0, None), "high"),
+        (Maximize("Open", scale=10), (None, None), -5.0),
+        (Maximize("Open", scale=10), (None, 10.0), 5.0),
+        (Minimize("Open", scale=10), (0.0, None), 5.0),
     ],
 )
-def test_an_evaluator_without_its_worse_end_cant_be_combined(objective, range_, side):
-    # Its term would be dropped on a case it finds N/A, scoring that case above a perfect one.
+def test_an_evaluator_without_its_worse_end_combines_and_is_never_dropped(objective, range_, value):
+    # Dropping its term on a case it finds N/A would score the case above a perfect one, so that case is
+    # unmeasured instead, as when a usage term is missing.
     registry = MetricRegistry({"Stars": (1.0, 5.0), "Open": range_})
+    oriented = value if isinstance(objective, Maximize) else -value
     for combination in (WeightedSum, Pareto):
-        with pytest.raises(ValueError, match=f"Open has no {side} end in its score_range"):
-            Criteria(combination(Maximize("Stars"), objective), [], registry)
-    Criteria(type(objective)("Open"), [], registry)  # alone it is never combined, so nothing is dropped
-    Criteria(WeightedSum(Maximize("Stars"), Minimize("tokens", scale=1000)), [], registry)  # usage is never N/A
+        criteria = Criteria(combination(Maximize("Stars"), objective), [], registry)
+        assert criteria.objective_value({"Stars": 5.0, "Open": value}) == pytest.approx((1.0 + oriented / 10) / 2)
+        assert criteria.objective_value({"Stars": 5.0}) is None
+        assert criteria.objective_value({"Open": value}) is None  # every droppable term N/A
+
+
+def test_an_evaluator_with_no_worst_end_keeps_its_weight_when_another_term_drops():
+    registry = MetricRegistry({"HelpfulnessEvaluator": (0.0, 1.0), "Stars": (1.0, 5.0), "Open": (0.0, None)})
+    criteria = Criteria(
+        WeightedSum(Maximize("Helpfulness"), Maximize("Stars"), Minimize("Open", scale=10)), [], registry
+    )
+    # Helpfulness N/A: its weight goes to Stars alone, Open's stays 1.
+    assert criteria.objective_value({"Stars": 5.0, "Open": 5.0}) == pytest.approx((2 * 1.0 - 0.5) / 3)
+
+
+def test_a_case_an_evaluator_with_no_worst_end_finds_not_applicable_is_unmeasured_but_eligible():
+    registry = MetricRegistry({"Stars": (1.0, 5.0), "Open": (0.0, None)})
+    criteria = Criteria(WeightedSum(Maximize("Stars"), Minimize("Open", scale=10)), [], registry)
+    records = [record("a", scores={"Stars": 5.0, "Open": NA}), record("b", scores={"Stars": 3.0, "Open": 4.0})]
+    train = score("c1", records, criteria, SPLITS).train
+    assert "a" not in train.objective_by_case and train.objective_by_run["a"] == [None]
+    assert train.objective_by_case["b"] == pytest.approx((0.5 - 0.4) / 2)
+    assert train.objective == pytest.approx((0.75 - 0.4) / 2)  # from the means: Stars 4, Open 4
+    assert train.is_eligible
+
+
+def test_a_crashed_run_has_no_value_for_an_evaluator_with_no_worst_end():
+    registry = MetricRegistry({"Stars": (1.0, 5.0), "Open": (0.0, None)})
+    criteria = Criteria(WeightedSum(Maximize("Stars"), Minimize("Open", scale=10)), [], registry)
+    records = [
+        record("a", 0, scores={"Stars": 5.0, "Open": 2.0}),
+        record("a", 1, status=TrialStatus.AGENT_FAILURE),
+        record("b", 0, status=TrialStatus.AGENT_FAILURE),
+    ]
+    train = score("c1", records, criteria, SPLITS).train
+    assert train.objective_by_run["a"] == [pytest.approx((1.0 - 0.2) / 2), None]
+    assert train.metrics_by_case["a"]["Stars"] == pytest.approx(3.0)  # the crash scores Stars at its worst end
+    assert "Open" not in train.metrics_by_case["b"]
+    assert not train.is_eligible  # case b has no Open value
+    # A number scores the crash on Open too.
+    numbered = Criteria(
+        WeightedSum(Maximize("Stars"), Minimize("Open", scale=10)), [], registry, agent_failure_score=1.0
+    )
+    train = score("c1", records, numbered, SPLITS).train
+    assert train.objective_by_run["b"] == [pytest.approx((0.0 - 0.1) / 2), None]
+    assert train.is_eligible
 
 
 def test_an_evaluator_with_an_infinite_range_in_a_combination_needs_a_scale():
@@ -383,6 +432,79 @@ def test_terms_are_oriented_raw_values_in_objective_order():
     assert criteria.terms({"HelpfulnessEvaluator": 0.8, "tokens": 500.0}) == (0.8, -500.0)
     assert criteria.terms({"HelpfulnessEvaluator": 0.8}) is None
     assert Criteria(Minimize("tokens"), [], REGISTRY).terms({"tokens": 5.0}) == (-5.0,)
+
+
+def test_a_pareto_takes_an_unbounded_metric_s_scale_from_the_baseline():
+    criteria = Criteria(Pareto(Maximize("Helpfulness"), Minimize("tokens")), [], REGISTRY)
+    assert criteria.baseline_scaled_metrics == ("tokens",) and criteria.baseline_scales == {}
+    with pytest.raises(RuntimeError, match="set_baseline_scales"):
+        criteria.objective_value({"HelpfulnessEvaluator": 0.8, "tokens": 500.0})
+    # Case a's runs average 200 tokens and case b's 600, so the scale is the mean over cases, 400.
+    criteria.set_baseline_scales([record("a", 0, tokens=100), record("a", 1, tokens=300), record("b", 0, tokens=600)])
+    assert criteria.baseline_scales == {"tokens": 400.0}
+    value = criteria.objective_value({"HelpfulnessEvaluator": 0.8, "tokens": 200.0})
+    assert value == pytest.approx((0.8 - 200 / 400) / 2)
+    with pytest.raises(RuntimeError, match="already set"):
+        criteria.set_baseline_scales([record("a", 0, tokens=50)])
+
+
+def test_a_baseline_scale_is_the_mean_s_magnitude_or_one_when_it_is_zero():
+    registry = MetricRegistry({"Stars": (1.0, 5.0), "Open": (None, None), "Gain": (None, None)})
+    criteria = Criteria(Pareto(Maximize("Stars"), Maximize("Open"), Maximize("Gain")), [], registry)
+    assert criteria.baseline_scaled_metrics == ("Open", "Gain")
+    records = [
+        record("a", scores={"Stars": 3.0, "Open": -4.0, "Gain": 0.0}),
+        record("b", scores={"Stars": 3.0, "Open": NA}),
+    ]
+    with pytest.warns(
+        UserWarning, match="Gain's mean on the baseline's train cases is 0, so its scale in the Pareto is 1"
+    ):
+        criteria.set_baseline_scales(records)
+    assert criteria.baseline_scales == {"Open": 4.0, "Gain": 1.0}  # Open: |-4|, case b being N/A
+    value = criteria.objective_value({"Stars": 5.0, "Open": 2.0, "Gain": 3.0})
+    assert value == pytest.approx((1.0 + 2.0 / 4 + 3.0 / 1) / 3)
+
+
+def test_a_baseline_mean_of_zero_up_to_float_noise_gives_one():
+    criteria = Criteria(Pareto(Maximize("Stars"), Maximize("Open")), [], UNBOUNDED)
+    records = [record(case, scores={"Stars": 3.0, "Open": v}) for case, v in (("a", 0.1), ("b", 0.2), ("c", -0.3))]
+    with pytest.warns(
+        UserWarning, match=r"Open's mean on the baseline's train cases is [0-9.e-]+, so its scale .* is 1"
+    ):
+        criteria.set_baseline_scales(records)
+    assert criteria.baseline_scales == {"Open": 1.0}
+
+
+def test_a_baseline_scale_with_no_value_is_one_without_a_warning():
+    criteria = Criteria(Pareto(Maximize("Stars"), Maximize("Open")), [], UNBOUNDED)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        criteria.set_baseline_scales([record("a", scores={"Stars": 3.0, "Open": NA})])
+    assert criteria.baseline_scales == {"Open": 1.0}
+
+
+def test_a_pareto_of_unbounded_terms_only_takes_every_scale_from_the_baseline():
+    registry = MetricRegistry({"Open": (0.0, None)})
+    criteria = Criteria(Pareto(Maximize("Open"), Minimize("tokens"), Minimize("seconds")), [], registry)
+    baseline = [record("a", scores={"Open": 2.0}, tokens=100, seconds=4.0), record("b", scores={"Open": 6.0})]
+    criteria.set_baseline_scales(baseline)
+    assert criteria.baseline_scales == {"Open": 4.0, "tokens": 100.0, "seconds": 3.0}
+    value = criteria.objective_value({"Open": 8.0, "tokens": 50.0, "seconds": 3.0})
+    assert value == pytest.approx((8 / 4 - 50 / 100 - 3 / 3) / 3)
+    # Open has a worst end (0), so it drops on a case it finds N/A; it is the only such term here.
+    assert criteria.objective_value({"tokens": 50.0, "seconds": 3.0}) is None
+
+
+def test_only_a_pareto_leaves_scales_to_the_baseline():
+    for objective in (
+        WeightedSum(Maximize("Helpfulness"), Minimize("tokens", scale=10)),
+        Pareto(Maximize("Helpfulness"), Minimize("tokens", scale=10)),
+        Minimize("tokens"),
+    ):
+        criteria = Criteria(objective, [], REGISTRY)
+        assert criteria.baseline_scaled_metrics == ()
+        criteria.set_baseline_scales([record("a", tokens=100)])  # nothing to set
+        assert criteria.baseline_scales == {}
 
 
 def test_unmet_names_each_constraint_not_met_on_measured_means():

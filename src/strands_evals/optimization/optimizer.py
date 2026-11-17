@@ -366,8 +366,14 @@ class Optimizer:
             if len(directions) > 1:
                 low, high = registry.range(direction.metric)
                 entry["weight"] = direction.weight
-                # None means the range width; an unbounded metric without scale= was rejected by Criteria.
-                entry["scale"] = direction.scale if direction.scale is not None else high - low  # type: ignore[operator]
+                # scale=None means the range width; an unbounded metric without scale= (only a Pareto allows
+                # one) takes the baseline's train mean, set after run.json is written, so it is stored as None.
+                if direction.scale is not None:
+                    entry["scale"] = direction.scale
+                elif low is not None and high is not None:
+                    entry["scale"] = high - low
+                else:
+                    entry["scale"] = None
         for constraint in criteria.constraints:
             if "constraint" not in metrics[constraint.metric]["roles"]:
                 metrics[constraint.metric]["roles"].append("constraint")
@@ -531,6 +537,8 @@ class Optimizer:
             self._records[candidate_id] = records
             train = [r for r in records.values() if r.split == "train"]
             if train:
+                if candidate_id == self._baseline.id:  # first: as at setup, it sets the scales a Pareto leaves to it
+                    self._criteria.set_baseline_scales(train)
                 self._candidates[candidate_id] = candidate
                 scores = score(candidate_id, train, self._criteria, self._case_split).train
                 assert scores is not None
@@ -1632,13 +1640,15 @@ class Optimizer:
         allowance: int,
         rejudge: bool = False,
         limiter: asyncio.Semaphore | None = None,
+        sets_scales: bool = False,
     ) -> CandidateScores:
         """Score one candidate on one split's cases and count the rollouts; `_score_event` writes its event.
 
         Every trial is saved as it finishes (`TrialRunner` writes the `trial` events); the caller guarantees the
         first pass fits (an explicit `can_afford`, the step's `n` cut, or the end phase's reserves), and
         `allowance` caps the re-run passes. Candidates
-        scored at once write their `score` events afterwards, in proposal order.
+        scored at once write their `score` events afterwards, in proposal order. `sets_scales` (the baseline
+        on train only): its records first set the scales a `Pareto` leaves to the baseline.
         """
         assert self._run is not None
         case_names = list(getattr(self._case_split, split))
@@ -1652,6 +1662,8 @@ class Optimizer:
             limiter=limiter,
         )
         self._budget.spend(rollouts)
+        if sets_scales:
+            self._criteria.set_baseline_scales(records)
         scores = getattr(score(candidate.id, records, self._criteria, self._case_split), split)
         assert scores is not None  # every requested trial has a record on this split
         self._records.setdefault(candidate.id, {}).update({(r.case_name, r.run_index): r for r in records})
@@ -1690,8 +1702,15 @@ class Optimizer:
             self._score_event(candidate, split, scores)
         return list(results)
 
-    def _score_event(self, candidate: Candidate, split: SplitName, scores: CandidateScores) -> None:
-        """The `score` event of a `_score` call."""
+    def _score_event(
+        self,
+        candidate: Candidate,
+        split: SplitName,
+        scores: CandidateScores,
+        *,
+        baseline_scales: Mapping[str, float] | None = None,
+    ) -> None:
+        """The `score` event of a `_score` call; `baseline_scales`, when not empty, the scales the baseline set."""
         assert self._run is not None
         case_names = list(getattr(self._case_split, split))
         records = [r for r in self._records[candidate.id].values() if r.split == split]
@@ -1705,6 +1724,7 @@ class Optimizer:
             objective_by_run=scores.objective_by_run,
             statuses=dict(Counter(r.status.value for r in records)),
             unavailable=scores.unavailable,
+            **({"baseline_scales": dict(baseline_scales)} if baseline_scales else {}),
         )
 
     async def _score_baseline(self) -> CandidateScores:
@@ -1717,8 +1737,8 @@ class Optimizer:
         assert self._run is not None
         baseline = self._baseline = Candidate.baseline(self._space)
         self._run.save_candidate(baseline, changed_keys=[], round=None, role=None)
-        scores = await self._score(baseline, "train", allowance=self._budget.allowance(phase="train"))
-        self._score_event(baseline, "train", scores)
+        scores = await self._score(baseline, "train", allowance=self._budget.allowance(phase="train"), sets_scales=True)
+        self._score_event(baseline, "train", scores, baseline_scales=self._criteria.baseline_scales)
         records = list(self._records[baseline.id].values())
         measured = {metric for metrics in scores.metrics_by_case.values() for metric in metrics}
         never = [m for m in self._criteria.goal_metrics if m not in measured]
