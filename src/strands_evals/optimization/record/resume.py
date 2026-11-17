@@ -89,6 +89,8 @@ class ResumeState:
         fits: Each `fit` event, in order: fitted ones are refitted, unfitted ones without an error kept the
             previous fit, ones with an error mean no fit in use from there.
         iterations: Rebuilt from the events, so the result covers the whole run.
+        best_after: Each closed iteration's `iteration_end` `best_after`, in order; the patience count is
+            replayed from them.
         search_cost: Summed from every `proposer_usage` event, closed iterations or not (a killed iteration's
             proposer calls were paid for, as its trials count in `spent`).
         finalists: Already chosen by the end phase, reused rather than re-ranked.
@@ -121,6 +123,7 @@ class ResumeState:
     open_rounds: list[OpenRound]
     fits: list[FitReplay]
     iterations: list[IterationRecord]
+    best_after: list[list[str]]
     search_cost: Usage
     finalists: list[str] | None
     validation: ValidationReport | None
@@ -182,6 +185,7 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
         open_rounds=[],
         fits=[],
         iterations=[],
+        best_after=[],
         search_cost=Usage.zero(),
         finalists=None,
         validation=None,
@@ -245,6 +249,7 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
         elif name == "iteration_end":
             record = IterationRecord.model_validate(event["record"])
             state.iterations.append(record)
+            state.best_after.append(list(event["best_after"]))
             state.iteration = record.iteration
             for block in record.blocks:
                 if block in event["exhausted"]:
