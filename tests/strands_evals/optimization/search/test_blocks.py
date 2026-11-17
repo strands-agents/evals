@@ -61,6 +61,10 @@ class Fake(Proposer):
         pass
 
 
+class Numbers(Fake):
+    kinds = frozenset({"int", "float"})
+
+
 def manager():
     return choice(component(Window, size=Int(1, 100)), component(Summary, ratio=Float(0.1, 0.9)))
 
@@ -280,6 +284,46 @@ def test_a_declared_name_takes_only_the_keys_its_proposer_can_propose():
         Search([Block(TPE(), "tools", name="b")]).resolve(Space({"tools": tool_descriptions(lookup)}))
     with pytest.raises(ValueError, match=r"manager.Window.size \(int\), which Thompson can't propose"):
         Search([Block(Thompson(), "manager", "manager.Window.size")]).resolve(full_space())
+
+
+def test_a_choices_name_leaves_its_selector_when_the_proposer_cant_propose_choices():
+    resolved, schedule = Search([Block(Numbers(), "manager")]).resolve(full_space())
+
+    assert names(resolved) == [
+        ("numbers", "Numbers", ["manager.Window.size", "manager.Summary.ratio"]),
+        ("structure", "TPE", ["manager"]),
+        ("numbers 2", "TPE", ["temperature", "effort"]),
+        ("text", "Reflection", ["prompt"]),
+    ]
+    assert shape(schedule) == ("nested", "structure", "alternate")
+    # a bare component's selector has one option, so it goes to no block
+    resolved, _ = Search([Block(Numbers(), "router")]).resolve(Space({"router": component(Router, k=Int(1, 5))}))
+    assert names(resolved) == [("numbers", "Numbers", ["router.Router.k"])]
+    with pytest.raises(ValueError, match=r"'b' holds no variable Reflection can propose \(manager \(choice\), "):
+        Search([Block(Reflection(), "manager", name="b")]).resolve(full_space())
+    # next to a key the proposer can propose, the choice's keys go to the default blocks
+    resolved, _ = Search([Block(Reflection(), "prompt", "manager")]).resolve(full_space())
+    assert names(resolved) == [
+        ("text", "Reflection", ["prompt"]),
+        ("structure", "TPE", ["manager"]),
+        ("numbers", "TPE", ["manager.Window.size", "manager.Summary.ratio", "temperature", "effort"]),
+    ]
+    # a choice with nothing under it has only its own key, so naming it names that key directly
+    space = Space({"mode": choice(fast="a", slow="b"), "prompt": TextValue(default="You help.", size_cap=50)})
+    with pytest.raises(ValueError, match=r"'b' holds mode \(choice\), which Reflection can't propose"):
+        Search([Block(Reflection(), "prompt", "mode", name="b")]).resolve(space)
+
+
+def test_two_blocks_naming_one_choice_split_it_by_what_their_proposers_can_propose():
+    blocks = [Block(Thompson(), "manager", name="s"), Block(Numbers(), "manager", name="n")]
+
+    resolved, schedule = Search(blocks).resolve(full_space())
+
+    assert names(resolved)[:2] == [
+        ("s", "Thompson", ["manager"]),
+        ("n", "Numbers", ["manager.Window.size", "manager.Summary.ratio"]),
+    ]
+    assert shape(schedule) == ("nested", "s", "alternate")
 
 
 def test_a_key_named_directly_wins_over_a_declared_name():
