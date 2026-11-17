@@ -114,7 +114,9 @@ def _invocations(result: OptimizationResult) -> list[tuple[str, str, str]]:
     """Each best-candidate train trial's (case, prompt, answer), from its mapped trajectory."""
     found = []
     for case in result.reports[result.best.id]["train"].cases:
-        spans = Session.model_validate(case["actual_trajectory"]).traces[0].spans
+        session = result.load_transcript(case["transcript"])
+        assert isinstance(session, Session)
+        spans = session.traces[0].spans
         invocation = next(span for span in spans if type(span).__name__ == "AgentInvocationSpan")
         found.append((case["name"], invocation.user_prompt, invocation.agent_response.strip()))
     return sorted(found)

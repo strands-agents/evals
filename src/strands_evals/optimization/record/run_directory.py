@@ -51,9 +51,9 @@ class RunDirectory:
     `events.jsonl` (the only source of truth on resume), `transcripts/<hash>.json` (each trajectory once,
     a `Session` with each distinct message stored once, named by the first 16 hex of the sha256 of the
     file's canonical JSON; `load_transcript` reads one back), `effects.json`, the review diffs,
-    `result.json` (the whole result, written last), `candidates/<id>/optimization_files/` (only when a
-    value reaches the agent as a path), and `run.lock` (empty; made by the first `lock()`). No per-candidate
-    values, trial, or report files.
+    `result.json` (the whole result, written last; it names transcripts by hash),
+    `candidates/<id>/optimization_files/` (only when a value reaches the agent as a path), and `run.lock`
+    (empty; made by the first `lock()`). No per-candidate values, trial, or report files.
 
     One writer per run. `open` only reads (`EventLog` cuts off a killed write's last line at its first append,
     not when it opens the log), and a writer calls `lock()` before it appends to a run it opened or created.
@@ -312,16 +312,9 @@ class RunDirectory:
 
         Raises:
             FileNotFoundError: The transcript file is missing.
-            ValueError: An unknown `format`.
+            ValueError: An unknown `format`, or a hash that isn't 16 lowercase hex digits.
         """
-        data = json.loads((self.root / "transcripts" / f"{transcript['hash']}.json").read_text(encoding="utf-8"))
-        if transcript["format"] == "packed_session":
-            return _unpack_session(data)
-        if transcript["format"] == "session":  # a whole `Session` dump, as earlier versions saved it
-            return Session.model_validate(data)
-        if transcript["format"] == "list":
-            return data
-        raise ValueError(f"transcript {transcript['hash']}: unknown format {transcript['format']!r}")
+        return read_transcript(self.root, transcript["hash"], transcript["format"])
 
     def trial_status(self, candidate_id: str, run_index: int, case_name: str) -> TrialStatus | None:
         """The last trial event's status for the key, from the index (no transcript read)."""
@@ -367,11 +360,12 @@ class RunDirectory:
         _write_text_atomically(path.with_name(f"{path.name}.values.json"), text + "\n")
 
     def save_result(self, result: Mapping[str, Any]) -> None:
-        """`<root>/result.json`: the whole `OptimizationResult` (`to_dict()`), written last, after the diffs.
+        """`<root>/result.json`: the whole `OptimizationResult` (`to_dict()`) as compact JSON (no indentation),
+        written last, after the diffs.
 
         Derived from the events, so a resumed finished run rewrites it; never read on resume.
         """
-        text = json.dumps(result, indent=2, default=_encode, ensure_ascii=False, allow_nan=False)
+        text = json.dumps(result, separators=(",", ":"), default=_encode, ensure_ascii=False, allow_nan=False)
         _write_text_atomically(self.root / "result.json", text + "\n")
 
 
@@ -469,6 +463,38 @@ def _unpack_session(data: Mapping[str, Any]) -> Session:
         for trace in session["traces"]
     ]
     return Session.model_validate({**session, "traces": traces})
+
+
+_TRANSCRIPT_HASH = re.compile(r"[0-9a-f]{16}")
+
+
+def read_transcript(root: Path, digest: str, format: str | None = None) -> list[Any] | Session:
+    """`<root>/transcripts/<digest>.json` read back: the `Session`, or the rollout's own list.
+
+    `format` is the trial event's (`packed_session`, `list`, or `session`, a whole `Session` dump as runs before
+    packing saved it); None tells it by the file's shape (a list; a dict with `messages` and `session`; else a
+    whole dump), for a caller that has only the hash.
+
+    Raises:
+        FileNotFoundError: The transcript file is missing.
+        ValueError: A `digest` that isn't 16 lowercase hex digits (as `save_trial` names files), or an unknown
+            `format`.
+    """
+    if not _TRANSCRIPT_HASH.fullmatch(digest):
+        raise ValueError(f"{digest!r} is not a transcript hash (16 lowercase hex digits)")
+    data = json.loads((root / "transcripts" / f"{digest}.json").read_text(encoding="utf-8"))
+    if format is None:
+        if isinstance(data, list):
+            format = "list"
+        else:
+            format = "packed_session" if "messages" in data and "session" in data else "session"
+    if format == "packed_session":
+        return _unpack_session(data)
+    if format == "session":
+        return Session.model_validate(data)
+    if format == "list":
+        return data
+    raise ValueError(f"transcript {digest}: unknown format {format!r}")
 
 
 def code_version() -> dict[str, Any]:

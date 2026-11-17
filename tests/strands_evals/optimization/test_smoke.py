@@ -39,6 +39,7 @@ from strands_evals.optimization import (
     tunable,
 )
 from strands_evals.types import EvaluationOutput
+from strands_evals.types.trace import Session
 from tests.strands_evals.optimization.scripted_model import ScriptedModel
 
 EXACT = "Give the exact answer."
@@ -240,6 +241,19 @@ def test_a_simulated_users_tokens_are_reported_apart_and_never_count_against_the
     new = [e["record"] for e in _events(older) if e["event"] == "trial" and "benchmark_usage" in e["record"]]
     assert 0 < len(new) < len(trials)
     assert resumed.benchmark_cost.tokens == USER_TOKENS * len(new)
+
+
+def test_the_result_names_each_session_transcript_by_its_hash(tmp_path):
+    optimizer, result = _run(tmp_path, budget=Budget(max_iterations=1))
+    root = result.run_dir
+    assert '"traces"' not in (root / "result.json").read_text(encoding="utf-8")  # no Session inlined
+    for candidate_id, splits in result.reports.items():
+        for report in splits.values():
+            for row in report.cases:
+                kept = optimizer._transcripts[candidate_id][(row["name"], row["run_index"])]
+                assert kept is not None and row["transcript"] == kept["hash"] and row["actual_trajectory"] is None
+                session = result.load_transcript(row["transcript"])
+                assert isinstance(session, Session) and row["input"] in session.model_dump_json()
 
 
 # text, through a file, to a reviewable diff
