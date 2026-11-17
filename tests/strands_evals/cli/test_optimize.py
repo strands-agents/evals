@@ -228,6 +228,7 @@ def test_config_run_tunes_instructions_and_a_choice(
     monkeypatch.chdir(project)
     args = _config_args(experiment_path, config, tmp_path, "--tune", 'effort=["auto","low"]')
     assert main(args) == 0
+    json.loads(capsys.readouterr().out)  # stdout is the result alone: trials don't print their answers
     root = _only_run(tmp_path)
     result = OptimizationResult.from_file(root / "result.json")
     assert result.improved and EXACT in result.best.values["instructions"]
@@ -576,6 +577,11 @@ def test_a_path_form_hook_resolves_against_the_run_files_folder(experiment_path,
     [
         (RUN_FILE + "json = true\n", "unknown key 'json'"),
         (RUN_FILE + "nope = 1\n", "unknown key 'nope'"),
+        (
+            RUN_FILE.replace("constraint = [", "constraints = ["),
+            "unknown key 'constraints'; did you mean 'constraint'?",
+        ),
+        (RUN_FILE.replace("max_iterations", "max_iteration"), "did you mean 'max_iterations'?"),
         (RUN_FILE.replace("max_iterations = 2", 'max_iterations = "two"'), "max_iterations must be an integer"),
         (RUN_FILE.replace('objective = ["maximize:Correct"]', 'objective = "maximize:Correct"'), "list of strings"),
         (RUN_FILE + "pareto = 1\n", "pareto must be true or false"),
@@ -586,5 +592,175 @@ def test_a_path_form_hook_resolves_against_the_run_files_folder(experiment_path,
     ],
 )
 def test_a_bad_run_file_is_a_usage_error(experiment_path, tmp_path, capsys, body, message):
+    assert main(["optimize", "run", str(_write_run_file(tmp_path, body))]) == 2
+    assert message in capsys.readouterr().err
+
+
+OBJECTIVE_SECTIONS = (
+    RUN_FILE.replace('objective = ["maximize:Correct"]\n', "")
+    + """
+[objective.correct]
+maximize = "Correct"
+weight = 2
+
+[objective.cost]
+minimize = "tokens"
+scale = 1000
+"""
+)
+
+NO_CONSTRAINT = OBJECTIVE_SECTIONS.replace('constraint = ["tokens<=450"]\n', "")
+
+
+def test_named_objective_tables_become_specs(experiment_path, tmp_path, capsys):
+    assert main(["--json", "optimize", "run", str(_write_run_file(tmp_path, OBJECTIVE_SECTIONS))]) == 0
+    root = _only_run(tmp_path)
+    assert json.loads((root / "cli.json").read_text())["objective"] == [
+        "maximize:Correct:weight=2",
+        "minimize:tokens:scale=1000",
+    ]
+    assert (
+        json.loads((root / "run.json").read_text())["objective"]
+        == "WeightedSum(Maximize(Correct, weight=2), Minimize(tokens, scale=1000))"
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (OBJECTIVE_SECTIONS + "max_rollouts = 60\n", "every key after a [objective] or [objective.NAME] header"),
+        (
+            NO_CONSTRAINT + '[constraint]\nmetric = "tokens"\nat_most = 450\nat_least = 1\n',
+            "needs one of at_most = X or at_least = X",
+        ),
+        (NO_CONSTRAINT + "[constraint]\nat_most = 450\n", 'needs metric = "METRIC"'),
+        (OBJECTIVE_SECTIONS + '[tune]\npath = "effort"\nchoices = "low"\n', "choices must be a list"),
+        (
+            OBJECTIVE_SECTIONS.replace('maximize = "Correct"', 'maximize = "Correct"\nminimize = "tokens"'),
+            "needs one of",
+        ),
+        (OBJECTIVE_SECTIONS.replace("weight = 2", 'weight = "two"'), "weight must be a number"),
+        (OBJECTIVE_SECTIONS.replace("weight = 2", "size = 2"), "unknown key 'size'"),
+        (OBJECTIVE_SECTIONS.replace("weight = 2", "weights = 2"), "unknown key 'weights'; did you mean 'weight'?"),
+        (  # [[objective]] sections and inline tables: not accepted
+            RUN_FILE.replace('objective = ["maximize:Correct"]\n', "") + '[[objective]]\nmaximize = "Correct"\n',
+            "[[objective]] sections and inline tables aren't accepted",
+        ),
+        (
+            RUN_FILE.replace('objective = ["maximize:Correct"]', 'objective = [{ maximize = "Correct" }]'),
+            "[[objective]] sections and inline tables aren't accepted",
+        ),
+        (NO_CONSTRAINT + '[[constraint]]\nmetric = "tokens"\nat_most = 450\n', "[[constraint]] sections"),
+        (OBJECTIVE_SECTIONS + "[constraint]\nat_most = 450\n", "a key given twice"),
+    ],
+)
+def test_a_bad_objective_table_is_a_usage_error(experiment_path, tmp_path, capsys, body, message):
+    assert main(["optimize", "run", str(_write_run_file(tmp_path, body))]) == 2
+    assert message in capsys.readouterr().err
+
+
+def test_a_constraint_table_becomes_a_spec(experiment_path, tmp_path, capsys):
+    body = RUN_FILE.replace('constraint = ["tokens<=450"]\n', "") + '[constraint]\nmetric = "tokens"\nat_most = 450\n'
+    assert main(["--json", "optimize", "run", str(_write_run_file(tmp_path, body))]) == 0
+    root = _only_run(tmp_path)
+    assert json.loads((root / "cli.json").read_text())["constraints"] == ["tokens<=450"]
+    assert json.loads((root / "run.json").read_text())["constraints"] == ["tokens <= 450"]
+
+
+def test_tune_tables_become_specs(experiment_path, tmp_path, monkeypatch, capsys, scripted_text_proposer):
+    config = _write_config(tmp_path, effort="auto")
+    monkeypatch.chdir(tmp_path)
+    body = f"""
+experiment = "experiment.json"
+config = "{config.name}"
+custom_evaluator = ["{CORRECT}"]
+objective = ["maximize:Correct"]
+max_iterations = 4
+proposals_per_iteration = 2
+max_workers = 40
+base_dir = "runs"
+
+[tune.effort]
+path = "effort"
+choices = ["auto", "low"]
+
+[tune.description]
+path = "description"
+"""
+    _write_config(tmp_path, effort="auto", description="A question answerer.")
+    assert main(["--json", "optimize", "run", str(_write_run_file(tmp_path, body))]) == 0
+    saved = json.loads((_only_run(tmp_path) / "cli.json").read_text())
+    assert saved["tune"] == ['effort=["auto", "low"]', "description"]
+
+
+SETTINGS = f"""
+experiment = "experiment.json"
+custom_evaluator = ["{CORRECT}"]
+max_iterations = 2
+proposals_per_iteration = 2
+max_workers = 40
+base_dir = "runs"
+"""
+
+
+@pytest.mark.parametrize(
+    "objectives",
+    [
+        '[objective]\nmaximize = "Correct"\n',  # a lone objective takes no weight
+        (
+            '[objective.correct]\nmaximize = "Correct"\nweight = 2\n\n'
+            '[objective.cost]\nminimize = "tokens"\nscale = 1000\n'
+        ),
+    ],
+    ids=["single", "named"],
+)
+def test_single_and_named_objective_tables(experiment_path, tmp_path, capsys, objectives):
+    body = SETTINGS + f'\n[agent]\nfactory = "{AGENTS}:manager_agent"\n\n' + objectives
+    assert main(["--json", "optimize", "run", str(_write_run_file(tmp_path, body))]) == 0
+    saved = json.loads((_only_run(tmp_path) / "cli.json").read_text())
+    assert saved["agent"] == f"{AGENTS}:manager_agent"  # [agent] factory is --agent
+    named = "cost" in objectives
+    expected = ["maximize:Correct:weight=2", "minimize:tokens:scale=1000"] if named else ["maximize:Correct"]
+    assert saved["objective"] == expected
+
+
+def test_an_agent_section_holds_a_config_route(experiment_path, tmp_path, monkeypatch, capsys, scripted_text_proposer):
+    _write_config(tmp_path, effort="auto")
+    monkeypatch.chdir(tmp_path)
+    body = (
+        SETTINGS
+        + 'objective = ["maximize:Correct"]\n\n[agent]\nconfig = "agent.json"\n\n'
+        + '[agent.tune.effort]\npath = "effort"\nchoices = ["auto", "low"]\n'
+    )
+    assert main(["--json", "optimize", "run", str(_write_run_file(tmp_path, body))]) == 0
+    saved = json.loads((_only_run(tmp_path) / "cli.json").read_text())
+    assert saved["config"] == str((tmp_path / "agent.json").resolve()) and saved["tune"] == ['effort=["auto", "low"]']
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (
+            SETTINGS + f'[agent]\nfactory = "{AGENTS}:manager_agent"\nmax_rollouts = 60\n',
+            "every key after the [agent] header belongs to it",
+        ),
+        (SETTINGS + f'[agent]\nfactory = "{AGENTS}:manager_agent"\nmodel = "x"\n', "[agent] has no key 'model'"),
+        (SETTINGS + '[agent]\nfactori = "x:y"\n', "[agent] has no key 'factori'; did you mean 'factory'?"),
+        (
+            SETTINGS + f'config = "agent.json"\n[agent]\nconfig = "agent.json"\nfactory = "{AGENTS}:manager_agent"\n',
+            "config is given both in [agent] and at the top level",
+        ),
+        (SETTINGS + f'agent = "{AGENTS}:manager_agent"\n[agent]\nconfig = "x"\n', "use one form"),
+        (
+            SETTINGS + '[objective]\nmaximize = "Correct"\n[objective]\nminimize = "tokens"\n',
+            "a key given twice",
+        ),
+        (
+            SETTINGS + '[objective]\nmaximize = "Correct"\n[objective.cost]\nminimize = "tokens"\n',
+            "mixes fields with named [objective.NAME] tables",
+        ),
+    ],
+)
+def test_a_bad_section_is_a_usage_error(experiment_path, tmp_path, capsys, body, message):
     assert main(["optimize", "run", str(_write_run_file(tmp_path, body))]) == 2
     assert message in capsys.readouterr().err

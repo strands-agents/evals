@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import difflib
 import inspect
 import json
 import logging
@@ -425,11 +426,15 @@ def apply_run_file(path: Path, parser: argparse.ArgumentParser, args: argparse.N
 
     Keys are the `run` flags without `--` (`-` -> `_`), plus `experiment` for the experiment file; the output
     flags (`--json`, `--rich`, `-v`, `--debug`) aren't keys. A repeatable flag's value is a list, `--pareto`'s a
-    boolean, every other flag's a string or number. A flag on the command line replaces the file's value (for a
-    repeatable flag, its whole list); giving any agent flag (`--agent`, `--build-task`, `--space`, `--config`) on
-    the command line replaces the file's agent route. Paths (`experiment`, `config`, `base_dir`) and path-form
-    `MODULE:ATTR`s resolve against the file's folder; dotted modules import from the working directory, as on the
-    command line.
+    boolean, every other flag's a string or number. The agent route may sit in an `[agent]` section (`factory` for
+    `--agent`, then `build_task`, `space`, `config`, `tune`, `rollout`, `environment`). `objective`, `constraint`,
+    and `tune` take the flag's strings, one `[key]` table, or named `[key.NAME]` tables (not `[[key]]` or inline
+    tables); a table's fields are `{maximize | minimize = METRIC, weight?, scale?}`, `{metric = METRIC,
+    at_most | at_least = X}`, `{path = PATH, choices?}`, and each becomes the flag's spec. A flag on the command
+    line replaces the file's value (for a repeatable flag, its whole list); giving any agent flag (`--agent`,
+    `--build-task`, `--space`, `--config`) on the command line replaces the file's agent route. Paths
+    (`experiment`, `config`, `base_dir`) and path-form `MODULE:ATTR`s resolve against the file's folder; dotted
+    modules import from the working directory, as on the command line.
 
     Raises:
         ValueError: The file can't be read or parsed, has an unknown key, a value of the wrong type, or no
@@ -440,12 +445,15 @@ def apply_run_file(path: Path, parser: argparse.ArgumentParser, args: argparse.N
     except OSError as error:
         raise ValueError(f"run file {path}: {error}") from error
     except tomllib.TOMLDecodeError as error:
-        raise ValueError(f"run file {path} isn't valid TOML: {error}") from error
+        hint = next((h for text, h in _TOML_HINTS if text in str(error)), "")
+        raise ValueError(f"run file {path} isn't valid TOML: {error}{hint}") from error
     actions = _run_file_actions(parser)
+    data = _flatten_sections(path, data, actions)
     unknown = sorted(set(data) - set(actions))
     if unknown:
         raise ValueError(
-            f"run file {path}: unknown key {unknown[0]!r}; keys are the run flags, e.g. {', '.join(list(actions)[:4])}"
+            f"run file {path}: unknown key {unknown[0]!r}{_did_you_mean(unknown[0], actions)}; keys are the run "
+            f"flags without --, e.g. {', '.join(list(actions)[:4])}"
         )
     if "experiment" not in data:
         raise ValueError(f'run file {path} has no experiment = "<experiment.json>"')
@@ -458,8 +466,16 @@ def apply_run_file(path: Path, parser: argparse.ArgumentParser, args: argparse.N
         action = actions[key]
         if action.dest in on_command_line:
             continue
+        if key in _TABLES and isinstance(value, list):
+            value = [_table_entry(path, key, i, entry, actions) for i, entry in enumerate(value)]
         value = _run_file_value(path, key, action, value)
         setattr(args, action.dest, _resolve_against(base, action.dest, value))
+
+
+def _did_you_mean(name: str, options: Any) -> str:
+    """`; did you mean 'x'?` for the closest of `options` (a plural, a typo), else nothing."""
+    close = difflib.get_close_matches(name, list(options), n=1, cutoff=0.6)
+    return f"; did you mean {close[0]!r}?" if close else ""
 
 
 def _run_file_actions(parser: argparse.ArgumentParser) -> dict[str, argparse.Action]:
@@ -474,6 +490,145 @@ def _run_file_actions(parser: argparse.ArgumentParser) -> dict[str, argparse.Act
         flag = next(option for option in action.option_strings if option.startswith("--"))
         actions[flag[2:].replace("-", "_")] = action
     return actions
+
+
+def _flatten_sections(path: Path, data: dict[str, Any], actions: Mapping[str, argparse.Action]) -> dict[str, Any]:
+    """`data` with an `[agent]` section's keys moved to the top level (`factory` -> `agent`), and every `objective` /
+    `constraint` / `tune` value as a list of entries (strings or tables)."""
+    data = dict(data)
+    section = data.get("agent")
+    if isinstance(section, dict):
+        del data["agent"]
+        for name, value in section.items():
+            if name not in _AGENT_SECTION:
+                if name in actions:
+                    raise ValueError(
+                        f"run file {path}: [agent] holds {name!r}: every key after the [agent] header belongs to it, "
+                        "so move the run's other keys above it"
+                    )
+                raise ValueError(
+                    f"run file {path}: [agent] has no key {name!r}{_did_you_mean(name, _AGENT_SECTION)}; "
+                    f"it takes {', '.join(_AGENT_SECTION)}"
+                )
+            key = "agent" if name == "factory" else name
+            if key in data:
+                raise ValueError(f"run file {path}: {key} is given both in [agent] and at the top level")
+            data[key] = value
+    for key in _TABLES:
+        if key in data:
+            data[key] = _table_entries(path, key, data[key])
+    return data
+
+
+def _table_entries(path: Path, key: str, value: Any) -> Any:
+    """`key = ["...", ...]` (the flag's strings) as given; one `[key]` table as a list of it; named `[key.NAME]`
+    tables as their values in file order (the names are labels only). `[[key]]` sections and inline tables in the
+    list are refused, so each field has one list form."""
+    if isinstance(value, list):
+        if any(isinstance(entry, dict) for entry in value):
+            raise ValueError(
+                f"run file {path}: {key} takes strings (the --{key.replace('_', '-')} specs), one [{key}] table, or "
+                f"named [{key}.NAME] tables; [[{key}]] sections and inline tables aren't accepted"
+            )
+        return value
+    if not isinstance(value, dict):
+        return value
+    tables = [v for v in value.values() if isinstance(v, dict)]
+    if not tables:
+        return [value]
+    if len(tables) != len(value):
+        raise ValueError(
+            f"run file {path}: [{key}] mixes fields with named [{key}.NAME] tables; use one [{key}] for a single "
+            f"{key}, or [{key}.NAME] tables for several"
+        )
+    return tables
+
+
+def _table_entry(path: Path, key: str, index: int, entry: Any, actions: Mapping[str, argparse.Action]) -> Any:
+    """An `objective` / `constraint` / `tune` table as the flag's spec string; a string entry as is."""
+    if not isinstance(entry, dict):
+        return entry
+    where = f"run file {path}: {key}[{index}]"
+    misplaced = sorted(set(entry) & set(actions))
+    if misplaced:
+        raise ValueError(
+            f"{where} holds {misplaced[0]!r}: every key after a [{key}] or [{key}.NAME] header belongs to that {key}, "
+            "so move the run's other keys above the first [...] header"
+        )
+    allowed = _TABLES[key]
+    unknown = sorted(set(entry) - set(allowed))
+    if unknown:
+        raise ValueError(
+            f"{where}: unknown key {unknown[0]!r}{_did_you_mean(unknown[0], allowed)}; "
+            f"a {key} takes {', '.join(allowed)}"
+        )
+    return _TABLE_SPECS[key](where, entry)
+
+
+def _objective_spec(where: str, entry: dict[str, Any]) -> str:
+    """`{maximize | minimize = METRIC, weight?, scale?}` -> `maximize:METRIC[:weight=X][:scale=X]`."""
+    direction = _one_of(where, entry, ("maximize", "minimize"), str, '"METRIC"')
+    spec = f"{direction}:{entry[direction]}"
+    for option in ("weight", "scale"):
+        if option in entry:
+            spec += f":{option}={_number(where, entry, option)}"
+    return spec
+
+
+def _constraint_spec(where: str, entry: dict[str, Any]) -> str:
+    """`{metric = METRIC, at_most | at_least = X}` -> `METRIC<=X` / `METRIC>=X`."""
+    if not isinstance(entry.get("metric"), str):
+        raise ValueError(f'{where} needs metric = "METRIC"')
+    bound = _one_of(where, entry, ("at_most", "at_least"), (int, float), "X")
+    return f"{entry['metric']}{'<=' if bound == 'at_most' else '>='}{_number(where, entry, bound)}"
+
+
+def _tune_spec(where: str, entry: dict[str, Any]) -> str:
+    """`{path = PATH, choices?}` -> `PATH` (a text field) or `PATH=JSON_LIST` (a choice)."""
+    if not isinstance(entry.get("path"), str):
+        raise ValueError(f'{where} needs path = "PATH"')
+    if "choices" not in entry:
+        return str(entry["path"])
+    if not isinstance(entry["choices"], list):
+        raise ValueError(f"{where}: choices must be a list")
+    return f"{entry['path']}={json.dumps(entry['choices'])}"
+
+
+def _one_of(where: str, entry: dict[str, Any], names: tuple[str, ...], kind: Any, placeholder: str) -> str:
+    """The one of `names` that `entry` has, holding a value of `kind`."""
+    present = [name for name in names if name in entry]
+    if len(present) != 1 or isinstance(entry[present[0]], bool) or not isinstance(entry[present[0]], kind):
+        raise ValueError(f"{where} needs one of {' or '.join(f'{name} = {placeholder}' for name in names)}")
+    return present[0]
+
+
+def _number(where: str, entry: dict[str, Any], name: str) -> int | float:
+    value = entry[name]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{where}: {name} must be a number")
+    return value
+
+
+_AGENT_SECTION = ("factory", "build_task", "space", "config", "tune", "rollout", "environment")
+_TOML_HINTS = (
+    ("Cannot overwrite a value", " (a key given both as a value and as a [section]: use one form)"),
+    ("immutable namespace", " ([[key]] sections aren't accepted: use the key's strings or [key.NAME] tables)"),
+    (
+        "twice",
+        " (a key given twice: as both `key = ...` and a [key] table, or as two [key] tables; use one form, and "
+        "[key.NAME] tables for several)",
+    ),
+)
+_TABLES: dict[str, tuple[str, ...]] = {
+    "objective": ("maximize", "minimize", "weight", "scale"),
+    "constraint": ("metric", "at_most", "at_least"),
+    "tune": ("path", "choices"),
+}
+_TABLE_SPECS: dict[str, Callable[[str, dict[str, Any]], str]] = {
+    "objective": _objective_spec,
+    "constraint": _constraint_spec,
+    "tune": _tune_spec,
+}
 
 
 def _run_file_value(path: Path, key: str, action: argparse.Action, value: Any) -> Any:

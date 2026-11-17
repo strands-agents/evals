@@ -149,7 +149,9 @@ def build_task(
                 trial = _fresh_state(config, base_dir, Path(folder))
 
                 def make_harness() -> Any:
-                    return create_harness(**harness_agent_kwargs_from_config(trial, base_dir=base_dir))
+                    kwargs = harness_agent_kwargs_from_config(trial, base_dir=base_dir)
+                    kwargs.setdefault("callback_handler", None)  # Strands' default prints every streamed answer
+                    return create_harness(**kwargs)
 
                 if rollout_fn is not None:
                     return await _call(rollout_fn, make_harness, case)
