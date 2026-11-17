@@ -3,12 +3,14 @@
 import asyncio
 import os
 import tempfile
+import threading
 
 import pytest
 from strands.types.exceptions import EventLoopException
 
 from strands_evals.optimization import Criteria, InfrastructureError, Maximize, Reflection, Space, TextValue
 from strands_evals.optimization.candidate import Candidate
+from strands_evals.optimization.search import reflection as reflection_module
 from strands_evals.optimization.search.proposer import ProposalRequest
 from strands_evals.types.trace import TextContent, ToolResultContent, UserMessage
 from tests.strands_evals.optimization.scripted_model import ScriptedModel, ToolUse
@@ -363,27 +365,82 @@ async def test_nothing_to_learn_from_logs_no_spend():
     assert events == []
 
 
-async def test_a_cancelled_call_logs_nothing_and_the_cancellation_propagates():
-    class Hanging(ScriptedModel):
-        def __init__(self):
-            super().__init__(["unused"])
-            self.started = asyncio.Event()
+class HangsAfter(ScriptedModel):
+    """Replays `turns`, then hangs on the next model call until cancelled (that call reports no usage)."""
 
-        async def stream(self, *args, **kwargs):
-            self.started.set()
+    def __init__(self, turns):
+        super().__init__(turns)
+        self.hanging = asyncio.Event()
+
+    async def stream(self, *args, **kwargs):
+        if self.calls == len(self.turns):
+            self.calls += 1
+            self.hanging.set()
             await asyncio.Event().wait()
-            yield {}  # pragma: no cover
+        async for chunk in super().stream(*args, **kwargs):
+            yield chunk
 
-    model = Hanging()
-    reflection = Reflection(model)
-    reflection._warned = True
+
+async def cancel_when(reflection, ready, *, n=1):
+    """Start `reflection.propose`, cancel it once `ready()` holds, and return the events it logged."""
     events = []
-    task = asyncio.create_task(reflection.propose(request(events=events)))
-    await asyncio.wait_for(model.started.wait(), timeout=10)
-    task.cancel()
+    task = asyncio.create_task(reflection.propose(request(n=n, events=events)))
+    try:
+        for _ in range(1000):
+            if ready():
+                break
+            await asyncio.sleep(0.01)
+        assert ready(), "the call never reached the point to cancel it at"
+    finally:
+        task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert events == []
+    return events
+
+
+async def test_a_cancelled_call_logs_the_spend_of_every_attempt_and_the_cancellation_propagates():
+    # Attempt 1 answers one call, then errors; attempt 2 answers one call, then its next request is still streaming.
+    model = HangsAfter(
+        [ToolUse("shell", {"command": "ls"}), ValueError("stream broke"), ToolUse("shell", {"command": "ls"})]
+    )
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = await cancel_when(reflection, model.hanging.is_set)
+    assert [e for e, _ in events] == ["proposer_retry", "proposer_usage"]
+    (usage,) = usage_events(events)
+    # Four calls (two answered, one failed, one still streaming); only the answered ones reported tokens.
+    assert (usage.tokens, usage.model_calls, usage.models) == (2 * 15, 4, ["scripted-model"])
+
+
+async def test_a_call_cancelled_while_its_submission_is_checked_logs_the_whole_conversations_spend(monkeypatch):
+    checking, release = threading.Event(), threading.Event()
+
+    def slow_guard(*args):
+        checking.set()
+        release.wait(timeout=10)
+        return {}, {}, []
+
+    monkeypatch.setattr(reflection_module, "_guard", slow_guard)
+    reflection = Reflection(ScriptedModel([write("p.txt", "Be brief."), submit(prompt="p.txt"), "Done."]))
+    reflection._warned = True
+    try:
+        events = await cancel_when(reflection, checking.is_set)
+    finally:
+        release.set()
+    (usage,) = usage_events(events)
+    assert len(events) == 1 and usage.tokens == 3 * 15
+
+
+async def test_a_cancelled_later_slot_logs_its_spend_and_the_patches_never_returned():
+    # Slot 0 submits; slot 1 answers one call, then its next request is still streaming.
+    model = HangsAfter(
+        [write("p.txt", "Be brief."), submit(prompt="p.txt"), "Done.", ToolUse("shell", {"command": "ls"})]
+    )
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = await cancel_when(reflection, model.hanging.is_set, n=2)
+    cancelled, first = usage_events(events)
+    assert len(events) == 2 and (cancelled.tokens, first.tokens) == (15, 45)  # slot 1's spend, then slot 0's patch
 
 
 async def test_a_later_slot_raising_logs_the_spend_of_the_patches_never_returned():

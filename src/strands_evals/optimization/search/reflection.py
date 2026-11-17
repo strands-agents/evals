@@ -109,9 +109,10 @@ class Reflection(Proposer):
     Each `propose` call (n=1) runs one agent (`concurrent = True`). The agent is retried 3 times, each
     failure logged as `proposer_retry`, then the last error is raised; nothing submitted, or every value
     dropped, returns `[]`. A returned patch's `usage` holds its call's model spend, every attempt and send-back
-    included; a call that returns nothing after its agent ran, or whose agent fails on every attempt, logs that
-    spend as `proposer_usage`
-    instead (nothing when cancelled). Guardrails run in code after the agent returns,
+    included; a call that returns nothing after its agent ran, whose agent fails on every attempt, or that is
+    cancelled once its agent started (a concurrent sibling call raised, or the run was cancelled), logs that
+    spend as `proposer_usage` instead. A model request still streaming when the call is cancelled is counted in
+    `model_calls` but reports no tokens. Guardrails run in code after the agent returns,
     including the leakage screen (drop a value that adds a shown case's identifier-like name, or a
     verbatim run of >= 40 characters from a shown trial's input, output, or conversation, that the
     parent's value didn't contain), logged as `screened`. A submitted value over its `size_cap` is sent back, in the
@@ -203,7 +204,7 @@ class Reflection(Proposer):
         for _ in range(request.n):
             try:
                 patch = await self._propose_one(request)
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 for built in patches:  # never returned, so no patch carries their spend
                     request.log("proposer_usage", usage=built.usage)
                 raise
@@ -264,39 +265,43 @@ class Reflection(Proposer):
             usage = Usage.zero()
             refused: list[dict[str, Any]] = []
             rejected: list[dict[str, str]] = []
-            for attempt in range(_ATTEMPTS):
-                submitted: dict[str, str] = {}
-                agent = Agent(
-                    model=self._model(),
-                    system_prompt=prompt + SUBMIT_INSTRUCTIONS,
-                    tools=[
-                        _confined_shell(work, [traces, versions, work], refused, root, running),
-                        _submit_tool(work, submitted, parent, rejected, caps),
-                    ],
-                    # Strands' 40-message window, trimmed at the end of each call and on overflow, with the task
-                    # message pinned: a send-back after a long first turn would otherwise go without it.
-                    conversation_manager=SlidingWindowConversationManager(pin_first=1),
-                    callback_handler=None,
-                )
-                agent.add_hook(_cap_tool_output, AfterToolCallEvent)
-                started = time.monotonic()
-                failure: Exception | None = None
-                try:
-                    params, rationale, revised = await self._converse(agent, message, submitted, caps, rejected)
-                except Exception as error:  # noqa: BLE001 - any failure of the agent is retried, then raised
-                    failure = error
-                finally:  # a cancellation (not an `Exception`) propagates from here, with no event
-                    usage = usage + _agent_usage(agent, time.monotonic() - started, self._model_id())
-                if failure is None:
-                    break
-                if attempt == _ATTEMPTS - 1:
-                    self.refused.extend(refused)
-                    # The agent ran (`usage` is never zero here), and no patch will carry its spend.
-                    request.log("proposer_usage", usage=usage)
-                    raise failure
-                request.log("proposer_retry", error_type=type(failure).__name__, error=str(failure)[:2000])
-            self.refused.extend(refused)
-            updates, dropped, screened = await asyncio.to_thread(_guard, request, params or {}, keys, parent)
+            try:
+                for attempt in range(_ATTEMPTS):
+                    submitted: dict[str, str] = {}
+                    agent = Agent(
+                        model=self._model(),
+                        system_prompt=prompt + SUBMIT_INSTRUCTIONS,
+                        tools=[
+                            _confined_shell(work, [traces, versions, work], refused, root, running),
+                            _submit_tool(work, submitted, parent, rejected, caps),
+                        ],
+                        # Strands' 40-message window, trimmed at the end of each call and on overflow, with the task
+                        # message pinned: a send-back after a long first turn would otherwise go without it.
+                        conversation_manager=SlidingWindowConversationManager(pin_first=1),
+                        callback_handler=None,
+                    )
+                    agent.add_hook(_cap_tool_output, AfterToolCallEvent)
+                    started = time.monotonic()
+                    failure: Exception | None = None
+                    try:
+                        params, rationale, revised = await self._converse(agent, message, submitted, caps, rejected)
+                    except Exception as error:  # noqa: BLE001 - any failure of the agent is retried, then raised
+                        failure = error
+                    finally:  # also on a cancellation, so the handler below logs this attempt's spend too
+                        usage = usage + _agent_usage(agent, time.monotonic() - started, self._model_id())
+                    if failure is None:
+                        break
+                    if attempt == _ATTEMPTS - 1:
+                        self.refused.extend(refused)
+                        # The agent ran (`usage` is never zero here), and no patch will carry its spend.
+                        request.log("proposer_usage", usage=usage)
+                        raise failure
+                    request.log("proposer_retry", error_type=type(failure).__name__, error=str(failure)[:2000])
+                self.refused.extend(refused)
+                updates, dropped, screened = await asyncio.to_thread(_guard, request, params or {}, keys, parent)
+            except asyncio.CancelledError:
+                request.log("proposer_usage", usage=usage)  # a cancelled call returns no patch to carry its spend
+                raise
             for key in screened:
                 request.log("screened", key=key, reason=dropped[key])
         if not updates:
