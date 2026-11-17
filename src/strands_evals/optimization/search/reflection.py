@@ -803,6 +803,8 @@ def _rewards(
     for t, score in zip(trials, scores, strict=True):
         broken = {}
         for c in criteria.constraints:
+            if c.compare != "absolute":
+                continue  # a single trial has no baseline value to compare with
             v = value(t, c.metric)
             excess = None if v is None else (v - c.bound if isinstance(c, AtMost) else c.bound - v)
             if excess is not None and excess > 0:

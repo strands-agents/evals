@@ -5,6 +5,7 @@ from collections import Counter
 import pytest
 
 from strands_evals.optimization import (
+    AtLeast,
     AtMost,
     Criteria,
     Maximize,
@@ -255,6 +256,30 @@ def test_it_prefers_a_combination_that_meets_the_drawn_constraints():
     )
     fit, summaries = world(SPACE, truths)
     criteria = Criteria(Maximize("A"), [AtMost("B", 0.5)], REGISTRY)
+    counts = picks(
+        Thompson(), lambda i: request(SPACE, KEYS, fit=fit, candidates=summaries, criteria=criteria, iteration=i), 20
+    )
+    assert counts[("r", "y")] >= 16
+
+
+@pytest.mark.parametrize(
+    "constraint, b_by_option",
+    [
+        # At most 1.5 times the baseline's B: q's 0.9 is 4.5 times the baseline's 0.2, though under 1.5.
+        (AtMost("B", 1.5, compare="ratio"), {"p": 0.2, "q": 0.9, "r": 0.2}),
+        # At most 0.1 below the baseline's B: q's 0.3 is 0.5 below the baseline's 0.8, though above -0.1.
+        (AtLeast("B", -0.1, compare="difference"), {"p": 0.8, "q": 0.3, "r": 0.8}),
+    ],
+)
+def test_a_relative_constraint_is_drawn_against_the_baseline(constraint, b_by_option):
+    # q is best on A; it meets the bound read as absolute but not against the baseline (option p, other x).
+    a_by_option = {"p": 0.40, "q": 0.80, "r": 0.60}
+    truths = grid(
+        {o: {"A": a_by_option[o], "B": b_by_option[o]} for o in a_by_option},
+        also=[({"option": "p", "other": "y"}, {"A": 0.42, "B": b_by_option["p"] + 0.02})],
+    )
+    fit, summaries = world(SPACE, truths)
+    criteria = Criteria(Maximize("A"), [constraint], REGISTRY)
     counts = picks(
         Thompson(), lambda i: request(SPACE, KEYS, fit=fit, candidates=summaries, criteria=criteria, iteration=i), 20
     )

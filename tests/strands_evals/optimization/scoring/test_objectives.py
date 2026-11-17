@@ -114,6 +114,8 @@ def test_weight_and_scale_of_the_wrong_type_fail_with_type_error(settings):
         ),
         (AtMost("tokens", 4000), "tokens <= 4000"),
         (AtLeast("Correctness", 0.8), "Correctness >= 0.8"),
+        (AtMost("tokens", 0.8, compare="ratio"), "tokens / baseline <= 0.8"),
+        (AtLeast("Correctness", -0.05, compare="difference"), "Correctness - baseline >= -0.05"),
     ],
 )
 def test_str_is_what_run_json_stores(objective, text):
@@ -675,3 +677,80 @@ def test_a_usage_value_that_is_not_finite_is_taken_out():
     assert "seconds" not in train.metrics_by_case["a"]
     assert train.objective == pytest.approx(-3.0)
     assert not train.is_eligible  # case a has no seconds
+
+
+# --- relative constraints ---
+
+
+def test_a_bound_compares_absolutely_by_default_and_compare_is_part_of_it():
+    assert AtMost("tokens", 4000).compare == "absolute"
+    assert AtLeast("Stars", -1, compare="difference").compare == "difference"
+    assert AtMost("tokens", 0.8, compare="ratio") != AtMost("tokens", 0.8)
+
+
+def test_compare_must_be_absolute_difference_or_ratio():
+    with pytest.raises(ValueError, match="compare= must be one of"):
+        AtLeast("Stars", 3, compare="relative")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("bound", [0, -0.2])
+def test_a_ratio_bound_must_be_above_0(bound):
+    with pytest.raises(ValueError, match="needs a bound > 0"):
+        AtMost("tokens", bound, compare="ratio")
+
+
+def test_criteria_keeps_compare_when_resolving_names():
+    criteria = Criteria(Maximize("Stars"), [AtLeast("Helpfulness", -0.05, compare="difference")], REGISTRY)
+    assert criteria.constraints == (AtLeast("HelpfulnessEvaluator", -0.05, compare="difference"),)
+
+
+def test_a_ratio_needs_a_metric_that_cant_be_negative():
+    assert Criteria(Maximize("Stars"), [AtMost("tokens", 0.8, compare="ratio")], REGISTRY).constraints
+    with pytest.raises(ValueError, match="a ratio to the baseline needs a metric that can't be negative"):
+        Criteria(Maximize("Stars"), [AtMost("Open", 2.0, compare="ratio")], UNBOUNDED)
+
+
+def test_relative_constraints_compare_with_the_baseline_over_the_cases_both_measured():
+    criteria = Criteria(
+        Maximize("Stars"),
+        [AtLeast("Stars", -0.5, compare="difference"), AtMost("tokens", 0.8, compare="ratio"), AtMost("tokens", 900)],
+        REGISTRY,
+    )
+    # The baseline has no value on case c, so c is left out of both relative comparisons.
+    candidate = {"a": {"Stars": 3.0, "tokens": 800.0}, "b": {"Stars": 4.0, "tokens": 900.0}, "c": {"tokens": 10.0}}
+    baseline = {"a": {"Stars": 4.0, "tokens": 1000.0}, "b": {"Stars": 4.0, "tokens": 1000.0}}
+    assert criteria.constraint_values(candidate, baseline) == [-0.5, pytest.approx(0.85), pytest.approx(570.0)]
+    assert criteria.unmet_constraints(candidate, baseline) == ["tokens / baseline <= 0.8: ratio 0.85 violates by 0.05"]
+
+
+def test_the_baseline_against_itself_is_exactly_0_and_1():
+    criteria = Criteria(
+        Maximize("Stars"), [AtLeast("Stars", 0, compare="difference"), AtMost("tokens", 1, compare="ratio")], REGISTRY
+    )
+    baseline = {"a": {"Stars": 3.1, "tokens": 1234.5}, "b": {"Stars": 4.7, "tokens": 98.25}}
+    assert criteria.constraint_values(baseline, baseline) == [0.0, 1.0]
+    assert criteria.unmet_constraints(baseline, baseline) == []
+
+
+def test_a_relative_constraint_without_a_value_is_unmet_and_says_why():
+    criteria = Criteria(
+        Maximize("Stars"),
+        [AtMost("tokens", 0.8, compare="ratio"), AtLeast("Stars", 0, compare="difference")],
+        REGISTRY,
+    )
+    candidate = {"a": {"Stars": 3.0, "tokens": 5.0}}
+    baseline = {"a": {"tokens": 0.0}, "b": {"Stars": 3.0}}
+    assert criteria.constraint_values(candidate, baseline) == [None, None]
+    assert criteria.unmet_constraints(candidate, baseline) == [
+        "tokens / baseline <= 0.8: the baseline's mean is 0, so the ratio is undefined",
+        "Stars - baseline >= 0: no case has a value for both the candidate and the baseline",
+    ]
+
+
+def test_a_relative_constraint_needs_the_baseline():
+    criteria = Criteria(Maximize("Stars"), [AtMost("tokens", 0.8, compare="ratio")], REGISTRY)
+    with pytest.raises(ValueError, match="compares with the baseline, but no baseline was given"):
+        criteria.unmet_constraints({"a": {"tokens": 1.0}})
+    assert (
+        Criteria(Maximize("Stars"), [AtMost("tokens", 4000)], REGISTRY).unmet_constraints({"a": {"tokens": 1.0}}) == []
+    )

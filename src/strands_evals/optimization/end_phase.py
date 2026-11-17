@@ -97,7 +97,8 @@ def pick(
     """The champion: the first feasible candidate on validation, baseline included; else the baseline.
 
     Feasible = eligible on validation and P(met) >= `criteria.feasibility_threshold` for every
-    constraint (measured means without a fit). Ranked by objective resolved to a tenth of its sd;
+    constraint (measured means without a fit); a relative constraint compares with the baseline on
+    validation. Ranked by objective resolved to a tenth of its sd;
     ties -> most trials, then earlier.
     Under a `Pareto` objective the same champion (the validated front's highest-gain member) plus
     `ValidationReport.front`.
@@ -105,10 +106,10 @@ def pick(
     Args:
         baseline_id: The baseline.
         finalist_ids: From `choose_finalists`.
-        validation: Candidate id -> its validation scores.
+        validation: Candidate id -> its validation scores; the baseline's included.
         fit: A fresh fit on the validation runs of the baseline and finalists only (never the search fit);
             None (fewer than 2 eligible, or the score model raised) -> measured means.
-        values: Candidate id -> values.
+        values: Candidate id -> values; the baseline's included.
         trial_counts: Candidate id -> validation trials that count.
         criteria: The objective, constraints, and feasibility threshold.
         rule: `FinalPick.rule`, passed to `assess`.
@@ -116,7 +117,9 @@ def pick(
     """
     ids = list(dict.fromkeys([baseline_id, *finalist_ids]))
     eligible = [c for c in ids if c in validation and validation[c].is_eligible]
-    assessments = assess(eligible, fit=fit, criteria=criteria, values=values, measured=validation, rule=rule)
+    assessments = assess(
+        eligible, fit=fit, criteria=criteria, values=values, measured=validation, rule=rule, baseline=baseline_id
+    )
     # The baseline comes first in `ids`, so with equal objectives and trial counts it wins the tie.
     ranked = rank(assessments, ids, trial_counts=trial_counts)
     feasible = [c for c in ranked if assessments[c].is_feasible]
@@ -126,7 +129,9 @@ def pick(
         if c not in assessments:
             infeasible[c] = "not eligible on validation: a case has no counted run for every goal metric"
         elif not assessments[c].is_feasible:
-            infeasible[c] = label_candidate(validation[c], assessments[c], criteria=criteria).reason
+            infeasible[c] = label_candidate(
+                validation[c], assessments[c], criteria=criteria, baseline=validation[baseline_id]
+            ).reason
     objectives = {c: assessments[c].objective if c in assessments else None for c in ids}
     return ValidationReport(
         champion_id=champion,

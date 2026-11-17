@@ -215,6 +215,16 @@ def test_a_bounded_constraint_joins_the_reward_as_a_mean():
     assert rewards[0][2]["constraints_broken"] == {"Cost <= 0.2": pytest.approx(0.2)}
 
 
+def test_a_relative_constraint_is_never_broken_by_one_trial():
+    # "Cost at most half the baseline's" limits the mean against the baseline's, not one trial's value.
+    criteria = Criteria(Maximize("Score"), [AtMost("Cost", 0.5, compare="ratio"), AtMost("Cost", 0.2)], REGISTRY)
+    trials = [trial("a", score=0.8)]
+    req = request(trials, criteria=criteria)
+    req = ProposalRequest(**{**req.__dict__, "scores": scores_of(trials, criteria, {"a": {"Cost": [0.6]}})})
+    rewards, _, _ = _rewards(req, 0.5)
+    assert rewards[0][2]["constraints_broken"] == {"Cost <= 0.2": pytest.approx(0.4)}
+
+
 def test_a_metric_with_no_value_is_left_out_of_the_reward_not_counted_as_0():
     """N/A (or a failed evaluator) on one part: the other parts' weights are rescaled, as the objective does."""
     criteria = Criteria(WeightedSum(Maximize("Score"), Maximize("Cost")), [], REGISTRY)

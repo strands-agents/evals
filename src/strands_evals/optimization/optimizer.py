@@ -489,7 +489,7 @@ class Optimizer:
             "label",
             iteration=0,
             candidate_id=self._baseline.id,
-            label=label_candidate(scores, assessments.get(self._baseline.id), criteria=self._criteria),
+            label=label_candidate(scores, assessments.get(self._baseline.id), criteria=self._criteria, baseline=scores),
         )
 
     def _init_state(self, baseline: Candidate) -> None:
@@ -902,13 +902,16 @@ class Optimizer:
         """Every eligible candidate in ranking order (the fit's estimates, else measured means), and each one's
         assessment."""
         eligible = [c for c in self._candidates if self._train[c].is_eligible]
+        baseline = self._baseline.id
         assessments = assess(
             eligible,
             fit=self._fit,
             criteria=self._criteria,
-            values={c: self._candidates[c].values for c in eligible},
+            # The baseline's values too, which a relative constraint compares with.
+            values={c: self._candidates[c].values for c in (*eligible, baseline)},
             measured=self._train,
             rule=Mean(),
+            baseline=baseline,
         )
         return rank(assessments, eligible, is_pareto=self._criteria.is_pareto), assessments
 
@@ -1130,7 +1133,10 @@ class Optimizer:
         labels = {}
         for candidate, _, _ in to_score:
             labels[candidate.id] = label_candidate(
-                self._train[candidate.id], assessments.get(candidate.id), criteria=self._criteria
+                self._train[candidate.id],
+                assessments.get(candidate.id),
+                criteria=self._criteria,
+                baseline=self._train[self._baseline.id],
             )
             self._run.events.append("label", iteration=iteration, candidate_id=candidate.id, label=labels[candidate.id])
         listening = {r.block for r in self._open_rounds}  # told only their round's best, at its end
@@ -1711,8 +1717,9 @@ class Optimizer:
         """Save and score the baseline on train; stop the run at setup when it can't be a parent.
 
         Raises:
-            RuntimeError: The baseline isn't eligible, no train trial of it completed, or a goal metric has no
-                value on any train case.
+            RuntimeError: The baseline isn't eligible, no train trial of it completed, a goal metric has no
+                value on any train case, or the baseline's train mean of a ratio constraint's metric is 0 (no
+                candidate could be judged against it).
         """
         assert self._run is not None
         baseline = self._baseline = Candidate.baseline(self._space)
@@ -1738,6 +1745,19 @@ class Optimizer:
         elif not any(r.status is TrialStatus.COMPLETED for r in records):
             # Eligible only through agent_failure_score: its scores would be the failure value alone.
             problem = "every train trial of the baseline failed, so nothing was measured"
+        # Against itself, a ratio has no value exactly when the baseline's mean is 0.
+        elif zero := [
+            str(c)
+            for c, value in zip(
+                self._criteria.constraints,
+                self._criteria.constraint_values(scores.metrics_by_case, scores.metrics_by_case),
+                strict=True,
+            )
+            if c.compare == "ratio" and value is None
+        ]:
+            problem = (
+                f"the baseline's train mean is 0 for {zero}, so no ratio to it is defined; use compare='difference'"
+            )
         else:
             return scores
         statuses = Counter(r.status.value for r in records)

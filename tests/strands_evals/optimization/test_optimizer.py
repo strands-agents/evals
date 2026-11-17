@@ -15,6 +15,7 @@ from strands_evals.optimization import (
     TPE,
     Alternate,
     AtLeast,
+    AtMost,
     Block,
     Budget,
     FileText,
@@ -1126,6 +1127,57 @@ async def test_a_finalist_failing_a_constraint_on_validation_cannot_ship(tmp_pat
     assert by_temperature[1.0] in result.validation.infeasible
     assert result.best.values["temperature"] == 0.5
     assert result.test is None and result.test_reason == "no test cases"
+
+
+async def test_a_relative_constraint_compares_with_the_baseline_on_each_split(tmp_path):
+    experiment = _experiment(n=14, evaluators=[Temperature()])
+    split = Split(train=experiment.cases[:8], validation=experiment.cases[8:14])
+    validation = {case.name for case in split.validation}
+
+    class Grounded(Evaluator):
+        """Up to temperature 0.5, 1.0 on train and 0.6 on validation, as the baseline (0.0) scores; 0.0 above."""
+
+        async def evaluate_async(self, evaluation_case):
+            level = 0.6 if evaluation_case.name in validation else 1.0
+            grounded = float(evaluation_case.actual_output) <= 0.5
+            return [EvaluationOutput(score=level if grounded else 0.0, test_pass=grounded, reason="g")]
+
+    blocks = [Block(Scripted({"temperature": 0.5}, {"temperature": 1.0}), "temperature"), Block(Scripted(), "manager")]
+    optimizer = _optimizer(
+        Experiment(cases=experiment.cases, evaluators=[Temperature(), Grounded(name="Grounded")]),
+        rollout_fn=_temperature_rollout,
+        search=Search(blocks, schedule=Joint()),
+        max_workers=64,
+        proposals_per_iteration=1,
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=2),
+        objective=Maximize("Temperature"),
+        constraints=[AtLeast("Grounded", -0.2, compare="difference")],
+        split=split,
+    )
+    result = await optimizer.run_async()
+    root = optimizer._run.root
+    assert json.loads((root / "run.json").read_text())["constraints"] == ["Grounded - baseline >= -0.2"]
+    by_temperature = {v.values["temperature"]: v.id for v in result.candidates.values()}
+    labels = {e["candidate_id"]: e["label"]["outcome"] for e in _events(optimizer) if e["event"] == "label"}
+    assert labels[by_temperature[0.5]] == "feasible" and labels[by_temperature[1.0]] == "infeasible"
+    # On validation the baseline scores 0.6 and 0.5 matches it, so 0.5 meets the bound there; a floor fixed at the
+    # train baseline's 1.0 - 0.2 would not.
+    assert result.best.values["temperature"] == 0.5
+    assert "Grounded - baseline >= -0.2" in result.validation.infeasible[by_temperature[1.0]]
+
+
+async def test_a_ratio_to_a_baseline_mean_of_0_stops_at_setup(tmp_path):
+    optimizer = _quiet(
+        experiment=_experiment(evaluators=[Temperature()]),
+        base_dir=tmp_path,
+        rollout_fn=_temperature_rollout,
+        constraints=[AtMost("Temperature", 2.0, compare="ratio")],
+    )
+    optimizer._setup()
+    with pytest.raises(RuntimeError, match=r"the baseline's train mean is 0 for \['Temperature / baseline <= 2'\]"):
+        await optimizer._score_baseline()
+    assert _events(optimizer)[-1]["reason"] == "setup"
 
 
 async def test_validation_and_test_runs_never_reach_the_search(tmp_path):

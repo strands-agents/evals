@@ -134,41 +134,66 @@ class Pareto(_Combination):
 
 Objective = Maximize | Minimize | WeightedSum | Pareto
 
+Compare = Literal["absolute", "difference", "ratio"]
+_COMPARES: tuple[Compare, ...] = ("absolute", "difference", "ratio")
+
 
 @dataclass(frozen=True, init=False)
 class _Bound:
-    """A bound on one metric's mean; during the search it only ranks, at the final pick it decides."""
+    """A bound on one metric's mean, or on its difference from or ratio to the baseline's mean on the same split;
+    during the search it only ranks, at the final pick it decides."""
 
     metric: str
     bound: float
+    compare: Compare
 
-    def __init__(self, target: MetricTarget, /, bound: float):
+    def __init__(self, target: MetricTarget, /, bound: float, *, compare: Compare = "absolute"):
         """Name the metric as in `Maximize`.
 
         Args:
             target: A metric name, an evaluator class, or an evaluator instance.
             bound: The limit on the mean; by position or keyword (`AtMost("tokens", bound=4000)`).
+            compare: What `bound` limits: `"absolute"` the candidate's mean; `"difference"` its mean minus the
+                baseline's over the cases both measured on the same split (`AtLeast("Correctness", -0.05,
+                compare="difference")`: at most 0.05 below the baseline); `"ratio"` its mean over the baseline's
+                (`AtMost("tokens", 0.8, compare="ratio")`: at most 80% of the baseline's tokens). With a fit, a
+                relative bound is judged on the fit's paired estimate (`MetricModel.difference` / `ratio`), so
+                the effects both share cancel.
 
         Raises:
             TypeError: `bound` is not a finite number.
+            ValueError: `compare` is not `"absolute"`, `"difference"`, or `"ratio"`; or a ratio's `bound` is not
+                > 0 (a ratio of means that can't be negative is never below 0).
         """
         if isinstance(bound, bool) or not isinstance(bound, (int, float)) or not math.isfinite(bound):
             raise TypeError(f"{type(self).__name__} bound must be a finite number, got {bound!r}")
+        if compare not in _COMPARES:
+            raise ValueError(f"{type(self).__name__} compare= must be one of {_COMPARES}, got {compare!r}")
+        if compare == "ratio" and bound <= 0:
+            raise ValueError(
+                f"{type(self).__name__} with compare='ratio' needs a bound > 0, a multiple of the baseline's mean "
+                f"(0.8 for 20% below it), got {bound!r}"
+            )
         object.__setattr__(self, "metric", _metric_name(target))
         object.__setattr__(self, "bound", float(bound))
+        object.__setattr__(self, "compare", compare)
 
     def __str__(self) -> str:
-        """E.g. `"tokens <= 4000"`; stored in `run.json`."""
+        """E.g. `"tokens <= 4000"`, `"tokens / baseline <= 0.8"`, `"Correctness - baseline >= -0.05"`; stored in
+        `run.json`."""
         operator = "<=" if isinstance(self, AtMost) else ">="
-        return f"{self.metric} {operator} {_number(self.bound)}"
+        return f"{_judged_name(self)} {operator} {_number(self.bound)}"
 
 
 class AtMost(_Bound):
-    """The metric's mean must not exceed `bound`, e.g. `AtMost("tokens", 4000)`."""
+    """The metric's mean must not exceed `bound`, e.g. `AtMost("tokens", 4000)`; with `compare="ratio"`,
+    `AtMost("tokens", 0.8, compare="ratio")` keeps it at most 80% of the baseline's."""
 
 
 class AtLeast(_Bound):
-    """The metric's mean must not fall below `bound`, e.g. `AtLeast("Correctness", 0.8)`."""
+    """The metric's mean must not fall below `bound`, e.g. `AtLeast("Correctness", 0.8)`; with
+    `compare="difference"`, `AtLeast("Correctness", -0.05, compare="difference")` keeps it at most 0.05 below the
+    baseline's."""
 
 
 Constraint = AtMost | AtLeast
@@ -365,25 +390,92 @@ class Criteria:
             return None
         return tuple(_oriented(t, metrics[t.metric]) for t in self._terms)
 
-    def unmet_constraints(self, metrics_by_case: Mapping[str, Mapping[str, float]]) -> list[str]:
+    def unmet_constraints(
+        self,
+        metrics_by_case: Mapping[str, Mapping[str, float]],
+        baseline: Mapping[str, Mapping[str, float]] | None = None,
+    ) -> list[str]:
         """One sentence per constraint not met on measured means; a constraint never measured counts as unmet.
 
         Sentences, as `CandidateLabel.unmet_constraints`; the per-constraint margins are `Assessment.violations`.
+        Each constraint is judged on what `constraint_values` gives it; a relative one with no value (no case
+        measured by both, or a ratio over a baseline mean of 0) counts as unmet too.
 
-        `metrics_by_case` maps case name -> metric name -> value, as `CandidateScores.metrics_by_case`.
+        Args:
+            metrics_by_case: Case name -> metric name -> value, as `CandidateScores.metrics_by_case`.
+            baseline: The baseline's `metrics_by_case` on the same split; needed only when a constraint is
+                relative.
+
+        Raises:
+            ValueError: A constraint compares with the baseline and `baseline` is None.
         """
         sentences = []
-        for constraint in self.constraints:
-            values = [case[constraint.metric] for case in metrics_by_case.values() if constraint.metric in case]
-            if not values:
-                sentences.append(f"{constraint}: never measured")
+        for constraint, (value, missing) in zip(self.constraints, self._judged(metrics_by_case, baseline), strict=True):
+            if value is None:
+                sentences.append(f"{constraint}: {missing}")
                 continue
-            mean = statistics.fmean(values)
-            excess = mean - constraint.bound if isinstance(constraint, AtMost) else constraint.bound - mean
-            # A mean equal to the bound up to float noise (0.1 + 0.2 against 0.3) is met.
-            if excess > 0 and not near(mean, constraint.bound):
-                sentences.append(f"{constraint}: mean {mean:.4g} violates by {excess:.4g}")
+            excess = value - constraint.bound if isinstance(constraint, AtMost) else constraint.bound - value
+            # A value equal to the bound up to float noise (0.1 + 0.2 against 0.3) is met.
+            if excess > 0 and not near(value, constraint.bound):
+                kind = "mean" if constraint.compare == "absolute" else constraint.compare
+                sentences.append(f"{constraint}: {kind} {value:.4g} violates by {excess:.4g}")
         return sentences
+
+    def constraint_values(
+        self,
+        metrics_by_case: Mapping[str, Mapping[str, float]],
+        baseline: Mapping[str, Mapping[str, float]] | None = None,
+    ) -> list[float | None]:
+        """What each constraint is judged on by measured means, in order.
+
+        `"absolute"`: the candidate's mean over the cases with a value. `"difference"` and `"ratio"`: over the
+        cases both the candidate and the baseline have a value on, the candidate's mean minus, or over, the
+        baseline's (as the test report pairs them). None when the candidate has no value, no case has both,
+        or a ratio's baseline mean is 0.
+
+        Args:
+            metrics_by_case: Case name -> metric name -> value, as `CandidateScores.metrics_by_case`.
+            baseline: The baseline's `metrics_by_case` on the same split; needed only when a constraint is
+                relative.
+
+        Raises:
+            ValueError: A constraint compares with the baseline and `baseline` is None.
+        """
+        return [value for value, _ in self._judged(metrics_by_case, baseline)]
+
+    def _judged(
+        self,
+        metrics_by_case: Mapping[str, Mapping[str, float]],
+        baseline: Mapping[str, Mapping[str, float]] | None,
+    ) -> list[tuple[float | None, str]]:
+        """`constraint_values`, each with why it is None (empty when it isn't)."""
+        relative = [c for c in self.constraints if c.compare != "absolute"]
+        if relative and baseline is None:
+            raise ValueError(f"{relative[0]} compares with the baseline, but no baseline was given")
+        judged: list[tuple[float | None, str]] = []
+        for constraint in self.constraints:
+            metric = constraint.metric
+            mine = {case: values[metric] for case, values in metrics_by_case.items() if metric in values}
+            if not mine:
+                judged.append((None, "never measured"))
+                continue
+            if constraint.compare == "absolute":
+                judged.append((statistics.fmean(mine.values()), ""))
+                continue
+            assert baseline is not None
+            shared = [case for case in mine if metric in baseline.get(case, {})]
+            if not shared:
+                judged.append((None, "no case has a value for both the candidate and the baseline"))
+                continue
+            mean = statistics.fmean(mine[case] for case in shared)
+            reference = statistics.fmean(baseline[case][metric] for case in shared)
+            if constraint.compare == "difference":
+                judged.append((mean - reference, ""))
+            elif reference == 0:
+                judged.append((None, "the baseline's mean is 0, so the ratio is undefined"))
+            else:
+                judged.append((mean / reference, ""))
+        return judged
 
     def _resolve_objective(self, objective: Objective | None) -> Objective:
         """The objective as the run uses it: the default filled in, metric names resolved, and checked.
@@ -441,7 +533,17 @@ class Criteria:
     def _resolve_constraint(self, constraint: Constraint) -> Constraint:
         if not isinstance(constraint, (AtMost, AtLeast)):
             raise TypeError(f"constraints must be AtMost or AtLeast, got {type(constraint).__name__}")
-        return type(constraint)(self.registry.resolve(constraint.metric), constraint.bound)
+        resolved = type(constraint)(
+            self.registry.resolve(constraint.metric), constraint.bound, compare=constraint.compare
+        )
+        low, _ = self.registry.range(resolved.metric)
+        if resolved.compare == "ratio" and (low is None or low < 0):
+            # Over a negative baseline mean, the ratio's inequality would point the other way.
+            raise ValueError(
+                f"{resolved}: a ratio to the baseline needs a metric that can't be negative, and {resolved.metric}'s "
+                f"range starts at {low}; use compare='difference'"
+            )
+        return resolved
 
     def _build_terms(self, objective: Objective) -> tuple[_Term, ...]:
         if isinstance(objective, (Maximize, Minimize)):
@@ -756,6 +858,15 @@ def _positive(name: str, value: float) -> float:
     if not math.isfinite(value) or value <= 0:
         raise ValueError(f"{name} must be a finite number > 0, got {value!r}")
     return float(value)
+
+
+def _judged_name(constraint: _Bound) -> str:
+    """What a constraint limits, as its text shows it: `"tokens"`, `"tokens - baseline"`, or `"tokens / baseline"`."""
+    if constraint.compare == "difference":
+        return f"{constraint.metric} - baseline"
+    if constraint.compare == "ratio":
+        return f"{constraint.metric} / baseline"
+    return constraint.metric
 
 
 def _number(value: float) -> str:

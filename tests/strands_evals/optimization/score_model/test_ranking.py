@@ -13,10 +13,14 @@ from strands_evals.optimization import (
     Mean,
     MetricRegistry,
     Minimize,
+    OneOf,
     Pareto,
     WeightedSum,
     p_met,
 )
+from strands_evals.optimization.declaration.space import Space
+from strands_evals.optimization.score_model.bayesbench import BayesBenchModel
+from strands_evals.optimization.score_model.protocols import FitData
 from strands_evals.optimization.score_model.ranking import (
     Assessment,
     assess,
@@ -259,6 +263,157 @@ def test_a_constraint_never_measured_is_unmet():
     measured = {"a": scores("a", {"x": {HELP: 0.5}}, 0.5)}
     a = assess(["a"], fit=None, criteria=criteria, values={"a": {}}, measured=measured, rule=Mean())["a"]
     assert a.violations == (math.inf,) and not a.is_feasible
+
+
+# ---- relative constraints -----------------------------------------------------------------------------------
+
+
+def _relative_scores():
+    """The baseline and two candidates measured on one case: Helpfulness and tokens."""
+    return {
+        "base": scores("base", {"x": {HELP: 0.8, "tokens": 1000.0}}, 0.8),
+        "a": scores("a", {"x": {HELP: 0.76, "tokens": 850.0}}, 0.76),
+        "b": scores("b", {"x": {HELP: 0.7, "tokens": 500.0}}, 0.7),
+    }
+
+
+def test_measured_relative_constraints_compare_with_the_baselines_scores():
+    criteria = Criteria(
+        Maximize(HELP), [AtLeast(HELP, -0.05, compare="difference"), AtMost("tokens", 0.9, compare="ratio")], REGISTRY
+    )
+    measured = _relative_scores()
+    out = assess(
+        ["base", "a", "b"],
+        fit=None,
+        criteria=criteria,
+        values=dict.fromkeys(measured, {}),
+        measured=measured,
+        rule=Mean(),
+        baseline="base",
+    )
+    # The baseline is 0 below itself and at a ratio of 1, so over "at most 90% of the baseline's tokens".
+    assert out["base"].violations == (-0.05, pytest.approx(0.1)) and not out["base"].is_feasible
+    assert out["a"].violations == (pytest.approx(-0.01), pytest.approx(-0.05)) and out["a"].is_feasible
+    assert out["b"].violations == (pytest.approx(0.05), pytest.approx(-0.4)) and not out["b"].is_feasible
+    label = label_candidate(measured["b"], out["b"], criteria=criteria, baseline=measured["base"])
+    assert label.unmet_constraints == [f"{HELP} - baseline >= -0.05: difference -0.1 violates by 0.05"]
+
+
+def test_a_relative_constraint_needs_the_baselines_id():
+    criteria = Criteria(Maximize(HELP), [AtLeast(HELP, -0.05, compare="difference")], REGISTRY)
+    measured = _relative_scores()
+    with pytest.raises(ValueError, match="compares with the baseline"):
+        assess(["a"], fit=None, criteria=criteria, values={"a": {}}, measured=measured, rule=Mean())
+
+
+def _tokens_fit():
+    """A fit of tokens over three options: a (the baseline) 1000, b 700, c 1300, with noise across cases and runs.
+
+    With this seed the model's own ratio of the baseline to itself has an sd of about 1e-10, not 0.
+    """
+    rng = random.Random(3)
+    cases = [f"case{k}" for k in range(8)]
+    means = {"a": 1000.0, "b": 700.0, "c": 1300.0}
+    measured = {}
+    for option, mean in means.items():
+        runs = {case: {"tokens": [mean + rng.gauss(0, 30) for _ in range(2)]} for case in cases}
+        measured[option] = CandidateScores(
+            candidate_id=option,
+            objective_by_case={},
+            metrics_by_case={case: {"tokens": sum(r["tokens"]) / 2} for case, r in runs.items()},
+            unavailable={},
+            objective_by_run={},
+            metrics_by_run=runs,
+            objective=-mean,
+            is_eligible=True,
+            failures=0,
+        )
+    values = {option: {"option": option} for option in means}
+    space = Space({"option": OneOf("a", "b", "c", default="a")})
+    data = FitData(
+        space=space, text_blocks={}, candidates=values, cases=cases, scores=measured, ranges={"tokens": (0.0, None)}
+    )
+    return BayesBenchModel().fit(data), values, measured
+
+
+def test_a_fit_judges_a_relative_constraint_on_the_paired_estimate_and_the_baseline_exactly():
+    fit, values, measured = _tokens_fit()
+    criteria = Criteria(
+        Minimize("tokens"),
+        [
+            AtMost("tokens", 1.0, compare="ratio"),
+            AtMost("tokens", 0, compare="difference"),
+            AtLeast("tokens", 0.5, compare="ratio"),
+        ],
+        REGISTRY,
+    )
+    out = assess(
+        ["a", "b", "c"], fit=fit, criteria=criteria, values=values, measured=measured, rule=Mean(), baseline="a"
+    )
+    assert all(a.is_from_fit for a in out.values())
+    # "No more tokens than the baseline", with the baseline at the bound: exactly met.
+    assert out["a"].violations == (0.0, 0.0, -0.5) and out["a"].is_feasible
+    assert out["a"].p_met == {
+        "tokens / baseline <= 1": 1.0,
+        "tokens - baseline <= 0": 1.0,
+        "tokens / baseline >= 0.5": 1.0,
+    }
+    assert out["b"].is_feasible and out["b"].p_met["tokens / baseline <= 1"] > 0.99
+    assert not out["c"].is_feasible and out["c"].p_met["tokens - baseline <= 0"] < 0.01
+    ratio = fit.metrics["tokens"].ratio(values["b"], values["a"], candidate="b", reference_candidate="a")
+    assert ratio.mean == pytest.approx(0.7, abs=0.05)
+    # AtMost at the feasibility quantile, AtLeast at 1 minus it.
+    assert out["b"].violations[0] == pytest.approx(ratio.quantile(0.9) - 1.0)
+    assert out["b"].violations[2] == pytest.approx(0.5 - ratio.quantile(0.1))
+    label = label_candidate(measured["c"], out["c"], criteria=criteria, baseline=measured["a"])
+    assert label.unmet_constraints[0].startswith("tokens / baseline <= 1: P(met) ")
+
+
+def test_with_a_relative_constraint_a_fit_without_the_baseline_leaves_it_to_measured_means():
+    criteria = Criteria(Maximize(HELP), [AtLeast(HELP, -0.05, compare="difference")], REGISTRY)
+    measured = _relative_scores()
+    fit = FakeFit({"a": {HELP: e(0.76)}, "b": {HELP: e(0.7)}})  # the baseline was left out of it
+    out = assess(
+        ["a", "b"],
+        fit=fit,
+        criteria=criteria,
+        values=dict.fromkeys(measured, {}),
+        measured=measured,
+        rule=Mean(),
+        baseline="base",
+    )
+    assert not out["a"].is_from_fit and out["a"].is_feasible
+    assert not out["b"].is_from_fit and out["b"].violations == (pytest.approx(0.05),)
+    # Without relative constraints the same fit is used.
+    absolute = Criteria(Maximize(HELP), [AtLeast(HELP, 0.75)], REGISTRY)
+    assert assess(["a"], fit=fit, criteria=absolute, values={"a": {}}, measured=measured, rule=Mean())["a"].is_from_fit
+
+
+def test_a_label_with_a_relative_constraint_needs_the_baseline():
+    criteria = Criteria(Maximize(HELP), [AtLeast(HELP, -0.05, compare="difference")], REGISTRY)
+    a = _label_assessment("a", objective=0.9, feasible=True, n_constraints=1)
+    with pytest.raises(ValueError, match="compares with the baseline"):
+        label_candidate(_label_scores("a", {"c1": 0.9}), a, criteria=criteria)
+
+
+def test_a_fit_that_puts_the_baselines_mean_at_0_leaves_a_ratio_to_measured_means():
+    criteria = Criteria(Minimize("tokens"), [AtMost("tokens", 0.8, compare="ratio")], REGISTRY)
+    fit = FakeFit({"base": {"tokens": e(0.0)}, "a": {"tokens": e(500.0)}})
+    measured = {
+        "base": scores("base", {"x": {"tokens": 1000.0}}, -1000.0),
+        "a": scores("a", {"x": {"tokens": 700.0}}, -700.0),
+    }
+    out = assess(
+        ["base", "a"],
+        fit=fit,
+        criteria=criteria,
+        values=dict.fromkeys(measured, {}),
+        measured=measured,
+        rule=Mean(),
+        baseline="base",
+    )
+    assert not out["a"].is_from_fit and out["a"].violations == (pytest.approx(-0.1),) and out["a"].is_feasible
+    assert not out["base"].is_from_fit and out["base"].violations == (pytest.approx(0.2),)
 
 
 def test_terms_follow_the_objective():
