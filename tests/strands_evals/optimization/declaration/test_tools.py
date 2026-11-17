@@ -1,5 +1,7 @@
 import pytest
+from mcp.types import Tool as MCPTool
 from strands import tool
+from strands.tools.mcp import MCPAgentTool
 from strands.tools.tools import PythonAgentTool
 from strands.types.tools import AgentTool
 
@@ -19,7 +21,7 @@ def search(query: str) -> str:
 
 
 class SpecOnlyTool(AgentTool):
-    """Like MCPAgentTool: a read-only tool_spec."""
+    """A tool with a read-only tool_spec."""
 
     @property
     def tool_name(self) -> str:
@@ -35,6 +37,56 @@ class SpecOnlyTool(AgentTool):
 
     async def stream(self, tool_use, invocation_state, **kwargs):
         yield {}
+
+
+class SpecIgnoringTool(SpecOnlyTool):
+    """A tool_spec setter that keeps the spec it has."""
+
+    @property
+    def tool_spec(self):
+        return {"name": "spec_only", "description": "d", "inputSchema": {"json": {}}}
+
+    @tool_spec.setter
+    def tool_spec(self, value):
+        pass
+
+
+class WriteThroughTool(SpecOnlyTool):
+    """A tool_spec setter that writes into the dict a shallow copy shares."""
+
+    def __init__(self):
+        super().__init__()
+        self._spec = {"name": "spec_only", "description": "d", "inputSchema": {"json": {}}}
+
+    @property
+    def tool_spec(self):
+        return self._spec
+
+    @tool_spec.setter
+    def tool_spec(self, value):
+        self._spec.update(value)
+
+
+class FixedSpecMCPTool(MCPAgentTool):
+    """An MCP tool whose spec doesn't come from its `mcp_tool`."""
+
+    @property
+    def tool_spec(self):
+        return {"name": "search_docs", "description": "Search the docs.", "inputSchema": {"json": {}}}
+
+
+def mcp_agent_tool(
+    description: str | None = "Search the docs.", mcp_client: object | None = None, name_override: str | None = None
+) -> MCPAgentTool:
+    """An MCP tool as the SDK's MCP client lists it, with a stand-in client (no server is called)."""
+    definition = MCPTool(
+        name="search_docs",
+        description=description,
+        inputSchema={"type": "object", "properties": {"query": {"type": "string"}}},
+        outputSchema={"type": "object", "properties": {"pages": {"type": "array"}}},
+        annotations={"readOnlyHint": True},
+    )
+    return MCPAgentTool(definition, mcp_client or object(), name_override=name_override)  # type: ignore[arg-type]
 
 
 def test_tools_are_keyed_by_name_with_their_description_as_baseline():
@@ -69,6 +121,54 @@ def test_python_agent_tools_are_supported():
     assert adder.tool_spec["description"] == "Add two numbers."
 
 
+def test_mcp_agent_tools_are_supported():
+    client = object()
+    docs = mcp_agent_tool(mcp_client=client, name_override="docs_search")
+    original, fields = docs.mcp_tool, docs.mcp_tool.model_dump()
+    declared = tool_descriptions(lookup, docs)
+    assert list(declared.tools) == ["lookup", "docs_search"]
+    built_lookup, built = declared.build({"lookup": "Find one record.", "docs_search": "Find pages."})
+    assert built_lookup.tool_spec["description"] == "Find one record."
+    assert isinstance(built, MCPAgentTool) and built is not docs
+    assert built.tool_spec == {**docs.tool_spec, "description": "Find pages."}
+    assert (built.tool_name, built.mcp_tool.name) == ("docs_search", "search_docs")
+    assert built.mcp_client is client
+    assert docs.mcp_tool is original and docs.mcp_tool.model_dump() == fields
+    assert docs.tool_spec["description"] == "Search the docs."
+
+
+def test_mcp_builds_share_no_part_of_the_spec():
+    docs = mcp_agent_tool()
+    declared = tool_descriptions(docs)
+    first, second = (declared.build({"search_docs": "Find."})[0] for _ in range(2))
+    first.tool_spec["inputSchema"]["json"]["properties"]["query"]["type"] = "integer"
+    first.tool_spec["outputSchema"]["json"]["properties"]["pages"]["type"] = "object"
+    for other in (second, docs):
+        assert other.tool_spec["inputSchema"]["json"]["properties"]["query"]["type"] == "string"
+        assert other.tool_spec["outputSchema"]["json"]["properties"]["pages"]["type"] == "array"
+
+
+def test_an_mcp_tool_without_a_description_builds_its_baseline_unchanged():
+    docs = mcp_agent_tool(description=None)
+    baseline = docs.tool_spec["description"]  # the SDK's text for a tool without one
+    assert tool_descriptions(docs).build({"search_docs": baseline})[0].tool_spec == docs.tool_spec
+
+
+@pytest.mark.parametrize(
+    "make",
+    [SpecIgnoringTool, lambda: FixedSpecMCPTool(mcp_agent_tool().mcp_tool, object())],  # type: ignore[arg-type]
+    ids=["setter", "mcp"],
+)
+def test_a_tool_whose_copy_ignores_a_new_description_fails_at_declaration(make):
+    with pytest.raises(TypeError, match="doesn't show the description set on it"):
+        tool_descriptions(make())
+
+
+def test_a_tool_whose_copy_changes_the_tool_itself_fails_at_declaration():
+    with pytest.raises(TypeError, match="changed the tool itself"):
+        tool_descriptions(WriteThroughTool())
+
+
 def test_a_tool_without_a_tool_spec_setter_fails_at_declaration():
     with pytest.raises(TypeError, match="no tool_spec setter"):
         tool_descriptions(SpecOnlyTool())
@@ -97,7 +197,7 @@ def test_a_tool_without_a_text_description_fails_at_declaration():
 
 def test_a_spec_the_setter_rejects_fails_at_declaration_not_on_every_build():
     spec = {"name": "other", "description": "Look up.", "inputSchema": {"json": {}}}
-    with pytest.raises(TypeError, match="setter rejects its own spec"):
+    with pytest.raises(TypeError, match="a copy with a new description can't be built"):
         tool_descriptions(PythonAgentTool("lookup", spec, lambda tool_use, **kwargs: None))  # type: ignore[arg-type]
 
 
