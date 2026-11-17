@@ -381,7 +381,7 @@ class Reflection(Proposer):
         """Nothing to keep: the versions table in each request is the history."""
 
     def config(self) -> dict[str, Any]:
-        """Model id, the sha256 of the system prompt (None for the default prompt), `success_threshold`, and
+        """Model id, the system prompt as given (None for the default prompt), `success_threshold`, and
         `over_limit_retries`."""
         if isinstance(self.model, str):
             model_id: str | None = self.model
@@ -389,10 +389,9 @@ class Reflection(Proposer):
             model_id = _DEFAULT_MODEL_ID
         else:
             model_id = self.model.get_config().get("model_id")
-        prompt = None if self.system_prompt is None else hashlib.sha256(self.system_prompt.encode()).hexdigest()
         return {
             "model": model_id,
-            "system_prompt_sha256": prompt,
+            "system_prompt": self.system_prompt,
             "success_threshold": self.success_threshold,
             "over_limit_retries": self.over_limit_retries,
         }

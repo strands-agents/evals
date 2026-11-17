@@ -13,8 +13,8 @@ class Estimate(BaseModel):
     Both are finite and `sd` is >= 0 (0 when there is no spread, e.g. a measured mean), else a
     `ValidationError` at construction, so a score model that returns NaN or infinity fails where it does.
 
-    Saved in `label` events (`CandidateLabel.estimates`) and `picked` events (`ValidationReport.estimates`);
-    `effects.json` rows hold mean and ci90 as plain fields instead.
+    Saved in `fit` events (`estimates`), `label` events (`CandidateLabel.estimates`), and `picked` events
+    (`ValidationReport.estimates`); `effects.json` rows hold mean and ci90 as plain fields instead.
     """
 
     model_config = ConfigDict(frozen=True)

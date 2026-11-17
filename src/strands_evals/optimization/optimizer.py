@@ -314,8 +314,8 @@ class Optimizer:
 
         Built the same way at `run_async` and at `resume`, since `load_state` compares the fields
         `Optimizer.resume` is given again (cases, space, objective, constraints, search, selection, score
-        model) with the saved ones. Text in the space (a text default, `edit_instructions`) is stored as
-        sha256 + length, never the text.
+        model) with the saved ones. A text default is stored as sha256 + length, never the text (the
+        baseline's `propose` event holds it); `edit_instructions` is stored as written.
         """
 
         def text(value: str | None) -> dict[str, Any] | None:
@@ -339,7 +339,7 @@ class Optimizer:
                 "log": info.log,
                 "options": None if info.options is None else list(info.options),
                 "size_cap": info.size_cap,
-                "edit_instructions": text(info.edit_instructions),
+                "edit_instructions": info.edit_instructions,
                 "active_when": None if info.active_when is None else list(info.active_when),
                 "source": None
                 if info.source is None
@@ -913,8 +913,9 @@ class Optimizer:
         return rank(assessments, eligible, is_pareto=self._criteria.is_pareto), assessments
 
     def _refit(self, *, scored: bool) -> None:
-        """Refit on every eligible candidate and write the `fit` event; with nothing new scored, or when the
-        model returns None, keep the fit in use.
+        """Refit on every eligible candidate and write the `fit` event, with each candidate's estimates as the
+        ranking takes them from the new fit; with nothing new scored, or when the model returns None, keep the fit
+        in use.
 
         A refit that raises is caught: the error goes in the event (a warning once per distinct error) and
         measured means are used until a later refit succeeds, which still gets the last successful fit as
@@ -922,7 +923,13 @@ class Optimizer:
         """
         assert self._run is not None
         eligible = [c for c in self._candidates if self._train[c].is_eligible]
-        event = {"iteration": self._iteration, "candidates": eligible, "flagged": [], "diagnostics": {}}
+        event = {
+            "iteration": self._iteration,
+            "candidates": eligible,
+            "flagged": [],
+            "diagnostics": {},
+            "estimates": {},
+        }
         if not scored:
             self._run.events.append("fit", **event, is_fitted=False, error=None)
             return
@@ -946,7 +953,13 @@ class Optimizer:
             return
         self._fit = self._last_fit = fit
         self._fit_error = None
-        event.update(flagged=list(fit.flagged), diagnostics=dict(fit.diagnostics))
+        # `assess` decides which estimates the ranking takes from the fit, so they are read from its assessments.
+        _, assessments = self._rank()
+        event.update(
+            flagged=list(fit.flagged),
+            diagnostics=dict(fit.diagnostics),
+            estimates={c: a.estimates for c, a in assessments.items() if a.estimates},
+        )
         self._run.events.append("fit", **event, is_fitted=True, error=None)
 
     def _fit_data(self, ids: Sequence[str], split: SplitName, scores: Mapping[str, CandidateScores]) -> FitData:

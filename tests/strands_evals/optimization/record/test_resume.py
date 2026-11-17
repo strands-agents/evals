@@ -332,6 +332,37 @@ def test_a_changed_field_fails_resume_naming_it(run, change, message):
         load_state(RunDirectory.open(run.root), config=config)
 
 
+def test_two_long_texts_that_differ_late_are_shown_from_where_they_differ(tmp_path):
+    shared = "Keep the answer to one paragraph. " * 8  # 272 characters, past what a message shows
+    config = copy.deepcopy(CONFIG)
+    config["space"][2]["edit_instructions"] = shared + "Cite the policy."
+    run = RunDirectory.create(tmp_path, config)
+    config["space"][2]["edit_instructions"] = shared + "Cite the manual."
+
+    with pytest.raises(ValueError) as raised:
+        load_state(RunDirectory.open(run.root), config=config)
+    assert str(raised.value).startswith(
+        "space['rules'].edit_instructions changed at index 281: "
+        "...'paragraph. Cite the policy.' -> ...'paragraph. Cite the manual.'; pass the run's space"
+    )
+    # A sentence added at the end: they differ where the shorter one ends.
+    config["space"][2]["edit_instructions"] = shared + "Cite the policy. Be brief."
+    with pytest.raises(ValueError) as raised:
+        load_state(RunDirectory.open(run.root), config=config)
+    assert str(raised.value).startswith(
+        "space['rules'].edit_instructions changed at index 288: "
+        "...'ph. Cite the policy.' -> ...'ph. Cite the policy. Be brief.'; pass the run's space"
+    )
+    # An apostrophe added late switches the repr's quotes, so the two cut reprs differ from their first character.
+    config["space"][2]["edit_instructions"] = shared + "Don't cite the policy."
+    with pytest.raises(ValueError) as raised:
+        load_state(RunDirectory.open(run.root), config=config)
+    assert str(raised.value).startswith(
+        "space['rules'].edit_instructions changed at index 272: "
+        "...'r to one paragraph. Cite the policy.' -> ...\"r to one paragraph. Don't cite the policy.\"; pass"
+    )
+
+
 def test_budget_and_max_workers_may_change(run):
     config = {**CONFIG, "budget": {"max_rollouts": 900}, "max_workers": 16}
 

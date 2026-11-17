@@ -33,6 +33,7 @@ from strands_evals.optimization import (
     Pareto,
     Patch,
     Proposer,
+    Reflection,
     Schedule,
     ScoreModel,
     Search,
@@ -235,7 +236,7 @@ def test_metrics_record_roles_ranges_and_effective_scale():
     assert config["constraints"] == ["Stars >= 3"]
 
 
-def test_space_stores_text_as_a_hash():
+def test_space_stores_a_text_default_as_a_hash_and_edit_instructions_as_written():
     @tunable(prompt=TextValue(default="be helpful", edit_instructions="keep it short"), k=Int(1, 9, default=3))
     def agent(prompt, k):
         return prompt
@@ -244,8 +245,9 @@ def test_space_stores_text_as_a_hash():
     space = {p["key"]: p for p in config["space"]}
     assert space["prompt"]["default"] == {"sha256": hashlib.sha256(b"be helpful").hexdigest(), "length": 10}
     assert "be helpful" not in json.dumps(space)
-    assert space["prompt"]["edit_instructions"]["length"] == len("keep it short")
-    assert space["k"]["default"] == 3 and space["k"]["min_value"] == 1
+    assert space["prompt"]["edit_instructions"] == "keep it short"
+    assert space["k"]["default"] == 3 and space["k"]["edit_instructions"] is None
+    assert space["k"]["min_value"] == 1
 
 
 def test_config_round_trips_through_resume(tmp_path):
@@ -257,6 +259,30 @@ def test_config_round_trips_through_resume(tmp_path):
         load_state(reopened, config=_optimizer(objective=Minimize("Score"))._config())
     with pytest.raises(ValueError, match=r"^selection\.name changed: 'top_ranked' -> 'other'"):
         load_state(reopened, config=_optimizer(selection=Other())._config())
+
+
+def test_resume_names_changed_edit_instructions_and_a_changed_reflection_prompt(tmp_path):
+    def optimizer(instructions, system_prompt):
+        @tunable(prompt=TextValue(default="be helpful", edit_instructions=instructions))
+        def agent(prompt):
+            return prompt
+
+        search = Search([Block(Reflection(system_prompt=system_prompt), "prompt")])
+        return Optimizer(_experiment(), agent, search=search)
+
+    run = RunDirectory.create(tmp_path, optimizer("keep it short", "Edit the prompt.")._config())
+    assert run.config["space"][0]["edit_instructions"] == "keep it short"
+    assert run.config["search"]["blocks"][0]["config"]["system_prompt"] == "Edit the prompt."
+    reopened = RunDirectory.open(run.root)
+    load_state(reopened, config=optimizer("keep it short", "Edit the prompt.")._config())
+    with pytest.raises(
+        ValueError, match=r"^space\['prompt'\]\.edit_instructions changed: 'keep it short' -> 'be terse'"
+    ):
+        load_state(reopened, config=optimizer("be terse", "Edit the prompt.")._config())
+    with pytest.raises(
+        ValueError, match=r"^search\.blocks\[0\]\.config\.system_prompt changed: 'Edit the prompt\.' -> None"
+    ):
+        load_state(reopened, config=optimizer("keep it short", None)._config())
 
 
 def test_reordered_cases_still_resume(tmp_path):
@@ -922,6 +948,39 @@ async def test_a_refit_that_raises_is_recorded_and_the_run_goes_on(tmp_path):
     fits = [e for e in events if e["event"] == "fit"]
     # The setup's fit and iteration 1's.
     assert [f["error"] for f in fits] == ["ArithmeticError: singular"] * 2 and not any(f["is_fitted"] for f in fits)
+    assert all(f["estimates"] == {} for f in fits)
+
+
+async def test_a_fit_event_records_every_fitted_candidates_estimates(tmp_path):
+    optimizer = _searching(
+        Block(Scripted({"temperature": 0.5}, {"temperature": 1.0}), "temperature"),
+        schedule=Alternate(),
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=3),
+        proposals_per_iteration=1,
+    )
+    _, events = await _search(optimizer)
+    fits = [e for e in events if e["event"] == "fit"]
+    fitted = [f for f in fits if f["is_fitted"]]
+    # The setup's fit (the baseline alone) and the steps of the block with nothing to propose don't fit.
+    assert len(fitted) == 2 and len(fits) > 2 and all(f["estimates"] == {} for f in fits if not f["is_fitted"])
+    for fit in fitted:
+        assert list(fit["estimates"]) == fit["candidates"]
+        assert all(set(by_metric) == {"Temperature"} for by_metric in fit["estimates"].values())
+    # The last fit is the one in use: its event holds what it estimates for each candidate.
+    in_use = optimizer._fit
+    assert fitted[-1]["estimates"] == {
+        c: {m: e.model_dump() for m, e in in_use.estimates(optimizer._candidates[c].values, c).items()}
+        for c in fitted[-1]["candidates"]
+    }
+    # A label holds the estimates of its own candidate at its own step only: the baseline's (labeled at setup,
+    # before any fit) has none, while each fit event holds every fitted candidate's.
+    labels = {(e["iteration"], e["candidate_id"]): e["label"]["estimates"] for e in events if e["event"] == "label"}
+    assert labels[(0, optimizer._baseline.id)] == {}
+    for fit in fitted:
+        (new,) = [c for (i, c) in labels if i == fit["iteration"]]
+        assert labels[(fit["iteration"], new)] == fit["estimates"][new]
+        assert optimizer._baseline.id in fit["estimates"]
 
 
 async def test_a_validation_fit_of_none_says_the_model_returned_no_fit(tmp_path):
@@ -994,6 +1053,21 @@ async def test_a_model_that_returns_none_keeps_the_fit_in_use(tmp_path):
     _, events = await _search(optimizer)
     assert optimizer._fit is flagged
     assert [f["is_fitted"] for f in events if f["event"] == "fit"] == [True, False]
+
+
+async def test_a_flagged_fits_event_holds_no_estimates(tmp_path):
+    optimizer = _searching(
+        Block(Scripted({"temperature": 0.5}), "temperature"),
+        schedule=Alternate(),
+        base_dir=tmp_path,
+        score_model=_Sequence(_FlaggedFit(), _FlaggedFit()),
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+    )
+    _, events = await _search(optimizer)
+    # The ranking uses measured means while a metric is flagged, so the fit is never asked (the fake can't answer).
+    fits = [(f["is_fitted"], f["flagged"], f["estimates"]) for f in events if f["event"] == "fit"]
+    assert fits == [(True, ["Temperature"], {})] * 2
 
 
 async def test_the_budget_stops_the_search_before_the_end_phases_reserve(tmp_path):
