@@ -35,8 +35,9 @@ class ProposalRequest:
         candidates: Every scored candidate so far: eligible ones in ranking order, then the ineligible in
             scoring order. Invalid and duplicate proposals never appear.
         n: How many patches to return: the step's `Step.n_candidates` (at most `proposals_per_iteration`),
-            or fewer when the budget can't score them all, on a redraw (only the shortfall), for a
-            concurrent proposer (1 per call), or in a step with several blocks (1 per slot).
+            or fewer when the budget can't score them all, on a redraw (only as many as were invalid or
+            duplicates), for a concurrent proposer (1 per call), or in a step with several blocks (1 per
+            slot).
         iteration: So a proposer can seed per iteration.
         seed: The run seed.
         redraw: The redraw number within this iteration and block (0 = first ask; `Search.redraws` caps it).
@@ -82,7 +83,11 @@ class Proposer(ABC):
 
     @abstractmethod
     async def propose(self, request: ProposalRequest) -> list[Patch]:
-        """Return up to `request.n` patches; `[]` means nothing useful this time (a redraw cause).
+        """Return up to `request.n` patches; fewer, `[]` included, means nothing more useful this time.
+
+        The optimizer redraws only invalid and duplicate patches, so it doesn't ask again this iteration for
+        the ones not returned. The exception is a step with several blocks: a slot redrawn because the
+        patches merged into it made an invalid or duplicate candidate asks every block again.
 
         Raising means the proposer itself failed and ends the run with `stop_reason="proposer_error"`.
         """

@@ -404,8 +404,11 @@ class Search:
             has nothing to nest (no structural block, or one structural block and nothing else): then it is
             `Joint()`.
         redraws: Caps re-asks per block per iteration after a duplicate (of an eligible candidate), an
-            invalid patch, a patch touching keys outside its block, or no patches at all. A round's opener
-            is never re-asked on a duplicate: the round opens on that candidate.
+            invalid patch, or a patch touching keys outside its block; a re-ask replaces only those
+            proposals. A slot that came back with no patch (with one block, the proposer returned fewer than
+            asked, `[]` included; with several, no block proposed for it) is dropped for the iteration, not
+            asked for again. A round's opener is never re-asked on a duplicate: the round opens on that
+            candidate.
     """
 
     blocks: tuple[Block, ...]
@@ -430,7 +433,8 @@ class Search:
             within: What the default schedule runs inside its rounds, e.g. `Joint()` to change every
                 block on every inner step; None means `Alternate()`. Unused when the default has nothing to
                 nest (no structural block, or one structural block and nothing else): then it is `Joint()`.
-            redraws: Re-asks per block per iteration after an unusable proposal.
+            redraws: Re-asks per block per iteration after a duplicate or invalid proposal; a slot that
+                came back with no patch is not asked for again.
 
         Raises:
             TypeError: A block is not a `Block`, `schedule` or `within` is not a `Schedule`, or `redraws`

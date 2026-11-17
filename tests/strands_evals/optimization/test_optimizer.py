@@ -669,6 +669,74 @@ async def test_a_duplicate_or_invalid_patch_is_told_and_redrawn(tmp_path):
     assert [p.outcome for p in optimizer._iterations[0].proposals] == ["duplicate", "invalid", "invalid", "feasible"]
 
 
+@pytest.mark.parametrize(
+    ("updates", "asks", "outcomes"),
+    [
+        ((), [(1, 0, 2)], []),
+        (({"temperature": 0.5},), [(1, 0, 2)], ["feasible"]),
+        (({"temperature": 0.0},), [(1, 0, 2), (1, 1, 1)], ["duplicate"]),  # repeats the baseline
+    ],
+    ids=["empty", "short", "short-with-a-duplicate"],
+)
+async def test_a_redraw_asks_only_for_the_invalid_and_duplicate_patches(tmp_path, updates, asks, outcomes):
+    proposer = Scripted(*updates)
+    optimizer = _searching(
+        Block(proposer, "temperature"),
+        schedule=Alternate(),
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=2,
+    )
+    await _search(optimizer)
+    # The slots the proposer left empty are dropped, not asked for again.
+    assert [(r.iteration, r.redraw, r.n) for r in proposer.requests] == asks
+    assert [p.outcome for p in optimizer._iterations[0].proposals] == outcomes
+
+
+async def test_a_concurrent_proposers_empty_call_drops_its_slot_and_a_duplicate_is_redrawn(tmp_path):
+    class OnePerCall(Scripted):
+        concurrent = True
+
+        async def propose(self, request):
+            self.requests.append(request)
+            update = self.updates.pop(0)
+            return [] if update is None else [Patch(updates=update, rationale="")]
+
+    # The first call proposes nothing; the second repeats the baseline.
+    proposer = OnePerCall(None, {"temperature": 0.0}, {"temperature": 0.5}, {"temperature": 1.0})
+    optimizer = _searching(
+        Block(proposer, "temperature"),
+        schedule=Alternate(),
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=2,
+    )
+    await _search(optimizer)
+    assert [r.redraw for r in proposer.requests] == [0, 0, 1]  # the redraw replaces only the duplicate
+    assert [p.outcome for p in optimizer._iterations[0].proposals] == ["duplicate", "feasible"]
+    assert proposer.updates == [{"temperature": 1.0}]
+
+
+async def test_a_slot_of_several_blocks_is_redrawn_only_when_it_had_a_patch(tmp_path):
+    structure = Scripted()  # never proposes
+    numbers = Scripted({"temperature": 0.0})  # repeats the baseline, then proposes nothing
+    optimizer = _searching(
+        Block(structure, "manager"),
+        Block(numbers, "temperature", "manager.Window.size"),
+        schedule=Joint(),
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=3),
+        proposals_per_iteration=2,
+    )
+    reason, _ = await _search(optimizer)
+    # Slot 1 (a duplicate) is redrawn, every block asked again; slot 2 (no patch from any block) is dropped.
+    assert [r.redraw for r in structure.requests] == [0, 0, 1]
+    assert [r.redraw for r in numbers.requests] == [0, 0, 1]
+    assert [p.outcome for p in optimizer._iterations[0].proposals] == ["duplicate"]
+    # The step saved nothing, so Joint ends the search.
+    assert reason == "exhausted" and len(optimizer._iterations) == 1
+
+
 async def test_a_candidate_whose_agent_cant_be_built_is_invalid_and_costs_nothing(tmp_path):
     @tunable(
         manager=choice(component(Window, size=Int(1, 100)), component(Summary)),

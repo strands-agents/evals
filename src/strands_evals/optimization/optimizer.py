@@ -1012,8 +1012,9 @@ class Optimizer:
         ranking: list[str],
         assessments: Mapping[str, Assessment],
     ) -> IterationRecord:
-        """Propose `n` candidates (redrawing a slot that is invalid, a duplicate, or empty), score the new
-        ones on train at once, refit, label, and tell the proposers; write `iteration_end`.
+        """Propose `n` candidates (redrawing a slot that is invalid or a duplicate; a slot that came back with no
+        patch is dropped), score the new ones on train at once, refit, label, and tell the proposers; write
+        `iteration_end`.
 
         Raises:
             _ProposerFailed: A proposer raised (its `proposer_error` event is written).
@@ -1029,7 +1030,9 @@ class Optimizer:
         for redraw in range(self._search.redraws + 1):
             if need <= 0 or opened is not None:
                 break
-            for draw in await self._draw(step, parent, need, redraw, ranking, assessments, summaries):
+            drawn = await self._draw(step, parent, need, redraw, ranking, assessments, summaries)
+            need = len(drawn)  # a slot that came back with no patch is dropped, not asked for again
+            for draw in drawn:
                 candidate = draw.candidate
                 if (
                     candidate is not None
