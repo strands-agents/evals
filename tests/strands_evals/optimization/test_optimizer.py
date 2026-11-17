@@ -319,6 +319,7 @@ async def test_the_baseline_is_saved_and_scored_on_train(tmp_path):
     assert [e["event"] for e in events] == ["config", "propose"] + ["trial"] * 8 + ["score"]
     assert events[1]["number"] == 0 and events[1]["origin"] == ["baseline"] and events[1]["parent_id"] is None
     assert events[-1]["rollouts"] == 8 and events[-1]["statuses"] == {"completed": 8}
+    assert "baseline_scales" not in events[-1]  # only a Pareto leaving a scale to the baseline records one
     assert {e["record"]["split"] for e in events if e["event"] == "trial"} == {"train"}
     assert optimizer._budget.spent == 8
 
@@ -1784,6 +1785,75 @@ async def test_pareto_ships_the_front_s_max_gain_member_and_tests_every_member(t
         (report.champion_id, report.baseline_id) == (member, result.baseline_id)
         for member, report in result.front_test.items()
     )
+
+
+class Cost(Evaluator):
+    """An unbounded cost that grows with the agent's temperature: 3 at the baseline's 0.0."""
+
+    score_range = (0.0, None)
+
+    async def evaluate_async(self, evaluation_case):
+        return [EvaluationOutput(score=3 + 10 * float(evaluation_case.actual_output), test_pass=True, reason="c")]
+
+
+_COST_PARETO = Pareto(Maximize("Temperature"), Minimize("Cost"))
+
+
+def test_a_pareto_scale_left_to_the_baseline_is_stored_as_none():
+    experiment = _experiment(evaluators=[Temperature(), Cost()])
+    optimizer = _optimizer(experiment, objective=Pareto(Maximize("Temperature"), Minimize("Cost"), Minimize("tokens")))
+    metrics = optimizer._config()["metrics"]
+    assert (metrics["Temperature"]["scale"], metrics["Cost"]["scale"], metrics["tokens"]["scale"]) == (1.0, None, None)
+
+
+async def test_the_baseline_sets_the_scale_a_pareto_leaves_to_it(tmp_path):
+    optimizer = _quiet(
+        experiment=_experiment(evaluators=[Temperature(), Cost()]),
+        base_dir=tmp_path,
+        rollout_fn=_temperature_rollout,
+        objective=_COST_PARETO,
+    )
+    optimizer._setup()
+    scores = await optimizer._score_baseline()
+    # Cost's scale is the baseline's mean, 3, so the baseline at temperature 0 is (0 - 3 / 3) / 2.
+    assert optimizer._criteria.baseline_scales == {"Cost": 3.0}
+    assert scores.objective == pytest.approx(-0.5)
+    assert optimizer._criteria.objective_value({"Temperature": 1.0, "Cost": 13.0}) == pytest.approx((1 - 13 / 3) / 2)
+    event = _events(optimizer)[-1]
+    assert event["event"] == "score" and event["baseline_scales"] == {"Cost": 3.0}
+    assert all(v == pytest.approx(-0.5) for runs in event["objective_by_run"].values() for v in runs)
+
+
+@pytest.mark.parametrize("where", ["during setup", "mid-iteration"])
+async def test_a_resumed_run_sets_the_same_baseline_scale(tmp_path, where):
+    experiment = _experiment(evaluators=[Temperature(), Cost()])
+    original_optimizer = _optimizer(
+        experiment,
+        rollout_fn=_temperature_rollout,
+        objective=_COST_PARETO,
+        max_workers=64,
+        base_dir=tmp_path / "runs",
+        proposals_per_iteration=2,
+        budget=Budget(max_iterations=4),
+    )
+    original = await original_optimizer.run_async()
+    cuts = {
+        "during setup": lambda events: _index(events, "trial", nth=3),
+        "mid-iteration": lambda events: _index(events, "score", after=_index(events, "iteration_end", nth=2)),
+    }
+    copy = _killed(original_optimizer._run.root, tmp_path, cuts[where])
+    killed = 1 + sum(1 for e in _events_at(copy) if e["event"] == "iteration_end")
+    resumed_optimizer = Optimizer.resume(
+        copy, experiment=experiment, factory=create_agent, rollout_fn=_temperature_rollout, objective=_COST_PARETO
+    )
+    resumed = await resumed_optimizer.run_async()
+    _assert_same(resumed, original, rerun=killed if where == "mid-iteration" else None)
+    assert resumed_optimizer._criteria.baseline_scales == original_optimizer._criteria.baseline_scales == {"Cost": 3.0}
+    # Recorded on the baseline's train score and no other event, in both logs (the resumed one scores the
+    # baseline again only when the cut left no closed iteration).
+    for events in (_events(original_optimizer), _events_at(copy)):
+        recorded = [(e["candidate_id"], e["split"], e["baseline_scales"]) for e in events if "baseline_scales" in e]
+        assert recorded == [(original.baseline_id, "train", {"Cost": 3.0})]
 
 
 # ---- resume inside a two-level Nested -------------------------------------------------------------------

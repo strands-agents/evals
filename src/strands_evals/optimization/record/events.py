@@ -55,7 +55,8 @@ class EventLog:
       one per trial as soon as it finishes. A later one for the same (candidate, run, case) replaces it.
       Trials of concurrently scored candidates interleave; every other event is written in a fixed order.
     - `score`: `candidate_id`, `split`, `case_names`, `runs`, `rollouts`, `objective_by_run`, `statuses`
-      (status -> trial count), `unavailable`.
+      (status -> trial count), `unavailable`; on the baseline's train score under a `Pareto` that leaves
+      scales to the baseline, also `baseline_scales` (metric -> the scale it set; `run.json` stores None).
     - `fit`: `candidates` (ids fitted), `is_fitted`, `error` (when the score model raised), `flagged`,
       `diagnostics`; one per step, `is_fitted=false` also when the step scored nothing new.
     - `select`: `parent_id`, `strategy`.

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import math
 import statistics
+import warnings
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from scipy import stats
@@ -47,8 +48,9 @@ class _Direction:
             target: A metric name, an evaluator class, or an evaluator instance.
             weight: Relative importance inside `WeightedSum` or `Pareto`.
             scale: The size of a meaningful change, so metrics in different units combine; None means the
-                metric's range width (1.0 for a 0-1 evaluator). An unbounded metric (every usage metric)
-                inside `WeightedSum` or `Pareto` needs it.
+                metric's range width (1.0 for a 0-1 evaluator). For an unbounded metric (every usage metric),
+                None inside `Pareto` means the baseline's train mean (its absolute value); inside `WeightedSum`
+                such a metric needs `scale=`.
 
         Raises:
             TypeError: `weight` or `scale` is not a number.
@@ -91,13 +93,14 @@ class _Combination:
 
         Raises:
             TypeError: No objectives, or one that isn't a `Maximize` / `Minimize`.
-            ValueError: The same target string twice, or, with two or more objectives, a usage metric name
-                without `scale=`. `Criteria`
+            ValueError: The same target string twice, or, in a `WeightedSum` of two or more objectives, a usage
+                metric name without `scale=`. `Criteria`
                 repeats both checks on resolved names and ranges (an evaluator with an unbounded
                 `score_range`, `"Helpfulness"` next to `HelpfulnessEvaluator`).
         """
-        # A combination of one objective is that objective, so it needs no scale to combine with others.
-        _check_terms(type(self).__name__, objectives, need_scale=len(objectives) > 1)
+        # A combination of one objective is that objective, so it needs no scale to combine with others; a Pareto
+        # takes an unbounded metric's scale from the baseline.
+        _check_terms(type(self).__name__, objectives, need_scale=len(objectives) > 1 and not isinstance(self, Pareto))
         object.__setattr__(self, "objectives", tuple(objectives))
 
     def __str__(self) -> str:
@@ -114,9 +117,12 @@ class WeightedSum(_Combination):
     `Minimize("tokens")`) is its oriented value / scale.
     `WeightedSum(Maximize("Helpfulness"), Minimize("tokens", scale=1000))` makes 1,000 tokens worth
     as much as the whole 0-1 Helpfulness range. Per case, N/A evaluator terms drop and the remaining
-    evaluator weights are rescaled to the same total; usage terms are never rescaled. All evaluator
-    terms N/A, or any usage term unmeasured, leaves the case unmeasured. A `WeightedSum` of one
-    objective is that objective.
+    evaluator weights are rescaled to the same total; usage terms and evaluator terms with no worst end
+    (a `score_range` open on the worse side) are never rescaled. All the other evaluator terms N/A, or any
+    usage or no-worst-end term unmeasured, leaves the case unmeasured. A crashed run has no value for an
+    evaluator with no worst end (unless `agent_failure_score` is a number), so it leaves that run
+    unmeasured, and a case whose every run crashed leaves the candidate ineligible. An unbounded metric
+    needs `scale=`, the exchange rate between the terms. A `WeightedSum` of one objective is that objective.
     """
 
 
@@ -127,8 +133,14 @@ class Pareto(_Combination):
     no other one beats on every objective. Candidates are ranked by the weighted gain, `WeightedSum`'s value
     with each objective's own `weight` and `scale`, and the champion is the validated front's highest-gain
     member (the baseline when nothing feasible beats it); every front member is tested against the
-    baseline. Constraints only filter candidates; they are never front dimensions. A `Pareto` of one
-    objective is that objective.
+    baseline. Constraints only filter candidates; they are never front dimensions. An unbounded metric
+    given without `scale=` (`Minimize("tokens")`) takes as its scale the absolute value of the baseline's
+    mean on train, set once when the baseline is scored (1 when that mean is 0). The front doesn't depend
+    on scales, but the ranking and the champion do: with equal weights, using 10% more tokens than the
+    baseline counts as much as 0.1 of a 0-1 score. Give `scale=` to set that exchange rate yourself, and
+    always for a metric that can be negative or positive (a `score_range` reaching below and above 0),
+    whose baseline mean can be near 0 and make its term outweigh the others. A `Pareto` of one objective is
+    that objective.
     """
 
 
@@ -178,20 +190,24 @@ Constraint = AtMost | AtLeast
 class _Term:
     """One objective term, resolved: its metric, direction, weight in the combination, scale, and offset.
 
-    `is_usage` marks a usage metric (tokens, seconds, ...): when another term is missing on a case, its
-    weight is never rescaled, and when it is missing itself, the case is left unmeasured.
+    `is_required` marks a term a case can't be valued without: a usage metric (tokens, seconds, ...) or an
+    evaluator whose range has no end on its worse side. When another term is missing on a case, its weight
+    is never rescaled, and when it is missing itself, the case is left unmeasured. Only the other evaluator
+    terms are dropped on a case.
 
     `offset` is the term's oriented worst end (the range's low end under `Maximize`, minus its high end
     under `Minimize`), subtracted before dividing by `scale`, so every bounded term of a combination
     spans 0 at worst to 1 at best (with the default scale). 0 for a lone objective and for a term whose
-    worst end is unbounded (usage metrics under `Minimize`).
+    worst end is unbounded (usage metrics under `Minimize`, evaluators open on their worse side).
+
+    `scale` is None for a term that takes the baseline's mean, until `Criteria.set_baseline_scales` sets it.
     """
 
     metric: str
     maximize: bool
     weight: float
-    scale: float
-    is_usage: bool
+    scale: float | None
+    is_required: bool
     offset: float = 0.0
 
 
@@ -208,6 +224,8 @@ class Criteria:
         goal_metrics: The metrics the score model fits, one model each: the objective's metrics, then the
             constraints' metrics, each once, in that order.
         is_pareto: The objective is a `Pareto` of two or more objectives, so the end phase works from the front.
+        baseline_scaled_metrics: Under a `Pareto`, its unbounded metrics given without `scale=`, whose scales
+            `set_baseline_scales` sets from the baseline; empty otherwise.
     """
 
     objective: Objective
@@ -217,6 +235,7 @@ class Criteria:
     feasibility_threshold: float
     goal_metrics: tuple[str, ...]
     is_pareto: bool
+    baseline_scaled_metrics: tuple[str, ...]
 
     def __init__(
         self,
@@ -244,9 +263,8 @@ class Criteria:
 
         Raises:
             ValueError: A metric name is unknown or ambiguous; inside a `WeightedSum` or `Pareto`, the same
-                metric twice after resolution, a metric with an unbounded range and no `scale=`, or an
-                evaluator with no end on its worse side (a low end under `Maximize`, a high end under
-                `Minimize`), since dropping its term on an N/A case would score the case above a perfect one; a lone
+                metric twice after resolution; inside a `WeightedSum`, a metric with an unbounded range and no
+                `scale=` (a `Pareto` takes the baseline's mean); a lone
                 `Maximize` / `Minimize` with a non-default `weight` or `scale` (read only inside a
                 `WeightedSum` or `Pareto`, so it would be silently ignored); `feasibility_threshold` outside (0, 1);
                 no objective and no evaluators to default to; `agent_failure_score` that isn't "worst", a finite
@@ -277,11 +295,14 @@ class Criteria:
         self.constraints = tuple(self._resolve_constraint(c) for c in constraints)
         self.is_pareto = isinstance(self.objective, Pareto)
         self._terms = self._build_terms(self.objective)
-        # Fixed by the objective; computed once, since objective_value runs for every run, case, and fit estimate.
-        self._evaluator_terms = tuple(t for t in self._terms if not t.is_usage)
-        self._usage_terms = tuple(t for t in self._terms if t.is_usage)
+        # Fixed by the objective (rebuilt once by set_baseline_scales); computed ahead, since objective_value runs
+        # for every run, case, and fit estimate.
+        self._droppable_terms = tuple(t for t in self._terms if not t.is_required)
+        self._required_terms = tuple(t for t in self._terms if t.is_required)
         self._total_weight = sum(t.weight for t in self._terms)
-        self._evaluator_weight = sum(t.weight for t in self._evaluator_terms)
+        self._droppable_weight = sum(t.weight for t in self._droppable_terms)
+        self.baseline_scaled_metrics = tuple(t.metric for t in self._terms if t.scale is None)
+        self._baseline_scales: dict[str, float] = {}
         self.goal_metrics = tuple(dict.fromkeys([t.metric for t in self._terms] + [c.metric for c in self.constraints]))
         if isinstance(agent_failure_score, (int, float)):
             for name in self.goal_metrics:
@@ -327,6 +348,53 @@ class Criteria:
             return high
         return None
 
+    @property
+    def baseline_scales(self) -> dict[str, float]:
+        """The scales `set_baseline_scales` set, metric -> scale (a copy); empty until then."""
+        return dict(self._baseline_scales)
+
+    def set_baseline_scales(self, records: Sequence[TrialRecord]) -> None:
+        """Set the scales in `baseline_scaled_metrics` from the baseline's train records.
+
+        Called before any objective value is computed (`objective_value` raises until then).
+
+        Each is the absolute value of the baseline's mean (over cases, of each case's mean over its runs, as
+        `score` measures them), set once so every case, run, and split is valued on one scale. A mean of 0 (up
+        to float noise) gives 1, with a warning; a metric with no value gives 1. Does nothing when
+        `baseline_scaled_metrics` is empty.
+
+        Args:
+            records: The baseline's train trial records.
+
+        Raises:
+            RuntimeError: The scales were already set.
+        """
+        if not self.baseline_scaled_metrics:
+            return
+        if self._baseline_scales:
+            raise RuntimeError(f"the baseline's scales are already set: {self._baseline_scales}")
+        runs_by_case, _, _ = _case_metrics(records, self)
+        scales = {}
+        for metric in self.baseline_scaled_metrics:
+            case_means = [
+                statistics.fmean(values)
+                for runs in runs_by_case.values()
+                if (values := [v for v in runs[metric] if v is not None])
+            ]
+            mean = statistics.fmean(case_means) if case_means else None
+            if mean is not None and near(mean, 0.0):
+                warnings.warn(
+                    f"{metric}'s mean on the baseline's train cases is {mean:.3g}, so its scale in the Pareto is 1; "
+                    "give it a scale= (the size of a meaningful change)",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            scales[metric] = 1.0 if mean is None or near(mean, 0.0) else abs(mean)
+        self._baseline_scales = scales
+        self._terms = tuple(replace(t, scale=scales[t.metric]) if t.scale is None else t for t in self._terms)
+        self._droppable_terms = tuple(t for t in self._terms if not t.is_required)
+        self._required_terms = tuple(t for t in self._terms if t.is_required)
+
     def objective_value(self, metrics: Mapping[str, float]) -> float | None:
         """The objective from per-metric values, always higher-is-better (`Minimize` negates).
 
@@ -334,25 +402,36 @@ class Criteria:
         mean (each objective's `weight`) of each term's oriented value minus its worst end, over its scale:
         0 to 1 for a bounded term with the default scale, whatever its range or direction, so an N/A term
         dropped on a case counts as scoring like the measured ones instead of moving the level. The worst end
-        is fixed by the range, not the baseline, so every case, run, and split is on one scale. Applied to
+        is fixed by the range, and every scale is fixed before the first value (a scale taken from the
+        baseline by `set_baseline_scales`), so every case, run, and split is on one scale. Applied to
         measured values (per case or per run, measured means, the test report) and, by the ranking, to each
         goal metric's estimate from a fit, never to a fitted scalar.
         None when the values leave it unmeasured.
+
+        Raises:
+            RuntimeError: A scale taken from the baseline isn't set yet.
         """
-        # A missing evaluator term drops, its weight spread over the measured evaluator terms; a missing usage
-        # term leaves the value unmeasured, since rescaling a cost up would swamp the scores.
-        if any(t.metric not in metrics for t in self._usage_terms):
+        if self.baseline_scaled_metrics and not self._baseline_scales:
+            raise RuntimeError(
+                f"the scales of {list(self.baseline_scaled_metrics)} come from the baseline and aren't set yet; call "
+                "set_baseline_scales with the baseline's train records first"
+            )
+        # A missing droppable term (an evaluator with a worst end) drops, its weight spread over the measured
+        # droppable terms; a missing required term leaves the value unmeasured: rescaling a cost up would swamp
+        # the scores, and an evaluator with no worst end has no level the others could stand in for.
+        if any(t.metric not in metrics for t in self._required_terms):
             return None
-        # Weights are > 0, so 0 means no evaluator term is measured.
-        measured_weight = sum(t.weight for t in self._evaluator_terms if t.metric in metrics)
-        if self._evaluator_terms and measured_weight == 0:
+        # Weights are > 0, so 0 means no droppable term is measured.
+        measured_weight = sum(t.weight for t in self._droppable_terms if t.metric in metrics)
+        if self._droppable_terms and measured_weight == 0:
             return None
-        rescale = self._evaluator_weight / measured_weight if measured_weight else 1.0
+        rescale = self._droppable_weight / measured_weight if measured_weight else 1.0
         total = 0.0
         for term in self._terms:
             if term.metric not in metrics:
                 continue
-            weight = term.weight if term.is_usage else term.weight * rescale
+            assert term.scale is not None  # checked above
+            weight = term.weight if term.is_required else term.weight * rescale
             total += weight * (_oriented(term, metrics[term.metric]) - term.offset) / term.scale
         return total / self._total_weight
 
@@ -391,7 +470,7 @@ class Criteria:
         None becomes the mean of every evaluator's score; a `WeightedSum` or `Pareto` of one objective becomes that
         objective; each name becomes the registry's (`"Helpfulness"` -> `"HelpfulnessEvaluator"`). Raises
         the `ValueError`s listed in `__init__` (a lone objective with `weight=` / `scale=`, a metric twice
-        after resolution, an unbounded metric without `scale=`).
+        after resolution, an unbounded metric without `scale=` in a `WeightedSum`).
         """
         defaulted = objective is None
         if objective is None:
@@ -412,7 +491,8 @@ class Criteria:
                 type(o)(self.registry.resolve(o.metric), weight=o.weight, scale=o.scale) for o in objective.objectives
             ]
             combined = type(objective)(*resolved)  # repeats the same-metric check on resolved names
-            name = type(objective).__name__
+            if isinstance(combined, Pareto):
+                return combined  # an unbounded metric without scale= takes the baseline's mean
             for o in resolved:
                 if o.scale is None and _width(self.registry.range(o.metric)) is None:
                     if defaulted:
@@ -423,17 +503,7 @@ class Criteria:
                         )
                     raise ValueError(
                         f"{o.metric} has no bounded range: give it a scale= (the size of a meaningful "
-                        f"change) so it can be combined in the {name}"
-                    )
-                low, high = self.registry.range(o.metric)
-                worst, side = (low, "low") if isinstance(o, Maximize) else (high, "high")
-                if worst is None and not self.registry.is_usage(o.metric):
-                    # A term is measured from its worst end; with none, dropping it on a case where the evaluator
-                    # is N/A would score that case as if the evaluator had done better than its best.
-                    raise ValueError(
-                        f"{o}: the evaluator {o.metric} has no {side} end in its score_range ({low}, {high}), so "
-                        f"it can't be combined in the {name} (a case it finds N/A would score above a perfect "
-                        f"one); give the evaluator a score_range with a {side} end"
+                        "change) so it can be combined in the WeightedSum"
                     )
             return combined
         raise TypeError(f"objective must be Maximize, Minimize, WeightedSum, or Pareto, got {type(objective).__name__}")
@@ -458,14 +528,15 @@ class Criteria:
         terms = []
         for o in objective.objectives:
             low, high = self.registry.range(o.metric)
+            # None (an unbounded metric under Pareto) until the baseline's mean sets it; a WeightedSum rejected it.
             scale = o.scale if o.scale is not None else _width((low, high))
-            assert scale is not None  # an unbounded metric without scale= was rejected when resolved
             maximize = isinstance(o, Maximize)
-            # Anchored at the worst end, so dropping an N/A term and rescaling the others keeps the level; only a
-            # usage metric (never N/A) may lack that end.
+            # Anchored at the worst end, so dropping an N/A term and rescaling the others keeps the level; a term
+            # with no worst end is never dropped.
             worst = low if maximize else (None if high is None else -high)
             offset = 0.0 if worst is None else worst
-            terms.append(_Term(o.metric, maximize, o.weight, scale, self.registry.is_usage(o.metric), offset))
+            required = self.registry.is_usage(o.metric) or worst is None
+            terms.append(_Term(o.metric, maximize, o.weight, scale, required, offset))
         return tuple(terms)
 
 
