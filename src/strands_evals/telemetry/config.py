@@ -14,7 +14,7 @@ from opentelemetry.baggage.propagation import W3CBaggagePropagator
 from opentelemetry.context import Context
 from opentelemetry.propagators.composite import CompositePropagator
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
+from opentelemetry.sdk.trace import ReadableSpan, Span, SpanLimits, SpanProcessor
 from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter, SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -84,6 +84,9 @@ class StrandsEvalsTelemetry:
     Args:
         tracer_provider: Optional pre-configured SDKTracerProvider. If None,
             a new one will be created and set as the global tracer provider.
+        span_limits: Optional limits (events, attributes, links per span) for the tracer provider
+            created when `tracer_provider` is None. If None, OpenTelemetry's defaults and its
+            `OTEL_SPAN_*` environment variables apply.
 
     Environment Variables:
         Environment variables are handled by the underlying OpenTelemetry SDK:
@@ -113,16 +116,26 @@ class StrandsEvalsTelemetry:
     def __init__(
         self,
         tracer_provider: SDKTracerProvider | None = None,
+        span_limits: SpanLimits | None = None,
     ) -> None:
         """Initialize the StrandsEvalsTelemetry instance.
 
         Args:
             tracer_provider: Optional pre-configured tracer provider.
                 If None, a new one will be created and set as global.
+            span_limits: Optional limits (events, attributes, links per span) for the tracer provider
+                created when `tracer_provider` is None. If None, OpenTelemetry's defaults and its
+                `OTEL_SPAN_*` environment variables apply.
 
         The instance is ready to use immediately after initialization, though
         trace exporters must be configured separately using the setup methods.
+
+        Raises:
+            ValueError: Both `tracer_provider` and `span_limits` are given; a provider's limits are set when
+                it is created.
         """
+        if tracer_provider is not None and span_limits is not None:
+            raise ValueError("span_limits applies only to the tracer provider created here; set it on tracer_provider")
         self.resource = get_otel_resource()
         self._in_memory_exporter: InMemorySpanExporter | None = None
         self.tracer_provider: TracerProvider
@@ -130,14 +143,14 @@ class StrandsEvalsTelemetry:
         if tracer_provider:
             self.tracer_provider = tracer_provider
         else:
-            self._initialize_tracer()
+            self._initialize_tracer(span_limits)
 
-    def _initialize_tracer(self) -> None:
+    def _initialize_tracer(self, span_limits: SpanLimits | None = None) -> None:
         """Initialize the OpenTelemetry tracer."""
         logger.info("Initializing tracer for strands-evals")
 
         # Create tracer provider
-        tracer_provider = SDKTracerProvider(resource=self.resource)
+        tracer_provider = SDKTracerProvider(resource=self.resource, span_limits=span_limits)
 
         # Set as global tracer provider
         trace_api.set_tracer_provider(tracer_provider)

@@ -376,7 +376,7 @@ async def test_a_completed_trial_is_logged(traces):
     assert entry.attempts == 1
     assert entry.previous_attempts == []
     assert len(entry.trace_id) == 32
-    assert len(entry.attempt_span_id) == 16
+    assert entry.usage.model_calls == 1
     assert log.trace_ids == {entry.trace_id}
 
 
@@ -512,10 +512,60 @@ async def test_a_retried_attempt_moves_into_previous_attempts(traces):
     assert entry.status is TrialStatus.COMPLETED
     assert entry.attempts == 2
     assert entry.trace_id == first.trace_id
-    assert entry.attempt_span_id != first.attempt_span_id
     assert entry.previous_attempts == [
-        (first.attempt_span_id, TrialStatus.INFRASTRUCTURE_INVALID, "ModelThrottledException", "slow down")
+        (first.usage, TrialStatus.INFRASTRUCTURE_INVALID, "ModelThrottledException", "slow down")
     ]
+
+
+async def test_an_attempt_that_raised_still_has_its_usage_and_spans_dropped(traces):
+    log = TrialLog()
+
+    async def rollout(agent_factory, case):
+        await agent_factory().invoke_async(case.input)
+        raise ValueError("bad output")
+
+    with pytest.raises(ValueError):
+        await _run(instrument(make_task(_agent_factory(), rollout), log, traces), _case(), traces)
+
+    entry = log.records()["case-1"]
+    assert entry.status is TrialStatus.AGENT_FAILURE
+    assert entry.usage.model_calls == 1
+    assert [span.name for span in traces._filter.spans(entry.trace_id)] == ["execute_case"]
+
+
+async def test_an_error_reading_a_failed_attempt_is_a_setup_error(traces, monkeypatch):
+    def unreadable(trace_id, attempt_span_id):
+        raise KeyError("unreadable span")
+
+    monkeypatch.setattr(traces, "usage", unreadable)
+    log = TrialLog()
+
+    async def task(case):
+        raise ModelThrottledException("slow down")
+
+    with pytest.raises(ModelThrottledException):  # the attempt's own error, so Experiment still retries it
+        await _run(instrument(task, log, traces), _case(), traces)
+
+    assert isinstance(log.setup_error, KeyError)
+    assert log.records() == {}
+    (trace_id,) = log.trace_ids
+    assert [span.name for span in traces._filter.spans(trace_id)] == ["execute_case"]
+
+
+async def test_an_error_reading_a_completed_attempt_is_raised(traces, monkeypatch):
+    def unreadable(trace_id, attempt_span_id):
+        raise KeyError("unreadable span")
+
+    monkeypatch.setattr(traces, "session", unreadable)
+    log = TrialLog()
+
+    with pytest.raises(KeyError):  # so Experiment runs no judge on it
+        await _run(instrument(make_task(_agent_factory(), default_rollout), log, traces), _case(), traces)
+
+    assert isinstance(log.setup_error, KeyError)
+    assert log.records() == {}
+    (trace_id,) = log.trace_ids
+    assert [span.name for span in traces._filter.spans(trace_id)] == ["execute_case"]
 
 
 async def test_a_sync_task_is_instrumented(traces):
@@ -557,12 +607,35 @@ async def test_experiment_evaluators_see_the_session(traces):
     }
     assert entries["a"].trace_id != entries["b"].trace_id
     for entry in entries.values():
-        session, usage = (
-            traces.session(entry.trace_id, entry.attempt_span_id),
-            traces.usage(entry.trace_id, entry.attempt_span_id),
-        )
-        assert isinstance(session, Session)
-        assert usage.model_calls == 1
+        assert entry.usage.model_calls == 1
+
+
+class _SpansHeld(Evaluator):
+    """Records the names of the spans the capture holds for its trial's trace while it judges."""
+
+    def __init__(self, traces):
+        super().__init__()
+        self.traces = traces
+        self.held = []
+
+    def evaluate(self, evaluation_case):
+        trace_id = format(trace_api.get_current_span().get_span_context().trace_id, "032x")
+        self.held.append(sorted(span.name for span in self.traces._filter.spans(trace_id)))
+        return [EvaluationOutput(score=1.0, test_pass=True, reason="")]
+
+
+async def test_judges_run_after_the_attempts_spans_are_dropped(traces):
+    log = TrialLog()
+    judge = _SpansHeld(traces)
+    experiment = Experiment(cases=[_case()], evaluators=[judge])
+
+    report = await experiment.run_evaluations_async(
+        instrument(make_task(_agent_factory(), default_rollout), log, traces)
+    )
+
+    assert report.scores == [1.0]
+    assert log.records()["case-1"].usage.model_calls == 1
+    assert judge.held == [["task_execution case-1"]]  # Experiment's own span: none of the attempt's
 
 
 async def test_experiment_throttling_retry_keeps_the_earlier_attempt(traces, no_retry_delay):
@@ -582,11 +655,11 @@ async def test_experiment_throttling_retry_keeps_the_earlier_attempt(traces, no_
     entry = log.records()["case-1"]
     assert entry.status is TrialStatus.COMPLETED
     assert entry.attempts == 2
-    ((span_id, status, error_type, _),) = entry.previous_attempts
+    ((usage, status, error_type, _),) = entry.previous_attempts
     assert status is TrialStatus.INFRASTRUCTURE_INVALID
     assert error_type == "ModelThrottledException"
-    assert traces.usage(entry.trace_id, entry.attempt_span_id).model_calls == 1
-    assert traces.usage(entry.trace_id, span_id).tokens == 0
+    assert entry.usage.model_calls == 1
+    assert usage.tokens == 0
 
 
 async def test_experiment_agent_failure_is_logged(traces):
@@ -620,13 +693,9 @@ async def test_usage_covers_every_agent_in_a_multi_agent_rollout(traces):
 
     log = TrialLog()
     task = instrument(make_task(_agent_factory(model_id="planner-model"), rollout), log, traces)
-    await _run(task, _case(), traces)
+    session = (await _run(task, _case(), traces))["trajectory"]
 
-    entry = log.records()["case-1"]
-    session, usage = (
-        traces.session(entry.trace_id, entry.attempt_span_id),
-        traces.usage(entry.trace_id, entry.attempt_span_id),
-    )
+    usage = log.records()["case-1"].usage
     assert sum(isinstance(span, AgentInvocationSpan) for trace in session.traces for span in trace.spans) == 3
     assert usage.model_calls == 3
     assert usage.tokens == 15 + 120 + 120

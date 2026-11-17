@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import SpanLimits
 from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
 
 from strands_evals.telemetry.config import StrandsEvalsTelemetry, get_otel_resource
@@ -69,6 +70,29 @@ def test_strands_evals_telemetry_init_without_provider():
 
         # Verify resource was created
         assert isinstance(telemetry.resource, Resource)
+
+
+def test_strands_evals_telemetry_init_with_span_limits():
+    """The tracer provider it creates gets the span limits"""
+    limits = SpanLimits(max_events=SpanLimits.UNSET)
+    with (
+        patch("strands_evals.telemetry.config.trace_api.set_tracer_provider") as mock_set_provider,
+        patch("strands_evals.telemetry.config.trace_api.get_tracer_provider"),
+        patch("strands_evals.telemetry.config.propagate.set_global_textmap"),
+    ):
+        StrandsEvalsTelemetry(span_limits=limits)
+
+    (provider,), _ = mock_set_provider.call_args
+    span = provider.get_tracer("test").start_span("span")
+    for i in range(200):
+        span.add_event(f"event {i}")
+    assert span.dropped_events == 0
+
+
+def test_strands_evals_telemetry_span_limits_with_custom_provider_raises():
+    """Span limits can't apply to a provider that already exists"""
+    with pytest.raises(ValueError, match="span_limits"):
+        StrandsEvalsTelemetry(tracer_provider=MagicMock(spec=SDKTracerProvider), span_limits=SpanLimits())
 
 
 def test_strands_evals_telemetry_init_with_custom_provider():
