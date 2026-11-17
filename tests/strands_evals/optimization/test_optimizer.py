@@ -1179,9 +1179,9 @@ async def test_the_default_search_runs_end_to_end_and_observes_every_patch_once(
 
 def _default_search(base_dir, **kwargs):
     kwargs.setdefault("budget", Budget(max_iterations=6))
+    kwargs.setdefault("rollout_fn", _temperature_rollout)
     return _optimizer(
         _experiment(evaluators=[Temperature()]),
-        rollout_fn=_temperature_rollout,
         max_workers=64,
         base_dir=base_dir,
         proposals_per_iteration=2,
@@ -1344,6 +1344,76 @@ async def test_a_smaller_budget_after_the_pick_skips_the_test_report(tmp_path):
         _resume(copy, budget=Budget(max_rollouts=spent - 1))
     result = await _resume(copy, budget=Budget(max_rollouts=spent)).run_async()
     assert result.test is None and result.test_reason.startswith("the test report needs")
+
+
+def test_a_ctrl_c_during_the_search_stops_run_and_resume_finishes_it(tmp_path, sigint):
+    async def on_iteration(record):
+        if record.iteration == 2:
+            sigint.send()  # a Ctrl-C once iteration 2 is closed
+            await asyncio.sleep(10)  # cancelled; otherwise the search goes on after it
+
+    original_optimizer = _default_search(tmp_path / "original")
+    original = original_optimizer.run()
+    optimizer = _default_search(tmp_path / "runs", on_iteration=on_iteration)
+    with pytest.raises(sigint.error):
+        optimizer.run()
+
+    root = optimizer._run.root
+    events = _events_at(root)
+    names = [e["event"] for e in events]
+    assert names.count("iteration_end") == 2 and "stop" not in names and not (root / "result.json").exists()
+    assert {e["record"]["split"] for e in events if e["event"] == "trial"} == {"train"}
+    resumed_optimizer = _resume(root)
+    _assert_same(resumed_optimizer.run(), original)
+    assert resumed_optimizer._budget.spent == original_optimizer._budget.spent
+
+
+@pytest.mark.parametrize("sync", [False, True], ids=["async rollout", "sync rollout"])
+def test_a_ctrl_c_during_validation_cancels_the_trial_in_flight_and_resume_runs_it(tmp_path, sigint, sync):
+    original_optimizer = _default_search(tmp_path / "original")
+    original = original_optimizer.run()
+    validation = set(original_optimizer._case_split.validation)
+    first, release, returned = threading.Lock(), threading.Event(), threading.Event()
+
+    def interrupts(case):
+        """Send a Ctrl-C from the first validation trial only."""
+        if case.name in validation and first.acquire(blocking=False):
+            sigint.send()
+            return True
+        return False
+
+    async def async_rollout(agent_factory, case):
+        if interrupts(case):
+            await asyncio.sleep(10)  # in flight when the run is cancelled
+        return await _temperature_rollout(agent_factory, case)
+
+    def sync_rollout(agent_factory, case):
+        if interrupts(case):
+            release.wait(10)  # in flight when the run is cancelled; its thread can't be stopped
+            returned.set()
+        _, temperature = agent_factory()
+        return str(temperature)
+
+    optimizer = _default_search(tmp_path / "runs", rollout_fn=sync_rollout if sync else async_rollout)
+    with pytest.raises(sigint.error):
+        optimizer.run()
+    if sync:
+        assert not returned.is_set()  # `run()` didn't wait for the sync rollout
+        release.set()
+        assert returned.wait(10)
+
+    root = optimizer._run.root
+    events = _events_at(root)
+    names = [e["event"] for e in events]
+    assert "finalists" in names and "picked" not in names and not (root / "result.json").exists()
+
+    def validation_trials(events):
+        return sum(1 for e in events if e["event"] == "trial" and e["record"]["split"] == "validation")
+
+    assert validation_trials(events) < validation_trials(_events(original_optimizer))  # the cancelled one isn't saved
+    resumed_optimizer = _resume(root)
+    _assert_same(resumed_optimizer.run(), original)
+    assert resumed_optimizer._budget.spent == original_optimizer._budget.spent
 
 
 def test_resume_checks_the_cases_and_the_config(tmp_path):
