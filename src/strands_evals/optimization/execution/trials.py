@@ -227,6 +227,13 @@ class TrialRunner:
         `completed` with that evaluator in `evaluator_errors` (every evaluator failed is
         `evaluator_invalid`), and only the agent side makes a trial `infrastructure_invalid`.
 
+        When `Experiment` fails on the case after the task returned (it can't serialize the output for
+        its span, say), it writes a case-level placeholder row (score 0) for every evaluator, and none is
+        taken as a score. With at least one evaluator the trial is `evaluator_invalid`, else `completed`;
+        its `error_type` and `error` are the exception `Experiment` caught, and no evaluator is in
+        `evaluator_errors`, so it is never re-judged: judging again is expected to fail the same way, or,
+        when `Experiment` failed before saving the output, would judge an output of None.
+
         Args:
             cases: Every case of the run.
             evaluators: The experiment's evaluators.
@@ -554,6 +561,24 @@ class TrialRunner:
         evaluations, details, errors, judge_usage = (
             self._judged({}, {}, {}, self._evaluators, report, state, view) if completed else ({}, {}, {}, {})
         )
+        error_type, error = entry.error_type, entry.error
+        if completed:
+            case_error_type, case_error = self._traces.case_error(entry.trace_id)
+            if case_error_type is not None:
+                # `Experiment` failed on the case after the task returned, so every row is a case-level
+                # placeholder. No evaluator is left in `errors`: a re-judge would replay the same output
+                # through the same failure and take its placeholder rows as scores.
+                error_type, error = case_error_type, case_error
+                evaluations, details, errors = {}, {}, {}
+                logger.warning(
+                    "candidate_id=<%s>, case_name=<%s>, run_index=<%s>, error_type=<%s>, error=<%s> | case failed "
+                    "after the task returned | no evaluator score recorded",
+                    call.candidate_id,
+                    case_name,
+                    run_index,
+                    error_type,
+                    error,
+                )
         status = entry.status
         if completed and self._evaluators and not evaluations:
             status = TrialStatus.EVALUATOR_INVALID
@@ -572,8 +597,8 @@ class TrialRunner:
             run_index=run_index,
             split=self._split_of[case_name],
             status=status,
-            error_type=entry.error_type,
-            error=entry.error,
+            error_type=error_type,
+            error=error,
             attempts=len(earlier) + 1,
             previous_attempts=earlier,
             output=_storable(kept.actual_output, call, "output") if kept is not None else None,
@@ -647,8 +672,9 @@ class TrialRunner:
     ) -> tuple[dict[str, EvaluationOutput], dict[str, list[EvaluationOutput]], dict[str, str], dict[str, Usage]]:
         """Fold this attempt's evaluator results into `evaluations` / `details` / `errors`.
 
-        `Experiment`'s report holds one row per evaluator it ran; a failed evaluator's row is a score-0
-        placeholder, dropped here. Experiment's own no-evaluator placeholder is never in `evaluators`.
+        `Experiment`'s report holds one row per evaluator; a failed evaluator's row is a score-0
+        placeholder, dropped here. Case-level placeholder rows (`Experiment` failed on the case itself) are
+        dropped by `_ran`. Experiment's own no-evaluator placeholder is never in `evaluators`.
         """
         rows = {row["evaluator"]: i for i, row in enumerate(report.cases)} if evaluators else {}
         judge_usage: dict[str, Usage] = {}

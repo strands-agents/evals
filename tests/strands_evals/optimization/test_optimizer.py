@@ -56,10 +56,11 @@ from strands_evals.optimization.declaration.space import Space
 from strands_evals.optimization.optimizer import _slots_used
 from strands_evals.optimization.record.resume import load_state
 from strands_evals.optimization.record.run_directory import RunDirectory
+from strands_evals.optimization.result import _reports
 from strands_evals.optimization.search.blocks import _saved
 from strands_evals.optimization.selection.top_ranked import TopRanked
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
-from strands_evals.types.optimization import Estimate
+from strands_evals.types.optimization import CaseSplit, Estimate, TrialRecord, TrialStatus
 
 
 class Score(Evaluator):
@@ -359,6 +360,18 @@ async def test_a_baseline_with_unmeasured_cases_stops_at_setup(tmp_path):
         await optimizer._score_baseline()
     stop = _events(optimizer)[-1]
     assert stop["event"] == "stop" and stop["reason"] == "setup" and "sandbox down" in stop["message"]
+
+
+async def test_a_baseline_experiment_fails_on_after_the_task_returned_stops_at_setup(tmp_path):
+    async def rollout(agent_factory, case):
+        return {"output": {(0, 1): "x"}}  # Experiment can't serialize it for its span
+
+    optimizer = _quiet(base_dir=tmp_path, rollout_fn=rollout)
+    optimizer._setup()
+    with pytest.raises(
+        RuntimeError, match=r"^8/8 train cases unmeasured .*: trials 8 evaluator_invalid; first error .*: TypeError: "
+    ):
+        await optimizer._score_baseline()
 
 
 async def test_a_crashing_baseline_scores_worst_and_is_eligible(tmp_path):
@@ -2453,6 +2466,47 @@ async def test_reports_match_what_experiment_returns_for_the_same_trials(tmp_pat
     reasons = [r.replace("flaky judge", "ValueError") for r in expected["reasons"]]
     assert report.reasons == reasons
     assert set(result.reports[result.best.id]) == {"train", "validation", "test"}
+
+
+async def test_reports_match_experiment_for_a_case_it_failed_on_after_the_task_returned():
+    case = Case(name="a", input="question a")
+
+    async def task(case):
+        return {"output": {(0, 1): "x"}}  # Experiment can't serialize it for its span
+
+    expected = await Experiment(cases=[case], evaluators=[Score()]).run_evaluations_async(task)
+    record = TrialRecord(
+        candidate_id="c",
+        case_name="a",
+        run_index=0,
+        split="train",
+        status=TrialStatus.EVALUATOR_INVALID,
+        error_type="TypeError",
+        error=expected.reasons[0].removeprefix("An error occurred: "),
+        attempts=1,
+        previous_attempts=[],
+        output=None,
+        trajectory=None,
+        interactions=None,
+        environment_state=None,
+        evaluations={},
+        details={},
+        evaluator_errors={},
+        usage=Usage.zero(),
+        judge_usage={},
+        rollouts=1,
+    )
+
+    split = CaseSplit(train=("a",), validation=(), test=())
+    report = _reports({"c": {("a", 0): record}}, cases=[case], evaluators=[Score()], split=split)["c"]["train"]
+
+    assert expected.reasons[0].startswith("An error occurred: keys must be str")
+    assert (report.scores, report.test_passes, report.reasons) == (
+        expected.scores,
+        expected.test_passes,
+        expected.reasons,
+    )
+    assert [{k: v for k, v in row.items() if k != "run_index"} for row in report.cases] == expected.cases
 
 
 async def test_the_result_reloads_whole_without_the_run_folder_and_summarizes(tmp_path):

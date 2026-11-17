@@ -697,9 +697,10 @@ def _reports(
     """Each candidate's `EvaluationReport` per split, as `Experiment.run_evaluations_async` flattens it.
 
     Rows in evaluator order, then the split's case order, then run index. A trial whose task raised
-    (`agent_failure`, `infrastructure_invalid`) gets a score-0 row per evaluator with `Experiment`'s reason
-    ("An error occurred: <error>") and the case itself as the row; an evaluator in `evaluator_errors` gets a
-    score-0 row with "Evaluator error: <exception type>" (the record keeps only the type). Each row is tagged
+    (`agent_failure`, `infrastructure_invalid`), or any other trial with `error` set (`Experiment` failed on
+    its case after the task returned), gets a score-0 row per evaluator with `Experiment`'s reason ("An error
+    occurred: <error>") and the case itself as the row; an evaluator in `evaluator_errors` gets a score-0 row
+    with "Evaluator error: <exception type>" (the record keeps only the type). Each row is tagged
     `evaluator`, `evaluator_type`, and `run_index`. So `overall_score` is what a plain eval run of the same
     trials reports.
 
@@ -730,7 +731,8 @@ def _reports(
                 for record in ordered:
                     case = by_name[record.case_name]
                     tag = {"evaluator": name, "evaluator_type": type_name, "run_index": record.run_index}
-                    if record.status in (TrialStatus.AGENT_FAILURE, TrialStatus.INFRASTRUCTURE_INVALID):
+                    raised = record.status in (TrialStatus.AGENT_FAILURE, TrialStatus.INFRASTRUCTURE_INVALID)
+                    if raised or record.error is not None:
                         rows.append({**case.model_dump(), **tag})
                         scores.append(0.0)
                         passes.append(False)

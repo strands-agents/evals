@@ -5,6 +5,7 @@ import pytest
 from opentelemetry.context import Context
 from strands import Agent
 from strands.telemetry.tracer import get_tracer as strands_tracer
+from strands.types.exceptions import ModelThrottledException
 
 from strands_evals.optimization.execution.traces import (
     _FILTERS,
@@ -333,6 +334,19 @@ def test_evaluator_view_with_no_evaluators_is_empty(traces, tracer):
     assert view.errors == {}
     assert view.labels == {}
     assert view.judge_usage == {}
+
+
+def test_case_error_reads_the_exception_recorded_on_the_case_span(traces, tracer):
+    with _trial(tracer, traces) as trace_id:
+        with pytest.raises(ConnectionError):
+            with tracer.start_as_current_span("task_execution case"):  # a nested span's exception isn't read
+                raise ConnectionError("unreachable")
+        trace_api.get_current_span().record_exception(ModelThrottledException("slow down"))
+    with _trial(tracer, traces) as clean_id:
+        pass
+
+    assert traces.case_error(trace_id) == ("ModelThrottledException", "slow down")  # no module path
+    assert traces.case_error(clean_id) == (None, None)
 
 
 def test_release_drops_only_those_trials(traces, tracer):
