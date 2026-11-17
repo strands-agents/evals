@@ -11,7 +11,7 @@ from ...evaluators import InteractionsEvaluator, OutputEvaluator, TrajectoryEval
 from ...evaluators.evaluator import Evaluator
 from ...experiment import Experiment
 from ...generators import ExperimentGenerator
-from .._common import EXIT_BAD_INPUT, EXIT_OK, emit_error
+from .._common import EXIT_BAD_INPUT, EXIT_OK, EXIT_RUNTIME_ERROR, emit_error
 from .._entrypoint import resolve_custom_evaluators
 from .._io import write_text_output
 
@@ -84,6 +84,14 @@ def _run(args: argparse.Namespace) -> int:
                 num_topics=args.num_topics,
             )
         )
+
+    if args.num_cases > 0 and not experiment.cases:
+        reason = generator.last_case_error
+        message = "case generation produced no cases"
+        if reason is not None:
+            message += f": {reason}"
+        emit_error(message)
+        return EXIT_RUNTIME_ERROR
 
     if args.output is not None:
         # `experiment.to_file` enforces a `.json` extension and writes via

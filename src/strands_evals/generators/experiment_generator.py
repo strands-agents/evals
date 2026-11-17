@@ -78,6 +78,7 @@ class ExperimentGenerator(Generic[InputT, OutputT]):
         self.include_expected_interactions = include_expected_interactions
         self.include_metadata = include_metadata
         self.max_parallel_num_cases = max_parallel_num_cases
+        self.last_case_error: Exception | None = None
 
         self.rubric_system_prompt = rubric_system_prompt
         self.case_system_prompt = case_system_prompt
@@ -124,6 +125,7 @@ class ExperimentGenerator(Generic[InputT, OutputT]):
                 gen_case = await case_generator.structured_output_async(self._Case, full_prompt)
                 results.append(Case(**gen_case.model_dump()))
             except Exception as e:
+                self.last_case_error = e
                 logger.exception(f"Error generating case: {e}")
             finally:
                 queue.task_done()
@@ -145,6 +147,7 @@ class ExperimentGenerator(Generic[InputT, OutputT]):
         Returns:
             List of generated Case objects matching the configured schema
         """
+        self.last_case_error = None
         prompt_specs = await self._prepare_generation_prompts(
             base_prompt=prompt, num_cases=num_cases, num_topics=num_topics
         )

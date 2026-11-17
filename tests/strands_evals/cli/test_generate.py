@@ -12,6 +12,7 @@ from strands_evals.case import Case
 from strands_evals.cli.main import main
 from strands_evals.evaluators.output_evaluator import OutputEvaluator
 from strands_evals.experiment import Experiment
+from strands_evals.generators import experiment_generator
 
 
 def _experiment_with(num_cases: int = 2, evaluator: bool = False) -> Experiment:
@@ -64,6 +65,32 @@ def test_generate_writes_to_file_via_to_file(tmp_path: Path, capsys):
     assert "1 case(s), 1 evaluator(s)" in captured.err
     # Stdout is empty when -o is set.
     assert captured.out == ""
+
+
+def test_generate_all_model_calls_fail_preserves_output_file(tmp_path: Path, capsys):
+    out_path = tmp_path / "experiment.json"
+    previous = '{"cases": ["previous content"]}'
+    out_path.write_text(previous, encoding="utf-8")
+    agent = AsyncMock()
+    agent.structured_output_async.side_effect = RuntimeError("AccessDeniedException: not authorized to InvokeModel")
+
+    with patch.object(experiment_generator, "Agent", return_value=agent):
+        exit_code = main(["generate", "--context", "refund policy", "--num-cases", "3", "-o", str(out_path)])
+
+    captured = capsys.readouterr()
+    assert exit_code == 3
+    assert "AccessDeniedException" in captured.err
+    assert captured.out == ""
+    assert out_path.read_text(encoding="utf-8") == previous
+
+
+def test_generate_zero_requested_cases_is_not_a_failure(capsys):
+    fake = AsyncMock(return_value=_experiment_with(num_cases=0))
+    with patch("strands_evals.cli.commands.generate.ExperimentGenerator.from_context_async", new=fake):
+        exit_code = main(["generate", "--context", "ctx", "--num-cases", "0"])
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out)["cases"] == []
 
 
 def test_generate_to_file_appends_json_extension(tmp_path: Path):
