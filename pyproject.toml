@@ -44,7 +44,7 @@ strands-evals = "strands_evals.cli:main"
 test = [
     "pytest>=8.0.0,<10.0.0",
     "pytest-cov>=7.0.0,<8.0.0",
-    "pytest-asyncio>=1.0.0,<1.5.0",
+    "pytest-asyncio>=1.0.0,<1.6.0",
     "pytest-xdist>=3.0.0,<4.0.0",
 ]
 
@@ -85,7 +85,7 @@ features = ["otel", "langfuse", "langchain", "opensearch", "adk", "claude", "sti
 dependencies = [
     "pytest>=8.0.0,<10.0.0",
     "pytest-cov>=7.0.0,<8.0.0",
-    "pytest-asyncio>=1.0.0,<1.5.0",
+    "pytest-asyncio>=1.0.0,<1.6.0",
     "pytest-xdist>=3.0.0,<4.0.0",
     "moto>=5.1.0,<6.0.0",
 ]
@@ -190,7 +190,7 @@ python_files = "test_*.py"
 dependencies = [
     "pytest>=8.0.0,<10.0.0",
     "pytest-cov>=7.0.0,<8.0.0",
-    "pytest-asyncio>=1.0.0,<1.5.0",  # This fixed the async support
+    "pytest-asyncio>=1.0.0,<1.6.0",  # This fixed the async support
     "pytest-xdist>=3.0.0,<4.0.0",
     "moto>=5.1.0,<6.0.0",
 ]
