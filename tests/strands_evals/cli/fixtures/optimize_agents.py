@@ -180,3 +180,8 @@ async def harness_rollout(agent_factory, case):
     ROLLOUTS.append(case.name)
     agent = agent_factory()
     return {"output": str(await agent.invoke_async(case.input))}
+
+
+def no_environment(case):
+    """An `--environment` that provides no resources."""
+    return {}

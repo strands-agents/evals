@@ -21,7 +21,7 @@ import re
 import sys
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Literal
 
@@ -80,6 +80,7 @@ class Inputs:
     config: str | None = None
     config_sha256: str | None = None
     tune: list[str] = field(default_factory=list)
+    tune_instructions: bool = True
     harness_version: str | None = None
     custom_evaluators: list[str] = field(default_factory=list)
     rollout: str | None = None
@@ -105,10 +106,17 @@ def load_inputs(run_dir: Path) -> Inputs:
     """Read `<run_dir>/cli.json`.
 
     Raises:
-        ValueError: The folder has no `cli.json` (it wasn't started by `optimize run`), or a newer schema.
+        ValueError: The folder has no `cli.json` (it wasn't started by `optimize run`, or was stopped before any
+            spend), or a newer schema. Unknown keys (from a newer strands-evals) are ignored with a warning.
     """
     path = run_dir / CLI_FILE
     if not path.is_file():
+        events = run_dir / "events.jsonl"
+        if events.is_file() and '"event": "trial"' not in events.read_text(encoding="utf-8"):
+            raise ValueError(
+                f"{run_dir} has no {CLI_FILE}: the run was stopped before it was written, so nothing was spent; "
+                "start a new run"
+            )
         raise ValueError(
             f"{run_dir} has no {CLI_FILE}: it wasn't started by `strands-evals optimize run`; "
             "resume it from Python with Optimizer.resume"
@@ -117,7 +125,11 @@ def load_inputs(run_dir: Path) -> Inputs:
     version = data.pop("schema_version", None)
     if version != SCHEMA_VERSION:
         raise ValueError(f"{path} has schema_version {version!r}; this strands-evals reads {SCHEMA_VERSION}")
-    return Inputs(**data)
+    known = {f.name for f in fields(Inputs)}
+    unknown = sorted(set(data) - known)
+    if unknown:  # written by a newer strands-evals: what it added is ignored, the rest still resumes
+        logger.warning("file=<%s>, keys=<%s> | ignoring cli.json keys this strands-evals doesn't know", path, unknown)
+    return Inputs(**{key: value for key, value in data.items() if key in known})
 
 
 def read_run_json(run_dir: Path) -> dict[str, Any]:
@@ -174,7 +186,7 @@ def parse_objective(spec: str) -> Maximize | Minimize:
 def parse_constraints(spec: str) -> list[Constraint]:
     """A `--constraint`: `METRIC<=X` / `METRIC>=X`, or `MODULE:ATTR` naming a constraint or a list of them (a value
     with `<`, `>`, or `=` is a spec)."""
-    if any(char in spec for char in "<>="):
+    if any(char in spec for char in "<>=") or ":" not in spec:
         return [parse_constraint(spec)]
     target = load_hook(spec, "--constraint", (AtMost, AtLeast, list, tuple), "a constraint (AtMost or AtLeast)")
     targets = list(target) if isinstance(target, (list, tuple)) else [target]
@@ -346,7 +358,7 @@ def agent_arguments(inputs: Inputs) -> dict[str, Any]:
         from . import _harness  # needs strands-harness, in the `optimization` extra
 
         config = Path(inputs.config)
-        markers, tuned = _harness.declare(config, inputs.tune)
+        markers, tuned = _harness.declare(config, inputs.tune, tune_instructions=inputs.tune_instructions)
         _harness.warn_host_tools(config)
         return {
             **common,
@@ -391,6 +403,27 @@ def load_final_pick(spec: str) -> FinalPick:
     return load_hook(spec, "--final-pick", FinalPick, "a FinalPick")  # type: ignore[no-any-return]
 
 
+def check_config_unchanged(inputs: Inputs) -> None:
+    """Refuse to resume a `--config` run whose config file changed since the run: a change to a key that isn't
+    tuned would otherwise mix trials of two agents (a tuned key's change is caught by `Optimizer.resume`).
+
+    Raises:
+        ValueError: The config file is gone, or its sha256 isn't the one `cli.json` recorded.
+    """
+    if inputs.config is None:
+        return
+    from . import _harness
+
+    config = Path(inputs.config)
+    if not config.is_file():
+        raise ValueError(f"--config {config} no longer exists; restore it to resume, or start a new run")
+    if _harness.file_sha256(config) != inputs.config_sha256:
+        raise ValueError(
+            f"--config {config} changed since the run, so resumed trials would run a different agent; "
+            "restore it to resume, or start a new run"
+        )
+
+
 def check_harness_version(inputs: Inputs) -> None:
     """Warn when the installed strands-harness isn't the run's: a 0.x release may rename config keys."""
     if inputs.config is None:
@@ -429,8 +462,14 @@ async def drive(optimizer: Optimizer, on_folder: Callable[[Path], None]) -> Opti
 # The .toml run file.
 
 RUN_FILE_SUFFIX = ".toml"
-_AGENT_ROUTE = ("agent", "build_task", "space", "config")
-_PATH_KEYS = ("experiment_file", "config", "base_dir")
+# Each route's keys: the route flag(s), then the agent keys the CLI accepts with that route.
+_ROUTE_KEYS = {
+    "agent": ("agent", "rollout", "environment"),
+    "build_task": ("build_task", "space"),
+    "config": ("config", "tune", "tune_instructions", "rollout"),
+}
+_AGENT_KEYS = frozenset(key for keys in _ROUTE_KEYS.values() for key in keys)
+_PATH_KEYS = ("experiment", "config", "base_dir")
 _HOOK_KEYS = (
     "agent",
     "build_task",
@@ -450,15 +489,18 @@ _OUTPUT_FLAGS = ("format", "verbose", "debug", "help")
 def apply_run_file(path: Path, parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Fill `args` from the `.toml` run file at `path`, for every flag not given on the command line.
 
-    Keys are the `run` flags without `--` (`-` -> `_`), plus `experiment` for the experiment file; the output
-    flags (`--json`, `--rich`, `-v`, `--debug`) aren't keys. A repeatable flag's value is a list, `--pareto`'s a
+    Keys are the `run` flags without `--` (`-` -> `_`), so the experiment file is `experiment` (`--experiment`); the
+    output flags (`--json`, `--rich`, `-v`, `--debug`) aren't keys. A repeatable flag's value is a list, `--pareto`'s a
     boolean, every other flag's a string or number. The agent route may sit in an `[agent]` section (`factory` for
-    `--agent`, then `build_task`, `space`, `config`, `tune`, `rollout`, `environment`). `objective`, `constraint`,
-    and `tune` take the flag's strings, one `[key]` table, or named `[key.NAME]` tables (not `[[key]]` or inline
-    tables); a table's fields are `{maximize | minimize = METRIC, weight?, scale?}`, `{metric = METRIC,
-    at_most | at_least = X}`, `{path = PATH, choices?}`, and each becomes the flag's spec. A flag on the command
-    line replaces the file's value (for a repeatable flag, its whole list); giving any agent flag (`--agent`,
-    `--build-task`, `--space`, `--config`) on the command line replaces the file's agent route. Paths
+    `--agent`, then `build_task`, `space`, `config`, `tune`, `tune_instructions`, `rollout`, `environment`).
+    `objective`, `constraint`, and `tune` take the flag's strings or named `[key.NAME]` tables (not one `[key]`,
+    `[[key]]`, or inline tables); a table's fields are `{maximize | minimize = METRIC, weight?, scale?}`,
+    `{metric = METRIC, at_most | at_least = X}`, `{path = PATH, choices?}`, and each becomes the flag's spec. A
+    flag on the command line replaces the file's value (for a repeatable flag, its whole list). A route flag on the
+    command line
+    (`--agent`, `--build-task` / `--space`, `--config`) chooses the route: the file's agent keys that don't fit it
+    are dropped, those that do are kept (with `--agent`: `rollout`, `environment`; with `--build-task`: the other
+    of `build_task` / `space`; with `--config`: `tune`, `tune_instructions`, `rollout`). Paths
     (`experiment`, `config`, `base_dir`) and path-form `MODULE:ATTR`s resolve against the file's folder; dotted
     modules import from the working directory, as on the command line.
 
@@ -486,13 +528,13 @@ def apply_run_file(path: Path, parser: argparse.ArgumentParser, args: argparse.N
             f"run file {path}: unknown key {unknown[0]!r}{_did_you_mean(unknown[0], actions)}; keys are the run "
             f"flags without --, e.g. {', '.join(list(actions)[:4])}"
         )
-    if "experiment" not in data:
-        raise ValueError(f'run file {path} has no experiment = "<experiment.json>"')
+    if "experiment" not in data and args.experiment is None:
+        raise ValueError(f'run file {path} has no experiment = "<experiment.json>" (or pass --experiment)')
     base = path.resolve().parent
-    on_command_line = {action.dest for action in actions.values() if getattr(args, action.dest) not in (None, False)}
-    on_command_line.discard("experiment_file")  # the positional named the run file itself
-    if on_command_line & set(_AGENT_ROUTE):
-        data = {key: value for key, value in data.items() if key not in _AGENT_ROUTE}
+    on_command_line = {action.dest for action in actions.values() if getattr(args, action.dest) != action.default}
+    route = _command_line_route(on_command_line)
+    if route is not None:  # the command line chose the route: drop the file's agent keys that don't fit it
+        data = {key: value for key, value in data.items() if key not in _AGENT_KEYS or key in _ROUTE_KEYS[route]}
     for key, value in data.items():
         action = actions[key]
         if action.dest in on_command_line:
@@ -501,6 +543,16 @@ def apply_run_file(path: Path, parser: argparse.ArgumentParser, args: argparse.N
             value = [_table_entry(path, key, i, entry, actions) for i, entry in enumerate(value)]
         value = _run_file_value(path, key, action, value)
         setattr(args, action.dest, _resolve_against(base, action.dest, value))
+
+
+def _command_line_route(on_command_line: set[str]) -> str | None:
+    """The route the command line's route flags choose (`agent`, `build_task`, `config`), or None; with several, the
+    first, and the route check reports the conflict."""
+    if "agent" in on_command_line:
+        return "agent"
+    if on_command_line & {"build_task", "space"}:
+        return "build_task"
+    return "config" if "config" in on_command_line else None
 
 
 def _did_you_mean(name: str, options: Any) -> str:
@@ -515,8 +567,7 @@ def _run_file_actions(parser: argparse.ArgumentParser) -> dict[str, argparse.Act
     for action in parser._actions:
         if action.dest in _OUTPUT_FLAGS:
             continue
-        if not action.option_strings:
-            actions["experiment"] = action
+        if not action.option_strings:  # the positional names the run file itself; `experiment` is --experiment
             continue
         flag = next(option for option in action.option_strings if option.startswith("--"))
         actions[flag[2:].replace("-", "_")] = action
@@ -531,6 +582,8 @@ def _flatten_sections(path: Path, data: dict[str, Any], actions: Mapping[str, ar
     if isinstance(section, dict):
         del data["agent"]
         for name, value in section.items():
+            if name == "agent":
+                raise ValueError(f'run file {path}: in [agent], the factory is factory = "...", not agent = "..."')
             if name not in _AGENT_SECTION:
                 if name in actions:
                     raise ValueError(
@@ -552,27 +605,25 @@ def _flatten_sections(path: Path, data: dict[str, Any], actions: Mapping[str, ar
 
 
 def _table_entries(path: Path, key: str, value: Any) -> Any:
-    """`key = ["...", ...]` (the flag's strings) as given; one `[key]` table as a list of it; named `[key.NAME]`
-    tables as their values in file order (the names are labels only). `[[key]]` sections and inline tables in the
-    list are refused, so each field has one list form."""
+    """`key = ["...", ...]` (the flag's strings) as given; named `[key.NAME]` tables as their values in file order
+    (the names are labels only). One `[key]` table with the fields directly under it, `[[key]]` sections, and
+    inline tables in the list are refused, so each key has one string form and one table form."""
     if isinstance(value, list):
         if any(isinstance(entry, dict) for entry in value):
             raise ValueError(
-                f"run file {path}: {key} takes strings (the --{key.replace('_', '-')} specs), one [{key}] table, or "
-                f"named [{key}.NAME] tables; [[{key}]] sections and inline tables aren't accepted"
+                f"run file {path}: {key} takes strings (the --{key.replace('_', '-')} specs) or named [{key}.NAME] "
+                f"tables; [[{key}]] sections and inline tables aren't accepted"
             )
         return value
     if not isinstance(value, dict):
         return value
-    tables = [v for v in value.values() if isinstance(v, dict)]
-    if not tables:
-        return [value]
-    if len(tables) != len(value):
+    fields_here = sorted(name for name, entry in value.items() if not isinstance(entry, dict))
+    if fields_here:
         raise ValueError(
-            f"run file {path}: [{key}] mixes fields with named [{key}.NAME] tables; use one [{key}] for a single "
-            f"{key}, or [{key}.NAME] tables for several"
+            f"run file {path}: [{key}] holds {fields_here[0]!r} directly; give each {key} a named table, "
+            f"[{key}.NAME], with its fields under it (even a single one)"
         )
-    return tables
+    return list(value.values())
 
 
 def _table_entry(path: Path, key: str, index: int, entry: Any, actions: Mapping[str, argparse.Action]) -> Any:
@@ -640,7 +691,7 @@ def _number(where: str, entry: dict[str, Any], name: str) -> int | float:
     return value
 
 
-_AGENT_SECTION = ("factory", "build_task", "space", "config", "tune", "rollout", "environment")
+_AGENT_SECTION = ("factory", "build_task", "space", "config", "tune", "tune_instructions", "rollout", "environment")
 _TOML_HINTS = (
     ("Cannot overwrite a value", " (a key given both as a value and as a [section]: use one form)"),
     ("immutable namespace", " ([[key]] sections aren't accepted: use the key's strings or [key.NAME] tables)"),
@@ -669,7 +720,7 @@ def _run_file_value(path: Path, key: str, action: argparse.Action, value: Any) -
         if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
             raise ValueError(f"{where} must be a list of strings, as the flag is repeatable")
         return value
-    if isinstance(action, argparse._StoreTrueAction):
+    if isinstance(action, (argparse._StoreTrueAction, argparse.BooleanOptionalAction)):
         if not isinstance(value, bool):
             raise ValueError(f"{where} must be true or false")
         return value

@@ -9,10 +9,12 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .._common import EXIT_BAD_INPUT, EXIT_OK, emit_error, resolve_format
+from .._common import EXIT_BAD_INPUT, EXIT_OK, EXIT_RUNTIME_ERROR, emit_error, resolve_format
 
 if TYPE_CHECKING:
     from ...optimization import OptimizationResult
+
+EXIT_INTERRUPTED = 130  # 128 + SIGINT, as shells report Ctrl-C
 
 # The optimizer is imported inside each subcommand, never at module level: `strands-evals` imports every command at
 # startup, and `strands_evals.optimization` needs the `optimization` extra.
@@ -27,6 +29,30 @@ def _print_result(result: OptimizationResult, args: argparse.Namespace) -> None:
     print(f"strands-evals optimize: run folder {result.run_dir}", file=sys.stderr)  # noqa: T201
 
 
+def _finish(result: OptimizationResult, args: argparse.Namespace) -> int:
+    """Print the result; exit 3 with the proposer's error when the search stopped on one (the end phase still ran,
+    so the result is printed, but a script checking the exit code shouldn't read a dead search as success)."""
+    _print_result(result, args)
+    if result.stop_reason != "proposer_error":
+        return EXIT_OK
+    events = (Path(result.run_dir) / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    failures = [event for event in map(json.loads, events) if event.get("event") == "proposer_error"]
+    failure = failures[-1] if failures else None
+    cause = f"{failure['error_type']}: {failure['error']}" if failure else "see events.jsonl"
+    block = f" (block {failure['block']!r})" if failure else ""
+    emit_error(f"the search stopped: a proposer{block} raised {cause}")
+    return EXIT_RUNTIME_ERROR
+
+
+def _interrupted(run_dir: Path | None) -> int:
+    """Ctrl-C: say how to continue instead of printing a traceback."""
+    where = f" {run_dir}" if run_dir is not None else " RUN_DIR"
+    print(  # noqa: T201
+        f"strands-evals optimize: interrupted; continue with `strands-evals optimize resume{where}`", file=sys.stderr
+    )
+    return EXIT_INTERRUPTED
+
+
 def _given(args: argparse.Namespace, *names: str) -> dict[str, Any]:
     """The flags among `names` that were passed (left None otherwise), so the `Optimizer`'s defaults stay the
     only defaults."""
@@ -35,19 +61,31 @@ def _given(args: argparse.Namespace, *names: str) -> dict[str, Any]:
 
 def _run(args: argparse.Namespace) -> int:
     """`optimize run`: read a run file if given, check the flags, build the `Optimizer`, run it, and print the
-    result; `cli.json` is written as soon as the run folder exists. Returns the exit code (2 on bad input)."""
-    from ...optimization import Budget, FinalPick, Optimizer
-    from .. import _optimize
+    result; `cli.json` is written as soon as the run folder exists. Returns the exit code (2 on bad input, 3 when
+    the search stopped on a proposer error, 130 on Ctrl-C)."""
+    try:
+        from ...optimization import Budget, FinalPick, Optimizer
+        from .. import _optimize
+    except ImportError as missing:  # the `optimization` extra isn't installed
+        emit_error(str(missing))
+        return EXIT_BAD_INPUT
+    debug = getattr(args, "debug", False)
 
-    if args.experiment_file.endswith(_optimize.RUN_FILE_SUFFIX):
+    if args.experiment_file.lower().endswith(_optimize.RUN_FILE_SUFFIX):
         try:
             _optimize.apply_run_file(Path(args.experiment_file), args.run_parser, args)
         except ValueError as run_file_error:
-            emit_error(str(run_file_error))
+            emit_error(str(run_file_error), debug=debug, exc=run_file_error)
             return EXIT_BAD_INPUT
-    error = _check_agent_flags(args)
-    if error is not None:
-        emit_error(error)
+        experiment_file = args.experiment
+    elif args.experiment is not None:
+        emit_error(f"--experiment goes with a .toml run file; {args.experiment_file} is already the experiment")
+        return EXIT_BAD_INPUT
+    else:
+        experiment_file = args.experiment_file
+    problem = _check_agent_flags(args)
+    if problem is not None:
+        emit_error(problem)
         return EXIT_BAD_INPUT
     config = Path(args.config).resolve() if args.config is not None else None
     harness: dict[str, Any] = {}
@@ -61,10 +99,11 @@ def _run(args: argparse.Namespace) -> int:
             "config": str(config),
             "config_sha256": _harness.file_sha256(config),
             "tune": args.tune or [],
+            "tune_instructions": args.tune_instructions is not False,
             "harness_version": _harness.harness_version(),
         }
     inputs = _optimize.Inputs(
-        experiment_file=str(Path(args.experiment_file).resolve()),
+        experiment_file=str(Path(experiment_file).resolve()),
         agent=args.agent,
         build_task=args.build_task,
         space=args.space,
@@ -106,15 +145,18 @@ def _run(args: argparse.Namespace) -> int:
             settings["final_pick"] = FinalPick(n_finalists=args.n_finalists)
         optimizer = Optimizer(**_optimize.agent_arguments(inputs), **settings)
     except (TypeError, ValueError) as error:
-        emit_error(str(error))
+        emit_error(str(error), debug=debug, exc=error)
         return EXIT_BAD_INPUT
 
     def on_folder(run_dir: Path) -> None:
         _optimize.save_inputs(run_dir, inputs)
         print(f"strands-evals optimize: run folder {run_dir}", file=sys.stderr)  # noqa: T201
 
-    _print_result(asyncio.run(_optimize.drive(optimizer, on_folder)), args)
-    return EXIT_OK
+    try:
+        result = asyncio.run(_optimize.drive(optimizer, on_folder))
+    except KeyboardInterrupt:
+        return _interrupted(optimizer.run_dir)
+    return _finish(result, args)
 
 
 def _check_agent_flags(args: argparse.Namespace) -> str | None:
@@ -132,6 +174,8 @@ def _check_agent_flags(args: argparse.Namespace) -> str | None:
         return f"give exactly one of --agent, --build-task (with --space), --config ({given})"
     if args.config is None and args.tune:
         return "--tune needs --config (with --agent or --space, declare what may change with markers)"
+    if args.config is None and args.tune_instructions is not None:
+        return "--tune-instructions / --no-tune-instructions go with --config"
     if (args.build_task is None) != (args.space is None):
         return "--build-task and --space go together: the task builder and the space it reads values from"
     if args.build_task is not None and args.rollout:
@@ -147,18 +191,39 @@ def _check_agent_flags(args: argparse.Namespace) -> str | None:
 
 def _resume(args: argparse.Namespace) -> int:
     """`optimize resume`: rebuild the inputs from `cli.json`, reopen the run with `Optimizer.resume` in its working
-    directory, and print the result. Returns the exit code (2 on bad input)."""
-    from ...optimization import Budget, Optimizer
-    from .. import _optimize
+    directory, and print the result. Returns the exit code, as `_run`'s."""
+    try:
+        from ...optimization import Budget, Optimizer
+        from .. import _optimize
+    except ImportError as missing:  # the `optimization` extra isn't installed
+        emit_error(str(missing))
+        return EXIT_BAD_INPUT
+    debug = getattr(args, "debug", False)
 
     run_dir = Path(args.run_dir).resolve()
     try:
         saved = _optimize.read_run_json(run_dir)
         inputs = _optimize.load_inputs(run_dir)
+        _optimize.check_config_unchanged(inputs)
     except ValueError as error:
-        emit_error(str(error))
+        emit_error(str(error), debug=debug, exc=error)
         return EXIT_BAD_INPUT
     _optimize.check_harness_version(inputs)
+    overrides = [
+        flag
+        for flag, value in (
+            ("--max-rollouts", args.max_rollouts),
+            ("--max-iterations", args.max_iterations),
+            ("--max-workers", args.max_workers),
+        )
+        if value is not None
+    ]
+    if overrides and (run_dir / "result.json").is_file():
+        print(  # noqa: T201
+            f"strands-evals optimize: the run has finished, so {', '.join(overrides)} change nothing; "
+            "start a new run to search more",
+            file=sys.stderr,
+        )
     with _optimize.working_directory(saved["workdir"]):
         try:
             budget = None
@@ -169,11 +234,13 @@ def _resume(args: argparse.Namespace) -> int:
                 run_dir, **_optimize.agent_arguments(inputs), budget=budget, max_workers=args.max_workers
             )
         except (TypeError, ValueError) as error:
-            emit_error(str(error))
+            emit_error(str(error), debug=debug, exc=error)
             return EXIT_BAD_INPUT
-        result = asyncio.run(_optimize.drive(optimizer, lambda _: None))
-    _print_result(result, args)
-    return EXIT_OK
+        try:
+            result = asyncio.run(_optimize.drive(optimizer, lambda _: None))
+        except KeyboardInterrupt:
+            return _interrupted(run_dir)
+    return _finish(result, args)
 
 
 def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentParser) -> None:
@@ -194,8 +261,14 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
         metavar="EXPERIMENT_FILE",
         help=(
             "a serialized Experiment JSON file, or a .toml run file holding the run's flags (keys are the flag names "
-            "with _ for -, plus experiment; flags given here override it)"
+            "with _ for -; flags given here override it)"
         ),
+    )
+    parser.add_argument(
+        "--experiment",
+        metavar="PATH",
+        default=None,
+        help="with a .toml run file: the experiment file, instead of the file's experiment",
     )
     agent = parser.add_mutually_exclusive_group()
     agent.add_argument(
@@ -227,6 +300,12 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
         ),
     )
     parser.add_argument(
+        "--tune-instructions",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="with --config: tune the config's instructions (default); --no-tune-instructions tunes only --tune",
+    )
+    parser.add_argument(
         "--rollout",
         metavar="MODULE:ATTR",
         default=None,
@@ -252,7 +331,7 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
         default=None,
         help=(
             "repeatable; several are combined as a weighted sum (or a Pareto front with --pareto); "
-            "MODULE:ATTR names a whole objective, given alone"
+            "MODULE:ATTR names a whole objective, given alone (use it for a metric whose name contains ':')"
         ),
     )
     goal.add_argument("--pareto", action="store_true", help="combine the --objective's as a Pareto front")
@@ -286,15 +365,56 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
         metavar="TRAIN,VALIDATION,TEST | MODULE:ATTR",
         help="shares (test 0 = none), or a Split (case lists, a split seed)",
     )
-    settings.add_argument("--seed", type=int, default=None, metavar="N")
-    settings.add_argument("--max-rollouts", type=int, default=None, metavar="N")
-    settings.add_argument("--max-iterations", type=int, default=None, metavar="N")
-    settings.add_argument("--runs-per-candidate", type=int, default=None, metavar="N")
-    settings.add_argument("--proposals-per-iteration", type=int, default=None, metavar="N")
-    settings.add_argument("--n-finalists", type=int, default=None, metavar="N")
-    settings.add_argument("--agent-failure-score", default=None, metavar="{worst,none,X}")
-    settings.add_argument("--feasibility-threshold", type=float, default=None, metavar="X")
-    settings.add_argument("--rerun-passes", type=int, default=None, metavar="N")
+    settings.add_argument(
+        "--seed", type=int, default=None, metavar="N", help="the run's seed: split, TPE, Thompson, ... (default 0)"
+    )
+    settings.add_argument(
+        "--max-rollouts",
+        type=int,
+        default=None,
+        metavar="N",
+        help="the budget, in rollouts (one case run once); the end phase's share is reserved up front (default 500)",
+    )
+    settings.add_argument(
+        "--max-iterations",
+        type=int,
+        default=None,
+        metavar="N",
+        help="stop after N x --proposals-per-iteration candidate slots (default: no limit)",
+    )
+    settings.add_argument(
+        "--runs-per-candidate", type=int, default=None, metavar="N", help="repetitions per case (default 1)"
+    )
+    settings.add_argument(
+        "--proposals-per-iteration", type=int, default=None, metavar="N", help="candidates per step (default 4)"
+    )
+    settings.add_argument(
+        "--n-finalists",
+        type=int,
+        default=None,
+        metavar="N",
+        help="finalists measured on validation before the pick (default 3)",
+    )
+    settings.add_argument(
+        "--agent-failure-score",
+        default=None,
+        metavar="{worst,none,X}",
+        help="what a crashed rollout scores: each metric's worst end, missing, or a number (default worst)",
+    )
+    settings.add_argument(
+        "--feasibility-threshold",
+        type=float,
+        default=None,
+        metavar="X",
+        help="P(constraint met) a candidate needs to count as feasible (default 0.9)",
+    )
+    settings.add_argument(
+        "--rerun-passes",
+        type=int,
+        default=None,
+        metavar="N",
+        help="re-runs of infrastructure failures and failed judges (default 2)",
+    )
     settings.add_argument("--max-workers", type=int, default=None, metavar="N", help="parallel trials (default: 4)")
     settings.add_argument(
         "--reflection-model", metavar="MODEL_ID", default=None, help="the model rewriting text values"
@@ -321,9 +441,15 @@ def add_subparser(subparsers: argparse._SubParsersAction, parent: argparse.Argum
         help="continue a killed run, or print a finished run's result",
         description="Rebuild a run's inputs from its cli.json and continue it; a finished run prints its result.",
     )
-    resume.add_argument("run_dir", metavar="RUN_DIR")
-    resume.add_argument("--max-rollouts", type=int, default=None, metavar="N")
-    resume.add_argument("--max-iterations", type=int, default=None, metavar="N")
-    resume.add_argument("--max-workers", type=int, default=None, metavar="N")
+    resume.add_argument("run_dir", metavar="RUN_DIR", help="the run folder `optimize run` printed")
+    resume.add_argument(
+        "--max-rollouts", type=int, default=None, metavar="N", help="a new budget for a killed run (default: the run's)"
+    )
+    resume.add_argument(
+        "--max-iterations", type=int, default=None, metavar="N", help="a new iteration limit (default: the run's)"
+    )
+    resume.add_argument(
+        "--max-workers", type=int, default=None, metavar="N", help="parallel trials (default: the run's)"
+    )
     resume.set_defaults(func=_resume)
     return parser

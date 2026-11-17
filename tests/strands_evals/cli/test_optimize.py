@@ -77,6 +77,7 @@ def test_run_saves_its_inputs_and_prints_the_result(experiment_path, tmp_path, c
         "config": None,
         "config_sha256": None,
         "tune": [],
+        "tune_instructions": True,
         "harness_version": None,
         "custom_evaluators": [CORRECT],
         "rollout": None,
@@ -630,11 +631,12 @@ def test_named_objective_tables_become_specs(experiment_path, tmp_path, capsys):
     [
         (OBJECTIVE_SECTIONS + "max_rollouts = 60\n", "every key after a [objective] or [objective.NAME] header"),
         (
-            NO_CONSTRAINT + '[constraint]\nmetric = "tokens"\nat_most = 450\nat_least = 1\n',
+            NO_CONSTRAINT + '[constraint.c]\nmetric = "tokens"\nat_most = 450\nat_least = 1\n',
             "needs one of at_most = X or at_least = X",
         ),
-        (NO_CONSTRAINT + "[constraint]\nat_most = 450\n", 'needs metric = "METRIC"'),
-        (OBJECTIVE_SECTIONS + '[tune]\npath = "effort"\nchoices = "low"\n', "choices must be a list"),
+        (NO_CONSTRAINT + "[constraint.c]\nat_most = 450\n", 'needs metric = "METRIC"'),
+        (NO_CONSTRAINT + '[constraint]\nmetric = "tokens"\nat_most = 450\n', "give each constraint a named table"),
+        (OBJECTIVE_SECTIONS + '[tune.e]\npath = "effort"\nchoices = "low"\n', "choices must be a list"),
         (
             OBJECTIVE_SECTIONS.replace('maximize = "Correct"', 'maximize = "Correct"\nminimize = "tokens"'),
             "needs one of",
@@ -660,7 +662,7 @@ def test_a_bad_objective_table_is_a_usage_error(experiment_path, tmp_path, capsy
 
 
 def test_a_constraint_table_becomes_a_spec(experiment_path, tmp_path, capsys):
-    body = RUN_FILE.replace('constraint = ["tokens<=450"]\n', "") + '[constraint]\nmetric = "tokens"\nat_most = 450\n'
+    body = RUN_FILE.replace('constraint = ["tokens<=450"]\n', "") + '[constraint.c]\nmetric = "tokens"\nat_most = 450\n'
     assert main(["--json", "optimize", "run", str(_write_run_file(tmp_path, body))]) == 0
     root = _only_run(tmp_path)
     assert json.loads((root / "cli.json").read_text())["constraints"] == ["tokens<=450"]
@@ -703,25 +705,15 @@ base_dir = "runs"
 """
 
 
-@pytest.mark.parametrize(
-    "objectives",
-    [
-        '[objective]\nmaximize = "Correct"\n',  # a lone objective takes no weight
-        (
-            '[objective.correct]\nmaximize = "Correct"\nweight = 2\n\n'
-            '[objective.cost]\nminimize = "tokens"\nscale = 1000\n'
-        ),
-    ],
-    ids=["single", "named"],
-)
-def test_single_and_named_objective_tables(experiment_path, tmp_path, capsys, objectives):
+def test_named_objective_tables_in_an_agent_section_run(experiment_path, tmp_path, capsys):
+    objectives = (
+        '[objective.correct]\nmaximize = "Correct"\nweight = 2\n\n[objective.cost]\nminimize = "tokens"\nscale = 1000\n'
+    )
     body = SETTINGS + f'\n[agent]\nfactory = "{AGENTS}:manager_agent"\n\n' + objectives
     assert main(["--json", "optimize", "run", str(_write_run_file(tmp_path, body))]) == 0
     saved = json.loads((_only_run(tmp_path) / "cli.json").read_text())
     assert saved["agent"] == f"{AGENTS}:manager_agent"  # [agent] factory is --agent
-    named = "cost" in objectives
-    expected = ["maximize:Correct:weight=2", "minimize:tokens:scale=1000"] if named else ["maximize:Correct"]
-    assert saved["objective"] == expected
+    assert saved["objective"] == ["maximize:Correct:weight=2", "minimize:tokens:scale=1000"]
 
 
 def test_an_agent_section_holds_a_config_route(experiment_path, tmp_path, monkeypatch, capsys, scripted_text_proposer):
@@ -757,10 +749,289 @@ def test_an_agent_section_holds_a_config_route(experiment_path, tmp_path, monkey
         ),
         (
             SETTINGS + '[objective]\nmaximize = "Correct"\n[objective.cost]\nminimize = "tokens"\n',
-            "mixes fields with named [objective.NAME] tables",
+            "[objective] holds 'maximize' directly; give each objective a named table",
         ),
     ],
 )
 def test_a_bad_section_is_a_usage_error(experiment_path, tmp_path, capsys, body, message):
     assert main(["optimize", "run", str(_write_run_file(tmp_path, body))]) == 2
     assert message in capsys.readouterr().err
+
+
+# PR #553 review fixes
+
+
+def _killed_copy(root: Path, tmp_path: Path) -> Path:
+    """A copy of finished run `root` cut after its first iteration, as a kill would leave it."""
+    lines = (root / "events.jsonl").read_text().splitlines()
+    cut = next(i for i, line in enumerate(lines) if json.loads(line)["event"] == "iteration_end") + 1
+    killed = tmp_path / "killed" / root.name
+    shutil.copytree(root, killed)
+    (killed / "events.jsonl").write_text("\n".join(lines[:cut]) + "\n")
+    (killed / "result.json").unlink()
+    return killed
+
+
+def test_a_zero_flag_overrides_the_run_file(experiment_path, tmp_path, capsys):
+    path = _write_run_file(tmp_path, RUN_FILE + "seed = 7\nrerun_passes = 2\n")
+    assert main(["--json", "optimize", "run", str(path), "--seed", "0", "--rerun-passes", "0"]) == 0
+    run = json.loads((_only_run(tmp_path) / "run.json").read_text())
+    assert run["seed"] == 0 and run["rerun_passes"] == 0
+
+
+def test_resume_refuses_a_config_changed_since_the_run(
+    experiment_path, tmp_path, monkeypatch, capsys, scripted_text_proposer
+):
+    config = _write_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    assert main(_config_args(experiment_path, config, tmp_path)) == 0
+    killed = _killed_copy(_only_run(tmp_path), tmp_path)
+    capsys.readouterr()
+    assert main(["--json", "optimize", "resume", str(killed)]) == 0  # unchanged: resumes
+    killed = _killed_copy(_only_run(tmp_path), tmp_path / "again")
+    config.write_text(config.read_text().replace('"qa"', '"renamed"'))  # a key that isn't tuned
+    capsys.readouterr()
+    assert main(["optimize", "resume", str(killed)]) == 2
+    assert "changed since the run" in capsys.readouterr().err
+
+
+class Unreachable(Proposer):
+    """A text proposer whose model can't be reached."""
+
+    kinds = frozenset({"text"})
+
+    async def propose(self, request):
+        raise RuntimeError("no model access")
+
+    def observe(self, observation):
+        pass
+
+
+def test_a_search_stopped_by_a_proposer_error_exits_3(experiment_path, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("strands_evals.optimization.search.blocks.Reflection", Unreachable)
+    config = _write_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    assert main(_config_args(experiment_path, config, tmp_path)) == 3
+    out, err = capsys.readouterr()
+    assert json.loads(out)["stop_reason"] == "proposer_error"  # the end phase still ran and the result printed
+    assert "raised RuntimeError: no model access" in err
+
+
+def test_debug_prints_the_traceback_of_a_bad_hook(experiment_path, tmp_path, capsys):
+    args = _run_args(experiment_path, tmp_path, "--search", f"{AGENTS}:final_pick")
+    assert main(["--debug", *args]) == 2
+    assert "Traceback" in capsys.readouterr().err
+
+
+def test_ctrl_c_says_how_to_resume(experiment_path, tmp_path, monkeypatch, capsys):
+    async def interrupted(optimizer, on_folder):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(_optimize_module(), "drive", interrupted)
+    assert main(_run_args(experiment_path, tmp_path)) == 130
+    assert "continue with `strands-evals optimize resume" in capsys.readouterr().err
+
+
+def _optimize_module():
+    from strands_evals.cli import _optimize
+
+    return _optimize
+
+
+def test_resume_overrides_a_killed_run_and_warns_on_a_finished_one(experiment_path, tmp_path, capsys):
+    assert main(_run_args(experiment_path, tmp_path)) == 0
+    root = _only_run(tmp_path)
+    killed = _killed_copy(root, tmp_path)
+    capsys.readouterr()
+    assert main(["--json", "optimize", "resume", str(killed), "--max-workers", "8", "--max-rollouts", "400"]) == 0
+    assert "change nothing" not in capsys.readouterr().err
+    assert main(["--json", "optimize", "resume", str(root), "--max-rollouts", "400"]) == 0
+    assert "the run has finished, so --max-rollouts change nothing" in capsys.readouterr().err
+
+
+def test_resume_a_config_run(experiment_path, tmp_path, monkeypatch, capsys):
+    config = _write_config(tmp_path, effort="auto")
+    monkeypatch.chdir(tmp_path)
+    tune = ("--no-tune-instructions", "--tune", 'effort=["auto","low"]')  # TPE only: its state is replayed on resume
+    assert main(_config_args(experiment_path, config, tmp_path, *tune)) == 0
+    root = _only_run(tmp_path)
+    original = OptimizationResult.from_file(root / "result.json")
+    killed = _killed_copy(root, tmp_path)
+    capsys.readouterr()
+    assert main(["--json", "optimize", "resume", str(killed)]) == 0
+    assert OptimizationResult.from_dict(json.loads(capsys.readouterr().out)).best.id == original.best.id
+
+
+def test_a_folder_stopped_before_cli_json_says_nothing_was_spent(tmp_path, capsys):
+    (tmp_path / "run").mkdir()
+    (tmp_path / "run" / "run.json").write_text("{}")
+    (tmp_path / "run" / "events.jsonl").write_text('{"event": "config"}\n')
+    assert main(["optimize", "resume", str(tmp_path / "run")]) == 2
+    assert "nothing was spent; start a new run" in capsys.readouterr().err
+
+
+def test_resume_ignores_cli_json_keys_it_does_not_know(experiment_path, tmp_path, capsys, caplog):
+    assert main(_run_args(experiment_path, tmp_path)) == 0
+    killed = _killed_copy(_only_run(tmp_path), tmp_path)
+    saved = json.loads((killed / "cli.json").read_text())
+    (killed / "cli.json").write_text(json.dumps({**saved, "from_a_newer_version": 1}))
+    capsys.readouterr()
+    assert main(["--json", "optimize", "resume", str(killed)]) == 0
+    assert "from_a_newer_version" in caplog.text
+
+
+def test_a_harness_version_change_warns(caplog):
+    from strands_evals.cli import _optimize
+
+    _optimize.check_harness_version(_optimize.Inputs(experiment_file="x", config="agent.json", harness_version="0.0.1"))
+    assert "strands-harness version differs" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (["--constraint", "tokens"], "--constraint must be METRIC<=X or METRIC>=X"),
+        (["--no-tune-instructions"], "--tune-instructions / --no-tune-instructions go with --config"),
+    ],
+)
+def test_more_usage_errors(experiment_path, tmp_path, capsys, extra, message):
+    assert main([*_run_args(experiment_path, tmp_path), *extra]) == 2
+    assert message in capsys.readouterr().err
+
+
+def test_agent_key_in_the_agent_section_points_to_factory(experiment_path, tmp_path, capsys):
+    body = SETTINGS + 'objective = ["maximize:Correct"]\n\n[agent]\nagent = "x:y"\n'
+    assert main(["optimize", "run", str(_write_run_file(tmp_path, body))]) == 2
+    assert 'the factory is factory = "...", not agent = "..."' in capsys.readouterr().err
+
+
+def test_no_tune_instructions_tunes_only_the_tune_paths(
+    experiment_path, tmp_path, monkeypatch, capsys, scripted_text_proposer
+):
+    config = _write_config(tmp_path, effort="auto")
+    monkeypatch.chdir(tmp_path)
+    args = _config_args(experiment_path, config, tmp_path, "--no-tune-instructions", "--tune", 'effort=["auto","low"]')
+    assert main(args) == 0
+    root = _only_run(tmp_path)
+    assert json.loads((root / "cli.json").read_text())["tune_instructions"] is False
+    assert [entry["key"] for entry in json.loads((root / "run.json").read_text())["space"]] == ["effort"]
+    capsys.readouterr()
+    assert main(_config_args(experiment_path, config, tmp_path / "none", "--no-tune-instructions")) == 2
+    assert "nothing is left to tune" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("section", "flags", "expected"),
+    [
+        (  # --agent over a config route: the config's tune doesn't fit, so it's dropped (no "--tune needs --config")
+            '[agent]\nconfig = "agent.json"\ntune = [\'effort=["auto","low"]\']\n',
+            ["--agent", f"{AGENTS}:manager_agent"],
+            {"agent": f"{AGENTS}:manager_agent", "config": None, "tune": []},
+        ),
+        (  # --agent over another factory: the file's rollout and environment fit, so they're kept
+            f'[agent]\nfactory = "{AGENTS}:plain_agent"\nrollout = "{AGENTS}:harness_rollout"\n'
+            f'environment = "{AGENTS}:no_environment"\n',
+            ["--agent", f"{AGENTS}:manager_agent"],
+            {
+                "agent": f"{AGENTS}:manager_agent",
+                "rollout": f"{AGENTS}:harness_rollout",
+                "environment": f"{AGENTS}:no_environment",
+            },
+        ),
+        (  # --build-task + --space over a factory: its rollout doesn't fit, so it's dropped
+            f'[agent]\nfactory = "{AGENTS}:manager_agent"\nrollout = "{AGENTS}:harness_rollout"\n',
+            ["--build-task", f"{AGENTS}:build_task", "--space", f"{AGENTS}:space"],
+            {"agent": None, "build_task": f"{AGENTS}:build_task", "space": f"{AGENTS}:space", "rollout": None},
+        ),
+        (  # --build-task alone: the file's space is the other half of the pair, so it's kept
+            f'[agent]\nbuild_task = "{AGENTS}:plain_agent"\nspace = "{AGENTS}:space"\n',
+            ["--build-task", f"{AGENTS}:build_task"],
+            {"build_task": f"{AGENTS}:build_task", "space": f"{AGENTS}:space"},
+        ),
+        (  # --config over a factory: its environment doesn't fit, so it's dropped; its rollout fits, so it's kept
+            f'[agent]\nfactory = "{AGENTS}:manager_agent"\nrollout = "{AGENTS}:harness_rollout"\n'
+            f'environment = "{AGENTS}:no_environment"\n',
+            ["--config", "agent.json"],
+            {"agent": None, "environment": None, "rollout": f"{AGENTS}:harness_rollout"},
+        ),
+        (  # --config over a config: the file's tune and tune_instructions fit, so they're kept
+            '[agent]\nconfig = "other.json"\ntune_instructions = false\ntune = [\'effort=["auto","low"]\']\n',
+            ["--config", "agent.json"],
+            {"tune": ['effort=["auto","low"]'], "tune_instructions": False},
+        ),
+    ],
+    ids=[
+        "agent-drops-tune",
+        "agent-keeps-rollout-environment",
+        "build-task-drops-rollout",
+        "build-task-keeps-space",
+        "config-drops-environment-keeps-rollout",
+        "config-keeps-tune",
+    ],
+)
+def test_a_route_flag_drops_only_the_file_keys_that_conflict(
+    experiment_path, tmp_path, monkeypatch, capsys, scripted_text_proposer, section, flags, expected
+):
+    _write_config(tmp_path, effort="auto")
+    monkeypatch.chdir(tmp_path)
+    body = SETTINGS + 'objective = ["maximize:Correct"]\n\n' + section
+    assert main(["--json", "optimize", "run", str(_write_run_file(tmp_path, body)), *flags]) == 0, (
+        capsys.readouterr().err
+    )
+    saved = json.loads((_only_run(tmp_path) / "cli.json").read_text())
+    assert {key: saved[key] for key in expected} == expected
+
+
+@pytest.mark.parametrize(
+    ("builtin_tools", "warned"),
+    [
+        (["read"], []),
+        (["shell", "read"], ["shell"]),
+        ({"web_search": False}, ["shell", "write", "edit"]),  # a map edits the defaults: the host tools stay on
+        ({"shell": False, "write": False, "edit": False}, []),
+        ({"*": False, "read": True}, []),
+        ({"*": False, "edit": True}, ["edit"]),
+    ],
+)
+def test_the_host_tools_warning_reads_builtin_tools_as_the_harness_does(tmp_path, caplog, builtin_tools, warned):
+    from strands_evals.cli import _harness
+
+    caplog.clear()
+    _harness.warn_host_tools(_write_config(tmp_path, builtinTools=builtin_tools))
+    assert (f"tools=<{', '.join(warned)}>" in caplog.text) if warned else ("tools=<" not in caplog.text)
+
+
+def _other_experiment(tmp_path: Path) -> Path:
+    cases = [Case(name=f"other{i:02d}", input=f"question {i}", expected_output=f"answer {i}") for i in range(20)]
+    path = tmp_path / "other" / "experiment.json"
+    path.parent.mkdir()
+    Experiment(cases=cases, evaluators=[Correct()]).to_file(str(path))
+    return path
+
+
+def test_experiment_flag_overrides_the_run_files(experiment_path, tmp_path, capsys):
+    other = _other_experiment(tmp_path)
+    assert (
+        main(["--json", "optimize", "run", str(_write_run_file(tmp_path, RUN_FILE)), "--experiment", str(other)]) == 0
+    )
+    root = _only_run(tmp_path)
+    assert json.loads((root / "cli.json").read_text())["experiment_file"] == str(other.resolve())
+    assert json.loads((root / "run.json").read_text())["cases"][0].startswith("other")
+
+
+def test_experiment_flag_stands_in_for_a_missing_experiment_key(experiment_path, tmp_path, capsys):
+    body = RUN_FILE.replace('experiment = "experiment.json"\n', "")
+    path = _write_run_file(tmp_path, body)
+    assert main(["--json", "optimize", "run", str(path), "--experiment", str(experiment_path)]) == 0
+
+
+def test_experiment_flag_needs_a_run_file(experiment_path, tmp_path, capsys):
+    args = [*_run_args(experiment_path, tmp_path), "--experiment", str(experiment_path)]
+    assert main(args) == 2
+    assert "--experiment goes with a .toml run file" in capsys.readouterr().err
+
+
+def test_an_uppercase_toml_suffix_is_a_run_file(experiment_path, tmp_path, capsys):
+    path = tmp_path / "OPTIMIZE.TOML"
+    path.write_text(RUN_FILE)
+    assert main(["--json", "optimize", "run", str(path)]) == 0

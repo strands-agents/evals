@@ -65,12 +65,16 @@ def read_config(path: Path) -> dict[str, Any]:
     return config
 
 
-def declare(config_path: Path, tune: list[str]) -> tuple[dict[str, Marker], list[Tuned]]:
-    """Declare a portable config's space: `instructions` (unless a `--tune` names it), then each `--tune` in order.
+def declare(
+    config_path: Path, tune: list[str], *, tune_instructions: bool = True
+) -> tuple[dict[str, Marker], list[Tuned]]:
+    """Declare a portable config's space: `instructions` (unless a `--tune` names it, or `tune_instructions` is
+    False), then each `--tune` in order.
 
     Args:
         config_path: The portable config (JSON).
         tune: The `--tune` specs: `PATH` (a text field, or `skills`) or `PATH=JSON_LIST` (a choice).
+        tune_instructions: Whether `instructions` is tuned without a `--tune` naming it (`--no-tune-instructions`).
 
     Returns:
         `(markers, tuned)`: the space, declared name -> marker (`JsonField`, `SkillLibrary`, or `OneOf`), and for
@@ -78,13 +82,16 @@ def declare(config_path: Path, tune: list[str]) -> tuple[dict[str, Marker], list
 
     Raises:
         ValueError: A path the config doesn't have, a text path that isn't a string, a bad choice list or one
-            missing the config's current value, `skills` not given as one path, or two paths with one name.
+            missing the config's current value, `skills` not given as one path, two paths with one name, or
+            nothing to tune.
     """
     raw = read_config(config_path)
     current = define_harness_agent_config(copy.deepcopy(raw))  # defaults merged: a choice may be left at one
     specs = [_split(spec) for spec in tune]
-    if DEFAULT_TUNED not in {path for path, _ in specs}:
+    if tune_instructions and DEFAULT_TUNED not in {path for path, _ in specs}:
         specs.insert(0, (DEFAULT_TUNED, None))
+    if not specs:
+        raise ValueError("--no-tune-instructions with no --tune: nothing is left to tune")
     markers: dict[str, Marker] = {}
     tuned: list[Tuned] = []
     kind: Literal["text", "skills", "choice"]
@@ -121,11 +128,18 @@ def declare(config_path: Path, tune: list[str]) -> tuple[dict[str, Marker], list
 
 
 def warn_host_tools(config_path: Path) -> None:
-    """Warn once when built-in tools that act on this machine are on and no sandbox is set."""
+    """Warn once when built-in tools that act on this machine (`shell`, `write`, `edit`) are on and no sandbox is set.
+
+    `builtinTools` as a list names exactly the tools that are on; as a map it edits the default set (every built-in
+    tool): `"*"` picks the starting set, and each key turns its tool on (true or a config) or off (false).
+    """
     config = define_harness_agent_config(read_config(config_path))
     tools = config["builtinTools"]
-    names = list(tools) if isinstance(tools, (list, dict)) else []
-    on = [tool for tool in _HOST_TOOLS if tool in names]
+    if isinstance(tools, dict):  # edits to the default set: "*" picks the start, a key turns its tool on or off
+        start = tools.get("*", True)
+        on = [tool for tool in _HOST_TOOLS if tools.get(tool, start) is not False]
+    else:  # a list: exactly these tools
+        on = [tool for tool in _HOST_TOOLS if tool in tools]
     if on and config["sandbox"] is None:
         logger.warning(
             "tools=<%s> | these built-in tools run on this machine with no sandbox, and concurrent trials share the "

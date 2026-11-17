@@ -213,13 +213,16 @@ strands-evals/
 │   │   ├── _entrypoint.py                    # `module:attr` resolver + classifier
 │   │   ├── _agent_task.py                    # synthesize_task_function (baggage-tagged)
 │   │   ├── _io.py                            # stdin/stdout/file helpers
+│   │   ├── _optimize.py                      # `optimize`: flags -> Optimizer, cli.json, the .toml run file
+│   │   ├── _harness.py                       # `optimize --config`: a strands-harness portable config as the agent
 │   │   └── commands/                         # subcommand implementations
 │   │       ├── run.py
 │   │       ├── validate.py
 │   │       ├── report.py
 │   │       ├── diagnose.py
 │   │       ├── generate.py
-│   │       └── fetch.py                      # pull Session JSON from a TraceProvider
+│   │       ├── fetch.py                      # pull Session JSON from a TraceProvider
+│   │       └── optimize.py                   # `optimize run` / `optimize resume`
 │   │
 │   ├── __main__.py                           # `python -m strands_evals` shim → cli.main
 │   │
