@@ -99,7 +99,12 @@ class Proposer(ABC):
 
     @abstractmethod
     def observe(self, observation: Observation) -> None:
-        """Called exactly once per patch this proposer returned."""
+        """Called exactly once per patch this proposer returned.
+
+        After a resume it is also called for patches returned before the kill, which this instance never
+        proposed and whose `state` was read back from JSON: the closed iterations' patches, replayed from their
+        `observe` events, and the killed iteration's, which runs again on its recorded proposals.
+        """
 
     def evidence(self, evidence: Evidence) -> None:  # noqa: B027 (optional hook, empty on purpose)
         """Called once for the baseline at setup and once per scored candidate another block proposed, except
