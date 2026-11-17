@@ -1,6 +1,7 @@
 """Tests for `Reflection.propose`: a scripted model drives the real agent, shell, and submit tool."""
 
 import asyncio
+import hashlib
 import os
 import tempfile
 
@@ -90,7 +91,10 @@ async def test_a_rewrite_becomes_a_patch_and_its_folders_are_removed(temp_root):
     assert patch.rationale == "Asked for the number."
     assert patch.usage.tokens == 45 and patch.usage.output_tokens == 15 and patch.usage.models == ["scripted-model"]
     assert patch.state["trials"] == 2 and patch.state["versions"] == 1
-    assert patch.state["digest"]["failing_cases"] == 1 and len(patch.state["digest"]["sha256"]) == 64
+    digest = patch.state["digest"]
+    assert digest["text"].startswith("# Digest: the current version's 2 conversations, 2 cases")
+    assert digest["sha256"] == hashlib.sha256(digest["text"].encode()).hexdigest()
+    assert digest["chars"] == len(digest["text"]) and digest["failing_cases"] == 1
     assert patch.state["revised"] == [] and patch.state["dropped"] == {} and patch.state["rejected"] == []
     assert events == []
     assert os.listdir(temp_root) == []
@@ -322,8 +326,9 @@ def usage_events(events):
 async def test_nothing_submitted_logs_the_calls_spend():
     patches, events, _ = await propose(["I see nothing to change."])
     assert patches == []
-    (usage,) = usage_events(events)
-    assert events == [("proposer_usage", {"usage": usage})]
+    ((event, fields),) = events
+    assert event == "proposer_usage" and set(fields) == {"usage", "reason", "rationale", "state"}
+    usage = fields["usage"]
     assert (usage.tokens, usage.model_calls, usage.models) == (15, 1, ["scripted-model"])
 
 
@@ -345,6 +350,7 @@ async def test_every_attempt_failing_logs_all_their_spend_then_raises():
         await reflection.propose(request(events=events))
     assert [e for e, _ in events] == ["proposer_retry"] * 3 + ["proposer_usage"]
     assert usage_events(events)[0].tokens == 4 * 15  # each attempt's one model call that answered
+    assert set(events[-1][1]) == {"usage"}  # a call that raises gives no reason: `proposer_error` follows
 
 
 async def test_a_patch_carries_its_calls_spend_and_logs_none():
@@ -396,3 +402,122 @@ async def test_a_later_slot_raising_logs_the_spend_of_the_patches_never_returned
     assert [e for e, _ in events] == ["proposer_retry"] * 3 + ["proposer_usage"] * 2
     failed, first = usage_events(events)
     assert (failed.tokens, first.tokens) == (0, 45)  # the failing slot's attempts answered nothing; slot 0's patch
+
+
+# ---- why a call proposed nothing: `reason`, `rationale`, and `state` on its `proposer_usage` ----------------------
+
+
+def empty_call(events):
+    """The fields of the call's one `proposer_usage` event."""
+    (fields,) = [fields for event, fields in events if event == "proposer_usage"]
+    return fields
+
+
+async def test_nothing_submitted_records_why_and_the_agents_reply():
+    _, events, _ = await propose(["I see nothing to change."])
+    fields = empty_call(events)
+    assert (fields["reason"], fields["rationale"]) == ("nothing_submitted", "I see nothing to change.")
+    assert fields["state"]["trials"] == 2 and fields["state"]["digest"]["failing_cases"] == 1
+
+
+async def test_an_empty_reply_records_no_rationale():
+    _, events, _ = await propose([""])
+    fields = empty_call(events)
+    assert (fields["reason"], fields["rationale"]) == ("nothing_submitted", None)
+
+
+async def test_an_unchanged_submission_records_unchanged():
+    _, events, _ = await propose([write("p.txt", "Be helpful."), submit(prompt="p.txt"), "Same."])
+    fields = empty_call(events)
+    assert (fields["reason"], fields["rationale"]) == ("unchanged", "Same.")
+    assert fields["state"]["dropped"] == {}
+
+
+async def test_every_submission_refused_records_rejected():
+    header = "# Version 0 (the baseline)\nrank: 1\n\nBe brief."
+    _, events, _ = await propose([write("p.txt", header), submit(prompt="p.txt"), "Submitted."], over_limit_retries=1)
+    fields = empty_call(events)
+    assert fields["reason"] == "rejected"
+    assert fields["state"]["rejected"][0]["name"] == "prompt"
+
+
+async def test_a_refusal_then_an_unchanged_submission_records_unchanged():
+    header = "# Version 0 (the baseline)\nrank: 1\n\nBe brief."
+    turns = [write("p.txt", header), submit(prompt="p.txt"), "Submitted."]
+    turns += [write("p.txt", "Be helpful."), submit(prompt="p.txt"), "Fixed."]
+    _, events, _ = await propose(turns)
+    fields = empty_call(events)
+    assert fields["reason"] == "unchanged" and fields["state"]["rejected"][0]["name"] == "prompt"
+
+
+async def test_a_refusal_in_a_failed_attempt_is_not_the_reason():
+    """The refusal came in an attempt that failed; the attempt that ran to the end submitted nothing."""
+    header = "# Version 0 (the baseline)\nrank: 1\n\nBe brief."
+    turns = [write("p.txt", header), submit(prompt="p.txt"), ValueError("stream broke"), "Nothing to change."]
+    _, events, _ = await propose(turns)
+    assert [e for e, _ in events] == ["proposer_retry", "proposer_usage"]
+    fields = empty_call(events)
+    assert fields["reason"] == "nothing_submitted" and fields["rationale"] == "Nothing to change."
+    assert fields["state"]["rejected"][0]["name"] == "prompt"  # the record keeps every attempt's refusals
+
+
+async def test_a_value_still_over_its_cap_records_dropped_with_its_send_backs():
+    turns = [write("p.txt", "x" * 80), submit(prompt="p.txt"), "Done."]
+    turns += [write("p.txt", "y" * 80), submit(prompt="p.txt"), "Again."]
+    _, events, _ = await propose(turns, over_limit_retries=1)
+    fields = empty_call(events)
+    assert (fields["reason"], fields["rationale"]) == ("dropped", "Done.")  # the first call's text
+    assert fields["state"]["revised"] == [{"prompt": 80}]
+    assert "over the size_cap of 60" in fields["state"]["dropped"]["prompt"]
+
+
+async def test_a_screened_value_records_dropped():
+    turns = [write("p.txt", "If the order is order-123, apologize."), submit(prompt="p.txt"), "Ok."]
+    _, events, _ = await propose(turns)
+    fields = empty_call(events)
+    assert fields["reason"] == "dropped"
+    assert fields["state"]["dropped"] == {"prompt": "adds the name of a shown case, 'order-123'"}
+
+
+async def test_a_value_outside_the_block_alone_records_dropped():
+    reflection = Reflection(ScriptedModel([write("t.txt", "warm"), submit(tone="t.txt"), "Done."]))
+    reflection._warned = True
+    events = []
+    assert await reflection.propose(request(keys=("prompt",), events=events)) == []
+    fields = empty_call(events)
+    assert fields["reason"] == "dropped" and fields["state"]["dropped"] == {"tone": "not one of this block's keys"}
+
+
+async def test_a_submission_naming_a_missing_file_records_nothing_submitted():
+    _, events, _ = await propose([submit(prompt="missing.txt"), "Submitted."])
+    fields = empty_call(events)
+    assert fields["reason"] == "nothing_submitted" and fields["state"]["rejected"] == []
+
+
+async def test_an_empty_calls_state_has_a_patchs_keys():
+    (patch,), _, _ = await propose([write("p.txt", "Be brief."), submit(prompt="p.txt"), "Done."])
+    _, events, _ = await propose(["Nothing."])
+    state = empty_call(events)["state"]
+    assert set(state) == set(patch.state) and set(state["digest"]) == set(patch.state["digest"])
+    assert state["digest"] == patch.state["digest"]  # the same parent's trials: the same digest
+
+
+async def test_the_recorded_digest_is_the_text_the_agent_read():
+    class Recording(ScriptedModel):
+        def __init__(self, turns):
+            super().__init__(turns)
+            self.last_messages = []
+
+        async def stream(self, messages, *args, **kwargs):
+            self.last_messages = messages
+            async for event in super().stream(messages, *args, **kwargs):
+                yield event
+
+    model = Recording([ToolUse("shell", {"command": "cat ../traces/DIGEST.md"}), "Read it."])
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    assert await reflection.propose(request(events=events)) == []
+    (result,) = [b["toolResult"] for m in model.last_messages for b in m["content"] if "toolResult" in b]
+    text = empty_call(events)["state"]["digest"]["text"]
+    assert result["content"][0]["text"] == text + "\n[exit code 0]"

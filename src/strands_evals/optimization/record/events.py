@@ -66,7 +66,8 @@ class EventLog:
     - `proposer_retry`, `proposer_error`: `block`, `redraw`, `error_type`, `error`.
     - `proposer_usage`: `block`, `redraw`, `usage` (`Usage`): a `propose` call's spend, written by the proposer
       for spend no returned patch carries, and by the optimizer for the returned patches' `usage` (also in
-      their `observe` events, which `search_cost` doesn't read).
+      their `observe` events, which `search_cost` doesn't read). A proposer's event may carry fields of its own:
+      `Reflection`'s, for a call that returned no patch after its agent ran, has `reason`, `rationale`, and `state`.
     - `screened`: `block`, `key`, `reason`.
     - `resume`: `spent`, `budget`, `code` (`code_version()` of the resuming code: strands-evals version, git commit,
       dirty, numpy and optuna versions).

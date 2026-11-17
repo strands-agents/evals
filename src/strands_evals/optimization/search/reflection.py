@@ -118,6 +118,23 @@ class Reflection(Proposer):
     same conversation, to be shortened, up to `over_limit_retries` times; one still over is dropped and the
     parent's value kept.
 
+    A patch's `state` records its call: how many `trials` and `versions` it was shown, the lengths `revised`
+    (sent back to be shortened), the values `dropped` and why, the values `rejected` at submission and the commands
+    `refused` (the first 10 of each, over every attempt), and the `digest`: the `DIGEST.md` text the agent was given
+    (`text`; the `rollout_NNNN.json` files it names, one per completed or failed parent train trial in order, are
+    removed when the call ends), its `sha256`, `chars`, and `failing_cases`. A call that returns no patch after its
+    agent ran writes on its `proposer_usage` event the `state` a patch would have held, the agent's reply to the
+    task message as `rationale` (None when empty; replies to send-backs aren't kept), and a `reason`, judged on the
+    attempt that ran to the end:
+
+    - `nothing_submitted`: no value was accepted and no submission was refused for a version's header (a submission
+      naming a missing file, or one outside the working folder, accepts nothing);
+    - `rejected`: no value was accepted and at least one submission was refused for a version's header;
+    - `dropped`: an accepted value was dropped (`state["dropped"]` says why) and none was kept;
+    - `unchanged`: every accepted value equaled the parent's.
+
+    A call with nothing to learn from (no parent train trial completed or failed) runs no agent and logs nothing.
+
     Runs on Linux and macOS only (`propose` raises `RuntimeError` on Windows; use WSL or a Linux container there).
 
     Attributes:
@@ -281,6 +298,7 @@ class Reflection(Proposer):
                 agent.add_hook(_cap_tool_output, AfterToolCallEvent)
                 started = time.monotonic()
                 failure: Exception | None = None
+                before = len(rejected)  # `rejected` keeps every attempt's refusals; this attempt's start here
                 try:
                     params, rationale, revised = await self._converse(agent, message, submitted, caps, rejected)
                 except Exception as error:  # noqa: BLE001 - any failure of the agent is retried, then raised
@@ -299,9 +317,6 @@ class Reflection(Proposer):
             updates, dropped, screened = await asyncio.to_thread(_guard, request, params or {}, keys, parent)
             for key in screened:
                 request.log("screened", key=key, reason=dropped[key])
-        if not updates:
-            request.log("proposer_usage", usage=usage)  # as above: the agent ran, and no patch carries its spend
-            return None
         state = {
             "trials": evidence.trials,
             "versions": len(evidence.versions),
@@ -313,9 +328,20 @@ class Reflection(Proposer):
                 "sha256": hashlib.sha256(evidence.digest_text.encode()).hexdigest(),
                 "chars": len(evidence.digest_text),
                 "failing_cases": evidence.failing_cases,
+                "text": evidence.digest_text,
             },
         }
-        return Patch(updates=dict[str, Value](updates), rationale=rationale, state=state, usage=usage)
+        if not updates:
+            if params is None:
+                reason = "rejected" if len(rejected) > before else "nothing_submitted"
+            else:
+                reason = "dropped" if dropped else "unchanged"
+            # As above: the agent ran, and no patch carries its spend.
+            request.log("proposer_usage", usage=usage, reason=reason, rationale=rationale or None, state=state)
+            return None
+        return Patch(
+            updates=dict[str, Value](updates), rationale=rationale or _FALLBACK_RATIONALE, state=state, usage=usage
+        )
 
     async def _converse(
         self,
@@ -331,11 +357,11 @@ class Reflection(Proposer):
 
         Returns:
             What was submitted (None for nothing), the rationale (the first call's final text, capped at
-            `_RATIONALE_CHARS`; `_FALLBACK_RATIONALE` when it has none), and the lengths sent back to be shortened.
+            `_RATIONALE_CHARS`; empty when it has none), and the lengths sent back to be shortened.
         """
         before = len(rejected)
         result = await agent.invoke_async(message)
-        rationale = (str(result).strip() or _FALLBACK_RATIONALE)[:_RATIONALE_CHARS]
+        rationale = str(result).strip()[:_RATIONALE_CHARS]
         params: dict[str, str] | None = dict(submitted) or None
         submitted.clear()
         revised: list[dict[str, int]] = []
