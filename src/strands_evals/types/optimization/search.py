@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import numbers
+import sys
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from .estimates import Estimate
 from .scores import LabelOutcome, Measured
@@ -24,6 +26,9 @@ class Patch(BaseModel):
     JSON-serializable (checked with `json.dumps` when the patch arrives). `usage` is the proposer's own
     model cost, reported in `search_cost` and never counted against the rollout budget. No proposer
     name: the optimizer knows which block asked, and records it in the candidate's `origin`.
+
+    An integer in `updates` that isn't a Python `int`, such as `numpy.int64(3)`, is stored as the int `3`,
+    and a `numpy.bool_` as a bool, where pydantic alone would store the floats `3.0` and `1.0`.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -32,6 +37,24 @@ class Patch(BaseModel):
     rationale: str
     state: Any = None
     usage: Usage | None = None
+
+    @field_validator("updates", mode="before")
+    @classmethod
+    def _keep_integers_and_bools(cls, updates: Any) -> Any:
+        """Turn a `numbers.Integral` that isn't an `int` into an exact `int`, and a `numpy.bool_` into a `bool`."""
+        if not isinstance(updates, Mapping):
+            return updates
+        # Not imported: `types/` loads without the optimization extra, and a `numpy.bool_` exists only once
+        # numpy is loaded.
+        numpy = sys.modules.get("numpy")
+        kept: dict[Any, Any] = {}
+        for key, value in updates.items():
+            if isinstance(value, numbers.Integral) and not isinstance(value, int):
+                value = int(value)
+            elif numpy is not None and isinstance(value, numpy.bool_):
+                value = bool(value)
+            kept[key] = value
+        return kept
 
 
 class CandidateSummary(BaseModel):

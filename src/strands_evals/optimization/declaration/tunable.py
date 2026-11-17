@@ -117,8 +117,9 @@ class TunableFactory:
     def bind(self, values: Values, *, workspace: Path | None = None) -> Callable[..., Any]:
         """Return a factory that builds fresh components with `values` bound on every call.
 
-        Fills missing keys with defaults but drops nothing (an inactive key raises `ValueError`), and
-        validates before any build. Copies files only if an active value reaches the agent as a path
+        Fills missing keys with defaults but drops nothing (an inactive key raises `ValueError`), gives
+        numbers their key's type as `Space.complete` does, and validates before any build. Copies files
+        only if an active value reaches the agent as a path
         (`as_path=True`, `SkillLibrary`): into `workspace` (cached), or with `workspace=None` into one
         temp folder per `bind()` call, kept while the bound factory or anything it built is alive (an
         object that can't be weakly referenced, e.g. a dict, keeps it until the process exits) and

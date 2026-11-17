@@ -199,6 +199,14 @@ def test_bind_canonicalizes_values_like_complete():
     assert str(make_agent.bind({"temperature": -0.0})()["temperature"]) == "0.0"
 
 
+def test_bind_gives_numbers_their_keys_types_and_validate_stays_strict():
+    built = make_agent.bind({"manager.Window.size": 30.0, "temperature": 1})()
+    assert type(built["manager"].size) is int and built["manager"].size == 30
+    assert type(built["temperature"]) is float and built["temperature"] == 1.0
+    with pytest.raises(ValueError, match="expected int"):
+        make_agent.validate({**make_agent.space.complete({}), "manager.Window.size": 30.0})
+
+
 def test_bind_builds_fresh_components_on_every_call():
     bound = make_agent.bind({"manager": "Summary", "manager.Summary.ratio": 0.5})
     first, second = bound(), bound()
