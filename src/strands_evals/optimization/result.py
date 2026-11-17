@@ -92,10 +92,11 @@ class CandidateView(BaseModel):
         )
 
     def diff(self) -> str:
-        """Unified diff of every changed text against the baseline, for review.
+        """Unified diff of every changed file and text value against the baseline, for review.
 
         File-backed values on their real paths (relative to the run's working directory), then non-file
-        text values headed by their key. Numbers and choices are in `changed_values()`.
+        text values headed by their key. Numbers and choices are in `changed_values()`; one in a JSON
+        file (a `JsonField`) also shows in that file's hunk.
         """
         return self.diff_text
 
@@ -268,8 +269,9 @@ class OptimizationResult(BaseModel):
 
         if self.improved:
             best = self.best
-            texts = sum(1 for line in best.diff_text.splitlines() if line.startswith("+++ "))
-            lines += ["", f"Changes: {texts} text value{'' if texts == 1 else 's'} (diff())"]
+            hunks = sum(1 for line in best.diff_text.splitlines() if line.startswith("+++ "))
+            plural = "" if hunks == 1 else "s"
+            lines += ["", f"Changes: {hunks} file{plural} or text value{plural} in diff()"]
             for key, sides in best.changed.items():
                 old = repr(sides["old"]) if "old" in sides else "(inactive)"
                 new = repr(sides["new"]) if "new" in sides else "(inactive)"

@@ -38,7 +38,7 @@ ParamKind = Literal["int", "float", "one_of", "choice", "text"]
 
 @dataclass(frozen=True)
 class FileSource:
-    """Where a file-backed text value lives."""
+    """Where a file-backed value lives."""
 
     path: Path
     pointer: str | None
@@ -173,8 +173,9 @@ class Space:
 
         Keys are taken in declaration order, so a filled choice decides which of its sub-keys are
         active. Unknown keys are kept, so `validate` reports them instead of a typo vanishing. A
-        `Float` value of -0.0 becomes 0.0, and a non-string `JsonField` value is rewritten as its JSON
-        text is written to the file ("0.50" becomes "0.5"), so one agent gets one candidate id.
+        `Float` value of -0.0 becomes 0.0, and a `JsonField` value held as JSON text (an array, an
+        object, or null) is rewritten as its JSON text is written to the file ("[1,2]" and "[1, 2]"
+        become one text), so one agent gets one candidate id.
 
         Args:
             values: The candidate's values.
@@ -302,7 +303,11 @@ class Space:
                 if info.source is None or not self.is_active(info.key, values):
                     continue
                 target = building / _location_in_copy(self._copy_folders, info.source.path)
-                self._files[info.key].write(str(values[info.key]), target)
+                marker, value = self._files[info.key], values[info.key]
+                if isinstance(marker, JsonField):
+                    marker.write(value, target)  # a number or boolean is written as one, not as its str()
+                else:
+                    marker.write(str(value), target)
             (building / _COPY_MARKER).write_bytes(key.encode("ascii"))  # last: only a finished copy has it
         except BaseException:
             shutil.rmtree(building, ignore_errors=True)
@@ -358,9 +363,11 @@ class Space:
         for info in self._params.values():
             if info.source is None or not self.is_active(info.key, values):
                 continue
-            marker = self._files[info.key]
+            marker, value = self._files[info.key], values[info.key]
             text = texts.get(info.source.path, marker._original())
-            texts[info.source.path] = marker._render(str(values[info.key]), text)
+            texts[info.source.path] = (
+                marker._render(value, text) if isinstance(marker, JsonField) else marker._render(str(value), text)
+            )
         return texts
 
     def _problem(self, info: ParamInfo, value: Any) -> str | None:
@@ -419,7 +426,11 @@ def _flatten(name: str, marker: Marker) -> list[ParamInfo]:
         return [_text(name, name, marker.default, marker.size_cap, marker.edit_instructions, source)]
     if isinstance(marker, JsonField):
         source = FileSource(marker.path, marker.pointer, False)
-        return [_text(name, name, marker.default, marker.size_cap, marker.edit_instructions, source)]
+        if isinstance(marker._typed, OneOf):
+            return [_one_of(name, name, marker._typed, None, source)]
+        if marker._typed is not None:
+            return [_number(name, name, marker._typed, None, source)]
+        return [_text(name, name, cast(str, marker.default), marker.size_cap, marker.edit_instructions, source)]
     if isinstance(marker, SkillLibrary):
         return [
             _text(
@@ -435,7 +446,9 @@ def _flatten(name: str, marker: Marker) -> list[ParamInfo]:
     raise TypeError(f"{name}: {type(marker).__name__} can't be declared yet")
 
 
-def _number(key: str, name: str, marker: Int | Float, active_when: tuple[str, str] | None) -> ParamInfo:
+def _number(
+    key: str, name: str, marker: Int | Float, active_when: tuple[str, str] | None, source: FileSource | None = None
+) -> ParamInfo:
     if marker.default is None:
         raise TypeError(f"{key}: {type(marker).__name__} has no default; {_NO_DEFAULT}")
     kind: ParamKind = "int" if isinstance(marker, Int) else "float"
@@ -448,12 +461,17 @@ def _number(key: str, name: str, marker: Int | Float, active_when: tuple[str, st
         max_value=marker.max_value,
         log=marker.log,
         active_when=active_when,
+        source=source,
     )
 
 
-def _one_of(key: str, name: str, marker: OneOf, active_when: tuple[str, str] | None) -> ParamInfo:
+def _one_of(
+    key: str, name: str, marker: OneOf, active_when: tuple[str, str] | None, source: FileSource | None = None
+) -> ParamInfo:
     default = marker.options[0] if marker.default is _UNSET else marker.default
-    return ParamInfo(key, name, "one_of", default, options=tuple(marker.options), active_when=active_when)
+    return ParamInfo(
+        key, name, "one_of", default, options=tuple(marker.options), active_when=active_when, source=source
+    )
 
 
 def _text(

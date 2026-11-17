@@ -433,9 +433,9 @@ _ValueMarkerT = TypeVar("_ValueMarkerT", bound=_ValueMarker)
 def _fill_default(marker: _ValueMarkerT, default: Any, *, where: str, source: str) -> _ValueMarkerT:
     """`marker` with `default` (a constructor's or a wrapped function's) filled in, if it has none.
 
-    Shared by `component()` and `tunable`. None is never an `Int` / `Float` / `TextValue` value, so it
-    raises asking for `default=` instead of building with a value the space rejects; a `OneOf` may
-    list None as an option, so it goes through the option check.
+    Shared by `component()`, `tunable`, and `JsonField`. None is never an `Int` / `Float` / `TextValue`
+    value, so it raises asking for `default=` instead of building with a value the space rejects; a
+    `OneOf` may list None as an option, so it goes through the option check.
 
     Args:
         marker: The marker to fill.

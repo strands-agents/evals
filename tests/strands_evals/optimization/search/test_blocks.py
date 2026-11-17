@@ -14,6 +14,7 @@ from strands_evals.optimization import (
     Float,
     Int,
     Joint,
+    JsonField,
     Nested,
     OneOf,
     Proposer,
@@ -153,6 +154,27 @@ def test_default_search_assigns_every_key_by_kind():
     assert resolved[0][0].proposer.n_startup_trials == 2
     assert resolved[1][0].proposer.n_startup_trials == 4
     assert shape(schedule) == ("nested", "structure", "alternate")
+
+
+def test_json_numbers_and_booleans_go_to_the_numbers_block_and_json_text_to_text(tmp_path):
+    path = tmp_path / "agent.json"
+    path.write_text('{"temperature": 0.7, "max_turns": 2, "stream": false, "prompt": "Hi.", "stop": ["END"]}')
+    space = Space(
+        {
+            "temperature": JsonField(path, "/temperature", Float(0.0, 1.0)),
+            "max_turns": JsonField(path, "/max_turns", Int(1, 20)),
+            "stream": JsonField(path, "/stream"),
+            "prompt": JsonField(path, "/prompt"),
+            "stop": JsonField(path, "/stop"),
+        }
+    )
+
+    resolved, _ = Search().resolve(space)
+
+    assert names(resolved) == [
+        ("numbers", "TPE", ["temperature", "max_turns", "stream"]),
+        ("text", "Reflection", ["prompt", "stop"]),
+    ]
 
 
 def test_a_bare_component_goes_to_no_block():
