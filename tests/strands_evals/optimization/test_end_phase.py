@@ -311,3 +311,38 @@ def test_pick_with_no_finalist_ships_the_baseline():
     )
     assert report.champion_id == "0"
     assert report.reason.startswith("no finalist from the search")
+
+
+def test_pick_reports_no_interval_for_a_metric_judged_on_one_of_several_validation_cases():
+    # The skill metric is N/A on v2 and v3, so v1 is its only case; HELP is measured on all three.
+    skill = "SkillEvaluator"
+    registry = MetricRegistry({HELP: (0.0, 1.0), skill: (0.0, 1.0)})
+    validation = CandidateScores(
+        candidate_id="0",
+        objective_by_case={"v1": 0.55, "v2": 0.75, "v3": 0.65},
+        metrics_by_case={"v1": {HELP: 0.55, skill: 0.95}, "v2": {HELP: 0.75}, "v3": {HELP: 0.65}},
+        unavailable={},
+        objective_by_run={"v1": [0.5, 0.6], "v2": [0.7, 0.8], "v3": [0.6, 0.7]},
+        metrics_by_run={
+            "v1": {HELP: [0.5, 0.6], skill: [0.9, 1.0]},
+            "v2": {HELP: [0.7, 0.8], skill: [None, None]},
+            "v3": {HELP: [0.6, 0.7], skill: [None, None]},
+        },
+        objective=0.65,
+        is_eligible=True,
+        failures=0,
+    )
+    report = pick(
+        baseline_id="0",
+        finalist_ids=[],
+        validation={"0": validation},
+        fit=None,
+        values={"0": {}},
+        trial_counts={"0": 6},
+        criteria=Criteria(Maximize(HELP), [], registry),
+        rule=Mean(),
+    )
+    measured = report.measured["0"]
+    assert measured[skill].mean == pytest.approx(0.95)
+    assert (measured[skill].n, measured[skill].ci95) == (1, None)
+    assert measured[HELP].n == 3 and measured[HELP].ci95 is not None

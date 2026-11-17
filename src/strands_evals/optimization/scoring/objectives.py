@@ -573,23 +573,24 @@ def score(candidate_id: str, records: Sequence[TrialRecord], criteria: Criteria,
 def measured_metrics(scores: CandidateScores, registry: MetricRegistry) -> dict[str, Measured]:
     """Every metric scored, with its mean and a 95% t-interval clipped to the metric's range.
 
-    The unit is the case (its mean over runs, `scores.metrics_by_case`); for a metric only one case has a
-    value for (a single-case split, or the other cases unmeasured), the unit is that case's runs, so it still
-    gets an interval. Chosen per metric. A metric with no value is left out. For reporting only
-    (`CandidateLabel`, `ValidationReport`, `TestReport`, `CandidateSummary`); the ranking keeps using
-    `CandidateScores.objective` and the fit.
+    One unit for every metric. When `scores` holds two or more cases (every case with a trial record, whether
+    or not a run counts), the unit is the case (its mean over runs, `scores.metrics_by_case`), so a metric
+    with a value on only one of them has `n == 1` and no interval. When it holds a single case, the unit is
+    that case's runs. The optimizer scores every case of a split, so in a run the unit follows the split's
+    size. A metric with no value is left out. For reporting only (`CandidateLabel`, `ValidationReport`,
+    `TestReport`, `CandidateSummary`); the ranking keeps using `CandidateScores.objective` and the fit.
 
     Args:
         scores: One candidate's scores on one split.
         registry: Gives each metric's range, which the interval is clipped to.
     """
     metrics = dict.fromkeys(metric for runs in scores.metrics_by_run.values() for metric in runs)
+    by_case = len(scores.metrics_by_run) >= 2  # every case with a record, counted runs or not
     by_metric: dict[str, list[float]] = {}
     for metric in metrics:
-        case_means = [case[metric] for case in scores.metrics_by_case.values() if metric in case]
-        if len(case_means) >= 2:
-            by_metric[metric] = case_means
-        else:  # at most one case has a value: its runs (the other cases' slots are all None)
+        if by_case:
+            by_metric[metric] = [case[metric] for case in scores.metrics_by_case.values() if metric in case]
+        else:  # one case: its runs
             by_metric[metric] = [
                 v for runs in scores.metrics_by_run.values() for v in runs.get(metric, []) if v is not None
             ]
