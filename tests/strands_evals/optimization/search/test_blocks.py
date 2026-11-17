@@ -391,13 +391,87 @@ def test_a_nested_on_an_unnamed_block_outside_the_search_raises():
 def test_nested_config():
     assert Nested(Block(TPE(), "manager", name="s"), Alternate(), inner_iterations=2).config() == {
         "outer": "s",
-        "inner": {"name": "alternate", "config": {}},
+        "inner": {"name": "alternate", "config": {"blocks": [], "iterations": 1}},
         "inner_iterations": 2,
     }
     with pytest.raises(ValueError, match="inner_iterations"):
         Nested("s", inner_iterations=-1)
     with pytest.raises(TypeError, match="Block or a block name"):
         Nested(3)
+
+
+def test_alternate_config_and_bad_arguments():
+    assert Alternate().config() == {"blocks": [], "iterations": 1}
+    assert Alternate("b", Block(TPE(), "manager", name="a"), iterations=3).config() == {
+        "blocks": ["b", "a"],
+        "iterations": 3,
+    }
+    with pytest.raises(TypeError, match="must be an int"):
+        Alternate(iterations="2")
+    with pytest.raises(TypeError, match="must be an int"):
+        Alternate(iterations=True)
+    with pytest.raises(ValueError, match="must be >= 1"):
+        Alternate(iterations=0)
+    with pytest.raises(TypeError, match="Blocks or block names"):
+        Alternate(3)
+    with pytest.raises(ValueError, match="empty name"):
+        Alternate("")
+
+
+def text_space():
+    return Space({"temperature": Float(0.0, 1.0, default=0.5), "prompt": TextValue(default="You help.")})
+
+
+def test_alternate_takes_unnamed_blocks_named_by_resolve():
+    numbers, text = Block(TPE(), "temperature"), Block(Reflection(), "prompt")
+    alternate = Alternate(text, numbers, iterations=2)
+
+    _, schedule = Search([numbers, text], schedule=alternate).resolve(text_space())
+
+    assert schedule is not alternate and schedule.config() == {"blocks": ["text", "numbers"], "iterations": 2}
+    assert numbers.name is None and alternate._blocks == (text, numbers)  # the user's schedule is unchanged
+    with pytest.raises(ValueError, match="no name"):
+        _ = alternate.order
+    with pytest.raises(ValueError, match="not in this Search"):
+        Search(schedule=Alternate(Block(TPE(), "temperature"))).resolve(text_space())
+
+
+def test_resolve_keeps_an_alternate_subclass_and_its_settings():
+    class Mine(Alternate):
+        def __init__(self, block, *, label):
+            super().__init__(block, iterations=2)
+            self.label = label
+
+    numbers = Block(TPE(), "temperature")
+    _, schedule = Search([numbers], schedule=Mine(numbers, label="mine")).resolve(text_space())
+
+    assert type(schedule) is Mine and schedule.label == "mine"
+    assert schedule.config() == {"blocks": ["numbers"], "iterations": 2}
+
+
+def test_resolve_logs_the_blocks_an_alternate_leaves_fixed(caplog):
+    with caplog.at_level("INFO", logger="strands_evals.optimization.search.blocks"):
+        Search(schedule=Alternate("numbers")).resolve(text_space())
+    assert "blocks=<['text']> | blocks left out of the alternate order never move" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level("INFO", logger="strands_evals.optimization.search.blocks"):
+        Search().resolve(full_space())  # the default inner Alternate() moves every block
+    assert "never move" not in caplog.text
+
+
+def test_an_alternate_in_a_nested_or_within_is_named_and_checked():
+    window, temp = Block(TPE(), "manager.Window.size"), Block(TPE(), "temperature", name="temp")
+    _, schedule = Search([window, temp], within=Alternate(window, "temp")).resolve(full_space())
+    assert shape(schedule) == ("nested", "structure", "alternate")
+    assert schedule.inner.config() == {"blocks": ["numbers", "temp"], "iterations": 1}
+
+    with pytest.raises(ValueError, match=r"outside its scope: \['nope'\]"):
+        Search(schedule=Alternate("nope")).resolve(full_space())
+    with pytest.raises(ValueError, match=r"outside its scope: \['nope'\]"):
+        Search(within=Alternate("nope")).resolve(full_space())
+    with pytest.raises(ValueError, match=r"outside its scope: \['structure'\]"):  # the round's outer block
+        Search(schedule=Nested("structure", Alternate("structure", "numbers"))).resolve(full_space())
 
 
 # ---- schedules over a scripted history ---------------------------------------------------------------------------
@@ -534,6 +608,87 @@ def test_alternate_rotates_and_ends_after_a_cycle_of_misses():
 
     assert [view(s)[0] if s else None for s in steps] == [["t"], ["m"], ["t"], ["m"], ["t"], None]
     assert history.replays(Alternate)
+
+
+@pytest.mark.parametrize(
+    "make",
+    [lambda: Alternate("m", "t", iterations=2), lambda: Alternate(iterations=2)],
+    ids=["given order", "block order"],
+)
+def test_alternate_gives_each_turn_iterations_steps(make):
+    history = History(make(), [Block(Fake(), "manager", name="m"), Block(Fake(), "temperature", name="t")])
+
+    # three new candidates, then repeats: a turn's step that saved nothing still uses one of its steps
+    steps = history.run(lambda step, i: ["feasible"] if i < 3 else [("duplicate", "base")])
+
+    # ends after a full cycle of misses: 2 steps for each of the 2 blocks
+    assert [view(s)[0] if s else None for s in steps] == [["m"], ["m"], ["t"], ["t"], ["m"], ["m"], ["t"], None]
+    assert history.replays(make)
+
+
+def test_a_block_given_twice_takes_two_turns_per_cycle():
+    history = History(
+        Alternate("t", "t", "m"), [Block(Fake(), "temperature", name="t"), Block(Fake(), "manager", name="m")]
+    )
+
+    steps = history.run(lambda step, i: ["feasible"] if i < 4 else [("duplicate", "base")])
+
+    assert [view(s)[0] if s else None for s in steps] == [["t"], ["t"], ["m"], ["t"], ["t"], ["m"], ["t"], None]
+
+
+def test_blocks_left_out_of_an_alternate_never_move():
+    history = History(Alternate("t"), [Block(Fake(), "temperature", name="t"), Block(Fake(), "manager", name="m")])
+
+    steps = history.run(lambda step, i: ["feasible"] if i < 2 else [("duplicate", "base")])
+
+    assert [view(s)[0] if s else None for s in steps] == [["t"], ["t"], ["t"], None]
+
+
+def test_an_alternate_in_a_round_skips_the_blocks_inactive_under_its_opener():
+    def make():
+        return Nested("structure", Alternate("window", "summary", "temp"), inner_iterations=3)
+
+    history = History(make(), blocks4())
+    history.save(history.plan(), ("feasible", SUMMARY))  # c1 chooses Summary: window is inactive
+
+    inner = []
+    for _ in range(3):
+        step = history.plan()
+        inner.append(view(step)[0])
+        history.save(step, "feasible")
+
+    assert inner == [["summary"], ["temp"], ["summary"]]
+    assert history.replays(make)
+
+
+def test_an_alternate_with_no_block_active_in_a_round_ends_the_round():
+    history = History(Nested("structure", Alternate("window")), blocks4())
+    history.save(history.plan(), ("feasible", SUMMARY))  # c1 chooses Summary: window is inactive
+
+    assert view(history.plan()) == (["structure"], 1, ("c1",), (1,), "opener", ("structure",))
+
+
+def test_an_alternates_turns_start_over_in_each_round():
+    def make():
+        return Nested("structure", Alternate("temp", "summary", iterations=2), inner_iterations=3)
+
+    history = History(make(), blocks4())
+    rounds = []
+    for _ in range(2):
+        history.save(history.plan(), ("feasible", SUMMARY))  # the opener
+        inner = []
+        for _ in range(3):
+            step = history.plan()
+            inner.append((view(step)[0], step.round))
+            history.save(step, "feasible")
+        rounds.append(inner)
+
+    # 2 blocks x 2 steps don't fit in 3 steps: summary gets one step per round
+    assert rounds == [
+        [(["temp"], (0,)), (["temp"], (0,)), (["summary"], (0,))],
+        [(["temp"], (1,)), (["temp"], (1,)), (["summary"], (1,))],
+    ]
+    assert history.replays(make)
 
 
 def nested_history(**kwargs):
