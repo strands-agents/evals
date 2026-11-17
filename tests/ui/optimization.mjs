@@ -8,7 +8,7 @@
  * scored is absent from the chart rather than sitting at zero, and the budget line is cumulative.
  */
 import fs from 'node:fs';
-import { page, runner } from './harness.mjs';
+import { page, runner, tick } from './harness.mjs';
 
 const { ok, done } = runner('optimization');
 
@@ -2132,6 +2132,85 @@ ok(p6.$('#v-opt-overview').classList.contains('on'),
 await p6.click('.tab[data-view="opt-runs"]');
 ok(!rows6()[0].classList.contains('on') && rows6()[1].classList.contains('on'),
    'with the mark moved, so the list and the result cannot disagree about which run is open');
+
+// ── nothing a run record says is taken as markup ──
+{
+  const hostile = '<img src=x onerror="window.__xss=1">';
+  const config = JSON.parse(CONFIG);
+  config.budget = { max_rollouts: hostile, max_iterations: hostile };
+  config.final_pick = { ...config.final_pick, n_finalists: hostile };
+  const events = lines.filter(Boolean).map(line => {
+    const e = JSON.parse(line);
+    if (e.event === 'test' && e.report && e.report.objective) {
+      e.report.objective = { ...e.report.objective, n_cases: hostile, ci_low: 0.1, ci_high: 0.1 };
+    }
+    if (e.event === 'trial' && e.record && e.record.case_name === 'train_case_01') e.record.status = 'view on app';
+    return JSON.stringify(e);
+  }).join('\n') + '\n';
+  const q = await page();
+  await q.openFolder({ 'evil/run.json': JSON.stringify(config), 'evil/events.jsonl': events });
+  for (const view of ['opt-setup', 'opt-overview', 'opt-progress', 'opt-candidates']) await q.click(`.tab[data-view="${view}"]`);
+  ok(q.$$('main img').length === 0, 'a count or budget in the record never becomes an element', q.$$('main img').length);
+  ok(q.window.__xss === undefined, 'and runs nothing');
+  ok(/&lt;img|<img/.test(q.$('#opt-setup-kv').textContent), 'it is shown as the text it is', q.text('#opt-setup-kv'));
+  ok(q.$$('#opt-status-chart .view, #opt-status-chart .app').length === 0, 'an unknown trial status is not a class name');
+  ok(q.$$('#opt-status-chart .other').length > 0, 'it is drawn as "other"');
+  errs.push(...q.errs);
+}
+
+// ── a mark that offers a way to its candidate has a candidate to go to ──
+{
+  const q = await page();
+  await q.openFolder({ 'demo/run.json': CONFIG, 'demo/events.jsonl': EVENTS });
+  await q.click('.tab[data-view="opt-trade"]');
+  const linked = q.$$('#opt-to-chart [data-cand]').map(c => c.dataset.cand);
+  await q.click('.tab[data-view="opt-candidates"]');
+  const rows = q.$$('#opt-cands tr.case').map(tr => tr.dataset.k);
+  ok(linked.length > 0 && linked.every(id => rows.includes(id)), 'every linked mark has a row', linked.join());
+  errs.push(...q.errs);
+}
+
+// ── a chart mark answers the pointer, and a candidate's mark opens that candidate ──
+{
+  const q = await page();
+  await q.openFolder({ 'demo/run.json': CONFIG, 'demo/events.jsonl': EVENTS });
+  await q.click('.tab[data-view="opt-progress"]');
+  const over = async (el, type = 'mouseover') => {
+    el.dispatchEvent(new q.window.MouseEvent(type, { bubbles: true, clientX: 40, clientY: 40 }));
+    await tick();
+  };
+  const tip = q.$('.chart-tip');
+  const mark = () => q.$$('#opt-series-chart circle.pt').find(c => c.dataset.cand === 'c8');
+  ok(tip.hidden === true, 'no tooltip until a mark is hovered');
+
+  await over(mark());
+  ok(tip.hidden === false, 'hovering a mark shows the tooltip');
+  ok(tip.querySelector('b').textContent === 'c8', 'headed by the candidate', tip.textContent);
+  ok(/infeasible/.test(tip.textContent) && /0\.69/.test(tip.textContent), 'with what the mark stood for',
+    tip.textContent);
+  ok(/Click to open in Candidates/.test(tip.textContent), 'and says a click goes somewhere', tip.textContent);
+  ok(mark().classList.contains('hot') && q.$('#opt-series-chart svg').classList.contains('hovering'),
+    'the hovered mark is picked out from the rest');
+  ok(mark().querySelector('title') === null && mark().getAttribute('aria-label').startsWith('c8'),
+    'and the native tooltip gives way without losing its label', mark().getAttribute('aria-label'));
+
+  await over(q.$('#opt-series-head'));
+  ok(tip.hidden === true && !mark().classList.contains('hot'), 'leaving the mark puts everything back');
+
+  const entry = q.$$('#opt-series-legend span').find(s => s.querySelector('i.infeasible'));
+  await over(entry);
+  ok(q.$('#opt-series-chart').closest('.chart').dataset.focus === 'infeasible',
+    'hovering a legend entry focuses its marks');
+  await over(q.$('#opt-series-head'));
+  ok(q.$('.chart[data-focus]') === null, 'until the pointer leaves it');
+
+  await q.type('#opt-find', 'no such candidate');
+  await q.click(mark());
+  ok(q.$('#v-opt-candidates').classList.contains('on'), 'clicking a mark goes to Candidates');
+  const row = q.$$('#opt-cands tr.case').find(tr => tr.dataset.k === 'c8');
+  ok(row && row.querySelector('.caret.open'), 'with that candidate open, whatever filter was on');
+  errs.push(...q.errs);
+}
 
 done([p, p2, p3, p4, p5, p6, pLate, pEmpty, pFall, pFlat, pWorse, pFine, pNoCI, pVal, pNoBase, pBare]
   .concat([pRec, pOne, pTwo, pThree]).flatMap(each => each.errs).concat(errs));

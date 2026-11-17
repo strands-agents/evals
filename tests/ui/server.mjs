@@ -273,7 +273,22 @@ try {
   const noToken = await fetch(`${base}/api/runs`);
   ok(noToken.status === 401, 'api needs the token', noToken.status);
 
-  done(errs);
+  // ── a link naming an optimizer run reopens that run, not the newest one ──
+  const older = path.join(root, 'older-tuning');
+  fs.mkdirSync(older);
+  const config = JSON.parse(fs.readFileSync(path.join(root, 'tuning/run.json'), 'utf8'));
+  fs.writeFileSync(path.join(older, 'run.json'), JSON.stringify({ ...config, run_id: 'older-run' }));
+  fs.copyFileSync(path.join(root, 'tuning/events.jsonl'), path.join(older, 'events.jsonl'));
+  const anHourAgo = new Date(Date.now() - 3600e3);
+  for (const name of ['run.json', 'events.jsonl']) fs.utimesSync(path.join(older, name), anHourAgo, anHourAgo);
+  const linked = await page({ fetchImpl: forward, url: `${base}/?t=${TOKEN}#tab=opt-overview&opt=older-tuning` });
+  await waitFor(() => linked.$('.app').dataset.ready, 'the linked page to boot');
+  ok(/older-run/.test(linked.text('#opt-sub')), 'a link naming an optimizer run opens that run',
+    linked.text('#opt-sub'));
+  ok(/opt=older-tuning/.test(linked.window.location.hash), 'and the link keeps naming it',
+    linked.window.location.hash);
+
+  done(errs.concat(linked.errs));
 } finally {
   proc.kill();
 }

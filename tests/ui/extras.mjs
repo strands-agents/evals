@@ -490,4 +490,164 @@ for (const [saved, label] of [['optimization', 'the section'], ['opt-results', '
   }
 }
 
+// ── what an edit writes to the file ──
+{
+  const hostile = '"><img src=x onerror="window.__xss=1">';
+  const opened = async () => {
+    const p = await page();
+    await p.openFolder({
+      'e/experiment.json': {
+        cases: [
+          { name: 'keep', input: 'a', metadata: { id: '42', flag: 'true', note: 'plain' } },
+          { name: 'gone', input: 'b' },
+        ],
+        evaluators: [{ evaluator_type: 'Contains', value: 'x', [hostile]: 'v' }],
+      },
+    });
+    await p.click('#runs-rows tr.run');
+    return p;
+  };
+  const remove = async p => {
+    await p.click(p.$$('#case-list li[data-i]')[1]);
+    await p.click('#del-case');
+  };
+
+  {
+    const p = await opened();
+    await remove(p);
+    ok(p.$('#save').disabled === false, 'deleting a case leaves something to save');
+    ok(p.text('#dirty') === '1 unsaved change', 'and counts as a change', p.text('#dirty'));
+    await p.click('#revert');
+    ok(p.$$('#case-list li[data-i]').length === 2, 'revert brings the deleted case back',
+      p.$$('#case-list li[data-i]').length);
+    ok(p.text('#dirty') === 'No unsaved changes', 'leaving nothing to save', p.text('#dirty'));
+
+    await remove(p);
+    await p.click('#save');
+    const saved = await p.saved();
+    ok(JSON.stringify(saved.cases.map(c => c.name)) === '["keep"]', 'saving writes the file without it',
+      JSON.stringify(saved.cases.map(c => c.name)));
+    ok(p.text('#dirty') === 'No unsaved changes', 'and the delete is no longer pending', p.text('#dirty'));
+    errs.push(...p.errs);
+  }
+
+  {
+    const p = await opened();
+    const row = p.$$('.meta-row').find(r => r.querySelector('[data-meta-k]').value === 'note');
+    await p.type(row.querySelector('[data-meta-v]'), 'edited');
+    await p.click('#save');
+    const saved = await p.saved();
+    ok(JSON.stringify(saved.cases[0].metadata) === JSON.stringify({ id: '42', flag: 'true', note: 'edited' }),
+      'editing one metadata key leaves the other string values strings', JSON.stringify(saved.cases[0].metadata));
+    errs.push(...p.errs);
+  }
+
+  {
+    const p = await opened();
+    await p.click('#evs .evchip');
+    ok(p.$$('#evform img').length === 0, 'an evaluator setting name is never markup');
+    ok(p.window.__xss === undefined, 'and runs nothing');
+    ok(p.$$('#evform label').some(l => l.textContent === hostile), 'it is shown as the text it is');
+    errs.push(...p.errs);
+  }
+}
+
+// ── a link this page cannot follow still opens the page ──
+for (const [hash, view] of [['tab=nope', 'v-runs'], ['tab=report&case=%E0%A4%A', 'v-report']]) {
+  const p = await page({ url: `http://127.0.0.1/?x=1#${hash}` });
+  ok(p.$('.app').dataset.ready === '1', `#${hash} boots`);
+  ok(p.$$('.view.on').map(v => v.id).join() === view, `and shows ${view}`, p.$$('.view.on').map(v => v.id).join());
+  errs.push(...p.errs);
+}
+
+// ── a server that answers but cannot scan is not mistaken for no server ──
+{
+  const fetchImpl = async url => String(url).includes('/api/config')
+    ? { ok: true, status: 200, json: async () => ({ root: '/served', depth: 3, read_only: false }) }
+    : { ok: false, status: 500, statusText: 'Internal Server Error', json: async () => ({ error: 'scan blew up' }) };
+  const p = await page({ fetchImpl });
+  ok(/^served/.test(p.text('#mode-tag')), 'the page stays in served mode', p.text('#mode-tag'));
+  ok(/scan blew up/.test(p.text('#runs-rows')), 'and reports the failure', p.text('#runs-rows'));
+  ok(!/sample/.test(p.text('#runs-sub')), 'instead of showing the bundled sample', p.text('#runs-sub'));
+  errs.push(...p.errs);
+}
+
+// ── a metadata row nobody touched is written back exactly as it was read ──
+{
+  const metadata = { note: 'line1\nline2', ' padded ': 'v', '': 'empty key', big: '9007199254740993', edit: 'x' };
+  const p = await page();
+  await p.openFolder({ 'm/experiment.json': { cases: [{ name: 'a', input: 'q', metadata }], evaluators: [] } });
+  await p.click('#runs-rows tr.run');
+  const row = p.$$('.meta-row').find(r => r.querySelector('[data-meta-k]').value === 'edit');
+  await p.type(row.querySelector('[data-meta-v]'), 'y');
+  await p.click('#save');
+  const saved = (await p.saved()).cases[0].metadata;
+  ok(JSON.stringify(saved) === JSON.stringify({ ...metadata, edit: 'y' }),
+    'line breaks, padded keys and an empty key survive an edit elsewhere', JSON.stringify(saved));
+  errs.push(...p.errs);
+}
+
+// ── the open run's own row is a way back to it, not a reload ──
+{
+  const p = await page();
+  await p.openFolder({ 'r/experiment.json': { cases: [{ name: 'a', input: 'first' }], evaluators: [] } });
+  await p.click('#runs-rows tr.run');
+  await p.type('#form [data-k="input"]', 'edited and not saved');
+  await p.click('.tab[data-view="runs"]');
+  await p.click(p.$('#runs-rows tr.run').children[3]);
+  ok(p.$('#v-experiment').classList.contains('on'), 'clicking the open run goes back to it');
+  ok(p.$('#form [data-k="input"]').value === 'edited and not saved', 'with the unsaved edit still there',
+    p.$('#form [data-k="input"]').value);
+  errs.push(...p.errs);
+}
+
+// ── the keyboard reaches what the pointer reaches ──
+{
+  const p = await page();
+  await p.openFolder({ 'k/experiment.json': { cases: [{ name: 'a', input: 'q' }], evaluators: [] } });
+  const row = p.$('#runs-rows tr.run');
+  ok(row.getAttribute('tabindex') === '0', 'a run row can take focus');
+  row.dispatchEvent(new p.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  await tick();
+  ok(p.$('#v-experiment').classList.contains('on'), 'and Enter opens it');
+  const current = p.$$('.tab').filter(t => t.getAttribute('aria-current') === 'page');
+  ok(current.length === 1 && current[0].dataset.view === 'experiment', 'the open view is marked as current',
+    current.map(t => t.dataset.view).join());
+  errs.push(...p.errs);
+}
+
+// ── the editor waits for a save in flight, and the theme toggle remembers ──
+{
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  const json = body => ({ ok: true, status: 200, json: async () => body });
+  const doc = { cases: [{ name: 'a', input: 'q' }], evaluators: [] };
+  const run = { id: 'e.json', dir: '.', report: null, link: null,
+    experiment: { path: 'e.json', name: 'e.json', size: 1, modified: 5, cases: 1, evaluators: [] } };
+  const fetchImpl = async (url, opts = {}) => {
+    if (String(url).includes('/api/config')) return json({ root: '/served', depth: 3, read_only: false });
+    if (String(url).includes('/api/runs')) return json({ root: '/served', depth: 3, read_only: false, runs: [run], skipped: [], optimizer_runs: [] });
+    if (opts.method === 'PUT') { await held; return json({ path: 'e.json', modified: 6, cases: 1 }); }
+    return json({ path: 'e.json', modified: 5, document: doc });
+  };
+  const p = await page({ fetchImpl });
+  await p.click('#runs-rows tr.run');
+  await p.type('#form [data-k="input"]', 'changed');
+  await p.click('#save');
+  ok(p.$('#v-experiment').inert === true, 'the editor is inert while the save is in flight');
+  release();
+  await tick(4);
+  ok(p.$('#v-experiment').inert === false, 'and usable again once it lands');
+  ok(/saved e\.json/.test(p.text('#saved')), 'with the save reported', p.text('#saved'));
+
+  const root = p.d.documentElement;
+  const before = root.dataset.theme;
+  await p.click('[data-theme-toggle]');
+  ok(root.dataset.theme !== before && ['light', 'dark'].includes(root.dataset.theme), 'the toggle flips the theme',
+    root.dataset.theme);
+  ok(p.d.cookie.includes(`strands-evals-theme=${root.dataset.theme}`), 'and keeps the choice for the next run',
+    p.d.cookie);
+  errs.push(...p.errs);
+}
+
 done(errs);

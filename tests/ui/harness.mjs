@@ -4,7 +4,11 @@ import { JSDOM } from 'jsdom';
 const ASSET = process.env.UI_HTML
   ? new URL(process.env.UI_HTML, `file://${process.cwd()}/`)
   : new URL('../../src/strands_evals/cli/assets/ui.html', import.meta.url);
-const HTML = fs.readFileSync(ASSET, 'utf8');
+/* Inlines the stylesheet and scripts beside the page, the way `load_asset` does for the server. */
+const beside = name => fs.readFileSync(new URL(name, ASSET), 'utf8');
+const HTML = fs.readFileSync(ASSET, 'utf8')
+  .replace(/<link rel="stylesheet" href="([\w.-]+)">/g, (_, name) => `<style>\n${beside(name)}</style>`)
+  .replace(/<script src="([\w.-]+)"><\/script>/g, (_, name) => `<script>\n${beside(name)}</script>`);
 
 /** A File stand-in: jsdom cannot build a real FileList, and only `text()` is used. */
 export class FakeFile {

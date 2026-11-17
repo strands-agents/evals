@@ -157,8 +157,8 @@ strands-evals ui experiments/
 strands-evals ui experiments/ --list
 ```
 
-`ui` binds loopback on a random port and prints a URL carrying a one-time token; every request
-needs that token, so nothing else on the machine can read or write through it. Edits save back to
+`ui` binds loopback on a random port and prints a URL carrying a token generated for that run; every
+request needs that token, so a page open in another browser tab cannot read or write through it. Edits save back to
 the file they were loaded from, with a conflict check against the file's mtime so a concurrent
 `run` or editor is never silently overwritten. Pass `--read-only` to browse without the Save path
 at all.

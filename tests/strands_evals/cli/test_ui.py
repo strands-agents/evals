@@ -9,20 +9,25 @@ file, pairing a report with an experiment it did not come from, and overwriting 
 from __future__ import annotations
 
 import json
+import os
 import threading
 from http import HTTPStatus
 from http.client import HTTPConnection
+from importlib import resources
 from pathlib import Path
 
 import pytest
 
+from strands_evals.cli import _ui_server
 from strands_evals.cli._ui_server import (
+    MAX_UPLOAD_BYTES,
     PathOutsideRoot,
     build_server,
     classify,
     discover,
     discover_optimizer_runs,
     link_status,
+    load_asset,
     read_event_log,
     resolve_within,
     server_url,
@@ -848,6 +853,237 @@ def test_put_refuses_to_write_outside_the_root(served):
     assert status == HTTPStatus.FORBIDDEN
 
 
+def test_put_refuses_a_file_that_does_not_exist(served):
+    root, request, _ = served
+    status, body = request("PUT", "/api/experiment?path=new/created.json", body={"document": _experiment("a")})
+
+    assert (status, body) == (HTTPStatus.NOT_FOUND, {"error": "new/created.json is not a file"})
+    assert not (root / "new").exists()
+
+
+def test_put_refuses_to_replace_a_file_that_is_not_an_experiment(served):
+    root, request, _ = served
+    before = (root / "report.json").read_text()
+    _, loaded = request("GET", "/api/file?path=report.json")
+
+    status, body = request(
+        "PUT",
+        "/api/experiment?path=report.json",
+        body={"document": _experiment("a"), "modified": loaded["modified"]},
+    )
+
+    assert (status, body) == (HTTPStatus.CONFLICT, {"error": "report.json is not an experiment file"})
+    assert (root / "report.json").read_text() == before
+
+
+def test_put_saves_a_file_whose_suffix_is_uppercase(served):
+    root, request, _ = served
+    _write(root / "UPPER.JSON", _experiment("a"))
+    _, loaded = request("GET", "/api/file?path=UPPER.JSON")
+
+    status, body = request(
+        "PUT",
+        "/api/experiment?path=UPPER.JSON",
+        body={"document": _experiment("a", "b"), "modified": loaded["modified"]},
+    )
+
+    assert (status, body["cases"]) == (HTTPStatus.OK, 2)
+
+
+@pytest.mark.parametrize("stamp", ["yesterday", [1], True, None, 10**400, float("inf")])
+def test_put_rejects_a_modified_stamp_that_is_not_a_usable_number(served, stamp):
+    root, request, _ = served
+    before = (root / "experiment.json").read_text()
+
+    status, body = request(
+        "PUT",
+        "/api/experiment?path=experiment.json",
+        body={"document": _experiment("a"), "modified": stamp},
+    )
+
+    assert (status, body) == (
+        HTTPStatus.BAD_REQUEST,
+        {"error": "'modified' must be the number the file was loaded with"},
+    )
+    assert (root / "experiment.json").read_text() == before
+
+
+def test_put_reports_a_document_that_cannot_be_json_as_unprocessable(served):
+    root, request, _ = served
+    before = (root / "experiment.json").read_text()
+    _, loaded = request("GET", "/api/file?path=experiment.json")
+    document = _experiment("a")
+    document["cases"][0]["metadata"] = {"score": float("nan")}
+
+    status, body = request(
+        "PUT",
+        "/api/experiment?path=experiment.json",
+        body={"document": document, "modified": loaded["modified"]},
+    )
+
+    assert status == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert "experiment.json is not valid JSON" in body["error"]
+    assert (root / "experiment.json").read_text() == before
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX permission bits")
+def test_put_keeps_the_permissions_of_the_file_it_replaces(served):
+    root, request, _ = served
+    target = root / "experiment.json"
+    target.chmod(0o640)
+    _, loaded = request("GET", "/api/file?path=experiment.json")
+
+    status, _ = request(
+        "PUT",
+        "/api/experiment?path=experiment.json",
+        body={"document": loaded["document"], "modified": loaded["modified"]},
+    )
+
+    assert status == HTTPStatus.OK
+    assert target.stat().st_mode & 0o777 == 0o640
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="needs a file the test user cannot write")
+def test_put_refuses_a_read_only_file(served):
+    root, request, _ = served
+    target = root / "experiment.json"
+    before = target.read_text()
+    target.chmod(0o444)
+    _, loaded = request("GET", "/api/file?path=experiment.json")
+
+    status, body = request(
+        "PUT",
+        "/api/experiment?path=experiment.json",
+        body={"document": _experiment("a"), "modified": loaded["modified"]},
+    )
+
+    assert (status, body) == (HTTPStatus.FORBIDDEN, {"error": "experiment.json is read-only"})
+    assert target.read_text() == before
+
+
+def _raw_put(server, headers: dict[str, str], body: bytes = b"") -> tuple[int, str | None]:
+    """Send a PUT with exactly these headers, so a test can lie about the body."""
+    host, port = server.server_address[:2]
+    conn = HTTPConnection(host, port, timeout=5)
+    try:
+        conn.putrequest("PUT", "/api/experiment?path=experiment.json")
+        conn.putheader("Host", f"127.0.0.1:{port}")
+        for name, value in headers.items():
+            conn.putheader(name, value)
+        conn.endheaders(body or None)
+        response = conn.getresponse()
+        response.read()
+        return response.status, response.getheader("Connection")
+    finally:
+        conn.close()
+
+
+def test_a_rejected_put_does_not_leave_its_body_for_the_next_request(served):
+    _, _, server = served
+    host, port = server.server_address[:2]
+    headers = {"Host": f"127.0.0.1:{port}"}
+    conn = HTTPConnection(host, port, timeout=5)
+    try:
+        conn.request(
+            "PUT",
+            "/api/experiment?path=experiment.json",
+            body=json.dumps({"document": _experiment("a")}),
+            headers={**headers, "X-Evals-Token": "wrong"},
+        )
+        rejected = conn.getresponse()
+        rejected.read()
+        connection = conn.sock
+
+        conn.request("GET", "/api/config", headers={**headers, "X-Evals-Token": server.config.token})
+        followed = conn.getresponse()
+        followed.read()
+        reused = conn.sock is connection
+    finally:
+        conn.close()
+
+    assert (rejected.status, followed.status, reused) == (HTTPStatus.UNAUTHORIZED, HTTPStatus.OK, True)
+
+
+def test_a_put_over_the_size_cap_closes_the_connection(served):
+    _, _, server = served
+    headers = {"X-Evals-Token": server.config.token, "Content-Length": str(MAX_UPLOAD_BYTES + 1)}
+
+    assert _raw_put(server, headers) == (HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "close")
+
+
+@pytest.mark.parametrize("framing", [{}, {"Transfer-Encoding": "chunked"}])
+def test_a_put_with_no_readable_length_closes_the_connection(served, framing):
+    _, _, server = served
+
+    assert _raw_put(server, {"X-Evals-Token": "wrong", **framing}) == (HTTPStatus.UNAUTHORIZED, "close")
+    assert _raw_put(server, {"X-Evals-Token": server.config.token, **framing}) == (
+        HTTPStatus.LENGTH_REQUIRED,
+        "close",
+    )
+
+
+def test_a_put_that_withholds_its_body_is_refused_without_waiting_for_it(served, monkeypatch):
+    _, _, server = served
+    monkeypatch.setattr(_ui_server, "DRAIN_TIMEOUT", 0.2)
+
+    assert _raw_put(server, {"X-Evals-Token": "wrong", "Content-Length": "1000"}) == (
+        HTTPStatus.UNAUTHORIZED,
+        "close",
+    )
+
+
+def test_file_endpoint_refuses_a_path_that_is_not_one(served):
+    _, request, _ = served
+    status, body = request("GET", "/api/file?path=%00")
+
+    assert status == HTTPStatus.FORBIDDEN
+    assert "is not a path" in body["error"]
+
+
+def test_runs_endpoint_survives_a_report_holding_nan(served):
+    root, request, _ = served
+    (root / "odd").mkdir()
+    (root / "odd" / "report.json").write_text(json.dumps({**_report("alpha"), "overall_score": float("nan")}))
+
+    status, body = request("GET", "/api/runs")
+
+    assert status == HTTPStatus.OK
+    odd = next(run for run in body["runs"] if run["id"] == "odd/report.json")
+    assert odd["report"]["overall_score"] is None
+
+
+@pytest.mark.parametrize(
+    "host,expected",
+    [
+        ("localhost", HTTPStatus.OK),
+        ("LOCALHOST:8080", HTTPStatus.OK),
+        ("[::1]:9", HTTPStatus.OK),
+        ("[::1].evil.example", HTTPStatus.FORBIDDEN),
+        ("127.0.0.1.evil.example", HTTPStatus.FORBIDDEN),
+        ("localhost:notaport", HTTPStatus.FORBIDDEN),
+        ("", HTTPStatus.FORBIDDEN),
+    ],
+)
+def test_only_a_well_formed_loopback_host_is_admitted(served, host, expected):
+    _, request, _ = served
+    status, _ = request("GET", "/api/config", headers={"Host": host})
+
+    assert status == expected
+
+
+@pytest.mark.skipif(os.name == "nt", reason="creating a symlink needs a privilege on Windows")
+def test_scan_does_not_read_through_a_link_that_leaves_the_folder(tmp_path: Path):
+    outside = _write(tmp_path / "outside" / "experiment.json", _experiment("secret"))
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "link.json").symlink_to(outside)
+
+    found = discover(root)
+
+    assert found.runs == []
+    assert found.skipped == [{"path": "link.json", "why": "a link to a file outside this folder"}]
+
+
 def test_read_only_server_refuses_writes(tmp_path: Path):
     _write(tmp_path / "experiment.json", _experiment("a"))
     server = build_server(tmp_path, port=0, read_only=True, asset="<html></html>")
@@ -873,50 +1109,115 @@ def test_read_only_server_refuses_writes(tmp_path: Path):
         thread.join(timeout=5)
 
 
-def test_shipped_asset_is_the_real_page():
-    from strands_evals.cli._ui_server import load_asset
+# ── the page ──
 
+
+def _assets():
+    return resources.files("strands_evals.cli").joinpath("assets")
+
+
+def test_shipped_asset_is_the_real_page():
     page = load_asset()
     assert page.startswith("<!DOCTYPE html>")
     assert 'id="runs-rows"' in page
 
 
-def test_the_page_is_re_read_per_request(tmp_path: Path, monkeypatch):
-    """Else every edit to ui.html needs a restart, which hands out a new token and new URL."""
-    from strands_evals.cli import _ui_server
+def test_shipped_page_is_one_document_with_every_asset_inlined():
+    source = _assets().joinpath("ui.html").read_text(encoding="utf-8")
+    page = load_asset()
 
+    # Nothing left for the browser to fetch: a second request would not carry the token.
+    assert "<script src=" not in page
+    assert 'rel="stylesheet"' not in page
+    assert page.count("<script>") == source.count("<script src=") > 0
+    for name in ("ui.css", "ui-core.js", "ui-boot.js"):
+        assert _assets().joinpath(name).read_text(encoding="utf-8") in page
+
+
+def test_every_inlined_tag_carries_the_nonce():
+    source = _assets().joinpath("ui.html").read_text(encoding="utf-8")
+    page = load_asset("n0nce")
+
+    assert "<script>" not in page
+    assert "<style>" not in page
+    assert page.count('<script nonce="n0nce">') == source.count("<script src=")
+    assert page.count('<style nonce="n0nce">') == 1
+
+
+def test_no_script_can_close_the_tag_it_is_inlined_into():
+    for asset in _assets().iterdir():
+        if asset.name.endswith((".js", ".css")):
+            assert "</script" not in asset.read_text(encoding="utf-8").lower(), asset.name
+
+
+def test_a_reference_load_asset_cannot_inline_is_an_error(tmp_path: Path, monkeypatch):
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "ui.html").write_text('<script defer src="ui-core.js"></script>')
+    monkeypatch.setattr(_ui_server.resources, "files", lambda package: tmp_path)
+
+    with pytest.raises(ValueError, match="may only reference assets as"):
+        load_asset()
+
+
+def test_the_page_is_served_under_a_policy_that_runs_only_its_own_scripts(tmp_path: Path):
+    server = build_server(tmp_path, port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    try:
+        conn = HTTPConnection(host, port, timeout=5)
+        conn.request("GET", f"/?t={server.config.token}", headers={"Host": f"127.0.0.1:{port}"})
+        response = conn.getresponse()
+        page = response.read().decode("utf-8")
+        policy = response.getheader("Content-Security-Policy")
+        referrer = response.getheader("Referrer-Policy")
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    nonce = server.config.nonce
+    assert f"script-src 'nonce-{nonce}'" in policy
+    assert "default-src 'none'" in policy
+    assert "'unsafe-inline'" not in policy.split("style-src-attr")[0]
+    assert f'<script nonce="{nonce}">' in page
+    assert "<script>" not in page
+    assert referrer == "no-referrer"
+
+
+def test_the_page_is_re_read_per_request(tmp_path: Path, monkeypatch):
+    """Else every edit to the page needs a restart, which hands out a new token and new URL."""
     server = build_server(tmp_path, port=0)
     assert server.config.reload_asset is True
 
-    monkeypatch.setattr(_ui_server, "load_asset", lambda: "<html>edited</html>")
+    monkeypatch.setattr(_ui_server, "load_asset", lambda nonce="": "<html>edited</html>")
     assert server.config.page() == "<html>edited</html>"
     server.server_close()
 
 
 def test_a_pinned_asset_is_not_re_read(tmp_path: Path, monkeypatch):
     """The test harness injects a page; re-reading would serve the real one instead."""
-    from strands_evals.cli import _ui_server
-
     server = build_server(tmp_path, port=0, asset="<html>pinned</html>")
-    monkeypatch.setattr(_ui_server, "load_asset", lambda: "<html>other</html>")
+    monkeypatch.setattr(_ui_server, "load_asset", lambda nonce="": "<html>other</html>")
 
     assert server.config.reload_asset is False
     assert server.config.page() == "<html>pinned</html>"
     server.server_close()
 
 
-def test_an_unreadable_page_falls_back_to_the_one_read_at_startup(tmp_path: Path, monkeypatch):
+def test_an_unreadable_page_falls_back_to_the_one_read_at_startup(tmp_path: Path, monkeypatch, caplog):
     """A half-written ui.html must not turn the whole server into a 500."""
-    from strands_evals.cli import _ui_server
-
     server = build_server(tmp_path, port=0)
     startup = server.config.asset
 
-    def boom() -> str:
+    def boom(nonce: str = "") -> str:
         raise OSError("vanished mid-save")
 
     monkeypatch.setattr(_ui_server, "load_asset", boom)
-    assert server.config.page() == startup
+    with caplog.at_level("WARNING"):
+        assert server.config.page() == startup
+    assert "could not re-read the ui page" in caplog.text
     server.server_close()
 
 

@@ -1,7 +1,7 @@
 /* The file opened from disk — `file://`, no server, no origin.
    Distinct from `standalone.mjs`: that suite boots at an http URL with `fetch` simply absent,
    which reaches standalone mode without ever touching the APIs an opaque origin restricts.
-   Sharing the page as a single file is a supported way to use it, so the restricted ones get
+   Opening the page from disk is a supported way to use it, so the restricted ones get
    exercised here. `history.replaceState` is the sharp edge: it rejects a URL it cannot verify
    against an opaque origin, and thrown from an async caller that aborted rendering outright. */
 import { page, runner } from './harness.mjs';
