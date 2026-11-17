@@ -296,6 +296,26 @@ def test_compare_invalid_report_identifies_trial_and_source(tmp_path: Path, caps
     assert str(candidate) in error
 
 
+def test_compare_error_displays_windows_path_without_repr_escaping(tmp_path: Path, capsys):
+    baseline = tmp_path / "baseline.json"
+    candidate = r"C:\reports\candidate.json"
+    _write_report(baseline, 0.0)
+
+    exit_code = main(
+        [
+            "compare",
+            "--baseline",
+            str(baseline),
+            "--candidate",
+            candidate,
+        ]
+    )
+    error = capsys.readouterr().err
+
+    assert exit_code == 2
+    assert f"source={candidate}:" in error
+
+
 def test_compare_supports_lower_is_better(tmp_path: Path, capsys):
     baseline = tmp_path / "baseline.json"
     candidate = tmp_path / "candidate.json"

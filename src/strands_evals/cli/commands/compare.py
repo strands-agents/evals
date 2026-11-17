@@ -37,7 +37,7 @@ def _load_reports(paths: list[str], excluded_indices: set[int]) -> list[Evaluati
             report = EvaluationReport.model_validate_json(read_text_input(path))
         except (OSError, ValueError) as error:
             source = "stdin" if path == "-" else path
-            raise ValueError(f"invalid report at trial {index}, source={source!r}: {error}") from error
+            raise ValueError(f"invalid report at trial {index}, source={source}: {error}") from error
         reports.append(report)
     return reports
 
