@@ -2,7 +2,7 @@ import pytest
 from strands import tool
 from strands.tools.tools import PythonAgentTool
 
-from strands_evals.optimization import Float, Int, OneOf, Space, TextValue, choice, component, tool_descriptions
+from strands_evals.optimization import Choice, Float, Int, OneOf, Space, TextValue, choice, component, tool_descriptions
 
 
 class Window:
@@ -328,6 +328,11 @@ def test_a_default_listed_second_activates_its_sub_keys():
     assert space.is_active("plugin.on.size", {})
     assert space.complete({}) == {"plugin": "on", "plugin.on.size": 40}
     assert isinstance(space.resolve("plugin", space.complete({}), None), Window)
+
+
+def test_a_choice_built_directly_with_a_default_that_is_no_label_fails():
+    with pytest.raises(TypeError, match=r"invalid default: plugin: 'zzz' is not one of \['on', 'off'\]"):
+        Space({"plugin": Choice({"on": 1, "off": None}, "zzz")})
 
 
 def test_resolve_builds_a_fresh_component_or_passes_the_fixed_value():

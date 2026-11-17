@@ -166,8 +166,15 @@ def test_one_choice_on_two_functions_takes_each_parameters_default():
     ids=["none", "type", "object"],
 )
 def test_a_choice_whose_parameter_default_is_none_of_its_alternatives_fails(parameter_default, alternatives):
-    with pytest.raises(TypeError, match=r"manager: the parameter's default .* is none of the choice's alternatives"):
+    with pytest.raises(TypeError, match=r"manager: the parameter's default .* matches none of the fixed") as error:
         tunable(lambda manager=parameter_default: manager, inject={"manager": choice(**alternatives)})
+    message = str(error.value)
+    assert str(list(alternatives)) in message and "must be the same object, not an equal copy" in message
+
+
+def test_the_first_alternative_equal_to_the_parameters_default_is_the_baseline():
+    declared = choice(window=component(Window), off=None, none=None)
+    assert tunable(lambda manager=None: manager, inject={"manager": declared}).space.param("manager").default == "off"
 
 
 def test_an_explicit_choice_default_wins_over_the_parameters_default():
@@ -414,6 +421,10 @@ def test_an_optional_component_builds_fresh_when_on_and_passes_none_when_off():
     first, second = on()["conversation_manager"], on()["conversation_manager"]
     assert isinstance(first, SlidingWindowConversationManager) and first is not second
     assert make_optional_agent.bind({"conversation_manager": "off"})()["conversation_manager"] is None
+
+
+def test_bind_fills_a_choice_with_the_alternative_equal_to_the_parameters_default():
+    assert make_optional_agent.bind({})()["conversation_manager"] is None
 
 
 def test_the_plain_call_builds_the_baseline_component():

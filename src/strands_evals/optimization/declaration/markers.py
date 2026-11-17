@@ -216,7 +216,9 @@ class Choice(_Marker):
     Attributes:
         alternatives: Label -> a `Component` or a fixed value, in declaration order; each
             component's `label` is its key.
-        default: The baseline's label; None means the first alternative.
+        default: The baseline's label, or None when not given. `tunable` fills in the label of the
+            fixed alternative equal to the parameter's default (see `choice()`); `Space` reads None
+            as the first alternative.
     """
 
     def __init__(self, alternatives: dict[str, Component | Any], default: str | None = None):
@@ -297,11 +299,13 @@ def choice(*alternatives: Component, default: str = _UNSET, **labeled: Component
     Without `default=`, `tunable` takes the wrapped parameter's default, as for `Int` / `Float` /
     `OneOf` / `TextValue`: the fixed alternative equal to it becomes the baseline, so the plain call
     `fn()` builds what the undecorated function builds, e.g. `off` in
-    `choice(on=component(...), off=None)` for a parameter that defaults to None. If none is equal
-    and there are two or more alternatives, `tunable` raises `TypeError`: pass `default=` to name
-    the baseline, which `fn()` then builds in place of the parameter's default, or list the
-    parameter's default as a fixed alternative. With one alternative, no parameter default, or no
-    function (under `build_task`), the baseline is the first alternative.
+    `choice(on=component(...), off=None)` for a parameter that defaults to None. Equal means a str,
+    int, float, bool, or None of the same type that compares equal; any other value must be the
+    same object, not an equal copy. If none is equal and there are two or more alternatives,
+    `tunable` raises `TypeError`: pass `default=` to name the baseline, which `fn()` then builds in
+    place of the parameter's default, or add the parameter's default itself as a keyword
+    alternative. With one alternative, no parameter default, or no function (under `build_task`),
+    the baseline is the first alternative.
 
     Args:
         *alternatives: From `component()`, labeled by class name.
@@ -355,8 +359,8 @@ def choice(*alternatives: Component, default: str = _UNSET, **labeled: Component
             raise TypeError(f"choice() labels must be non-empty and contain no '.' or '/', got {label!r}")
     if default is not _UNSET and (not isinstance(default, str) or default not in names):
         raise TypeError(
-            f"choice(default=...) must be one of the labels {names}, got {default!r}; "
-            "default= names the baseline, so no alternative can be labeled 'default'"
+            f"choice(default=...) names the baseline and must be one of the labels {names}, got {default!r} "
+            "(no alternative can be labeled 'default')"
         )
     return Choice(
         {
@@ -477,7 +481,8 @@ def _fill_choice_default(marker: Choice, default: Any, *, where: str) -> Choice:
 
     Used by `tunable`. Unchanged when `default=` was given or there is only one alternative. Equal
     means the same object, or a plain value (str, int, float, bool, None) of the same type that
-    compares equal, so `True` doesn't match `1`; the first equal alternative wins.
+    compares equal, so `True` doesn't match `1` and an equal copy of a dict doesn't match; the
+    first equal alternative wins.
 
     Args:
         marker: The choice to fill.
@@ -496,7 +501,8 @@ def _fill_choice_default(marker: Choice, default: Any, *, where: str) -> Choice:
         if alternative is default or (isinstance(default, Value) and _is_option(default, [alternative])):
             return Choice(marker.alternatives, label)
     raise TypeError(
-        f"{where}: the parameter's default {default!r} is none of the choice's alternatives "
-        f"{list(marker.alternatives)}; pass default= with the baseline's label, or list the parameter's "
-        "default as a fixed alternative by keyword"
+        f"{where}: the parameter's default {default!r} matches none of the fixed alternatives of the choice "
+        f"{list(marker.alternatives)}; pass default= with the baseline's label, or add the parameter's default "
+        "itself as a keyword alternative (anything but a str, int, float, bool, or None must be the same "
+        "object, not an equal copy)"
     )
