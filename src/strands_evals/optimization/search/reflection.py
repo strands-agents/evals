@@ -22,10 +22,12 @@ from typing import Any, ClassVar, cast
 
 from botocore.config import Config as BotocoreConfig
 from strands import Agent, tool
+from strands.agent.agent_result import AgentResult
 from strands.agent.conversation_manager import SlidingWindowConversationManager
 from strands.hooks.events import AfterToolCallEvent
 from strands.models.bedrock import BedrockModel
 from strands.models.model import CacheConfig, Model
+from strands.types.agent import Limits
 from strands.types.tools import AgentTool
 
 from ...types.optimization import CandidateSummary, Observation, Patch, TrialRecord, TrialStatus, Usage, Value
@@ -83,7 +85,7 @@ _DIGEST_FILE = "DIGEST.md"
 
 _ATTEMPTS = 4  # the agent's first try, then 3 retries
 _RATIONALE_CHARS = 2_000
-_FALLBACK_RATIONALE = "rewritten by Reflection"  # when the agent's first call ends with no text
+_FALLBACK_RATIONALE = "rewritten by Reflection"  # when the agent's first call ends with no text, or at a limit
 _VERBATIM_CHARS = 40  # a run this long copied from a shown trial is a leak
 
 
@@ -118,6 +120,14 @@ class Reflection(Proposer):
     same conversation, to be shortened, up to `over_limit_retries` times; one still over is dropped and the
     parent's value kept.
 
+    Each proposal (one agent, with its send-backs and retries) has a turn limit, `max_turns` model turns, and a
+    time limit, `max_seconds` from its agent's first turn. At the turn limit the last allowed turn's tool calls
+    still run; at the time limit the agent is cancelled where it is (a model call cut off there reports no tokens)
+    and its shell commands are killed. Either way nothing more is sent back or retried, what was submitted by then
+    goes through the guardrails as usual, and the patch's `state["stopped_by"]` names the limit (`"max_turns"`,
+    `"max_seconds"`, or None). An attempt that fails with no turn or time left raises its error instead of being
+    retried.
+
     Runs on Linux and macOS only (`propose` raises `RuntimeError` on Windows; use WSL or a Linux container there).
 
     Attributes:
@@ -135,6 +145,8 @@ class Reflection(Proposer):
         system_prompt: str | None = None,
         success_threshold: float | None = 0.5,
         over_limit_retries: int = 2,
+        max_turns: int | None = 100,
+        max_seconds: float | None = 3600,
     ):
         """Configure the proposer agent.
 
@@ -146,11 +158,17 @@ class Reflection(Proposer):
             success_threshold: Reward a trial needs to count as a success; None splits by rank.
             over_limit_retries: How many times a submission with a value over its `size_cap` is sent back to be
                 shortened; 0 drops it at once.
+            max_turns: The most model turns one proposal's agent takes, over its first reply, send-backs, and
+                retries; None for no limit.
+            max_seconds: The most seconds one proposal's agent runs, from its first turn, over its send-backs and
+                retries; None for no limit.
 
         Raises:
             TypeError: `model` is not a `Model`, a model id, or None, `system_prompt` is not a string,
-                `success_threshold` is not a number or None, or `over_limit_retries` is not an integer.
-            ValueError: `success_threshold` is outside [0, 1], or `over_limit_retries` is below 0.
+                `success_threshold` or `max_seconds` is not a number or None, `over_limit_retries` is not an
+                integer, or `max_turns` is not an integer or None.
+            ValueError: `success_threshold` is outside [0, 1], `over_limit_retries` is below 0, `max_turns` is
+                below 1, or `max_seconds` is not a finite number above 0.
         """
         if model is not None and not isinstance(model, (Model, str)):
             raise TypeError(f"Reflection(model=...) takes a Model, a model id, or None, not {model!r}")
@@ -167,10 +185,22 @@ class Reflection(Proposer):
             raise TypeError(f"Reflection(over_limit_retries=...) must be an integer, not {over_limit_retries!r}")
         if over_limit_retries < 0:
             raise ValueError(f"Reflection(over_limit_retries=...) must be 0 or more, not {over_limit_retries!r}")
+        if max_turns is not None:
+            if not isinstance(max_turns, int) or isinstance(max_turns, bool):
+                raise TypeError(f"Reflection(max_turns=...) must be an integer or None, not {max_turns!r}")
+            if max_turns < 1:
+                raise ValueError(f"Reflection(max_turns=...) must be 1 or more, not {max_turns!r}")
+        if max_seconds is not None:
+            if not isinstance(max_seconds, (int, float)) or isinstance(max_seconds, bool):
+                raise TypeError(f"Reflection(max_seconds=...) must be a number or None, not {max_seconds!r}")
+            if not math.isfinite(max_seconds) or max_seconds <= 0:
+                raise ValueError(f"Reflection(max_seconds=...) must be a finite number above 0, not {max_seconds!r}")
         self.model = model
         self.system_prompt = system_prompt
         self.success_threshold = success_threshold
         self.over_limit_retries = over_limit_retries
+        self.max_turns = max_turns
+        self.max_seconds = max_seconds
         self.refused: list[dict[str, Any]] = []
         self._warned = False
 
@@ -180,8 +210,9 @@ class Reflection(Proposer):
 
         Raises:
             RuntimeError: Running on Windows: the agent's shell needs Linux or macOS.
-            Exception: The agent failed `_ATTEMPTS` times in a row: the last error, whatever it is (a wrong model id
-                or no access to the model fails every attempt, and proposing nothing would hide it).
+            Exception: The agent failed `_ATTEMPTS` times in a row, or failed with no turn or time left to retry: the
+                last error, whatever it is (a wrong model id or no access to the model fails every attempt, and
+                proposing nothing would hide it).
         """
         if os.name == "nt":
             raise RuntimeError(
@@ -218,8 +249,8 @@ class Reflection(Proposer):
         The call's three folders (`traces`, `versions`, `work`) are made inside one temp folder of its own, which the
         shell lets the agent name: a model that `cd`s to the folder holding them, or reads `../versions/...` from
         `work`, is not refused. Writing the evidence and the guardrails run in a worker thread, so concurrent calls
-        keep streaming; a shell command still running when the call ends (cancelled) is killed before its folders are
-        removed."""
+        keep streaming; a shell command still running when the call ends (cancelled, or at its time limit) is killed
+        before its folders are removed."""
         keys = list(request.keys)
         parent = dict(request.parent.values)
         running: set[subprocess.Popen[bytes]] = set()
@@ -264,13 +295,15 @@ class Reflection(Proposer):
             usage = Usage.zero()
             refused: list[dict[str, Any]] = []
             rejected: list[dict[str, str]] = []
+            turns = self.max_turns  # the turns left when an attempt starts, lowered by each failed one
+            deadline = None if self.max_seconds is None else time.monotonic() + self.max_seconds
             for attempt in range(_ATTEMPTS):
                 submitted: dict[str, str] = {}
                 agent = Agent(
                     model=self._model(),
                     system_prompt=prompt + SUBMIT_INSTRUCTIONS,
                     tools=[
-                        _confined_shell(work, [traces, versions, work], refused, root, running),
+                        _confined_shell(work, [traces, versions, work], refused, root, running, deadline),
                         _submit_tool(work, submitted, parent, rejected, caps),
                     ],
                     # Strands' 40-message window, trimmed at the end of each call and on overflow, with the task
@@ -282,20 +315,29 @@ class Reflection(Proposer):
                 started = time.monotonic()
                 failure: Exception | None = None
                 try:
-                    params, rationale, revised = await self._converse(agent, message, submitted, caps, rejected)
+                    params, rationale, revised, stopped = await self._converse(
+                        agent, message, submitted, caps, rejected, turns, deadline
+                    )
                 except Exception as error:  # noqa: BLE001 - any failure of the agent is retried, then raised
                     failure = error
                 finally:  # a cancellation (not an `Exception`) propagates from here, with no event
                     usage = usage + _agent_usage(agent, time.monotonic() - started, self._model_id())
                 if failure is None:
                     break
-                if attempt == _ATTEMPTS - 1:
+                spent = _limit_reached(agent, turns, deadline)  # no turn or time left for another attempt
+                if attempt == _ATTEMPTS - 1 or spent is not None:
+                    if spent is not None:
+                        logger.warning("limit=<%s> | reflection agent failed with no turn or time left to retry", spent)
                     self.refused.extend(refused)
                     # The agent ran (`usage` is never zero here), and no patch will carry its spend.
                     request.log("proposer_usage", usage=usage)
                     raise failure
                 request.log("proposer_retry", error_type=type(failure).__name__, error=str(failure)[:2000])
+                if turns is not None:
+                    turns -= agent.event_loop_metrics.cycle_count
             self.refused.extend(refused)
+            if stopped is not None:
+                logger.warning("limit=<%s> | reflection agent stopped at its turn or time limit", stopped)
             updates, dropped, screened = await asyncio.to_thread(_guard, request, params or {}, keys, parent)
             for key in screened:
                 request.log("screened", key=key, reason=dropped[key])
@@ -309,6 +351,7 @@ class Reflection(Proposer):
             "dropped": dropped,
             "rejected": [{"name": k, "reason": r[:300]} for reasons in rejected for k, r in reasons.items()][:10],
             "refused": refused[:10],
+            "stopped_by": stopped,
             "digest": {
                 "sha256": hashlib.sha256(evidence.digest_text.encode()).hexdigest(),
                 "chars": len(evidence.digest_text),
@@ -324,18 +367,24 @@ class Reflection(Proposer):
         submitted: dict[str, str],
         caps: Mapping[str, int | None],
         rejected: list[dict[str, str]],
-    ) -> tuple[dict[str, str] | None, str, list[dict[str, int]]]:
+        turns: int | None,
+        deadline: float | None,
+    ) -> tuple[dict[str, str] | None, str, list[dict[str, int]], str | None]:
         """Send the task message, then send back, in the same conversation and up to `over_limit_retries` times, a
         submission with values over their `size_cap` (`over_limit_message`) or a turn that ended with nothing
-        accepted on a refused submission (`REFUSED`); each new submission replaces the values it gives.
+        accepted on a refused submission (`REFUSED`); each new submission replaces the values it gives. Nothing is
+        sent back once the proposal's turns or time ran out (`_invoke`).
 
         Returns:
             What was submitted (None for nothing), the rationale (the first call's final text, capped at
-            `_RATIONALE_CHARS`; `_FALLBACK_RATIONALE` when it has none), and the lengths sent back to be shortened.
+            `_RATIONALE_CHARS`; `_FALLBACK_RATIONALE` when it has none or was stopped at a limit), the lengths sent
+            back to be shortened, and the limit that ended the conversation (`"max_turns"`, `"max_seconds"`, or
+            None).
         """
         before = len(rejected)
-        result = await agent.invoke_async(message)
-        rationale = (str(result).strip() or _FALLBACK_RATIONALE)[:_RATIONALE_CHARS]
+        result, stopped = await _invoke(agent, message, turns, deadline)
+        reply = "" if stopped is not None else str(result)  # an agent stopped at a limit gave no final reply
+        rationale = (reply.strip() or _FALLBACK_RATIONALE)[:_RATIONALE_CHARS]
         params: dict[str, str] | None = dict(submitted) or None
         submitted.clear()
         revised: list[dict[str, int]] = []
@@ -344,19 +393,23 @@ class Reflection(Proposer):
                 k: (len(v), cap) for k, v in (params or {}).items() if (cap := caps.get(k)) is not None and len(v) > cap
             }
             if params and over:
-                revised.append({k: n for k, (n, _) in over.items()})
                 text = over_limit_message(over)
             elif not params and len(rejected) > before:
                 refusal = "Refused, nothing was submitted:\n" + "\n".join(f"{k}: {r}" for k, r in rejected[-1].items())
                 text = REFUSED.format(refusal=refusal)
             else:
                 break
+            stopped = stopped or _limit_reached(agent, turns, deadline)
+            if stopped is not None:  # a send-back is due, but the proposal has no turn or time left for it
+                break
+            if over:
+                revised.append({k: n for k, (n, _) in over.items()})
             before = len(rejected)
-            await agent.invoke_async(text)
+            _, stopped = await _invoke(agent, text, turns, deadline)
             if submitted:
                 params = {**(params or {}), **submitted}
                 submitted.clear()
-        return params, rationale, revised
+        return params, rationale, revised, stopped
 
     def _model(self) -> Model:
         """The proposer's model: the given `Model`, else Bedrock at temperature 1.0, streaming, with prompt caching
@@ -381,8 +434,8 @@ class Reflection(Proposer):
         """Nothing to keep: the versions table in each request is the history."""
 
     def config(self) -> dict[str, Any]:
-        """Model id, the sha256 of the system prompt (None for the default prompt), `success_threshold`, and
-        `over_limit_retries`."""
+        """Model id, the sha256 of the system prompt (None for the default prompt), `success_threshold`,
+        `over_limit_retries`, `max_turns`, and `max_seconds`."""
         if isinstance(self.model, str):
             model_id: str | None = self.model
         elif self.model is None:
@@ -395,7 +448,54 @@ class Reflection(Proposer):
             "system_prompt_sha256": prompt,
             "success_threshold": self.success_threshold,
             "over_limit_retries": self.over_limit_retries,
+            "max_turns": self.max_turns,
+            "max_seconds": self.max_seconds,
         }
+
+
+def _limit_reached(agent: Agent, turns: int | None, deadline: float | None) -> str | None:
+    """The proposal's limit that leaves `agent` no further turn: `"max_turns"` once it has taken `turns` (model calls,
+    counted as event-loop cycles), `"max_seconds"` once `deadline` (`time.monotonic()`) has passed, else None."""
+    if turns is not None and agent.event_loop_metrics.cycle_count >= turns:
+        return "max_turns"
+    if deadline is not None and time.monotonic() >= deadline:
+        return "max_seconds"
+    return None
+
+
+async def _invoke(
+    agent: Agent, text: str, turns: int | None, deadline: float | None
+) -> tuple[AgentResult | None, str | None]:
+    """Send `text` to `agent` within the proposal's limits: Strands' turn limit for the turns it has left (the last
+    turn's tool calls still run), and a task cancelled at `deadline` wherever the agent is, in a model stream that
+    never ends or a running tool.
+
+    The agent runs in a task of its own, so that how it ends once cancelled (a `CancelledError`, or an error a model
+    raises instead) never reads as its own failure, and a cancellation of this call always propagates.
+
+    Returns:
+        The agent's result (None when a limit was reached before it replied) and the limit that ended it
+        (`"max_turns"`, `"max_seconds"`, or None).
+
+    Raises:
+        Exception: The agent's own error, before the deadline.
+    """
+    stopped = _limit_reached(agent, turns, deadline)
+    if stopped is not None:
+        return None, stopped
+    limits: Limits | None = None if turns is None else {"turns": turns - agent.event_loop_metrics.cycle_count}
+    task = asyncio.create_task(agent.invoke_async(text, limits=limits))
+    task.add_done_callback(lambda ended: ended.cancelled() or ended.exception())  # read, so asyncio never logs it
+    try:
+        done, _ = await asyncio.wait({task}, timeout=None if deadline is None else deadline - time.monotonic())
+    finally:
+        if not task.done():  # the deadline passed, or this call was cancelled
+            task.cancel()
+            await asyncio.wait({task})
+    if not done:
+        return None, "max_seconds"
+    result = task.result()
+    return result, "max_turns" if result.stop_reason == "limit_turns" else None
 
 
 def _outside(command: str, roots: Sequence[str], cwd: str, home: str | None = None) -> list[str]:
@@ -456,6 +556,7 @@ def _confined_shell(
     refused: list[dict[str, Any]],
     home: str | None = None,
     running: set[subprocess.Popen[bytes]] | None = None,
+    deadline: float | None = None,
 ) -> AgentTool:
     """A shell tool that runs each command with `bash -c` in `work` (also `HOME` and `TMPDIR`), with this process's
     environment otherwise and no standard input, and refuses a command naming a path outside `roots` and `home`
@@ -464,8 +565,9 @@ def _confined_shell(
     Each command runs in its own process group, killed when `bash` exits or its timeout passes, so a process it left
     in the background neither holds the call open until the timeout nor outlives it; `bash` is reaped only after, so
     its process id (the group's) can't be reused first. While it runs it is in `running`, for the caller to kill when
-    the call ends early (cancelled). Output that isn't valid UTF-8 (a `head -c` cutting a character) is decoded with
-    replacement characters."""
+    the call ends early (cancelled, or at its time limit); with a `deadline` (`time.monotonic()`), a command's timeout
+    is also cut to the seconds left before it, rounded up (at least 1). Output that isn't valid UTF-8 (a `head -c`
+    cutting a character) is decoded with replacement characters."""
 
     @tool
     def shell(command: str, timeout: int = 300) -> str:
@@ -490,6 +592,8 @@ def _confined_shell(
                 f"folders and write only in your working folder, {work}.{shared}"
             )
         timeout = min(max(timeout, 1), 3600)
+        if deadline is not None:  # never past it, even for a command that starts as the agent is stopped
+            timeout = min(timeout, max(math.ceil(deadline - time.monotonic()), 1))
         env = {**os.environ, "HOME": work, "TMPDIR": work}
         # Files, not pipes: a background process holding a pipe open would keep the call waiting until it exits.
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
