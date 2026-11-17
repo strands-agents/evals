@@ -41,8 +41,9 @@ class CandidateScores(BaseModel):
         objective_by_case: Case name -> mean of that case's measured per-run objectives. For Reflection's
             per-case scores and the test report, never for ranking.
         metrics_by_case: Case name -> metric name -> that case's mean, for every metric with a value on that
-            case (each evaluator and every usage metric), so `measured_metrics()` can report tokens and seconds
-            next to the scores. Usage means cover completed and `agent_failure` runs, so a crash's cost counts.
+            case (each evaluator, usage, and `Derived` metric), so `measured_metrics()` can report tokens and
+            seconds next to the scores. Usage means cover completed and `agent_failure` runs, so a crash's cost
+            counts.
         unavailable: Case name -> run index -> metric -> why scoring took the value out (e.g. outside the
             evaluator's range).
         objective_by_run: Case name -> each run's objective (None = not measured); written to the `score`
@@ -52,8 +53,9 @@ class CandidateScores(BaseModel):
         objective: The measured objective: `Criteria.objective_value` over each goal metric's mean across
             cases; what the ranking uses without a fit.
         is_eligible: Every case has at least one run that counts for every goal metric (an evaluator N/A on a
-            case doesn't count against it), and the objective (under `Pareto` every term) is measured. Only
-            eligible candidates are fitted, ranked as parents, or chosen as finalists.
+            case doesn't count against it, but a `Derived` metric that needs its score has no value there), and
+            the objective (under `Pareto` every term) is measured. Only eligible candidates are fitted, ranked
+            as parents, or chosen as finalists.
         failures: `agent_failure` trials on this split (each trial's last attempt); infrastructure and
             evaluator failures aren't counted.
     """

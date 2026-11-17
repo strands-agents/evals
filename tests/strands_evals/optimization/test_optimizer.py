@@ -15,8 +15,10 @@ from strands_evals.optimization import (
     TPE,
     Alternate,
     AtLeast,
+    AtMost,
     Block,
     Budget,
+    Derived,
     FileText,
     FinalPick,
     Float,
@@ -183,6 +185,17 @@ def test_no_evaluators_and_no_objective():
         _optimizer(_experiment(evaluators=[]), objective=Minimize("tokens"), agent_failure_score=None)
 
 
+@pytest.mark.parametrize("range_", [(0, None), (0, 10)])
+def test_a_derived_cost_warns_like_a_usage_metric(range_):
+    # A crash's cost is computed from its real usage, bounded range or not.
+    cost = Derived("cost", lambda m: 0.001 * m["tokens"], range=range_)
+    with pytest.warns(UserWarning, match="every goal is a usage metric or a Derived metric"):
+        _optimizer(objective=Minimize(cost))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _optimizer(objective=Minimize(cost), constraints=[AtLeast("Score", 0.5)])
+
+
 def test_bad_name():
     with pytest.raises(ValueError, match="lowercase"):
         _optimizer(name="My Run")
@@ -233,6 +246,17 @@ def test_metrics_record_roles_ranges_and_effective_scale():
         "tokens": {"kind": "usage", "roles": ["objective"], "range": [0.0, None], "weight": 1.0, "scale": 1000.0},
     }
     assert config["constraints"] == ["Stars >= 3"]
+
+
+def test_a_derived_objective_resumes_by_its_name(tmp_path):
+    def build(name):
+        derived = Derived(name, lambda m: 1 - m["Score"], range=(0, 1))
+        return _optimizer(objective=Minimize(derived), constraints=[AtLeast("Score", 0.0)])._config()
+
+    reopened = RunDirectory.open(RunDirectory.create(tmp_path, build("miss")).root)
+    load_state(reopened, config=build("miss"))
+    with pytest.raises(ValueError, match="^objective changed: 'Minimize\\(miss\\)' -> 'Minimize\\(gap\\)'"):
+        load_state(reopened, config=build("gap"))
 
 
 def test_space_stores_text_as_a_hash():
@@ -370,6 +394,18 @@ async def test_a_goal_metric_never_measured_stops_at_setup(tmp_path):
     with pytest.raises(RuntimeError, match=r"goal metric\(s\) \['Grounded'\] have no value on any train case"):
         await optimizer._score_baseline()
     assert _events(optimizer)[-1]["reason"] == "setup"
+
+
+async def test_a_goal_metric_taken_out_on_every_case_stops_at_setup_with_the_reason(tmp_path):
+    cached = Derived("cached", lambda m: m["cache_read_tokens"], range=(0, None))
+    optimizer = _quiet(base_dir=tmp_path, rollout_fn=_rollout(), constraints=[AtMost(cached, 100)])
+    optimizer._setup()
+    with pytest.raises(
+        RuntimeError,
+        match=r"\['cached'\] have no value on any train case.*; first goal value taken out \(case\d+\): cached needs "
+        r"'cache_read_tokens', which this run has no value of$",
+    ):
+        await optimizer._score_baseline()
 
 
 async def test_build_task_gets_the_candidates_values(tmp_path):
@@ -1037,6 +1073,30 @@ def _two_steps(*updates, **kwargs):
     )
 
 
+def _coolness():
+    """A derived objective and a floor on its evaluator (so setup doesn't warn): the coolest is the warmest."""
+    coolness = Derived("coolness", lambda m: 1.0 - m["Temperature"], range=(0, 1))
+    return {"objective": Minimize(coolness), "constraints": [AtLeast("Temperature", 0.0)]}
+
+
+async def test_a_derived_objective_is_fitted_picked_and_tested_like_an_evaluator(tmp_path):
+    coolness = Derived("coolness", lambda m: 1.0 - m["Temperature"], range=(0, 1))
+    with pytest.warns(UserWarning, match="every goal is a usage metric or a Derived metric"):
+        optimizer = _two_steps(
+            {"temperature": 0.5}, {"temperature": 1.0}, base_dir=tmp_path, objective=Minimize(coolness)
+        )
+    result = await optimizer.run_async()
+    assert optimizer._config()["metrics"] == {
+        "coolness": {"kind": "derived", "roles": ["objective"], "range": [0.0, 1.0]}
+    }
+    fits = [e for e in _events(optimizer) if e["event"] == "fit"]
+    assert fits[-1]["is_fitted"] and list(fits[-1]["diagnostics"]) == ["coolness"]
+    assert result.best.values["temperature"] == 1.0 and result.validation.estimates
+    assert result.test.difference["coolness"].mean_diff == pytest.approx(-1.0)
+    best = next(row for row in result.to_rows("proposal") if row["candidate_id"] == result.best.id)
+    assert best["train.coolness"] == 0.0 and best["estimate.coolness"] == pytest.approx(0.0, abs=0.1)
+
+
 async def test_the_end_phase_ships_the_best_finalist_and_writes_the_run_files(tmp_path):
     optimizer = _two_steps({"temperature": 0.5}, {"temperature": 1.0}, base_dir=tmp_path)
     result = await optimizer.run_async()
@@ -1266,6 +1326,18 @@ async def test_a_killed_run_resumes_to_the_same_result_spending_nothing_twice(tm
     assert resumed_optimizer._budget.spent == original_optimizer._budget.spent
     new_trials = sum(1 for e in _events_at(copy) if e["event"] == "trial") - trials_before
     assert new_trials == sum(1 for e in _events(original_optimizer) if e["event"] == "trial") - trials_before
+
+
+async def test_a_killed_run_with_a_derived_objective_computes_it_again_from_the_saved_trials(tmp_path):
+    original_optimizer = _default_search(tmp_path / "runs", **_coolness())
+    original = await original_optimizer.run_async()
+    copy = _killed(original_optimizer._run.root, tmp_path, lambda events: _index(events, "finalists"))
+    resumed_optimizer = _resume(copy, **_coolness())
+    resumed = await resumed_optimizer.run_async()
+    _assert_same(resumed, original)
+    assert resumed_optimizer._budget.spent == original_optimizer._budget.spent
+    baseline = resumed_optimizer._train[resumed.baseline_id]
+    assert all(case["coolness"] == 1.0 for case in baseline.metrics_by_case.values())  # temperature 0
 
 
 async def test_a_refit_that_raises_on_replay_falls_back_to_measured_means_and_the_resume_goes_on(tmp_path):
