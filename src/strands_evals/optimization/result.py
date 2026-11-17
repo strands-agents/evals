@@ -208,7 +208,8 @@ class OptimizationResult(BaseModel):
     def summary(self) -> str:
         """The run in a few lines: why the search stopped, what ships and why, every finalist on validation
         (the validation fit's estimate next to the measured mean), under `Pareto` the validated front, the
-        test report, what changed, and the costs."""
+        test report, what changed, the costs, and why there are no effects or which metrics the held-out
+        check flagged."""
         goals = list(dict.fromkeys(goal["metric"] for goal in self.effects.get("goals", [])))
         v = self.validation
         steps = len(self.iterations)
@@ -282,8 +283,14 @@ class OptimizationResult(BaseModel):
             f"{cost['test'].tokens} test. Proposers {self.search_cost.tokens}, judges {self.judge_cost.tokens}, "
             f"earlier attempts {self.retry_cost.tokens}.",
         ]
+        flagged = [m for m, d in self.effects.get("metrics", {}).items() if d.get("diagnostics", {}).get("flagged")]
         if self.effects.get("reason"):
             lines.append(f"Effects: none ({self.effects['reason']}).")
+        elif flagged:
+            lines.append(
+                f"Effects: the held-out check flagged {', '.join(flagged)}; "
+                "from then on the search ranked by measured means, not the fit."
+            )
         return "\n".join(lines)
 
     def _name(self, candidate_id: str) -> str:
