@@ -110,15 +110,17 @@ report.run_display()
 
 ## Command-Line Interface
 
-Installing `strands-agents-evals` also installs the `strands-evals` console script, a thin wrapper over the Python API for CI and one-off use. It has five subcommands:
+Installing `strands-agents-evals` also installs the `strands-evals` console script, a thin wrapper over the Python API for CI and one-off use. It has seven subcommands:
 
 | Command | Purpose |
 | --- | --- |
 | `strands-evals run` | Execute an Experiment against an `--agent` factory or `--task` callable, or run a single ad-hoc case via `--input` + `--evaluator`/`--expected-output`/`--rubric`. |
 | `strands-evals validate` | Schema-check a serialized Experiment JSON file (CI gate before `run`). |
 | `strands-evals report` | Render an existing `EvaluationReport` JSON via Rich, or dump it as JSON. |
+| `strands-evals compare` | Experimentally compare paired baseline and candidate reports with confidence intervals and per-evaluator verdicts. |
 | `strands-evals diagnose` | Run `detect_failures`, `analyze_root_cause`, or the full `diagnose_session` pipeline on a Session JSON file. |
 | `strands-evals generate` | Synthesize an Experiment via `ExperimentGenerator` from a free-form `--context` or an existing `--experiment` file. |
+| `strands-evals fetch` | Fetch a Session JSON document from a supported trace provider. |
 
 Common flows:
 
@@ -142,6 +144,11 @@ strands-evals run \
 
 # Diagnose a failing session captured to JSON
 strands-evals diagnose session.json --confidence medium
+
+# Compare a candidate code change against a baseline report
+strands-evals compare \
+  --baseline reports/baseline.json \
+  --candidate reports/candidate.json
 
 # Generate a starter experiment from a tools description
 strands-evals generate --context "$(cat tools.txt)" --num-cases 10 \
@@ -170,6 +177,9 @@ pip install -e ".[test,dev]"
 
 # Install with field-level structured-output scoring
 pip install -e ".[stickler]"
+
+# Install experimental statistical report comparison
+pip install -e ".[comparison]"
 ```
 
 ## Features at a Glance
