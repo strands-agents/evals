@@ -834,6 +834,24 @@ async def test_a_cancelled_trial_saves_nothing_and_keeps_no_spans(traces):
     assert _kept(traces) == before
 
 
+async def test_an_error_reading_an_attempt_raises_unjudged_and_saves_nothing(traces, monkeypatch):
+    before = _kept(traces)
+    cache = MemoryCache()
+    judge = Fixed()
+
+    def unreadable(trace_id, attempt_span_id):
+        raise ValueError("unreadable span")
+
+    monkeypatch.setattr(traces, "session", unreadable)
+
+    with pytest.raises(ValueError, match="unreadable span"):
+        await _runner(traces, cache, _cases("a"), [judge]).run("cand", _agent_task(), ["a"], runs=1, allowance=0)
+
+    assert judge.calls == 0
+    assert cache.saved == []
+    assert _kept(traces) == before
+
+
 async def test_a_trial_that_fails_while_its_record_is_built_releases_its_trace(traces, monkeypatch):
     before = _kept(traces)
     runner = _runner(traces, MemoryCache(), _cases("a"), [Fixed()])
