@@ -29,7 +29,7 @@ from strands_evals.cli._ui_discovery import (
     link_status,
     read_event_log,
 )
-from strands_evals.cli._ui_evaluators import evaluator_catalog
+from strands_evals.cli._ui_evaluators import check_evaluators, evaluator_catalog
 from strands_evals.cli._ui_server import (
     MAX_UPLOAD_BYTES,
     PAGE_ROOTS,
@@ -1460,6 +1460,11 @@ def test_llms_txt_describes_every_address_the_server_answers(client: Client):
     for route, handler in UIHandler._GET_ROUTES.items():
         assert f"- `{route}`: {handler.__doc__}" in lines
         assert handler.__doc__
+    assert (
+        '- `PUT /api/experiment`: With `?path=<experiment file>` and a body of `{"document": ..., "modified": ...}`: '
+        "saves the experiment over the file it was read from. `modified` is the time `/api/file` gave; a file changed "
+        "since is refused, and so is every save when the server was started with `--read-only`."
+    ) in lines
     for line in (
         "- `/reports/<report file>.md`: its figures, each failing row with its input, expected and actual output "
         "and the evaluator's reason, then every row",
@@ -1714,6 +1719,41 @@ def test_a_put_whose_body_cannot_be_read_closes_the_connection(client: Client, m
 
     assert reply == _refused(status, message)
     assert reply.headers["Connection"] == "close"
+
+
+def test_evaluator_notes_say_what_the_library_would_refuse_to_construct():
+    notes = check_evaluators(
+        [
+            {"evaluator_type": "OutputEvaluator", "rubric": "Score it.", "model_id": "a-model"},
+            {"evaluator_type": "Contains", "value": "refund", "threshold": 1, "colour": "red"},
+            {"evaluator_type": "MyTeamsOwnEvaluator", "anything": 1},
+            {"evaluator_type": 7},
+            "not an evaluator",
+            {"evaluator_type": "OutputEvaluator"},
+        ]
+    )
+
+    assert notes == [
+        {
+            "index": 1,
+            "evaluator_type": "Contains",
+            "level": "error",
+            "message": "'colour' is not a setting of Contains",
+        },
+        {
+            "index": 1,
+            "evaluator_type": "Contains",
+            "level": "error",
+            "message": "'threshold' is not a setting of Contains",
+        },
+        {
+            "index": 2,
+            "evaluator_type": "MyTeamsOwnEvaluator",
+            "level": "warning",
+            "message": "not a built-in evaluator; `run` and `validate` need it passed in as a custom evaluator",
+        },
+        {**MISSING_RUBRIC, "index": 5},
+    ]
 
 
 def test_evaluator_catalog_describes_each_built_in_from_the_class():

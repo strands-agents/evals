@@ -11,7 +11,6 @@ Bound to loopback, but it reads and writes files under the served directory, so 
 from __future__ import annotations
 
 import html
-import inspect
 import ipaddress
 import json
 import logging
@@ -39,13 +38,13 @@ from ._ui_discovery import (
     EXPERIMENT,
     REPORT,
     SESSION,
-    _inside,
-    _real,
-    _session_summary,
     classify,
     discover,
     fingerprint,
+    is_inside,
     read_event_log,
+    real_path,
+    session_seconds,
 )
 from ._ui_evaluators import check_evaluators, evaluator_catalog
 from ._ui_markdown import diagnosis_markdown, experiment_markdown, llms_text, report_markdown, session_markdown
@@ -56,7 +55,7 @@ MAX_UPLOAD_BYTES = 32 * 1024 * 1024
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]"})
 WILDCARD_HOSTS = frozenset({"", "0.0.0.0", "::"})
 
-# Where the served page finds its token. The address bar no longer carries it past the first request.
+# Where the served page finds its token: the address bar carries it on the first request only.
 TOKEN_SLOT = '<meta name="strands-evals-token" content="">'
 COOKIE_PREFIX = "strands_evals_ui_"
 
@@ -70,6 +69,11 @@ PAGE_ROOTS = ("/reports", "/experiments", "/sessions", "/optimization")
 DATA_ROOTS = {"/reports/": REPORT, "/experiments/": EXPERIMENT, "/sessions/": SESSION}
 DATA_FORMS = (".md", ".json")
 PRINTABLE = re.compile(r"[!-~]+")
+
+_LOCAL_ASSET = re.compile(r'<link rel="stylesheet" href="([\w.-]+)">|<script src="([\w.-]+)"></script>')
+_ANY_ASSET = re.compile(r"<script[^>]*\ssrc=|<link[^>]*\srel=\"stylesheet\"")
+_HOST_HEADER = re.compile(r"(\[[0-9A-Fa-f:.]+\]|[^:\[\]]+)(?::\d+)?")
+_TOKEN_IN_URL = re.compile(r"([?&]t=)[^&\s\"]+")
 
 
 def is_page_path(path: str) -> bool:
@@ -100,8 +104,8 @@ def resolve_within(root: Path, relative: str) -> Path:
     if "\x00" in relative:
         raise PathOutsideRoot(f"{relative!r} is not a path")
     root = root.resolve()
-    candidate = _real(root / relative)
-    if not _inside(root, candidate):
+    candidate = real_path(root / relative)
+    if not is_inside(root, candidate):
         raise PathOutsideRoot(f"{relative} is outside {root}")
     return candidate
 
@@ -311,7 +315,7 @@ class UIHandler(BaseHTTPRequestHandler):
         return secrets.compare_digest(supplied.encode("utf-8", "replace"), self.config.token.encode("utf-8"))
 
     def _authorized(self, query: dict[str, list[str]]) -> bool:
-        return self._is_token((self.headers.get("X-Evals-Token") or "") or (query.get("t", [""])[0]))
+        return self._is_token(self.headers.get("X-Evals-Token") or query.get("t", [""])[0])
 
     def _cookie_name(self) -> str:
         # Cookies ignore the port, so two servers on one machine need two names.
@@ -420,7 +424,7 @@ class UIHandler(BaseHTTPRequestHandler):
         self._json(HTTPStatus.OK, {**self._settings(), "evaluators": evaluator_catalog()})
 
     def _get_scan(self, query: dict[str, list[str]]) -> None:
-        """Every experiment, report, session, diagnosis and optimizer run under the served folder, and a fingerprint."""
+        """What a scan of the served folder finds, to its depth and its file cap, and a fingerprint of the folder."""
         # Taken before the scan, so a file written during it reads as a change afterwards.
         mark = fingerprint(self.config.root, self.config.depth)
         result = discover(self.config.root, self.config.depth)
@@ -471,7 +475,8 @@ class UIHandler(BaseHTTPRequestHandler):
 
     def _get_llms(self, query: dict[str, list[str]]) -> None:
         """This description of what the server answers."""
-        routes = {route: inspect.getdoc(handler) or "" for route, handler in self._GET_ROUTES.items()}
+        handlers = {**self._GET_ROUTES, "PUT /api/experiment": UIHandler._put_experiment}
+        routes = {route: " ".join((handler.__doc__ or "").split()) for route, handler in handlers.items()}
         text = llms_text(routes, PAGE_ROOTS, DATA_ROOTS, DATA_FORMS)
         self._send(HTTPStatus.OK, text.encode("utf-8"), "text/plain; charset=utf-8")
 
@@ -517,10 +522,14 @@ class UIHandler(BaseHTTPRequestHandler):
                 except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                     self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{made} could not be parsed: {exc}")
                     return
-            text = session_markdown(path, obj, _session_summary(obj)["seconds"], diagnoses)
+            text = session_markdown(path, obj, session_seconds(obj), diagnoses)
         self._send(HTTPStatus.OK, text.encode("utf-8", "replace"), "text/markdown; charset=utf-8")
 
     def _put_experiment(self, query: dict[str, list[str]], body: dict) -> None:
+        """With `?path=<experiment file>` and a body of `{"document": ..., "modified": ...}`: saves the experiment
+        over the file it was read from. `modified` is the time `/api/file` gave; a file changed since is refused,
+        and so is every save when the server was started with `--read-only`.
+        """
         if "document" not in body:
             self._error(HTTPStatus.BAD_REQUEST, "expected {'document': ..., 'modified': ...}")
             return
@@ -579,12 +588,10 @@ class UIHandler(BaseHTTPRequestHandler):
         )
 
     def _get_page(self, query: dict[str, list[str]]) -> None:
-        """Serve the page to a request that proves it has the token.
+        """Serve the page to a request that has the token or the cookie.
 
-        The printed link carries the token once. It is answered with a cookie and a redirect to the bare
-        address, so the token is not left in the address bar, the history or a shared link. The cookie
-        only opens the page: every `/api` route still needs the token itself, which the page reads out
-        of the document it was served.
+        The printed link is answered with the cookie and a redirect to the same address without the token,
+        so the token is not left in the address bar, the history or a shared link.
         """
         html_type = "text/html; charset=utf-8"
         if "t" in query and self._authorized(query):
@@ -668,12 +675,6 @@ class _Server(ThreadingHTTPServer):
         super().__init__(address, handler)
 
 
-_LOCAL_ASSET = re.compile(r'<link rel="stylesheet" href="([\w.-]+)">|<script src="([\w.-]+)"></script>')
-_ANY_ASSET = re.compile(r"<script[^>]*\ssrc=|<link[^>]*\srel=\"stylesheet\"")
-_HOST_HEADER = re.compile(r"(\[[0-9A-Fa-f:.]+\]|[^:\[\]]+)(?::\d+)?")
-_TOKEN_IN_URL = re.compile(r"([?&]t=)[^&\s\"]+")
-
-
 def load_asset(nonce: str = "") -> str:
     """The page shipped beside this module, with its stylesheet and scripts inlined.
 
@@ -727,10 +728,9 @@ def build_server(
 
 
 def server_url(server: _Server) -> str:
-    host, port = server.server_address[:2]
-    shown = "127.0.0.1" if host in ("0.0.0.0", "") else "::1" if host == "::" else host
-    if isinstance(shown, bytes):  # pragma: no cover - AF_UNIX never happens here
-        shown = shown.decode()
-    if ":" in str(shown) and not str(shown).startswith("["):
+    """The link to print: the page's address with the token, on loopback when every interface was bound."""
+    host, port = str(server.server_address[0]), server.server_address[1]
+    shown = {"0.0.0.0": "127.0.0.1", "": "127.0.0.1", "::": "::1"}.get(host, host)
+    if ":" in shown:
         shown = f"[{shown}]"
     return f"http://{shown}:{port}/?t={server.config.token}"

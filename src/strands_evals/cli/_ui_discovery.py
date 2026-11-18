@@ -6,10 +6,12 @@ and `tests/ui/parity.mjs` holds the two to the same listing.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
 import re
+from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -55,24 +57,30 @@ def _prune_run_storage(filenames: list[str], dirnames: list[str]) -> None:
         filenames[:] = [f for f in filenames if f.lower() not in RUN_OWN_FILES]
 
 
-def _walk(root: Path, depth: int) -> Iterator[tuple[Path, list[str]]]:
-    """Yield each directory under `root`, at most `depth` levels down, with its sorted filenames.
+def _walk(root: Path, depth: int) -> Iterator[tuple[Path, str, list[str]]]:
+    """Yield each directory under `root`, `depth` levels down at most: its path, its root-relative name, its files.
 
-    Skips dot-directories, dependency folders, and a run directory's own storage.
+    The root's own name is `.`. Skips dot-directories, dependency folders, and a run directory's own storage.
     """
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         here = Path(dirpath)
-        if len(here.relative_to(root).parts) >= depth:
+        where = here.relative_to(root)
+        if len(where.parts) >= depth:
             dirnames[:] = []
         dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d not in SKIPPED_DIRS)
         _prune_run_storage(filenames, dirnames)
-        yield here, sorted(filenames)
+        yield here, where.as_posix(), sorted(filenames)
+
+
+def _under(where: str, name: str) -> str:
+    """The root-relative path of the file `name` in the directory `where`."""
+    return name if where == "." else f"{where}/{name}"
 
 
 def fingerprint(root: Path, depth: int = DEFAULT_DEPTH) -> str:
     """Digest the name, size and mtime of every file the page can show, so a change to the tree changes it."""
     digest = hashlib.sha256()
-    for here, filenames in _walk(root, depth):
+    for here, where, filenames in _walk(root, depth):
         names = [name for name in filenames if name.lower().endswith((".json", ".jsonl"))]
         if RUN_CONFIG_NAME in filenames and EVENT_LOG_NAME in filenames:
             names += sorted(RUN_OWN_FILES)
@@ -81,8 +89,7 @@ def fingerprint(root: Path, depth: int = DEFAULT_DEPTH) -> str:
                 info = (here / name).stat()
             except OSError:
                 continue
-            where = (here / name).relative_to(root).as_posix()
-            digest.update(f"{where}\0{info.st_size}\0{info.st_mtime_ns}\n".encode())
+            digest.update(f"{_under(where, name)}\0{info.st_size}\0{info.st_mtime_ns}\n".encode())
     return digest.hexdigest()
 
 
@@ -103,6 +110,11 @@ class ScannedFile:
     @property
     def directory(self) -> str:
         return _dirname(self.path)
+
+    @functools.cached_property
+    def case_ids(self) -> set[str]:
+        """For an experiment: every identifier one of its cases can be referred to by."""
+        return _experiment_case_ids(self.obj)
 
 
 @dataclass
@@ -171,7 +183,7 @@ def is_task_result(obj: Any) -> bool:
 
 
 def _dirname(path: str) -> str:
-    """The directory part of a root-relative path, `.` at the root; mirrors `ScannedFile.directory`."""
+    """The directory part of a root-relative path, `.` at the root."""
     return path.rsplit("/", 1)[0] if "/" in path else "."
 
 
@@ -244,7 +256,7 @@ def tuned_against(split: Any, experiments: Sequence[ScannedFile]) -> dict | None
 
     best: dict | None = None
     for experiment in sorted(experiments, key=lambda f: f.path):
-        matched = len(wanted & _experiment_case_ids(experiment.obj))
+        matched = len(wanted & experiment.case_ids)
         if matched and (best is None or matched > best["matched"]):
             best = {
                 "path": experiment.path,
@@ -328,21 +340,24 @@ def _millis(stamp: Any) -> int | None:
     return seconds * 1000 + moment.microsecond // 1000
 
 
-def _session_summary(obj: dict) -> dict:
-    """How much a session recorded, and how long its traces ran for. The time between traces is not counted."""
-    traces = [trace["spans"] for trace in obj["traces"]]
+def session_seconds(obj: dict) -> float | None:
+    """How long a session's traces ran for. The time between traces is not counted."""
     millis: int | None = None
-    for spans in traces:
-        infos = [span.get("span_info") for span in spans if isinstance(span, dict)]
+    for trace in obj["traces"]:
+        infos = [span.get("span_info") for span in trace["spans"] if isinstance(span, dict)]
         ends = [info.get(key) for info in infos if isinstance(info, dict) for key in ("start_time", "end_time")]
         times = [millis_at for millis_at in map(_millis, ends) if millis_at is not None]
         if len(times) > 1:
             millis = (millis or 0) + max(times) - min(times)
+    return None if millis is None else millis / 1000
+
+
+def _session_summary(obj: dict) -> dict:
     return {
         "session_id": obj["session_id"],
-        "traces": len(traces),
-        "spans": sum(len(spans) for spans in traces),
-        "seconds": None if millis is None else millis / 1000,
+        "traces": len(obj["traces"]),
+        "spans": sum(len(trace["spans"]) for trace in obj["traces"]),
+        "seconds": session_seconds(obj),
     }
 
 
@@ -363,13 +378,16 @@ _SUMMARY: dict[str, Callable[[dict], dict]] = {
 }
 
 
-def _file_entry(scanned: ScannedFile) -> dict:
+def _file_entry(scanned: ScannedFile, **links: Any) -> dict:
+    """What a list shows for one file. `links` are the files it was paired with."""
     return {
         "path": scanned.path,
         "name": scanned.name,
         "size": scanned.size,
         "modified": scanned.modified,
         **_SUMMARY[scanned.kind](scanned.obj),
+        "dir": scanned.directory,
+        **links,
     }
 
 
@@ -379,6 +397,14 @@ def _opens_as_task_result(path: Path) -> bool:
             return TASK_RESULT_HEAD.match(handle.read(64)) is not None
     except OSError:
         return False
+
+
+def _json_files(root: Path, depth: int) -> Iterator[tuple[Path, str, str]]:
+    """Each `.json` file the walk reaches: its path, its directory under the root and its root-relative path."""
+    for here, where, filenames in _walk(root, depth):
+        for filename in filenames:
+            if filename.lower().endswith(".json"):
+                yield here / filename, where, _under(where, filename)
 
 
 def scan(root: Path, depth: int = DEFAULT_DEPTH) -> tuple[list[ScannedFile], list[dict], bool, dict[str, int]]:
@@ -392,46 +418,35 @@ def scan(root: Path, depth: int = DEFAULT_DEPTH) -> tuple[list[ScannedFile], lis
     truncated = False
     stores: dict[str, int] = {}
     root = root.resolve()
-    seen = 0
 
-    for here, filenames in _walk(root, depth):
-        for filename in filenames:
-            if not filename.lower().endswith(".json"):
-                continue
-            full = here / filename
-            rel = full.relative_to(root).as_posix()
-            # One result read in full shows the directory is a store; the rest are told by how they open.
-            if _dirname(rel) in stores and not full.is_symlink() and _opens_as_task_result(full):
-                stores[_dirname(rel)] += 1
-                continue
-            if seen >= MAX_SCAN_FILES:
-                truncated = True
-                break
-            seen += 1
-            if full.is_symlink() and not _inside(root, _real(full)):
-                skipped.append({"path": rel, "why": "a link to a file outside this folder"})
-                continue
-            try:
-                info = full.stat()
-                obj = json.loads(full.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError) as exc:
-                skipped.append({"path": rel, "why": f"could not read: {exc.__class__.__name__}"})
-                continue
-            except json.JSONDecodeError as exc:
-                skipped.append({"path": rel, "why": f"invalid JSON at line {exc.lineno}: {exc.msg}"})
-                continue
-
-            kind = classify(obj)
-            if kind is None and is_task_result(obj):
-                stores[_dirname(rel)] = stores.get(_dirname(rel), 0) + 1
-                seen -= 1
-                continue
-            if kind is None:
-                skipped.append({"path": rel, "why": "not an experiment or a report"})
-                continue
-            found.append(ScannedFile(path=rel, kind=kind, obj=obj, size=info.st_size, modified=info.st_mtime))
-        if truncated:
+    for full, where, rel in _json_files(root, depth):
+        # One result read in full shows the directory is a store; the rest are told by how they open.
+        if where in stores and not full.is_symlink() and _opens_as_task_result(full):
+            stores[where] += 1
+            continue
+        if len(found) + len(skipped) >= MAX_SCAN_FILES:
+            truncated = True
             break
+        if full.is_symlink() and not is_inside(root, real_path(full)):
+            skipped.append({"path": rel, "why": "a link to a file outside this folder"})
+            continue
+        try:
+            info = full.stat()
+            obj = json.loads(full.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError) as exc:
+            skipped.append({"path": rel, "why": f"could not read: {exc.__class__.__name__}"})
+            continue
+        except json.JSONDecodeError as exc:
+            skipped.append({"path": rel, "why": f"invalid JSON at line {exc.lineno}: {exc.msg}"})
+            continue
+
+        kind = classify(obj)
+        if kind is not None:
+            found.append(ScannedFile(path=rel, kind=kind, obj=obj, size=info.st_size, modified=info.st_mtime))
+        elif is_task_result(obj):
+            stores[where] = stores.get(where, 0) + 1
+        else:
+            skipped.append({"path": rel, "why": "not an experiment or a report"})
 
     return found, skipped, truncated, stores
 
@@ -446,11 +461,20 @@ def _steps_apart(left: str, right: str) -> int:
     return len(a) + len(b) - 2 * shared
 
 
+def _nearest(candidates: Sequence[ScannedFile], directory: str) -> ScannedFile | None:
+    """The one of `candidates` fewest steps from `directory`. Two equally near are a tie, and a tie is not guessed."""
+    if not candidates:
+        return None
+    steps = [_steps_apart(candidate.directory, directory) for candidate in candidates]
+    closest = [candidate for candidate, apart in zip(candidates, steps, strict=True) if apart == min(steps)]
+    return closest[0] if len(closest) == 1 else None
+
+
 def experiment_of(report: ScannedFile, experiments: Sequence[ScannedFile], alone: bool) -> ScannedFile | None:
     """The experiment a report was made from, or `None` when that cannot be told.
 
     Beside it under the same name first, or as the only pair in the directory when `alone`. Failing that, the
-    nearest experiment holding every case the report has. Two equally near are a tie, and a tie is not guessed.
+    nearest experiment holding every case the report has.
     """
     beside = sorted((e for e in experiments if e.directory == report.directory), key=lambda e: e.path)
     named = [e for e in beside if _stem(e.name) == _stem(report.name)]
@@ -459,22 +483,15 @@ def experiment_of(report: ScannedFile, experiments: Sequence[ScannedFile], alone
     if alone and len(beside) == 1:
         return beside[0]
 
-    holding = [e for e in experiments if link_status(e.obj, report.obj)["status"] == "verified"]
-    if not holding:
-        return None
-    nearest = min(_steps_apart(e.directory, report.directory) for e in holding)
-    closest = [e for e in holding if _steps_apart(e.directory, report.directory) == nearest]
-    return closest[0] if len(closest) == 1 else None
+    # The experiments `link_status` would call verified.
+    wanted = _case_keys(report.obj)
+    return _nearest([e for e in experiments if wanted and wanted <= e.case_ids], report.directory)
 
 
 def session_of(diagnosis: ScannedFile, sessions: Sequence[ScannedFile]) -> ScannedFile | None:
-    """The session a diagnosis is of: the nearest one with its `session_id`. A tie is not guessed."""
+    """The session a diagnosis is of: the nearest one with its `session_id`."""
     named = [s for s in sessions if s.obj["session_id"] == diagnosis.obj.get("session_id")]
-    if not named:
-        return None
-    nearest = min(_steps_apart(s.directory, diagnosis.directory) for s in named)
-    closest = [s for s in named if _steps_apart(s.directory, diagnosis.directory) == nearest]
-    return closest[0] if len(closest) == 1 else None
+    return _nearest(named, diagnosis.directory)
 
 
 def _newest_first(scanned: ScannedFile) -> tuple[float, str]:
@@ -489,66 +506,48 @@ def discover(root: Path, depth: int = DEFAULT_DEPTH) -> Discovery:
     too, each with the diagnoses made of it, and a diagnosis whose session is not in the tree stands on its own.
     """
     found, skipped, truncated, stores = scan(root, depth)
-    scanned_experiments = [f for f in found if f.kind == EXPERIMENT]
-    scanned_reports = [f for f in found if f.kind == REPORT]
+    of_kind: dict[str, list[ScannedFile]] = {kind: [] for kind in _SUMMARY}
+    for scanned in sorted(found, key=_newest_first):
+        of_kind[scanned.kind].append(scanned)
 
     reports: list[dict] = []
     made_from: dict[str, list[str]] = {}
-    for report in sorted(scanned_reports, key=_newest_first):
-        alone = sum(1 for other in scanned_reports if other.directory == report.directory) == 1
-        experiment = experiment_of(report, scanned_experiments, alone)
+    reports_in = Counter(report.directory for report in of_kind[REPORT])
+    for report in of_kind[REPORT]:
+        experiment = experiment_of(report, of_kind[EXPERIMENT], alone=reports_in[report.directory] == 1)
         if experiment is not None:
             made_from.setdefault(experiment.path, []).append(report.path)
         reports.append(
-            {
-                **_file_entry(report),
-                "dir": report.directory,
-                "experiment": experiment.path if experiment else None,
-                "link": link_status(experiment.obj, report.obj) if experiment else None,
-            }
+            _file_entry(
+                report,
+                experiment=experiment.path if experiment else None,
+                link=link_status(experiment.obj, report.obj) if experiment else None,
+            )
         )
 
-    experiments = [
-        {**_file_entry(experiment), "dir": experiment.directory, "reports": made_from.get(experiment.path, [])}
-        for experiment in sorted(scanned_experiments, key=_newest_first)
-    ]
-
-    scanned_sessions = [f for f in found if f.kind == SESSION]
     diagnoses: list[dict] = []
     diagnosed: dict[str, list[str]] = {}
-    for diagnosis in sorted((f for f in found if f.kind == DIAGNOSIS), key=_newest_first):
-        session = session_of(diagnosis, scanned_sessions)
+    for diagnosis in of_kind[DIAGNOSIS]:
+        session = session_of(diagnosis, of_kind[SESSION])
         if session is not None:
             diagnosed.setdefault(session.path, []).append(diagnosis.path)
-        diagnoses.append(
-            {**_file_entry(diagnosis), "dir": diagnosis.directory, "session": session.path if session else None}
-        )
-    sessions = [
-        {**_file_entry(session), "dir": session.directory, "diagnoses": diagnosed.get(session.path, [])}
-        for session in sorted(scanned_sessions, key=_newest_first)
-    ]
+        diagnoses.append(_file_entry(diagnosis, session=session.path if session else None))
 
     optimizer_runs = discover_optimizer_runs(root, depth)
-
     for optimizer_run in optimizer_runs:
         split = (optimizer_run.get("config") or {}).get("split")
-        optimizer_run["tuned_against"] = tuned_against(split, scanned_experiments)
+        optimizer_run["tuned_against"] = tuned_against(split, of_kind[EXPERIMENT])
 
     # A `run.json` recognised as an optimizer run config is not a scan failure.
-    optimizer_dirs = {r["dir"] for r in optimizer_runs}
-    skipped = [
-        s
-        for s in skipped
-        if not (s["path"].rsplit("/", 1)[-1] == RUN_CONFIG_NAME and _dirname(s["path"]) in optimizer_dirs)
-    ]
+    run_configs = {_under(run["dir"], RUN_CONFIG_NAME) for run in optimizer_runs}
 
     return Discovery(
-        experiments=experiments,
+        experiments=[_file_entry(e, reports=made_from.get(e.path, [])) for e in of_kind[EXPERIMENT]],
         reports=reports,
-        skipped=skipped,
+        skipped=[skip for skip in skipped if skip["path"] not in run_configs],
         truncated=truncated,
         optimizer_runs=optimizer_runs,
-        sessions=sessions,
+        sessions=[_file_entry(s, diagnoses=diagnosed.get(s.path, [])) for s in of_kind[SESSION]],
         diagnoses=diagnoses,
         stores=[{"dir": directory, "files": files} for directory, files in sorted(stores.items())],
     )
@@ -634,7 +633,7 @@ def _optimizer_run_summary(
         "is_pareto": bool(config.get("is_pareto")) or str(config.get("objective") or "").startswith("Pareto("),
         "budget": config.get("budget") or {},
         "config": config,
-        "events_path": f"{directory}/{EVENT_LOG_NAME}" if directory != "." else EVENT_LOG_NAME,
+        "events_path": _under(directory, EVENT_LOG_NAME),
         "events": len(log.events),
         "events_size": events_stat.st_size,
         "modified": max(events_stat.st_mtime, config_stat.st_mtime),
@@ -659,7 +658,7 @@ def discover_optimizer_runs(root: Path, depth: int = DEFAULT_DEPTH) -> list[dict
     found: list[dict] = []
     root = root.resolve()
 
-    for here, filenames in _walk(root, depth):
+    for here, where, filenames in _walk(root, depth):
         if RUN_CONFIG_NAME not in filenames or EVENT_LOG_NAME not in filenames:
             continue
 
@@ -672,9 +671,8 @@ def discover_optimizer_runs(root: Path, depth: int = DEFAULT_DEPTH) -> list[dict
         if not isinstance(config, dict):
             continue
 
-        relative = here.relative_to(root).as_posix() or "."
         log = read_event_log(events_path)
-        summary = _optimizer_run_summary(relative, config, events_stat, config_stat, log)
+        summary = _optimizer_run_summary(where, config, events_stat, config_stat, log)
         # Most runs have no effects model, so the page is told rather than left to ask for a file that is not there.
         summary["has_effects"] = (here / "effects.json").is_file()
         found.append(summary)
@@ -683,10 +681,10 @@ def discover_optimizer_runs(root: Path, depth: int = DEFAULT_DEPTH) -> list[dict
     return found
 
 
-def _real(path: Path) -> Path:
+def real_path(path: Path) -> Path:
     """`path.resolve()`, which before Python 3.13 raises on a link that leads back to itself."""
     return Path(os.path.realpath(path))
 
 
-def _inside(root: Path, candidate: Path) -> bool:
+def is_inside(root: Path, candidate: Path) -> bool:
     return candidate == root or root in candidate.parents
