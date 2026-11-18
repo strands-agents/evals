@@ -16,6 +16,7 @@ import difflib
 import inspect
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -696,11 +697,15 @@ def _tune_spec(where: str, entry: dict[str, Any]) -> str:
         if not isinstance(entry["choices"], list):
             raise ValueError(f"{where}: choices must be a list")
         return f"{entry['path']}={json.dumps(entry['choices'])}"
-    bounds = entry[given[0]]
+    kind, bounds = given[0], entry[given[0]]
     numbers = isinstance(bounds, list) and len(bounds) == 2
     if not numbers or any(isinstance(b, bool) or not isinstance(b, (int, float)) for b in bounds):
-        raise ValueError(f"{where}: {given[0]} must be [LO, HI], two numbers")
-    return f"{entry['path']}={given[0]}:{bounds[0]}..{bounds[1]}"
+        raise ValueError(f"{where}: {kind} must be [LO, HI], two numbers")
+    if kind == "int" and not all(isinstance(b, int) for b in bounds):
+        raise ValueError(f"{where}: int = {bounds} needs two integers (float = [LO, HI] for a number with a fraction)")
+    if not all(math.isfinite(b) for b in bounds) or bounds[0] >= bounds[1]:
+        raise ValueError(f"{where}: {kind} = {bounds} needs two finite numbers with LO < HI")
+    return f"{entry['path']}={kind}:{bounds[0]}..{bounds[1]}"
 
 
 def _one_of(where: str, entry: dict[str, Any], names: tuple[str, ...], kind: Any, placeholder: str) -> str:

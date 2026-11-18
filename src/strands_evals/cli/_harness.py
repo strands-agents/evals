@@ -13,6 +13,7 @@ import copy
 import hashlib
 import json
 import logging
+import math
 import shutil
 import tempfile
 from collections.abc import Callable
@@ -94,7 +95,8 @@ def declare(
     Raises:
         ValueError: A path the config doesn't have, a text path that isn't a string, a bad choice list or one
             missing the config's current value, a bad range or one the config's value is outside of (or not a
-            number of that type), `skills` not given as one path, two paths with one name, or nothing to tune.
+            number of that type), an option or range value the harness rejects at that path, `skills` not given as
+            one path, two paths with one name, or nothing to tune.
     """
     raw = read_config(config_path)
     current = define_harness_agent_config(copy.deepcopy(raw))  # defaults merged: a choice may be left at one
@@ -112,11 +114,14 @@ def declare(
         if name in markers:
             raise ValueError(f"--tune {text}: another --tune path is also named {name!r}")
         if isinstance(options, _Range):
-            markers[name], kind = _number(text, options, _get(current, path, text)), "number"
+            number = _number(text, options, _get(current, path, text))
+            _check_accepted(raw, path, text, _samples(options, number.default))
+            markers[name], kind = number, "number"
         elif options is not None:
             value = _get(current, path, text)
             if value not in options:
                 raise ValueError(f"--tune {text}: the config's value {value!r} must be one of the options")
+            _check_accepted(raw, path, text, options)
             markers[name], kind = OneOf(*options, default=value), "choice"
         elif path == ("skills",):
             skills = raw.get("skills")
@@ -229,13 +234,39 @@ def _fresh_state(config: dict[str, Any], base_dir: Path, folder: Path) -> dict[s
     return trial
 
 
+def _check_accepted(raw: dict[str, Any], path: tuple[str | int, ...], text: str, values: list[Any]) -> None:
+    """Each of `values` set at `path` must pass the harness's own checks, so a value no trial could run (an option
+    the field doesn't take, a fraction for an integer field) is a usage error here, before any spend."""
+    for value in values:
+        config = copy.deepcopy(raw)
+        _set(config, path, value)
+        try:
+            define_harness_agent_config(config)
+        except ValueError as error:
+            raise ValueError(f"--tune {text}: the harness doesn't take {value!r} there: {error}") from None
+
+
+def _samples(bounds: _Range, default: float) -> list[Any]:
+    """The values to check a range with: for a float range first a fraction inside it, as most proposals are (so an
+    integer field is reported on that), then both bounds and the default, as the marker gives them."""
+    if bounds.kind == "int":
+        return [int(bounds.low), int(bounds.high), default]
+    step, inside = bounds.high - bounds.low, None
+    for _ in range(60):
+        step /= 2
+        if not (bounds.low + step).is_integer():
+            inside = bounds.low + step
+            break
+    return [*([inside] if inside is not None else []), float(bounds.low), float(bounds.high), float(default)]
+
+
 def _number(text: str, bounds: _Range, value: Any) -> Int | Float:
     """`Int` / `Float` over `bounds`, its default the config's `value`, which must be a number of that type inside."""
     numeric = not isinstance(value, bool) and isinstance(value, int if bounds.kind == "int" else (int, float))
     if not numeric or not bounds.low <= value <= bounds.high:
         what = "an integer" if bounds.kind == "int" else "a number"
         raise ValueError(
-            f"--tune {text}: the config's value {value!r} must be {what} in {bounds.low:g}..{bounds.high:g}"
+            f"--tune {text}: the config's value {value!r} must be {what} in {bounds.low!r}..{bounds.high!r}"
         )
     if bounds.kind == "int":
         return Int(int(bounds.low), int(bounds.high), default=value)
@@ -245,13 +276,20 @@ def _number(text: str, bounds: _Range, value: Any) -> Int | Float:
 def _range(path: str, raw: str) -> _Range:
     """`int:LO..HI` or `float:LO..HI` (inclusive, LO < HI)."""
     kind, _, bounds = raw.partition(":")
-    low, sep, high = bounds.partition("..")
+    parts = bounds.split("..")
     try:
+        if len(parts) != 2 or "..." in bounds:
+            raise ValueError
         parse = int if kind == "int" else float
-        lo, hi = parse(low), parse(high)
+        lo, hi = parse(parts[0]), parse(parts[1])
+        if not (math.isfinite(lo) and math.isfinite(hi)):
+            raise ValueError
     except ValueError as error:
-        raise ValueError(f"--tune {path}: a range is {kind}:LO..HI with two {kind}s (got '{raw}')") from error
-    if not sep or lo >= hi:
+        raise ValueError(
+            f"--tune {path}: a range is {kind}:LO..HI with two {'ints' if kind == 'int' else 'finite floats'} "
+            f"(got '{raw}')"
+        ) from error
+    if lo >= hi:
         raise ValueError(f"--tune {path}: a range is {kind}:LO..HI with LO < HI (got '{raw}')")
     return _Range("int" if kind == "int" else "float", lo, hi)
 
@@ -291,7 +329,10 @@ def _get(document: Any, path: tuple[str | int, ...], text: str) -> Any:
         try:
             document = document[part]
         except (KeyError, IndexError, TypeError):
-            raise ValueError(f"--tune {text}: the config has nothing at that path") from None
+            raise ValueError(
+                f"--tune {text}: the config has nothing at that path; write the field in the config (its value "
+                "there is the baseline) to tune it"
+            ) from None
     return document
 
 

@@ -838,32 +838,61 @@ def _optimize_module():
     return _optimize
 
 
-def test_resume_overrides_a_killed_run_and_warns_on_a_finished_one(experiment_path, tmp_path, capsys):
+def test_resume_overrides_a_killed_run_and_warns_on_a_finished_one(experiment_path, tmp_path, monkeypatch, capsys):
+    from strands_evals.optimization import Optimizer
+
     assert main(_run_args(experiment_path, tmp_path)) == 0
     root = _only_run(tmp_path)
     killed = _killed_copy(root, tmp_path)
     capsys.readouterr()
+    real, given = Optimizer.resume.__func__, {}
+
+    def spy(cls, *args, **kwargs):
+        given.update(kwargs)
+        return real(cls, *args, **kwargs)
+
+    monkeypatch.setattr(Optimizer, "resume", classmethod(spy))
     assert main(["--json", "optimize", "resume", str(killed), "--max-workers", "8", "--max-rollouts", "400"]) == 0
     assert "change nothing" not in capsys.readouterr().err
     events = [json.loads(line) for line in (killed / "events.jsonl").read_text().splitlines()]
     (resumed,) = [event for event in events if event["event"] == "resume"]
     assert resumed["budget"]["max_rollouts"] == 400  # the override reached the run
+    assert given["max_workers"] == 8
     # a finished run only prints its result: an override that wouldn't fit the spend is ignored, not an error
     assert main(["--json", "optimize", "resume", str(root), "--max-rollouts", "1"]) == 0
     assert "the run has finished, so --max-rollouts change nothing" in capsys.readouterr().err
 
 
-def test_a_finished_config_run_prints_its_result_after_the_config_changed(
+def test_a_finished_config_run_prints_its_result_whatever_happened_to_the_config(
     experiment_path, tmp_path, monkeypatch, capsys, scripted_text_proposer
 ):
-    config = _write_config(tmp_path)
+    config = _write_config(tmp_path, effort="auto")
     monkeypatch.chdir(tmp_path)
-    assert main(_config_args(experiment_path, config, tmp_path)) == 0
+    assert main(_config_args(experiment_path, config, tmp_path, "--tune", 'effort=["auto","low"]')) == 0
     root = _only_run(tmp_path)
-    config.write_text(config.read_text() + "\n")  # a byte changed; no trial runs for a finished run
-    capsys.readouterr()
+    expected = json.loads(capsys.readouterr().out)
+    config.write_text(config.read_text().replace('"auto"', '"low"'))  # a tuned value applied, as from the champion
     assert main(["--json", "optimize", "resume", str(root)]) == 0
-    assert json.loads(capsys.readouterr().out)["run_id"] == root.name
+    assert json.loads(capsys.readouterr().out) == expected
+    config.unlink()
+    (tmp_path / "experiment.json").unlink()  # a finished run reads neither
+    assert main(["--json", "optimize", "resume", str(root)]) == 0
+    capsys.readouterr()
+    moved = tmp_path / "elsewhere" / root.name
+    shutil.move(root, moved)
+    assert main(["--json", "optimize", "resume", str(moved)]) == 0
+    out, err = capsys.readouterr()
+    assert json.loads(out)["run_id"] == root.name and f"run folder {moved}" in err
+
+
+def test_ctrl_c_while_printing_says_the_run_finished(experiment_path, tmp_path, monkeypatch, capsys):
+    def interrupted(*args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("strands_evals.cli.commands.optimize._print_result", interrupted)
+    assert main(_run_args(experiment_path, tmp_path)) == 130
+    err = capsys.readouterr().err
+    assert "the run has finished and its result is in" in err and "nothing was spent" not in err
 
 
 @pytest.mark.parametrize(
@@ -876,6 +905,30 @@ def test_a_finished_config_run_prints_its_result_after_the_config_changed(
 def test_a_flag_replaces_the_file_value_it_excludes(experiment_path, tmp_path, capsys, hooks, file_key, flag):
     path = _write_run_file(tmp_path, RUN_FILE + file_key)
     assert main(["--json", "optimize", "run", str(path), *flag]) == 0, capsys.readouterr().err
+
+
+def test_n_finalists_replaces_the_files_final_pick(experiment_path, tmp_path, capsys, hooks):
+    path = _write_run_file(tmp_path, RUN_FILE + f'final_pick = "{AGENTS}:final_pick"\n')
+    assert main(["--json", "optimize", "run", str(path), "--n-finalists", "1"]) == 0, capsys.readouterr().err
+    assert json.loads((_only_run(tmp_path) / "run.json").read_text())["final_pick"]["n_finalists"] == 1
+
+
+def test_reflection_model_replaces_the_files_search(experiment_path, tmp_path, monkeypatch, capsys):
+    models = []
+
+    def reflection(model=None):
+        models.append(model)
+        return AddInstruction()
+
+    monkeypatch.setattr(_optimize_module(), "Reflection", reflection)
+    _write_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    body = (
+        SETTINGS + f'search = "{AGENTS}:search"\nobjective = ["maximize:Correct"]\n\n[agent]\nconfig = "agent.json"\n'
+    )
+    path = _write_run_file(tmp_path, body)
+    assert main(["--json", "optimize", "run", str(path), "--reflection-model", "some-model"]) == 0
+    assert models == ["some-model"]
 
 
 def test_ctrl_c_before_the_run_starts(experiment_path, tmp_path, monkeypatch, capsys):
@@ -1076,6 +1129,7 @@ def test_an_uppercase_toml_suffix_is_a_run_file(experiment_path, tmp_path, capsy
 
 
 DEPTH = "builtinTools.subagent.maxDepth"
+TIMEOUT = "builtinTools.programmatic_tool_caller.timeout"
 
 
 def _depth_config(folder: Path) -> Path:
@@ -1103,15 +1157,57 @@ def test_an_int_range_tunes_a_config_number(experiment_path, tmp_path, monkeypat
     assert (entry["kind"], entry["min_value"], entry["max_value"], entry["default"]) == ("int", 0, 3, 1)
 
 
+def _timeout_config(folder: Path) -> Path:
+    """A config whose only built-in tool is the programmatic tool caller, with a float setting to tune."""
+    return _write_config(folder, builtinTools={"*": False, "programmatic_tool_caller": {"timeout": 30}})
+
+
 def test_a_float_range_declares_a_float_around_the_config_value(tmp_path):
     from strands_evals.cli import _harness
     from strands_evals.optimization import Float
 
-    config = _write_config(tmp_path, contextManager={"ratio": 0.5})
-    markers, tuned = _harness.declare(config, ["contextManager.ratio=float:0.1..0.9"], tune_instructions=False)
-    marker = markers["contextManager_ratio"]
-    assert isinstance(marker, Float) and (marker.min_value, marker.max_value, marker.default) == (0.1, 0.9, 0.5)
-    assert tuned[0].kind == "number" and tuned[0].path == ("contextManager", "ratio")
+    markers, tuned = _harness.declare(_timeout_config(tmp_path), [f"{TIMEOUT}=float:1..60"], tune_instructions=False)
+    marker = markers[TIMEOUT.replace(".", "_")]
+    assert isinstance(marker, Float) and (marker.min_value, marker.max_value, marker.default) == (1.0, 60.0, 30.0)
+    assert tuned[0].kind == "number" and tuned[0].path == ("builtinTools", "programmatic_tool_caller", "timeout")
+
+
+@pytest.mark.parametrize(
+    ("path", "kind", "low", "high", "write", "tune"),
+    [
+        (DEPTH, int, 0, 3, _depth_config, ("--tune", f"{DEPTH}=int:0..3")),
+        (TIMEOUT, float, 1.0, 60.0, _timeout_config, f'[agent.tune.timeout]\npath = "{TIMEOUT}"\nfloat = [1, 60]\n'),
+    ],
+    ids=["int-flag", "float-table"],
+)
+def test_a_ranged_number_reaches_each_trials_config(
+    experiment_path, tmp_path, monkeypatch, capsys, path, kind, low, high, write, tune
+):
+    from strands_evals.cli import _harness
+
+    seen = []
+    real = _harness.harness_agent_kwargs_from_config
+
+    def spy(config, **kwargs):
+        seen.append(_harness._get(config, _harness._path(path), path))
+        return real(config, **kwargs)
+
+    monkeypatch.setattr(_harness, "harness_agent_kwargs_from_config", spy)
+    config = write(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    if isinstance(tune, tuple):
+        args = _config_args(experiment_path, config, tmp_path, "--no-tune-instructions", *tune)
+    else:
+        body = SETTINGS + 'objective = ["maximize:Correct"]\n\n[agent]\nconfig = "agent.json"\n'
+        args = [
+            "--json",
+            "optimize",
+            "run",
+            str(_write_run_file(tmp_path, body + "tune_instructions = false\n\n" + tune)),
+        ]
+    assert main(args) == 0, capsys.readouterr().err
+    assert seen and all(type(value) is kind and low <= value <= high for value in seen)
+    assert len(set(seen)) > 1  # proposals, not only the baseline, reached the trials
 
 
 @pytest.mark.parametrize(
@@ -1126,7 +1222,23 @@ def test_a_float_range_declares_a_float_around_the_config_value(tmp_path):
         ("instructions=int:0..3", {}, "must be an integer"),
         (f"{DEPTH}=int:3..1", {}, "LO < HI"),
         (f"{DEPTH}=int:a..b", {}, "two ints"),
-        (f"{DEPTH}=float:0.1", {}, "two floats"),
+        (f"{DEPTH}=float:0.1", {}, "two finite floats"),
+        (f"{DEPTH}=float:0...95", {}, "two finite floats"),
+        (f"{DEPTH}=float:nan..1", {}, "two finite floats"),
+        (f"{DEPTH}=float:-inf..inf", {}, "two finite floats"),
+        (f"{DEPTH}=int:3..3", {}, "LO < HI"),
+        (f"{DEPTH}=int:0..3", {}, "write the field in the config"),  # builtinTools is a list: no subagent object
+        (
+            f"{DEPTH}=float:0..3",
+            {"builtinTools": {"*": False, "subagent": {"maxDepth": 1}}},
+            "the harness doesn't take 1.5 there",  # an integer field: no trial could take a fraction
+        ),
+        (
+            f"{TIMEOUT}=float:0..60",
+            {"builtinTools": {"*": False, "programmatic_tool_caller": {"timeout": 30}}},
+            "the harness doesn't take 0.0 there",  # timeout must be positive
+        ),
+        ('effort=["auto","bogus"]', {"effort": "auto"}, "the harness doesn't take 'bogus' there"),
         ("contextManager.ratio=float:0.1..0.4", {"contextManager": {"ratio": 0.5}}, "must be a number in 0.1..0.4"),
     ],
 )
@@ -1142,6 +1254,8 @@ def test_a_bad_range_is_a_usage_error(experiment_path, tmp_path, capsys, tune, c
         ("int = [0, 3]\nchoices = [0, 1]\n", "give one of choices, int, float"),
         ("int = [0]\n", "int must be [LO, HI], two numbers"),
         ('float = ["a", "b"]\n', "float must be [LO, HI], two numbers"),
+        ("int = [0.5, 3]\n", "int = [0.5, 3] needs two integers"),
+        ("float = [1.0, 1.0]\n", "needs two finite numbers with LO < HI"),
     ],
 )
 def test_a_bad_range_table_is_a_usage_error(experiment_path, tmp_path, capsys, fields, message):

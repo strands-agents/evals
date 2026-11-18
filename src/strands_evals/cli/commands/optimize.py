@@ -20,22 +20,33 @@ EXIT_INTERRUPTED = 130  # 128 + SIGINT, as shells report Ctrl-C
 # startup, and `strands_evals.optimization` needs the `optimization` extra.
 
 
-def _print_result(result: OptimizationResult, args: argparse.Namespace) -> None:
+def _print_result(result: OptimizationResult, args: argparse.Namespace, run_dir: Path) -> None:
     """`summary()` on a TTY (or with `--rich`), else the whole result as JSON on stdout; the folder on stderr."""
     if resolve_format(args) == "json":
         sys.stdout.write(json.dumps(result.to_dict(), indent=2, ensure_ascii=False) + "\n")
     else:
         sys.stdout.write(result.summary() + "\n")
-    print(f"strands-evals optimize: run folder {result.run_dir}", file=sys.stderr)  # noqa: T201
+    print(f"strands-evals optimize: run folder {run_dir}", file=sys.stderr)  # noqa: T201
 
 
-def _finish(result: OptimizationResult, args: argparse.Namespace) -> int:
+def _finish(result: OptimizationResult, args: argparse.Namespace, run_dir: Path) -> int:
     """Print the result; exit 3 with the proposer's error when the search stopped on one (the end phase still ran,
-    so the result is printed, but a script checking the exit code shouldn't read a dead search as success)."""
-    _print_result(result, args)
+    so the result is printed, but a script checking the exit code shouldn't read a dead search as success).
+
+    `run_dir` is the folder as found now, not `result.run_dir`, which is where the run was written (a folder may
+    have moved since)."""
+    try:
+        _print_result(result, args, run_dir)
+    except KeyboardInterrupt:
+        print(  # noqa: T201
+            f"strands-evals optimize: interrupted while printing; the run has finished and its result is in "
+            f"{run_dir / 'result.json'} (`strands-evals optimize resume {run_dir}` prints it again)",
+            file=sys.stderr,
+        )
+        return EXIT_INTERRUPTED
     if result.stop_reason != "proposer_error":
         return EXIT_OK
-    events = (Path(result.run_dir) / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    events = (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
     failures = [event for event in map(json.loads, events) if event.get("event") == "proposer_error"]
     failure = failures[-1] if failures else None
     cause = f"{failure['error_type']}: {failure['error']}" if failure else "see events.jsonl"
@@ -61,7 +72,8 @@ def _given(args: argparse.Namespace, *names: str) -> dict[str, Any]:
 
 def _before_start(subcommand: Any) -> Any:
     """Wrap a subcommand so Ctrl-C before the run starts (imports, loading the experiment and hooks) exits 130
-    with one line instead of a traceback; nothing has been spent then."""
+    with one line instead of a traceback; nothing has been spent then. A Ctrl-C once the run has started is handled
+    where it happens (`_interrupted`, `_finish`), so it never reaches this."""
 
     def guarded(args: argparse.Namespace) -> int:
         try:
@@ -171,7 +183,7 @@ def _run(args: argparse.Namespace) -> int:
         result = asyncio.run(_optimize.drive(optimizer, on_folder))
     except KeyboardInterrupt:
         return _interrupted(optimizer.run_dir)
-    return _finish(result, args)
+    return _finish(result, args, Path(result.run_dir))
 
 
 def _check_agent_flags(args: argparse.Namespace) -> str | None:
@@ -205,8 +217,9 @@ def _check_agent_flags(args: argparse.Namespace) -> str | None:
 
 
 def _resume(args: argparse.Namespace) -> int:
-    """`optimize resume`: rebuild the inputs from `cli.json`, reopen the run with `Optimizer.resume` in its working
-    directory, and print the result. Returns the exit code, as `_run`'s."""
+    """`optimize resume`: print a finished run's saved result, or rebuild a killed run's inputs from `cli.json`,
+    reopen it with `Optimizer.resume` in its working directory, and print the result. Returns the exit code, as
+    `_run`'s."""
     try:
         from ...optimization import Budget, Optimizer
         from .. import _optimize
@@ -216,16 +229,40 @@ def _resume(args: argparse.Namespace) -> int:
     debug = getattr(args, "debug", False)
 
     run_dir = Path(args.run_dir).resolve()
-    finished = (run_dir / "result.json").is_file()  # runs no trial: it only prints its result again
+    if (run_dir / "result.json").is_file():  # finished: print the saved result; no agent, experiment, or config
+        return _print_finished(run_dir, args)
     try:
         saved = _optimize.read_run_json(run_dir)
         inputs = _optimize.load_inputs(run_dir)
-        if not finished:
-            _optimize.check_config_unchanged(inputs)
+        _optimize.check_config_unchanged(inputs)
     except ValueError as error:
         emit_error(str(error), debug=debug, exc=error)
         return EXIT_BAD_INPUT
     _optimize.check_harness_version(inputs)
+    with _optimize.working_directory(saved["workdir"]):
+        try:
+            budget = None
+            if args.max_rollouts is not None or args.max_iterations is not None:
+                given = _given(args, "max_rollouts", "max_iterations")
+                budget = Budget(**{**saved["budget"], **given})
+            optimizer = Optimizer.resume(
+                run_dir, **_optimize.agent_arguments(inputs), budget=budget, max_workers=args.max_workers
+            )
+        except (TypeError, ValueError) as error:
+            emit_error(str(error), debug=debug, exc=error)
+            return EXIT_BAD_INPUT
+        try:
+            result = asyncio.run(_optimize.drive(optimizer, lambda _: None))
+        except KeyboardInterrupt:
+            return _interrupted(run_dir)
+    return _finish(result, args, run_dir)
+
+
+def _print_finished(run_dir: Path, args: argparse.Namespace) -> int:
+    """A finished run: print its `result.json`, building no agent, so a config edited (or deleted) since, for
+    instance by applying the champion, doesn't matter. `--max-*` overrides change nothing, and say so."""
+    from ...optimization import OptimizationResult
+
     overrides = [
         flag
         for flag, value in (
@@ -235,30 +272,18 @@ def _resume(args: argparse.Namespace) -> int:
         )
         if value is not None
     ]
-    if overrides and finished:
+    if overrides:
         print(  # noqa: T201
             f"strands-evals optimize: the run has finished, so {', '.join(overrides)} change nothing; "
             "start a new run to search more",
             file=sys.stderr,
         )
-    with _optimize.working_directory(saved["workdir"]):
-        try:
-            budget = None
-            if not finished and (args.max_rollouts is not None or args.max_iterations is not None):
-                given = _given(args, "max_rollouts", "max_iterations")
-                budget = Budget(**{**saved["budget"], **given})
-            max_workers = None if finished else args.max_workers
-            optimizer = Optimizer.resume(
-                run_dir, **_optimize.agent_arguments(inputs), budget=budget, max_workers=max_workers
-            )
-        except (TypeError, ValueError) as error:
-            emit_error(str(error), debug=debug, exc=error)
-            return EXIT_BAD_INPUT
-        try:
-            result = asyncio.run(_optimize.drive(optimizer, lambda _: None))
-        except KeyboardInterrupt:
-            return _interrupted(run_dir)
-    return _finish(result, args)
+    try:
+        result = OptimizationResult.from_file(run_dir / "result.json")
+    except (OSError, ValueError) as error:
+        emit_error(f"{run_dir / 'result.json'}: {error}", debug=getattr(args, "debug", False), exc=error)
+        return EXIT_BAD_INPUT
+    return _finish(result, args, run_dir)
 
 
 def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentParser) -> None:
