@@ -38,8 +38,7 @@ const pairs = el => [...el.querySelectorAll('dt')].map(dt => [dt.textContent, dt
 {
   const p = await open();
   await p.openFolder({ 'run/experiment.json': EXPERIMENT, 'run/report.json': REPORT });
-  await p.click('#runs-rows tr.run');
-  await p.click('.tab[data-view="report"]');
+  await p.openReport('run');
   for (const row of p.$$('#rep-rows tr.case')) await p.click(`#rep-rows tr.case[data-i="${row.dataset.i}"]`);
   const shown = i => Object.fromEntries(pairs(p.$(`#rep-rows tr.case[data-i="${i}"] + tr.detail .blocks`)));
 
@@ -62,7 +61,7 @@ const pairs = el => [...el.querySelectorAll('dt')].map(dt => [dt.textContent, dt
   ok(!p.$('#rep-rows tr.case'), 'and does not match the words a misprinted value would have held');
   await p.type('#rep-find', '');
 
-  await p.click('.tab[data-view="experiment"]');
+  await p.openExperiment('run');
   await p.click(p.$$('#case-list li[data-i]')[1]);
   await p.click(p.$$('#case-list li[data-i]')[0]);
   ok(!p.d.body.textContent.includes('[object Object]')
@@ -74,7 +73,7 @@ const pairs = el => [...el.querySelectorAll('dt')].map(dt => [dt.textContent, dt
 {
   const p = await open();
   await p.openFolder({ 'run/experiment.json': EXPERIMENT });
-  await p.click('#runs-rows tr.run');
+  await p.openExperiment();
   const field = k => p.$(`#form [data-k="${k}"]`);
   ok(field('input').dataset.json === '1' && field('input').value === pretty(MULTIMODAL)
     && field('expected_output').value === pretty({ answer: 42 }) && /edited as JSON/.test(p.text('#form')),
@@ -109,12 +108,12 @@ const pairs = el => [...el.querySelectorAll('dt')].map(dt => [dt.textContent, dt
 {
   let sent = null;
   const p = await open({ fetchImpl: fakeServer({
-    runs: [{ id: 'e.json', dir: '.', report: null, link: null,
-      experiment: { path: 'e.json', name: 'e.json', size: 1, modified: 5, cases: 2, evaluators: EXPERIMENT.evaluators } }],
+    scan: { experiments: [{ path: 'e.json', name: 'e.json', dir: '.', size: 1, modified: 5, cases: 2,
+      evaluators: EXPERIMENT.evaluators, reports: [] }] },
     file: { path: 'e.json', modified: 5, document: EXPERIMENT },
     put: body => { sent = body; return [{ path: 'e.json', modified: 6, cases: 2 }]; },
   }) });
-  await p.click('#runs-rows tr.run');
+  await p.openExperiment();
   await p.click(p.$$('#case-list li[data-i]')[1]);
   await p.type('#form [data-k="input"]', 'changed');
   await p.click('#save');
