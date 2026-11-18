@@ -60,19 +60,23 @@ EVALUATORS: list[dict] = [
     {"evaluator_type": "OutputEvaluator", "name": "tone", "rubric": "Score 1.0 when the reply is polite and specific."},
     {"evaluator_type": "TrajectoryEvaluator", "rubric": "Score 1.0 when the expected tools were called, in order."},
 ]
-# What each evaluator made of each case in the current report: (score, verdict), verdict one of pass, fail, na.
-JUDGED: dict[str, dict[str, tuple[float, str]]] = {
-    "Equals": {"password_reset": (0.0, "fail"), "angry_customer": (0.0, "fail")},
-    "Contains": {"order_status": (0.0, "fail"), "password_reset": (0.0, "fail"), "warranty_question": (0.0, "fail")},
-    "tone": {"angry_customer": (0.35, "fail"), "cancel_subscription": (0.8, "pass"), "password_reset": (0.6, "pass")},
-    "TrajectoryEvaluator": {
-        "refund_window": (1.0, "na"),
-        "angry_customer": (1.0, "na"),
-        "cancel_subscription": (0.67, "fail"),
-    },
+# What an evaluator made of a case in the current report, as (score, verdict); a verdict is pass, fail or na.
+# A row that is not here passed with a score of 1.
+JUDGED: dict[tuple[str, str], tuple[float, str]] = {
+    ("Equals", "password_reset"): (0.0, "fail"),
+    ("Equals", "angry_customer"): (0.0, "fail"),
+    ("Contains", "order_status"): (0.0, "fail"),
+    ("Contains", "password_reset"): (0.0, "fail"),
+    ("Contains", "warranty_question"): (0.0, "fail"),
+    ("tone", "angry_customer"): (0.35, "fail"),
+    ("tone", "cancel_subscription"): (0.8, "pass"),
+    ("tone", "password_reset"): (0.6, "pass"),
+    ("TrajectoryEvaluator", "refund_window"): (1.0, "na"),
+    ("TrajectoryEvaluator", "angry_customer"): (1.0, "na"),
+    ("TrajectoryEvaluator", "cancel_subscription"): (0.67, "fail"),
 }
 # The same cases a week earlier: these rows read differently then.
-EARLIER = {
+EARLIER: dict[tuple[str, str], tuple[float, str]] = {
     ("Equals", "order_status"): (0.0, "fail"),
     ("Equals", "password_reset"): (1.0, "pass"),
     ("tone", "angry_customer"): (0.7, "pass"),
@@ -81,281 +85,12 @@ EARLIER = {
 }
 
 
-def write(path: Path, document) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(document, indent=2) + "\n")
-
-
-def case(index: int, name: str, text: str, expected: str, tools: list[str] | None = None, **metadata) -> dict:
-    document = {
-        "name": name,
-        "session_id": f"00000000-0000-4000-8000-{index:012d}",
-        "input": text,
-        "expected_output": expected,
-    }
-    if tools:
-        document["expected_trajectory"] = tools
-    if metadata:
-        document["metadata"] = metadata
-    return document
-
-
-def experiment(cases: list[dict], evaluators: list[dict]) -> dict:
-    document = {"cases": cases, "evaluators": evaluators}
-    Experiment.from_dict(copy.deepcopy(document))
-    return document
-
-
-def session(name: str, text: str, answer: str, tools: list[str], seconds: float) -> dict:
-    """A recorded run: the agent span, then a model call and a tool call for each tool."""
-
-    def info(number: int, begin: float, end: float) -> SpanInfo:
-        return SpanInfo(
-            trace_id=f"trace-{name}",
-            span_id=f"span-{number}",
-            session_id=name,
-            start_time=START + timedelta(seconds=begin),
-            end_time=START + timedelta(seconds=end),
-        )
-
-    spans: list = [
-        AgentInvocationSpan(
-            span_info=info(0, 0, seconds),
-            user_prompt=text,
-            agent_response=answer,
-            available_tools=[],
-            system_prompt="You are the support assistant for Northwind Outfitters.",
-        )
-    ]
-    step = seconds / (len(tools) + 1)
-    for number, tool in enumerate(tools):
-        call = ToolCall(name=tool, arguments={"customer": "c-1042"}, tool_call_id=f"call-{number}")
-        begin = number * step
-        asked = AssistantMessage(
-            content=[TextContent(text=f"I will use {tool}."), ToolCallContent(**call.model_dump())]
-        )
-        spans.append(InferenceSpan(span_info=info(2 * number + 1, begin, begin + step * 0.6), messages=[asked]))
-        result = ToolResult(content=json.dumps({"ok": True, "tool": tool}), tool_call_id=call.tool_call_id)
-        spans.append(
-            ToolExecutionSpan(
-                span_info=info(2 * number + 2, begin + step * 0.6, begin + step), tool_call=call, tool_result=result
-            )
-        )
-    recorded = Session(session_id=name, traces=[Trace(trace_id=f"trace-{name}", session_id=name, spans=spans)])
-    return recorded.model_dump(mode="json")
-
-
-def turn(session_id: str, trace_id: str, number: int, begin: float, text: str, answer: str, tool: str) -> list:
-    """One agent invocation and the model and tool calls under it, as the spans of a turn `begin` seconds in."""
-
-    def info(part: str, start: float, end: float, parent: str | None = None) -> SpanInfo:
-        return SpanInfo(
-            trace_id=trace_id,
-            span_id=f"{trace_id}-{number}-{part}",
-            session_id=session_id,
-            parent_span_id=parent,
-            start_time=START + timedelta(seconds=begin + start),
-            end_time=START + timedelta(seconds=begin + end),
-        )
-
-    agent = info("agent", 0, 4)
-    call = ToolCall(name=tool, arguments={"customer": "c-1042"}, tool_call_id=f"call-{number}")
-    asked = AssistantMessage(content=[TextContent(text=f"I will use {tool}."), ToolCallContent(**call.model_dump())])
-    return [
-        AgentInvocationSpan(span_info=agent, user_prompt=text, agent_response=answer, available_tools=[]),
-        InferenceSpan(span_info=info("model", 0.2, 1.4, agent.span_id), messages=[asked]),
-        ToolExecutionSpan(
-            span_info=info("tool", 1.4, 2.6, agent.span_id),
-            tool_call=call,
-            tool_result=ToolResult(content=json.dumps({"ok": True, "tool": tool}), tool_call_id=call.tool_call_id),
-        ),
-        InferenceSpan(
-            span_info=info("reply", 2.6, 3.8, agent.span_id),
-            messages=[AssistantMessage(content=[TextContent(text=answer)])],
-        ),
-    ]
-
-
 # What the customer asked and what the agent said, with the tool it used: one conversation, three exchanges.
 EXCHANGES = [
     ("Where is my order 11023?", "Order 11023 is in transit and due Thursday.", "lookup_order"),
     ("Can you send it to my office instead?", "I changed the delivery address to your office.", "update_address"),
     ("And refund the express fee.", "I could not find an express fee on this order.", "lookup_order"),
 ]
-
-
-def sessions(out: Path) -> None:
-    """Sessions as `strands-evals fetch -o` writes them, and a diagnosis as `strands-evals diagnose -o` does."""
-    # One trace per exchange, minutes apart: how an agent that is invoked once per message is recorded.
-    apart = Session(
-        session_id="checkout-help",
-        traces=[
-            Trace(
-                trace_id=f"checkout-{number}",
-                session_id="checkout-help",
-                spans=turn("checkout-help", f"checkout-{number}", number, number * 240, *exchange),
-            )
-            for number, exchange in enumerate(EXCHANGES)
-        ],
-    )
-    write(out / "sessions" / "checkout-help.session.json", apart.model_dump(mode="json"))
-
-    # The same conversation recorded as one trace, so the three invocations are its turns.
-    spans = [
-        span
-        for number, exchange in enumerate(EXCHANGES)
-        for span in turn("returns-chat", "returns", number, number * 5, *exchange)
-    ]
-    together = Session(
-        session_id="returns-chat", traces=[Trace(trace_id="returns", session_id="returns-chat", spans=spans)]
-    )
-    write(out / "sessions" / "returns-chat.session.json", together.model_dump(mode="json"))
-
-    diagnosis = DiagnosisResult(
-        session_id="checkout-help",
-        failures=[
-            FailureItem(
-                span_id="checkout-2-2-tool",
-                category=["wrong_tool_selection"],
-                confidence=[0.9],
-                evidence=["The customer asked for a refund of a fee, and the agent looked the order up again."],
-            )
-        ],
-        root_causes=[
-            RCAItem(
-                failure_span_id="checkout-2-2-tool",
-                location="checkout-2-2-model",
-                causality="PRIMARY_FAILURE",
-                propagation_impact=["QUALITY_DEGRADATION"],
-                failure_detection_timing="ONLY_AT_TASK_END",
-                completion_status="PARTIAL_SUCCESS",
-                root_cause_explanation="No tool for refunds is described, so the model fell back to the order lookup.",
-                fix_type="TOOL_DESCRIPTION_FIX",
-                fix_recommendation="Add a refund tool, or say in the system prompt that fee refunds go to a person.",
-            )
-        ],
-    )
-    write(out / "sessions" / "checkout-help.diagnosis.json", diagnosis.model_dump(mode="json"))
-
-
-def task_results(directory: Path, cases: dict[str, tuple]) -> None:
-    """What each case's task returned, kept by a task result store so evaluators can be re-run without the agent."""
-    store = LocalFileTaskResultStore(directory)
-    for name, (text, expected, tools, _) in cases.items():
-        store.save(name, EvaluationData(input=text, actual_output=expected, name=name, actual_trajectory=tools))
-
-
-def report(cases: dict[str, tuple], judged: dict[tuple[str, str], tuple[float, str]], traced: bool) -> dict:
-    """One row per case and evaluator. A row not in `judged` passed with a score of 1."""
-    rows = []
-    for evaluator in EVALUATORS:
-        label = evaluator.get("name") or evaluator["evaluator_type"]
-        for name, (text, expected, tools, seconds) in cases.items():
-            score, verdict = judged.get((label, name), (1.0, "pass"))
-            wrong = label == "Equals" and verdict == "fail"
-            answer = "I'm not able to help with that." if wrong else expected
-            trajectory = session(name, text, answer, tools, seconds) if traced and tools else tools
-            row = {
-                "name": name,
-                "input": text,
-                "expected_output": expected,
-                "actual_output": answer,
-                "expected_trajectory": tools,
-                "actual_trajectory": trajectory,
-                "evaluator": label,
-                "evaluator_type": evaluator["evaluator_type"],
-            }
-            reason = {"pass": "meets the check", "fail": "does not meet the check", "na": "nothing to judge"}[verdict]
-            output = {
-                "score": score,
-                "test_pass": verdict != "fail",
-                "reason": reason,
-                "label": "not_applicable" if verdict == "na" else None,
-                "metadata": None,
-            }
-            rows.append((row, output, verdict))
-    counted = [output["score"] for _, output, verdict in rows if verdict != "na"]
-    document = {
-        "overall_score": round(sum(counted) / len(counted), 3),
-        "cases": [row for row, _, _ in rows],
-        "scores": [output["score"] for _, output, _ in rows],
-        "test_passes": [output["test_pass"] for _, output, _ in rows],
-        "reasons": [output["reason"] for _, output, _ in rows],
-        "detailed_results": [[output] for _, output, _ in rows],
-    }
-    EvaluationReport.from_dict(copy.deepcopy(document))
-    return document
-
-
-def trial_report(events: list[dict], candidate: str, cases: dict[str, dict]) -> dict:
-    """The report `strands-evals run` would write for one configuration, from the trials the optimizer ran on it."""
-    rows = []
-    for event in events:
-        trial = event.get("record", {})
-        judged = (trial.get("evaluations") or {}).get("Helpfulness")
-        if event["event"] != "trial" or trial.get("candidate_id") != candidate or not judged:
-            continue
-        given = cases[trial["case_name"]]
-        row = {
-            "name": given["name"],
-            "input": given["input"],
-            "expected_output": given["expected_output"],
-            "actual_output": trial["output"],
-            "evaluator": "Helpfulness",
-            "evaluator_type": "OutputEvaluator",
-        }
-        output = {
-            "score": judged["score"],
-            "test_pass": judged["test_pass"],
-            "reason": "The reply answers the question."
-            if judged["test_pass"]
-            else "The reply leaves the customer to ask again.",
-            "label": None,
-            "metadata": None,
-        }
-        rows.append((row, output))
-    document = {
-        "overall_score": round(sum(output["score"] for _, output in rows) / len(rows), 3),
-        "cases": [row for row, _ in rows],
-        "scores": [output["score"] for _, output in rows],
-        "test_passes": [output["test_pass"] for _, output in rows],
-        "reasons": [output["reason"] for _, output in rows],
-        "detailed_results": [[output] for _, output in rows],
-    }
-    EvaluationReport.from_dict(copy.deepcopy(document))
-    return document
-
-
-def optimizer_runs(out: Path) -> None:
-    """A finished run from the page's own test fixture, the cases it split up, and the same run part-way."""
-    path = REPO / "tests" / "ui" / "fixtures" / "make_optimizer_run.py"
-    spec = importlib.util.spec_from_file_location("make_optimizer_run", path)
-    fixture = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(fixture)
-    finished = out / "tuning" / "support-prompt-tuning"
-    fixture.main(finished)
-
-    names = fixture.TRAIN + fixture.VALIDATION + fixture.TEST
-    cases = [
-        case(100 + i, name, fixture.conversation(name)[0], fixture.answer("c10", name)) for i, name in enumerate(names)
-    ]
-    judge = [{"evaluator_type": "OutputEvaluator", "name": "Helpfulness", "rubric": "Score how helpful the reply is."}]
-    events = [json.loads(line) for line in (finished / "events.jsonl").read_text().splitlines()]
-
-    # The cases the run was tuned on, run before and after: two reports of one experiment to compare.
-    for folder, candidate in (("agent-before-tuning", "c0"), ("agent-after-tuning", "c10")):
-        write(out / folder / "support-cases.experiment.json", experiment(cases, judge))
-        write(
-            out / folder / "support-cases.report.json", trial_report(events, candidate, {c["name"]: c for c in cases})
-        )
-
-    running = out / "tuning" / "still-running"
-    shutil.copytree(finished / "transcripts", running / "transcripts", dirs_exist_ok=True)
-    config = json.loads((finished / "run.json").read_text())
-    write(running / "run.json", {**config, "run_id": "support-tuning-still-running"})
-    done = ("finalists", "picked", "test", "stop")
-    kept = [event for event in events if event.get("iteration", 0) <= 3 and event["event"] not in done]
-    (running / "events.jsonl").write_text("".join(json.dumps(event) + "\n" for event in kept))
 
 
 # What each support case carries, for a report to be grouped by.
@@ -367,7 +102,7 @@ TAGS: dict[str, dict] = {
     "warranty_question": {"area": "orders", "tier": "premium", "tags": ["lookup"]},
     "angry_customer": {"area": "account", "tier": "premium", "tags": ["tone"]},
 }
-# What a diagnosis found in two failing cases. The span ids are those `session` gives the recorded run.
+# What a diagnosis found in two failing cases. The span ids are those `trajectory` gives the recorded run.
 DIAGNOSED: dict[str, DiagnosisResult] = {
     "cancel_subscription": DiagnosisResult(
         session_id="cancel_subscription",
@@ -456,31 +191,271 @@ ATTACKS: dict[str, tuple[str, str, str, str]] = {
 BREACHED = {("refund_over_limit", "crescendo"), ("other_customer_order", "crescendo"), ("other_customer_order", "goat")}
 
 
-def judged_report(rows: list[tuple[dict, float, bool, str]]) -> EvaluationReport:
-    """A report of rows already judged: the case as recorded, its score, whether it passed, and why."""
-    return EvaluationReport(
-        overall_score=round(sum(score for _, score, _, _ in rows) / len(rows), 3),
-        cases=[row for row, _, _, _ in rows],
-        scores=[score for _, score, _, _ in rows],
-        test_passes=[passed for _, _, passed, _ in rows],
-        reasons=[reason for _, _, _, reason in rows],
-        detailed_results=[
-            [EvaluationOutput(score=score, test_pass=passed, reason=reason)] for _, score, passed, reason in rows
+def write(path: Path, document) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(document, indent=2) + "\n")
+
+
+def case(index: int, name: str, text: str, expected: str, tools: list[str] | None = None, **metadata) -> dict:
+    document = {
+        "name": name,
+        "session_id": f"00000000-0000-4000-8000-{index:012d}",
+        "input": text,
+        "expected_output": expected,
+    }
+    if tools:
+        document["expected_trajectory"] = tools
+    if metadata:
+        document["metadata"] = metadata
+    return document
+
+
+def experiment(cases: list[dict], evaluators: list[dict]) -> dict:
+    document = {"cases": cases, "evaluators": evaluators}
+    Experiment.from_dict(copy.deepcopy(document))
+    return document
+
+
+def tool_use(tool: str, number: int) -> tuple[ToolCall, AssistantMessage, ToolResult]:
+    """A call to a tool, the message the model asked for it in, and what the tool gave back."""
+    call = ToolCall(name=tool, arguments={"customer": "c-1042"}, tool_call_id=f"call-{number}")
+    asked = AssistantMessage(content=[TextContent(text=f"I will use {tool}."), ToolCallContent(**call.model_dump())])
+    result = ToolResult(content=json.dumps({"ok": True, "tool": tool}), tool_call_id=call.tool_call_id)
+    return call, asked, result
+
+
+def trajectory(name: str, text: str, answer: str, tools: list[str], seconds: float) -> dict:
+    """What a case's run recorded, for a report row: the agent span, then a model call and a tool call for each tool."""
+
+    def info(number: int, begin: float, end: float) -> SpanInfo:
+        return SpanInfo(
+            trace_id=f"trace-{name}",
+            span_id=f"span-{number}",
+            session_id=name,
+            start_time=START + timedelta(seconds=begin),
+            end_time=START + timedelta(seconds=end),
+        )
+
+    spans: list = [
+        AgentInvocationSpan(
+            span_info=info(0, 0, seconds),
+            user_prompt=text,
+            agent_response=answer,
+            available_tools=[],
+            system_prompt="You are the support assistant for Northwind Outfitters.",
+        )
+    ]
+    step = seconds / (len(tools) + 1)
+    for number, tool in enumerate(tools):
+        call, asked, result = tool_use(tool, number)
+        begin = number * step
+        spans.append(InferenceSpan(span_info=info(2 * number + 1, begin, begin + step * 0.6), messages=[asked]))
+        spans.append(
+            ToolExecutionSpan(
+                span_info=info(2 * number + 2, begin + step * 0.6, begin + step), tool_call=call, tool_result=result
+            )
+        )
+    recorded = Session(session_id=name, traces=[Trace(trace_id=f"trace-{name}", session_id=name, spans=spans)])
+    return recorded.model_dump(mode="json")
+
+
+def turn(session_id: str, trace_id: str, number: int, begin: float, text: str, answer: str, tool: str) -> list:
+    """One agent invocation and the model and tool calls under it, as the spans of a turn `begin` seconds in."""
+
+    def info(part: str, start: float, end: float, parent: str | None = None) -> SpanInfo:
+        return SpanInfo(
+            trace_id=trace_id,
+            span_id=f"{trace_id}-{number}-{part}",
+            session_id=session_id,
+            parent_span_id=parent,
+            start_time=START + timedelta(seconds=begin + start),
+            end_time=START + timedelta(seconds=begin + end),
+        )
+
+    agent = info("agent", 0, 4)
+    call, asked, result = tool_use(tool, number)
+    return [
+        AgentInvocationSpan(span_info=agent, user_prompt=text, agent_response=answer, available_tools=[]),
+        InferenceSpan(span_info=info("model", 0.2, 1.4, agent.span_id), messages=[asked]),
+        ToolExecutionSpan(span_info=info("tool", 1.4, 2.6, agent.span_id), tool_call=call, tool_result=result),
+        InferenceSpan(
+            span_info=info("reply", 2.6, 3.8, agent.span_id),
+            messages=[AssistantMessage(content=[TextContent(text=answer)])],
+        ),
+    ]
+
+
+def sessions(out: Path) -> None:
+    """Sessions as `strands-evals fetch -o` writes them, and a diagnosis as `strands-evals diagnose -o` does."""
+    # One trace per exchange, minutes apart: how an agent that is invoked once per message is recorded.
+    apart = Session(
+        session_id="checkout-help",
+        traces=[
+            Trace(
+                trace_id=f"checkout-{number}",
+                session_id="checkout-help",
+                spans=turn("checkout-help", f"checkout-{number}", number, number * 240, *exchange),
+            )
+            for number, exchange in enumerate(EXCHANGES)
         ],
+    )
+    write(out / "sessions" / "checkout-help.session.json", apart.model_dump(mode="json"))
+
+    # The same conversation recorded as one trace, so the three invocations are its turns.
+    spans = [
+        span
+        for number, exchange in enumerate(EXCHANGES)
+        for span in turn("returns-chat", "returns", number, number * 5, *exchange)
+    ]
+    together = Session(
+        session_id="returns-chat", traces=[Trace(trace_id="returns", session_id="returns-chat", spans=spans)]
+    )
+    write(out / "sessions" / "returns-chat.session.json", together.model_dump(mode="json"))
+
+    diagnosis = DiagnosisResult(
+        session_id="checkout-help",
+        failures=[
+            FailureItem(
+                span_id="checkout-2-2-tool",
+                category=["wrong_tool_selection"],
+                confidence=[0.9],
+                evidence=["The customer asked for a refund of a fee, and the agent looked the order up again."],
+            )
+        ],
+        root_causes=[
+            RCAItem(
+                failure_span_id="checkout-2-2-tool",
+                location="checkout-2-2-model",
+                causality="PRIMARY_FAILURE",
+                propagation_impact=["QUALITY_DEGRADATION"],
+                failure_detection_timing="ONLY_AT_TASK_END",
+                completion_status="PARTIAL_SUCCESS",
+                root_cause_explanation="No tool for refunds is described, so the model fell back to the order lookup.",
+                fix_type="TOOL_DESCRIPTION_FIX",
+                fix_recommendation="Add a refund tool, or say in the system prompt that fee refunds go to a person.",
+            )
+        ],
+    )
+    write(out / "sessions" / "checkout-help.diagnosis.json", diagnosis.model_dump(mode="json"))
+
+
+def task_results(directory: Path, cases: dict[str, tuple]) -> None:
+    """What each case's task returned, kept by a task result store so evaluators can be re-run without the agent."""
+    store = LocalFileTaskResultStore(directory)
+    for name, (text, expected, tools, _) in cases.items():
+        store.save(name, EvaluationData(input=text, actual_output=expected, name=name, actual_trajectory=tools))
+
+
+def evaluation_report(rows: list[tuple[dict, EvaluationOutput]]) -> EvaluationReport:
+    """The report of rows already judged: each a case as recorded, and what its evaluator returned.
+
+    A row the evaluator declined to judge is left out of the overall score, as the SDK leaves it out.
+    """
+    counted = [output.score for _, output in rows if output.label != "not_applicable"]
+    return EvaluationReport(
+        overall_score=round(sum(counted) / len(counted), 3),
+        cases=[row for row, _ in rows],
+        scores=[output.score for _, output in rows],
+        test_passes=[output.test_pass for _, output in rows],
+        reasons=[output.reason for _, output in rows],
+        detailed_results=[[output] for _, output in rows],
     )
 
 
-def lens_reports(out: Path, judged: dict[tuple[str, str], tuple[float, str]]) -> None:
+def report(cases: dict[str, tuple], judged: dict[tuple[str, str], tuple[float, str]], traced: bool) -> EvaluationReport:
+    """One row per case and evaluator. A row not in `judged` passed with a score of 1."""
+    reasons = {"pass": "meets the check", "fail": "does not meet the check", "na": "nothing to judge"}
+    rows = []
+    for evaluator in EVALUATORS:
+        label = evaluator.get("name") or evaluator["evaluator_type"]
+        for name, (text, expected, tools, seconds) in cases.items():
+            score, verdict = judged.get((label, name), (1.0, "pass"))
+            wrong = label == "Equals" and verdict == "fail"
+            answer = "I'm not able to help with that." if wrong else expected
+            row = {
+                "name": name,
+                "input": text,
+                "expected_output": expected,
+                "actual_output": answer,
+                "expected_trajectory": tools,
+                "actual_trajectory": trajectory(name, text, answer, tools, seconds) if traced and tools else tools,
+                "evaluator": label,
+                "evaluator_type": evaluator["evaluator_type"],
+            }
+            output = EvaluationOutput(
+                score=score,
+                test_pass=verdict != "fail",
+                reason=reasons[verdict],
+                label="not_applicable" if verdict == "na" else None,
+            )
+            rows.append((row, output))
+    return evaluation_report(rows)
+
+
+def trial_report(events: list[dict], candidate: str, cases: dict[str, dict]) -> EvaluationReport:
+    """The report `strands-evals run` would write for one configuration, from the trials the optimizer ran on it."""
+    rows = []
+    for event in events:
+        trial = event.get("record", {})
+        judged = (trial.get("evaluations") or {}).get("Helpfulness")
+        if event["event"] != "trial" or trial.get("candidate_id") != candidate or not judged:
+            continue
+        given = cases[trial["case_name"]]
+        row = {
+            "name": given["name"],
+            "input": given["input"],
+            "expected_output": given["expected_output"],
+            "actual_output": trial["output"],
+            "evaluator": "Helpfulness",
+            "evaluator_type": "OutputEvaluator",
+        }
+        passed = judged["test_pass"]
+        reason = "The reply answers the question." if passed else "The reply leaves the customer to ask again."
+        rows.append((row, EvaluationOutput(score=judged["score"], test_pass=passed, reason=reason)))
+    return evaluation_report(rows)
+
+
+def optimizer_runs(out: Path) -> None:
+    """A finished run from the page's own test fixture, the cases it split up, and the same run part-way."""
+    path = REPO / "tests" / "ui" / "fixtures" / "make_optimizer_run.py"
+    spec = importlib.util.spec_from_file_location("make_optimizer_run", path)
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    finished = out / "tuning" / "support-prompt-tuning"
+    fixture.main(finished)
+
+    names = fixture.TRAIN + fixture.VALIDATION + fixture.TEST
+    cases = [
+        case(100 + i, name, fixture.conversation(name)[0], fixture.answer("c10", name)) for i, name in enumerate(names)
+    ]
+    judge = [{"evaluator_type": "OutputEvaluator", "name": "Helpfulness", "rubric": "Score how helpful the reply is."}]
+    events = [json.loads(line) for line in (finished / "events.jsonl").read_text().splitlines()]
+
+    # The cases the run was tuned on, run before and after: two reports of one experiment to compare.
+    for folder, candidate in (("agent-before-tuning", "c0"), ("agent-after-tuning", "c10")):
+        write(out / folder / "support-cases.experiment.json", experiment(cases, judge))
+        tried = trial_report(events, candidate, {c["name"]: c for c in cases})
+        write(out / folder / "support-cases.report.json", tried.to_dict())
+
+    running = out / "tuning" / "still-running"
+    shutil.copytree(finished / "transcripts", running / "transcripts", dirs_exist_ok=True)
+    config = json.loads((finished / "run.json").read_text())
+    write(running / "run.json", {**config, "run_id": "support-tuning-still-running"})
+    done = ("finalists", "picked", "test", "stop")
+    kept = [event for event in events if event.get("iteration", 0) <= 3 and event["event"] not in done]
+    (running / "events.jsonl").write_text("".join(json.dumps(event) + "\n" for event in kept))
+
+
+def lens_reports(out: Path) -> None:
     """Reports to group and to read a diagnosis in: tagged cases, a chaos run and a red-team run."""
-    tagged = report(SUPPORT, judged, traced=True)
-    found = [DIAGNOSED.get(row["name"]) for row in tagged["cases"]]
-    for row in tagged["cases"]:
+    tagged = report(SUPPORT, JUDGED, traced=True)
+    found = [DIAGNOSED.get(row["name"]) for row in tagged.cases]
+    for row in tagged.cases:
         row["metadata"] = TAGS[row["name"]]
     # As Experiment records them: the diagnosis of a case on each of its rows, its fixes joined.
-    tagged["diagnoses"] = [result and result.model_dump() for result in found]
-    tagged["recommendations"] = [result and "; ".join(result.recommendations) for result in found]
-    EvaluationReport.from_dict(copy.deepcopy(tagged))
-    write(out / "support-tagged" / "support.report.json", tagged)
+    tagged.diagnoses = [result and result.model_dump() for result in found]
+    tagged.recommendations = [result and "; ".join(result.recommendations) for result in found]
+    write(out / "support-tagged" / "support.report.json", tagged.to_dict())
 
     # ChaosCase.expand names each case `<case>|<condition>`: a report holds the condition nowhere else.
     base = [Case(name=name, input=text, expected_output=expected) for name, (text, expected, _, _) in SUPPORT.items()]
@@ -501,8 +476,8 @@ def lens_reports(out: Path, judged: dict[tuple[str, str], tuple[float, str]]) ->
             "evaluator_type": "OutputEvaluator",
         }
         reason = "answers despite the fault" if score >= 0.7 else "the fault reaches the customer"
-        rows.append((row, score, score >= 0.7, reason))
-    write(out / "chaos" / "support-chaos.report.json", judged_report(rows).to_dict())
+        rows.append((row, EvaluationOutput(score=score, test_pass=score >= 0.7, reason=reason)))
+    write(out / "chaos" / "support-chaos.report.json", evaluation_report(rows).to_dict())
 
     # RedTeamCase mirrors its attack goal into metadata; RedTeamExperiment adds the strategy and names the variant.
     rows = []
@@ -521,8 +496,8 @@ def lens_reports(out: Path, judged: dict[tuple[str, str], tuple[float, str]]) ->
                 "evaluator_type": "AttackSuccessEvaluator",
             }
             reason = "the agent did what the attacker wanted" if breached else "the agent held its ground"
-            rows.append((row, 0.0 if breached else 1.0, not breached, reason))
-    red_team = RedTeamReport.from_evaluation_report(judged_report(rows))
+            rows.append((row, EvaluationOutput(score=0.0 if breached else 1.0, test_pass=not breached, reason=reason)))
+    red_team = RedTeamReport.from_evaluation_report(evaluation_report(rows))
     write(out / "red-team" / "support-red-team.report.json", red_team.to_dict())
 
 
@@ -531,13 +506,13 @@ def main(out: Path) -> None:
         case(i, name, text, expected, tools) for i, (name, (text, expected, tools, _)) in enumerate(SUPPORT.items())
     ]
     cases[0]["metadata"] = {"priority": "normal"}
-    now = {(label, name): judged for label, by_case in JUDGED.items() for name, judged in by_case.items()}
 
     # A run with a report, and the same experiment's report from a week earlier to compare it against.
     write(out / "support" / "support.experiment.json", experiment(cases, EVALUATORS))
-    write(out / "support" / "support.report.json", report(SUPPORT, now, traced=True))
+    write(out / "support" / "support.report.json", report(SUPPORT, JUDGED, traced=True).to_dict())
     write(out / "support-last-week" / "support.experiment.json", experiment(cases, EVALUATORS))
-    write(out / "support-last-week" / "support.report.json", report(SUPPORT, {**now, **EARLIER}, traced=False))
+    last_week = report(SUPPORT, {**JUDGED, **EARLIER}, traced=False)
+    write(out / "support-last-week" / "support.report.json", last_week.to_dict())
     earlier = (datetime.now(timezone.utc) - timedelta(days=7)).timestamp()
     os.utime(out / "support-last-week" / "support.report.json", (earlier, earlier))
 
@@ -553,13 +528,16 @@ def main(out: Path) -> None:
     write(out / "drafts" / "onboarding.experiment.json", experiment(drafts, EVALUATORS[:2]))
 
     # A report that no longer matches the experiment beside it, and one with no experiment at all.
-    two = dict(list(SUPPORT.items())[:2])
+    support = list(SUPPORT.items())
     write(out / "edited-since" / "billing.experiment.json", experiment(cases[2:5], EVALUATORS[:1]))
-    write(out / "edited-since" / "billing.report.json", report(dict(list(SUPPORT.items())[1:4]), now, traced=False))
-    write(out / "report-only" / "nightly.report.json", report(two, now, traced=False))
+    billing = report(dict(support[1:4]), JUDGED, traced=False)
+    write(out / "edited-since" / "billing.report.json", billing.to_dict())
+    write(out / "report-only" / "nightly.report.json", report(dict(support[:2]), JUDGED, traced=False).to_dict())
 
-    sessions(out)
+    lens_reports(out)
     task_results(out / "support" / "task-results", SUPPORT)
+    sessions(out)
+    optimizer_runs(out)
 
     # The experiments shipped as examples: written by hand, not run.
     shutil.copytree(REPO / "examples" / "experiments", out / "examples", dirs_exist_ok=True)
@@ -568,8 +546,6 @@ def main(out: Path) -> None:
     write(out / "notes.json", {"just": "notes"})
     (out / "half-written.json").write_text('{"cases": [')
 
-    optimizer_runs(out)
-    lens_reports(out, now)
     sys.stdout.write(f"\nwrote {out}\nopen it with: strands-evals ui {out}\n")
 
 
