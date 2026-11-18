@@ -1,51 +1,59 @@
 """Local HTTP server backing `strands-evals ui`.
 
-Discovery, pairing and writes all live here rather than in the browser, so the logic that
-decides *which file is what* is covered by the Python test suite and the page stays a view.
+Bound to loopback, but it reads and writes files under the served directory, so it is an authenticated surface:
 
-The server is a development tool bound to loopback, but it reads and writes files in the
-directory it was pointed at, so it is treated as an authenticated surface:
-
-- a per-process token, printed in the URL, gates every `/api` route and the page itself.
-  A random web page in another tab cannot guess it, so it cannot read or overwrite files.
-- the `Host` header must name a loopback address, which is what stops DNS rebinding from
-  turning a public hostname into a request to this port.
-- every path from the client is resolved and checked to be inside the root, so `..` and
-  symlinks pointing out of the tree are rejected rather than followed.
-- writes carry the `modified` stamp the client loaded with, and a file that changed on disk
-  since then is a 409 instead of a silent overwrite of someone else's edit.
+- a per-process token, printed in the URL, gates the page and every `/api` route.
+- the `Host` header must name a loopback address, which blocks DNS rebinding.
+- every client path is resolved and must stay inside the root, so `..` and outbound symlinks are rejected.
+- a write carries the `modified` stamp the client loaded, and a file changed on disk since then is a 409.
 """
 
 from __future__ import annotations
 
+import functools
+import hashlib
+import html
 import inspect
+import ipaddress
 import json
 import logging
+import math
 import os
 import re
 import secrets
+import socket
+import stat
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from http import HTTPStatus
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib import resources
 from pathlib import Path
-from typing import Any
-from urllib.parse import parse_qs, urlparse
+from typing import Any, TypeGuard
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from ..case import Case
-from ..experiment import builtin_evaluator_types
+from ..experiment import _builtin_evaluator_types
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_DEPTH = 3
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
 MAX_SCAN_FILES = 2000
-LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]", "::1"})
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]"})
+WILDCARD_HOSTS = frozenset({"", "0.0.0.0", "::"})
 
-# One optimizer trial is one event, so a long run's log is mostly trials. The cap is on lines
-# rather than bytes because a half-read log has to be reported as partial, and lines are what the
-# page counts.
+# Where the served page finds its token. The address bar no longer carries it past the first request.
+TOKEN_SLOT = '<meta name="strands-evals-token" content="">'
+COOKIE_PREFIX = "strands_evals_ui_"
+
+# A refused request's body is read and dropped only within these bounds; past them the connection closes.
+DRAIN_LIMIT = 1024 * 1024
+DRAIN_TIMEOUT = 2.0
+
+# Capped on lines, not bytes: a cut log is reported as partial, and lines are what the page counts.
 MAX_EVENT_LINES = 50_000
 
 EXPERIMENT = "experiment"
@@ -54,28 +62,62 @@ REPORT = "report"
 EVENT_LOG_NAME = "events.jsonl"
 RUN_CONFIG_NAME = "run.json"
 
-# Inside a run directory these hold the run's own storage: the transcript of every distinct
-# trajectory, the files copied per candidate, the diffs left for review. None of them is a document
-# to classify, and a run of a few hundred trials would otherwise fill the "could not use" list with
-# its own bookkeeping and spend the whole file budget reading it. The page reads a transcript by
-# path, when a trial is opened, which is the only time one is wanted.
+SKIPPED_DIRS = frozenset({"node_modules", "__pycache__"})
+# Where the page keeps its views: `/runs/<file>/report`, `/optimization/<directory>/overview`, and so on.
+PAGE_ROOTS = ("/runs", "/optimization")
+PRINTABLE = re.compile(r"[!-~]+")
+
+# A run directory's own storage. Scanning it would fill the skipped list and spend the file budget.
 RUN_OWN_DIRS = frozenset({"transcripts", "candidates", "front"})
-# The same, for the files a run writes beside its log: the effects model the page plots on request,
-# the champion's diff values, which are there for review, and the `OptimizationResult` the run
-# returns. None of the three is an experiment or a report, and a real run leaves all of them.
+# Files a run writes beside its log; none is an experiment or a report.
 RUN_OWN_FILES = frozenset({"effects.json", "best.values.json", "result.json"})
 
 
 def _prune_run_storage(filenames: list[str], dirnames: list[str]) -> None:
     """Drop a run directory's own storage from a walk, in place.
 
-    Only inside a directory that *is* a run — a `run.json` with an `events.jsonl` beside it. A
-    folder called `candidates` anywhere else is someone's own folder and gets walked like any.
+    Applies only where `run.json` and `events.jsonl` sit together; a `candidates` folder elsewhere is walked.
     """
     names = set(filenames)
     if RUN_CONFIG_NAME in names and EVENT_LOG_NAME in names:
         dirnames[:] = [d for d in dirnames if d not in RUN_OWN_DIRS]
         filenames[:] = [f for f in filenames if f.lower() not in RUN_OWN_FILES]
+
+
+def _walk(root: Path, depth: int) -> Iterator[tuple[Path, list[str]]]:
+    """Yield each directory under `root`, at most `depth` levels down, with its sorted filenames.
+
+    Skips dot-directories, dependency folders, and a run directory's own storage.
+    """
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        here = Path(dirpath)
+        if len(here.relative_to(root).parts) >= depth:
+            dirnames[:] = []
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d not in SKIPPED_DIRS)
+        _prune_run_storage(filenames, dirnames)
+        yield here, sorted(filenames)
+
+
+def is_page_path(path: str) -> bool:
+    """Whether a request path is one of the page's own addresses. They all serve the one document."""
+    return path in ("/", "/index.html") or any(path == root or path.startswith(f"{root}/") for root in PAGE_ROOTS)
+
+
+def fingerprint(root: Path, depth: int = DEFAULT_DEPTH) -> str:
+    """Digest the name, size and mtime of every file the page can show, so a change to the tree changes it."""
+    digest = hashlib.sha256()
+    for here, filenames in _walk(root, depth):
+        names = [name for name in filenames if name.lower().endswith((".json", ".jsonl"))]
+        if RUN_CONFIG_NAME in filenames and EVENT_LOG_NAME in filenames:
+            names += sorted(RUN_OWN_FILES)
+        for name in names:
+            try:
+                info = (here / name).stat()
+            except OSError:
+                continue
+            where = (here / name).relative_to(root).as_posix()
+            digest.update(f"{where}\0{info.st_size}\0{info.st_mtime_ns}\n".encode())
+    return digest.hexdigest()
 
 
 @dataclass
@@ -94,7 +136,7 @@ class ScannedFile:
 
     @property
     def directory(self) -> str:
-        return self.path.rsplit("/", 1)[0] if "/" in self.path else "."
+        return _dirname(self.path)
 
 
 @dataclass
@@ -114,12 +156,12 @@ class EventLog:
     truncated: bool = False
 
 
+# `classify`, `_stem`, `link_status`, `_report_summary`, `read_event_log` and `tuned_against` are mirrored in
+# `assets/ui-folder.js` for the page's no-server mode. Change one side and the other must follow.
 def classify(obj: Any) -> str | None:
-    """Identify a parsed JSON document by its shape.
+    """Identify a parsed JSON document by its shape, never by its filename.
 
-    Filenames are not evidence: `nightly-eval.json` and `out.json` are both things people
-    actually commit. Both shapes carry `cases`, so the discriminator is `evaluators` for an
-    experiment against the report's own required fields.
+    Both shapes carry `cases`: `evaluators` marks an experiment, the report's required fields mark a report.
     """
     if not isinstance(obj, dict):
         return None
@@ -147,13 +189,8 @@ _STEM_SUFFIX = re.compile(r"(^|[._-])(experiment|exp|report|rep)$", re.IGNORECAS
 def _stem(name: str) -> str:
     """Filename with the .json suffix and a trailing experiment/report token removed.
 
-    Lets `nightly.experiment.json` pair with `nightly.report.json` while leaving `nightly.json`
-    and `smoke.json` apart. Plain `experiment.json` and `report.json` both reduce to the empty
-    stem, which is what pairs them — that is the layout the CLI's own `--output` produces, so it
-    has to work without relying on there being exactly one of each in the directory.
-
-    The token only comes off at a separator or the whole name, so `myexperiment.json` keeps its
-    name instead of becoming `my`.
+    The token comes off only at a separator or as the whole name: `nightly.experiment.json` gives `nightly`,
+    `myexperiment.json` gives `myexperiment`, and `experiment.json` and `report.json` both give the empty stem.
     """
     base = name[:-5] if name.lower().endswith(".json") else name
     return _STEM_SUFFIX.sub("", base)
@@ -173,9 +210,7 @@ def _case_keys(report_obj: dict) -> set[str]:
 def _experiment_case_ids(experiment_obj: dict) -> set[str]:
     """Every identifier a case in an experiment can be referred to by.
 
-    Both `session_id` and `name`, because a case may be matched against a report row (which
-    prefers `session_id`) or against an optimizer split (which holds whichever the run was
-    handed), and there is no way to tell from the id alone which one it is.
+    Both `session_id` and `name`: report rows prefer `session_id`, optimizer splits hold whichever the run was given.
     """
     ids: set[str] = set()
     for case in experiment_obj.get("cases", []):
@@ -189,10 +224,8 @@ def _experiment_case_ids(experiment_obj: dict) -> set[str]:
 def _split_case_ids(split: Any) -> set[str]:
     """Every case an optimizer run's split names, across train, validation and test.
 
-    Out of either shape a record writes them in. The optimizer puts the *fractions* it was asked
-    for at `split.train` and the names it drew under `split.cases.train`; earlier records put the
-    names at `split.train` directly. Reading only the second finds nothing at all in a real run's
-    record, and nothing is how this says "no experiment here supplied these cases".
+    `run.json` has two shapes: names under `split.cases.train` with the fractions at `split.train`, or, in
+    earlier records, names at `split.train` directly.
     """
     ids: set[str] = set()
     if not isinstance(split, dict):
@@ -210,15 +243,8 @@ def _split_case_ids(split: Any) -> set[str]:
 def tuned_against(split: Any, experiments: Sequence[ScannedFile]) -> dict | None:
     """Which experiment, if any, supplied the cases an optimizer run split up.
 
-    A run record cannot name its own experiment: `Optimizer.resume` has to be handed one back
-    because `run.json` has nowhere to keep it. So the only thing connecting a run on the
-    Optimization section to anything on the Runs tab is the case identifiers in its split, which
-    makes this the same kind of guess `link_status` makes about a report — and it is reported the
-    same way, as an overlap rather than as a claim.
-
-    `None` when nothing overlaps, so the page says nothing instead of naming a file at random.
-    The winner is the experiment matching the most of the split; ties go to the first path, so
-    two identical experiments in a tree give the same answer on every scan.
+    `run.json` does not name its experiment, so this is a guess from case-id overlap and is reported as one.
+    Returns `None` when nothing overlaps. The largest overlap wins, and ties go to the first path.
     """
     wanted = _split_case_ids(split)
     if not wanted:
@@ -241,11 +267,8 @@ def tuned_against(split: Any, experiments: Sequence[ScannedFile]) -> dict | None
 def link_status(experiment_obj: dict, report_obj: dict) -> dict:
     """Whether a report plausibly came from the experiment it is being shown beside.
 
-    Pairing by directory and filename is a guess. A report whose rows name cases the
-    experiment does not contain is a guess that went wrong, and showing its score next to
-    those cases would be a quietly wrong answer to "how did this experiment do". The rows
-    carry `session_id`, so the overlap is checkable; the UI reports what this returns rather
-    than implying the pair is certain.
+    Pairing by directory and filename is a guess, so the case-id overlap is returned as a `status`
+    (`verified`, `partial`, `mismatch` or `unverified`) with a `detail` string.
     """
     exp_keys = _experiment_case_ids(experiment_obj)
     rep_keys = _case_keys(report_obj)
@@ -317,10 +340,7 @@ def _file_entry(scanned: ScannedFile) -> dict:
 def scan(root: Path, depth: int = DEFAULT_DEPTH) -> tuple[list[ScannedFile], list[dict], bool]:
     """Read every JSON file under `root` up to `depth` directories deep.
 
-    Returns the files that classified, the ones that did not with the reason, and whether the
-    file cap was hit. Unreadable and unparseable files are reported rather than dropped: a
-    folder where the thing you are looking for failed to parse should not look like a folder
-    where it is absent.
+    Returns the files that classified, the ones that did not with the reason, and whether the file cap was hit.
     """
     found: list[ScannedFile] = []
     skipped: list[dict] = []
@@ -328,16 +348,8 @@ def scan(root: Path, depth: int = DEFAULT_DEPTH) -> tuple[list[ScannedFile], lis
     root = root.resolve()
     seen = 0
 
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        here = Path(dirpath)
-        level = len(here.relative_to(root).parts)
-        if level >= depth:
-            dirnames[:] = []
-        # Scanning a repo's dependencies is slow and finds nothing a user is looking for.
-        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d not in {"node_modules", "__pycache__"})
-        _prune_run_storage(filenames, dirnames)
-
-        for filename in sorted(filenames):
+    for here, filenames in _walk(root, depth):
+        for filename in filenames:
             if not filename.lower().endswith(".json"):
                 continue
             if seen >= MAX_SCAN_FILES:
@@ -346,8 +358,11 @@ def scan(root: Path, depth: int = DEFAULT_DEPTH) -> tuple[list[ScannedFile], lis
             seen += 1
             full = here / filename
             rel = full.relative_to(root).as_posix()
+            if full.is_symlink() and not _inside(root, full.resolve()):
+                skipped.append({"path": rel, "why": "a link to a file outside this folder"})
+                continue
             try:
-                stat = full.stat()
+                info = full.stat()
                 obj = json.loads(full.read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError) as exc:
                 skipped.append({"path": rel, "why": f"could not read: {exc.__class__.__name__}"})
@@ -360,7 +375,7 @@ def scan(root: Path, depth: int = DEFAULT_DEPTH) -> tuple[list[ScannedFile], lis
             if kind is None:
                 skipped.append({"path": rel, "why": "not an experiment or a report"})
                 continue
-            found.append(ScannedFile(path=rel, kind=kind, obj=obj, size=stat.st_size, modified=stat.st_mtime))
+            found.append(ScannedFile(path=rel, kind=kind, obj=obj, size=info.st_size, modified=info.st_mtime))
         if truncated:
             break
 
@@ -419,17 +434,12 @@ def discover(root: Path, depth: int = DEFAULT_DEPTH) -> Discovery:
 
     optimizer_runs = discover_optimizer_runs(root, depth)
 
-    # The one link between the two kinds of run in this tree. Done here rather than in
-    # `discover_optimizer_runs` because this scan already parsed every experiment, so matching
-    # the splits against them costs no extra read.
     scanned_experiments = [f for f in found if f.kind == EXPERIMENT]
     for optimizer_run in optimizer_runs:
         split = (optimizer_run.get("config") or {}).get("split")
         optimizer_run["tuned_against"] = tuned_against(split, scanned_experiments)
 
-    # An optimizer run's `run.json` is not an experiment or a report, so the scan files it under
-    # "did not classify". Once it has been recognised as a run config, saying so again as a
-    # problem would send someone looking for a fault that isn't there.
+    # A `run.json` recognised as an optimizer run config is not a scan failure.
     optimizer_dirs = {r["dir"] for r in optimizer_runs}
     skipped = [
         s
@@ -443,10 +453,8 @@ def discover(root: Path, depth: int = DEFAULT_DEPTH) -> Discovery:
 def read_event_log(path: Path, max_lines: int = MAX_EVENT_LINES) -> EventLog:
     """Read an optimizer `events.jsonl`.
 
-    A truncated last line is dropped rather than reported: the optimizer appends with one write
-    per event, so the only way to see a partial line is to read the log while a run is still
-    writing, and that is normal rather than a problem worth showing. Any *earlier* line that
-    fails to parse is real corruption, so it is reported with its line number.
+    A partial last line is dropped silently, because a live run is still appending. Any earlier line that
+    fails to parse is reported with its line number.
     """
     log = EventLog()
     try:
@@ -456,9 +464,7 @@ def read_event_log(path: Path, max_lines: int = MAX_EVENT_LINES) -> EventLog:
         return log
 
     lines = text.split("\n")
-    # Every line but the last is known complete, because a complete line is one with a newline
-    # after it. That holds either way the file ends: with a newline the split leaves a trailing
-    # empty string (skipped as blank below), and without one the last element is the partial line.
+    # Only the last element can be a partial line: every earlier one ended in a newline.
     complete = len(lines) - 1
     for number, line in enumerate(lines, start=1):
         if not line.strip():
@@ -469,7 +475,6 @@ def read_event_log(path: Path, max_lines: int = MAX_EVENT_LINES) -> EventLog:
         try:
             event = json.loads(line)
         except json.JSONDecodeError as exc:
-            # The last line of a log being written is expected to be partial; drop it quietly.
             if number > complete:
                 continue
             log.bad_lines.append({"line": number, "why": f"invalid JSON: {exc.msg}"})
@@ -491,13 +496,9 @@ def _optimizer_run_summary(
 ) -> dict:
     """What the runs list shows for one optimizer run.
 
-    Only things that can be *read* out of the log, never derived: counts, the last stop reason,
-    the champion the end phase recorded. Every derived series — best-so-far, the budget curve —
-    is computed in the page from the same event log, so the rule for it lives in exactly one
-    place instead of being reimplemented here and drifting.
+    Only values read from the log. Derived series (best-so-far, the budget curve) are computed in the page.
     """
-    # Distinct iteration numbers rather than a count of `iteration_end` events, so the same
-    # iteration recorded twice reads as one iteration rather than as progress.
+    # Distinct numbers, so an iteration recorded twice counts once.
     iterations = {e.get("iteration") for e in log.events if e.get("event") == "iteration_end"}
     champion = None
     stop_reason = None
@@ -513,11 +514,7 @@ def _optimizer_run_summary(
         elif name == "stop":
             stop_reason = event.get("reason")
 
-    # What the run achieved, which is the one thing a list of runs was not saying. Read, not
-    # computed: it is the comparison the end phase itself recorded, and the precedence is the
-    # page's — `test` is the held-out split, `picked` is the validation split the search chose on
-    # and so the weaker claim, used only when there is no test report. Taking whichever came last
-    # in the log would label a result by the order the end phase happened to write it in.
+    # `test` (held-out split) outranks `picked` (validation split), whatever order the log has them in.
     end_report = end_reports.get("test") or end_reports.get("picked")
     objective = (end_report or {}).get("objective")
     result = {"objective": objective, "held_out": "test" in end_reports} if isinstance(objective, dict) else None
@@ -545,8 +542,7 @@ def _optimizer_run_summary(
         "stop_reason": stop_reason,
         "bad_lines": log.bad_lines,
         "truncated": log.truncated,
-        # Filled in by `discover`, the only caller holding the tree's experiments to match the
-        # split against. Always present, so the page reads one shape however it was discovered.
+        # Filled in by `discover`, which holds the experiments to match the split against.
         "tuned_against": None,
     }
 
@@ -554,23 +550,13 @@ def _optimizer_run_summary(
 def discover_optimizer_runs(root: Path, depth: int = DEFAULT_DEPTH) -> list[dict]:
     """Find optimizer run directories: a `run.json` with an `events.jsonl` beside it.
 
-    Both are required. `run.json` alone is far too common a filename to treat as evidence of an
-    optimizer run, and an event log with no config cannot be read (the objective and the budget
-    live in the config).
+    Both are required: `run.json` alone is too common a filename, and the log cannot be read without the config.
     """
     found: list[dict] = []
     root = root.resolve()
 
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        here = Path(dirpath)
-        level = len(here.relative_to(root).parts)
-        if level >= depth:
-            dirnames[:] = []
-        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d not in {"node_modules", "__pycache__"})
-        _prune_run_storage(filenames, dirnames)
-
-        names = set(filenames)
-        if RUN_CONFIG_NAME not in names or EVENT_LOG_NAME not in names:
+    for here, filenames in _walk(root, depth):
+        if RUN_CONFIG_NAME not in filenames or EVENT_LOG_NAME not in filenames:
             continue
 
         config_path, events_path = here / RUN_CONFIG_NAME, here / EVENT_LOG_NAME
@@ -584,7 +570,10 @@ def discover_optimizer_runs(root: Path, depth: int = DEFAULT_DEPTH) -> list[dict
 
         relative = here.relative_to(root).as_posix() or "."
         log = read_event_log(events_path)
-        found.append(_optimizer_run_summary(relative, config, events_stat, config_stat, log))
+        summary = _optimizer_run_summary(relative, config, events_stat, config_stat, log)
+        # Most runs have no effects model, so the page is told rather than left to ask for a file that is not there.
+        summary["has_effects"] = (here / "effects.json").is_file()
+        found.append(summary)
 
     found.sort(key=lambda r: -r["modified"])
     return found
@@ -597,28 +586,65 @@ class PathOutsideRoot(ValueError):
 def resolve_within(root: Path, relative: str) -> Path:
     """Resolve a client path against the root, refusing anything that escapes it.
 
-    Resolution happens before the check so a symlink pointing out of the tree is caught too,
-    not just a literal `..`.
+    Resolves before checking, so a symlink pointing out of the tree is caught as well as a literal `..`.
     """
     if not relative:
         raise PathOutsideRoot("no path given")
-    candidate = (root / relative).resolve()
+    if "\x00" in relative:
+        raise PathOutsideRoot(f"{relative!r} is not a path")
     root = root.resolve()
-    if candidate != root and root not in candidate.parents:
+    candidate = (root / relative).resolve()
+    if not _inside(root, candidate):
         raise PathOutsideRoot(f"{relative} is outside {root}")
     return candidate
+
+
+def _inside(root: Path, candidate: Path) -> bool:
+    return candidate == root or root in candidate.parents
+
+
+def _same_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address, bound: str) -> bool:
+    try:
+        return address == ipaddress.ip_address(bound)
+    except ValueError:  # bound by name, e.g. a hostname: only loopback names are answered
+        return False
+
+
+def is_loopback(host: str) -> bool:
+    """Whether binding `host` keeps the server on this machine."""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_timestamp(value: Any) -> TypeGuard[float]:
+    """Whether a client-sent `modified` can be compared with an mtime."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return abs(value) < 2**53
+    return isinstance(value, float) and math.isfinite(value)
+
+
+def _finite(value: Any) -> Any:
+    """`value` with NaN and Infinity replaced by None, which is how JSON can carry them."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _finite(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_finite(item) for item in value]
+    return value
 
 
 def validate_experiment_payload(payload: Any) -> dict:
     """Check an experiment document well enough to refuse to write a broken one.
 
-    Cases go through `Case.model_validate`, which is the same gate `Experiment.from_file` uses,
-    so a save cannot produce a file the library then refuses to load.
-
-    Evaluators are deliberately *not* instantiated. `Experiment.from_dict` resolves
-    `evaluator_type` against a registry of built-ins, so validating them here would reject
-    every experiment built on a custom evaluator subclass — which is most real ones. They are
-    inspected without being constructed by `check_evaluators`, and reported as advice.
+    Cases go through `Case.model_validate`, the same gate `Experiment.from_file` uses. Evaluators are never
+    instantiated, because that would reject custom evaluator subclasses; `check_evaluators` inspects them.
     """
     if not isinstance(payload, dict):
         raise ValueError("experiment must be a JSON object")
@@ -646,23 +672,13 @@ def validate_experiment_payload(payload: Any) -> dict:
 def check_evaluators(evaluators: Any) -> list[dict]:
     """Say whether each `evaluator_type` would survive `Experiment.from_dict`, without running it.
 
-    A page that can save an experiment the CLI then refuses to load is a trap, and the failure
-    arrives later and somewhere else — `strands-evals validate` reporting a `TypeError` from a
-    constructor. So the settings are checked against the real registry and the real signature,
-    and reported as advice rather than enforced: nothing here blocks a save.
-
-    `from_dict` constructs the evaluator, so checking by construction would mean building models
-    and whatever else an `__init__` does. `inspect.signature` answers the same question for the
-    two ways a built-in actually fails — a required setting left out and a setting that is not a
-    parameter — without that.
-
-    An unregistered name is only a warning. Custom evaluator subclasses are passed to
-    `from_dict` by the caller, not named in the file, and most real experiments have one.
+    Uses `inspect.signature` on the built-in registry, never construction. The notes are advice and block nothing.
+    An unregistered name is only a warning: custom evaluators are passed to `from_dict` by the caller.
     """
     if not isinstance(evaluators, list):
         return []
 
-    registry = builtin_evaluator_types()
+    registry = _builtin_evaluator_types()
     notes: list[dict] = []
     for index, evaluator in enumerate(evaluators):
         if not isinstance(evaluator, dict):
@@ -703,28 +719,73 @@ def check_evaluators(evaluators: Any) -> list[dict]:
     return notes
 
 
+@functools.cache
+def evaluator_catalog() -> dict[str, dict]:
+    """What the page says about each built-in evaluator: its summary and its settings, read off the class.
+
+    Read from the library so that the page describes an evaluator added later without being edited.
+    """
+    catalog: dict[str, dict] = {}
+    for name, target in _builtin_evaluator_types().items():
+        try:
+            parameters = list(inspect.signature(target).parameters.values())
+        except (TypeError, ValueError):  # a builtin or C-implemented __init__
+            parameters = []
+        settings = [
+            {
+                "name": parameter.name,
+                "required": parameter.default is inspect.Parameter.empty,
+                "default": None if parameter.default is inspect.Parameter.empty else _shown(parameter.default),
+            }
+            for parameter in parameters
+            if parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        ]
+        summary = (inspect.getdoc(target) or "").strip().split("\n", 1)[0]
+        catalog[name] = {"summary": summary, "settings": settings}
+    return catalog
+
+
+def _shown(default: Any) -> str:
+    """A setting's default as a user would write it in the file, cut short when it is a long prompt."""
+    text = json.dumps(default) if isinstance(default, (str, int, float, bool, type(None))) else repr(default)
+    return text if len(text) <= 48 else text[:45] + "..."
+
+
 def write_json_atomic(target: Path, payload: dict) -> float:
     """Serialize, then replace the file in one step; returns the new mtime.
 
-    Serializing first means a document that cannot become valid JSON leaves the existing file
-    untouched, matching `Experiment.to_file`. `allow_nan=False` is deliberate: NaN and Infinity
-    are not JSON, and the library's own writer rejects them rather than emitting something only
-    Python can read back.
+    Serializing first leaves the existing file untouched when the document is not valid JSON
+    (NaN and Infinity included), matching `Experiment.to_file`.
     """
     data = json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False).encode("utf-8")
-    directory = target.parent
-    directory.mkdir(parents=True, exist_ok=True)
-    handle = tempfile.NamedTemporaryFile("wb", dir=directory, prefix=f".{target.name}.", suffix=".tmp", delete=False)
+    try:
+        mode = stat.S_IMODE(target.stat().st_mode)
+    except FileNotFoundError:
+        mode = None
+    handle = tempfile.NamedTemporaryFile(
+        "wb", dir=target.parent, prefix=f".{target.name}.", suffix=".tmp", delete=False
+    )
     try:
         with handle as stream:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
+        # The temp file is created 0600; without this a save would narrow the file's permissions.
+        if mode is not None:
+            os.chmod(handle.name, mode)
         os.replace(handle.name, target)
     except BaseException:
         Path(handle.name).unlink(missing_ok=True)
         raise
     return target.stat().st_mtime
+
+
+UNAUTHORIZED_PAGE = (
+    b"<!doctype html><meta charset=utf-8><title>strands-evals</title>"
+    b"<body style='font:14px \"Space Grotesk\",system-ui,sans-serif;padding:40px'>"
+    b"<h3 style='font:600 18px \"JetBrains Mono\",ui-monospace,monospace'>Open the link the CLI printed</h3>"
+    b"<p>This page needs the token in the URL that <code>strands-evals ui</code> printed.</p>"
+)
 
 
 @dataclass
@@ -736,20 +797,27 @@ class UIConfig:
     asset: str = ""
     # True when `asset` came from the shipped file rather than a caller, so it can be re-read.
     reload_asset: bool = False
+    # The address the server was asked to bind, which decides which `Host` headers it answers.
+    bound_host: str = "127.0.0.1"
+    # Carried by the page's own <style> and <script> tags; markup injected from a file cannot know it.
+    nonce: str = field(default_factory=lambda: secrets.token_urlsafe(16))
 
     def page(self) -> str:
-        """The page to serve, re-read from disk unless a caller pinned one.
-
-        Read per request rather than once at startup: the page is a single file someone is
-        usually editing, and caching it at boot means every change needs the server restarted —
-        which hands out a new token and a new URL to go with it.
-        """
+        """The page to serve, re-read from disk on every request unless a caller pinned one."""
         if not self.reload_asset:
             return self.asset
         try:
-            return load_asset()
-        except OSError:
-            return self.asset  # the copy read at startup, which at least still works
+            return load_asset(self.nonce)
+        except OSError as exc:
+            logger.warning("error=<%s> | could not re-read the ui page, serving the copy read at startup", exc)
+            return self.asset
+
+    def content_security_policy(self) -> str:
+        own = f"'nonce-{self.nonce}'"
+        return (
+            f"default-src 'none'; script-src {own}; style-src {own}; style-src-attr 'unsafe-inline'; "
+            "img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        )
 
 
 class UIHandler(BaseHTTPRequestHandler):
@@ -757,6 +825,7 @@ class UIHandler(BaseHTTPRequestHandler):
 
     server_version = "strands-evals-ui"
     protocol_version = "HTTP/1.1"
+    timeout = 60  # an idle or stalled connection gives its thread back
 
     @property
     def config(self) -> UIConfig:
@@ -765,194 +834,233 @@ class UIHandler(BaseHTTPRequestHandler):
     # ── plumbing ──
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        # BaseHTTPRequestHandler writes to stderr unconditionally; route it through logging so
-        # the CLI's -v/--debug flags control it like everything else.
-        logger.debug("client=<%s> | %s", self.address_string(), fmt % args)
+        # The base class writes to stderr; logging puts it under the CLI's -v/--debug flags.
+        line = _TOKEN_IN_URL.sub(r"\1<redacted>", fmt % args)
+        logger.debug("client=<%s> | %s", self.address_string(), line)
 
-    def _send(self, status: HTTPStatus, body: bytes, content_type: str) -> None:
+    def _send(
+        self, status: HTTPStatus, body: bytes, content_type: str, *, headers: dict[str, str] | None = None
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        # The page is served from, and only talks to, this origin.
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
 
     def _json(self, status: HTTPStatus, payload: dict) -> None:
-        self._send(status, json.dumps(payload, allow_nan=False).encode("utf-8"), "application/json; charset=utf-8")
+        try:
+            text = json.dumps(payload, allow_nan=False)
+        except ValueError:  # a file on disk held NaN or Infinity, which Python reads and JSON forbids
+            text = json.dumps(_finite(payload), allow_nan=False)
+        self._send(status, text.encode("utf-8"), "application/json; charset=utf-8")
 
     def _error(self, status: HTTPStatus, message: str) -> None:
         self._json(status, {"error": message})
 
-    def _host_is_loopback(self) -> bool:
-        host = (self.headers.get("Host") or "").strip()
-        if not host:
-            return False
-        name = host.rsplit(":", 1)[0] if not host.startswith("[") else host.split("]")[0] + "]"
-        return name.lower() in LOOPBACK_HOSTS
+    def _host_is_admitted(self) -> bool:
+        """Whether `Host` names this server, which is what stops DNS rebinding.
 
-    def _authorized(self, query: dict[str, list[str]]) -> bool:
-        supplied = (self.headers.get("X-Evals-Token") or "") or (query.get("t", [""])[0])
-        # Compared as bytes: compare_digest rejects non-ASCII str, and a header is attacker-chosen.
+        A rebinding request carries the attacker's hostname. Loopback names are always answered; a server
+        bound beyond loopback also answers to the address it was bound to, or to any IP literal when it was
+        bound to every interface.
+        """
+        match = _HOST_HEADER.fullmatch((self.headers.get("Host") or "").strip())
+        if match is None:
+            return False
+        name = match.group(1).lower()
+        if name in LOOPBACK_HOSTS:
+            return True
+        try:
+            address = ipaddress.ip_address(name.strip("[]"))
+        except ValueError:
+            return False
+        bound = self.config.bound_host
+        return bound in WILDCARD_HOSTS or _same_address(address, bound)
+
+    def _is_token(self, supplied: str) -> bool:
+        # Compared as bytes: compare_digest rejects non-ASCII str, and the value is attacker-chosen.
         return secrets.compare_digest(supplied.encode("utf-8", "replace"), self.config.token.encode("utf-8"))
 
-    # ── routes ──
+    def _authorized(self, query: dict[str, list[str]]) -> bool:
+        return self._is_token((self.headers.get("X-Evals-Token") or "") or (query.get("t", [""])[0]))
 
-    def do_GET(self) -> None:  # noqa: N802 - name fixed by BaseHTTPRequestHandler
-        parsed = urlparse(self.path)
-        query = parse_qs(parsed.query)
+    def _cookie_name(self) -> str:
+        # Cookies ignore the port, so two servers on one machine need two names.
+        return f"{COOKIE_PREFIX}{self.connection.getsockname()[1]}"
 
-        if not self._host_is_loopback():
-            self._error(HTTPStatus.FORBIDDEN, "this server only answers requests addressed to localhost")
-            return
-
-        if parsed.path in ("/", "/index.html"):
-            if not self._authorized(query):
-                self._send(
-                    HTTPStatus.UNAUTHORIZED,
-                    b"<!doctype html><meta charset=utf-8><title>strands-evals</title>"
-                    b"<body style='font:14px system-ui;padding:40px'>"
-                    b"<h3>Open the link the CLI printed</h3>"
-                    b"<p>This page needs the one-time token from <code>strands-evals ui</code>.</p>",
-                    "text/html; charset=utf-8",
-                )
-                return
-            self._send(HTTPStatus.OK, self.config.page().encode("utf-8"), "text/html; charset=utf-8")
-            return
-
-        if not self._authorized(query):
-            self._error(HTTPStatus.UNAUTHORIZED, "missing or wrong token")
-            return
-
-        if parsed.path == "/api/config":
-            self._json(
-                HTTPStatus.OK,
-                {
-                    "root": str(self.config.root),
-                    "depth": self.config.depth,
-                    "read_only": self.config.read_only,
-                },
-            )
-            return
-
-        if parsed.path == "/api/runs":
-            result = discover(self.config.root, self.config.depth)
-            self._json(
-                HTTPStatus.OK,
-                {
-                    "root": str(self.config.root),
-                    "depth": self.config.depth,
-                    "read_only": self.config.read_only,
-                    "runs": result.runs,
-                    "skipped": result.skipped,
-                    "truncated": result.truncated,
-                    "optimizer_runs": result.optimizer_runs,
-                },
-            )
-            return
-
-        if parsed.path == "/api/events":
-            rel = query.get("path", [""])[0]
-            try:
-                target = resolve_within(self.config.root, rel)
-            except PathOutsideRoot as exc:
-                self._error(HTTPStatus.FORBIDDEN, str(exc))
-                return
-            if not target.is_file():
-                self._error(HTTPStatus.NOT_FOUND, f"{rel} is not a file")
-                return
-            log = read_event_log(target)
-            self._json(
-                HTTPStatus.OK,
-                {
-                    "path": rel,
-                    "modified": target.stat().st_mtime,
-                    "events": log.events,
-                    "bad_lines": log.bad_lines,
-                    "truncated": log.truncated,
-                },
-            )
-            return
-
-        if parsed.path == "/api/file":
-            rel = query.get("path", [""])[0]
-            try:
-                target = resolve_within(self.config.root, rel)
-            except PathOutsideRoot as exc:
-                self._error(HTTPStatus.FORBIDDEN, str(exc))
-                return
-            if not target.is_file():
-                self._error(HTTPStatus.NOT_FOUND, f"{rel} is not a file")
-                return
-            try:
-                obj = json.loads(target.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-                self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{rel} could not be parsed: {exc}")
-                return
-            self._json(
-                HTTPStatus.OK,
-                {
-                    "path": rel,
-                    "modified": target.stat().st_mtime,
-                    "document": obj,
-                    "evaluator_notes": check_evaluators(obj.get("evaluators") if isinstance(obj, dict) else None),
-                },
-            )
-            return
-
-        self._error(HTTPStatus.NOT_FOUND, f"no route for {parsed.path}")
-
-    def do_HEAD(self) -> None:  # noqa: N802
-        self.do_GET()
-
-    def do_PUT(self) -> None:  # noqa: N802
-        parsed = urlparse(self.path)
-        query = parse_qs(parsed.query)
-
-        if not self._host_is_loopback():
-            self._error(HTTPStatus.FORBIDDEN, "this server only answers requests addressed to localhost")
-            return
-        if not self._authorized(query):
-            self._error(HTTPStatus.UNAUTHORIZED, "missing or wrong token")
-            return
-        if parsed.path != "/api/experiment":
-            self._error(HTTPStatus.NOT_FOUND, f"no route for {parsed.path}")
-            return
-        if self.config.read_only:
-            self._error(HTTPStatus.FORBIDDEN, "server started with --read-only")
-            return
-
+    def _has_page_cookie(self) -> bool:
         try:
-            length = int(self.headers.get("Content-Length") or 0)
+            morsel = SimpleCookie(self.headers.get("Cookie") or "").get(self._cookie_name())
+        except CookieError:
+            return False
+        return morsel is not None and self._is_token(unquote(morsel.value))
+
+    def _refusal(self, query: dict[str, list[str]]) -> tuple[HTTPStatus, str] | None:
+        """Why this request is not admitted, if it is not: the wrong Host or the wrong token."""
+        if not self._host_is_admitted():
+            return HTTPStatus.FORBIDDEN, "this server only answers requests addressed to the host it is serving on"
+        if not self._authorized(query):
+            return HTTPStatus.UNAUTHORIZED, "missing or wrong token"
+        return None
+
+    def _settings(self) -> dict:
+        return {"root": str(self.config.root), "depth": self.config.depth, "read_only": self.config.read_only}
+
+    def _requested_file(
+        self, query: dict[str, list[str]], missing: str = "{rel} is not a file"
+    ) -> tuple[str, Path] | None:
+        """The `path` parameter resolved to a file inside the root, or None once the error is sent."""
+        rel = query.get("path", [""])[0]
+        try:
+            target = resolve_within(self.config.root, rel)
+        except PathOutsideRoot as exc:
+            self._error(HTTPStatus.FORBIDDEN, str(exc))
+            return None
+        if not target.is_file():
+            self._error(HTTPStatus.NOT_FOUND, missing.format(rel=rel))
+            return None
+        return rel, target
+
+    def _body_length(self) -> int | None:
+        """The declared body size, or None when it cannot be read by length.
+
+        That is a missing or malformed `Content-Length`, a chunked body, or a size over the cap.
+        """
+        declared = self.headers.get("Content-Length")
+        if declared is None or self.headers.get("Transfer-Encoding"):
+            return None
+        try:
+            length = int(declared)
         except ValueError:
-            self._error(HTTPStatus.BAD_REQUEST, "bad Content-Length")
-            return
-        if length <= 0:
+            return None
+        return length if 0 <= length <= MAX_UPLOAD_BYTES else None
+
+    def _reject_unread(self, status: HTTPStatus, message: str) -> None:
+        """Refuse a request whose body has not been read.
+
+        A small body is drained first: left unread, a kept-alive connection would parse it as the next
+        request. Anything else closes the connection, so a client cannot hold a thread by withholding a body.
+        """
+        remaining = self._body_length()
+        if remaining is None or remaining > DRAIN_LIMIT:
+            self.close_connection = True
+        else:
+            self.connection.settimeout(DRAIN_TIMEOUT)
+            try:
+                while remaining:
+                    chunk = self.rfile.read(min(remaining, 65536))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+            except OSError:  # the declared body never arrived
+                self.close_connection = True
+            finally:
+                self.connection.settimeout(self.timeout)
+        self._error(status, message)
+
+    def _json_body(self) -> dict | None:
+        """The request body as a JSON object, or None once the error is sent."""
+        length = self._body_length()
+        if length is None:
+            declared = self.headers.get("Content-Length") or ""
+            if declared.isdigit() and int(declared) > MAX_UPLOAD_BYTES:
+                self._reject_unread(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, f"body over {MAX_UPLOAD_BYTES} bytes")
+            else:
+                self._reject_unread(HTTPStatus.LENGTH_REQUIRED, "send the body with a Content-Length")
+            return None
+        if length == 0:
             self._error(HTTPStatus.BAD_REQUEST, "empty body")
-            return
-        if length > MAX_UPLOAD_BYTES:
-            self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, f"body over {MAX_UPLOAD_BYTES} bytes")
-            return
+            return None
 
         raw = self.rfile.read(length)
         try:
             body = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             self._error(HTTPStatus.BAD_REQUEST, f"body is not JSON: {exc}")
+            return None
+        if not isinstance(body, dict):
+            self._error(HTTPStatus.BAD_REQUEST, "body is not a JSON object")
+            return None
+        return body
+
+    # ── routes ──
+
+    def _get_config(self, query: dict[str, list[str]]) -> None:
+        self._json(HTTPStatus.OK, {**self._settings(), "evaluators": evaluator_catalog()})
+
+    def _get_runs(self, query: dict[str, list[str]]) -> None:
+        # Taken before the scan, so a file written during it reads as a change afterwards.
+        mark = fingerprint(self.config.root, self.config.depth)
+        result = discover(self.config.root, self.config.depth)
+        self._json(
+            HTTPStatus.OK,
+            {
+                **self._settings(),
+                "fingerprint": mark,
+                "runs": result.runs,
+                "skipped": result.skipped,
+                "truncated": result.truncated,
+                "optimizer_runs": result.optimizer_runs,
+            },
+        )
+
+    def _get_changes(self, query: dict[str, list[str]]) -> None:
+        self._json(HTTPStatus.OK, {"fingerprint": fingerprint(self.config.root, self.config.depth)})
+
+    def _get_events(self, query: dict[str, list[str]]) -> None:
+        requested = self._requested_file(query)
+        if requested is None:
             return
-        if not isinstance(body, dict) or "document" not in body:
+        rel, target = requested
+        log = read_event_log(target)
+        self._json(
+            HTTPStatus.OK,
+            {
+                "path": rel,
+                "modified": target.stat().st_mtime,
+                "events": log.events,
+                "bad_lines": log.bad_lines,
+                "truncated": log.truncated,
+            },
+        )
+
+    def _get_file(self, query: dict[str, list[str]]) -> None:
+        requested = self._requested_file(query)
+        if requested is None:
+            return
+        rel, target = requested
+        try:
+            obj = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{rel} could not be parsed: {exc}")
+            return
+        self._json(
+            HTTPStatus.OK,
+            {
+                "path": rel,
+                "modified": target.stat().st_mtime,
+                "document": obj,
+                "evaluator_notes": check_evaluators(obj.get("evaluators") if isinstance(obj, dict) else None),
+            },
+        )
+
+    def _put_experiment(self, query: dict[str, list[str]], body: dict) -> None:
+        if "document" not in body:
             self._error(HTTPStatus.BAD_REQUEST, "expected {'document': ..., 'modified': ...}")
             return
-
-        rel = query.get("path", [""])[0]
-        try:
-            target = resolve_within(self.config.root, rel)
-        except PathOutsideRoot as exc:
-            self._error(HTTPStatus.FORBIDDEN, str(exc))
+        requested = self._requested_file(query, missing="{rel} is no longer on disk, so it cannot be saved in place")
+        if requested is None:
             return
-        if target.suffix != ".json":
+        rel, target = requested
+        if target.suffix.lower() != ".json":
             self._error(HTTPStatus.BAD_REQUEST, "only .json files can be written")
             return
 
@@ -962,22 +1070,32 @@ class UIHandler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc))
             return
 
-        # Lost-update guard: the client sends the mtime it loaded. A file that moved under it
-        # means someone else (an editor, another tab, a `run`) wrote in the meantime, and
-        # overwriting would throw their work away without anyone noticing.
         expected = body.get("modified")
-        if target.exists() and expected is not None:
-            actual = target.stat().st_mtime
-            if abs(actual - float(expected)) > 1e-6:
-                self._error(
-                    HTTPStatus.CONFLICT,
-                    f"{rel} changed on disk since it was loaded; reload before saving",
-                )
-                return
+        if not _is_timestamp(expected):
+            self._error(HTTPStatus.BAD_REQUEST, "'modified' must be the number the file was loaded with")
+            return
+        # The page saves back to the experiment it loaded; it never creates a file or replaces another kind.
+        try:
+            current = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            current = None
+        if classify(current) != EXPERIMENT:
+            self._error(HTTPStatus.CONFLICT, f"{rel} is not an experiment file")
+            return
+        # Lost-update guard: a file whose mtime differs from the one the client loaded was written by someone else.
+        if abs(target.stat().st_mtime - expected) > 1e-6:
+            self._error(HTTPStatus.CONFLICT, f"{rel} changed on disk since it was loaded; reload before saving")
+            return
+        if not os.access(target, os.W_OK):
+            self._error(HTTPStatus.FORBIDDEN, f"{rel} is read-only")
+            return
 
         try:
             modified = write_json_atomic(target, document)
-        except (OSError, ValueError) as exc:
+        except ValueError as exc:
+            self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{rel} is not valid JSON: {exc}")
+            return
+        except OSError as exc:
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"could not write {rel}: {exc}")
             return
 
@@ -992,6 +1110,77 @@ class UIHandler(BaseHTTPRequestHandler):
             },
         )
 
+    def _get_page(self, query: dict[str, list[str]]) -> None:
+        """Serve the page to a request that proves it has the token.
+
+        The printed link carries the token once. It is answered with a cookie and a redirect to the bare
+        address, so the token is not left in the address bar, the history or a shared link. The cookie
+        only opens the page: every `/api` route still needs the token itself, which the page reads out
+        of the document it was served.
+        """
+        html_type = "text/html; charset=utf-8"
+        if "t" in query and self._authorized(query):
+            cookie = f"{self._cookie_name()}={quote(self.config.token, safe='')}; Path=/; HttpOnly; SameSite=Lax"
+            # The same address without the token, so a link into the page lands where it pointed.
+            path = urlparse(self.path).path
+            where = path if PRINTABLE.fullmatch(path) else "/"
+            self._send(HTTPStatus.SEE_OTHER, b"", html_type, headers={"Location": where, "Set-Cookie": cookie})
+            return
+        if not (self._authorized(query) or self._has_page_cookie()):
+            self._send(HTTPStatus.UNAUTHORIZED, UNAUTHORIZED_PAGE, html_type)
+            return
+        slot = TOKEN_SLOT.replace('""', f'"{html.escape(self.config.token, quote=True)}"')
+        page = self.config.page().replace(TOKEN_SLOT, slot, 1)
+        policy = {"Content-Security-Policy": self.config.content_security_policy()}
+        self._send(HTTPStatus.OK, page.encode("utf-8"), html_type, headers=policy)
+
+    _GET_ROUTES: dict[str, Callable[[UIHandler, dict[str, list[str]]], None]] = {
+        "/api/config": _get_config,
+        "/api/runs": _get_runs,
+        "/api/changes": _get_changes,
+        "/api/events": _get_events,
+        "/api/file": _get_file,
+    }
+
+    def do_GET(self) -> None:  # noqa: N802 - name fixed by BaseHTTPRequestHandler
+        parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+        is_page = is_page_path(parsed.path)
+
+        if is_page and self._host_is_admitted():
+            self._get_page(query)
+            return
+        refusal = self._refusal(query)
+        if refusal:
+            self._error(*refusal)
+            return
+
+        route = self._GET_ROUTES.get(parsed.path)
+        if route is None:
+            self._error(HTTPStatus.NOT_FOUND, f"no route for {parsed.path}")
+            return
+        route(self, query)
+
+    def do_HEAD(self) -> None:  # noqa: N802
+        self.do_GET()
+
+    def do_PUT(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+
+        refusal = self._refusal(query)
+        if refusal is None and parsed.path != "/api/experiment":
+            refusal = HTTPStatus.NOT_FOUND, f"no route for {parsed.path}"
+        if refusal is None and self.config.read_only:
+            refusal = HTTPStatus.FORBIDDEN, "server started with --read-only"
+        if refusal:
+            self._reject_unread(*refusal)
+            return
+
+        body = self._json_body()
+        if body is not None:
+            self._put_experiment(query, body)
+
 
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
@@ -999,14 +1188,41 @@ class _Server(ThreadingHTTPServer):
 
     def __init__(self, address: tuple[str, int], handler: type[BaseHTTPRequestHandler], config: UIConfig):
         self.config = config
+        if ":" in address[0]:
+            self.address_family = socket.AF_INET6
         super().__init__(address, handler)
 
 
-def load_asset() -> str:
-    """The single-file page shipped beside this module."""
-    from importlib import resources
+_LOCAL_ASSET = re.compile(r'<link rel="stylesheet" href="([\w.-]+)">|<script src="([\w.-]+)"></script>')
+_ANY_ASSET = re.compile(r"<script[^>]*\ssrc=|<link[^>]*\srel=\"stylesheet\"")
+_HOST_HEADER = re.compile(r"(\[[0-9A-Fa-f:.]+\]|[^:\[\]]+)(?::\d+)?")
+_TOKEN_IN_URL = re.compile(r"([?&]t=)[^&\s\"]+")
 
-    return resources.files(__package__).joinpath("assets/ui.html").read_text(encoding="utf-8")
+
+def load_asset(nonce: str = "") -> str:
+    """The page shipped beside this module, with its stylesheet and scripts inlined.
+
+    One document keeps every byte of the page behind the token and needs no static routes.
+    `tests/ui/harness.mjs` assembles the page the same way for the browser tests.
+
+    Raises:
+        ValueError: If `ui.html` references an asset in a form this cannot inline.
+    """
+    assets = resources.files(__package__).joinpath("assets")
+    source = assets.joinpath("ui.html").read_text(encoding="utf-8")
+    if len(_ANY_ASSET.findall(source)) != len(_LOCAL_ASSET.findall(source)):
+        raise ValueError(
+            'ui.html may only reference assets as <link rel="stylesheet" href="NAME"> or <script src="NAME"></script>'
+        )
+    attribute = f' nonce="{nonce}"' if nonce else ""
+
+    def inline(match: re.Match[str]) -> str:
+        stylesheet, script = match.groups()
+        if stylesheet:
+            return f"<style{attribute}>\n{assets.joinpath(stylesheet).read_text(encoding='utf-8')}</style>"
+        return f"<script{attribute}>\n{assets.joinpath(script).read_text(encoding='utf-8')}</script>"
+
+    return _LOCAL_ASSET.sub(inline, source)
 
 
 def build_server(
@@ -1025,9 +1241,10 @@ def build_server(
         token=token or secrets.token_urlsafe(32),
         depth=depth,
         read_only=read_only,
-        asset=asset if asset is not None else load_asset(),
         reload_asset=asset is None,
+        bound_host=host,
     )
+    config.asset = asset if asset is not None else load_asset(config.nonce)
     try:
         return _Server((host, port), UIHandler, config)
     except OSError as exc:
@@ -1036,7 +1253,7 @@ def build_server(
 
 def server_url(server: _Server) -> str:
     host, port = server.server_address[:2]
-    shown = "127.0.0.1" if host in ("0.0.0.0", "") else host
+    shown = "127.0.0.1" if host in ("0.0.0.0", "") else "::1" if host == "::" else host
     if isinstance(shown, bytes):  # pragma: no cover - AF_UNIX never happens here
         shown = shown.decode()
     if ":" in str(shown) and not str(shown).startswith("["):

@@ -1,493 +1,419 @@
-/* Edge cases: big reports, deep links, partial documents, runs missing a half. */
-import { page, runner, tick } from './harness.mjs';
+/* The Evals section beyond the bundled sample: the report table, the run list, links, the case
+   editor and what Save writes, served mode against a fake server, keyboard and theme. */
+import { fakeServer, page, runner, tick } from './harness.mjs';
 
 const { ok, done } = runner('extras');
-const errs = [];
-
-// ── a report big enough to need the cap ──
-{
-  const n = 420;
-  const cases = Array.from({ length: n }, (_, i) => ({
-    name: `case_${i}`, session_id: `sid-${i}`, evaluator: 'OutputEvaluator',
-    input: `q${i}`, expected_output: 'yes', actual_output: i % 7 ? 'yes' : 'no',
-  }));
-  const p = await page();
-  await p.openFolder({
-    'big/experiment.json': { cases: cases.map(({ name, session_id, input }) => ({ name, session_id, input })), evaluators: [] },
-    'big/report.json': {
-      overall_score: 0.857, cases,
-      scores: cases.map((_, i) => (i % 7 ? 1 : 0)),
-      test_passes: cases.map((_, i) => !!(i % 7)),
-      detailed_results: cases.map((_, i) => [{ score: i % 7 ? 1 : 0, test_pass: !!(i % 7), label: i % 7 ? 'match' : 'no_match' }]),
-    },
-  });
+const pages = [];
+const open = async opts => { const p = await page(opts); pages.push(p); return p; };
+/** A page with no server, opened at an address of its own: there the route follows `#`. */
+const linked = route => open({ url: `http://127.0.0.1:9999/#${route}` });
+/** A page with this experiment, and its report if given, read from a folder and opened. */
+const opened = async (experiment, report) => {
+  const p = await open();
+  await p.openFolder({ 'run/experiment.json': experiment, ...(report && { 'run/report.json': report }) });
   await p.click('#runs-rows tr.run');
+  return p;
+};
+const experiment = (...cases) => ({ cases, evaluators: [] });
+const CASE = { name: 'a', session_id: 's-a', input: 'q' };
+const report = (score, ...cases) => ({
+  overall_score: score, cases: cases.map(c => ({ evaluator: 'X', ...c })),
+  scores: cases.map(() => score), test_passes: cases.map(() => score === 1),
+});
+
+// ── report table: the row cap ──
+{
+  const cases = Array.from({ length: 420 }, (_, i) => ({ name: `case_${i}`, session_id: `sid-${i}`, input: `q${i}` }));
+  const p = await opened(experiment(...cases), report(1, ...cases));
   await p.click('.tab[data-view="report"]');
-  ok(p.$$('#rep-rows tr.case').length === 300, 'first page is capped at 300 rows', p.$$('#rep-rows tr.case').length);
-  ok(p.$('#rep-more').hidden === false, 'and says there are more');
-  ok(/Show 120 more cases/.test(p.text('#rep-more')), 'naming how many', p.text('#rep-more'));
-  ok(p.text('#rep-count') === `${n} of ${n} rows`, 'the count is the real total, not the shown one', p.text('#rep-count'));
+  const shown = () => p.$$('#rep-rows tr.case').length;
+  ok(shown() === 300, 'the first page is capped at 300 rows', shown());
+  ok(!p.$('#rep-more').hidden && /120 more/.test(p.text('#rep-more')), 'with a button naming how many are left',
+    p.text('#rep-more'));
+  ok(p.text('#rep-count') === '420 of 420 rows', 'the count is the total, not the rows shown', p.text('#rep-count'));
   await p.click('#rep-more');
-  ok(p.$$('#rep-rows tr.case').length === n, 'show-more reveals the rest', p.$$('#rep-rows tr.case').length);
-  ok(p.$('#rep-more').hidden === true, 'and the button goes away');
-  errs.push(...p.errs);
+  ok(shown() === 420 && p.$('#rep-more').hidden, 'show more reveals the rest and goes away', shown());
 }
 
-// ── a deep link opens the case it names ──
+// ── report table: a report with only its required arrays ──
 {
-  const p = await page({ url: 'http://127.0.0.1/?x=1#tab=report&run=experiment.json&case=refund_edge_case' });
-  ok(p.text('.tab.on') === 'Report', 'the tab from the hash wins', p.text('.tab.on'));
-  ok(p.$$('#case-list li.on')[0]?.textContent.includes('refund_edge_case'),
-    'the case from the hash is selected', p.$$('#case-list li.on')[0]?.textContent);
-  await p.click('.tab[data-view="experiment"]');
-  ok(/case=refund_edge_case/.test(p.window.location.hash), 'the hash keeps naming it', p.window.location.hash);
-  errs.push(...p.errs);
-}
-
-/* ── links saved under names the section has since stopped using ──
-   `tab=optimization` named the whole of it before it was split into tabs, and `tab=opt-results`
-   named the one tab that held the result and everything about it. Both were looking at the
-   result, so both land on Overview, which is where the result is now — rather than at a view name
-   this page no longer has and a silent fall back to the run list. */
-for (const [saved, label] of [['optimization', 'the section'], ['opt-results', 'its Results tab']]) {
-  const p = await page({ url: `http://127.0.0.1/?x=1#tab=${saved}` });
-  ok(p.$('#v-opt-overview').classList.contains('on'), `a link saved as ${label} lands on the result`);
-  ok(/tab=opt-overview/.test(p.window.location.hash), 'and is rewritten to the view it found',
-    p.window.location.hash);
-  errs.push(...p.errs);
-}
-
-// ── a report that omits every optional array still renders ──
-{
-  const p = await page();
-  await p.openFolder({
-    'bare/experiment.json': { cases: [{ name: 'a', session_id: 's-a', input: 'q' }], evaluators: [] },
-    'bare/report.json': {
-      overall_score: 1.0,
-      cases: [{ name: 'a', session_id: 's-a', evaluator: 'OutputEvaluator', input: 'q', actual_output: 'yes' }],
-      scores: [1.0], test_passes: [true],
-    },
-  });
-  await p.click('#runs-rows tr.run');
+  const p = await opened(experiment(CASE), report(1, { ...CASE, actual_output: 'yes' }));
   await p.click('.tab[data-view="report"]');
-  ok(p.$$('#rep-rows tr.case').length === 1, 'the row renders', p.$$('#rep-rows tr.case').length);
-  ok(p.text('#r-score') === '1.00', 'score renders', p.text('#r-score'));
+  ok(p.$$('#rep-rows tr.case').length === 1 && p.text('#r-score') === '1.00', 'renders its row and score',
+    p.text('#v-report'));
   await p.click('#rep-rows tr.case');
-  const detail = p.text('#rep-rows tr.detail');
-  ok(/evaluator returned no outputs/.test(detail), 'says the row carries no outputs rather than inventing a verdict', detail);
-  ok(p.errs.length === 0, 'no errors on a report missing its optional arrays', p.errs.join('; '));
-  errs.push(...p.errs);
+  ok(/returned no outputs/.test(p.text('#rep-rows tr.detail')),
+    'and says the row has no outputs rather than inventing a verdict', p.text('#rep-rows tr.detail'));
 }
 
-// ── a report that does not belong to the experiment beside it says so ──
+// ── run list: pairing, half-present runs, and the cells that jump to a tab ──
 {
-  const p = await page();
+  const p = await open();
   await p.openFolder({
-    'wrong/experiment.json': { cases: [{ name: 'a', session_id: 's-a', input: 'q' }], evaluators: [] },
-    'wrong/report.json': {
-      overall_score: 0.0,
-      cases: [{ name: 'somebody-elses-case', session_id: 's-z', evaluator: 'X' }],
-      scores: [0.0], test_passes: [false],
-    },
+    'paired/experiment.json': experiment({ ...CASE, expected_output: 'yes' }),
+    'paired/report.json': report(0.25, CASE),
+    'paired/experiment.saved.json': experiment(CASE),
+    'mismatch/experiment.json': experiment(CASE),
+    'mismatch/report.json': report(0, { name: 'somebody-elses-case', session_id: 's-z' }),
+    'only-report/report.json': report(0.4, { name: 'a' }),
+    'only-exp/experiment.json': experiment(CASE),
   });
-  const row = p.$('#runs-rows tr.run');
-  ok(/does not match/.test(row.textContent), 'mismatched pairing is flagged', row.textContent.replace(/\s+/g, ' '));
-  errs.push(...p.errs);
-}
+  const PAIRED = 'paired / experiment.json', ONLY_EXP = 'only-exp / experiment.json';
+  const row = label => p.$$('#runs-rows tr.run').find(r => p.text(r.children[0]) === label);
+  const cell = (label, i) => row(label).children[i];
+  const shows = (label, i, what) => what.test(p.text(cell(label, i)));
+  const runs = () => p.click('.tab[data-view="runs"]');
 
-// ── the default filenames pair even when another experiment is in the folder ──
-{
-  const p = await page();
-  await p.openFolder({
-    'd/experiment.json': { cases: [{ name: 'a', session_id: 's-a', input: 'q' }], evaluators: [] },
-    'd/report.json': {
-      overall_score: 1, cases: [{ name: 'a', session_id: 's-a', evaluator: 'X' }],
-      scores: [1], test_passes: [true],
-    },
-    'd/experiment.saved.json': { cases: [{ name: 'a', session_id: 's-a', input: 'q' }], evaluators: [] },
-  });
-  const rows = p.$$('#runs-rows tr.run');
-  ok(rows.length === 2, 'two experiments, one report', rows.length);
-  const paired = rows.find(r => />\s*experiment.json|experiment.json<|experiment.json/.test(r.children[1].textContent)
-    && !/saved/.test(r.children[1].textContent));
-  ok(/pairing verified/.test(paired.textContent), 'experiment.json paired with report.json',
-    paired.textContent.replace(/\s+/g, ' '));
-  const other = rows.find(r => /saved/.test(r.children[1].textContent));
-  ok(/not run yet/.test(other.children[2].textContent), 'the other experiment is left unpaired',
-    other.children[2].textContent);
-  errs.push(...p.errs);
-}
+  ok(shows(PAIRED, 2, /pairing verified/), 'experiment.json pairs with the report.json beside it', p.text(row(PAIRED)));
+  ok(shows('paired / experiment.saved.json', 2, /not run yet/), 'leaving the other experiment in the folder unpaired',
+    p.text('#runs-rows'));
+  ok(shows('mismatch / experiment.json', 2, /does not match/), 'a report for other cases is flagged', p.text('#runs-rows'));
+  ok(shows('only-report / report.json', 1, /none/), 'a report alone is a run with no experiment', p.text('#runs-rows'));
+  const jumps = label => [...row(label).children].map(td => td.dataset.goto || '-').join();
+  ok(jumps(PAIRED) === '-,experiment,report,-' && jumps(ONLY_EXP) === '-,experiment,-,-',
+    'only a cell with something behind it is marked as a jump', `${jumps(PAIRED)} | ${jumps(ONLY_EXP)}`);
 
-// ── a run with only a report, and one with only an experiment ──
-{
-  const p = await page();
-  await p.openFolder({
-    'only-report/report.json': {
-      overall_score: 0.4,
-      cases: [{ name: 'a', evaluator: 'X', input: 'q', actual_output: 'no' }],
-      scores: [0.4], test_passes: [false],
-    },
-    'only-exp/experiment.json': { cases: [{ name: 'b', session_id: 's-b', input: 'q' }], evaluators: [] },
-  });
-  const rows = p.$$('#runs-rows tr.run');
-  ok(rows.length === 2, 'both halves listed as runs', rows.length);
-  const reportOnly = rows.find(r => /only-report/.test(r.textContent));
-  ok(/none/.test(reportOnly.children[1].textContent), 'report-only run says it has no experiment',
-    reportOnly.children[1].textContent);
-  const expOnly = rows.find(r => /only-exp/.test(r.textContent));
-  ok(/not run yet/.test(expOnly.children[2].textContent), 'experiment-only run says it has not run',
-    expOnly.children[2].textContent);
-
-  await p.click(reportOnly);
-  ok(p.text('.tab.on') === 'Report', 'picking a report-only run opens the report', p.text('.tab.on'));
+  await p.click(row('only-report / report.json'));
+  ok(p.text('.tab.on') === 'Report' && p.text('#r-score') === '0.40', 'a report-only run opens on its report',
+    p.text('.tab.on'));
   await p.click('.tab[data-view="experiment"]');
-  ok(/No experiment in this run/.test(p.text('#form')), 'the editor says why it is empty', p.text('#form'));
-  ok(p.$('#save').disabled && p.$('#add-case').disabled, 'and offers no controls that cannot work');
+  ok(/No experiment in this run/.test(p.text('#form')) && p.$('#save').disabled && p.$('#add-case').disabled,
+    'and its editor says why it is empty, with nothing to press', p.text('#form'));
+
+  await runs();
+  await p.click(cell(ONLY_EXP, 2));
+  ok(p.text('.tab.on') === 'Experiment', 'a cell that is not a jump does what the row does', p.text('.tab.on'));
   await p.click('.tab[data-view="report"]');
-  ok(p.text('#r-score') === '0.40', 'the report still loads', p.text('#r-score'));
+  ok(/No report in this run/.test(p.text('#rep-rows')), 'and a run with no report says so', p.text('#rep-rows'));
 
-  await p.click(p.$$('#runs-rows tr.run').find(r => /only-exp/.test(r.textContent)));
-  await p.click('.tab[data-view="report"]');
-  ok(/No report in this run/.test(p.text('#rep-rows')), 'and the report side says it has not run',
-    p.text('#rep-rows'));
-  errs.push(...p.errs);
-}
+  await runs();
+  await p.click(cell(PAIRED, 2));
+  ok(p.text('.tab.on') === 'Report' && p.text('#r-score') === '0.25', 'the report cell opens a run on its report',
+    p.text('.tab.on'));
+  await runs();
+  await p.click(cell(PAIRED, 2));
+  ok(p.text('.tab.on') === 'Report', 'also when that run is the one already open', p.text('.tab.on'));
 
-/* ── the experiment and report cells open their own tab ──
- * The row already selects the run; which of its two halves you wanted is in the cell you
- * clicked, and a run list is read by scanning those columns. */
-{
-  const p = await page();
-  await p.openFolder({
-    'alpha/experiment.json': {
-      cases: [{ name: 'a', session_id: 's-a', input: 'q', expected_output: 'yes' }],
-      evaluators: [{ evaluator_type: 'OutputEvaluator', threshold: 0.8 }],
-    },
-    'alpha/report.json': {
-      overall_score: 0.25,
-      cases: [{ name: 'a', session_id: 's-a', evaluator: 'X', input: 'q', actual_output: 'no' }],
-      scores: [0.25], test_passes: [false],
-    },
-    'beta/experiment.json': { cases: [{ name: 'b', session_id: 's-b', input: 'q' }], evaluators: [] },
-  });
-  const rowOf = name => p.$$('#runs-rows tr.run').find(r => new RegExp(name).test(r.textContent));
-
-  const expCell = rowOf('alpha').children[1];
-  ok(expCell.dataset.goto === 'experiment' && expCell.classList.contains('goto'),
-    'the experiment cell is marked as a jump', expCell.className + ' ' + expCell.dataset.goto);
-  await p.click(expCell);
-  ok(p.text('.tab.on') === 'Experiment', 'clicking it lands on the Experiment tab', p.text('.tab.on'));
-  ok(p.$$('#case-list li[data-i]').length === 1, 'with that run loaded, not just the tab switched',
-    p.$$('#case-list li[data-i]').length);
-
-  /* From another run, so the jump goes through selection rather than the already-here
-     shortcut — and the default for a run that has both halves is the Experiment tab, which
-     is what the cell has to override. */
-  await p.click('.tab[data-view="runs"]');
-  await p.click(rowOf('beta'));
-  await p.click('.tab[data-view="runs"]');
-  await p.click(rowOf('alpha').children[2]);
-  ok(p.text('.tab.on') === 'Report', 'the report cell lands on the Report tab', p.text('.tab.on'));
-  ok(p.text('#r-score') === '0.25', 'showing that run’s report', p.text('#r-score'));
-
-  // And the same cell on the run already open is the shortcut, which must land identically.
-  await p.click('.tab[data-view="runs"]');
-  await p.click(rowOf('alpha').children[2]);
-  ok(p.text('.tab.on') === 'Report', 'and so does it on the run already open', p.text('.tab.on'));
-
-  /* A run with no report must not have its empty cell jump to an empty Report tab — the
-     cell is only a jump when there is something behind it. */
-  await p.click('.tab[data-view="runs"]');
-  const noReport = rowOf('beta').children[2];
-  ok(!noReport.dataset.goto && !noReport.classList.contains('goto'),
-    'the "not run yet" cell is not a jump', noReport.className);
-  await p.click(noReport);
-  ok(p.text('.tab.on') === 'Experiment', 'clicking it does what the row does', p.text('.tab.on'));
-
-  /* Jumping between the tabs of the run you are already on must not re-read it from disk:
-     the unsaved-changes prompt only fires when the run changes, so a silent reload here
-     would drop the edit without ever asking. */
+  // Re-reading the open run would drop the edit without asking.
+  await p.click('.tab[data-view="experiment"]');
   await p.type('#form [data-k="expected_output"]', 'edited, not saved');
-  await p.click('.tab[data-view="runs"]');
-  await p.click(rowOf('beta').children[1]);
-  ok(p.text('.tab.on') === 'Experiment', 'the jump still happens', p.text('.tab.on'));
-  ok(p.$('#form [data-k="expected_output"]').value === 'edited, not saved',
-    'and the unsaved edit survives it', p.$('#form [data-k="expected_output"]').value);
-  ok(/1 unsaved change/.test(p.text('#dirty')), 'still reported as unsaved', p.text('#dirty'));
-  errs.push(...p.errs);
+  await runs();
+  await p.click(cell(PAIRED, 3));
+  ok(p.$('#v-experiment').classList.contains('on') && p.$('#form [data-k="expected_output"]').value === 'edited, not saved',
+    'the open run’s row goes back to it with the unsaved edit intact', p.$('#form [data-k="expected_output"]').value);
 }
 
-/* ── the properties are set in ink you can read ──
- * Field labels, column headers and the detail list's keys name what you are looking at, so
- * none of them may be set in the page's faintest ink. */
+// ── deep links ──
 {
-  const p = await page();
-  await p.openFolder({
-    'c/experiment.json': {
-      cases: [{ name: 'a', session_id: 's-a', input: 'q', expected_output: 'yes' }],
-      // The rubric carries markup, because picking the key out of `name=value` means the
-      // value is now interpolated into HTML and has to arrive escaped.
-      evaluators: [{ evaluator_type: 'OutputEvaluator', threshold: 0.8, rubric: 'say <b>yes</b>' }],
-    },
-    'c/report.json': {
-      overall_score: 1, cases: [{ name: 'a', session_id: 's-a', evaluator: 'X', input: 'q', actual_output: 'yes' }],
-      scores: [1], test_passes: [true],
-    },
-  });
-  await p.click('#runs-rows tr.run');
-  /* jsdom does not substitute custom properties, so a computed `color` comes back as the
-     literal `var(--inkN)` it was declared with. That is exactly what is being asserted: which
-     ink the stylesheet reaches for, not what a particular theme resolves it to. */
-  const ink = sel => p.window.getComputedStyle(p.$(sel)).color.trim();
-  const FAINT = 'var(--ink3)';
-  ok(ink('.field .hint') === FAINT, 'a hint is still the faintest ink, as the reference',
-    ink('.field .hint'));
-  ok(ink('.field > label') !== FAINT, 'a case field label is not', ink('.field > label'));
-
-  /* And the faintest ink itself has to clear WCAG AA on the card it sits on, or promoting
-     the labels would just have moved the problem to the hints. */
-  const lum = hex => {
-    const ch = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255)
-      .map(v => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
-    return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
-  };
-  const faintHex = p.window.getComputedStyle(p.$('.app')).getPropertyValue('--ink3').trim();
-  // `--card` is declared as `var(--card, #ffffff)` so a host theme can override it; untouched,
-  // as it is here, the ground is white.
-  const ratio = (lum('#ffffff') + 0.05) / (lum(faintHex) + 0.05);
-  ok(ratio >= 4.5, 'the muted ink clears 4.5:1 on an untinted card', `${faintHex} is ${ratio.toFixed(2)}:1`);
-
-  // An evaluator's settings read as `name=value`, with the name picked out of it.
-  const chipKey = p.$('#evs .evchip .ck');
-  ok(chipKey && chipKey.textContent === 'threshold', 'the evaluator setting names its key',
-    chipKey && chipKey.textContent);
-  ok(/threshold=0.8/.test(p.text('#evs .evchip .c')), 'and still shows the value beside it',
-    p.text('#evs .evchip .c'));
-  ok(/say <b>yes<\/b>/.test(p.text('#evs .evchip .c')), 'a value containing markup is shown as text',
-    p.text('#evs .evchip .c'));
-  ok(!p.$('#evs .evchip .c b'), 'not parsed as markup',
-    p.$('#evs .evchip .c').innerHTML);
-
+  const p = await linked('/runs/experiment.json/experiment/cases/refund_edge_case');
+  ok(p.text('.tab.on') === 'Experiment' && p.text('#case-list li.on .nm') === 'refund_edge_case',
+    'an address opens the view and the case it names', `${p.text('.tab.on')} ${p.text('#case-list li.on')}`);
   await p.click('.tab[data-view="report"]');
-  ok(ink('table.rep th') !== FAINT, 'a report column header is not the faintest ink', ink('table.rep th'));
-  await p.click('#rep-rows tr.case');
-  ok(ink('#rep-rows tr.detail .kv dt') !== FAINT, 'nor is a detail property name',
-    ink('#rep-rows tr.detail .kv dt'));
-  errs.push(...p.errs);
+  ok(p.window.location.hash === '#/runs/experiment.json/report', 'and another view of the same run is a path beside it',
+    p.window.location.hash);
+}
+for (const [route, view, rewritten, what] of [
+  ['/nope/at/all', 'runs', '/runs', 'an address the page does not have falls back to the run list'],
+  ['/runs/experiment.json/experiment/cases/%E0%A4%A', 'experiment', '/runs/experiment.json/experiment/cases/order_status_lookup',
+    'a malformed escape names no case, so the first is shown'],
+  ['/optimization/tuning/overview', 'runs', '/runs', 'an Optimization address with no optimizer run falls back to the run list'],
+]) {
+  const p = await linked(route);
+  const on = p.$$('.view.on').map(v => v.id).join();
+  ok(p.$('.app').dataset.ready === '1' && on === `v-${view}` && p.window.location.hash === '#' + rewritten,
+    `${route}: ${what}, and the address is rewritten to match`, `${on} ${p.window.location.hash}`);
 }
 
-// ── the metadata editor ──
+// ── case editor: deleting a case ──
 {
-  const GENERATED = {
-    'gen/experiment.json': {
-      cases: [
-        { name: 'kept', session_id: 's-0', input: 'q0', expected_output: 'a',
-          metadata: { status: 'accepted', source: 'session-7' } },
-        { name: 'draft_a', session_id: 's-1', input: 'q1', metadata: { status: 'draft', turns: 3 } },
-        { name: 'draft_b', session_id: 's-2', input: 'q2', metadata: { status: 'draft' } },
-        { name: 'odd', session_id: 's-3', input: 'q3', metadata: 'not an object' },
-      ],
-      evaluators: [],
-    },
-  };
-  const opened = async () => {
-    const p = await page();
-    await p.openFolder(GENERATED);
-    await p.click('#runs-rows tr.run');
-    await p.click('.tab[data-view="experiment"]');
-    return p;
-  };
-  const rows = p => p.$$('.meta-rows .meta-row');
-  const pair = row => [row.querySelector('[data-meta-k]').value, row.querySelector('[data-meta-v]').value];
-  const pick = async (p, i) => { await p.click(`#case-list li[data-i="${i}"]`); };
-  // The case object is a closure variable; reading it back means re-rendering from it.
-  const reread = async (p, i) => { await pick(p, (i + 1) % 4); await pick(p, i); };
-
-  {
-    const p = await opened();
-    // The glyph strip: which expectations a case carries, without opening it.
-    ok(p.text('#case-list li[data-i="0"] .props') === 'OM', 'a case lists its properties',
-      p.text('#case-list li[data-i="0"] .props'));
-    ok(p.text('#case-list li[data-i="1"] .props') === 'M', 'and only the ones it has',
-      p.text('#case-list li[data-i="1"] .props'));
-    ok(p.$$('#case-list .badge').length === 2, 'each draft is badged as one',
-      p.$$('#case-list .badge').length);
-    ok(!p.$('#case-list li[data-i="0"] .badge'), 'an accepted case is not');
-
-    await pick(p, 1);
-    ok(rows(p).length === 2, 'metadata renders one row per key', rows(p).length);
-    ok(pair(rows(p)[0]).join('=') === 'status=draft', 'key and value, unquoted',
-      pair(rows(p)[0]).join('='));
-    ok(pair(rows(p)[1]).join('=') === 'turns=3', 'a number shows as its digits',
-      pair(rows(p)[1]).join('='));
-    errs.push(...p.errs);
-  }
-
-  // ── editing a value, and what lands in the file ──
-  {
-    const p = await opened();
-    await pick(p, 1);
-    await p.type(rows(p)[1].querySelector('[data-meta-v]'), '4');
-    ok(p.text('#dirty') === '1 unsaved change', 'a metadata edit is an unsaved change',
-      p.text('#dirty'));
-    ok(p.text('#save') === 'Save (1)', 'and the Save button carries the count', p.text('#save'));
-
-    await p.type(rows(p)[0].querySelector('[data-meta-v]'), 'hello world');
-    await p.click('#save');
-    const doc = await p.saved();
-    ok(doc.cases[1].metadata.turns === 4, 'a value that parses as JSON is written as JSON',
-      JSON.stringify(doc.cases[1].metadata));
-    ok(doc.cases[1].metadata.status === 'hello world', 'one that does not is written as text',
-      JSON.stringify(doc.cases[1].metadata));
-    errs.push(...p.errs);
-  }
-
-  // ── renaming and clearing keys ──
-  {
-    const p = await opened();
-    await pick(p, 1);
-    await p.type(rows(p)[1].querySelector('[data-meta-k]'), 'turn_count');
-    await reread(p, 1);
-    ok(rows(p).map(pair).map(kv => kv[0]).join(',') === 'status,turn_count', 'a key can be renamed',
-      rows(p).map(pair).map(kv => kv[0]).join(','));
-
-    await p.type(rows(p)[1].querySelector('[data-meta-k]'), '');
-    await reread(p, 1);
-    ok(rows(p).length === 1, 'emptying a key drops it', rows(p).map(pair).join(' | '));
-
-    await p.type(rows(p)[0].querySelector('[data-meta-k]'), '');
-    await reread(p, 1);
-    ok(rows(p).length === 0, 'and the last one drops the metadata itself', rows(p).length);
-    ok(!p.$('#case-list li[data-i="1"] .props').textContent.includes('M'),
-      'which the glyph strip reflects', p.text('#case-list li[data-i="1"] .props'));
-    errs.push(...p.errs);
-  }
-
-  // ── adding and removing a row ──
-  {
-    const p = await opened();
-    await pick(p, 2);
-    ok(rows(p).length === 1, 'one key to start', rows(p).length);
-    await p.click('[data-meta-add]');
-    ok(rows(p).length === 2, 'the + key button offers a row', rows(p).length);
-    /* A blank row is not a key yet: nothing about the case has changed, so nothing should claim
-       it has — and saving here must not put a `""` key in the file. */
-    ok(p.text('#dirty') === 'No unsaved changes', 'a blank row is not an edit', p.text('#dirty'));
-
-    await p.type(rows(p)[1].querySelector('[data-meta-k]'), 'source');
-    await p.type(rows(p)[1].querySelector('[data-meta-v]'), 'session-9');
-    await reread(p, 2);
-    ok(rows(p).map(pair).map(kv => kv.join('=')).join(',') === 'status=draft,source=session-9',
-      'a filled row becomes a key', rows(p).map(pair).map(kv => kv.join('=')).join(','));
-
-    await p.click(rows(p)[0].querySelector('[data-meta-rm]'));
-    await reread(p, 2);
-    ok(rows(p).map(pair).map(kv => kv.join('=')).join(',') === 'source=session-9',
-      'and the × removes one', rows(p).map(pair).map(kv => kv.join('=')).join(','));
-    errs.push(...p.errs);
-  }
-
-  // ── metadata that rows cannot represent ──
-  {
-    const p = await opened();
-    await pick(p, 3);
-    ok(!p.$('.meta-rows'), 'a metadata that is not an object gets no rows');
-    const area = p.$$('textarea[data-k="metadata"]')[0];
-    ok(area && area.value === '"not an object"', 'it is shown as JSON instead', area && area.value);
-    ok(/not an object, so it is shown as JSON/.test(p.text('#form')), 'and says why');
-    errs.push(...p.errs);
-  }
-
-  /* An empty dict or list is not a property the case carries: `{}` in the file and the key
-     being absent mean the same thing to every evaluator, so neither earns a glyph. */
-  {
-    const p = await page();
-    await p.openFolder({
-      'empties/experiment.json': {
-        cases: [{ name: 'hollow', session_id: 's-h', input: 'q', metadata: {}, expected_trajectory: [] }],
-        evaluators: [],
-      },
-    });
-    await p.click('#runs-rows tr.run');
-    await p.click('.tab[data-view="experiment"]');
-    ok(p.text('#case-list li[data-i="0"] .props') === '', 'an empty property earns no glyph',
-      JSON.stringify(p.text('#case-list li[data-i="0"] .props')));
-    ok(p.$$('.meta-rows .meta-row').length === 0, 'and the editor shows it as no keys',
-      p.$$('.meta-rows .meta-row').length);
-    ok(!!p.$('[data-meta-add]'), 'with the + key button still offered');
-    errs.push(...p.errs);
-  }
-
-  // ── the review pass ──
-  {
-    const p = await opened();
-    ok(p.text('#review-case') === 'Review drafts (2)', 'the button counts the drafts',
-      p.text('#review-case'));
-    ok(p.$('#review-case').disabled === false, 'and is live when there are any');
-    ok(p.$('#review-bar').hidden === true, 'the bar is not shown until asked for');
-
-    await p.click('#review-case');
-    ok(p.$('#review-bar').hidden === false, 'which opens it');
-    ok(/2 drafts left, 2 kept/.test(p.text('#review-bar')), 'counting both sides',
-      p.text('#review-bar'));
-    // Reviewing means looking at the case being decided, so the pass moves the selection.
-    ok(p.$('#case-list li.on').dataset.i === '1', 'and selects the first draft',
-      p.$('#case-list li.on')?.dataset.i);
-
-    await p.key('a');
-    ok(/1 draft left, 3 kept/.test(p.text('#review-bar')), 'accept resolves one draft',
-      p.text('#review-bar'));
-    ok(p.$('#case-list li.on').dataset.i === '2', 'and moves to the next',
-      p.$('#case-list li.on')?.dataset.i);
-    ok(!p.$('#case-list li[data-i="1"] .badge'), 'the accepted case loses its badge');
-
-    await p.key('d');
-    ok(p.$$('#case-list li').length === 3, 'drop removes the case from the list',
-      p.$$('#case-list li').length);
-    ok(p.$('#review-bar').hidden === true, 'and with no drafts left the pass closes');
-    ok(/every draft is resolved/.test(p.text('#saved')), 'saying so', p.text('#saved'));
-    ok(p.$('#review-case').disabled === true, 'with nothing left to review');
-
-    await p.click('#save');
-    const doc = await p.saved();
-    ok(doc.cases.map(c => c.name).join(',') === 'kept,draft_a,odd', 'the dropped case is written out',
-      doc.cases.map(c => c.name).join(','));
-    ok(doc.cases[1].metadata.status === 'accepted', 'and the accepted one keeps its other keys',
-      JSON.stringify(doc.cases[1].metadata));
-    ok(doc.cases[1].metadata.turns === 3, 'untouched', JSON.stringify(doc.cases[1].metadata));
-    errs.push(...p.errs);
-  }
-
-  // ── accept-all, and leaving the pass ──
-  {
-    const p = await opened();
-    await p.click('#review-case');
-    await p.click('[data-rv="acceptall"]');
-    ok(p.$$('#case-list .badge').length === 0, 'accept all resolves every draft at once',
-      p.$$('#case-list .badge').length);
-    ok(p.$('#review-bar').hidden === true, 'and the pass is over');
-    errs.push(...p.errs);
-  }
-
-  {
-    const p = await opened();
-    await p.click('#review-case');
-    await p.key('Escape');
-    ok(p.$('#review-bar').hidden === true, 'escape leaves the pass');
-    ok(p.$$('#case-list .badge').length === 2, 'deciding nothing', p.$$('#case-list .badge').length);
-    ok(p.text('#dirty') === 'No unsaved changes', 'and changing nothing', p.text('#dirty'));
-
-    /* The shortcuts are single letters. While a field has focus they are letters someone is
-       typing, so they must not also be decisions. */
-    await p.click('#review-case');
-    const input = p.$('#case-find');
-    input.focus();
-    input.dispatchEvent(new p.window.KeyboardEvent('keydown', { key: 'd', bubbles: true }));
-    await tick();
-    ok(p.$$('#case-list li').length === 4, 'a keystroke in a field is not a decision',
-      p.$$('#case-list li').length);
-    errs.push(...p.errs);
-  }
+  const p = await opened(experiment({ name: 'keep', input: 'a' }, { name: 'gone', input: 'b' }));
+  const remove = async () => { await p.click('#case-list li[data-i="1"]'); await p.click('#del-case'); };
+  await remove();
+  ok(p.text('#dirty') === '1 unsaved change', 'deleting a case counts as a change', p.text('#dirty'));
+  await p.click('#revert');
+  ok(p.$$('#case-list li[data-i]').length === 2 && p.text('#dirty') === 'No unsaved changes',
+    'Revert brings it back, leaving nothing to save', p.text('#dirty'));
+  await remove();
+  await p.click('#save');
+  const names = (await p.saved()).cases.map(c => c.name).join();
+  ok(names === 'keep', 'and Save writes the file without it', names);
+  ok(p.text('#dirty') === 'No unsaved changes', 'after which the delete is no longer pending', p.text('#dirty'));
 }
 
-done(errs);
+// ── case editor: an evaluator setting is text, whatever it contains ──
+{
+  const markup = '"><img src=x onerror="window.__xss=1">', value = 'say <b>yes</b>';
+  const p = await opened({ cases: [CASE], evaluators: [{ evaluator_type: 'Contains', [markup]: value }] });
+  ok(p.text('#evs .evchip .c') === `${markup}=${JSON.stringify(value)}`, 'its name and value are text on the chip',
+    p.$('#evs .evchip').innerHTML);
+  await p.click('#evs .evchip');
+  ok(p.$$('#evform label').some(l => l.textContent === markup) && !p.$('#evform img'), 'and in the form it opens',
+    p.$('#evform').innerHTML);
+}
+
+const DRAFTS = experiment(
+  { name: 'kept', input: 'q0', expected_output: 'a', metadata: { status: 'accepted', source: 'session-7' } },
+  { name: 'draft_a', input: 'q1', metadata: { status: 'draft', turns: 3 } },
+  { name: 'draft_b', input: 'q2', metadata: { status: 'draft' } },
+  { name: 'odd', input: 'q3', metadata: 'not an object' },
+  { name: 'hollow', input: 'q4', metadata: {}, expected_trajectory: [] },
+);
+const badges = p =>
+  p.$$('#case-list li[data-i]').filter(li => li.querySelector('.badge')).map(li => li.dataset.i).join();
+
+// ── metadata ──
+{
+  const p = await opened(DRAFTS);
+  const pick = i => p.click(`#case-list li[data-i="${i}"]`);
+  const rows = () => p.$$('.meta-row');
+  const field = (n, which) => rows()[n].querySelector(`[data-meta-${which}]`);
+  const written = async i => { await p.click('#save'); return JSON.stringify((await p.saved()).cases[i].metadata); };
+  const glyphs = () => p.$$('#case-list .props').map(el => el.textContent).join();
+
+  ok(glyphs() === 'OM,M,M,M,', 'the list marks the properties a case carries, and an empty one is not carried', glyphs());
+  ok(badges(p) === '1,2', 'and badges each draft', badges(p));
+
+  await pick(1);
+  const shown = rows().map((_, n) => `${field(n, 'k').value}=${field(n, 'v').value}`).join();
+  ok(shown === 'status=draft,turns=3', 'one row per key, with the value unquoted', shown);
+  await p.type(field(1, 'v'), '4');
+  ok(p.text('#dirty') === '1 unsaved change' && p.text('#save') === 'Save (1)',
+    'editing a value is an unsaved change, counted on Save', `${p.text('#dirty')} | ${p.text('#save')}`);
+  await p.type(field(0, 'v'), 'hello world');
+  let file = await written(1);
+  ok(file === '{"status":"hello world","turns":4}', 'a value that parses as JSON is written as JSON, any other as text', file);
+
+  await p.type(field(1, 'k'), 'turn_count');
+  file = await written(1);
+  ok(file === '{"status":"hello world","turn_count":4}', 'a key can be renamed', file);
+  await p.type(field(1, 'k'), '');
+  file = await written(1);
+  ok(file === '{"status":"hello world"}', 'emptying a key drops it', file);
+  await p.type(field(0, 'k'), '');
+  file = await written(1);
+  ok(file === undefined && glyphs() === 'OM,,M,M,', 'and emptying the last one drops the metadata itself',
+    `${file} ${glyphs()}`);
+
+  await pick(2);
+  await p.click('[data-meta-add]');
+  ok(rows().length === 2 && p.text('#dirty') === 'No unsaved changes', '+ key offers a blank row, which is not an edit',
+    `${rows().length} rows, ${p.text('#dirty')}`);
+  await p.type(field(1, 'k'), 'source');
+  await p.type(field(1, 'v'), 'session-9');
+  file = await written(2);
+  ok(file === '{"status":"draft","source":"session-9"}', 'a filled row becomes a key', file);
+  await p.click(field(0, 'rm'));
+  file = await written(2);
+  ok(file === '{"source":"session-9"}', 'and the × removes one', file);
+
+  await pick(3);
+  ok(!p.$('.meta-rows') && p.$('textarea[data-k="metadata"]').value === '"not an object"',
+    'metadata that is not an object is shown as JSON, not rows', p.text('#form'));
+  await pick(4);
+  ok(rows().length === 0 && !!p.$('[data-meta-add]'), 'and an empty one as no rows, with + key offered', rows().length);
+}
+{
+  const metadata = {
+    edit: 'x', id: '42', flag: 'true', big: '9007199254740993', note: 'line1\nline2', ' padded ': 'v', '': 'empty key',
+  };
+  const p = await opened(experiment({ name: 'a', input: 'q', metadata }));
+  await p.type('.meta-row [data-meta-v]', 'y');
+  await p.click('#save');
+  const file = JSON.stringify((await p.saved()).cases[0].metadata);
+  ok(file === JSON.stringify({ ...metadata, edit: 'y' }),
+    'editing one key leaves numeric and boolean strings, line breaks, padded keys and an empty key as they were', file);
+}
+
+// ── review pass over drafts ──
+{
+  const p = await opened(DRAFTS);
+  const bar = p.$('#review-bar'), selected = () => p.$('#case-list li.on').dataset.i;
+  ok(p.text('#review-case') === 'Review drafts (2)' && bar.hidden,
+    'the button counts the drafts, and the bar waits to be asked for', p.text('#review-case'));
+  await p.click('#review-case');
+  ok(/2 drafts left, 3 kept/.test(p.text(bar)) && selected() === '1',
+    'starting the pass counts both sides and selects the first draft', `${p.text(bar)} | selected ${selected()}`);
+  await p.key('a');
+  ok(/1 draft left, 4 kept/.test(p.text(bar)) && selected() === '2' && badges(p) === '2',
+    'a accepts the draft and moves to the next', `${p.text(bar)} | selected ${selected()} | drafts ${badges(p)}`);
+  await p.key('d');
+  ok(p.$$('#case-list li').length === 4 && bar.hidden && p.$('#review-case').disabled,
+    'd drops the case, and with no drafts left the pass closes', p.$$('#case-list li').length);
+  ok(/every draft is resolved/.test(p.text('#saved')), 'saying so', p.text('#saved'));
+  await p.click('#save');
+  const file = (await p.saved()).cases.map(c => `${c.name}:${JSON.stringify(c.metadata)}`);
+  ok(file.length === 4 && file[1] === 'draft_a:{"status":"accepted","turns":3}',
+    'Save writes the file without the dropped case, the accepted one keeping its other keys', file.join(' '));
+}
+{
+  const p = await opened(DRAFTS);
+  const bar = p.$('#review-bar');
+  await p.click('#review-case');
+  await p.key('Escape');
+  ok(bar.hidden && badges(p) === '1,2' && p.text('#dirty') === 'No unsaved changes',
+    'Escape leaves the pass, deciding nothing', `drafts ${badges(p)}, ${p.text('#dirty')}`);
+  await p.click('#review-case');
+  await p.key('d', p.$('#case-find'));
+  ok(p.$$('#case-list li').length === 5, 'a letter typed into a field is not a decision', p.$$('#case-list li').length);
+  await p.click('[data-rv="acceptall"]');
+  ok(badges(p) === '' && bar.hidden, 'Accept all resolves every draft and ends the pass', badges(p));
+}
+
+// ── review pass: its shortcuts belong to the Experiment view ──
+{
+  const p = await opened(experiment({ ...CASE, metadata: { status: 'draft' } }, { name: 'b', session_id: 's-b', input: 'q' }));
+  await p.click('#review-case');
+  await p.click('.tab[data-view="runs"]');
+  await p.key('d');
+  await p.click('.tab[data-view="experiment"]');
+  ok(p.$$('#case-list li[data-i]').length === 2, 'd pressed on another view drops nothing', p.$$('#case-list li[data-i]').length);
+}
+
+// ── a long rubric: cut short on its chip, whole in a text block ──
+{
+  const rubric = 'Score 1.0 when the reply is polite and names the policy. '.repeat(6).trim();
+  const p = await opened({ cases: [CASE], evaluators: [{ evaluator_type: 'OutputEvaluator', rubric, include_inputs: true }] });
+  const chip = () => p.$('#evs .evchip');
+  ok(p.text(chip()).length < 120 && p.text(chip()).includes('…') && chip().getAttribute('aria-expanded') === 'false',
+    'a long rubric is cut short on its chip', p.text(chip()));
+  await p.click(chip());
+  const area = p.$('#evform textarea[data-evk="rubric"]');
+  ok(area && area.value === rubric && p.$('#evform input[data-evk="include_inputs"]').type === 'checkbox'
+    && chip().getAttribute('aria-expanded') === 'true',
+  'and the chip opens a text block holding all of it, with the short settings still one line each');
+  await p.type(area, 'Score 1.0 when correct.\nScore 0 otherwise.');
+  await p.click('#save');
+  const saved = (await p.saved()).evaluators[0].rubric;
+  ok(saved === 'Score 1.0 when correct.\nScore 0 otherwise.', 'what is typed there is saved, line break included', saved);
+}
+
+// ── history: a move between views or runs is a step, and Back and Forward retrace them ──
+{
+  const two = { name: 'a2', session_id: 's-a2', input: 'q' };
+  const p = await open();
+  await p.openFolder({
+    'one/experiment.json': experiment(CASE, two), 'one/report.json': report(1, CASE),
+    'two/experiment.json': experiment({ name: 'b', session_id: 's-b', input: 'q' }),
+  });
+  const history = p.window.history;
+  const run = name => p.$$('#runs-rows tr.run').find(r => r.textContent.includes(name));
+  const at = () => `${p.$('.view.on').id} ${p.text('#path')}`;
+  const travel = async delta => { history.go(delta); await tick(6); return at(); };
+  const start = history.length;
+  await p.click(run('one'));
+  const scrolls = p.window.__scrolls;
+  await p.click('.tab[data-view="report"]');
+  await p.click('.tab[data-view="report"]');
+  ok(p.window.__scrolls === scrolls + 1, 'a view moved to starts at its top; the one already open stays put', p.window.__scrolls - scrolls);
+  await p.click('.tab[data-view="runs"]');
+  await p.click(run('two'));
+  ok(history.length === start + 4, 'each move between views or runs adds a step', history.length - start);
+  const retraced = [await travel(-1), await travel(-1), await travel(-1), await travel(3)];
+  ok(retraced.join() === 'v-runs one,v-report one/report.json,v-experiment one/experiment.json,v-experiment two/experiment.json',
+    'Back walks them in reverse, across runs, and Forward returns', retraced.join());
+
+  await travel(-3);
+  const steps = history.length;
+  await p.click(p.$$('#case-list li[data-i]')[1]);
+  ok(history.length === steps && p.window.location.hash === '#/runs/one/experiment.json/experiment/cases/a2',
+    'picking a case corrects the address without adding a step', p.window.location.hash);
+
+  await p.click('.tab[data-view="runs"]');
+  await p.click(run('two'));
+  const reread = [await travel(-2), p.$('#form [data-k="name"]').value, await travel(2)];
+  ok(reread.join() === 'v-experiment one/experiment.json,a2,v-experiment two/experiment.json',
+    'Back reopens the case that was being read, and the way Forward is still there', reread.join());
+
+  p.window.location.hash = '#/runs/one/experiment.json/report';
+  await tick(6);
+  ok(at() === 'v-report one/report.json', 'an address typed into the open page is followed', at());
+
+  await p.click(run('two'));
+  await p.type('#form [data-k="input"]', 'unsaved');
+  p.window.confirm = () => false;
+  await travel(-1);
+  ok(p.$('#form [data-k="input"]').value === 'unsaved' && p.window.location.hash === '#/runs/two/experiment.json/report',
+    'Back to another run does not drop unsaved edits when that is declined, and the address says where the page still is',
+    p.window.location.hash);
+
+  const fresh = await linked('/runs/experiment.json/report');
+  ok(fresh.window.history.length === 1, 'opening a link adds no step of its own', fresh.window.history.length);
+}
+
+// ── served mode, against a fake server ──
+const served = put => fakeServer({
+  runs: [{ id: 'e.json', dir: '.', report: null, link: null,
+    experiment: { path: 'e.json', name: 'e.json', size: 1, modified: 5, cases: 1, evaluators: [] } }],
+  file: { path: 'e.json', modified: 5, document: experiment({ name: 'a', input: 'q' }) },
+  put,
+});
+{
+  const p = await open({ fetchImpl: fakeServer({ runs: () => [{ error: 'scan blew up' }, 500] }) });
+  ok(/^served/.test(p.text('#mode-tag')) && !p.$('#runs-rows tr.run'),
+    'a failed scan leaves the page in served mode, not on the sample', p.text('#mode-tag'));
+  ok(/scan blew up/.test(p.text('#runs-rows')), 'and is reported', p.text('#runs-rows'));
+}
+{
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  const answers = [
+    async () => { await held; return [{ path: 'e.json', modified: 6, cases: 1 }]; },
+    () => [{ error: 'e.json is no longer on disk' }, 404],
+  ];
+  const p = await open({ fetchImpl: served(() => answers.shift()()) });
+  await p.click('#runs-rows tr.run');
+  await p.type('#form [data-k="input"]', 'changed');
+  await p.click('#save');
+  ok(p.$('#v-experiment').inert === true, 'the editor is inert while a save is in flight');
+  release();
+  await tick(4);
+  ok(p.$('#v-experiment').inert === false && /saved e\.json/.test(p.text('#saved')), 'and usable again once it lands',
+    p.text('#saved'));
+
+  await p.type('#form [data-k="input"]', 'worth keeping');
+  await p.click('#save');
+  await tick(4);
+  const offer = p.$('#saved button');
+  ok(offer && offer.textContent === 'Download a copy', 'a save answered 404 offers the edits as a download', p.text('#saved'));
+  await p.click(offer);
+  ok((await p.saved()).cases[0].input === 'worth keeping' && p.text('#dirty') === '1 unsaved change',
+    'which holds them, while the page still counts them as unsaved', p.text('#dirty'));
+}
+{
+  const server = served();
+  const p = await open({ fetchImpl: server, url: 'http://127.0.0.1:9999/', token: 'from-the-document' });
+  await p.click('#runs-rows tr.run');
+  const tokens = [...new Set(server.sent.map(r => r.headers['X-Evals-Token']))].join();
+  ok(tokens === 'from-the-document', 'with no token in the link, every request carries the one in the document', tokens);
+}
+
+// ── keyboard, the current view, and the theme ──
+{
+  const p = await open();
+  await p.key('Enter', p.$('#runs-rows tr.run'));
+  const current = p.$$('.tab[aria-current="page"]').map(t => t.dataset.view).join();
+  ok(p.$('#v-experiment').classList.contains('on'), 'Enter on a row opens it');
+  ok(current === 'experiment', 'and only the open view is marked as current', current);
+
+  const root = p.d.documentElement;
+  const luminance = hex => {
+    const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map(v => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const token = name => p.window.getComputedStyle(p.$('.app')).getPropertyValue(name).trim();
+  const contrast = () => {
+    const [hi, lo] = [luminance(token('--ink3')), luminance(token('--card'))].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  const lightCard = token('--card');
+  ok(root.dataset.theme === 'light' && contrast() >= 4.5, 'the muted ink clears 4.5:1 on the light card',
+    `${token('--ink3')} on ${lightCard}`);
+  await p.click('[data-theme-toggle]');
+  ok(root.dataset.theme === 'dark' && p.d.cookie.includes('strands-evals-theme=dark'),
+    'the toggle flips the theme and keeps the choice in a cookie', `${root.dataset.theme} | ${p.d.cookie}`);
+  ok(token('--card') !== lightCard && contrast() >= 4.5, 'and the muted ink clears 4.5:1 on the dark card too',
+    `${token('--ink3')} on ${token('--card')}`);
+}
+
+done(pages.flatMap(p => p.errs));

@@ -4,7 +4,11 @@ import { JSDOM } from 'jsdom';
 const ASSET = process.env.UI_HTML
   ? new URL(process.env.UI_HTML, `file://${process.cwd()}/`)
   : new URL('../../src/strands_evals/cli/assets/ui.html', import.meta.url);
-const HTML = fs.readFileSync(ASSET, 'utf8');
+/* Inlines the stylesheet and scripts beside the page, the way `load_asset` does for the server. */
+const beside = name => fs.readFileSync(new URL(name, ASSET), 'utf8');
+const HTML = fs.readFileSync(ASSET, 'utf8')
+  .replace(/<link rel="stylesheet" href="([\w.-]+)">/g, (_, name) => `<style>\n${beside(name)}</style>`)
+  .replace(/<script src="([\w.-]+)"><\/script>/g, (_, name) => `<script>\n${beside(name)}</script>`);
 
 /** A File stand-in: jsdom cannot build a real FileList, and only `text()` is used. */
 export class FakeFile {
@@ -18,6 +22,9 @@ export class FakeFile {
   async text() { return this._t; }
 }
 
+/* Every window built, closed when the suite reports: a served page polls on a timer, which would keep Node alive. */
+const WINDOWS = [];
+
 export const tick = (n = 3) => new Promise(resolve => setTimeout(resolve, n * 5));
 
 /** Poll until `cond()` holds; real HTTP round trips outlast a fixed tick. */
@@ -30,26 +37,35 @@ export async function waitFor(cond, what = 'condition', ms = 5000) {
   throw new Error('timed out waiting for ' + what);
 }
 
-/** Build the page. `fetchImpl` is installed before any script runs, so boot() sees it. */
-export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok' } = {}) {
+/** Build the page. `fetchImpl` is installed before any script runs, so boot() sees it.
+    `phone` answers the page's small-window media query, which jsdom cannot. `visible` makes the
+    document one that is being looked at; without it a served page's polling timer does nothing. */
+export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok', token, phone, visible } = {}) {
   const errs = [];
-  const dom = new JSDOM(HTML, {
+  /* `token` stands in for the server writing it into the document, as it does for a served page. */
+  const html = token ? HTML.replace('name="strands-evals-token" content=""', `name="strands-evals-token" content="${token}"`) : HTML;
+  const dom = new JSDOM(html, {
     runScripts: 'dangerously',
+    pretendToBeVisual: !!visible,
     url,
     beforeParse(window) {
       if (fetchImpl) window.fetch = (...a) => fetchImpl(...a);
-      /* Keep the blobs, not just the filenames: for the editor, what matters is the bytes it
-         would have written, and a download is the only place a standalone page emits them. */
+      if (phone) window.matchMedia = query => ({ matches: /max-width/.test(query) });
+      // A download is the only place a standalone page emits a document: keep the blob for `saved()`.
       window.__blobs = [];
       window.URL.createObjectURL = blob => { window.__blobs.push(blob); return 'blob:stub'; };
       window.URL.revokeObjectURL = () => {};
       window.confirm = () => true;
+      // jsdom has no layout to scroll: count the calls instead.
+      window.__scrolls = 0;
+      window.scrollTo = () => { window.__scrolls += 1; };
       // jsdom has no download: record the anchor the page would have clicked.
       window.__downloads = [];
       window.HTMLAnchorElement.prototype.click = function () { window.__downloads.push(this.download); };
     },
   });
   const { window } = dom;
+  WINDOWS.push(window);
   window.addEventListener('error', e => errs.push(String((e.error && e.error.message) || e.error)));
   const d = window.document;
   await tick();
@@ -57,10 +73,11 @@ export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok' } =
     window, d, errs, dom,
     $: s => d.querySelector(s),
     $$: s => [...d.querySelectorAll(s)],
-    text: s => (d.querySelector(s) || {}).textContent?.replace(/\s+/g, ' ').trim(),
+    /** The text of a selector's first match, or of an element, with whitespace collapsed. */
+    text: s => ((typeof s === 'string' ? d.querySelector(s) : s) || {}).textContent?.replace(/\s+/g, ' ').trim(),
     click: async s => {
       const el = typeof s === 'string' ? d.querySelector(s) : s;
-      el.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      el.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
       await tick();
     },
     type: async (s, value) => {
@@ -82,9 +99,9 @@ export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok' } =
       });
       return JSON.parse(text);
     },
-    /** A keystroke with nothing focused, for the shortcuts that listen on the document. */
-    key: async key => {
-      d.dispatchEvent(new window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+    /** A keystroke on `target`; with none, on the document, where the shortcuts listen. */
+    key: async (key, target = d) => {
+      target.dispatchEvent(new window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
       await tick();
     },
     /** Feed a tree into the standalone folder reader. */
@@ -102,6 +119,30 @@ export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok' } =
   return api;
 }
 
+// A copy, as off the wire: the page must not share objects with the test.
+const answer = (body, status = 200) =>
+  ({ ok: status < 400, status, statusText: '', json: async () => JSON.parse(JSON.stringify(body)) });
+
+/** A `fetchImpl` that answers as the server would, recording each request in `.sent`.
+    `runs` and `put` may be functions returning `[body, status]`, to fail a scan or hold a save.
+    `file` may be a function of the path asked for; `mark` returns the tree's fingerprint. */
+export function fakeServer({ config = { root: '/served', depth: 3, read_only: false }, runs = [], file, put, mark } = {}) {
+  const sent = [];
+  const fetchImpl = async (url, opts = {}) => {
+    sent.push({ url: String(url), method: opts.method || 'GET', headers: opts.headers || {} });
+    const path = String(url).split('?')[0];
+    if (path === '/api/config') return answer(config);
+    if (path === '/api/changes') return answer({ fingerprint: mark ? mark() : 'still' });
+    if (path === '/api/runs') {
+      return typeof runs === 'function' ? answer(...runs())
+        : answer({ ...config, fingerprint: mark ? mark() : 'still', runs, skipped: [], optimizer_runs: [] });
+    }
+    if (opts.method === 'PUT') return answer(...await put(JSON.parse(opts.body)));
+    return answer(typeof file === 'function' ? file(new URL(String(url), 'http://x').searchParams.get('path')) : file);
+  };
+  return Object.assign(fetchImpl, { sent });
+}
+
 export function runner(name) {
   let fail = 0, pass = 0;
   const ok = (cond, msg, extra) => {
@@ -110,6 +151,7 @@ export function runner(name) {
   return {
     ok,
     done(errs) {
+      WINDOWS.forEach(window => window.close());
       if (errs && errs.length) { console.log('page errors:', errs); fail += errs.length; }
       console.log(`${fail ? 'FAILED' : 'ok'}  ${name}: ${pass} passed${fail ? `, ${fail} failed` : ''}`);
       if (fail) process.exitCode = 1;

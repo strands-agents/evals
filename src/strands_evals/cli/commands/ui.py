@@ -1,4 +1,4 @@
-"""`strands-evals ui` — browse and edit the experiments in a directory."""
+"""`strands-evals ui`: browse and edit the experiments in a directory."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import webbrowser
 from pathlib import Path
 
 from .._common import EXIT_BAD_INPUT, EXIT_OK, resolve_format
-from .._ui_server import DEFAULT_DEPTH, build_server, discover, server_url
+from .._ui_server import DEFAULT_DEPTH, build_server, discover, is_loopback, server_url
 
 TOKEN_ENV = "STRANDS_EVALS_UI_TOKEN"
 
@@ -21,8 +21,6 @@ def _run(args: argparse.Namespace) -> int:
         print(f"strands-evals: error: {args.directory} is not a directory", file=sys.stderr)  # noqa: T201
         return EXIT_BAD_INPUT
 
-    # --list is the non-interactive half of the same discovery the server exposes, so CI and
-    # scripts can ask "what is in this tree" without starting a browser.
     if args.list:
         result = discover(root, args.depth)
         if resolve_format(args) == "json":
@@ -44,10 +42,6 @@ def _run(args: argparse.Namespace) -> int:
                 left = f"{experiment['path']} ({experiment['cases']} cases)" if experiment else "(no experiment)"
                 right = f"{report['path']} ({report['overall_score']:.2f})" if report else "(not run)"
                 print(f"{left}  ->  {right}")  # noqa: T201
-            # Named as what they are rather than listed alongside: an optimizer run is a
-            # directory, not a file pair, and a line that could be either is one a script has to
-            # guess at. Omitted entirely, which is what this did, a tree of nothing but runs
-            # printed as an empty tree — while the server it is supposed to agree with found them.
             for run in result.optimizer_runs:
                 search = f"{run['candidates']} candidates, {run['iterations']} iterations"
                 champion = f"champion {run['champion_id']}" if run.get("champion_id") else "no champion"
@@ -57,8 +51,7 @@ def _run(args: argparse.Namespace) -> int:
                 print(f"skipped {skip['path']}: {skip['why']}", file=sys.stderr)  # noqa: T201
         return EXIT_OK
 
-    # A fixed token makes the URL survive a restart, which is the difference between a bookmark
-    # and copying a fresh link out of the terminal every time. Opt-in: the default stays random.
+    # A supplied token keeps the URL stable across restarts. Opt-in: the default stays random.
     token = args.token or os.environ.get(TOKEN_ENV) or None
 
     server = build_server(
@@ -75,8 +68,6 @@ def _run(args: argparse.Namespace) -> int:
     print(f"strands-evals ui{mode}: serving {root.resolve()}", file=sys.stderr)  # noqa: T201
     print(f"  {url}", file=sys.stderr)  # noqa: T201
     if token:
-        # Said plainly, because a token you chose is one someone else can guess, and anything
-        # that reaches loopback on this machine can then read and write files under DIRECTORY.
         print(  # noqa: T201
             "  that token was supplied, not generated: any process on this machine that guesses"
             f" it can {'read' if args.read_only else 'read and write'} files under DIRECTORY",
@@ -84,6 +75,12 @@ def _run(args: argparse.Namespace) -> int:
         )
     else:
         print("  the token in that link is what authorizes the page; Ctrl-C to stop", file=sys.stderr)  # noqa: T201
+    if not is_loopback(args.host):
+        print(  # noqa: T201
+            f"  listening beyond this machine on {args.host}: anyone who can reach it and has that link can"
+            f" {'read' if args.read_only else 'read and write'} files under DIRECTORY, over unencrypted HTTP",
+            file=sys.stderr,
+        )
 
     if args.browser:
         # A headless box has no browser to open; the URL is already printed either way.
@@ -131,7 +128,8 @@ def add_subparser(
         default="127.0.0.1",
         help=(
             "address to bind (default: 127.0.0.1). This server reads and writes files in "
-            "DIRECTORY, so binding anything other than loopback exposes them to your network."
+            "DIRECTORY, so binding anything other than loopback exposes them to your network. "
+            "Use 0.0.0.0 inside a container, or a specific address to serve on one interface."
         ),
     )
     parser.add_argument(
@@ -149,8 +147,8 @@ def add_subparser(
         "--token",
         help=(
             f"authorize with this token instead of a fresh random one (or set ${TOKEN_ENV}). "
-            "Keeps the URL the same across restarts, so it can be bookmarked — at the cost of "
-            "being a secret you chose rather than one nobody can guess. Use a long value, and "
+            "With --port, keeps the printed link the same across restarts so that link can be bookmarked, "
+            "at the cost of being a secret you chose rather than one nobody can guess. Use a long value, and "
             "prefer --read-only if anyone else can reach loopback on this machine."
         ),
     )
