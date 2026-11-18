@@ -450,6 +450,17 @@ def test_an_agent_failure_scores_the_worst_end_and_its_usage_counts():
     assert train.is_eligible
 
 
+def test_a_crash_before_any_model_call_leaves_usage_unmeasured():
+    crashed = record("a", 0, status=TrialStatus.AGENT_FAILURE).model_copy(update={"usage": Usage.zero()})
+    records = [crashed, record("b", 0, scores={"HelpfulnessEvaluator": 1.0}, tokens=150)]
+    train = score("c1", records, CRITERIA, SPLITS).train
+    assert "tokens" not in train.metrics_by_case["a"]  # 0 measured nothing and would rank the crash cheapest
+    assert train.metrics_by_case["a"]["HelpfulnessEvaluator"] == 0.0
+    assert train.objective_by_run["a"] == [None]
+    assert train.failures == 1
+    assert not train.is_eligible
+
+
 def test_with_crash_score_none_an_agent_failure_is_missing_data():
     criteria = Criteria(Maximize("Helpfulness"), [], REGISTRY, agent_failure_score=None)
     records = [record("a", 0, status=TrialStatus.AGENT_FAILURE), record("b", 0, scores={"HelpfulnessEvaluator": 1.0})]
