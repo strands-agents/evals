@@ -307,6 +307,21 @@ def _events(optimizer):
     return [json.loads(line) for line in (optimizer._run.root / "events.jsonl").read_text().splitlines()]
 
 
+async def test_run_dir_is_set_before_the_baseline_is_scored(tmp_path):
+    seen = []
+    optimizer = _quiet(base_dir=tmp_path, rollout_fn=_rollout(), budget=Budget(max_iterations=1))
+    optimizer._on_iteration = lambda record: seen.append(optimizer.run_dir)
+    assert optimizer.run_dir is None
+    task = asyncio.ensure_future(optimizer.run_async())
+    await asyncio.sleep(0)  # run_async creates the folder before its first await
+    assert optimizer.run_dir is not None and optimizer.run_dir.parent == tmp_path
+    assert not any(e["event"] == "trial" for e in _events(optimizer))  # nothing spent yet
+    result = await task
+    assert seen and set(seen) == {optimizer.run_dir} and result.run_dir == optimizer.run_dir
+    resumed = Optimizer.resume(optimizer.run_dir, experiment=_experiment(), factory=create_agent, rollout_fn=_rollout())
+    assert resumed.run_dir == optimizer.run_dir
+
+
 async def test_the_baseline_is_saved_and_scored_on_train(tmp_path):
     optimizer = _quiet(base_dir=tmp_path, rollout_fn=_rollout(), name="quick")
     optimizer._setup()

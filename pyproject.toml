@@ -78,6 +78,8 @@ optimization = [
     "numpy>=1.26.0,<3.0.0",
     "scipy>=1.11.0,<2.0.0",
     "optuna>=5.0.0,<6.0.0",
+    "tomli>=2.0.0,<3.0.0; python_version < '3.11'",  # `strands-evals optimize run FILE.toml` on 3.10
+    "strands-harness>=0.4.0,<0.5.0",  # `strands-evals optimize --config`
 ]
 
 [tool.ruff]
