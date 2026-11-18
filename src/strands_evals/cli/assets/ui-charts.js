@@ -89,9 +89,10 @@ function budgetChart(d) {
   const cap = d.maxRollouts;
   const hi = Math.max(d.spent, cap || 0) || 1;
   const { y, out: axis } = yAxis(0, hi, 'rollouts run, cumulative');
-  const pts = [{ iteration: '', cumulative: 0 }].concat(d.iterations);
+  /* The curve starts from nothing spent, a point before the first iteration. */
+  const pts = [{ cumulative: 0 }].concat(d.iterations);
   const n = pts.length;
-  const x = i => PAD.l + (n === 1 ? 0 : (i / (n - 1)) * IN_W);
+  const x = i => PAD.l + (i / (n - 1)) * IN_W;
 
   const path = pts.map((p, i) => `${i ? 'L' : 'M'}${x(i)},${y(p.cumulative)}`).join(' ');
   const area = `${path} L${x(n - 1)},${y(0)} L${x(0)},${y(0)} Z`;
@@ -100,11 +101,7 @@ function budgetChart(d) {
     marks += `<circle class="pt data" cx="${x(i + 1)}" cy="${y(p.cumulative)}" r="3">`
       + `<title>${esc(`iteration ${p.iteration}: +${p.rollouts}, ${p.cumulative} total`)}</title></circle>`;
   });
-  const last = d.iterations[d.iterations.length - 1];
-  const spentFlag = last
-    ? flag(x(d.iterations.length), y(last.cumulative),
-      cap != null ? `${last.cumulative} of ${cap}` : `${last.cumulative}`)
-    : '';
+  const spentFlag = flag(x(n - 1), y(d.spent), cap != null ? `${d.spent} of ${cap}` : `${d.spent}`);
   const capLine = cap != null
     ? `<line class="cap-line" x1="${PAD.l}" y1="${y(cap)}" x2="${PAD.l + IN_W}" y2="${y(cap)}"/>`
       + `<text class="tick" x="${PAD.l + IN_W}" y="${y(cap) - 5}" text-anchor="end">`
@@ -337,13 +334,11 @@ const statusClass = s => STATUSES.includes(s) ? s : 'other';
 
 function statusChart(d) {
   if (!d.trials) return '<div class="empty">No trial has been recorded yet.</div>';
-  const present = STATUSES.filter(s => d.statuses[s]);
-  const other = Object.keys(d.statuses).filter(s => !STATUSES.includes(s));
-  const bars = present.concat(other).map(s => {
-    const pctWidth = (d.statuses[s] / d.trials) * 100;
-    return `<span class="${statusClass(s)}" style="width:${pctWidth.toFixed(2)}%" title="${esc(s)}: ${esc(d.statuses[s])}"></span>`;
-  }).join('');
-  const legend = present.concat(other).map(s =>
+  /* The schema's statuses in its order, then any other the log holds. */
+  const found = STATUSES.filter(s => d.statuses[s]).concat(Object.keys(d.statuses).filter(s => !STATUSES.includes(s)));
+  const bars = found.map(s => `<span class="${statusClass(s)}" style="width:${((d.statuses[s] / d.trials) * 100).toFixed(2)}%"`
+    + ` title="${esc(s)}: ${esc(d.statuses[s])}"></span>`).join('');
+  const legend = found.map(s =>
     `<span><i class="${statusClass(s)}"></i>`
     + `${esc(s.replace(/_/g, ' '))} ${esc(d.statuses[s])}</span>`).join('');
   const splits = Object.keys(d.bySplit).sort()

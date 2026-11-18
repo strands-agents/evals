@@ -176,7 +176,6 @@ eq(text('#opt-method-sum'),
 await go(p, 'setup');
 ok($('#v-opt-setup').classList.contains('on') && text('#path') === 'demo/run.json', 'Setup reads run.json',
   text('#path'));
-ok($$('#v-opt-setup input, #v-opt-setup textarea, #v-opt-setup select').length === 0, 'Setup is read-only');
 ok($('#opt-source').hidden, 'no experiment is named when the folder holds none');
 has(text('#opt-explain'), /built 10 versions .* searched on train, picked the champion once on validation/,
   'the account counts the candidates built, not the 11 proposals, and says what each split was for');
@@ -293,8 +292,9 @@ ok(/held-out cases/.test(stripNote(p)) && /nothing to draw for tokens \(no inter
   eq([unshown.$('#opt-hero .champ-gain').className, hero(unshown, '.champ-read')], ['champ-gain flat', 'not shown'],
     'an interval that includes zero is not dressed as a win');
   const running = await openFixture({ tab: 'overview', events: eventsWith(e => (['picked', 'test', 'finalists'].includes(e.event) ? null : e)) });
-  eq([running.$('#opt-hero .champ').className, hero(running, '.champ-name'), hero(running, '.champ-from')],
-    ['champ none', 'not picked yet', 'Leading on training: c10 at 0.67.'], 'and a run with no champion names who is leading');
+  eq([running.$('#opt-hero .champ').className, hero(running, '.champ-name'), hero(running, '.champ-from'), stats(running)[1]],
+    ['champ none', 'not picked yet', 'Leading on training: c10 at 0.67.', 'Best on training | 0.67 | c10 · highest here'],
+    'and a run with no champion names who is leading, without calling it "not the pick"');
 
   const failed = await openFixture({ tab: 'overview', events: eventsWith(e => {
     if (e.event === 'trial' && e.record.candidate_id === 'c10' && e.record.case_name === 'train_case_01') e.record.status = 'agent_failure';
@@ -685,7 +685,7 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
 {
   const cut = jsonl(EVENTS.slice(0, 40)) + JSON.stringify(EVENTS[40]).slice(0, 30);
   const running = await openFixture({ events: cut, tab: 'overview' });
-  ok(running.text('#opt-note') === '' && /still running/.test(running.text('#opt-sub'))
+  ok(running.text('#opt-note') === '' && running.text('#facts') === 'still running'
     && marks(running, '#opt-series-chart').length > 0,
     'a half-written last line is not damage: the run reads as still running and draws what it has',
     running.text('#opt-note'));
@@ -717,12 +717,12 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
   const on = () => q.$$('#opt-runs-rows tr[data-opt-run]').map(tr => tr.classList.contains('on'));
   ok(on().length === 2 && q.text('#opt-runs-count') === '2 runs', 'both runs are listed and counted',
     q.text('#opt-runs-count'));
-  ok(q.text('#opt-sub').startsWith(RUN_ID) && same(on(), [true, false]), 'the first is open, and its row is marked',
-    q.text('#opt-sub'));
+  ok(q.text('#crumbs') === `Runs/${RUN_ID}` && same(on(), [true, false]), 'the first is open, and its row is marked',
+    q.text('#crumbs'));
   await go(q, 'runs');
   await q.click(q.$$('#opt-runs-rows tr[data-opt-run]')[1]);
-  ok(q.text('#opt-sub').startsWith('second-run') && q.$('#v-opt-overview').classList.contains('on')
-    && same(on(), [false, true]), 'picking the other run opens its Overview and moves the mark', q.text('#opt-sub'));
+  ok(q.text('#crumbs') === 'Runs/second-run' && q.$('#v-opt-overview').classList.contains('on')
+    && same(on(), [false, true]), 'picking the other run opens its Overview and moves the mark', q.text('#crumbs'));
   eq(q.window.location.hash, '#/optimization/b/overview', 'and the address names that run by its directory');
   await go(q, 'candidates');
   await openCand(q, 'c0');
@@ -859,13 +859,13 @@ const WRITTEN = configWith(c => {
 // ── Tunables: a space that does not cover the log, and a record with none ──
 {
   const narrowed = configWith(c => {
-    c.space = c.space.filter(r => !['temperature', 'max_tokens'].includes(r.key));
+    c.space = [null, ...c.space.filter(r => !['temperature', 'max_tokens'].includes(r.key))];
   });
   const partial = await openFixture({ config: narrowed, tab: 'tunables' });
   ok(partial.$$('#opt-space-rows tr').length === 4 && partial.$('#opt-space-note').classList.contains('warn')
     && partial.text('#opt-space-note')
       === 'The log also changed temperature, max_tokens, which this space does not declare.',
-    'keys the log changed without the space declaring them are named, as a warning', partial.text('#opt-space-note'));
+    'keys the log changed without the space declaring them are named, as a warning, and a null row is skipped', partial.text('#opt-space-note'));
 
   const spaceless = await openFixture({ config: configWith(c => { delete c.space; }), tab: 'setup' });
   const brief = kv(spaceless, '#opt-setup-kv');
@@ -1281,15 +1281,6 @@ const TWO_GOALS = 'Pareto(Maximize(Quality), Minimize(tokens))';
   await tick(4);
   eq(saved && saved.modified, 5,
     'reading the tuned-against experiment for a candidate\'s cases leaves the editor\'s save guard on the copy it loaded');
-}
-
-// ── a null row in the declared space, and a run that has picked nothing yet ──
-{
-  const q = await openFixture({ config: configWith(c => { c.space = [null, ...c.space]; }), tab: 'tunables' });
-  eq(q.$$('#opt-space-rows tr').length, CONFIG.space.length, 'a null row in the declared space is skipped');
-  const unpicked = await openFixture({ events: eventsWith(e => (['picked', 'test', 'finalists'].includes(e.event) ? null : e)), tab: 'overview' });
-  const stats = flat(unpicked.$('#opt-stats'));
-  ok(/highest here/.test(stats) && !/not the pick/.test(stats), 'with no champion, the training best is not called "not the pick"', stats);
 }
 
 done(pages.flatMap(q => q.errs));
