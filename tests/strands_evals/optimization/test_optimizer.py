@@ -1974,3 +1974,61 @@ async def test_resume_inside_a_two_level_nested_matches_the_uninterrupted_run(tm
         search=_two_structural_search(),
     ).run_async()
     _assert_same(resumed, original, rerun=killed)
+
+
+# ---- a nested space -----------------------------------------------------------------------------------------------
+
+
+class Holder:
+    def __init__(self, manager=None, temperature=0.5):
+        self.manager = manager
+        self.temperature = temperature
+
+
+@tunable(
+    agent=component(
+        Holder,
+        manager=choice(
+            off=None, window=component(Window, size=Int(1, 100)), summary=component(Summary, ratio=Float(0.1, 0.9))
+        ),
+        temperature=Float(0.0, 1.0),
+    )
+)
+def _nested(agent):
+    return agent
+
+
+async def _nested_rollout(agent_factory, case):
+    return str(agent_factory().temperature)
+
+
+async def test_a_nested_space_runs_and_resumes_like_the_uninterrupted_run(tmp_path):
+    experiment = Experiment(cases=_experiment().cases, evaluators=[Temperature()])
+    original_optimizer = Optimizer(
+        experiment,
+        _nested,
+        rollout_fn=_nested_rollout,
+        max_workers=64,
+        base_dir=tmp_path / "runs",
+        budget=Budget(max_iterations=6),
+        proposals_per_iteration=2,
+    )
+    original = await original_optimizer.run_async()
+    recorded = json.loads((original_optimizer._run.root / "run.json").read_text())["space"]
+    space = {p["key"]: p["active_when"] for p in recorded}
+    assert space["agent.Holder.manager"] == ["agent", "Holder"]
+    assert space["agent.Holder.manager.window.size"] == ["agent.Holder.manager", "window"]
+    assert len({c.values["agent.Holder.manager"] for c in original.candidates.values()}) >= 2  # it switched
+    for c in original.candidates.values():
+        _nested.space.validate(c.values)  # every candidate holds exactly the keys its choices make active
+
+    def second_iteration_scored(events):
+        """Just past the first `score` of iteration 2: that iteration, killed."""
+        return _index(events, "score", after=_index(events, "iteration_end"))
+
+    copy = _killed(original_optimizer._run.root, tmp_path, second_iteration_scored)
+    killed = 1 + sum(1 for e in _events_at(copy) if e["event"] == "iteration_end")
+    resumed = await Optimizer.resume(
+        copy, experiment=experiment, factory=_nested, rollout_fn=_nested_rollout
+    ).run_async()
+    _assert_same(resumed, original, rerun=killed)

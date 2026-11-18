@@ -155,6 +155,30 @@ def test_default_search_assigns_every_key_by_kind():
     assert shape(schedule) == ("nested", "structure", "alternate")
 
 
+class Prompted:
+    def __init__(self, prompt: str = "Summarize.", helper: object = None):
+        self.prompt = prompt
+        self.helper = helper
+
+
+def test_default_search_assigns_nested_keys_by_kind():
+    helper = choice(off=None, router=component(Router, k=Int(1, 5)))
+    nested = choice(
+        component(Window, size=Int(1, 100)),
+        component(Prompted, prompt=TextValue(), helper=helper),
+        component(Summary, ratio=Float(0.1, 0.9)),
+    )
+    space = Space({"agent": component(Prompted, prompt=TextValue(), helper=nested)})
+    resolved, schedule = Search().resolve(space)
+    middle = "agent.Prompted.helper"
+    assert names(resolved) == [
+        ("text", "Reflection", ["agent.Prompted.prompt", f"{middle}.Prompted.prompt"]),
+        ("structure", "TPE", [middle, f"{middle}.Prompted.helper"]),
+        ("numbers", "TPE", [f"{middle}.Window.size", f"{middle}.Prompted.helper.router.k", f"{middle}.Summary.ratio"]),
+    ]
+    assert shape(schedule) == ("nested", "structure", "alternate")
+
+
 def test_a_bare_component_goes_to_no_block():
     space = Space({"manager": component(Window, size=Int(1, 100)), "temperature": Float(0.0, 1.0, default=0.5)})
 

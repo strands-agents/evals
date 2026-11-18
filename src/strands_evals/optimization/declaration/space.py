@@ -55,9 +55,12 @@ class ParamInfo:
     `cm.window.window_size` with `active_when=("cm", "window")`. When a proposal switches `cm` to
     `summary`, `Space.complete` drops `cm.window.window_size` (if it were kept, it would change the
     candidate id without changing the agent) and fills the keys `summary` brings in. Validation,
-    TPE, the score model's design, and `Nested` read it too. Conditions are one level deep, since
-    `component()` takes no nested markers. Text keys can't sit under a `choice()`, so theirs is
-    always None.
+    TPE, the score model's design, and `Nested` read it too. Conditions chain: a key under a
+    `choice()` or `component()` nested in an alternative names the nested choice's key, whose own
+    `active_when` names the alternative it sits under, so a key is active only when every choice
+    above it selects its way. A `TextValue` under an alternative is a text key with a condition;
+    every other text key (a top-level `TextValue`, a file-backed value, a tool description) is
+    always active.
 
     `min_value` / `max_value` are the inclusive bounds of an `Int` / `Float`. Fields after `default`
     default to None (`log` to False), so each kind sets only its own.
@@ -228,8 +231,8 @@ class Space:
     def resolve(self, name: str, values: Values, workspace: Path | None) -> Any:
         """What the factory receives for one declared name: a fresh component, a value, or a path.
 
-        - A choice: a new instance of the chosen component, e.g. `Summary(ratio=0.5)`, or the chosen
-          fixed value as is.
+        - A choice: a new instance of the chosen component, e.g. `Summary(ratio=0.5)`, with its
+          nested choices and components built the same way, or the chosen fixed value as is.
         - `tool_descriptions`: new copies of the tools with the candidate's descriptions.
         - `FileText(as_path=True)`: the path of the file inside `workspace`, or the original path
           when `workspace` is None (the plain call).
@@ -249,11 +252,7 @@ class Space:
             raise KeyError(f"{name!r} is not a declared name; declared: {list(self._markers)}")
         marker = self._markers[name]
         if isinstance(marker, Choice):
-            label = cast(str, values[name])
-            alternative = marker.alternatives[label]
-            if not isinstance(alternative, Component):
-                return alternative
-            return alternative.build({arg: values[f"{name}.{label}.{arg}"] for arg in alternative.tunable})
+            return _build(name, marker, values)
         if isinstance(marker, ToolDescriptions):
             return marker.build({tool: cast(str, values[f"{name}.{tool}"]) for tool in marker.tools})
         if isinstance(marker, SkillLibrary) or (isinstance(marker, FileText) and marker.as_path):
@@ -396,17 +395,7 @@ def _flatten(name: str, marker: Marker) -> list[ParamInfo]:
             raise TypeError(f"{name}: TextValue has no default; {_NO_DEFAULT}")
         return [_text(name, name, marker.default, marker.size_cap, marker.edit_instructions)]
     if isinstance(marker, Choice):
-        labels = tuple(marker.alternatives)
-        infos = [ParamInfo(name, name, "choice", labels[0], options=labels)]
-        for label, alternative in marker.alternatives.items():
-            if isinstance(alternative, Component):
-                for arg, tunable in alternative.tunable.items():
-                    key, condition = f"{name}.{label}.{arg}", (name, label)
-                    if isinstance(tunable, OneOf):
-                        infos.append(_one_of(key, name, tunable, condition))
-                    else:
-                        infos.append(_number(key, name, tunable, condition))
-        return infos
+        return _choice(name, name, marker, None)
     if isinstance(marker, ToolDescriptions):
         infos = []
         for tool_name, tool in marker.tools.items():
@@ -433,6 +422,53 @@ def _flatten(name: str, marker: Marker) -> list[ParamInfo]:
             for relative, member in marker._members.items()
         ]
     raise TypeError(f"{name}: {type(marker).__name__} can't be declared yet")
+
+
+def _choice(key: str, name: str, marker: Choice, active_when: tuple[str, str] | None) -> list[ParamInfo]:
+    """The keys of the choice at `key`: its own, then each alternative's tunable kwargs at `<key>.<label>.<arg>`.
+
+    Each kwarg's key is active under its alternative, and a nested choice's keys follow its own key,
+    so every condition comes before the keys it decides.
+    """
+    labels = tuple(marker.alternatives)
+    infos = [ParamInfo(key, name, "choice", labels[0], options=labels, active_when=active_when)]
+    for label, alternative in marker.alternatives.items():
+        if not isinstance(alternative, Component):
+            continue
+        for arg, tunable in alternative.tunable.items():
+            sub_key, condition = f"{key}.{label}.{arg}", (key, label)
+            if isinstance(tunable, Choice):
+                infos.extend(_choice(sub_key, name, tunable, condition))
+            elif isinstance(tunable, OneOf):
+                infos.append(_one_of(sub_key, name, tunable, condition))
+            elif isinstance(tunable, TextValue):
+                if tunable.default is None:  # `component()` fills it, so only a hand-built `Component` gets here
+                    raise TypeError(f"{sub_key}: TextValue has no default; pass default=")
+                infos.append(
+                    _text(sub_key, name, tunable.default, tunable.size_cap, tunable.edit_instructions, None, condition)
+                )
+            else:
+                infos.append(_number(sub_key, name, tunable, condition))
+    return infos
+
+
+def _build(key: str, marker: Choice, values: Values) -> Any:
+    """The chosen alternative of the choice at `key`: a fresh component, or the fixed value as is.
+
+    A component's nested choices are built the same way, from their own keys.
+    """
+    label = cast(str, values[key])
+    alternative = marker.alternatives[label]
+    if not isinstance(alternative, Component):
+        return alternative
+    return alternative.build(
+        {
+            arg: _build(f"{key}.{label}.{arg}", tunable, values)
+            if isinstance(tunable, Choice)
+            else values[f"{key}.{label}.{arg}"]
+            for arg, tunable in alternative.tunable.items()
+        }
+    )
 
 
 def _number(key: str, name: str, marker: Int | Float, active_when: tuple[str, str] | None) -> ParamInfo:
@@ -463,9 +499,19 @@ def _text(
     size_cap: int | None,
     edit_instructions: str | None,
     source: FileSource | None = None,
+    active_when: tuple[str, str] | None = None,
 ) -> ParamInfo:
     cap = _default_size_cap(default) if size_cap is None else size_cap
-    return ParamInfo(key, name, "text", default, size_cap=cap, edit_instructions=edit_instructions, source=source)
+    return ParamInfo(
+        key,
+        name,
+        "text",
+        default,
+        size_cap=cap,
+        edit_instructions=edit_instructions,
+        active_when=active_when,
+        source=source,
+    )
 
 
 def _check_no_overlap(

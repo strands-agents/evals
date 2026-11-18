@@ -1,5 +1,6 @@
 """Tests for Reflection's evidence: the trace files, the digest, the rewards, and the versions folder."""
 
+import dataclasses
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -15,6 +16,8 @@ from strands_evals.optimization import (
     Space,
     TextValue,
     WeightedSum,
+    choice,
+    component,
 )
 from strands_evals.optimization.candidate import Candidate
 from strands_evals.optimization.search.proposer import ProposalRequest
@@ -24,6 +27,7 @@ from strands_evals.optimization.search.reflection import (
     _messages,
     _rewards,
     _text_files,
+    _write_versions,
 )
 from strands_evals.types import EvaluationOutput
 from strands_evals.types.optimization import (
@@ -567,6 +571,27 @@ def test_digest_that_fits_at_the_shortest_fields_keeps_every_line():
 
 
 # ---- versions ------------------------------------------------------------------------------------------------------
+
+
+class Summarizer:
+    def __init__(self, prompt: str = "Summarize."):
+        self.prompt = prompt
+
+
+def test_a_text_a_version_leaves_out_is_listed_as_not_used_with_no_file(tmp_path):
+    space = Space({"manager": choice(off=None, summary=component(Summarizer, prompt=TextValue()))})
+    baseline = Candidate.baseline(space)
+    child = baseline.child(space, {"manager": "summary"}, origin=["structure"], rationale="")
+    req = dataclasses.replace(
+        request([trial("a", score=0.9)], parent=child, keys=("manager.summary.prompt",)),
+        space=space,
+        candidates=[summary(child, number=1, rank=1), summary(baseline, number=0, rank=2)],
+    )
+    _write_versions(str(tmp_path), req, ["Score"])
+    assert (tmp_path / "rank-001-version-1" / "manager.summary.prompt.txt").read_text() == "Summarize."
+    assert os.listdir(tmp_path / "rank-002-version-0") == ["version.md"]  # not an empty text file
+    listed = (tmp_path / "rank-002-version-0" / "version.md").read_text()
+    assert listed.endswith("- manager.summary.prompt: not used by this version\n")
 
 
 def test_versions_folder_has_one_folder_per_version_with_each_text_alone(folders):
