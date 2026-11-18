@@ -157,17 +157,18 @@ async function api(path, opts) {
 /* ══════════ chrome ══════════ */
 
 const SECTION_OF = {
-  reports: 'evals', report: 'evals', experiments: 'evals', experiment: 'evals',
+  reports: 'evals', report: 'evals', compare: 'evals', experiments: 'evals', experiment: 'evals',
   'opt-runs': 'optimization', 'opt-setup': 'optimization', 'opt-overview': 'optimization',
   'opt-progress': 'optimization', 'opt-candidates': 'optimization', 'opt-tunables': 'optimization',
   'opt-trade': 'optimization',
 };
 /* The list a page is opened from: the sidebar marks that, since the page itself is not in it. */
 const listOf = view => view === 'report' ? (repCand ? 'opt-runs' : 'reports')
+  : view === 'compare' ? 'reports'
   : view === 'experiment' ? 'experiments'
     : SECTION_OF[view] === 'optimization' ? 'opt-runs' : view;
 const VIEW_NAME = {
-  reports: 'Reports', report: 'Report', experiments: 'Experiments', experiment: 'Cases', 'opt-runs': 'Runs',
+  reports: 'Reports', report: 'Report', compare: 'Compare', experiments: 'Experiments', experiment: 'Cases', 'opt-runs': 'Runs',
   'opt-setup': 'Setup', 'opt-overview': 'Overview', 'opt-progress': 'Progress',
   'opt-candidates': 'Candidates', 'opt-tunables': 'Tunables', 'opt-trade': 'Trade-off',
 };
@@ -179,6 +180,7 @@ function show(view, opts) {
   /* A page with nothing open in it is its list. */
   if (view === 'report' && !REP) view = 'reports';
   if (view === 'experiment' && !EXP) view = 'experiments';
+  if (view === 'compare' && !CMP.length) view = 'reports';
   const section = SECTION_OF[listOf(view)];
   const moved = !$('v-' + view).classList.contains('on');
   app.querySelectorAll('.sec').forEach(s => s.classList.toggle('on', s.dataset.sec === section));
@@ -199,6 +201,7 @@ function show(view, opts) {
     experiments: folder,
     experiment: expMeta && expMeta.path,
     report: repMeta && repMeta.path,
+    compare: `${CMP.length} reports`,
     'opt-runs': folder,
     'opt-setup': (run && (run.dir === '.' ? 'run.json' : run.dir + '/run.json')) || 'no optimizer run loaded',
     'opt-tunables': (run && (run.dir === '.' ? 'run.json' : run.dir + '/run.json')) || 'no optimizer run loaded',

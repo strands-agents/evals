@@ -885,3 +885,21 @@ th[data-term], th[data-tip], .cap[data-term] {
 @media (prefers-reduced-motion: reduce) {
   .app * { transition: none !important; }
 }
+
+/* ── comparing reports ── */
+.pickbox { float: left; margin: -6px 6px -6px -8px; padding: 8px; cursor: pointer; }
+.pickbox input { display: block; width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.pickbox + span { display: block; overflow: hidden; }
+table.cmp { min-width: 600px; }
+table.cmp td { vertical-align: middle; }
+table.cmp a, .facts .chip { overflow-wrap: anywhere; }
+.facts .chip { margin: 2px 0; }
+.facts .chip .ord, .facts .chip .x { flex: none; }
+#cmp-evals td .delta { margin-left: 6px; font-size: 11.5px; }
+.chart [data-cmp-row] { cursor: pointer; }
+.chart [data-cmp-row]:focus { outline: none; }
+/* On a narrow page the header's actions sit under its facts, not beside them. */
+@media (max-width: 1080px) {
+  .facts { flex-basis: 100%; }
+  #cmp-with .pick-list { left: 0; right: auto; }
+}

@@ -60,7 +60,8 @@ function renderLists() {
   $('reports-rows').innerHTML = failed + (REPORTS.map(r => {
     const open = !repCand && repMeta && repMeta.path === r.path;
     return `<tr class="row${open ? ' on' : ''}" data-report="${esc(r.path)}" tabindex="0">
-        <td>${filed(r)}</td>
+        <td><label class="pickbox"><input type="checkbox" data-pick="${esc(r.path)}"${cmpPick.has(r.path) ? ' checked' : ''}
+          aria-label="Compare ${esc(r.path)}"></label><span>${filed(r)}</span></td>
         <td class="ev">${scoreBar(r.overall_score)} · ${plural(r.rows, 'row')}`
       + (r.failing ? ` · <span class="vb fail"><i></i>${r.failing} failing</span>` : '') + `</td>
         <td class="ev">${madeFrom(r)}</td>
@@ -82,6 +83,7 @@ function renderLists() {
       + skipped.map(s => `<li><code>${esc(s.path)}</code> — ${esc(s.why)}</li>`).join('')
       + '</ul></details>'
     : '';
+  renderComparePick();
   renderPageHead(currentView());
 }
 

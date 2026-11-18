@@ -172,6 +172,7 @@ with someone serving the same folder:
 | --- | --- |
 | `/reports` | Every report found, each with the experiment it was made from. |
 | `/reports/<report file>` | One report. |
+| `/reports/compare?r=<report file>&r=<report file>` | Two or more reports side by side, oldest first. |
 | `/experiments` | Every experiment file found, each with the reports made from it. |
 | `/experiments/<experiment file>` | Its cases; add `/cases/<name>` for one case. |
 | `/optimization` | The optimizer runs found. |

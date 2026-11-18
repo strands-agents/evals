@@ -32,13 +32,12 @@ function loadReport(meta, doc, keep) {
     openRows = new Set(); repFilter = 'all'; repQuery = ''; repLimit = 300;
     $('rep-find').value = '';
     app.querySelectorAll('#rep-seg button').forEach(b => b.classList.toggle('on', b.dataset.f === 'all'));
-    repOther = null;
   }
   buildRows(); renderHero(); renderReportCharts(); renderReport();
 }
 
 function clearReport() {
-  REP = null; repMeta = null; ROWS = []; BY_CASE = []; repOther = null;
+  REP = null; repMeta = null; ROWS = []; BY_CASE = [];
   renderReportCharts();
   const score = $('r-score');
   score.textContent = '—'; score.classList.add('none');

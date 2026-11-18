@@ -132,10 +132,21 @@ const VIEW_GUIDE = {
       'One row per case and evaluator. The score is the evaluator\'s number; the verdict is its own pass or fail.',
       'Open a row to see the input, the expected and actual output, and the reason the evaluator gave.',
       'Filter to Failing to see what to fix first. Rows marked not applicable are left out of the overall score.',
-      'The charts show where the failures sit, how scores are spread, and what changed since another report. Select a mark to open its row.',
+      'The charts show where the failures sit, how scores are spread, and what each case took. Select a mark to open its row.',
+      'Compare with, at the top, sets this report beside another one.',
     ],
     terms: ['score', 'verdict', 'not_applicable'],
     links: [['how-evaluation-works/#the-levels-an-evaluator-scores-at', 'How evaluators score'], ['detectors/', 'Diagnosing failures'], ['cli/report/', 'The report command']],
+  },
+  compare: {
+    steps: [
+      'The reports you picked, oldest first. Each is numbered; the numbers head the columns below.',
+      'The grid has one line per case and evaluator and one column per report. A line that changes colour is a row that flipped; a gap means that report does not hold the row.',
+      'The last chart sets the oldest against the newest: what now passes, what now fails, and how far each score moved.',
+      'Select a mark to open that row in its report. Add or remove reports at the top.',
+    ],
+    terms: ['report', 'verdict', 'not_applicable'],
+    links: [['cli/run/#experiment-file-run', 'Running an experiment'], ['cli/report/', 'The report command']],
   },
   'opt-runs': {
     steps: [

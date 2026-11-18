@@ -1,5 +1,5 @@
 /* The Report's charts and the trace view inside a report row: the verdict grid, the score
-   distribution, this report against another, and what each case cost. */
+   distribution, and what each case cost. */
 import { page, runner, tick } from './harness.mjs';
 
 const { ok, done } = runner('charts');
@@ -61,33 +61,13 @@ same(tips(p, '#rep-spread line.hmean'), ['X · mean 0.6 over 3 rows', 'Y · mean
   'the distribution is per evaluator and leaves out the rows it did not apply to');
 ok(p.$$('#rep-spread rect.hbin').length === 4, 'with a bar wherever scores fall', p.$$('#rep-spread rect.hbin').length);
 
-// ── against another report ──
-ok(!p.$('#rep-cmp svg') && /Pick an earlier report/.test(p.text('#rep-cmp-cap')), 'nothing is compared until a report is picked');
-same(p.$$('#rep-cmp-pick button').map(o => o.dataset.value), ['', 'then/report.json'], 'the picker offers the other reports in the folder');
-await p.click('#rep-cmp-pick button[data-value="then/report.json"]');
-ok(p.text('#rep-cmp-pick summary') === 'then/report.json' && !p.$('#rep-cmp-pick details').open,
-  'picking from the list names the choice on its button and closes the list', p.text('#rep-cmp-pick summary'));
-const list = () => p.$('#rep-cmp-pick details');
-list().open = true;
-await p.click('#rep-cmp-cap');
-const closedByClick = !list().open;
-list().open = true;
-await p.key('Escape');
-ok(closedByClick && !list().open, 'an open list closes on a click elsewhere and on Escape');
-ok(p.text('#rep-cmp-legend') === '1 now pass1 now fail2 kept their verdict1 only in this report1 only in the other',
-  'the rows both reports hold are counted by what happened to their verdict', p.text('#rep-cmp-legend'));
-same(tips(p, '#rep-cmp g.bell'), ['a · Y · 0.90 to 0.20 · now fails', 'c · X · 0.30 to 0.80 · now passes'],
-  'and the ones that moved are drawn, the largest move first');
-same(p.$$('#rep-cmp g.bell').map(g => g.classList[1]), ['down', 'up'], 'marked worse or better');
-await p.click(p.$$('#rep-cmp g.bell')[1]);
-ok(p.$('#rep-rows tr.case[data-i="4"]').getAttribute('aria-expanded') === 'true', 'a row there opens in the table too');
-
 // ── what each case cost, read off its recorded session ──
 same(p.$$('#rep-cost text.vlab').map(t => t.textContent), ['5s', '2s'], 'cases with a recorded session are charted by how long they took, longest first');
 same(tips(p, '#rep-cost g.rbar'), ['a · 1 model call · 1 tool call · 5s', 'c · 1 model call · 1 tool call · 2s'],
   'with what the session counted');
 
 // ── a recorded session in a report row is drawn as a trace ──
+await p.click(p.$$('#rep-heat rect.cell')[2]);
 const detail = p.$('#rep-rows tr.detail .trace');
 ok(detail && p.text(detail.querySelector('.tr-count')) === '3 spans of a recorded session'
   && p.text(detail.querySelector('.tr-sum')) === '1 model call · 1 tool call · 2s'
@@ -106,8 +86,6 @@ ok(detail && p.text(detail.querySelector('.tr-count')) === '3 spans of a recorde
 {
   const q = await open({ 'now/experiment.json': experiment, 'now/report.json': report(NOW) });
   ok(q.$('#rep-cost-card').hidden, 'no cost chart without anything recorded to cost');
-  ok(q.$('#rep-cmp-pick').hidden && /No other report in this folder/.test(q.text('#rep-cmp-cap')),
-    'and the comparison says there is nothing to compare against', q.text('#rep-cmp-cap'));
 }
 
 // ── no report, no charts ──

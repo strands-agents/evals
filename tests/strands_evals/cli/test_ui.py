@@ -965,6 +965,15 @@ def test_every_address_of_the_page_serves_it_and_survives_the_token_redirect(cli
     assert client.send("GET", path, headers={"X-Evals-Token": None}).status == HTTPStatus.UNAUTHORIZED
 
 
+def test_the_token_redirect_keeps_the_reports_a_comparison_names(client: Client):
+    compared = "r=a%2Fone.report.json&r=b%2Ftwo.report.json"
+
+    first = client.send("GET", f"/reports/compare?t={client.token}&{compared}", headers={"X-Evals-Token": None})
+    last = client.send("GET", f"/reports/compare?{compared}&t={client.token}", headers={"X-Evals-Token": None})
+
+    assert first.headers["Location"] == last.headers["Location"] == f"/reports/compare?{compared}"
+
+
 @pytest.mark.parametrize("path", ["/reportsheet", "/runs", "/optimizations", "/favicon.ico", "/api"])
 def test_an_address_that_is_not_the_pages_is_not_found(client: Client, path):
     assert client.send("GET", path) == _refused(HTTPStatus.NOT_FOUND, f"no route for {path}")
