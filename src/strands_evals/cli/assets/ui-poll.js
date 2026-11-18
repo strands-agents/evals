@@ -17,8 +17,8 @@ async function refreshOpen() {
   };
   const report = repCand ? null : changed(REPORTS, repMeta);
   if (report) {
-    const open = repMeta, doc = await document_for(report);
-    if (repMeta === open) loadReport(report, doc, true);
+    const was = repMeta, doc = await document_for(report);
+    if (repMeta === was) loadReport(report, doc, true);
   }
 
   const experiment = changed(EXPERIMENTS, expMeta);
@@ -27,9 +27,9 @@ async function refreshOpen() {
     note('This file changed on disk while you were editing it.', 'stale');
     return;
   }
-  const open = expMeta, at = cases[sel] && cases[sel].name;
+  const was = expMeta, at = cases[sel] && cases[sel].name;
   const doc = await document_for(experiment);
-  if (expMeta !== open || countDirty()) return;
+  if (expMeta !== was || countDirty()) return;
   loadExperiment(experiment, doc);
   const again = cases.findIndex(c => c.name === at);
   if (again > 0) { sel = again; renderForm(); }

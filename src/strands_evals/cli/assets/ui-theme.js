@@ -11,8 +11,13 @@ function storedTheme() {
   try { return localStorage.getItem(THEME_KEY); } catch { return null; }
 }
 
+/* A choice kept for a year, on whichever port the page is served from next. */
+function remember(key, value) {
+  document.cookie = `${key}=${value}; path=/; max-age=31536000; SameSite=Lax`;
+}
+
 function storeTheme(theme) {
-  document.cookie = `${THEME_KEY}=${theme}; path=/; max-age=31536000; SameSite=Lax`;
+  remember(THEME_KEY, theme);
   try { localStorage.setItem(THEME_KEY, theme); } catch { /* opaque origin: not persisted */ }
 }
 

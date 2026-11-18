@@ -90,8 +90,10 @@ for (const [rel, content] of Object.entries(TREE)) {
 fs.cpSync(FIXTURE, path.join(root, 'tuning'), { recursive: true });
 fs.writeFileSync(path.join(root, 'tuning/result.json'), JSON.stringify({ champion: 'c10' }));
 fs.writeFileSync(path.join(root, 'tuning/best.values.json'), JSON.stringify({ temperature: 0.2 }));
-fs.mkdirSync(path.join(root, 'tuning/candidates/c1'), { recursive: true });
-fs.writeFileSync(path.join(root, 'tuning/candidates/c1/agent.json'), JSON.stringify({ copied: true }));
+for (const own of ['candidates/c1/agent.json', 'front/c1.json']) {
+  fs.mkdirSync(path.dirname(path.join(root, 'tuning', own)), { recursive: true });
+  fs.writeFileSync(path.join(root, 'tuning', own), JSON.stringify({ copied: true }));
+}
 
 /* What a folder picker hands the page: every .json and .jsonl under the root. */
 const picked = {};

@@ -13,7 +13,7 @@ const HTML = fs.readFileSync(ASSET, 'utf8')
   .replace(/<script src="([\w.-]+)"><\/script>/g, (_, name) => `<script>\n${beside(name)}</script>`);
 
 /** A File stand-in: jsdom cannot build a real FileList, and only `text()` is used. */
-export class FakeFile {
+class FakeFile {
   constructor(path, text) {
     this.webkitRelativePath = path;
     this.name = path.split('/').pop();

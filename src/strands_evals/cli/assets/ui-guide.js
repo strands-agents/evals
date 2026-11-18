@@ -329,7 +329,7 @@ app.addEventListener('click', e => {
   if (e.target.closest('[data-guide-toggle], [data-guide-close]')) {
     const on = app.dataset.guide !== 'on';
     setGuide(on);
-    document.cookie = `${GUIDE_KEY}=${on ? 'on' : 'off'}; path=/; max-age=31536000; SameSite=Lax`;
+    remember(GUIDE_KEY, on ? 'on' : 'off');
     /* The content column just changed width, and charts are drawn to the width they have. */
     if (REP) renderReportCharts();
     if (OPT) renderOptimization();
