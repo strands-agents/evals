@@ -33,13 +33,14 @@ function loadReport(meta, doc, keep) {
     $('rep-find').value = '';
     app.querySelectorAll('#rep-seg button').forEach(b => b.classList.toggle('on', b.dataset.f === 'all'));
     repOther = null;
+    repGroup = ''; repGroupOnly = null;
   }
-  buildRows(); renderHero(); renderReportCharts(); renderReport();
+  buildRows(); renderHero(); renderReportCharts(); renderLenses(); renderReport();
 }
 
 function clearReport() {
   REP = null; repMeta = null; ROWS = []; BY_CASE = []; repOther = null;
-  renderReportCharts();
+  renderReportCharts(); renderLenses();
   const score = $('r-score');
   score.textContent = '—'; score.classList.add('none');
   $('r-stats').innerHTML = '';
@@ -162,6 +163,8 @@ const verdictTag = r => r.na
 function matches(g) {
   if (repFilter === 'fail' && g.rows.every(r => r.pass || r.na)) return false;
   if (repFilter === 'na' && !g.rows.some(r => r.na)) return false;
+  if (repFilter === 'diag' && !g.rows.some(r => r.diagnosis)) return false;
+  if (repGroupOnly != null && groupOf(g) !== repGroupOnly) return false;
   if (!repQuery) return true;
   const hay = [g.name, g.case.input, g.case.expected_output, g.case.expected_assertion, g.case.actual_output].map(valueText)
     .concat(g.rows.map(r => [r.reason, r.evaluator]
@@ -172,7 +175,7 @@ function matches(g) {
 
 function renderReport() {
   if (!REP) return;
-  const groups = BY_CASE.filter(matches);
+  const groups = inGroupOrder(BY_CASE.filter(matches));
   const total = groups.reduce((n, g) => n + g.rows.length, 0);
   const visible = groups.slice(0, repLimit);
   const hidden = groups.length - visible.length;
@@ -181,10 +184,10 @@ function renderReport() {
   $('rep-more').hidden = hidden <= 0;
   $('rep-more').textContent = hidden > 0 ? `Show ${hidden} more case${hidden === 1 ? '' : 's'}` : '';
 
-  $('rep-rows').innerHTML = visible.map(g => g.rows.map((r, k) => {
+  $('rep-rows').innerHTML = visible.map((g, at) => groupHead(visible, at) + g.rows.map((r, k) => {
     const on = openRows.has(r.i);
     const head = `<tr class="case" data-i="${r.i}" tabindex="0" aria-expanded="${on}">
-        <td>${k === 0 ? `<span class="caret${on ? ' open' : ''}"></span>${esc(g.name)}` : ''}</td>
+        <td>${k === 0 ? `<span class="caret${on ? ' open' : ''}"></span>${esc(g.name)}${diagnosedTag(g)}` : ''}</td>
         <td class="ev">${esc(r.evaluator == null ? '—' : r.evaluator)}</td>
         <td>${r.na ? '<span class="path">—</span>'
         : scoreBar(r.score)}</td>
@@ -216,20 +219,18 @@ function renderReport() {
       if (o && o.metadata && Object.keys(o.metadata).length) judged.push([`Metadata${tag}`, pre(o.metadata)]);
     });
     if (r.outputs.length > 1) judged.push(['Aggregated', `score ${fmt(r.score)} · ${esc(r.reason)}`]);
-    if (r.diagnosis) judged.push(['Diagnosis', pre(r.diagnosis)]);
-    if (r.recommendation) judged.push(['Recommendation', esc(r.recommendation)]);
 
     /* Two columns: what the case asked and got back, then what this evaluator made of it. */
     const only = !r.na && r.outputs.length === 1 && r.outputs[0] ? r.outputs[0].label : null;
     const blocks = rows => rows.map(([k2, v]) => `<dt>${k2}</dt>`
-      + `<dd${/^(Expected|Actual|Metadata|Diagnosis)/.test(k2) ? ' class="m"' : ''}>${v}</dd>`).join('');
+      + `<dd${/^(Expected|Actual|Metadata)/.test(k2) ? ' class="m"' : ''}>${v}</dd>`).join('');
     return head + '<tr class="detail"><td colspan="4"><div class="rowd">'
       + `<dl class="blocks">${blocks(asked)}</dl>`
       + `<dl class="blocks judge ${r.na ? 'na' : r.pass ? 'pass' : 'fail'}">`
       + `<dt class="judge-by">${esc(r.evaluator == null ? 'Evaluator' : r.evaluator)}</dt>`
       + `<dd class="judge-score">${r.na ? '' : scoreBar(r.score)}${verdictTag(r)}`
       + `${only && only !== r.evaluator ? `<span class="mono path">${esc(only)}</span>` : ''}</dd>`
-      + `${blocks(judged)}</dl></div></td></tr>`;
+      + `${blocks(judged)}</dl>${diagnosisView(r, c)}</div></td></tr>`;
   }).join('')).join('')
     || '<tr><td colspan="4" class="empty">No rows match</td></tr>';
 }
@@ -245,10 +246,11 @@ $('rep-seg').onclick = e => {
 $('rep-more').onclick = () => { repLimit += 300; renderReport(); };
 /** Open one row of the table and bring it into view, clearing a filter that would hide it. */
 function openReportRow(i) {
-  repFilter = 'all'; repQuery = '';
+  repFilter = 'all'; repQuery = ''; repGroupOnly = null;
   $('rep-find').value = '';
   app.querySelectorAll('#rep-seg button').forEach(b => b.classList.toggle('on', b.dataset.f === 'all'));
-  const at = BY_CASE.findIndex(g => g.rows.some(r => r.i === i));
+  renderLenses();
+  const at = inGroupOrder(BY_CASE).findIndex(g => g.rows.some(r => r.i === i));
   repLimit = Math.max(repLimit, at + 1);
   openRows.add(i);
   renderReport();

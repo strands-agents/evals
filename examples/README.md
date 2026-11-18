@@ -44,7 +44,7 @@ Point `ui` at any directory holding runs the optimizer wrote and it finds them t
 
 `make_ui_demo.py` writes a synthetic folder that fills every view of the page: an experiment with a report and
 last week's report to compare it against, the tuning cases run before and after tuning, recorded sessions, cases still in draft, a report that no
-longer matches its experiment, a report with no experiment, these example experiments unrun, two files
+longer matches its experiment, a report with no experiment, reports to group by what their cases carry (tagged cases with diagnoses, a chaos run, a red-team run), these example experiments unrun, two files
 the scan sets aside, a finished optimizer run and one still in progress.
 
 ```bash
