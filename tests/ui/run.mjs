@@ -27,6 +27,7 @@ const suites = [
   'sessions.mjs',
   'markdown.mjs',
   'editor.mjs',
+  'empty.mjs',
 ];
 let failed = 0;
 

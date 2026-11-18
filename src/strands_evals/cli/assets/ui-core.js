@@ -135,6 +135,12 @@ function ask(message, yes, no) {
   });
 }
 
+/* The Strands frog, for a page or a table with nothing in it. */
+const FROG = '<svg class="frog" viewBox="0 0 32 32" fill="currentColor" aria-hidden="true"><path d="'
+  + 'M32 15.24H30.48V25.91H32V15.24ZM30.48 25.91H28.95V27.43H30.48V25.91ZM30.48 12.19H28.95V15.24H30.48V12.19ZM28.95 27.43H27.43V28.96H28.95V27.43ZM28.95 9.15H27.43V12.19H28.95V9.15ZM27.43 28.96H25.91V30.48H27.43V28.96ZM27.43 7.62H25.91V9.15H27.43V7.62ZM25.91 3.05H24.38V7.62H25.91V3.05ZM16.76 30.48V28.96H19.81V27.43H15.24V28.96H7.62V30.48H15.24V32H25.91V30.48H16.76ZM24.38 1.53H22.86V3.05H24.38V1.53ZM22.86 15.24H19.81V16.76H22.86V15.24ZM21.34 25.91H19.81V27.43H21.34V25.91ZM22.86 0H18.29V1.53H22.86V0ZM19.81 24.38H18.29V25.91H19.81V24.38ZM19.81 16.76H18.29V18.29H19.81V16.76ZM21.34 3.05H18.29V6.1H21.34V3.05ZM18.29 18.29H16.76V24.38H18.29V18.29ZM18.29 1.53H16.76V3.05H18.29V1.53ZM16.76 3.05H15.24V6.1H16.76V3.05ZM15.24 25.91H13.72V27.43H15.24V25.91ZM13.72 21.34H12.19V25.91H13.72V21.34ZM15.24 6.1H12.19V7.62H15.24V6.1ZM12.19 19.81H10.67V21.34H12.19V19.81ZM12.19 9.15H10.67V10.67H12.19V9.15ZM12.19 3.05H10.67V6.1H12.19V3.05ZM10.67 1.53H9.15V3.05H10.67V1.53ZM10.67 10.67H6.1V12.19H10.67V10.67ZM7.62 27.43H6.1V28.96H7.62V27.43ZM9.15 0H4.57V1.53H9.15V0ZM1.53 30.48V28.96H0V32H7.62V30.48H1.53ZM10.67 18.29H3.05V19.81H10.67V18.29ZM7.62 3.05H4.57V6.1H7.62V3.05ZM4.57 27.43H6.1V25.91H3.05V27.43H1.53V28.96H4.57V27.43ZM4.57 7.62H3.05V10.67H4.57V7.62ZM4.57 1.53H3.05V3.05H4.57V1.53ZM3.05 24.38H1.53V25.91H3.05V24.38ZM3.05 10.67H1.53V13.72H3.05V10.67ZM3.05 3.05H1.53V7.62H3.05V3.05ZM3.05 21.34V19.81H1.53V13.72H0V24.38H1.53V21.34H3.05Z"/></svg>';
+/** A page or a whole table with nothing to show: the frog, a headline, then the reason. Both are markup. */
+const emptyState = (title, body) => `<div class="nores">${FROG}<b>${title}</b>${body}</div>`;
+
 const json = v => `<span class="mono">${esc(JSON.stringify(v, null, 1))}</span>`;
 /* A case's input and outputs are whatever the task takes and returns: text, a dict, a list. */
 const valueText = v => v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v, null, 2);
@@ -176,18 +182,18 @@ const SECTION_OF = {
   sessions: 'evals', session: 'evals',
   'opt-runs': 'optimization', 'opt-setup': 'optimization', 'opt-overview': 'optimization',
   'opt-progress': 'optimization', 'opt-candidates': 'optimization', 'opt-tunables': 'optimization',
-  'opt-trade': 'optimization',
+  'opt-trade': 'optimization', missing: 'evals',
 };
 const VIEW_NAME = {
   reports: 'Reports', report: 'Report', compare: 'Compare', experiments: 'Experiments', experiment: 'Cases',
   sessions: 'Sessions', session: 'Session', 'opt-runs': 'Runs',
   'opt-setup': 'Setup', 'opt-overview': 'Overview', 'opt-progress': 'Progress',
-  'opt-candidates': 'Candidates', 'opt-tunables': 'Tunables', 'opt-trade': 'Trade-off',
+  'opt-candidates': 'Candidates', 'opt-tunables': 'Tunables', 'opt-trade': 'Trade-off', missing: 'Not found',
 };
 /* The list a page is opened from: the sidebar marks that, since the page itself is not in it. */
 const LIST_OF = { report: 'reports', compare: 'reports', experiment: 'experiments', session: 'sessions' };
-const listOf = view => ((view === 'report' && repCand) || SECTION_OF[view] === 'optimization' ? 'opt-runs'
-  : LIST_OF[view] || view);
+const listOf = view => (view === 'missing' ? MISSING.list
+  : (view === 'report' && repCand) || SECTION_OF[view] === 'optimization' ? 'opt-runs' : LIST_OF[view] || view);
 /* Reports when there are any, since most folders hold results; a folder of experiments alone opens on those,
    and one of sessions alone on those. */
 const homeView = () => (REPORTS.length ? 'reports' : EXPERIMENTS.length ? 'experiments'
@@ -195,16 +201,18 @@ const homeView = () => (REPORTS.length ? 'reports' : EXPERIMENTS.length ? 'exper
 
 /* Counts the moves between views: a file that arrives after one is not opened over where the page went. */
 let moves = 0;
+/* What the `missing` view last said was not here: `{ route, list }`, set each time it is shown. */
+let MISSING = null;
 
 function show(view, opts) {
   moves += 1;
-  if (!SECTION_OF[view] || (SECTION_OF[view] === 'optimization' && !OPT_RUNS.length)) view = homeView();
+  /* The list of runs can be shown empty; a view of one run needs a run. */
+  if (!SECTION_OF[view] || (SECTION_OF[view] === 'optimization' && view !== 'opt-runs' && !OPT_RUNS.length)) view = homeView();
   /* A page with nothing open in it is its list. */
   if (view === 'report' && !REP) view = 'reports';
   if (view === 'experiment' && !EXP) view = 'experiments';
   if (view === 'compare' && !CMP.length) view = 'reports';
   if (view === 'session' && !sesMeta) view = 'sessions';
-  if (view === 'sessions' && !sessionRows().length) view = homeView();
   const section = SECTION_OF[listOf(view)];
   const moved = !$('v-' + view).classList.contains('on');
   app.querySelectorAll('.sec').forEach(s => s.classList.toggle('on', s.dataset.sec === section));

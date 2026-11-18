@@ -125,12 +125,6 @@ for (const [route, view, rewritten, what] of [
   ['/reports/report.json', 'report', '/reports/report.json', 'one report'],
   ['/experiments/experiment.json', 'experiment', '/experiments/experiment.json/cases/order_status_lookup',
     'one experiment, on its first case'],
-  ['/nope/at/all', 'reports', '/reports', 'an address the page does not have falls back to Reports'],
-  ['/reports/gone.json', 'reports', '/reports', 'a report that is not in the folder falls back to the list'],
-  ['/experiments/gone.json', 'experiments', '/experiments', 'as does an experiment that is not'],
-  ['/experiments/experiment.json/cases/%E0%A4%A', 'experiment', '/experiments/experiment.json/cases/order_status_lookup',
-    'a malformed escape names no case, so the first is shown'],
-  ['/optimization/tuning/overview', 'reports', '/reports', 'an Optimization address with no optimizer run falls back to Reports'],
 ]) {
   const p = await linked(route);
   const on = p.$$('.view.on').map(v => v.id).join();

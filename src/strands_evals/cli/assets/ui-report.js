@@ -268,7 +268,9 @@ function renderReport() {
 
   $('rep-rows').innerHTML = visible.map((g, at) => groupHead(visible, at) + g.rows.map((r, k) =>
     rowLine(g, r, k === 0) + (openRows.has(r.i) ? rowDetail(g.case, r) : '')).join('')).join('')
-    || '<tr><td colspan="4" class="empty">No rows match</td></tr>';
+    || (ROWS.length ? '<tr><td colspan="4" class="empty">No rows match</td></tr>'
+      : `<tr><td colspan="4">${emptyState('Not a ripple in this report',
+        'The file holds no rows: the run that wrote it had no case to evaluate.')}</td></tr>`);
 }
 
 $('rep-find').oninput = e => { repQuery = e.target.value.trim().toLowerCase(); repLimit = REP_PAGE; renderReport(); };

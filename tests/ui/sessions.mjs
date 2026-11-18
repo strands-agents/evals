@@ -227,7 +227,9 @@ function serve(tree) {
     'the address of a session reopens it, with its diagnosis', where);
   eq((await openAt('/sessions/traces/a.diagnosis.json'))[1], 'v-session /sessions/traces/a.json',
     'the address of a diagnosis opens the session it was made from');
-  eq((await openAt('/sessions/gone.json'))[1], 'v-sessions /sessions', 'the address of a session that is gone falls back to the list');
+  const [gone, lost] = await openAt('/sessions/gone.json');
+  eq([lost, gone.text('#missing b'), tab(gone).classList.contains('on')], ['v-missing /sessions/gone.json', 'That session hopped away', true],
+    'the address of a session that is gone says so and stays, with Sessions still marked');
   eq((await openAt('/'))[1], 'v-sessions /sessions', 'a folder holding only sessions opens on them');
 
   const [p] = await openAt('/sessions');
@@ -246,8 +248,10 @@ function serve(tree) {
   const server = serve(tree);
   const p = await page({ fetchImpl: server, url: 'http://127.0.0.1:9999/sessions', visible: true });
   const poll = async () => { await p.window.pollNow(); await tick(); };
-  eq([tab(p).hidden, shown(p), p.window.location.pathname], [true, 'v-reports', '/reports'],
-    'the address of the list in a folder with no session falls back to Reports');
+  eq([tab(p).hidden, shown(p), p.window.location.pathname, p.text('#sessions-rows')],
+    [true, 'v-sessions', '/sessions', 'No sessions in this pond yetNo recorded session or diagnosis under /served. '
+      + 'Save one with strands-evals fetch ... -o FILE, then Rescan. CLI reference'],
+    'the address of the list in a folder with no session shows it empty, and says how to fill it');
 
   tree.sessions.push(sessionEntry('new/a.json', 5, PLAIN));
   tree.files['new/a.json'] = { modified: 5, document: PLAIN };

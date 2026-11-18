@@ -183,6 +183,9 @@ with someone serving the same folder:
 | `/optimization/<run directory>/candidates/<id>` | One candidate of a run, opened and in view. |
 | `/optimization/<run directory>/candidates/<id>/report` | One candidate's cases, as a report. |
 
+An address that names something the folder does not hold is not redirected: the page says what it looked
+for and leaves the address as typed, so it opens on its own once the file is there.
+
 The page is also written to be handed to a coding agent. A report, a report row, a comparison, an
 experiment, a case, a session, a candidate, an optimizer result and a trace each have a **Copy as Markdown**
 action, beside a **Copy path** for the file and a **Copy command** that runs one case again; a report with

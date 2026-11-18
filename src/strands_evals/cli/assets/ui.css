@@ -940,3 +940,14 @@ table.cmp a, .facts .chip { overflow-wrap: anywhere; }
 /* A table wider than a narrow window scrolls sideways: its actions stay within what is showing. */
 .detail .mdacts { position: sticky; left: 0; width: fit-content; max-width: calc(100vw - 56px); }
 .tr-copy { display: block; margin: 0 0 10px; }
+
+/* ── empty and not-found states ── */
+.nores .frog { display: block; width: 44px; height: 44px; margin: 0 auto 12px; color: var(--accent); }
+/* The headline is the first <b>; one in the sentence under it stays in the sentence. */
+.nores > b ~ b { display: inline; margin: 0; }
+.nores code { font: 12.5px var(--mono); color: var(--ink2); overflow-wrap: anywhere; }
+.nores .ways { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 18px; margin-top: 12px; }
+.nores .ways a { color: var(--accent); font-weight: 600; text-decoration: none; }
+.nores .ways a:hover { text-decoration: underline; }
+#missing .nores, .optnone .nores, #opt-to-none .nores { max-width: 62ch; margin: 0 auto; padding: 56px 12px; line-height: 1.6; }
+.view.blank > :not(h2):not(.optnone) { display: none; }
