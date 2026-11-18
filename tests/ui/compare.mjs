@@ -11,7 +11,7 @@ const report = (overall, rows, started) => ({
   scores: rows.map(r => r[2]),
   test_passes: rows.map(r => r[3] !== 'fail'),
   detailed_results: rows.map(r => [{ score: r[2], test_pass: r[3] !== 'fail', label: r[3] === 'na' ? 'not_applicable' : 'judged' }]),
-  ...(started && { run: { started_at: started } }),
+  ...(started && { run_info: { start_time: started } }),
 });
 const experiment = { cases: ['a', 'b', 'c'].map(name => ({ name, session_id: `s-${name}`, input: 'q' })), evaluators: [] };
 

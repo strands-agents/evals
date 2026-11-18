@@ -99,7 +99,7 @@ write('support/support.experiment.json', JSON.stringify(EXPERIMENT));
 write('support/support.report.json', JSON.stringify(REPORT).replace('"__NUMBERS__"', NUMBERS));
 write('code/nightly.report.json', JSON.stringify({ overall_score: 1, cases: [{ name: 'a', evaluator: 'Equals' }, { name: 'b|c', evaluator: 'Equals' }],
   scores: [1, 1], test_passes: [true, true] }));
-write('code/weekly.report.json', JSON.stringify({ overall_score: 0.25, run: { started_at: '2026-11-02T10:00:00Z' },
+write('code/weekly.report.json', JSON.stringify({ overall_score: 0.25, run_info: { start_time: '2026-11-02T10:00:00Z' },
   cases: [{ name: 'a', evaluator: 'Equals' }, { name: 'b|c', evaluator: 'Equals' }], scores: [0, 0.5], test_passes: [false, true] }));
 /* The older report says nothing of when it ran, so it is placed by its file's time. */
 fs.utimesSync(path.join(root, 'code/nightly.report.json'), Date.UTC(2026, 10, 1) / 1000, Date.UTC(2026, 10, 1) / 1000);

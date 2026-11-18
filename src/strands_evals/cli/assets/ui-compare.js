@@ -36,7 +36,7 @@ function compareRows(before, after) {
 /* A report made by an SDK that records the run says when it ran; an older one has only its file's time. */
 async function comparable(meta) {
   const doc = await document_for(meta);
-  const started = Date.parse(((doc && doc.run) || {}).started_at);
+  const started = Date.parse(((doc && doc.run_info) || {}).start_time);
   const dated = Number.isFinite(started);
   return { meta, rows: reportRows(doc), at: dated ? started : (meta.modified || 0) * 1000, dated };
 }
