@@ -891,8 +891,7 @@ function trialPanel(t, run) {
 async function sourceCases(run) {
   const named = run.tuned_against && EXPERIMENTS.find(e => e.path === run.tuned_against.path);
   try {
-    /* A copy: `document_for` moves the save guard of the entry it reads, which may be open in the editor. */
-    const doc = named ? await document_for({ ...named }) : null;
+    const doc = named ? await document_for(named) : null;
     return doc ? new Map((doc.cases || []).map(c => [c.name, c])) : null;
   } catch {
     return null;

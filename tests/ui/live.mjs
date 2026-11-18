@@ -43,6 +43,12 @@ const server = fakeServer({
   scan: () => [{ root: '/served', depth: 3, read_only: false, fingerprint: tree.mark, experiments: tree.experiments, reports: tree.reports,
     sessions: tree.sessions, skipped: [], optimizer_runs: [] }],
   file: path => ({ path, ...tree.files[path] }),
+  /* Only `e.json` is ever saved: refused, as the server refuses, when it changed since the editor read it. */
+  put: body => {
+    if (body.modified !== tree.files['e.json'].modified) return [{ error: 'e.json changed on disk since it was loaded' }, 409];
+    write('e.json', body.document);
+    return [{ path: 'e.json', modified: tree.files['e.json'].modified, cases: body.document.cases.length }];
+  },
 });
 const asked = () => server.sent.splice(0).map(r => r.url.split('?')[0]).join(' ');
 /* Hold the answer for one file until the test lets it go, as a slow read would. */
@@ -110,10 +116,43 @@ await p.click('#saved .reload');
 await p.click(p.$$('#case-list li[data-i]')[1]);
 ok(input() === 'rewritten again', 'the offer beside it reloads from disk', input());
 
+// ── nor over an edit made while the changed file was being read ──
+{
+  write('e.json', experiment('rewritten under a slow read'));
+  const release = hold('e.json');
+  const polled = p.window.pollNow();
+  await tick();
+  await p.type('#form [data-k="input"]', 'typed meanwhile');
+  await release();
+  await polled;
+  ok(input() === 'typed meanwhile' && /changed on disk/.test(p.text('#saved')),
+    'an edit made during the re-read is kept, and the page says the file moved under it', `${input()} | ${p.text('#saved')}`);
+  await p.click('#saved .reload');
+  await p.click(p.$$('#case-list li[data-i]')[1]);
+}
+
 // ── Rescan re-reads what is open as well as the lists ──
 write('e.json', experiment('rewritten a third time'));
 await p.click('[data-act="rescan"]');
 ok(input() === 'rewritten a third time', 'Rescan shows the open experiment as it is on disk now, not only the lists', input());
+
+// ── a reload the reader walked away from does not move what Save is checked against ──
+{
+  await p.type('#form [data-k="input"]', 'mine');
+  write('e.json', experiment('theirs'));
+  await p.click('#save');
+  ok(/changed on disk/.test(p.text('#saved')), 'a save over a file that changed on disk is refused', p.text('#saved'));
+  const release = hold('e.json');
+  await p.click('#saved .reload');
+  await p.click('.tab[data-view="reports"]');
+  await release();
+  await p.openExperiment();
+  await p.click('#save');
+  ok(input() === 'mine' && tree.files['e.json'].document.cases[1].input === 'theirs' && /changed on disk/.test(p.text('#saved')),
+    'the edits are still there, and saving them is still refused', `${input()} | ${tree.files['e.json'].document.cases[1].input} | ${p.text('#saved')}`);
+  await p.click('#saved .reload');
+  await p.click(p.$$('#case-list li[data-i]')[1]);
+}
 
 // ── a file that arrives after the reader went elsewhere does not take the page ──
 {

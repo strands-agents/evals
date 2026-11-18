@@ -23,14 +23,15 @@ async function refreshOpen() {
 
   const experiment = changed(EXPERIMENTS, expMeta);
   if (!experiment) return;
+  const was = expMeta, read = await readFile(experiment);
+  if (expMeta !== was) return;
+  /* Asked after the read: an edit made while it was on its way counts too. */
   if (countDirty() || review || $('v-experiment').inert) {
     note('This file changed on disk while you were editing it.', 'stale');
     return;
   }
-  const was = expMeta, at = cases[sel] && cases[sel].name;
-  const doc = await document_for(experiment);
-  if (expMeta !== was || countDirty()) return;
-  loadExperiment(experiment, doc);
+  const at = cases[sel] && cases[sel].name;
+  loadExperimentFile(experiment, read);
   const again = cases.findIndex(c => c.name === at);
   if (again > 0) { sel = again; renderForm(); }
 }

@@ -92,13 +92,17 @@ function renderLists() {
 
 /* ══════════ reading the folder, and opening what is in it ══════════ */
 
-async function document_for(meta) {
-  if (!meta) return null;
-  if (meta.obj) return meta.obj;                       // standalone: already in memory
-  const res = await api('/api/file?path=' + encodeURIComponent(meta.path));
-  meta.modified = res.modified;                        // refresh the save guard's baseline
-  if (res.evaluator_notes) meta.evaluator_notes = res.evaluator_notes;
-  return res.document;
+/* A file as the server holds it now: `{ document, modified, evaluator_notes }`. Standalone, the copy in memory. */
+const readFile = async meta => (meta.obj ? { document: meta.obj }
+  : api('/api/file?path=' + encodeURIComponent(meta.path)));
+const document_for = async meta => (await readFile(meta)).document;
+
+/* Put a file as read into the editor. Save is checked against the time it had when read, so that time
+   moves only here: a read that is dropped must leave it alone. */
+function loadExperimentFile(meta, read) {
+  if (read.modified != null) meta.modified = read.modified;
+  if (read.evaluator_notes) meta.evaluator_notes = read.evaluator_notes;
+  loadExperiment(meta, read.document);
 }
 
 /* `keepOpen` re-reads the folder under an open page, so what is open in an optimizer run stays open. */
@@ -141,7 +145,6 @@ async function readToOpen(path, read) {
     return null;
   }
 }
-const documentToOpen = meta => readToOpen(meta.path, () => document_for(meta));
 
 /* Whether the open experiment's unsaved edits may be dropped: asked in the page when there are any. */
 async function mayDiscard(doing) {
@@ -152,7 +155,7 @@ async function mayDiscard(doing) {
 /** Open one report on its own page. The experiment editor, and any edits in it, are left alone. */
 async function openReport(path) {
   const meta = REPORTS.find(r => r.path === path);
-  const doc = meta && await documentToOpen(meta);
+  const doc = meta && await readToOpen(path, () => document_for(meta));
   if (!doc) return;
   repCand = null;
   loadReport(meta, doc);
@@ -169,9 +172,9 @@ async function openExperiment(path, opts) {
   /* Opening the one already open again would re-read it from disk and drop unsaved edits. */
   if (expMeta && expMeta.path === path && !force) return show('experiment');
   if (!force && !await mayDiscard('open another experiment')) return;
-  const doc = await documentToOpen(meta);
-  if (!doc) return;
-  loadExperiment(meta, doc);
+  const read = await readToOpen(path, () => readFile(meta));
+  if (!read) return;
+  loadExperimentFile(meta, read);
   scanError = '';
   renderLists();
   show('experiment');
