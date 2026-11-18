@@ -25,7 +25,7 @@ import socket
 import stat
 import tempfile
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from http import HTTPStatus
 from http.cookies import CookieError, SimpleCookie
@@ -792,14 +792,14 @@ def _is_timestamp(value: Any) -> TypeGuard[float]:
     return isinstance(value, float) and math.isfinite(value)
 
 
-def _finite(value: Any) -> Any:
+def finite(value: Any) -> Any:
     """`value` with NaN and Infinity replaced by None, which is how JSON can carry them."""
     if isinstance(value, float):
         return value if math.isfinite(value) else None
     if isinstance(value, dict):
-        return {key: _finite(item) for key, item in value.items()}
+        return {key: finite(item) for key, item in value.items()}
     if isinstance(value, list):
-        return [_finite(item) for item in value]
+        return [finite(item) for item in value]
     return value
 
 
@@ -1022,7 +1022,7 @@ class UIHandler(BaseHTTPRequestHandler):
         try:
             text = json.dumps(payload, allow_nan=False)
         except ValueError:  # a file on disk held NaN or Infinity, which Python reads and JSON forbids
-            text = json.dumps(_finite(payload), allow_nan=False)
+            text = json.dumps(finite(payload), allow_nan=False)
         self._send(status, text.encode("utf-8"), "application/json; charset=utf-8")
 
     def _error(self, status: HTTPStatus, message: str) -> None:
@@ -1166,21 +1166,7 @@ class UIHandler(BaseHTTPRequestHandler):
         # Taken before the scan, so a file written during it reads as a change afterwards.
         mark = fingerprint(self.config.root, self.config.depth)
         result = discover(self.config.root, self.config.depth)
-        self._json(
-            HTTPStatus.OK,
-            {
-                **self._settings(),
-                "fingerprint": mark,
-                "experiments": result.experiments,
-                "reports": result.reports,
-                "skipped": result.skipped,
-                "truncated": result.truncated,
-                "optimizer_runs": result.optimizer_runs,
-                "sessions": result.sessions,
-                "diagnoses": result.diagnoses,
-                "stores": result.stores,
-            },
-        )
+        self._json(HTTPStatus.OK, {**self._settings(), "fingerprint": mark, **asdict(result)})
 
     def _get_changes(self, query: dict[str, list[str]]) -> None:
         """The fingerprint now. It differs from a scan's once something the scan listed has changed."""
@@ -1250,7 +1236,7 @@ class UIHandler(BaseHTTPRequestHandler):
         if form == ".json":
             self._json(HTTPStatus.OK, obj)
             return
-        obj = _finite(obj)  # as the page is sent it, so both write the same Markdown
+        obj = finite(obj)  # as the page is sent it, so both write the same Markdown
         # The path as the scan writes it, so the file is found in the listing however it was asked for.
         root = self.config.root.resolve()
         path = target.relative_to(root).as_posix()
@@ -1269,7 +1255,7 @@ class UIHandler(BaseHTTPRequestHandler):
             diagnoses = []
             for made in listed(found.sessions).get("diagnoses") or []:
                 try:
-                    diagnoses.append((made, _finite(json.loads((root / made).read_text(encoding="utf-8")))))
+                    diagnoses.append((made, finite(json.loads((root / made).read_text(encoding="utf-8")))))
                 except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                     self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{made} could not be parsed: {exc}")
                     return

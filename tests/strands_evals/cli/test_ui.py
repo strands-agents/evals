@@ -1993,16 +1993,7 @@ def test_ui_list_prints_what_it_found_as_json(tmp_path: Path, capsys):
 
     found = discover(tmp_path)
     assert [len(found.experiments), len(found.reports), len(found.optimizer_runs), len(found.skipped)] == [2, 2, 2, 1]
-    assert json.loads(capsys.readouterr().out) == {
-        "root": str(tmp_path.resolve()),
-        "experiments": found.experiments,
-        "reports": found.reports,
-        "optimizer_runs": found.optimizer_runs,
-        "sessions": [],
-        "diagnoses": [],
-        "stores": [],
-        "skipped": found.skipped,
-    }
+    assert json.loads(capsys.readouterr().out) == {"root": str(tmp_path.resolve()), **asdict(found)}
 
 
 def test_ui_list_prints_what_it_found_as_text(tmp_path: Path, capsys):
@@ -2020,6 +2011,33 @@ def test_ui_list_prints_what_it_found_as_text(tmp_path: Path, capsys):
         "spare/unrun.json (1 cases)  ->  (not run)",
     ]
     assert printed.err == f"skipped notes.json: {NOT_RECOGNISED}\n"
+
+
+def test_ui_list_says_when_the_scan_stopped_at_the_file_cap(tmp_path: Path, capsys, monkeypatch):
+    for name in ("a.json", "b.json"):
+        _write(tmp_path / name, _experiment("a"))
+    monkeypatch.setattr(_ui_server, "MAX_SCAN_FILES", 1)
+
+    assert main(["--json", "ui", str(tmp_path), "--list"]) == 0
+    listed = json.loads(capsys.readouterr().out)
+    assert main(["--rich", "ui", str(tmp_path), "--list"]) == 0
+    printed = capsys.readouterr()
+
+    assert (listed["truncated"], [experiment["path"] for experiment in listed["experiments"]]) == (True, ["a.json"])
+    assert printed.out == "a.json (1 cases)  ->  (not run)\n"
+    assert printed.err == "scan hit the file cap: the rest of DIRECTORY was not read\n"
+
+
+def test_ui_list_prints_json_for_a_report_holding_nan(tmp_path: Path, capsys):
+    (tmp_path / "report.json").write_text(json.dumps({**_report("a"), "overall_score": float("nan")}))
+
+    assert main(["--json", "ui", str(tmp_path), "--list"]) == 0
+
+    def refuse(constant: str) -> None:
+        raise AssertionError(f"{constant} is not JSON")
+
+    listed = json.loads(capsys.readouterr().out, parse_constant=refuse)
+    assert [report["overall_score"] for report in listed["reports"]] == [None]
 
 
 def test_ui_rejects_a_path_that_is_not_a_directory(tmp_path: Path, capsys):

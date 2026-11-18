@@ -7,12 +7,45 @@ import json
 import os
 import sys
 import webbrowser
+from dataclasses import asdict
 from pathlib import Path
 
 from .._common import EXIT_BAD_INPUT, EXIT_OK, resolve_format
-from .._ui_server import DEFAULT_DEPTH, build_server, discover, is_loopback, server_url
+from .._ui_server import DEFAULT_DEPTH, build_server, discover, finite, is_loopback, server_url
 
 TOKEN_ENV = "STRANDS_EVALS_UI_TOKEN"
+
+
+def _print_listing(root: Path, args: argparse.Namespace) -> None:
+    result = discover(root, args.depth)
+    if resolve_format(args) == "json":
+        print(json.dumps(finite({"root": str(root.resolve()), **asdict(result)}), indent=2))  # noqa: T201
+        return
+
+    scored = {r["path"]: f"{r['path']} ({r['overall_score']:.2f})" for r in result.reports}
+    for experiment in result.experiments:
+        made = ", ".join(scored[path] for path in experiment["reports"]) or "(not run)"
+        print(f"{experiment['path']} ({experiment['cases']} cases)  ->  {made}")  # noqa: T201
+    for report in result.reports:
+        if report["experiment"] is None:
+            print(f"(no experiment)  ->  {scored[report['path']]}")  # noqa: T201
+    for run in result.optimizer_runs:
+        search = f"{run['candidates']} candidates, {run['iterations']} iterations"
+        champion = f"champion {run['champion_id']}" if run.get("champion_id") else "no champion"
+        stopped = f", stopped: {run['stop_reason']}" if run.get("stop_reason") else ""
+        print(f"optimizer run {run['dir']} ({search})  ->  {champion}{stopped}")  # noqa: T201
+    for session in result.sessions:
+        made = ", ".join(session["diagnoses"]) or "(not diagnosed)"
+        print(f"session {session['path']} ({session['traces']} traces, {session['spans']} spans)  ->  {made}")  # noqa: T201
+    for diagnosis in result.diagnoses:
+        if diagnosis["session"] is None:
+            print(f"(no session)  ->  {diagnosis['path']} ({diagnosis['failures']} failures)")  # noqa: T201
+    for store in result.stores:
+        print(f"task result store {store['dir']} ({store['files']} results)")  # noqa: T201
+    for skip in result.skipped:
+        print(f"skipped {skip['path']}: {skip['why']}", file=sys.stderr)  # noqa: T201
+    if result.truncated:
+        print("scan hit the file cap: the rest of DIRECTORY was not read", file=sys.stderr)  # noqa: T201
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -22,46 +55,7 @@ def _run(args: argparse.Namespace) -> int:
         return EXIT_BAD_INPUT
 
     if args.list:
-        result = discover(root, args.depth)
-        if resolve_format(args) == "json":
-            print(  # noqa: T201
-                json.dumps(
-                    {
-                        "root": str(root.resolve()),
-                        "experiments": result.experiments,
-                        "reports": result.reports,
-                        "optimizer_runs": result.optimizer_runs,
-                        "sessions": result.sessions,
-                        "diagnoses": result.diagnoses,
-                        "stores": result.stores,
-                        "skipped": result.skipped,
-                    },
-                    indent=2,
-                )
-            )
-        else:
-            scored = {r["path"]: f"{r['path']} ({r['overall_score']:.2f})" for r in result.reports}
-            for experiment in result.experiments:
-                made = ", ".join(scored[path] for path in experiment["reports"]) or "(not run)"
-                print(f"{experiment['path']} ({experiment['cases']} cases)  ->  {made}")  # noqa: T201
-            for report in result.reports:
-                if report["experiment"] is None:
-                    print(f"(no experiment)  ->  {scored[report['path']]}")  # noqa: T201
-            for run in result.optimizer_runs:
-                search = f"{run['candidates']} candidates, {run['iterations']} iterations"
-                champion = f"champion {run['champion_id']}" if run.get("champion_id") else "no champion"
-                stopped = f", stopped: {run['stop_reason']}" if run.get("stop_reason") else ""
-                print(f"optimizer run {run['dir']} ({search})  ->  {champion}{stopped}")  # noqa: T201
-            for session in result.sessions:
-                made = ", ".join(session["diagnoses"]) or "(not diagnosed)"
-                print(f"session {session['path']} ({session['traces']} traces, {session['spans']} spans)  ->  {made}")  # noqa: T201
-            for diagnosis in result.diagnoses:
-                if diagnosis["session"] is None:
-                    print(f"(no session)  ->  {diagnosis['path']} ({diagnosis['failures']} failures)")  # noqa: T201
-            for store in result.stores:
-                print(f"task result store {store['dir']} ({store['files']} results)")  # noqa: T201
-            for skip in result.skipped:
-                print(f"skipped {skip['path']}: {skip['why']}", file=sys.stderr)  # noqa: T201
+        _print_listing(root, args)
         return EXIT_OK
 
     # A supplied token keeps the URL stable across restarts. Opt-in: the default stays random.
