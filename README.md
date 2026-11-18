@@ -705,7 +705,9 @@ the `pass_threshold` together, from the same fit, and choose them again after ch
 decision-model checkpoint.
 
 Each row's `metadata` records `path` (`"fast"` or `"fallback"`), `p_gate` and `band`. Escalated
-rows also keep the rubric's rows under `fast_rows`. After loading a saved experiment, re-attach
+rows also record `escalation_reason`, and keep the rubric's rows under `fast_rows`. The reason is
+`"band"` when `p_gate` is inside the band, and `"not_applicable"` when the gating question does
+not apply to the case. The second wins, and its `p_gate` says nothing about the band. After loading a saved experiment, re-attach
 the decision model with `cascade.fast.decision_model = decision_model`, and on
 `cascade.fallback` too when the fallback is a `TypedRubricEvaluator`.
 

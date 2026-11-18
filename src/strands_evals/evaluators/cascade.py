@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 CascadePath = Literal["fast", "fallback"]
 """Which evaluator resolved a case, as written to each row's `metadata["path"]`."""
 
+EscalationReason = Literal["band", "not_applicable"]
+"""Why a case went to the fallback, as written to each fallback row's `metadata["escalation_reason"]`."""
+
 
 def _check_band_is_reachable(band: Band, question: RubricQuestion) -> None:
     """Reject, or warn about, a band that no `p_gate` can fall into.
@@ -79,6 +82,10 @@ class Cascade(Evaluator[InputT, OutputT]):
     - `path`: `"fast"` or `"fallback"`, the evaluator that resolved the case.
     - `p_gate`: the gating probability, so every fast verdict can be checked against the band.
     - `band`: the band in use, as a dict.
+    - `escalation_reason`: on fallback rows only. `"band"` when `p_gate` is inside the band, and
+      `"not_applicable"` when the gating question does not apply to the case, which escalates
+      whatever the band is and wins when both hold. For a `"not_applicable"` row, `p_gate` is only
+      the highest credited probability and says nothing about the band.
     - `fast_rows`: on fallback rows only, the rubric's rows, so the escalated case can be audited.
 
     A failing fallback fails the case: it is never silently replaced by the rubric's verdict.
@@ -185,11 +192,13 @@ class Cascade(Evaluator[InputT, OutputT]):
         gate_row = self._gate_row(fast_rows)
         p_gate = self._p_gate(gate_row)
 
-        if gate_row.not_applicable or self._escalate_when.contains(p_gate):
-            fallback_rows = await self._fallback.evaluate_async(evaluation_case)
-            audit = [row.model_dump(mode="json") for row in fast_rows]
-            return [self._tag(row, "fallback", p_gate, fast_rows=audit) for row in fallback_rows]
-        return [self._tag(row, "fast", p_gate) for row in fast_rows]
+        reason = self._escalation_reason(gate_row, p_gate)
+        if reason is None:
+            return [self._tag(row, "fast", p_gate) for row in fast_rows]
+
+        fallback_rows = await self._fallback.evaluate_async(evaluation_case)
+        audit = [row.model_dump(mode="json") for row in fast_rows]
+        return [self._tag(row, "fallback", p_gate, escalation_reason=reason, fast_rows=audit) for row in fallback_rows]
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize both evaluators and the band. The rubric's decision model is never written."""
@@ -221,6 +230,15 @@ class Cascade(Evaluator[InputT, OutputT]):
             if (row.metadata or {}).get("question_id") == question_id:
                 return row
         raise ValueError(f"fast rubric returned no row for gating question <{question_id}>")
+
+    def _escalation_reason(self, gate_row: EvaluationOutput, p_gate: float) -> EscalationReason | None:
+        """Why the case must go to the fallback, or None when the rubric's rows stand."""
+        # A case the question does not apply to has no real gate value, so it is checked first.
+        if gate_row.not_applicable:
+            return "not_applicable"
+        if self._escalate_when.contains(p_gate):
+            return "band"
+        return None
 
     def _p_gate(self, gate_row: EvaluationOutput) -> float:
         # `TypedRubricEvaluator` has already checked that the distribution is complete and valid.

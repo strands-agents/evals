@@ -416,6 +416,80 @@ async def test_inapplicable_gating_question_escalates():
 
 
 @pytest.mark.asyncio
+async def test_fast_rows_carry_no_escalation_reason():
+    rows = await _cascade(_noul(0.05)).evaluate_async(_case())
+    assert [row.metadata["path"] for row in rows] == ["fast"]
+    assert "escalation_reason" not in rows[0].metadata
+
+
+@pytest.mark.asyncio
+async def test_band_escalation_records_the_band_reason():
+    rows = await _cascade(_noul(0.5)).evaluate_async(_case())
+    assert rows[0].metadata["escalation_reason"] == "band"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "band_high, p_gate_in_band",
+    [(0.05, True), (0.5, True), (0.02, False)],
+    ids=["band-also-matches", "wide-band", "band-misses"],
+)
+async def test_not_applicable_reason_wins_whether_or_not_p_gate_is_in_the_band(band_high, p_gate_in_band):
+    # The credited options hold 0.04 (top: 0.03), and "does not apply" holds 0.96.
+    band = Band(question="risk", low=0.0, high=band_high)
+    cascade = _cascade(_risk(0.03, 0.005, 0.005, 0.96), {"risk": _RISK}, band)
+
+    rows = await cascade.evaluate_async(_case())
+
+    assert band.contains(rows[0].metadata["p_gate"]) is p_gate_in_band
+    assert rows[0].metadata["path"] == "fallback"
+    assert rows[0].metadata["escalation_reason"] == "not_applicable"
+
+
+@pytest.mark.asyncio
+async def test_reason_tells_a_band_escalation_from_a_not_applicable_one():
+    band = Band(question="risk", low=0.30, high=0.40)
+    cases = {
+        "in_band": (_risk(0.35, 0.25, 0.20, 0.20), "band"),
+        "not_applicable": (_risk(0.02, 0.01, 0.02, 0.95), "not_applicable"),
+        "confident": (_risk(0.80, 0.10, 0.05, 0.05), None),
+    }
+    for name, (probabilities, reason) in cases.items():
+        rows = await _cascade(probabilities, {"risk": _RISK}, band).evaluate_async(_case())
+        assert rows[0].metadata.get("escalation_reason") == reason, name
+        assert rows[0].metadata["path"] == ("fast" if reason is None else "fallback"), name
+
+
+@pytest.mark.asyncio
+async def test_every_fallback_row_gets_the_reason_and_the_metadata_stays_json():
+    judge = StubJudge(
+        rows=[
+            EvaluationOutput(score=1.0, test_pass=True, reason="a"),
+            EvaluationOutput(score=0.0, test_pass=False, reason="b", metadata={"judge": "x"}),
+        ]
+    )
+    rows = await _cascade(_noul(0.5), judge=judge).evaluate_async(_case())
+    assert [row.metadata["escalation_reason"] for row in rows] == ["band", "band"]
+    assert rows[1].metadata["judge"] == "x"
+    json.dumps([row.metadata for row in rows])
+
+
+@pytest.mark.asyncio
+async def test_a_fallback_row_survives_a_report_round_trip(tmp_path):
+    model = StubDecisionModel(_risk(0.02, 0.01, 0.02, 0.95))
+    rubric = TypedRubricEvaluator({"risk": _RISK}, decision_model=model)
+    cascade = Cascade(fast=rubric, fallback=StubJudge(), escalate_when=Band(question="risk", low=0, high=0.05))
+
+    report = await Experiment(cases=[Case(name="c", input="hi")], evaluators=[cascade]).run_evaluations_async(
+        lambda case: "ok"
+    )
+    row = report[0].detailed_results[0][0] if isinstance(report, list) else report.detailed_results[0][0]
+
+    assert row.metadata["escalation_reason"] == "not_applicable"
+    assert EvaluationOutput.model_validate_json(row.model_dump_json()).metadata == row.metadata
+
+
+@pytest.mark.asyncio
 async def test_fallback_error_fails_the_case():
     cascade = _cascade(_noul(0.5), judge=StubJudge(error=RuntimeError("judge down")))
     with pytest.raises(RuntimeError, match="judge down"):
