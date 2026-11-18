@@ -70,13 +70,8 @@ _INITIAL_RETRY_DELAY = 4
 _MAX_RETRY_DELAY = 240  # 4 minutes
 
 
-def builtin_evaluator_types() -> dict[str, type[Evaluator]]:
-    """The evaluator names `from_dict` resolves without any custom evaluators passed in.
-
-    Exposed because callers that read experiment files without running them — the CLI's
-    `ui`, for one — need to say whether a written `evaluator_type` will load, and the only
-    honest answer is the registry itself rather than a second copy of the list.
-    """
+def _builtin_evaluator_types() -> dict[str, type[Evaluator]]:
+    """The evaluator names `from_dict` resolves without any custom evaluators passed in."""
     return {
         "Evaluator": Evaluator,
         "OutputEvaluator": OutputEvaluator,
@@ -833,7 +828,7 @@ class Experiment(Generic[InputT, OutputT, ReportT]):
         """
         custom_evaluators = custom_evaluators or []
         cases: list[Case] = [Case.model_validate(case_data) for case_data in data["cases"]]
-        default_evaluators = builtin_evaluator_types()
+        default_evaluators = _builtin_evaluator_types()
         all_evaluators: dict[str, type[Evaluator]] = {
             **default_evaluators,
             **{v.get_type_name(): v for v in custom_evaluators},

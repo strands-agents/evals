@@ -157,11 +157,29 @@ strands-evals ui experiments/
 strands-evals ui experiments/ --list
 ```
 
-`ui` binds loopback on a random port and prints a URL carrying a one-time token; every request
-needs that token, so nothing else on the machine can read or write through it. Edits save back to
-the file they were loaded from, with a conflict check against the file's mtime so a concurrent
-`run` or editor is never silently overwritten. Pass `--read-only` to browse without the Save path
-at all.
+`ui` binds loopback on a random port and prints a link carrying a token generated for that run. Every
+request needs that token, so a page open in another browser tab cannot read or write through it.
+Opening the link trades the token for a cookie and lands on a clean address, so the token is not left
+in the address bar or the browser history. Edits save back to the file they were loaded from, with a
+conflict check against the file's mtime so a concurrent `run` or editor is never silently overwritten.
+While the page is open it checks every few seconds whether the folder changed and re-reads what it is
+showing, so a run in progress fills in without a reload; unsaved edits are never replaced.
+
+Every view has an address of its own, so Back and Forward work and a view can be bookmarked or shared
+with someone serving the same folder:
+
+| Address | Shows |
+| --- | --- |
+| `/runs` | The experiments and reports found. |
+| `/runs/<experiment file>/experiment` | Its cases; add `/cases/<name>` for one case. |
+| `/runs/<experiment file>/report` | Its report. |
+| `/optimization` | The optimizer runs found. |
+| `/optimization/<run directory>/<view>` | One run: `setup`, `overview`, `progress`, `candidates`, `tunables` or `trade-off`. |
+| `/optimization/<run directory>/candidates/<id>/report` | One candidate's cases, as a report. |
+
+To see every view with data in it, `python examples/make_ui_demo.py DIR` writes a synthetic folder to serve.
+Pass `--read-only` to browse without the Save path at all, and `--host` to serve beyond this machine
+(for example `0.0.0.0` inside a container).
 
 Run any subcommand with `--help` for the full flag set (custom evaluators via `MODULE:CLASS`, trace attributes, `--fail-on` exit-code rules, output formats, etc.).
 

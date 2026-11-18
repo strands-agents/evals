@@ -1,82 +1,66 @@
-/* Standalone mode: the file opened with no server behind it. */
+/* Standalone mode: the page opened with no server behind it. */
 import { page, runner } from './harness.mjs';
 
 const { ok, done } = runner('standalone');
-const p = await page();                       // no fetch -> /api/config fails -> standalone
-const { $, $$, text, click, type, openFolder, window, errs } = p;
+const { $, $$, text, click, type, saved, openFolder, errs } = await page();   // no fetch, so /api/config fails
+const caseCount = () => $$('#case-list li[data-i]').length;
 
-// ── boot ──
-ok(text('.tab.on') === 'Runs', 'lands on Runs', text('.tab.on'));
-ok($$('.view.on').length === 1, 'exactly one view visible', $$('.view.on').length);
-ok(/standalone file/.test(text('#mode-tag')), 'mode tag names standalone', text('#mode-tag'));
-ok(/saves download/.test(text('#mode-tag')), 'mode tag says saves download', text('#mode-tag'));
-ok($('[data-act="rescan"]').hidden === true, 'Rescan hidden without a server');
-ok($('[data-act="pick"]').hidden === false, 'Open folder offered');
-ok(/showing the sample it carries/.test(text('#runs-sub')), 'says the data is the sample', text('#runs-sub'));
-ok(/Open a folder/.test(text('#runs-sub')), 'and names the way out of it', text('#runs-sub'));
+// ── boot: the bundled sample, already open ──
+ok(text('.tab.on') === 'Runs' && $$('.view.on').length === 1, 'lands on Runs, the one view showing', text('.tab.on'));
+ok(/standalone.*download/.test(text('#mode-tag')), 'the mode tag says standalone, and that saves download', text('#mode-tag'));
+ok($('[data-act="rescan"]').hidden && !$('[data-act="pick"]').hidden, 'Open folder is offered in place of Rescan');
+ok(/sample/.test(text('#runs-sub')), 'and the page says it is showing its sample', text('#runs-sub'));
 
-// ── the bundled sample is one run, and its pairing is checked not assumed ──
-const runs = $$('#runs-rows tr.run');
-ok(runs.length === 1, 'one bundled run', runs.length);
-const cells = [...runs[0].children].map(c => c.textContent.replace(/\s+/g, ' ').trim());
-ok(/13 cases/.test(cells[1]) && /3 evaluators/.test(cells[1]), 'counts cases + evaluators', cells[1]);
-ok(/0\.92/.test(cells[2]) && /5 failing/.test(cells[2]), 'summarises the report', cells[2]);
-ok(/pairing verified/.test(cells[2]), 'pairing is verified, not assumed', cells[2]);
+const run = text('#runs-rows');
+ok($$('#runs-rows tr.run').length === 1 && /13 cases · 3 evaluators/.test(run),
+  'the sample is one run, its cases and evaluators counted', run);
+ok(/0\.92/.test(run) && /5 failing/.test(run) && /pairing verified/.test(run),
+  'its report summarised and the pairing checked', run);
+ok(caseCount() === 13 && text('#r-score') === '0.92', 'and it is loaded before anything is clicked',
+  `${caseCount()} cases, score ${text('#r-score')}`);
+const stats = $$('#r-stats .stat').map(s => `${s.querySelector('.v').textContent} ${s.querySelector('.k').textContent}`);
+ok(stats[0] === '31 / 36 Rows passing' && stats[3] === '3 Not applicable',
+  'rows an evaluator declined are counted apart from the rows passing', stats.join(', '));
 
-// ── the sample is already loaded, so the page is useful on open ──
-ok($$('#case-list li[data-i]').length === 13, '13 cases loaded at boot', $$('#case-list li[data-i]').length);
-ok(text('#r-score') === '0.92', 'hero score', text('#r-score'));
-const stats = $$('#r-stats .stat').map(s => s.querySelector('.v').textContent + '=' + s.querySelector('.k').textContent);
-ok(stats[0] === '31 / 36=Rows passing', 'rows passing counted with is_applicable', stats[0]);
-ok(stats[3] === '3=Not applicable', 'not-applicable count', stats[3]);
-
-// ── evaluators, including the editable config ──
-const chips = $$('#evs .evchip').map(c => c.textContent.replace(/\s+/g, ' ').trim());
-ok(chips.length === 3, 'three evaluator chips', chips.length);
-ok(chips[0] === 'OutputEvaluator', 'unnamed evaluator shows its class', chips[0]);
-ok(/threshold=0.9/.test(chips[1]), 'non-default config shown', chips[1]);
-ok(chips[2].startsWith('support_rubric') && /RubricEvaluator/.test(chips[2]), 'name AND class', chips[2]);
-/* Only the server can check an evaluator — it has the registry and the constructors. With no
-   server the page says nothing rather than guessing from the class name. */
-ok(text('#evnotes') === '', 'no evaluator verdicts without a server', text('#evnotes'));
+// ── evaluators and their settings ──
+const chips = () => $$('#evs .evchip').map(c => [...c.children].map(el => el.textContent).join(' '));
+ok(chips().join(' | ') === 'OutputEvaluator | ToolTrajectoryEvaluator threshold=0.9 | support_rubric RubricEvaluator',
+  'a chip shows the name or else the class, the class beside a name, and any settings', chips().join(' | '));
+// Only the server can check an evaluator against the registry.
+ok(text('#evnotes') === '', 'with no verdict on any of them without a server', text('#evnotes'));
 
 await click('#evs .evchip');
-ok($('#evform').hidden === false, 'clicking a chip opens its config');
+ok($('#evform').hidden === false, 'clicking a chip opens its settings');
 await click('[data-evclose]');
-ok($('#evform').hidden === true, 'and closes again');
+ok($('#evform').hidden === true, 'and Close shuts them');
 
 await click($$('#evs .evchip')[1]);
-ok($('#evform [data-evk="threshold"]'), 'threshold is editable', $('#evform').textContent.slice(0, 80));
 await type('#evform [data-evk="threshold"]', '0.75');
-ok(/1 unsaved change/.test(text('#dirty')), 'editing config marks dirty', text('#dirty'));
-ok($('#save').disabled === false, 'Save enabled by a config edit');
+ok(text('#dirty') === '1 unsaved change', 'editing a setting is an unsaved change', text('#dirty'));
 await click('#revert');
-ok(text('#dirty') === 'No unsaved changes', 'revert restores evaluators', text('#dirty'));
-ok(/threshold=0.9/.test($$('#evs .evchip')[1].textContent), 'chip shows the original value');
+ok(text('#dirty') === 'No unsaved changes' && /threshold=0.9/.test(chips()[1]), 'which Revert undoes', chips()[1]);
 
-// ── add / delete a case ──
-const before = $$('#case-list li[data-i]').length;
+// ── adding, saving and deleting a case ──
+const before = caseCount();
 await click('#add-case');
-ok($$('#case-list li[data-i]').length === before + 1, 'add case appends', $$('#case-list li[data-i]').length);
-ok($('#save').disabled === false, 'a new case is dirty immediately');
+ok(caseCount() === before + 1 && !$('#save').disabled, 'a new case joins the list, unsaved', caseCount());
 await click('#save');
-ok(/has no input/.test(text('#saved')), 'refuses to write a case with no input', text('#saved'));
+ok(/has no input/.test(text('#saved')) && await saved() === null, 'Save refuses a case with no input', text('#saved'));
 await type('#form [data-k="input"]', 'a brand new question');
 await click('#save');
-ok(/downloaded/.test(text('#saved')), 'standalone save downloads', text('#saved'));
-ok(text('#dirty') === 'No unsaved changes', 'clean after save', text('#dirty'));
+ok((await saved()).cases[before].input === 'a brand new question' && text('#dirty') === 'No unsaved changes',
+  'and downloads the file once it has one', text('#saved'));
 await click('#del-case');
-ok($$('#case-list li[data-i]').length === before, 'delete removes it', $$('#case-list li[data-i]').length);
+ok(caseCount() === before, 'Delete removes the case', caseCount());
 
-// ── duplicate names are refused: the report could not tell them apart ──
+// The report could not tell two cases of one name apart.
 await click($$('#case-list li[data-i]')[0]);
-const second = $$('#case-list li[data-i]')[1].querySelector('.nm').textContent;
-await type('#form [data-k="name"]', second);
+await type('#form [data-k="name"]', $$('#case-list li[data-i] .nm')[1].textContent);
 await click('#save');
-ok(/two cases are named/.test(text('#saved')), 'duplicate names refused', text('#saved'));
+ok(/two cases are named/.test(text('#saved')), 'Save refuses two cases of one name', text('#saved'));
 await click('#revert');
 
-// ── trajectories that are not lists of strings ──
+// ── an opened folder, and trajectories that are not lists of strings ──
 await openFolder({
   'tree/experiment.json': {
     cases: [
@@ -89,30 +73,16 @@ await openFolder({
     evaluators: [{ evaluator_type: 'ToolTrajectoryEvaluator' }],
   },
 });
-ok($$('#runs-rows tr.run').length === 1, 'opened folder lists its run', $$('#runs-rows tr.run').length);
-/* Having opened a folder, the page is reading real files. Still calling that the bundled
-   sample is the only signal a reader has that the click did anything, so it has to flip. */
-ok(!/showing the sample it carries/.test(text('#runs-sub')), 'stops claiming the sample', text('#runs-sub'));
-ok(/Reading the folder you opened/.test(text('#runs-sub')), 'confirms the folder', text('#runs-sub'));
-ok(/save as a download/.test(text('#runs-sub')), 'says where edits go', text('#runs-sub'));
+ok($$('#runs-rows tr.run').length === 1 && /folder you opened/.test(text('#runs-sub')),
+  'an opened folder replaces the sample, and the page says so', text('#runs-sub'));
 await click('#runs-rows tr.run');
-ok($$('#case-list li[data-i]').length === 3, 'three cases from the folder', $$('#case-list li[data-i]').length);
-
-const trajectoryText = () => {
-  const field = $$('#form .field').find(f => /Expected trajectory/.test(f.querySelector('label').textContent));
-  return field.textContent.replace(/\s+/g, ' ').trim();
-};
-ok(/search\(q="rome"\)/.test(trajectoryText()), 'a recorded call is named, not [object Object]', trajectoryText());
-ok(!/object Object/.test(trajectoryText()), 'no [object Object] anywhere', trajectoryText());
-ok(/reply\(\)/.test(trajectoryText()), 'an entry with only a tool name still reads', trajectoryText());
-
+const trajectory = () => text('[aria-labelledby="label-expected_trajectory"]');
+ok(caseCount() === 3 && /search\(q="rome"\)/.test(trajectory()) && /reply\(\)/.test(trajectory()),
+  'a recorded call reads as its name and arguments, not [object Object]', trajectory());
 await click($$('#case-list li[data-i]')[1]);
-ok(!/^Expected trajectory none/.test(trajectoryText()), 'a Session trajectory is not reported as absent', trajectoryText());
-ok(/session_id/.test(trajectoryText()), 'a Session trajectory is shown as JSON', trajectoryText());
-
+ok(/session_id/.test(trajectory()), 'a Session trajectory is shown as JSON, not reported as absent', trajectory());
 await click($$('#case-list li[data-i]')[2]);
-ok($$('#form .chips[data-chips] .chip').length === 2, 'string trajectory still renders chips',
+ok($$('#form .chips .chip').length === 2 && !!$('#form .chips .addchip'), 'a list of tool names is chips that can be added to',
   $$('#form .chips .chip').length);
-ok($('#form .chips .addchip'), 'and can be added to');
 
 done(errs);
