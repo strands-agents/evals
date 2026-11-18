@@ -153,7 +153,7 @@ async function openReport(path) {
   const meta = REPORTS.find(r => r.path === path);
   const doc = meta && await documentToOpen(meta);
   if (!doc) return;
-  closeCandidate();
+  repCand = null;
   loadReport(meta, doc);
   scanError = '';
   renderLists();

@@ -7,25 +7,6 @@ let repFilter = 'all', repQuery = '', openRows = new Set(), repLimit = REP_PAGE;
 /* The candidate whose cases the report page shows in place of a report file, or null. */
 let repCand = null;
 
-/* ── a candidate's cases on the report page ── */
-function noteCandidate(what) {
-  $('rep-borrowed').hidden = false;
-  $('rep-borrowed').innerHTML = `<span>${what}</span><button class="btn" data-act="unborrow">Back to Candidates</button>`;
-}
-
-function closeCandidate() {
-  repCand = null;
-  $('rep-borrowed').hidden = true;
-  $('rep-borrowed').innerHTML = '';
-}
-
-app.querySelector('#rep-borrowed').onclick = e => {
-  if (!e.target.closest('[data-act="unborrow"]')) return;
-  closeCandidate();
-  clearReport();
-  show('opt-candidates');
-};
-
 function setFilter(f) {
   repFilter = f;
   app.querySelectorAll('#rep-seg button').forEach(b => b.classList.toggle('on', b.dataset.f === f));
@@ -49,7 +30,7 @@ function loadReport(meta, doc, keep) {
 }
 
 function clearReport() {
-  REP = null; repMeta = null; ROWS = []; BY_CASE = [];
+  REP = null; repMeta = null; repCand = null; ROWS = []; BY_CASE = [];
   renderReportCharts(); renderLenses();
   const score = $('r-score');
   score.textContent = '—'; score.classList.add('none');

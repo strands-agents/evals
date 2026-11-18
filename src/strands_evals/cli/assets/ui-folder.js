@@ -313,7 +313,7 @@ async function showFolder(label, entries, rootDepth) {
   EXPERIMENTS = found.experiments;
   REPORTS = found.reports;
   skipped = found.skipped;
-  clearExperiment(); clearReport(); closeCandidate(); closeSession();
+  clearExperiment(); clearReport(); closeSession();
   setSessions(found);
   renderLists();
   await loadOptimizerRuns(found.optimizerRuns);

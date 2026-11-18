@@ -961,9 +961,6 @@ function openCandidateReport(p) {
       if (found && repMeta === meta) loadReport(meta, candidateReport(p, found), true);
     });
   }
-  const why = outcomeWhy(p);
-  noteCandidate(`Candidate <b>${esc(p.candidate_id)}</b> of ${esc(run.run_id)}, `
-    + 'from Optimization.' + (why ? ` <span class="tag warn">${esc(p.outcome)}</span> ${esc(why)}` : ''));
   renderLists();
 }
 

@@ -33,7 +33,11 @@ function experimentHead() {
 function runHead(view) {
   const run = OPT_RUNS[optSel];
   const trail = [['Runs', 'opt-runs'], [run.run_id, 'opt-overview']];
-  if (view === 'report') return [trail.concat([['Candidates', 'opt-candidates'], [repCand]]), 'The cases this candidate ran, as a report.'];
+  if (view === 'report') {
+    const p = OPT && OPT.proposals.find(c => c.candidate_id === repCand), why = p && outcomeWhy(p);
+    return [trail.concat([['Candidates', 'opt-candidates'], [repCand]]), 'The cases this candidate ran, as a report.'
+      + (why ? ` <span class="tag warn">${esc(p.outcome)}</span> ${esc(why)}` : '')];
+  }
   const status = !OPT ? '' : OPT.stop ? `stopped: ${OPT.stop.reason}` : 'still running';
   return [trail.slice(0, 1).concat([[run.run_id]]),
     [status, OPT && OPT.champion ? `champion ${OPT.champion}` : ''].filter(Boolean).map(esc).join(' · ')];
@@ -59,5 +63,7 @@ $('crumbs').onclick = e => {
   const back = e.target.closest('[data-go]');
   if (!back) return;
   e.preventDefault();
+  /* A candidate's cases are on the report page only while it is open: leaving by a crumb puts them away. */
+  if (repCand) clearReport();
   show(back.dataset.go);
 };

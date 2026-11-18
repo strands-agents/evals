@@ -216,9 +216,9 @@ ok(/held-out cases/.test(stripNote(p)) && /nothing to draw for tokens \(no inter
   await openCand(q, 'c8');
   eq(detail(q)['Why infeasible'], why, 'an infeasible candidate names the constraint it broke and what it measured');
   await q.click('#opt-cands [data-open]');
-  ok(q.text('#rep-borrowed').includes(`infeasible ${why}`) && q.text('#r-stats').startsWith('8 / 8'),
-    'and says so again above its cases, every one of which passes', `${q.text('#rep-borrowed')} | ${q.text('#r-stats')}`);
-  await q.click('#rep-borrowed [data-act="unborrow"]');
+  ok(q.text('#facts').includes(`infeasible ${why}`) && q.text('#r-stats').startsWith('8 / 8'),
+    'and says so again above its cases, every one of which passes', `${q.text('#facts')} | ${q.text('#r-stats')}`);
+  await q.click('#crumbs [data-go="opt-candidates"]');
   await openCand(q, 'c10');
   ok(!Object.keys(detail(q)).some(k => k.startsWith('Why c') || k === 'Why feasible'), 'a feasible one has nothing to explain',
     Object.keys(detail(q)).join());
@@ -637,11 +637,11 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
 
   const q = await openFixture({ files: { ...experiment, ...report } });
   await q.openReport();
-  eq([q.text('#rep-count'), q.$('#rep-borrowed').hidden, q.text('#crumbs')], ['2 of 2 rows', true, 'Reports/evals/report.json'],
-    'a report from the folder is open under Reports, with no candidate announced');
+  eq([q.text('#rep-count'), q.text('#crumbs')], ['2 of 2 rows', 'Reports/evals/report.json'],
+    'a report from the folder is open under Reports');
   await candidate(q);
-  eq([q.text('#rep-count'), q.text('#rep-borrowed')], ['15 of 15 rows', `Candidate c10 of ${RUN_ID}, from Optimization.Back to Candidates`],
-    'a candidate on the page is announced by candidate and run, with the way back');
+  eq([q.text('#rep-count'), q.text('#facts')], ['15 of 15 rows', 'The cases this candidate ran, as a report.'],
+    'a candidate on the page says what its rows are, with nothing to add for one that can ship');
   eq([q.text('#crumbs'), q.$$('#crumbs a').map(a => a.dataset.go).join(), q.text('.tab.on'), q.$('#opt-tabs').hidden],
     [`Runs/${RUN_ID}/Candidates/c10`, 'opt-runs,opt-overview,opt-candidates', 'Runs', true],
     'the header names it Runs / run / Candidates / id, each part a way back, and the sidebar is on Runs');
@@ -653,8 +653,8 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
   ok(q.$('#v-opt-candidates').classList.contains('on') && !q.$('#opt-tabs').hidden, 'the Candidates crumb goes back to the run’s candidates',
     q.$('.view.on').id);
   await q.openReport();
-  eq([q.text('#rep-count'), q.$('#rep-borrowed').hidden, q.text('#path'), q.$('#reports-rows tr.row').classList.contains('on')],
-    ['2 of 2 rows', true, 'evals/report.json', true],
+  eq([q.text('#rep-count'), q.text('#crumbs'), q.text('#path'), q.$('#reports-rows tr.row').classList.contains('on')],
+    ['2 of 2 rows', 'Reports/evals/report.json', 'evals/report.json', true],
     'opening the folder’s report again shows it, with its path, its row marked and the candidate gone');
 
   const q2 = await openFixture({ files: experiment });
@@ -664,7 +664,7 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
   const h = await openFixture({ files: { ...experiment, ...report } });
   await h.openReport();
   await candidate(h);
-  const showing = () => `${h.text('#rep-count')} ${h.$('#rep-borrowed').hidden ? 'own' : 'candidate'}`;
+  const showing = () => `${h.text('#rep-count')} ${h.text('#crumbs').startsWith('Runs') ? 'candidate' : 'own'}`;
   const travel = async delta => { h.window.history.go(delta); await tick(6); return `${h.$('.view.on').id} ${showing()}`; };
   eq(h.window.location.hash, '#/optimization/demo/candidates/c10/report', 'a candidate on the report page is named in the address');
   eq([await travel(-2), await travel(2)], ['v-report 2 of 2 rows own', 'v-report 15 of 15 rows candidate'],
@@ -674,9 +674,9 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
   await tick(6);
   eq([`${reopened.$('.view.on').id} ${reopened.text('#rep-count')}`, reopened.text('#crumbs')],
     ['v-report 15 of 15 rows', `Runs/${RUN_ID}/Candidates/c10`], 'and the address alone reopens them');
-  await q2.click('#rep-borrowed [data-act="unborrow"]');
+  await q2.click('#crumbs [data-go="opt-candidates"]');
   ok(q2.$('#v-opt-candidates').classList.contains('on') && q2.text('#rep-count') === '',
-    'Back to Candidates goes there, leaving no report loaded', q2.text('#rep-count'));
+    'the Candidates crumb goes there, leaving no report loaded', q2.text('#rep-count'));
   await q2.click('.tab[data-view="reports"]');
   ok(q2.$('#v-reports').classList.contains('on') && q2.$('#pagehead').hidden, 'so Reports is the list again, with no header', q2.$('.view.on').id);
 }

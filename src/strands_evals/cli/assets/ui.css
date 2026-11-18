@@ -142,13 +142,6 @@ h2, .chart h3, .pane > header .t, .hero .big, .stat .v, .winner .wid {
 .tab:hover { color: var(--ink1); }
 .tab.on { font-weight: 600; color: var(--on-brand); background: var(--brand); }
 .grow { flex: 1; }
-.borrowed {
-  margin: 0 0 18px; padding: 10px 14px; background: var(--card); border: 1px solid var(--hair);
-  border-left: 3px solid var(--brand); border-radius: 0 var(--r) var(--r) 0;
-  font-size: 12.5px; color: var(--ink2); display: flex; align-items: center; gap: 12px;
-}
-.borrowed b { color: var(--ink1); font-weight: 600; }
-.borrowed .btn { margin-left: auto; flex: none; }
 .source { margin: -10px 0 18px; }
 .path { color: var(--ink3); font-size: 12.5px; }
 
