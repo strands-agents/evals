@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import itertools
 import json
 import shutil
 import threading
@@ -1639,6 +1640,57 @@ async def test_resume_rebuilds_scores_as_the_closed_iterations_left_them(tmp_pat
     assert not resumed_optimizer._train[rescored.candidate_id].is_eligible  # as step 1 left it
 
 
+async def test_a_failed_record_kept_on_resume_names_no_transcript_of_a_killed_rerun(tmp_path):
+    # temperature 0.5's trials hit infrastructure in step 1; step 2 re-runs them, saving transcripts, and is killed.
+    failing = {"left": 8}
+
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        if temperature == 0.5 and failing["left"] > 0:
+            failing["left"] -= 1
+            raise InfrastructureError("sandbox down")
+        return {"output": str(temperature), "trajectory": [case.name, temperature]}
+
+    def search(*updates):
+        return Search([Block(Scripted(*updates), "temperature"), Block(Scripted(), "manager")], schedule=Joint())
+
+    original = _optimizer(
+        _experiment(evaluators=[Temperature()]),
+        rollout_fn=rollout,
+        search=search({"temperature": 0.5}, {"temperature": 0.5}, {"temperature": 1.0}),
+        max_workers=64,
+        rerun_passes=0,
+        proposals_per_iteration=1,
+        base_dir=tmp_path / "runs",
+        budget=Budget(max_iterations=3),
+    )
+    await original.run_async()
+    copy = _killed(
+        original._run.root, tmp_path, lambda events: _index(events, "score", after=_index(events, "iteration_end"))
+    )
+    # The resumed step 2 proposes 1.0 instead, so 0.5 keeps step 1's failed records.
+    result = await Optimizer.resume(
+        copy,
+        experiment=_experiment(evaluators=[Temperature()]),
+        factory=create_agent,
+        rollout_fn=rollout,
+        search=search({"temperature": 1.0}),
+    ).run_async()
+
+    half = next(c for c, view in result.candidates.items() if view.values["temperature"] == 0.5)
+    last = {}
+    for event in _events_at(copy):
+        if event["event"] == "trial" and event["record"]["candidate_id"] == half:
+            last[(event["record"]["case_name"], event["record"]["run_index"])] = event["record"]
+    # The last trial events are the killed step's re-runs, which saved transcripts.
+    assert last and all(saved["transcript"] is not None for saved in last.values())
+    cases = [row for row in result.to_rows("case") if row["candidate_id"] == half]
+    assert len(cases) == len(last) and all(row["status"] == "infrastructure_invalid" for row in cases)
+    assert all(row["transcript"] is None for row in cases)
+    rows = result.reports[half]["train"].cases
+    assert len(rows) == len(cases) and all(row["transcript"] is None for row in rows)
+
+
 async def test_max_iterations_counts_candidate_slots_not_steps(tmp_path):
     # temperature has 3 options: once each is measured, every numbers step is all duplicates and costs no slot.
     proposer = Scripted({"temperature": 0.5}, {"temperature": 0.0}, {"temperature": 1.0}, *[{"temperature": 0.5}] * 30)
@@ -1752,7 +1804,9 @@ async def test_reports_match_what_experiment_returns_for_the_same_trials(tmp_pat
     report = result.reports[result.baseline_id]["train"]
     assert report.overall_score == pytest.approx(expected["overall_score"])
     assert report.scores == expected["scores"] and report.test_passes == expected["test_passes"]
-    assert [{k: v for k, v in row.items() if k != "run_index"} for row in report.cases] == expected["cases"]
+    assert all(row["transcript"] is None for row in report.cases)  # this rollout saves no trajectory
+    tags = ("run_index", "transcript")
+    assert [{k: v for k, v in row.items() if k not in tags} for row in report.cases] == expected["cases"]
     # Experiment keeps the evaluator's message; the trial record keeps only its type.
     reasons = [r.replace("flaky judge", "ValueError") for r in expected["reasons"]]
     assert report.reasons == reasons
@@ -1776,6 +1830,94 @@ async def test_the_result_reloads_whole_without_the_run_folder_and_summarizes(tm
     assert "temperature: 0.0 -> 1.0" in text
     with pytest.raises(ValueError, match="unknown grain"):
         result.to_rows("trial")
+
+
+def _with_transcripts(experiment=None):
+    """What a run passes, and resume passes again: two evaluators; each trial a distinct trajectory, except on a
+    crashed case and on a case whose rollout returns none (those two case names are returned too)."""
+    train = list(_optimizer()._case_split.train)  # the same seed and cases give the same split
+    crashes_on, bare = train[1], train[2]
+    calls = itertools.count()
+
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        if case.name == crashes_on:
+            raise ValueError("boom")
+        if case.name == bare:
+            return str(temperature)
+        return {"output": str(temperature), "trajectory": [f"only in the transcript {next(calls)}", temperature]}
+
+    passed = {
+        "experiment": _experiment(evaluators=[Temperature(), Score()]) if experiment is None else experiment,
+        "factory": create_agent,
+        "rollout_fn": rollout,
+        "objective": Maximize("Temperature"),
+        "search": Search(
+            [Block(Scripted({"temperature": 0.5}), "temperature"), Block(Scripted(), "manager")], schedule=Joint()
+        ),
+    }
+    return passed, {crashes_on, bare}
+
+
+def _run_with_transcripts(base_dir):
+    passed, without = _with_transcripts()
+    optimizer = Optimizer(
+        **passed,
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        runs_per_candidate=2,
+        max_workers=64,
+        base_dir=base_dir,
+    )
+    return optimizer, without
+
+
+async def test_the_result_names_each_trajectory_by_its_transcript_hash_and_is_written_compact(tmp_path):
+    optimizer, without = _run_with_transcripts(tmp_path / "runs")
+    result = await optimizer.run_async()
+    root = result.run_dir
+    text = (root / "result.json").read_text(encoding="utf-8")
+    assert "only in the transcript" not in text
+    assert text.count("\n") == 1  # compact
+    assert result.to_file(tmp_path / "copy.json").read_text(encoding="utf-8") == text
+
+    hashes = {(r["candidate_id"], r["case_name"], r["run_index"]): r["transcript"] for r in result.to_rows("case")}
+    saved = [digest for digest in hashes.values() if digest is not None]
+    assert len(set(saved)) == len(saved)  # one distinct trajectory per trial
+    rows = [(c, row) for c, splits in result.reports.items() for report in splits.values() for row in report.cases]
+    assert len(rows) == 2 * len(hashes)  # one row per evaluator per trial
+    assert {row["name"] for _, row in rows if row["transcript"] is None} == without
+    for candidate_id, row in rows:
+        digest = hashes[(candidate_id, row["name"], row["run_index"])]
+        assert row.get("actual_trajectory") is None and row["transcript"] == digest  # a failed row has no key
+        if digest is not None:
+            trajectory = optimizer._records[candidate_id][(row["name"], row["run_index"])].trajectory
+            assert json.loads((root / "transcripts" / f"{digest}.json").read_text(encoding="utf-8")) == trajectory
+    assert OptimizationResult.from_file(root / "result.json") == result
+
+    # A result written with the trajectories inline still loads.
+    old = result.to_dict()
+    for splits in old["reports"].values():
+        for report in splits.values():
+            for row in report["cases"]:
+                row["actual_trajectory"] = ["inline"]
+                del row["transcript"]
+    (tmp_path / "old.json").write_text(json.dumps(old, indent=2), encoding="utf-8")
+    reloaded = OptimizationResult.from_file(tmp_path / "old.json")
+    assert reloaded.reports[result.baseline_id]["train"].cases[0]["actual_trajectory"] == ["inline"]
+
+
+async def test_a_finished_run_resumed_rewrites_the_same_transcript_hashes(tmp_path):
+    optimizer, _ = _run_with_transcripts(tmp_path)
+    original = await optimizer.run_async()
+
+    # Fresh proposers, as a new process would pass them; the same cases, since a failed trial's row holds the
+    # case's session id.
+    passed, _ = _with_transcripts(optimizer._experiment)
+    again = await Optimizer.resume(original.run_dir, **passed).run_async()
+    assert any(row["transcript"] for splits in again.reports.values() for r in splits.values() for row in r.cases)
+    assert again.reports == original.reports
+    assert OptimizationResult.from_file(original.run_dir / "result.json") == again
 
 
 # ---- concurrent vs. one-at-a-time scoring ---------------------------------------------------------------

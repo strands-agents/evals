@@ -39,6 +39,7 @@ from strands_evals.optimization import (
     tunable,
 )
 from strands_evals.types import EvaluationOutput
+from strands_evals.types.trace import Session
 
 EXACT = "Give the exact answer."
 JUDGE_TOKENS = 40
@@ -188,6 +189,19 @@ def test_the_judges_usage_is_kept_apart_from_the_agents(tmp_path):
         "validation": ["scripted-world"],
         "test": ["scripted-world"],
     }
+
+
+def test_the_result_names_each_session_transcript_by_its_hash(tmp_path):
+    optimizer, result = _run(tmp_path, budget=Budget(max_iterations=1))
+    root = result.run_dir
+    assert '"traces"' not in (root / "result.json").read_text(encoding="utf-8")  # no Session inlined
+    for candidate_id, splits in result.reports.items():
+        for report in splits.values():
+            for row in report.cases:
+                record = optimizer._records[candidate_id][(row["name"], row["run_index"])]
+                saved = json.loads((root / "transcripts" / f"{row['transcript']}.json").read_text(encoding="utf-8"))
+                assert isinstance(record.trajectory, Session) and row["actual_trajectory"] is None
+                assert saved == record.trajectory.model_dump(mode="json")
 
 
 # text, through a file, to a reviewable diff
