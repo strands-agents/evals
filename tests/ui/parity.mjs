@@ -27,6 +27,13 @@ function report(names, { failing = [], declined = [] } = {}) {
   };
 }
 
+/* A recorded session: `seconds` is what each trace took, in whole milliseconds, added up. */
+const stamp = seconds => new Date(Date.UTC(2026, 0, 5, 9) + seconds * 1000).toISOString().replace('Z', '456Z');
+const span = (id, start, end) => ({ span_type: 'inference', messages: [], span_info: { span_id: id, session_id: 's', start_time: stamp(start), end_time: stamp(end) } });
+const session = (id, ...traces) => ({ session_id: id, traces: traces.map((spans, i) => ({ trace_id: `${id}-${i}`, session_id: id, spans })) });
+const diagnosis = id => ({ session_id: id, failures: [{ span_id: 'a', category: ['x'], confidence: [0.5], evidence: ['e'] }], root_causes: [] });
+const taskResult = name => ({ input: name, actual_output: 'out', name, expected_output: null, actual_trajectory: null });
+
 /* One file per rule the two sides must agree on. */
 const TREE = {
   'paired/experiment.json': experiment('a', 'b', 'c'),
@@ -51,6 +58,20 @@ const TREE = {
   'tie/right/e.json': experiment('t1'),
   'tie/shared.report.json': report(['t1']),
   'split-source/experiment.json': experiment('train_case_01', 'train_case_02', 'val_case_01', 'test_case_01'),
+  'recorded/any-name.json': session('s1', [span('a', 0, 1.2345), span('b', 2, 3.5)], [span('c', 600, 600.25)], []),
+  'recorded/s1.diagnosis.json': diagnosis('s1'),
+  'recorded/untimed.json': session('s2', [{ span_type: 'inference', messages: [] }]),
+  'recorded/elsewhere/s9.diagnosis.json': diagnosis('s9'),
+  'recorded/causes.json': { root_causes: [{ failure_span_id: 'a', location: 'b' }] },
+  'recorded/no-spans.session.json': { session_id: 's3', traces: [{ trace_id: 't' }] },
+  'twice/left/s.json': session('twin', [span('a', 0, 1)]),
+  'twice/right/s.json': session('twin', [span('a', 0, 1)]),
+  'twice/twin.diagnosis.json': diagnosis('twin'),
+  'cached/a.json': taskResult('a'),
+  'cached/b.json': taskResult('b'),
+  'cached/c.report.json': report(['c1']),
+  'cached/z-notes.json': { input: 'opens like a result, in a store' },
+  'loose/row.json': { input: 'opens like a result, and is not one' },
   'notes.json': { just: 'notes' },
   'broken.json': '{"cases": [',
   'a/b/c/too-deep/experiment.json': experiment('deep'),
@@ -94,7 +115,11 @@ await new Promise((resolve, reject) => {
 /* Only what both sides decide. Sizes, mtimes and in-memory documents differ by construction. */
 const pick = (obj, keys) => obj && Object.fromEntries(keys.map(k => [k, obj[k] === undefined ? null : obj[k]]));
 const byPath = (a, b) => a.path.localeCompare(b.path);
-const normalize = ({ experiments, reports, skipped, optimizer }) => ({
+const normalize = ({ experiments, reports, skipped, optimizer, sessions, diagnoses, stores }) => ({
+  sessions: sessions.map(s => ({ ...pick(s, ['path', 'name', 'dir', 'session_id', 'traces', 'spans', 'seconds']), diagnoses: [...s.diagnoses].sort() }))
+    .sort(byPath),
+  diagnoses: diagnoses.map(d => pick(d, ['path', 'name', 'dir', 'session_id', 'failures', 'root_causes', 'session'])).sort(byPath),
+  stores: stores.map(s => ({ ...pick(s, ['dir', 'files']), path: s.dir })).sort(byPath),
   /* Each side lists newest first by its own clock, so the order is not compared. */
   experiments: experiments.map(e => ({ ...pick(e, ['path', 'name', 'dir', 'cases', 'evaluators']), reports: [...e.reports].sort() }))
     .sort(byPath),
@@ -114,7 +139,8 @@ try {
   const served = await (await fetch(`http://127.0.0.1:${port}/api/scan`, { headers: { 'X-Evals-Token': TOKEN } })).json();
   const p = await page();
   await p.openFolder(picked);
-  const folder = JSON.parse(p.window.eval('JSON.stringify({ experiments: EXPERIMENTS, reports: REPORTS, skipped, optimizer: OPT_RUNS })'));
+  const folder = JSON.parse(p.window.eval('JSON.stringify({ experiments: EXPERIMENTS, reports: REPORTS, skipped, optimizer: OPT_RUNS,'
+    + ' sessions: SESSIONS, diagnoses: DIAGNOSES, stores: STORES })'));
 
   const server = normalize({ ...served, optimizer: served.optimizer_runs });
   const client = normalize(folder);
@@ -125,8 +151,17 @@ try {
   const paired = ['many/monday.report.json', 'near/runs/k.report.json', 'tie/shared.report.json', 'orphan/report.json'].map(r => of[r]).join();
   ok(paired === 'many/suite.json,near/suite.json,,', 'by cases a report goes to the one experiment that holds them, the nearer of two, and to none on a tie',
     paired);
+  const recorded = Object.fromEntries(server.sessions.map(s => [s.path, s]));
+  ok(recorded['recorded/any-name.json'].seconds === 3.75 && recorded['recorded/untimed.json'].seconds === null
+    && recorded['recorded/any-name.json'].diagnoses.join() === 'recorded/s1.diagnosis.json',
+  'a session is timed trace by trace and holds the diagnosis made of it', JSON.stringify(recorded['recorded/any-name.json']));
+  const lone = server.diagnoses.filter(d => d.session === null).map(d => d.path).join();
+  ok(lone === 'recorded/causes.json,recorded/elsewhere/s9.diagnosis.json,twice/twin.diagnosis.json',
+    'a diagnosis stands alone when no session has its id, when it names none, and when two equally near do', lone);
+  ok(JSON.stringify(server.stores) === '[{"dir":"cached","files":3,"path":"cached"}]',
+    'a store counts its results and what opens like one after them, and a look-alike elsewhere is not a store', JSON.stringify(server.stores));
   const key = entry => entry.id || entry.path;
-  for (const part of ['experiments', 'reports', 'skipped', 'optimizer']) {
+  for (const part of ['experiments', 'reports', 'skipped', 'optimizer', 'sessions', 'diagnoses', 'stores']) {
     const keys = list => list.map(key).join(' ');
     ok(keys(server[part]) === keys(client[part]), `${part}: both sides find the same entries`,
       `\n  server: ${keys(server[part])}\n  page:   ${keys(client[part])}`);

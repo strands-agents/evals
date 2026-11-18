@@ -44,7 +44,8 @@ function renderPageHead(view) {
   const head = run ? runHead(view)
     : view === 'report' && repMeta ? reportHead()
       : view === 'compare' && CMP.length ? compareHead()
-      : view === 'experiment' && expMeta ? experimentHead() : null;
+      : view === 'experiment' && expMeta ? experimentHead()
+        : view === 'session' && sesMeta ? sessionHead() : null;
   $('pagehead').hidden = !head;
   $('opt-tabs').hidden = !run || view === 'report';
   renderCompareAction(view);

@@ -9,6 +9,14 @@ function classify(o) {
   if (Array.isArray(o.cases) && Array.isArray(o.evaluators)) return 'experiment';
   if (typeof o.overall_score === 'number' && Array.isArray(o.scores)
       && Array.isArray(o.test_passes) && Array.isArray(o.cases)) return 'report';
+  if (typeof o.session_id === 'string' && Array.isArray(o.traces)) {
+    return o.traces.every(t => t && typeof t === 'object' && Array.isArray(t.spans)) ? 'session' : null;
+  }
+  const on = (list, key) => Array.isArray(list) && list.every(x => x && typeof x === 'object' && typeof x[key] === 'string');
+  const found = on(o.failures, 'span_id'), explained = on(o.root_causes, 'failure_span_id');
+  if (found && typeof o.session_id === 'string' && (o.root_causes == null || explained)) return 'diagnosis';
+  /* `--rca-only` writes root causes alone, with no session named. */
+  if (o.failures == null && explained && o.root_causes.length) return 'diagnosis';
   return null;
 }
 
@@ -209,9 +217,12 @@ function withoutRunStorage(entries) {
 }
 
 async function ingest(all, rootDepth = 0) {
-  const entries = withoutRunStorage(all.filter(e => scanned(e.path, rootDepth)));
+  /* In path order, so a directory's files are read in the order the server reads them. */
+  const entries = withoutRunStorage(all.filter(e => scanned(e.path, rootDepth)))
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   const found = [];
   skipped = [];
+  const stores = new Map();                     // directory -> the saved task results it holds
   const logs = new Map(), configs = new Map(), transcripts = new Map(), effects = new Map();
   const owned = [];                             // `best.values.json` and `result.json`, held aside the same way
 
@@ -237,9 +248,19 @@ async function ingest(all, rootDepth = 0) {
       continue;
     }
 
+    const text = await file.text(), here = dirOf(path);
+    /* One result read in full shows the directory is a store; the rest are told by how they open. */
+    if (stores.has(here) && TASK_RESULT_HEAD.test(text)) {
+      stores.set(here, stores.get(here) + 1);
+      continue;
+    }
     let obj = null, why = null;
-    try { obj = JSON.parse(await file.text()); } catch (err) { why = 'invalid JSON: ' + err.message; }
+    try { obj = JSON.parse(text); } catch (err) { why = 'invalid JSON: ' + err.message; }
     const kind = why ? null : classify(obj);
+    if (!kind && !why && isTaskResult(obj)) {
+      stores.set(here, (stores.get(here) || 0) + 1);
+      continue;
+    }
     if (!kind) {
       /* Hold a run.json aside rather than skipping it: whether it is an optimizer run config
          depends on a sibling that may not have been read yet. */
@@ -267,7 +288,8 @@ async function ingest(all, rootDepth = 0) {
       modified: file.lastModified ? file.lastModified / 1000 : 0, obj,
     };
     if (kind === 'experiment') Object.assign(meta, { cases: (obj.cases || []).length, evaluators: obj.evaluators || [] });
-    else Object.assign(meta, reportMeta(obj));
+    else if (kind === 'report') Object.assign(meta, reportMeta(obj));
+    else Object.assign(meta, kind === 'session' ? sessionMeta(obj) : diagnosisMeta(obj));
     found.push({ kind, meta, dir: dirOf(path) });
   }
 
@@ -304,7 +326,8 @@ async function ingest(all, rootDepth = 0) {
   return {
     experiments: filesOf('experiment').map(e =>
       Object.assign(e.meta, { dir: e.dir, reports: madeFrom.get(e.meta.path) || [] })),
-    reports, optimizerRuns,
+    reports, optimizerRuns, ...sessionsFrom(found),
+    stores: [...stores].sort(([a], [b]) => (a < b ? -1 : 1)).map(([dir, files]) => ({ dir, files })),
   };
 }
 
@@ -312,7 +335,8 @@ async function ingest(all, rootDepth = 0) {
 async function showFolder(found) {
   EXPERIMENTS = found.experiments;
   REPORTS = found.reports;
-  clearExperiment(); clearReport(); closeCandidate();
+  clearExperiment(); clearReport(); closeCandidate(); closeSession();
+  setSessions(found);
   renderLists();
   await loadOptimizerRuns(found.optimizerRuns);
   show(homeView());

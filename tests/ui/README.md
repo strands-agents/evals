@@ -26,7 +26,7 @@ that can import `strands_evals`; override with `PYTHON=/path/to/venv/bin/python 
 suites at a different build of the page with `UI_HTML=path/to/ui.html`.
 
 `harness.mjs` holds what the suites share: `page()` builds the page in jsdom and returns helpers to
-drive it (`openReport()` and `openExperiment()` pick a row from the two lists), `fakeServer()` is a `fetch` that answers as the server would, and `runner()` counts
+drive it (`openReport()`, `openExperiment()` and `openSession()` pick a row from the lists), `fakeServer()` is a `fetch` that answers as the server would, and `runner()` counts
 assertions.
 
 | Suite | Covers |
@@ -42,7 +42,8 @@ assertions.
 | `fidelity.mjs` | Nothing the page does not understand is misprinted or lost. A case's input and outputs of any shape in a report row and the editor: a dict or list as indented JSON, a list of role and content messages as a conversation, never `[object Object]`. A structured field edited as JSON, with JSON that does not parse marked and refused. Keys the editor has no field for, on the file, a case and an evaluator, written back by Save in the download and to the server. |
 | `compare.mjs` | Reports side by side: ticking reports in the list and Compare with on a report's header, the order (when each run started, else the file's time), the summary and each evaluator's mean, the verdict grid with gaps where a report lacks a row, the oldest against the newest (what flipped, what moved, what only one holds), a mark opening its row, adding and removing reports, the address served and after `#`, Back, a re-run or deleted report under an open comparison, a report made in code, and reports sharing no rows. |
 | `lenses.mjs` | Two lenses on a report. Group by: the metadata keys on offer, the summary per value (cases, rows, passing, failing, mean score), the table grouped and filtered to one group, list and dict values, the condition read from chaos case names, a report with no metadata, the choice kept across a live refresh. Diagnosis: what failed, why, where and what to do, spans linked to the trace of the row, the Diagnosed filter and marker, a row with none, and a malformed diagnosis shown as written. |
-| `parity.mjs` | The server's discovery and the page's folder reader run over one tree and compared field by field: which files are experiments and reports, how they pair, the failing and not-applicable counts, what is skipped and why, which directories are left out, and the optimizer run summary. |
+| `parity.mjs` | The server's discovery and the page's folder reader run over one tree and compared field by field: which files are experiments and reports, how they pair, the failing and not-applicable counts, what is skipped and why, which directories are left out, the optimizer run summary, sessions and their durations, which session a diagnosis goes to, and what a task result store holds. |
+| `sessions.mjs` | Sessions as a third kind of thing in the Evals section: a session told by its shape and a look-alike that is not one, the sidebar item only when there is one, the list's figures, a session's page with each trace under its own heading and cost, a trace of several agent invocations read as turns, a diagnosis on its session's page or on its own, a task result store named and its files neither listed nor skipped, the addresses that reopen a session, and a new or rewritten session picked up while the page is open. |
 
 `fixtures/optimizer-run` is synthetic and not committed. `fixtures/make_optimizer_run.py` writes
 it deterministically (84 files, 80 of them transcripts named by content hash), and `npm test` runs

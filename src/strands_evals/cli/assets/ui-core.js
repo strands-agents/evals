@@ -166,14 +166,17 @@ const SECTION_OF = {
 const listOf = view => view === 'report' ? (repCand ? 'opt-runs' : 'reports')
   : view === 'compare' ? 'reports'
   : view === 'experiment' ? 'experiments'
-    : SECTION_OF[view] === 'optimization' ? 'opt-runs' : view;
+    : view === 'session' ? 'sessions'
+      : SECTION_OF[view] === 'optimization' ? 'opt-runs' : view;
 const VIEW_NAME = {
   reports: 'Reports', report: 'Report', compare: 'Compare', experiments: 'Experiments', experiment: 'Cases', 'opt-runs': 'Runs',
   'opt-setup': 'Setup', 'opt-overview': 'Overview', 'opt-progress': 'Progress',
   'opt-candidates': 'Candidates', 'opt-tunables': 'Tunables', 'opt-trade': 'Trade-off',
 };
-/* Reports when there are any, since most folders hold results; a folder of experiments alone opens on those. */
-const homeView = () => (REPORTS.length || !EXPERIMENTS.length ? 'reports' : 'experiments');
+/* Reports when there are any, since most folders hold results; a folder of experiments alone opens on those,
+   and one of sessions alone on those. */
+const homeView = () => (REPORTS.length ? 'reports' : EXPERIMENTS.length ? 'experiments'
+  : sessionRows().length ? 'sessions' : 'reports');
 
 function show(view, opts) {
   if (!SECTION_OF[view] || (SECTION_OF[view] === 'optimization' && !OPT_RUNS.length)) view = homeView();
@@ -181,6 +184,8 @@ function show(view, opts) {
   if (view === 'report' && !REP) view = 'reports';
   if (view === 'experiment' && !EXP) view = 'experiments';
   if (view === 'compare' && !CMP.length) view = 'reports';
+  if (view === 'session' && !sesMeta) view = 'sessions';
+  if (view === 'sessions' && !sessionRows().length) view = homeView();
   const section = SECTION_OF[listOf(view)];
   const moved = !$('v-' + view).classList.contains('on');
   app.querySelectorAll('.sec').forEach(s => s.classList.toggle('on', s.dataset.sec === section));
@@ -191,9 +196,10 @@ function show(view, opts) {
     else t.removeAttribute('aria-current');
   });
   app.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.id === 'v-' + view));
-  const lists = view === 'reports' || view === 'experiments';
+  const lists = view === 'reports' || view === 'experiments' || view === 'sessions';
   $('folder').hidden = !lists;
   $('skips').hidden = !lists;
+  $('stores').hidden = !lists;
   const run = OPT_RUNS[optSel];
   const folder = ROOT || folderLabel || 'no folder opened';
   const where = {
@@ -202,6 +208,8 @@ function show(view, opts) {
     experiment: expMeta && expMeta.path,
     report: repMeta && repMeta.path,
     compare: `${CMP.length} reports`,
+    sessions: folder,
+    session: sesMeta && sesMeta.path,
     'opt-runs': folder,
     'opt-setup': (run && (run.dir === '.' ? 'run.json' : run.dir + '/run.json')) || 'no optimizer run loaded',
     'opt-tunables': (run && (run.dir === '.' ? 'run.json' : run.dir + '/run.json')) || 'no optimizer run loaded',

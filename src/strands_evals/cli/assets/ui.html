@@ -39,6 +39,7 @@
       <div class="tabs">
         <button class="tab on" data-view="reports" data-sec="evals" data-tip="Every report found in this folder, whether or not an experiment file sits beside it.">Reports</button>
         <button class="tab" data-view="experiments" data-sec="evals" data-tip="Every experiment file found in this folder, and the reports made from each.">Experiments</button>
+        <button class="tab" data-view="sessions" data-sec="evals" hidden data-tip="Every recorded session found in this folder, and what a diagnosis found in each.">Sessions</button>
       </div>
     </div>
     <div class="sgroup" id="sgroup-opt" hidden>
@@ -267,6 +268,29 @@
       <button class="more" id="rep-more" hidden></button>
     </section>
 
+    <section class="view" id="v-sessions">
+      <h2>Sessions</h2>
+      <p class="sub">A session is the recorded traces of one conversation with an agent. A diagnosis made of one is shown on its page.</p>
+      <div class="ctl">
+        <span class="grow"></span>
+        <span class="path" id="sessions-count"></span>
+      </div>
+      <div class="scroll">
+        <table class="rep">
+          <thead><tr>
+            <th style="width:34%" data-term="session">Session</th><th style="width:34%" data-tip="How many traces and spans the session holds, and what a diagnosis of it found.">Recorded</th>
+            <th style="width:14%" data-tip="How long its traces ran for, added up. The time between traces is not counted.">Duration</th><th data-tip="When the session last changed on disk.">Modified</th>
+          </tr></thead>
+          <tbody id="sessions-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="view" id="v-session">
+      <div id="ses-found"></div>
+      <div class="trace" id="ses-trace"></div>
+    </section>
+
     <!-- ── Optimization · Runs ── -->
     <section class="view" id="v-opt-runs">
       <h2>Optimization runs in this folder</h2>
@@ -455,6 +479,7 @@
         </div>
       </div>
     </section>
+    <div id="stores"></div>
     <div id="skips"></div>
   </main>
   <aside class="guide-panel" id="guide" aria-label="How to use this view" hidden>
@@ -474,6 +499,7 @@
 <script src="ui-guide.js"></script>
 <script src="ui-plot.js"></script>
 <script src="ui-trace.js"></script>
+<script src="ui-diagnosis.js"></script>
 <script src="ui-lists.js"></script>
 <script src="ui-head.js"></script>
 <script src="ui-experiment.js"></script>
@@ -482,6 +508,7 @@
 <script src="ui-compare.js"></script>
 <script src="ui-report-lenses.js"></script>
 <script src="ui-folder.js"></script>
+<script src="ui-sessions.js"></script>
 <script src="ui-optimizer-record.js"></script>
 <script src="ui-charts.js"></script>
 <script src="ui-tips.js"></script>

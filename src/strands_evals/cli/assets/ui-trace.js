@@ -99,22 +99,33 @@ function spanCard(s, i) {
   return `<div class="msg">${head(kind)}<pre>${clip(JSON.stringify(s), 700)}</pre></div>`;
 }
 
-/** The spans of a strands-evals `Session`, or null when `doc` is not one. */
-const sessionSpans = doc => doc && typeof doc === 'object' && !Array.isArray(doc) && Array.isArray(doc.traces)
-  ? doc.traces.flatMap(tr => (tr && Array.isArray(tr.spans) ? tr.spans : []))
+/** The traces of a strands-evals `Session` as `[{ id, spans }]`, or null when `doc` is not one. */
+const sessionTraces = doc => doc && typeof doc === 'object' && !Array.isArray(doc) && Array.isArray(doc.traces)
+  ? doc.traces.map(tr => ({ id: tr && tr.trace_id, spans: tr && Array.isArray(tr.spans) ? tr.spans : [] }))
   : null;
 
+/** The spans of a strands-evals `Session`, or null when `doc` is not one. */
+const sessionSpans = doc => {
+  const traces = sessionTraces(doc);
+  return traces && traces.flatMap(tr => tr.spans);
+};
+
+const spanStart = s => Date.parse(((s && s.span_info) || {}).start_time);
+const spanEnd = s => Date.parse(((s && s.span_info) || {}).end_time);
+
 /** What a trace says it cost: `{ seconds, tokens, modelCalls, toolCalls }`, each null where it is not
-    recorded, or null when `doc` is not a trace. A session times its spans; a message list counts tokens. */
+    recorded, or null when `doc` is not a trace. A session times its spans; a message list counts tokens.
+    A session's time is what its traces took, added up: the wait between two traces is nobody's cost. */
 function traceStats(doc) {
-  const spans = sessionSpans(doc);
-  if (spans) {
-    const times = spans.flatMap(s => {
-      const info = (s && s.span_info) || {};
-      return [Date.parse(info.start_time), Date.parse(info.end_time)];
-    }).filter(Number.isFinite);
+  const traces = sessionTraces(doc);
+  if (traces) {
+    const spans = traces.flatMap(tr => tr.spans);
+    const took = traces.map(tr => {
+      const times = tr.spans.flatMap(s => [spanStart(s), spanEnd(s)]).filter(Number.isFinite);
+      return times.length > 1 ? Math.max(...times) - Math.min(...times) : null;
+    }).filter(ms => ms != null);
     return {
-      seconds: times.length > 1 ? (Math.max(...times) - Math.min(...times)) / 1000 : null,
+      seconds: took.length ? took.reduce((sum, ms) => sum + ms, 0) / 1000 : null,
       tokens: null,
       modelCalls: spans.filter(s => s && s.span_type === 'inference').length,
       toolCalls: spans.filter(s => s && s.span_type === 'execute_tool').length,
@@ -137,6 +148,51 @@ const costText = stats => !stats ? '' : [
   stats.seconds != null ? `${nice(stats.seconds)}s` : '',
   stats.tokens != null ? `${compact(stats.tokens)} tokens` : '',
 ].filter(Boolean).join(' · ');
+const spansCost = spans => costText(traceStats({ traces: [{ spans }] }));
+
+/** The turns of one trace: `{ turns: [{ agent, spans }], loose }`, or null when it holds fewer than two.
+    A turn is an agent invocation that is not inside another one. A span belongs to the turn its
+    `agent_span_id` or its parents lead to, and failing those to the one it started during. */
+function traceTurns(spans) {
+  const byId = new Map(spans.filter(s => s && s.span_info && s.span_info.span_id).map(s => [s.span_info.span_id, s]));
+  const turnOf = s => {
+    let turn = null, at = s;
+    for (let hops = 0; at && hops < spans.length; hops++) {
+      at = byId.get(at.agent_span_id) || byId.get((at.span_info || {}).parent_span_id);
+      if (at && at.span_type === 'invoke_agent') turn = at;
+    }
+    return turn;
+  };
+  const agents = spans.filter(s => s && s.span_type === 'invoke_agent' && !turnOf(s));
+  if (agents.length < 2) return null;
+  const turns = new Map(agents.map(agent => [agent, { agent, spans: [] }]));
+  const loose = [];
+  spans.forEach(s => {
+    if (turns.has(s)) return;
+    const turn = (s && turnOf(s)) || agents.find(a => spanStart(s) >= spanStart(a) && spanStart(s) <= spanEnd(a));
+    (turn ? turns.get(turn).spans : loose).push(s);
+  });
+  return { turns: [...turns.values()], loose };
+}
+
+/** One trace of a session. `first` is where its spans stand in the session's count, and `of` how many
+    traces the session holds. Anything drawn once per trace, such as a timeline, belongs here. */
+function traceSection(trace, at, of, first) {
+  const number = new Map(trace.spans.map((s, i) => [s, first + i]));
+  const cards = spans => spans.map(s => spanCard(s, number.get(s))).join('');
+  const turn = (label, spans) => `<div class="tr-turn"><div class="tr-turnhead"><b>${label}</b>`
+    + `<span>${esc(spansCost(spans))}</span></div>${cards(spans)}</div>`;
+  const turns = traceTurns(trace.spans);
+  const cost = spansCost(trace.spans);
+  return `<section class="tr-trace" data-trace="${esc(trace.id == null ? '' : trace.id)}">`
+    + (of > 1 ? `<h4 class="tr-head">Trace ${at + 1} of ${of}<span class="path">${esc(trace.id == null ? '' : trace.id)}</span></h4>`
+      + (cost ? `<div class="tr-sum">${esc(cost)}</div>` : '') : '')
+    + (!trace.spans.length ? '<div class="empty">This trace was recorded with no spans in it.</div>'
+      : !turns ? trace.spans.map((s, i) => spanCard(s, first + i)).join('')
+        : turns.turns.map((t, k) => turn(`Turn ${k + 1} of ${turns.turns.length}`, [t.agent, ...t.spans])).join('')
+          + (turns.loose.length ? turn('Outside any turn', turns.loose) : ''))
+    + '</section>';
+}
 
 /* Two shapes: a strands-evals `Session` (traces of spans) or a list of Strands messages. Read
    off the document, not the pointer's `format`, because the two can disagree. */
@@ -145,13 +201,20 @@ function traceView(doc, rawLabel = 'the file as written') {
     + `<pre class="out">${esc(JSON.stringify(doc, null, 1).slice(0, 200000))}</pre></details>`;
   const cost = costText(traceStats(doc));
   const sum = cost ? `<div class="tr-sum">${esc(cost)}</div>` : '';
-  const spans = sessionSpans(doc);
-  if (spans) {
-    if (!spans.length) {
+  const traces = sessionTraces(doc);
+  if (traces) {
+    const spans = traces.reduce((n, tr) => n + tr.spans.length, 0);
+    if (!spans) {
       return '<div class="empty">This session was recorded with no spans in it.</div>' + raw;
     }
-    return `<div class="tr-count">${plural(spans.length, 'span')} of a recorded session</div>${sum}`
-      + spans.map((s, i) => spanCard(s, i)).join('') + raw;
+    let first = 0;
+    return `<div class="tr-count">${traces.length > 1 ? plural(traces.length, 'trace') + ' · ' : ''}`
+      + `${plural(spans, 'span')} of a recorded session</div>${sum}`
+      + traces.map((tr, at) => {
+        const section = traceSection(tr, at, traces.length, first);
+        first += tr.spans.length;
+        return section;
+      }).join('') + raw;
   }
   if (Array.isArray(doc)) {
     if (!doc.length) return '<div class="empty">This transcript is an empty list.</div>' + raw;

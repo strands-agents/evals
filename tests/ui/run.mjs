@@ -24,6 +24,7 @@ const suites = [
   'fidelity.mjs',
   'compare.mjs',
   'lenses.mjs',
+  'sessions.mjs',
 ];
 let failed = 0;
 

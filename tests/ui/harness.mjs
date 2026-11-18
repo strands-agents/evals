@@ -95,6 +95,8 @@ export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok', to
     openExperiment: match => api.click(listed('#experiments-rows', match)),
     /** Open a report from the Reports list: the first, or the one whose row says `match`. */
     openReport: match => api.click(listed('#reports-rows', match)),
+    /** Open a session from the Sessions list: the first, or the one whose row says `match`. */
+    openSession: match => api.click(listed('#sessions-rows', match)),
     /** The parsed document behind the page's most recent download. */
     saved: async () => {
       const blob = window.__blobs[window.__blobs.length - 1];
