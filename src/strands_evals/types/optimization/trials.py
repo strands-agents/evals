@@ -45,11 +45,12 @@ class Usage(BaseModel):
             (unmeasured, not 0).
         cache_write_tokens: Part of `input_tokens`; None when the provider never reported it
             (unmeasured, not 0).
-        model_calls: Number of `chat` spans.
+        model_calls: Number of `chat` spans, not counting calls that raised (throttled or failed) without
+            reporting usage.
         seconds: Duration of the `rollout` span (environment setup and teardown excluded), or of the
             attempt span when there is none (a `build_task` task).
-        models: Model ids that made the calls, first use first, from each `chat` span's
-            `gen_ai.request.model`; `[]` when no span has it. Summing two usages joins the lists in
+        models: Model ids that made the calls, first use first, from each counted `chat` span's
+            `gen_ai.request.model`; `[]` when none has it. Summing two usages joins the lists in
             first-use order. For `Patch.usage`, the proposer agent's configured model id.
     """
 
