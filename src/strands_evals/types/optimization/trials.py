@@ -151,7 +151,10 @@ class TrialRecord(BaseModel):
     `attempts == len(previous_attempts) + 1`. `output` is saved as returned when JSON-serializable,
     else as `str(output)`. A list `trajectory`, `interactions`, and each `environment_state` entry's
     `state` keep their shape; any part that isn't JSON is converted as pydantic saves it, and only what
-    pydantic can't encode becomes `str()`.
+    pydantic can't encode becomes `str()`. When the last attempt raised, it returned nothing, so `output`,
+    `interactions`, and `environment_state` are None. An `agent_failure` record's `trajectory` is still
+    that attempt's `Session`, built from its spans (None when it has no agent spans), also when the
+    rollout returns its own trajectory on success. An `infrastructure_invalid` record's is None.
 
     `rollouts` is what the last attempt cost the budget: 1 when the agent ran (a first pass or a re-run
     pass), 0 for a judge-only re-run on the saved output and for an attempt `Experiment` retried on

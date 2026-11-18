@@ -495,6 +495,13 @@ class TrialRunner:
         if completed and self._evaluators and not evaluations:
             status = TrialStatus.EVALUATOR_INVALID
         kept = data if completed else None  # an attempt that raised keeps no output
+        if kept is not None:
+            trajectory = _storable(kept.actual_trajectory, call, "trajectory")
+        elif entry.status is TrialStatus.AGENT_FAILURE:
+            # the attempt returned nothing to carry its Session, so build it from the attempt's spans
+            trajectory = self._traces.session(entry.trace_id, entry.attempt_span_id)
+        else:
+            trajectory = None  # infrastructure_invalid: run again while passes and allowance last; no proposer reads it
         environment_state = (
             [
                 s.model_copy(update={"state": _storable(s.state, call, "environment_state")})
@@ -514,7 +521,7 @@ class TrialRunner:
             attempts=len(earlier) + 1,
             previous_attempts=earlier,
             output=_storable(kept.actual_output, call, "output") if kept is not None else None,
-            trajectory=_storable(kept.actual_trajectory, call, "trajectory") if kept is not None else None,
+            trajectory=trajectory,
             interactions=_storable(kept.actual_interactions, call, "interactions") if kept is not None else None,
             environment_state=environment_state,
             evaluations=evaluations,
