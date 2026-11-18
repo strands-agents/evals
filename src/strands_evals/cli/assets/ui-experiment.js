@@ -211,7 +211,7 @@ const props = c => PROP_GLYPHS
 function renderList() {
   const q = $('case-find').value.trim().toLowerCase();
   const shown = cases.map((c, i) => ({ c, i })).filter(({ c }) =>
-    !q || ((c.name || '') + ' ' + (c.input || '')).toLowerCase().includes(q));
+    !q || ((c.name || '') + ' ' + valueText(c.input)).toLowerCase().includes(q));
   $('case-list').innerHTML = shown.map(({ c, i }) => {
     const edited = JSON.stringify(c) !== orig[i];
     return `<li data-i="${i}" tabindex="0" class="${i === sel ? 'on' : ''}" title="${edited ? 'unsaved changes' : esc(c.name || '(unnamed)')}">`
@@ -240,12 +240,14 @@ function renderForm() {
   $('form-sid').textContent = String(c.session_id || '').slice(0, 8);
   $('form').innerHTML = FIELDS.map(f => {
     const v = c[f.k];
+    /* A text field holding a dict or a list is edited as JSON, so it is never rewritten as text. */
+    const structured = f.t === 'area' && v != null && typeof v !== 'string';
     let ctl;
     if (f.t === 'steps') {
       ctl = stepsControl(f.k, v);
     } else if (f.t === 'meta') {
       ctl = metaControl(f.k, v);
-    } else if (f.t === 'json') {
+    } else if (f.t === 'json' || structured) {
       ctl = v == null
         ? `<textarea class="f mono" rows="2" data-k="${f.k}" data-json="1" spellcheck="false" placeholder="empty"></textarea>`
         : `<textarea class="f mono" rows="${Math.min(10, JSON.stringify(v, null, 2).split('\n').length)}" data-k="${f.k}" data-json="1" spellcheck="false">${esc(JSON.stringify(v, null, 2))}</textarea>`;
@@ -256,6 +258,7 @@ function renderForm() {
     }
     return `<div class="field" role="group" aria-labelledby="label-${f.k}">`
       + `<div class="flabel"><label id="label-${f.k}">${f.l}</label>${helpButton('field', f.k, f.l)}</div>${ctl}`
+      + (structured ? '<div class="hint">This value is structured, so it is edited as JSON.</div>' : '')
       + (f.hint ? `<div class="hint">${f.hint}</div>` : '') + '</div>';
   }).join('');
 }
@@ -416,7 +419,11 @@ $('form').addEventListener('input', e => {
     if (raw.trim() === '') { cases[sel][k] = null; el.classList.remove('invalid'); }
     else {
       try { cases[sel][k] = JSON.parse(raw); el.classList.remove('invalid'); }
-      catch { el.classList.add('invalid'); return; }
+      catch {
+        el.classList.add('invalid');
+        note('That is not valid JSON, so the change is not applied.', 'err');
+        return;
+      }
     }
   } else if (el.dataset.required) {
     // `Case.input` is required: keep the empty string, not null, and let preflight() report it.
@@ -546,10 +553,11 @@ function nonFinite(v, path) {
 }
 
 function preflight() {
+  if ($('form').querySelector('.invalid')) return 'a field holds JSON that does not parse; fix it or revert before saving';
   for (const [i, c] of cases.entries()) {
     const bad = nonFinite(c, `cases[${i}]`);
     if (bad) return `${bad} is not finite — the library's writer rejects it`;
-    if (c.input == null || String(c.input).trim() === '') {
+    if (c.input == null || valueText(c.input).trim() === '') {
       return `case ${c.name || i} has no input, which Case requires`;
     }
   }
@@ -562,7 +570,7 @@ function preflight() {
 $('save').onclick = async () => {
   const problem = preflight();
   if (problem) return note(problem, 'err');
-  const document_ = { cases, evaluators: evals };
+  const document_ = experimentDocument();
 
   if (MODE === 'server') {
     /* The editor is inert until the answer arrives, and the answer belongs to the run that asked. */
@@ -599,8 +607,11 @@ $('save').onclick = async () => {
   refreshDirty();
 };
 
+/* The file as it will be written: what the editor changed, and everything else exactly as it was read. */
+const experimentDocument = () => ({ ...EXP, cases, evaluators: evals });
+
 function downloadExperiment() {
-  const text = JSON.stringify({ cases, evaluators: evals }, null, 2) + '\n';
+  const text = JSON.stringify(experimentDocument(), null, 2) + '\n';
   const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
   const a = Object.assign(document.createElement('a'), {
     href: url, download: (expMeta && expMeta.name) || 'experiment.json',

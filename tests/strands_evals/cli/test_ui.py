@@ -1120,6 +1120,31 @@ def test_an_unknown_route_is_not_found(client: Client, method):
 # ── the server: saving ──
 
 
+def test_put_writes_back_values_and_keys_the_editor_has_no_field_for(client: Client):
+    """A red-team experiment carries strategies at the top, and any case can hold structured values."""
+    document = {
+        "schema_version": 2,
+        "attack_strategies": [{"strategy_type": "crescendo", "label": "slow"}],
+        "cases": [
+            {
+                "name": "a",
+                "input": {"instruction": "Describe it", "media": ["q3.png"]},
+                "expected_output": [{"role": "assistant", "content": "A chart."}],
+                "risk": {"category": "pii"},
+            }
+        ],
+        "evaluators": [{"evaluator_type": "Equals", "internal": {"keep": True}}],
+        "model": "judge-model",
+    }
+    target = _write(client.root / "experiment.json", _experiment("alpha"))
+
+    reply = client.put("experiment.json", {"document": document, "modified": LOADED})
+
+    assert reply.status == HTTPStatus.OK
+    assert json.loads(target.read_text()) == document
+    assert list(json.loads(target.read_text())) == list(document)
+
+
 @pytest.mark.parametrize("name", ["experiment.json", "UPPER.JSON"])
 def test_put_writes_the_file_it_loaded(client: Client, name):
     target = _write(client.root / name, _experiment("alpha", "beta"))
