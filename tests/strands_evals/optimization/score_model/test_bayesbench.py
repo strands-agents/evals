@@ -357,7 +357,8 @@ def test_the_held_out_check_flags_a_model_whose_predictions_keep_missing():
     assert fit.diagnostics["score"]["n_holdout"] == 18
     assert fit.flagged == ["score"]
     out = effects_json(fit, CRITERIA)
-    assert out["reason"] == "flagged: score" and out["effects"] == []
+    assert out["reason"] is None and out["effects"] == effects(fit)
+    assert out["effects"] and all(row["flagged"] for row in out["effects"])
 
 
 def test_the_held_out_check_of_an_unbounded_metric_ignores_a_change_of_scale():
@@ -613,6 +614,7 @@ def test_effects_json_holds_effects_design_goals_and_metrics():
     json.dumps(out)  # serializable
     assert out["reason"] is None
     assert out["effects"] == effects(fit)
+    assert out["effects"] and not any(row["flagged"] for row in out["effects"])
     assert out["factors"] == design(fit)["factors"]
     assert out["goals"] == [
         {"role": "objective", "index": 0, "metric": "score", "better": "higher"},
@@ -641,14 +643,30 @@ def test_effects_json_says_why_it_has_no_effects():
     assert effects_json(Other(), CRITERIA)["reason"] == "effects need a BayesBenchModel fit"
 
 
-def test_a_flagged_fit_gives_no_effects_but_keeps_its_diagnostics():
+def test_a_flagged_metric_keeps_every_metrics_effects_each_marked_for_its_own_metric():
     candidates, observations, _, cases = _world(5, n=8)
-    fit = _fit(candidates, observations, cases)
-    fit.diagnostics["score"]["flagged"] = True
+    tokens = {cid: {case: [1000.0 + 100.0 * (v["option"] == "b")] for case in cases} for cid, v in candidates.items()}
+    data = FitData(
+        space=SPACE,
+        text_blocks={"text": ["text"]},
+        candidates=candidates,
+        cases=cases,
+        scores=_scores({"score": observations, "tokens": tokens}),
+        ranges={"score": (None, None), "tokens": (None, None)},
+    )
+    fit = BayesBenchModel().fit(data)
+    unflagged = effects_json(fit, CRITERIA)
+    fit.diagnostics["tokens"]["flagged"] = True
     out = effects_json(fit, CRITERIA)
-    assert out["reason"] == "flagged: score"
-    assert out["effects"] == out["factors"] == []
-    assert out["metrics"]["score"]["diagnostics"]["flagged"] is True
+    json.dumps(out, allow_nan=False)  # as `save_effects` writes it
+    assert out["reason"] is None
+    assert {row["metric"] for row in out["effects"]} == {"score", "tokens"}
+    assert all(row["flagged"] is (row["metric"] == "tokens") for row in out["effects"])
+    # The same effects as before the flag, with only the marker changed.
+    assert [{**row, "flagged": False} for row in out["effects"]] == unflagged["effects"]
+    assert out["factors"] == design(fit)["factors"] and out["omitted"] == design(fit)["omitted"]
+    assert out["metrics"]["tokens"]["diagnostics"]["flagged"] is True
+    assert out["metrics"]["score"]["diagnostics"]["flagged"] is False
 
 
 def test_config_is_empty():

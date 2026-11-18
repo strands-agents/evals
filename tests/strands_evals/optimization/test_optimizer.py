@@ -1778,6 +1778,28 @@ async def test_the_result_reloads_whole_without_the_run_folder_and_summarizes(tm
         result.to_rows("trial")
 
 
+async def test_the_summary_names_the_flagged_metrics_or_why_there_are_no_effects(tmp_path):
+    result = await _two_steps({"temperature": 0.5}, {"temperature": 1.0}, base_dir=tmp_path).run_async()
+    metrics = {
+        "Temperature": {"diagnostics": {"flagged": False}},
+        "tokens": {"diagnostics": {"flagged": True}},
+        "seconds": {"diagnostics": {"flagged": True}},
+    }
+
+    def effects_lines(effects):
+        text = result.model_copy(update={"effects": {**result.effects, **effects}}).summary()
+        return [line for line in text.splitlines() if line.startswith("Effects:")]
+
+    assert effects_lines({"metrics": metrics, "reason": None}) == [
+        "Effects: the held-out check flagged tokens, seconds; from then on the search ranked by measured means, "
+        "not the fit."
+    ]
+    # Empty effects with a reason (as a flagged fit gave before) print only the reason.
+    empty = {"effects": [], "factors": [], "omitted": [], "metrics": metrics, "reason": "flagged: tokens, seconds"}
+    assert effects_lines(empty) == ["Effects: none (flagged: tokens, seconds)."]
+    assert effects_lines({"metrics": {"tokens": {"diagnostics": {"flagged": False}}}, "reason": None}) == []
+
+
 # ---- concurrent vs. one-at-a-time scoring ---------------------------------------------------------------
 
 
