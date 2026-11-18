@@ -213,13 +213,16 @@ strands-evals/
 │   │   ├── _entrypoint.py                    # `module:attr` resolver + classifier
 │   │   ├── _agent_task.py                    # synthesize_task_function (baggage-tagged)
 │   │   ├── _io.py                            # stdin/stdout/file helpers
+│   │   ├── _optimize.py                      # `optimize`: flags -> Optimizer, cli.json, the .toml run file
+│   │   ├── _harness.py                       # `optimize --config`: a strands-harness portable config as the agent
 │   │   └── commands/                         # subcommand implementations
 │   │       ├── run.py
 │   │       ├── validate.py
 │   │       ├── report.py
 │   │       ├── diagnose.py
 │   │       ├── generate.py
-│   │       └── fetch.py                      # pull Session JSON from a TraceProvider
+│   │       ├── fetch.py                      # pull Session JSON from a TraceProvider
+│   │       └── optimize.py                   # `optimize run` / `optimize resume`
 │   │
 │   ├── __main__.py                           # `python -m strands_evals` shim → cli.main
 │   │
@@ -274,7 +277,7 @@ strands-evals/
 
 - **`.agents/skills/`**: Agent skills, one directory per skill containing a `SKILL.md`; the folder name must match the skill's `name` frontmatter
 - **`src/strands_evals/`**: All production code
-- **`src/strands_evals/cli/`**: `strands-evals` console script — six subcommands (`run`, `validate`, `report`, `diagnose`, `generate`, `fetch`) plus the `module:attr` resolver and synthesized task wrapper used by `--agent`. `fetch` has per-provider sub-subcommands (`cloudwatch`, `langfuse`, `opensearch`); langfuse / opensearch are imported lazily so they only fail when invoked without their extra installed.
+- **`src/strands_evals/cli/`**: `strands-evals` console script — seven subcommands (`run`, `validate`, `report`, `diagnose`, `generate`, `fetch`, `optimize`) plus the `module:attr` resolver and synthesized task wrapper used by `--agent`. `optimize` (`run` / `resume`, built in `_optimize.py`) imports `strands_evals.optimization` only when invoked, since it needs the `optimization` extra. `fetch` has per-provider sub-subcommands (`cloudwatch`, `langfuse`, `opensearch`); langfuse / opensearch are imported lazily so they only fail when invoked without their extra installed.
 - **`tests/strands_evals/`**: Unit tests mirroring src/ structure
 - **`tests/strands_evals/cli/`**: CLI tests; fixtures live under `cli/fixtures/` and are referenced by tests via `tests.strands_evals.cli.fixtures.*:attr` specs
 - **`tests_integ/`**: Integration tests using real trace providers and model endpoints
