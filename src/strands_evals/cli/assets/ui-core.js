@@ -6,6 +6,8 @@
 const app = document.querySelector('.app');
 const $ = id => document.getElementById(id);
 const isObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
+const arrayOf = v => Array.isArray(v) ? v : [];
+const mean = values => values.reduce((a, b) => a + b, 0) / values.length;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const fmt = n => (typeof n === 'number' && isFinite(n)) ? n.toFixed(2) : '—';
 const KB = n => n == null ? '' : (n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB');
@@ -148,6 +150,26 @@ function showValue(v) {
   return `<pre class="val">${esc(valueText(v))}</pre>`;
 }
 const pre = v => v == null ? '&mdash;' : json(v);
+
+/* `navigator.clipboard` needs a secure context, which `file://` is not, so there is a fallback. */
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch { /* fall through to the selection trick */ }
+  try {
+    const ta = Object.assign(document.createElement('textarea'), { value: text });
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const done = document.execCommand && document.execCommand('copy');
+    ta.remove();
+    return !!done;
+  } catch { return false; }
+}
 
 /* ══════════ transport ══════════ */
 

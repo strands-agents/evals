@@ -95,7 +95,6 @@ const mdCaseParts = (c, i, heading) =>
 
 /** An experiment: its evaluators with their settings, then every case. */
 function experimentMarkdown(path, doc, reports) {
-  const isObject = v => v && typeof v === 'object' && !Array.isArray(v);
   const given = arrayOf(doc.cases).map(c => (isObject(c) ? c : {}));
   const evaluators = arrayOf(doc.evaluators).filter(isObject);
   const facts = [
@@ -168,10 +167,9 @@ const mdRunFacts = run => [`- Run: ${run.run_id}`, `- Directory: \`${filePath(ru
 
 /** A candidate: what it measured beside the baseline, and what it changed from it. */
 function candidateMarkdown(p, d, run) {
-  const byId = new Map(d.proposals.map(x => [x.candidate_id, x]));
-  const chain = [];
-  for (let at = p; at && !chain.includes(at.candidate_id); at = byId.get(at.parent_id)) chain.push(at.candidate_id);
-  const base = p.isBaseline ? null : byId.get(d.baselineId) || d.points.find(x => x.candidate_id === d.baselineId);
+  const chain = d.lineageOf(p.candidate_id);
+  const base = p.isBaseline ? null : d.proposals.find(x => x.candidate_id === d.baselineId)
+    || d.points.find(x => x.candidate_id === d.baselineId);
   const facts = mdRunFacts(run).concat([`- Iteration: ${p.iteration}`]);
   if (p.outcome) facts.push(`- Outcome: ${p.outcome}`);
   if (p.isChampion || p.isBaseline) facts.push(`- Standing: ${p.isChampion ? 'champion' : 'baseline'}`);

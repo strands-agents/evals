@@ -6,7 +6,6 @@
 const plainWords = s => String(s).replace(/[_-]+/g, ' ').toLowerCase();
 /* The detector's taxonomy writes a category as `<parent>-category-<kind>`. */
 const categoryText = s => plainWords(String(s).replace('-category-', ': '));
-const arrayOf = v => Array.isArray(v) ? v : [];
 /* A span the diagnosis names. When its session is drawn on the page it points at the card that draws it. */
 function spanRef(id, spans) {
   const at = spans ? spans.findIndex(s => s && s.span_info && s.span_info.span_id === id) : -1;

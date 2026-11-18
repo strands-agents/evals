@@ -8,8 +8,6 @@ const W = 640, H = 244, PAD = { t: 26, r: 16, b: 46, l: 48 };
 const IN_W = W - PAD.l - PAD.r, IN_H = H - PAD.t - PAD.b;
 const FLOOR = PAD.t + IN_H;
 
-const mean = values => values.reduce((a, b) => a + b, 0) / values.length;
-
 const svg = inner => `<svg viewBox="0 0 ${W} ${H}" role="img">`
   + `<rect class="plot" x="${PAD.l}" y="${PAD.t}" width="${IN_W}" height="${IN_H}"/>${inner}</svg>`;
 
