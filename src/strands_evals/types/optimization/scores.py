@@ -157,11 +157,12 @@ class ValidationReport(BaseModel):
         front: Under a `Pareto` objective, the validated front (the baseline included when on it), in ranking
             order, so the champion is first unless the front is empty; `[]` otherwise.
         objectives: Candidate id -> its validation objective under the validation fit, or by measured
-            validation means when `problem` is set; None when it isn't eligible on validation.
+            validation means when `problem` is set; None when it isn't eligible on validation or no
+            validation trial of it completed.
         estimates: Candidate id -> goal metric -> the validation fit's estimate; empty when assessed by
             measured means.
-        infeasible: Candidate id -> why it can't ship (a constraint not met on validation, or not
-            eligible there).
+        infeasible: Candidate id -> why it can't ship (a constraint not met on validation, not eligible
+            there, or no validation trial of it completed).
         measured: Candidate id -> every metric measured on validation.
         problem: Why the validation fit wasn't used, e.g. "fewer than 2 eligible candidates" or
             "the model raised: <Type>: <message>"; None when it was used.
