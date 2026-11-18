@@ -1,9 +1,8 @@
 /* The Report's charts and the trace view inside a report row: the verdict grid, the score
    distribution, and what each case cost. */
-import { page, runner, tick } from './harness.mjs';
+import { page, runner } from './harness.mjs';
 
 const { ok, done } = runner('charts');
-const pages = [];
 const same = (actual, expected, msg) => ok(JSON.stringify(actual) === JSON.stringify(expected), msg, JSON.stringify(actual));
 
 /* Rows as `[case, evaluator, score, verdict]`, the verdict one of pass, fail or na. */
@@ -28,18 +27,13 @@ const session = seconds => {
 const NOW = [['a', 'X', 1, 'pass'], ['a', 'Y', 0.2, 'fail'], ['b', 'X', 0, 'fail'], ['b', 'Y', 1, 'na'], ['c', 'X', 0.8, 'pass']];
 const THEN = [['a', 'X', 1, 'pass'], ['a', 'Y', 0.9, 'pass'], ['b', 'X', 0, 'fail'], ['c', 'X', 0.3, 'fail'], ['d', 'X', 1, 'pass']];
 
-async function open(files) {
-  const p = await page();
-  pages.push(p);
-  await p.openFolder(files);
-  await p.openReport('now /');
-  return p;
-}
 const tips = (p, selector) => p.$$(selector).map(el => el.querySelector('title').textContent);
-const p = await open({
+const p = await page();
+await p.openFolder({
   'now/experiment.json': experiment, 'now/report.json': report(NOW, { a: session(5), c: session(2) }),
   'then/experiment.json': experiment, 'then/report.json': report(THEN),
 });
+await p.openReport('now /');
 
 // ── the verdict grid: one cell per row of the report, a gap where an evaluator did not run ──
 same(tips(p, '#rep-heat rect.cell'), [
@@ -83,19 +77,15 @@ ok(detail && p.text(detail.querySelector('.tr-count')) === '3 spans of a recorde
   ok(/^Input ?q/.test(p.text('#rep-rows tr.case[data-i="2"] + tr.detail .blocks:not(.judge)')), 'beside the case itself');
 }
 
-// ── a report alone in its folder, with no sessions ──
-{
-  const q = await open({ 'now/experiment.json': experiment, 'now/report.json': report(NOW) });
-  ok(q.$('#rep-cost-card').hidden, 'no cost chart without anything recorded to cost');
-}
+// ── a report with no session recorded for any case ──
+ok(!p.$('#rep-cost-card').hidden, 'the cost chart is there while there is something to cost');
+await p.openReport('then /');
+ok(p.$('#rep-cost-card').hidden && !p.$('#rep-charts').hidden && p.$$('#rep-heat rect.cell').length === 5,
+  'a report with nothing recorded to cost drops the cost chart and keeps the others', p.$$('#rep-heat rect.cell').length);
 
 // ── no report, no charts ──
-{
-  const q = await page();
-  pages.push(q);
-  await q.openFolder({ 'now/experiment.json': experiment });
-  await q.openExperiment();
-  ok(q.$('#rep-charts').hidden, 'an experiment with no report shows no charts');
-}
+await p.openFolder({ 'now/experiment.json': experiment });
+ok(p.$('#rep-charts').hidden && !p.$('#rep-rows tr') && p.text('#r-score') === '—',
+  'a folder with no report in it shows no charts, and nothing else of the last report', p.text('#r-score'));
 
-done(pages.flatMap(q => q.errs));
+done(p.errs);

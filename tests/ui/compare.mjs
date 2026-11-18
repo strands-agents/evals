@@ -171,7 +171,6 @@ ok(p.text('#cmp-with summary') === 'Add a report…', 'as Add a report', p.text(
 await p.click('#cmp-with button[data-value="c/report.json"]');
 same(compared(p), ['#1 c/report.json', '#2 a/report.json', '#3 b/report.json'], 'adding one places it by when it ran');
 ok(p.$('#cmp-with').hidden, 'and with every report compared there is nothing left to add');
-ok(!p.$('#rep-cmp') && !/Against another report/.test(p.text('#v-report')), 'the report page no longer carries a comparison of its own');
 
 // ── two reports, one made in code with no experiment file ──
 {

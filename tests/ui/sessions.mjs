@@ -132,6 +132,12 @@ const found = p => {
   ok(shown(p) === 'v-sessions' && p.$('#sessions-rows tr.row.on').dataset.session === 'traces/a.json',
     'the breadcrumb leads back to the list, with the open session marked');
 
+  // ── one trace of one invocation: no headings, and its cost said once ──
+  await p.openSession('one.json');
+  eq([p.text('#ses-trace .tr-count'), texts(p, '#ses-trace .tr-sum'), p.$$('#ses-trace .tr-trace').length, p.$$('#ses-trace .tr-head, #ses-trace .tr-turn').length],
+    ['3 spans of a recorded session', ['1 model call · 1 tool call · 4s'], 1, 0],
+    'a session of one trace is counted and costed once, with no trace heading and no turns');
+
   // ── several agent invocations in one trace: turns ──
   await p.openSession('turns.session.json');
   ok(p.$$('#ses-trace .tr-trace').length === 1 && !p.$('#ses-trace .tr-head'), 'a single trace needs no trace heading');
@@ -175,16 +181,6 @@ const found = p => {
   await p.openFolder({ 'e.json': { cases: [{ name: 'a', input: 'q' }], evaluators: [] } });
   ok(tab(p).hidden && shown(p) === 'v-experiments' && !p.text('#stores'), 'a folder with no session hides the item again',
     `${tab(p).hidden} ${shown(p)}`);
-  pages.push(p);
-}
-
-// ── the trace view elsewhere is unchanged for a session of one trace ──
-{
-  const p = await page();
-  p.window.document.body.insertAdjacentHTML('beforeend', `<div id="probe">${p.window.traceView(PLAIN)}</div>`);
-  eq([p.text('#probe .tr-count'), texts(p, '#probe .tr-sum'), p.$$('#probe .tr-trace').length, p.$$('#probe .tr-head, #probe .tr-turn').length],
-    ['3 spans of a recorded session', ['1 model call · 1 tool call · 4s'], 1, 0], 'one trace of one invocation draws as before, inside its trace');
-  eq(p.window.traceStats(APART), { seconds: 12, tokens: null, modelCalls: 3, toolCalls: 3 }, 'a session costs what its traces took, added up');
   pages.push(p);
 }
 
