@@ -282,6 +282,24 @@ ok(!p.$('#rep-cmp') && !/Against another report/.test(p.text('#v-report')), 'the
   r.window.history.back();
   await tick();
   same(compared(r), ['#1 early.json', '#2 mid.json', '#3 late.json'], 'and Back puts it back');
+
+  // A mark whose report can no longer be read.
+  const unread = new Set();
+  const answers = server();
+  const s = await open({ fetchImpl: (url, opts) => (unread.has(new URL(String(url), 'http://x').searchParams.get('path'))
+    ? { ok: false, status: 404, statusText: 'Not Found', json: async () => ({ error: 'no such file' }) } : answers(url, opts)) });
+  await s.openReport('mid.json');
+  await s.click('#cmp-with button[data-value="late.json"]');
+  unread.add('late.json');
+  await s.click('#cmp-ends g.bell');
+  ok(view(s) === 'v-reports' && /could not load late\.json/.test(s.text('#reports-rows')),
+    'a mark whose report cannot be read goes to the list, which says so', s.text('#reports-rows').slice(0, 80));
+  s.window.history.back();
+  await tick();
+  s.window.history.back();
+  await tick();
+  ok(view(s) === 'v-report' && s.text('#crumbs') === 'Reports/mid.json' && !s.$('#rep-rows tr.case[aria-expanded="true"]'),
+    'and opens no row in the report that was open before', `${view(s)} ${s.text('#crumbs')}`);
 }
 
 done(pages.flatMap(q => q.errs));
