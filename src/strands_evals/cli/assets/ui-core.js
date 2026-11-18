@@ -178,7 +178,11 @@ const VIEW_NAME = {
 const homeView = () => (REPORTS.length ? 'reports' : EXPERIMENTS.length ? 'experiments'
   : sessionRows().length ? 'sessions' : 'reports');
 
+/* Counts the moves between views: a file that arrives after one is not opened over where the page went. */
+let moves = 0;
+
 function show(view, opts) {
+  moves += 1;
   if (!SECTION_OF[view] || (SECTION_OF[view] === 'optimization' && !OPT_RUNS.length)) view = homeView();
   /* A page with nothing open in it is its list. */
   if (view === 'report' && !REP) view = 'reports';

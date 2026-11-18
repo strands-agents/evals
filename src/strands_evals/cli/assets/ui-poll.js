@@ -6,7 +6,8 @@
 const POLL_MS = 5000;
 let polling = false;
 
-/** Re-read the open report and the open experiment where their files changed. Unsaved edits are never replaced. */
+/** Re-read the open report and the open experiment where their files changed. Unsaved edits are never replaced,
+    and neither is anything opened while the file was being read. */
 async function refreshOpen() {
   await refreshSession();
   const changed = (list, loaded) => {
@@ -14,7 +15,10 @@ async function refreshOpen() {
     return now && now.modified !== loaded.modified ? now : null;
   };
   const report = repCand ? null : changed(REPORTS, repMeta);
-  if (report) loadReport(report, await document_for(report), true);
+  if (report) {
+    const open = repMeta, doc = await document_for(report);
+    if (repMeta === open) loadReport(report, doc, true);
+  }
 
   const experiment = changed(EXPERIMENTS, expMeta);
   if (!experiment) return;
@@ -22,10 +26,19 @@ async function refreshOpen() {
     note('This file changed on disk while you were editing it.', 'stale');
     return;
   }
-  const at = cases[sel] && cases[sel].name;
-  loadExperiment(experiment, await document_for(experiment));
+  const open = expMeta, at = cases[sel] && cases[sel].name;
+  const doc = await document_for(experiment);
+  if (expMeta !== open || countDirty()) return;
+  loadExperiment(experiment, doc);
   const again = cases.findIndex(c => c.name === at);
   if (again > 0) { sel = again; renderForm(); }
+}
+
+/** Re-read the folder, then whatever is open from it. */
+async function refresh() {
+  if (!await rescan(true)) return;
+  try { await refreshOpen(); await refreshCompare(); } catch (err) { scanError = `could not re-read: ${err.message}`; }
+  renderLists();
 }
 
 async function pollNow() {
@@ -34,9 +47,7 @@ async function pollNow() {
   try {
     let mark;
     try { mark = (await api('/api/changes')).fingerprint; } catch { return; }   // no answer: the next tick asks again
-    if (!mark || mark === treeMark || !await rescan(true)) return;
-    try { await refreshOpen(); await refreshCompare(); } catch (err) { scanError = `could not re-read: ${err.message}`; }
-    renderLists();
+    if (mark && mark !== treeMark) await refresh();
   } finally {
     polling = false;
   }
@@ -46,3 +57,5 @@ function startPolling() {
   setInterval(pollNow, POLL_MS);
   document.addEventListener('visibilitychange', pollNow);
 }
+
+app.querySelectorAll('[data-act="rescan"]').forEach(b => { b.onclick = refresh; });

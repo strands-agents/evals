@@ -87,8 +87,6 @@ function renderLists() {
   renderPageHead(currentView());
 }
 
-app.querySelectorAll('[data-act="rescan"]').forEach(b => { b.onclick = () => rescan(true); });
-
 /* ══════════ reading the folder, and opening what is in it ══════════ */
 
 async function document_for(meta) {
@@ -129,12 +127,29 @@ function openFailed(path, err) {
   show(homeView());
 }
 
+/* A file's document, or null when it would not load or the page moved on while it did. */
+async function loaded(meta) {
+  const from = moves;
+  try {
+    const doc = await document_for(meta);
+    return moves === from ? doc : null;
+  } catch (err) {
+    if (moves === from) openFailed(meta.path, err);
+    return null;
+  }
+}
+
+/* Whether the open experiment's unsaved edits may be dropped: asked in the page when there are any. */
+async function mayDiscard(doing) {
+  const dirty = countDirty();
+  return !dirty || ask(`${plural(dirty, 'unsaved change')} will be lost if you ${doing}.`, 'Discard and open', 'Stay');
+}
+
 /** Open one report on its own page. The experiment editor, and any edits in it, are left alone. */
 async function openReport(path) {
   const meta = REPORTS.find(r => r.path === path);
-  if (!meta) return;
-  let doc;
-  try { doc = await document_for(meta); } catch (err) { return openFailed(path, err); }
+  const doc = meta && await loaded(meta);
+  if (!doc) return;
   closeCandidate();
   loadReport(meta, doc);
   scanError = '';
@@ -146,14 +161,12 @@ async function openReport(path) {
 async function openExperiment(path, opts) {
   const meta = EXPERIMENTS.find(e => e.path === path);
   if (!meta) return;
+  const force = opts && opts.force;
   /* Opening the one already open again would re-read it from disk and drop unsaved edits. */
-  if (expMeta && expMeta.path === path && !(opts && opts.force)) return show('experiment');
-  const dirty = countDirty();
-  if (!(opts && opts.force) && dirty
-      && !await ask(`${dirty} unsaved ${dirty === 1 ? 'change' : 'changes'} will be lost if you open another experiment.`,
-        'Discard and open', 'Stay')) return;
-  let doc;
-  try { doc = await document_for(meta); } catch (err) { return openFailed(path, err); }
+  if (expMeta && expMeta.path === path && !force) return show('experiment');
+  if (!force && !await mayDiscard('open another experiment')) return;
+  const doc = await loaded(meta);
+  if (!doc) return;
   loadExperiment(meta, doc);
   scanError = '';
   renderLists();

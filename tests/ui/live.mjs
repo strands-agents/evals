@@ -20,8 +20,12 @@ const listed = (path, modified, more) =>
 const tree = {
   mark: 'm1',
   experiments: [listed('e.json', 5, { reports: ['r.json'] })],
-  reports: [listed('r.json', 5, { experiment: 'e.json', link: null })],
-  files: { 'e.json': { modified: 5, document: experiment('second question') }, 'r.json': { modified: 5, document: report(true, false) } },
+  reports: [listed('r.json', 5, { experiment: 'e.json', link: null }), listed('other.json', 5, { experiment: null, link: null })],
+  files: {
+    'e.json': { modified: 5, document: experiment('second question') },
+    'r.json': { modified: 5, document: report(true, false) },
+    'other.json': { modified: 5, document: report(true, true) },
+  },
 };
 const write = (path, document) => {
   const modified = tree.files[path].modified + 1;
@@ -36,8 +40,19 @@ const server = fakeServer({
   file: path => ({ path, ...tree.files[path] }),
 });
 const asked = () => server.sent.splice(0).map(r => r.url.split('?')[0]).join(' ');
+/* Hold the answer for one file until the test lets it go, as a slow read would. */
+let slow = null;
+const hold = path => {
+  let release;
+  slow = { path, until: new Promise(resolve => { release = resolve; }) };
+  return async () => { slow = null; release(); await tick(); };
+};
+const fetchImpl = async (url, opts) => {
+  if (slow && String(url).includes(`path=${slow.path}`)) await slow.until;
+  return server(url, opts);
+};
 
-const p = await page({ fetchImpl: server, visible: true });
+const p = await page({ fetchImpl, visible: true });
 await p.openExperiment();
 const rows = () => p.$$('#experiments-rows tr.row');
 const poll = async () => { await p.window.pollNow(); await tick(); };
@@ -85,6 +100,31 @@ ok(input() === 'my edit' && /changed on disk/.test(p.text('#saved')),
 await p.click('#saved .reload');
 await p.click(p.$$('#case-list li[data-i]')[1]);
 ok(input() === 'rewritten again', 'the offer beside it reloads from disk', input());
+
+// ── Rescan re-reads what is open as well as the lists ──
+write('e.json', experiment('rewritten a third time'));
+await p.click('[data-act="rescan"]');
+ok(input() === 'rewritten a third time', 'Rescan shows the open experiment as it is on disk now, not only the lists', input());
+
+// ── a file that arrives after the reader went elsewhere does not take the page ──
+{
+  let release = hold('r.json');
+  await p.openReport('r.json');
+  await p.openReport('other.json');
+  await release();
+  ok(p.text('#crumbs') === 'Reports/other.json' && p.text('#r-score') === '1.00',
+    'a report that loads late does not replace the one opened after it', `${p.text('#crumbs')} ${p.text('#r-score')}`);
+
+  await p.openReport('r.json');
+  write('r.json', report(true, true));
+  release = hold('r.json');
+  const polled = p.window.pollNow();
+  await tick();
+  await p.openReport('other.json');
+  await release();
+  await polled;
+  ok(p.text('#crumbs') === 'Reports/other.json', 'nor does a re-read of the report that was open before it', p.text('#crumbs'));
+}
 
 // ── a tab nobody is looking at stays quiet, and catches up when it is looked at ──
 Object.defineProperty(p.d, 'hidden', { value: true, configurable: true });
