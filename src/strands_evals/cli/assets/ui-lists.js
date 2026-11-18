@@ -30,7 +30,7 @@ const madeFrom = r => (r.experiment ? `${openLink('experiment', r.experiment)} $
 
 /* The reports made from an experiment that the folder still holds. */
 const reportsOf = e => e.reports.map(path => REPORTS.find(r => r.path === path)).filter(Boolean);
-const contents = e => `${plural(e.cases, 'case')} · ${plural((e.evaluators || []).length, 'evaluator')}`;
+const experimentSize = e => `${plural(e.cases, 'case')} · ${plural((e.evaluators || []).length, 'evaluator')}`;
 
 const filed = m => `${m.dir && m.dir !== '.' ? `<span class="dim">${esc(m.dir)} /</span> ` : ''}${esc(m.name)}`
   + `<br><span class="path">${KB(m.size)}</span>`;
@@ -75,7 +75,7 @@ function renderLists() {
   redraw($('experiments-rows'), failed + (EXPERIMENTS.map(e =>
     `<tr class="row${expMeta && expMeta.path === e.path ? ' on' : ''}" data-experiment="${esc(e.path)}" tabindex="0">
         <td>${filed(e)}</td>
-        <td class="ev">${contents(e)}</td>
+        <td class="ev">${experimentSize(e)}</td>
         <td class="ev">${reportsOf(e).map(r => `${openLink('report', r.path, r.name)} ${fmt(r.overall_score)}`).join('<br>')
           || '<span class="empty">not run yet</span>'}</td>
         <td class="ev">${when(e.modified)}</td></tr>`).join('')
@@ -131,7 +131,7 @@ function openFailed(path, err) {
 }
 
 /* A file's document, or null when it would not load or the page moved on while it did. */
-async function loaded(meta) {
+async function documentToOpen(meta) {
   const from = moves;
   try {
     const doc = await document_for(meta);
@@ -151,7 +151,7 @@ async function mayDiscard(doing) {
 /** Open one report on its own page. The experiment editor, and any edits in it, are left alone. */
 async function openReport(path) {
   const meta = REPORTS.find(r => r.path === path);
-  const doc = meta && await loaded(meta);
+  const doc = meta && await documentToOpen(meta);
   if (!doc) return;
   closeCandidate();
   loadReport(meta, doc);
@@ -168,7 +168,7 @@ async function openExperiment(path, opts) {
   /* Opening the one already open again would re-read it from disk and drop unsaved edits. */
   if (expMeta && expMeta.path === path && !force) return show('experiment');
   if (!force && !await mayDiscard('open another experiment')) return;
-  const doc = await loaded(meta);
+  const doc = await documentToOpen(meta);
   if (!doc) return;
   loadExperiment(meta, doc);
   scanError = '';

@@ -78,9 +78,9 @@ async function followAddress() {
   writeAddress(currentView(), true);
 }
 /* One at a time: a step taken while the one before it is still loading waits its turn. */
-let stepping = Promise.resolve();
-const step = () => { stepping = stepping.then(followAddress, followAddress); };
-window.addEventListener('popstate', step);
-window.addEventListener('hashchange', step);
+let followed = Promise.resolve();
+const followInTurn = () => { followed = followed.then(followAddress, followAddress); };
+window.addEventListener('popstate', followInTurn);
+window.addEventListener('hashchange', followInTurn);
 
 boot();

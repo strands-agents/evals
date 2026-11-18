@@ -23,7 +23,7 @@ function experimentHead() {
   const made = reportsOf(e);
   const out = stem(e.name) ? `${stem(e.name)}.report.json` : 'report.json';
   return [[['Experiments', 'experiments'], [e.path]],
-    `${contents(e)} · `
+    `${experimentSize(e)} · `
       + (made.length
         ? `${made.length === 1 ? 'Report' : 'Reports'}: ${made.map(r => `${openLink('report', r.path)} ${fmt(r.overall_score)}`).join(', ')}`
         : `<span class="empty">Not run yet.</span> To run it: <code>strands-evals run ${esc(e.name)} --agent module:attr -o ${esc(out)}</code>`

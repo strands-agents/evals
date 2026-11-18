@@ -36,7 +36,7 @@ async function refreshOpen() {
 }
 
 /** Re-read the folder, then whatever is open from it. */
-async function refresh() {
+async function rereadFolder() {
   if (!await rescan(true)) return;
   try { await refreshOpen(); await refreshCompare(); } catch (err) { scanError = `could not re-read: ${err.message}`; }
   renderLists();
@@ -48,7 +48,7 @@ async function pollNow() {
   try {
     let mark;
     try { mark = (await api('/api/changes')).fingerprint; } catch { return; }   // no answer: the next tick asks again
-    if (mark && mark !== treeMark) await refresh();
+    if (mark && mark !== treeMark) await rereadFolder();
   } finally {
     polling = false;
   }
@@ -59,4 +59,4 @@ function startPolling() {
   document.addEventListener('visibilitychange', pollNow);
 }
 
-app.querySelectorAll('[data-act="rescan"]').forEach(b => { b.onclick = refresh; });
+app.querySelectorAll('[data-act="rescan"]').forEach(b => { b.onclick = rereadFolder; });

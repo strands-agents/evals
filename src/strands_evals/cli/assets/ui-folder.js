@@ -226,7 +226,7 @@ function scanned(path, rootDepth) {
   return dirs.length <= SCAN_DEPTH && !dirs.some(d => d.startsWith('.') || SKIPPED_DIRS.includes(d));
 }
 
-const UNKNOWN = 'not an experiment or a report';
+const UNRECOGNISED = 'not an experiment or a report';
 
 async function ingest(all, rootDepth = 0) {
   /* In path order, so a directory's files are read in the order the server reads them. */
@@ -277,7 +277,7 @@ async function ingest(all, rootDepth = 0) {
       continue;
     }
     if (!kind) {
-      skipped.push({ path, why: why || UNKNOWN });
+      skipped.push({ path, why: why || UNRECOGNISED });
       continue;
     }
     const meta = { path, name: file.name, size: file.size, modified: modified(file), obj };
