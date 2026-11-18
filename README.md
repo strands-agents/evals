@@ -172,6 +172,7 @@ with someone serving the same folder:
 | --- | --- |
 | `/reports` | Every report found, each with the experiment it was made from. |
 | `/reports/<report file>` | One report. |
+| `/reports/<report file>/rows/<case>/<evaluator>` | One row of a report, opened and in view. |
 | `/reports/compare?r=<report file>&r=<report file>` | Two or more reports side by side, oldest first. |
 | `/experiments` | Every experiment file found, each with the reports made from it. |
 | `/experiments/<experiment file>` | Its cases; add `/cases/<name>` for one case. |
@@ -179,9 +180,8 @@ with someone serving the same folder:
 | `/sessions/<session file>` | One session, trace by trace, with any diagnosis made of it. |
 | `/optimization` | The optimizer runs found. |
 | `/optimization/<run directory>/<view>` | One run: `setup`, `overview`, `progress`, `candidates`, `tunables` or `trade-off`. |
-| `/optimization/<run directory>/candidates/<id>/report` | One candidate's cases, as a report. |
-| `/reports/<report file>/rows/<case>/<evaluator>` | One row of a report, opened and in view. |
 | `/optimization/<run directory>/candidates/<id>` | One candidate of a run, opened and in view. |
+| `/optimization/<run directory>/candidates/<id>/report` | One candidate's cases, as a report. |
 
 The page is also written to be handed to a coding agent. A report, a report row, a comparison, an
 experiment, a case, a session, a candidate, an optimizer result and a trace each have a **Copy as Markdown**
@@ -203,8 +203,8 @@ open them. For example: `curl -H "X-Evals-Token: $TOKEN" http://127.0.0.1:PORT/r
 
 A report is listed whether or not an experiment file sits beside it, so one made in code with
 `run_evaluations()` and saved with `to_file()` shows up too, marked as run from code. A report is matched to
-the experiment of the same name in its directory, or failing that to the one experiment that holds all of
-its cases, and one experiment can have many reports.
+the experiment of the same name in its directory, or failing that to the nearest experiment that holds all
+of its cases. Two that are equally near are not guessed between, and one experiment can have many reports.
 
 A session saved with `strands-evals fetch ... -o` is listed under Sessions and read one trace after another.
 A diagnosis written by `strands-evals diagnose -o` is shown on the page of the session with its `session_id`,
