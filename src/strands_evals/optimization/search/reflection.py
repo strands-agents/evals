@@ -287,10 +287,11 @@ class Reflection(Proposer):
                         _submit_tool(work, submitted, parent, rejected, caps),
                     ],
                     # At 85% of the model's context window the oldest messages but the last 4 are elided; the
-                    # first message, the task, is never removed, nor is a pinned send-back. Tool outputs stay
-                    # whole unless the provider rejects a request as too large, nothing calls a model (so `usage`
-                    # is the whole spend), and with no stash there is no retrieval tool: the agent rereads a file
-                    # through its shell.
+                    # first message, the task, is never removed, nor is a pinned send-back (except by the SDK's
+                    # last-resort truncation, when even the last messages don't fit). Tool outputs stay whole
+                    # unless the provider rejects a request as too large, nothing calls a model (so `usage` is the
+                    # whole spend), and with no stash there is no retrieval tool: the agent rereads a file through
+                    # its shell.
                     context_manager={
                         "strategies": [
                             Offload.truncate("*").when(utilization=0.85, preserve_recent=4),
@@ -668,18 +669,16 @@ def _cap_tool_output(event: AfterToolCallEvent) -> None:
 
 class _ShortenToolResultsOnOverflow:
     """Only when the provider rejects a request as too large: cut the tool results of the oldest message with any
-    not yet cut to their first and last `_OVERFLOW_KEPT_CHARS` characters, one message per retry.
+    over `4 * _OVERFLOW_KEPT_CHARS` characters to their first and last `_OVERFLOW_KEPT_CHARS`, one message per retry.
+    A cut result is shorter than that threshold, so it is never cut again.
 
     The context manager's own strategies remove whole messages and always keep the newest, so a turn whose tool
-    results alone overflow the window (several large reads at once) could never be sent.
+    results alone overflow the window (several large reads at once) could never be sent. This runs after the
+    elision, in the same pass, so a rejected request also costs the oldest kept result even when the elision alone
+    would have made it fit; only a model whose real window is smaller than Strands believes is rejected at all.
     """
 
     name = "reflection:shorten-tool-results-on-overflow"
-
-    def __init__(self) -> None:
-        # The result items already cut, by identity (one strategy per agent): matching the note's text could
-        # also match a file the agent read.
-        self._cut: list[object] = []
 
     async def apply(self, context: ContextState) -> bool:
         if not context.overflow:
@@ -689,13 +688,12 @@ class _ShortenToolResultsOnOverflow:
             for block in message["content"]:
                 for item in block.get("toolResult", {}).get("content", []):
                     text = item.get("text")
-                    if text and len(text) > 2 * _OVERFLOW_KEPT_CHARS and not any(item is c for c in self._cut):
+                    if text and len(text) > 4 * _OVERFLOW_KEPT_CHARS:
                         removed = len(text) - 2 * _OVERFLOW_KEPT_CHARS
                         item["text"] = (
-                            f"{text[:_OVERFLOW_KEPT_CHARS]}\n\n... [cut: {removed} characters removed: the context "
-                            f"window was full; read less at once] ...\n\n{text[-_OVERFLOW_KEPT_CHARS:]}"
+                            f"{text[:_OVERFLOW_KEPT_CHARS]}\n\n... [cut: {removed} characters removed because the "
+                            f"context window was full] ...\n\n{text[-_OVERFLOW_KEPT_CHARS:]}"
                         )
-                        self._cut.append(item)
                         cut = True
             if cut:
                 return True

@@ -266,17 +266,21 @@ async def test_no_trial_to_learn_from_proposes_nothing():
 
 class Recording(ScriptedModel):
     """Records each request, reports its size as a provider does (utilization is read from the reported usage),
-    and rejects one over its 4,000-token window, as a provider does, without using up a scripted turn."""
+    and rejects one over its 4,000-token window, as a provider does, without using up a scripted turn.
 
-    def __init__(self, turns):
+    `believed` is the window Strands is told (the real one by default)."""
+
+    window = 4000  # tokens: a few large reads fill it
+
+    def __init__(self, turns, *, believed=None):
         super().__init__(turns)
-        self.config["context_window_limit"] = 4000  # tokens: a few large reads fill it
+        self.config["context_window_limit"] = believed or self.window
         self.seen, self.tools, self.rejected = [], set(), 0
 
     async def stream(self, messages, tool_specs=None, *args, **kwargs):
         request = [json.dumps(m["content"]) for m in messages]
         tokens = sum(map(len, request)) // 4
-        if tokens > self.config["context_window_limit"]:
+        if tokens > self.window:
             self.rejected += 1
             raise ContextWindowOverflowException(f"{tokens} tokens")
         self.tools.add(tuple(spec["name"] for spec in tool_specs))
@@ -339,7 +343,24 @@ async def test_tool_results_too_large_for_the_window_are_cut_and_the_call_goes_o
     assert model.rejected == 1 and events == []
     cut = next(m for messages in model.seen for m in messages if "[cut:" in m)
     assert "a" * 200 in cut and "z" * 150 in cut and "y" * 200 not in cut  # the tail ends with the exit code
-    assert "characters removed: the context window was full" in cut
+    assert "characters removed because the context window was full" in cut
+
+
+async def test_a_rejected_request_is_elided_first_then_a_kept_result_is_cut():
+    """Strands believes the window is larger than it is, so nothing is elided until the provider rejects a request;
+    then the elision runs first and the cut lands on a result the elided request keeps."""
+    reads = [ToolUse("shell", {"command": f"printf '{c}%.0s' $(seq 2000)"}) for c in "abcdef"]
+    turns = [*reads, write("p.txt", "Ask for the number."), submit(prompt="p.txt"), "Done."]
+    model = Recording(turns, believed=200_000)
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    (patch,) = await reflection.propose(request(events=events))
+    assert patch.updates == {"prompt": "Ask for the number.\n"}
+    assert model.rejected == 1 and events == []
+    after = next(messages for messages in model.seen if "elided" in "".join(messages[1:2]))
+    assert len(after) == 5  # the task + the last 4: two reads (call, result), the older result cut
+    assert "[cut:" in after[2] and "d" * 200 in after[2] and "e" * 2000 in after[4]
 
 
 async def test_tool_results_are_cut_only_on_overflow_oldest_message_first():
@@ -348,15 +369,21 @@ async def test_tool_results_are_cut_only_on_overflow_oldest_message_first():
     def result(text):
         return {"role": "user", "content": [{"toolResult": {"toolUseId": "t", "content": [{"text": text}]}}]}
 
-    newer = "... [cut: " + "n" * 1000  # a file that looks like a cut result is still cut
-    messages = [{"role": "user", "content": [{"text": "task " * 200}]}, result("o" * 1000), result(newer)]
+    small = "s" * 800  # cutting it wouldn't shorten it enough to be worth a retry
+    messages = [
+        {"role": "user", "content": [{"text": "task " * 200}]},
+        result("o" * 1000),
+        result(small),
+        result("n" * 1000),
+    ]
     assert not await shorten.apply(SimpleNamespace(overflow=False, messages=messages))
     assert await shorten.apply(SimpleNamespace(overflow=True, messages=messages))
     texts = [m["content"][0].get("toolResult", {}).get("content", [{}])[0].get("text") for m in messages]
-    assert "[cut: 600 characters removed" in texts[1] and texts[2] == newer  # the oldest, alone
-    assert await shorten.apply(SimpleNamespace(overflow=True, messages=messages))  # then the next
-    assert messages[2]["content"][0]["toolResult"]["content"][0]["text"].endswith("n" * 200)
-    assert not await shorten.apply(SimpleNamespace(overflow=True, messages=messages))  # nothing left to cut
+    assert "[cut: 600 characters removed" in texts[1] and texts[3] == "n" * 1000  # the oldest, alone
+    assert await shorten.apply(SimpleNamespace(overflow=True, messages=messages))  # then the next large one
+    assert messages[3]["content"][0]["toolResult"]["content"][0]["text"].endswith("n" * 200)
+    assert not await shorten.apply(SimpleNamespace(overflow=True, messages=messages))  # a cut result isn't cut again
+    assert messages[2]["content"][0]["toolResult"]["content"][0]["text"] == small
     assert messages[0]["content"][0]["text"] == "task " * 200
 
 
