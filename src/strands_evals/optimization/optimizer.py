@@ -509,6 +509,7 @@ class Optimizer:
         self._last_fit: Fit | None = None  # the last successful fit, the next refit's `previous`
         self._fit_errors: set[str] = set()
         self._fit_error: str | None = None  # the last refit's error while no refit has succeeded since
+        self._build_errors: set[str] = set()  # infrastructure errors the build check has warned about
         self._saved: dict[str, Candidate] = {baseline.id: baseline}  # every saved candidate, by id
         self._open_rounds: list[OpenRound] = []
         self._search_cost = Usage.zero()
@@ -1583,8 +1584,9 @@ class Optimizer:
         resources and no call kwargs, so a factory that needs a resource from `environment` or a kwarg only the
         rollout passes can't be built here and isn't checked (its trials run as usual). Neither is a factory that
         fails on infrastructure (`classify`: expired credentials, a dropped connection): that is no fault of the
-        values, so the proposer isn't told they're invalid; the trials run, and are re-run, as in any outage. On
-        the `build_task` path the agent is built inside the task, so nothing is checked.
+        values, so the proposer isn't told they're invalid; the trials run, and are re-run, as in any outage (a
+        warning once per distinct error). On the `build_task` path the agent is built inside the task, so nothing
+        is checked.
         """
         if self._factory is None:
             return None
@@ -1597,6 +1599,15 @@ class Optimizer:
             return None
         except Exception as error:  # noqa: BLE001 - any other failure to build makes the candidate invalid
             if classify(error) is TrialStatus.INFRASTRUCTURE_INVALID:
+                text = f"{type(error).__name__}: {error}"
+                if text not in self._build_errors:
+                    self._build_errors.add(text)
+                    warnings.warn(
+                        f"the agent couldn't be built ({text}); its trials run, and are re-run, as "
+                        "infrastructure failures",
+                        UserWarning,
+                        stacklevel=2,
+                    )
                 return None
             return f"the agent can't be built: {type(error).__name__}: {error}"
         return None

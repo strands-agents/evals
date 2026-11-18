@@ -71,6 +71,7 @@ _SERVICE_ERROR_CODES = frozenset(
         "throttlingexception",
         "expiredtokenexception",
         "expiredtoken",
+        "requestexpired",  # EC2-style APIs: expired temporary credentials, or a request signed too long ago
     }
 )
 
@@ -90,9 +91,9 @@ def classify(error: BaseException) -> TrialStatus:
     6. The service's own failure, or expired credentials, by error code (`response["Error"]["Code"]`,
        lowercased; read with `getattr`, so it also covers botocore `EventStreamError` in a streamed response):
        `internalserverexception`, `serviceunavailableexception`, `modelstreamerrorexception`,
-       `modelnotreadyexception`, `throttlingexception`, `expiredtokenexception`, `expiredtoken`
-       -> `INFRASTRUCTURE_INVALID`. A wrong key (`UnrecognizedClientException`) or missing model access
-       (`AccessDeniedException`) is not: no re-run fixes it.
+       `modelnotreadyexception`, `throttlingexception`, `expiredtokenexception`, `expiredtoken`,
+       `requestexpired` -> `INFRASTRUCTURE_INVALID`. A wrong key (`UnrecognizedClientException`) or missing
+       model access (`AccessDeniedException`) is not: no re-run fixes it.
     7. Anything else -> `AGENT_FAILURE`, a user's own deadline (`asyncio.TimeoutError`) included, so a
        slow agent never sheds its hard cases by being re-run.
 

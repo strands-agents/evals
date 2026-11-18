@@ -45,6 +45,7 @@ CASES = [
     pytest.param(botocore_errors.SSOTokenLoadError(error_msg="no cache"), INFRASTRUCTURE, id="SSOTokenLoadError"),
     pytest.param(_client_error("ExpiredTokenException"), INFRASTRUCTURE, id="ClientError-ExpiredTokenException"),
     pytest.param(_client_error("ExpiredToken"), INFRASTRUCTURE, id="ClientError-ExpiredToken"),
+    pytest.param(_client_error("RequestExpired"), INFRASTRUCTURE, id="ClientError-RequestExpired"),
     pytest.param(botocore_errors.SSOError(), INFRASTRUCTURE, id="SSOError"),
     pytest.param(botocore_errors.RefreshWithMFAUnsupportedError(), INFRASTRUCTURE, id="RefreshWithMFAUnsupported"),
     *(

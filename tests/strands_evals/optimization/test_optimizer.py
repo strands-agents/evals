@@ -734,7 +734,8 @@ async def test_a_factory_failing_on_infrastructure_is_not_invalid(tmp_path):
         max_workers=64,
         base_dir=tmp_path,
     )
-    await _search(optimizer)
+    with pytest.warns(UserWarning, match=r"the agent couldn't be built \(CredentialRetrievalError"):
+        await _search(optimizer)
     assert [o.outcome for o in proposer.observed] == ["feasible"]
 
 
