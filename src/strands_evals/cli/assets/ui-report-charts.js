@@ -5,30 +5,17 @@
 
 let repCost = null;                       // the cost measure charted, kept across re-renders
 
-const evaluatorName = r => r.evaluator == null ? '—' : String(r.evaluator);
-/* A mark that opens its row in the table. Only a small chart puts every mark in the tab order. */
-const rowLink = (r, focusable) => ` data-row="${r.i}"${focusable ? ' tabindex="0"' : ''}`;
-
 function verdictGrid() {
   const evaluators = [...new Set(ROWS.map(evaluatorName))];
-  const focusable = evaluators.length * BY_CASE.length <= 80;
+  const tabbable = evaluators.length * BY_CASE.length <= TAB_MARKS;
   return heatmap(evaluators, BY_CASE.map(g => g.name), (e, c) => {
     const r = BY_CASE[c].rows.find(row => evaluatorName(row) === evaluators[e]);
-    return r && {
-      cls: r.na ? 'na' : r.pass ? 'pass' : 'fail',
-      tip: `${r.name} · ${evaluators[e]} · `
-        + (r.na ? 'not applicable' : `score ${fmt(r.score)} · ${r.pass ? 'pass' : 'fail'}`),
-      attrs: rowLink(r, focusable),
-    };
+    return r && { cls: verdictOf(r), tip: `${rowTitle(r)} · ${verdictText(r)}`, attrs: rowLink(r, tabbable) };
   });
 }
 
 function scoreSpread() {
-  const by = new Map();
-  for (const r of ROWS) {
-    if (r.na || typeof r.score !== 'number') continue;
-    by.set(evaluatorName(r), (by.get(evaluatorName(r)) || []).concat(r.score));
-  }
+  const by = scoresByEvaluator(ROWS);
   return by.size ? histRows([...by].map(([label, values]) => ({ label, values })), { axis: 'score' }) : '';
 }
 
@@ -54,7 +41,7 @@ function renderCaseCost() {
   $('rep-cost').innerHTML = barRows(rows.slice(0, CHART_ROWS).map(({ g, cost }) => ({
     label: g.name,
     value: cost[repCost],
-    text: repCost === 'seconds' ? `${nice(cost.seconds)}s` : compact(cost.tokens),
+    text: repCost === 'seconds' ? secondsText(cost.seconds) : compact(cost.tokens),
     tip: `${g.name} · ${costText(cost)}`,
     attrs: rowLink(g.rows[0], true),
   })), { axis: repCost });
@@ -71,8 +58,3 @@ function renderReportCharts() {
   $('rep-spread').innerHTML = spread;
   renderCaseCost();
 }
-
-$('rep-charts').addEventListener('click', e => {
-  const mark = e.target.closest('[data-row]');
-  if (mark) openReportRow(+mark.dataset.row);
-});

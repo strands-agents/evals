@@ -10,7 +10,6 @@ let sesMeta = null, SES = null;              // the open session, or lone diagno
 let sesFound = [];                           // the diagnoses shown with it, as `{ meta, doc }`
 let sesMark = '';                            // what was on disk when it was read
 
-/* Registered from here so that the tables in `ui-core.js` and `ui-guide.js` hold no line per feature. */
 Object.assign(SECTION_OF, { sessions: 'evals', session: 'evals' });
 Object.assign(VIEW_NAME, { sessions: 'Sessions', session: 'Session' });
 Object.assign(TERMS, {
@@ -44,13 +43,10 @@ Object.assign(VIEW_GUIDE, {
    `sessionMeta`, `diagnosisMeta`, `sessionOf` and `isTaskResult` mirror `_session_summary`,
    `_diagnosis_summary`, `session_of` and `is_task_result` in `_ui_server.py`. */
 
-const sessionMeta = obj => {
-  const traces = sessionTraces(obj);
-  return {
-    session_id: obj.session_id, traces: traces.length,
-    spans: traces.reduce((n, tr) => n + tr.spans.length, 0), seconds: traceStats(obj).seconds,
-  };
-};
+const sessionMeta = obj => ({
+  session_id: obj.session_id, traces: sessionTraces(obj).length,
+  spans: sessionSpans(obj).length, seconds: traceStats(obj).seconds,
+});
 const diagnosisMeta = obj => ({
   session_id: typeof obj.session_id === 'string' ? obj.session_id : null,
   failures: (obj.failures || []).length, root_causes: (obj.root_causes || []).length,
@@ -89,10 +85,21 @@ function sessionsFrom(found) {
 
 /* What the Sessions list holds: every session, then each diagnosis whose session is not in the folder. */
 const sessionRows = () => SESSIONS.concat(DIAGNOSES.filter(d => !d.session));
-const failuresFound = n => (n ? `<span class="tag warn">${plural(n, 'failure')} found</span>`
-  : '<span class="tag ok">no failures found</span>');
+/* Which of the two a row of that list is. */
+const isSession = m => m.traces != null;
 const madeOf = s => (s.diagnoses || []).map(path => DIAGNOSES.find(d => d.path === path)).filter(Boolean);
-const lasted = seconds => (seconds == null ? '—' : `${nice(seconds)}s`);
+
+/* What a row holds, as the list and the page header both say it. */
+const sessionHolds = m => `${plural(m.traces, 'trace')} · ${plural(m.spans, 'span')}`;
+const diagnosisHolds = m => `${plural(m.failures, 'failure')} · ${plural(m.root_causes, 'root cause')}`;
+/* What the diagnoses made of a session found between them, or nothing when there is none. */
+function foundTag(s) {
+  const made = madeOf(s);
+  if (!made.length) return '';
+  const failures = made.reduce((n, d) => n + d.failures, 0);
+  return ' · ' + (failures ? `<span class="tag warn">${plural(failures, 'failure')} found</span>`
+    : '<span class="tag ok">no failures found</span>');
+}
 
 function renderSessions() {
   const rows = sessionRows();
@@ -101,18 +108,14 @@ function renderSessions() {
   $('sessions-count').innerHTML = plural(SESSIONS.length, 'session')
     + (lone ? ` · ${lone} ${lone === 1 ? 'diagnosis' : 'diagnoses'} without ${lone === 1 ? 'its' : 'their'} session` : '')
     + (truncated ? ' · <span class="tag warn">scan hit the file cap</span>' : '');
-  $('sessions-rows').innerHTML = rows.map(m => {
-    const made = m.traces == null ? null : madeOf(m);
-    return `<tr class="row${sesMeta && sesMeta.path === m.path ? ' on' : ''}" data-session="${esc(m.path)}" tabindex="0">
+  $('sessions-rows').innerHTML = rows.map(m =>
+    `<tr class="row${sesMeta && sesMeta.path === m.path ? ' on' : ''}" data-session="${esc(m.path)}" tabindex="0">
         <td>${filed(m)}</td>
-        <td class="ev">` + (made
-      ? `${plural(m.traces, 'trace')} · ${plural(m.spans, 'span')}`
-        + (made.length ? ` · ${failuresFound(made.reduce((n, d) => n + d.failures, 0))}` : '')
+        <td class="ev">` + (isSession(m) ? sessionHolds(m) + foundTag(m)
       : '<span class="tag" data-tip="A diagnosis whose session is not in this folder. It opens on its own.">diagnosis</span> '
-        + `${plural(m.failures, 'failure')} · ${plural(m.root_causes, 'root cause')}`) + `</td>
-        <td class="ev">${made ? lasted(m.seconds) : '—'}</td>
-        <td class="ev">${when(m.modified)}</td></tr>`;
-  }).join('');
+        + diagnosisHolds(m)) + `</td>
+        <td class="ev">${m.seconds == null ? '—' : secondsText(m.seconds)}</td>
+        <td class="ev">${when(m.modified)}</td></tr>`).join('');
   $('stores').innerHTML = STORES.length
     ? `<p class="stores">${STORES.length === 1 ? 'A task result store was' : `${STORES.length} task result stores were`} found: `
       + STORES.map(s => `<code>${esc(s.dir)}</code> holds ${plural(s.files, 'saved result')}`).join(', ')
@@ -137,22 +140,17 @@ function closeSession() {
 
 function sessionHead() {
   const m = listed(sessionRows(), sesMeta);
-  const made = m.traces == null ? null : madeOf(m);
-  return [[['Sessions', 'sessions'], [m.path]], made
-    ? `${plural(m.traces, 'trace')} · ${plural(m.spans, 'span')}${m.seconds == null ? '' : ` · ${lasted(m.seconds)}`}`
-      + ` · session <b>${esc(m.session_id)}</b>`
-      + (made.length ? ` · ${failuresFound(made.reduce((n, d) => n + d.failures, 0))}` : '')
+  return [[['Sessions', 'sessions'], [m.path]], isSession(m)
+    ? `${sessionHolds(m)}${m.seconds == null ? '' : ` · ${secondsText(m.seconds)}`}`
+      + ` · session <b>${esc(m.session_id)}</b>${foundTag(m)}`
     : `A diagnosis${m.session_id ? ` of session <b>${esc(m.session_id)}</b>, which is not in this folder` : ' that does not name its session'}`
-      + ` · ${plural(m.failures, 'failure')} · ${plural(m.root_causes, 'root cause')}`];
+      + ` · ${diagnosisHolds(m)}`];
 }
 
 function renderSession() {
   $('ses-found').innerHTML = sesFound.map(f => `<section class="found"><h3>${esc(f.meta.path)}</h3>`
     + `${diagnosisView(f.doc, { spans: sessionSpans(SES) })}</section>`).join('');
-  $('ses-trace').innerHTML = sesMeta.traces == null
-    ? `<details class="raw"><summary>the file as written</summary>`
-      + `<pre class="out">${esc(JSON.stringify(SES, null, 1).slice(0, 200000))}</pre></details>`
-    : traceView(SES);
+  $('ses-trace').innerHTML = isSession(sesMeta) ? traceView(SES) : rawView(SES, 'the file as written');
 }
 
 /* What is on disk for a session and its diagnoses, to tell when the open copy has gone stale. */
@@ -161,8 +159,8 @@ const sessionMark = m => [m.modified].concat((m.diagnoses || []).map(path =>
 
 async function loadSession(meta) {
   const doc = await document_for(meta);
-  const found = meta.traces == null ? [{ meta, doc }]
-    : await Promise.all(madeOf(meta).map(async d => ({ meta: d, doc: await document_for(d) })));
+  const found = isSession(meta) ? await Promise.all(madeOf(meta).map(async d => ({ meta: d, doc: await document_for(d) })))
+    : [{ meta, doc }];
   sesMeta = meta; SES = doc; sesFound = found;
   sesMark = sessionMark(meta);
   renderSessions();

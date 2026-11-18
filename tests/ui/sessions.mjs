@@ -41,7 +41,7 @@ const TOGETHER = {
       model('M0', 0.5, 1.5, 'A0'), tool('T0', 1.5, 3, { agent: 'A0' }), agent('A0', 0, 4, 'first'),
       model('M1', 10.5, 11.5, 'A1'), tool('T1', 11.5, 13, { agent: 'A1' }), model('unlinked', 12, 12.5), agent('A1', 10, 14, 'second'),
       model('M2', 20.5, 21.5, 'A2'), agent('helper', 21, 23, 'delegated', 'A2'), tool('T2', 21.5, 22.5, { parent: 'helper' }),
-      agent('A2', 20, 24, 'third'), model('late', 100, 101),
+      agent('A2', 20, 24, 'third'), model('late', 100, 101), model('later', 200, 202),
     ],
   }],
 };
@@ -93,7 +93,7 @@ const found = p => {
   eq(p.text('#sessions-count'), '3 sessions · 2 diagnoses without their session', 'the list counts what it holds');
   eq(rowOf(p, 'a.json'), ['3 traces · 9 spans', '12s'],
     'a session is recognised whatever its file is called, and its duration leaves out the wait between traces');
-  eq(rowOf(p, 'turns.session.json'), ['1 trace · 12 spans · 1 failure found', '101s'], 'a diagnosis of a session is counted on its row');
+  eq(rowOf(p, 'turns.session.json'), ['1 trace · 13 spans · 1 failure found', '202s'], 'a diagnosis of a session is counted on its row');
   ok(p.text(cells(p, 'turns.session.json')[0]).startsWith('chat / turns.session.json'), 'a row names the file and its folder',
     p.text(cells(p, 'turns.session.json')[0]));
   ok(!p.$$('#sessions-rows tr.row').some(r => r.textContent.includes('turns.diagnosis.json')),
@@ -125,20 +125,28 @@ const found = p => {
   eq(p.$$('#ses-trace .tr-trace').map(tr => [tr.dataset.trace, [...tr.querySelectorAll(':scope > .msg > .who span')].map(el => p.text(el)).join(' ')]),
     [['t-0', '#0 #1 #2'], ['t-1', '#3 #4 #5'], ['t-2', '#6 #7 #8']], 'spans stay under their own trace, numbered through the session');
   ok(!p.$('#ses-trace .tr-turn') && !p.$('#ses-found').children.length, 'a trace of one agent invocation is not split into turns');
+  eq(texts(p, '#actions [data-md], #v-session [data-md]'), ['Copy as Markdown', 'Copy path'],
+    'the session is copied from its header, by the one button that says so');
 
   await p.click('#crumbs a');
   ok(shown(p) === 'v-sessions' && p.$('#sessions-rows tr.row.on').dataset.session === 'traces/a.json',
     'the breadcrumb leads back to the list, with the open session marked');
+
+  // ── one trace of one invocation: no headings, and its cost said once ──
+  await p.openSession('one.json');
+  eq([p.text('#ses-trace .tr-count'), texts(p, '#ses-trace .tr-sum'), p.$$('#ses-trace .tr-trace').length, p.$$('#ses-trace .tr-head, #ses-trace .tr-turn').length],
+    ['3 spans of a recorded session', ['1 model call · 1 tool call · 4s'], 1, 0],
+    'a session of one trace is counted and costed once, with no trace heading and no turns');
 
   // ── several agent invocations in one trace: turns ──
   await p.openSession('turns.session.json');
   ok(p.$$('#ses-trace .tr-trace').length === 1 && !p.$('#ses-trace .tr-head'), 'a single trace needs no trace heading');
   eq(p.$$('#ses-trace .tr-turnhead').map(h => `${p.text(h.querySelector('b'))}: ${p.text(h.querySelector('span'))}`),
     ['Turn 1 of 3: 1 model call · 1 tool call · 4s', 'Turn 2 of 3: 2 model calls · 1 tool call · 4s',
-      'Turn 3 of 3: 1 model call · 1 tool call · 4s', 'Outside any turn: 1 model call · 1s'],
-    'a trace with several agent invocations reads as turns, each with what it cost');
+      'Turn 3 of 3: 1 model call · 1 tool call · 4s', 'Outside any turn: 2 model calls · 3s'],
+    'a trace with several agent invocations reads as turns, each with what it cost, the wait between spans outside any turn left out');
   const turns = p.$$('#ses-trace .tr-turn').map(t => [...t.querySelectorAll(':scope > .msg')].map(m => p.text(m.querySelector('.who span'))).join(' '));
-  eq(turns, ['#2 #0 #1', '#6 #3 #4 #5', '#10 #7 #8 #9', '#11'],
+  eq(turns, ['#2 #0 #1', '#6 #3 #4 #5', '#10 #7 #8 #9', '#11 #12'],
     'each turn opens on its agent invocation, then the spans it led to: by link, through a nested agent, or by when they ran');
   ok(p.text(p.$('#ses-trace .tr-turn .msg')).includes('first') && p.text(p.$$('#ses-trace .tr-turn')[2]).includes('delegated'),
     'the prompt leads its turn, and a delegated invocation stays inside the turn that made it');
@@ -176,13 +184,14 @@ const found = p => {
   pages.push(p);
 }
 
-// ── the trace view elsewhere is unchanged for a session of one trace ──
+// ── a message that is not one ──
 {
   const p = await page();
-  p.window.document.body.insertAdjacentHTML('beforeend', `<div id="probe">${p.window.traceView(PLAIN)}</div>`);
-  eq([p.text('#probe .tr-count'), texts(p, '#probe .tr-sum'), p.$$('#probe .tr-trace').length, p.$$('#probe .tr-head, #probe .tr-turn').length],
-    ['3 spans of a recorded session', ['1 model call · 1 tool call · 4s'], 1, 0], 'one trace of one invocation draws as before, inside its trace');
-  eq(p.window.traceStats(APART), { seconds: 12, tokens: null, modelCalls: 3, toolCalls: 3 }, 'a session costs what its traces took, added up');
+  await p.openFolder({ 'odd.json': { session_id: 's-odd', traces: [{ spans: [
+    { span_type: 'inference', messages: [null, { role: 'assistant', content: 'still here' }] }] }] } });
+  await p.openSession();
+  eq([shown(p), texts(p, '#ses-trace .msg.nested')], ['v-session', ['unknown', 'assistantstill here']],
+    'a message that is not one is shown as unknown, and the rest of its span with it');
   pages.push(p);
 }
 

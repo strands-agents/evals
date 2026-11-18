@@ -150,6 +150,19 @@ const lens = p => {
   await p.openReport('other.json');
   ok(p.text('#rep-group-pick button.on') === 'None' && p.text('#rep-count') === '6 of 6 rows',
     'opening a different report starts ungrouped', p.text('#rep-count'));
+
+  const rewrite = async (document, modified) => {
+    tree.files['other.json'] = { modified, document };
+    tree.reports[1].modified = modified;
+    tree.mark += '+';
+    await p.window.pollNow(); await tick();
+  };
+  await rewrite({ ...TAGGED, diagnoses: [{ failures: [], root_causes: [] }] }, 6);
+  await p.click('#rep-seg [data-f="diag"]');
+  same(table(), ['order/X', 'order/Y'], 'a diagnosis written while the report is open can be filtered by');
+  await rewrite(TAGGED, 7);
+  ok(p.$('#rep-seg button.on').dataset.f === 'all' && p.text('#rep-count') === '6 of 6 rows',
+    'and when the report is written again with none, the filter it no longer offers is dropped', p.text('#rep-count'));
 }
 
 // ── a diagnosis read as one ──

@@ -50,8 +50,6 @@ function causeItem(c, spans) {
     `recommendation` is a report row's own. '' when there is neither a diagnosis nor a recommendation. */
 function diagnosisView(d, { spans = null, recommendation = '' } = {}) {
   if (d == null && !recommendation) return '';
-  const raw = d == null ? '' : '<details class="raw"><summary>the diagnosis as written</summary>'
-    + `<pre class="out">${esc(JSON.stringify(d, null, 1))}</pre></details>`;
   const shaped = d && typeof d === 'object' && (Array.isArray(d.failures) || Array.isArray(d.root_causes));
   if (d != null && !shaped) {
     return '<div class="diag"><h4>Diagnosis</h4><p class="empty">This is not in the shape a diagnosis is written in, '
@@ -76,7 +74,7 @@ function diagnosisView(d, { spans = null, recommendation = '' } = {}) {
     + (failures.length ? `<h5>What failed</h5><ul>${failures.map(f => failureItem(f, spans)).join('')}</ul>` : '')
     + (causes.length ? `<h5>Why</h5><ul>${causes.map(cause => causeItem(cause, spans)).join('')}</ul>` : '')
     + (todo ? `<h5>What to do</h5>${todo}` : '')
-    + raw + '</div>';
+    + (d ? rawView(d, 'the diagnosis as written') : '') + '</div>';
 }
 
 /* A span named by a diagnosis is found by the number its card carries, however the trace lays its cards out. */
