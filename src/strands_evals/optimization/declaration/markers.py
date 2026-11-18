@@ -18,7 +18,8 @@ class _Unset:
         return "<unset>"
 
 
-# `OneOf(default=)` not given: `None` can be an option, so `OneOf` needs its own sentinel.
+# `default=` not given: None can be a `OneOf` option, and `choice(default=None)` reads as an
+# alternative labeled "default", so it must raise rather than mean unset.
 _UNSET: Any = _Unset()
 
 
@@ -209,15 +210,20 @@ class Component(_Marker):
 class Choice(_Marker):
     """A swap between alternatives, returned by `choice()`.
 
-    Create it with `choice()`, which checks the labels; constructing it directly skips that.
+    Create it with `choice()`, which checks the labels and the default; constructing it directly
+    skips that.
 
     Attributes:
-        alternatives: Label -> a `Component` or a fixed value, baseline first; each component's
-            `label` is its key.
+        alternatives: Label -> a `Component` or a fixed value, in declaration order; each
+            component's `label` is its key.
+        default: The baseline's label, or None when not given. `tunable` fills in the label of the
+            fixed alternative equal to the parameter's default (see `choice()`); `Space` reads None
+            as the first alternative.
     """
 
-    def __init__(self, alternatives: dict[str, Component | Any]):
+    def __init__(self, alternatives: dict[str, Component | Any], default: str | None = None):
         self.alternatives = alternatives
+        self.default = default
 
 
 def component(factory: Callable[..., Any], /, **kwargs: Any) -> Component:
@@ -280,30 +286,38 @@ def component(factory: Callable[..., Any], /, **kwargs: Any) -> Component:
     return result
 
 
-def choice(*alternatives: Component, **labeled: Component | Any) -> Choice:
-    """Declare a swap between alternatives; the first is the baseline.
+def choice(*alternatives: Component, default: str = _UNSET, **labeled: Component | Any) -> Choice:
+    """Declare a swap between alternatives; `default=` names the baseline.
 
     Pass components positionally, labeled by class name, or by keyword, labeled by the keyword:
     `choice(window=component(...), summary=component(...))`. The keyword form is needed when the same
     class appears twice. A keyword alternative may also be a fixed value, passed through as is:
     `choice(on=component(ToolCallLimiter, max_calls=Int(1, 20)), off=None)`. Labels become key
-    segments, so they contain no `.` or `/`. Each component in the result is a copy carrying its
-    label, so one component can sit in several choices.
+    segments, so they contain no `.` or `/`, and `default` can't be one. Each component in the
+    result is a copy carrying its label, so one component can sit in several choices.
 
-    Under `tunable`, the first alternative replaces the wrapped parameter's default, so the plain
-    call `fn()` builds it too (unlike `Int` / `Float` / `OneOf` / `TextValue`, which take the
-    parameter's default). To keep what production builds as the baseline, list it first, e.g.
-    `choice(off=None, window=component(...))` for a parameter that defaults to None.
+    Without `default=`, `tunable` takes the wrapped parameter's default, as for `Int` / `Float` /
+    `OneOf` / `TextValue`: the fixed alternative equal to it becomes the baseline, so the plain call
+    `fn()` builds what the undecorated function builds, e.g. `off` in
+    `choice(on=component(...), off=None)` for a parameter that defaults to None. Equal means a str,
+    int, float, bool, or None of the same type that compares equal; any other value must be the
+    same object, not an equal copy. If none is equal and there are two or more alternatives,
+    `tunable` raises `TypeError`: pass `default=` to name the baseline, which `fn()` then builds in
+    place of the parameter's default, or add the parameter's default itself as a keyword
+    alternative. With one alternative, no parameter default, or no function (under `build_task`),
+    the baseline is the first alternative.
 
     Args:
         *alternatives: From `component()`, labeled by class name.
+        default: The baseline's label; omit to use the wrapped parameter's default, or the first
+            alternative.
         **labeled: From `component()` or a fixed value, labeled by keyword.
 
     Raises:
         TypeError: No alternatives, positional and keyword alternatives mixed, a positional fixed
             value, a positional lambda or `functools.partial` (label it by keyword), a class as a
             fixed value (wrap it in `component()`), a marker other than a component, the same class
-            twice positionally, or a label with `.` or `/`.
+            twice positionally, a label with `.` or `/`, or a default that isn't one of the labels.
     """
     if alternatives and labeled:
         raise TypeError("choice() takes alternatives either positionally or by keyword, not both")
@@ -343,11 +357,17 @@ def choice(*alternatives: Component, **labeled: Component | Any) -> Choice:
     for label in names:
         if not label or "." in label or "/" in label:
             raise TypeError(f"choice() labels must be non-empty and contain no '.' or '/', got {label!r}")
+    if default is not _UNSET and (not isinstance(default, str) or default not in names):
+        raise TypeError(
+            f"choice(default=...) names the baseline and must be one of the labels {names}, got {default!r} "
+            "(no alternative can be labeled 'default')"
+        )
     return Choice(
         {
             label: alternative._labeled(label) if isinstance(alternative, Component) else alternative
             for label, alternative in pairs
-        }
+        },
+        None if default is _UNSET else default,
     )
 
 
@@ -454,3 +474,35 @@ def _fill_default(marker: _ValueMarkerT, default: Any, *, where: str, source: st
         return cast(_ValueMarkerT, marker._with_default(default))
     except TypeError as error:
         raise TypeError(f"{where}: {source} {default!r} doesn't fit its marker: {error}") from error
+
+
+def _fill_choice_default(marker: Choice, default: Any, *, where: str) -> Choice:
+    """`marker` with the fixed alternative equal to a wrapped parameter's `default` as its baseline.
+
+    Used by `tunable`. Unchanged when `default=` was given or there is only one alternative. Equal
+    means the same object, or a plain value (str, int, float, bool, None) of the same type that
+    compares equal, so `True` doesn't match `1` and an equal copy of a dict doesn't match; the
+    first equal alternative wins.
+
+    Args:
+        marker: The choice to fill.
+        default: The wrapped parameter's default.
+        where: Error prefix: the declared name.
+
+    Raises:
+        TypeError: No fixed alternative equals `default`, so the plain call would build another
+            alternative than the wrapped function does by default.
+    """
+    if marker.default is not None or len(marker.alternatives) < 2:
+        return marker
+    for label, alternative in marker.alternatives.items():
+        if isinstance(alternative, Component):
+            continue
+        if alternative is default or (isinstance(default, Value) and _is_option(default, [alternative])):
+            return Choice(marker.alternatives, label)
+    raise TypeError(
+        f"{where}: the parameter's default {default!r} matches none of the fixed alternatives of the choice "
+        f"{list(marker.alternatives)}; pass default= with the baseline's label, or add the parameter's default "
+        "itself as a keyword alternative (anything but a str, int, float, bool, or None must be the same "
+        "object, not an equal copy)"
+    )

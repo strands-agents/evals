@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, overload
 
 from ...types.optimization import Value, Values
-from .markers import _fill_default, _ValueMarker
+from .markers import Choice, _fill_choice_default, _fill_default, _ValueMarker
 from .space import Marker, Space
 
 logger = logging.getLogger(__name__)
@@ -277,9 +277,9 @@ def tunable(
 
     A marker naming no parameter of `fn` (unless `fn` takes `**kwargs`) raises `TypeError`. A marker
     without `default=` takes the parameter's own default, so `fn()` and the baseline build the same
-    agent; a marker with neither raises `TypeError` (see `_ValueMarker`). A `choice()` is the
-    exception: its first alternative replaces the parameter's default, so list what production
-    builds first (see `choice()`).
+    agent; a marker with neither raises `TypeError` (see `_ValueMarker`). A `choice()` without
+    `default=` takes the fixed alternative equal to the parameter's default, and raises `TypeError`
+    if none is (see `choice()`). A bare `component()` replaces the parameter's default.
 
     The decorator form doesn't work on a method (the factory isn't bound to the instance, so
     `self` goes missing); mount a bound method instead: `tunable(obj.method, inject={...})`.
@@ -293,8 +293,9 @@ def tunable(
 
     Raises:
         TypeError: No markers (a bare `@tunable`), a marker names no parameter, has no default
-            anywhere, or is of an unknown type; or `fn` is already a `TunableFactory` (declare every
-            marker in one `tunable(...)`).
+            anywhere, or is of an unknown type; a `choice()` of two or more alternatives without
+            `default=` whose parameter default is none of its fixed alternatives; or `fn` is
+            already a `TunableFactory` (declare every marker in one `tunable(...)`).
     """
     if fn is not None:
         if not kwargs:
@@ -341,6 +342,8 @@ def _fill_defaults(
 
 def _with_parameter_default(name: str, marker: Marker, default: Any) -> Marker:
     """`marker` with the parameter's `default` filled in, if the marker has none; raises `TypeError`."""
+    if isinstance(marker, Choice):
+        return _fill_choice_default(marker, default, where=name)
     if not isinstance(marker, _ValueMarker):
-        return marker  # components, choices, tools, and files take no parameter default
+        return marker  # bare components, tools, and files take no parameter default
     return _fill_default(marker, default, where=name, source="the parameter's default")

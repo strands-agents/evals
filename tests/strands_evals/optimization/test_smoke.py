@@ -117,6 +117,7 @@ class Correct(Evaluator):
     manager=choice(
         window=component(SlidingWindowConversationManager, window_size=Int(4, 40)),
         summary=component(SummarizingConversationManager, summary_ratio=Float(0.1, 0.8)),
+        default="window",
     ),
     temperature=Float(0.0, 1.0, default=0.9),
 )

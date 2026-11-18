@@ -37,7 +37,7 @@ class Summary:
         self.ratio = ratio
 
 
-MANAGER = choice(component(Window, size=Int(1, 100)), component(Summary, ratio=Float(0.1, 0.9)))
+MANAGER = choice(component(Window, size=Int(1, 100)), component(Summary, ratio=Float(0.1, 0.9)), default="Window")
 
 
 @tunable(manager=MANAGER, prompt=TextValue(), temperature=Float(0.0, 1.0), effort=OneOf("low", "high"))
@@ -127,6 +127,72 @@ def test_one_of_without_any_default_takes_the_first_option():
 def test_an_explicit_default_wins_over_the_parameters_default():
     factory = tunable(lambda temperature=0.7: temperature, inject={"temperature": Float(0.0, 1.0, default=0.2)})
     assert factory() == 0.2
+
+
+def test_a_choice_takes_the_fixed_alternative_equal_to_the_parameters_default():
+    def build(manager=None):
+        return manager
+
+    factory = tunable(build, inject={"manager": choice(on=component(Window, size=Int(1, 100)), off=None)})
+    assert factory.space.param("manager").default == "off"
+    assert factory() is build() is None
+    preset = tunable(
+        lambda mode="dense": mode, inject={"mode": choice(window=component(Window), dense="dense", sparse="sparse")}
+    )
+    assert (preset.space.param("mode").default, preset()) == ("dense", "dense")
+
+
+def test_a_choice_matches_an_object_default_by_identity():
+    shared = {"mode": "dense"}
+    factory = tunable(lambda preset=shared: preset, inject={"preset": choice(window=component(Window), dense=shared)})
+    assert factory.space.param("preset").default == "dense" and factory() is shared
+
+
+def test_one_choice_on_two_functions_takes_each_parameters_default():
+    declared = choice(on=component(Window), off=None, preset="dense")
+    first = tunable(lambda manager=None: manager, inject={"manager": declared})
+    second = tunable(lambda manager="dense": manager, inject={"manager": declared})
+    assert (first.space.param("manager").default, second.space.param("manager").default) == ("off", "preset")
+    assert declared.default is None
+
+
+@pytest.mark.parametrize(
+    ("parameter_default", "alternatives"),
+    [
+        (None, {"window": component(Window), "summary": component(Summary)}),
+        (True, {"window": component(Window), "one": 1}),  # True is not the alternative 1
+        ({"mode": "dense"}, {"window": component(Window), "dense": {"mode": "dense"}}),  # equal, but not the same
+    ],
+    ids=["none", "type", "object"],
+)
+def test_a_choice_whose_parameter_default_is_none_of_its_alternatives_fails(parameter_default, alternatives):
+    with pytest.raises(TypeError, match=r"manager: the parameter's default .* matches none of the fixed") as error:
+        tunable(lambda manager=parameter_default: manager, inject={"manager": choice(**alternatives)})
+    message = str(error.value)
+    assert str(list(alternatives)) in message and "must be the same object, not an equal copy" in message
+
+
+def test_the_first_alternative_equal_to_the_parameters_default_is_the_baseline():
+    declared = choice(window=component(Window), off=None, none=None)
+    assert tunable(lambda manager=None: manager, inject={"manager": declared}).space.param("manager").default == "off"
+
+
+def test_an_explicit_choice_default_wins_over_the_parameters_default():
+    declared = choice(on=component(Window, size=Int(1, 100)), off=None, default="on")
+    assert isinstance(tunable(lambda manager=None: manager, inject={"manager": declared})(), Window)
+    no_match = choice(window=component(Window), summary=component(Summary), default="summary")
+    assert isinstance(tunable(lambda manager=None: manager, inject={"manager": no_match})(), Summary)
+
+
+def test_a_choice_without_a_parameter_default_starts_at_its_first_alternative():
+    declared = choice(on=component(Window), off=None)
+    assert isinstance(tunable(lambda manager: manager, inject={"manager": declared})(), Window)
+    assert isinstance(tunable(lambda **kwargs: kwargs, inject={"manager": declared})()["manager"], Window)
+
+
+def test_a_one_alternative_choice_replaces_the_parameters_default():
+    factory = tunable(lambda manager=None: manager, inject={"manager": choice(component(Window))})
+    assert isinstance(factory(), Window)
 
 
 # --- declaration errors (zero rollouts) ---
@@ -322,6 +388,7 @@ def test_a_factory_without_a_name_takes_arguments():
     conversation_manager=choice(
         component(SummarizingConversationManager, summary_ratio=Float(0.1, 0.8)),
         component(SlidingWindowConversationManager, window_size=Int(4, 200)),
+        default="SummarizingConversationManager",
     )
 )
 def make_strands_agent(conversation_manager=None):
@@ -350,10 +417,14 @@ def make_optional_agent(conversation_manager=None):
 
 
 def test_an_optional_component_builds_fresh_when_on_and_passes_none_when_off():
-    on = make_optional_agent.bind({})
+    on = make_optional_agent.bind({"conversation_manager": "on"})
     first, second = on()["conversation_manager"], on()["conversation_manager"]
     assert isinstance(first, SlidingWindowConversationManager) and first is not second
     assert make_optional_agent.bind({"conversation_manager": "off"})()["conversation_manager"] is None
+
+
+def test_bind_fills_a_choice_with_the_alternative_equal_to_the_parameters_default():
+    assert make_optional_agent.bind({})()["conversation_manager"] is None
 
 
 def test_the_plain_call_builds_the_baseline_component():
