@@ -337,12 +337,13 @@ def link_status(experiment_obj: dict, report_obj: dict) -> dict:
 
 def _report_summary(obj: dict) -> dict:
     """Headline numbers for the Reports list, counted the way the library counts them."""
-    detailed = obj.get("detailed_results") or []
+    detailed = obj.get("detailed_results")
+    detailed = detailed if isinstance(detailed, list) else []
     passes = obj.get("test_passes") or []
     failing = 0
     not_applicable = 0
     for index, _ in enumerate(obj.get("cases", [])):
-        outputs = detailed[index] if index < len(detailed) else []
+        outputs = detailed[index] if index < len(detailed) and isinstance(detailed[index], list) else []
         # Mirrors EvaluationReport.is_applicable: a row is droppable only when it has outputs
         # and every one of them both declined to judge and passed.
         declined = bool(outputs) and all(
@@ -375,9 +376,10 @@ def _millis(stamp: Any) -> int | None:
         return None
     try:
         moment = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-    except ValueError:
+        seconds = int(moment.replace(microsecond=0).timestamp())
+    except (ValueError, OverflowError, OSError):  # not a time, or one the platform's clock cannot place
         return None
-    return int(moment.replace(microsecond=0).timestamp()) * 1000 + moment.microsecond // 1000
+    return seconds * 1000 + moment.microsecond // 1000
 
 
 def _session_summary(obj: dict) -> dict:
@@ -453,14 +455,14 @@ def scan(root: Path, depth: int = DEFAULT_DEPTH) -> tuple[list[ScannedFile], lis
             full = here / filename
             rel = full.relative_to(root).as_posix()
             # One result read in full shows the directory is a store; the rest are told by how they open.
-            if _dirname(rel) in stores and _opens_as_task_result(full):
+            if _dirname(rel) in stores and not full.is_symlink() and _opens_as_task_result(full):
                 stores[_dirname(rel)] += 1
                 continue
             if seen >= MAX_SCAN_FILES:
                 truncated = True
                 break
             seen += 1
-            if full.is_symlink() and not _inside(root, full.resolve()):
+            if full.is_symlink() and not _inside(root, _real(full)):
                 skipped.append({"path": rel, "why": "a link to a file outside this folder"})
                 continue
             try:
@@ -654,8 +656,8 @@ def _optimizer_run_summary(
 
     Only values read from the log. Derived series (best-so-far, the budget curve) are computed in the page.
     """
-    # Distinct numbers, so an iteration recorded twice counts once.
-    iterations = {e.get("iteration") for e in log.events if e.get("event") == "iteration_end"}
+    # Distinct, so an iteration recorded twice counts once. As text, so one that is not a number still counts.
+    iterations = {str(e.get("iteration")) for e in log.events if e.get("event") == "iteration_end"}
     champion = None
     stop_reason = None
     end_reports: dict[str, dict] = {}
@@ -749,10 +751,15 @@ def resolve_within(root: Path, relative: str) -> Path:
     if "\x00" in relative:
         raise PathOutsideRoot(f"{relative!r} is not a path")
     root = root.resolve()
-    candidate = (root / relative).resolve()
+    candidate = _real(root / relative)
     if not _inside(root, candidate):
         raise PathOutsideRoot(f"{relative} is outside {root}")
     return candidate
+
+
+def _real(path: Path) -> Path:
+    """`path.resolve()`, which before Python 3.13 raises on a link that leads back to itself."""
+    return Path(os.path.realpath(path))
 
 
 def _inside(root: Path, candidate: Path) -> bool:
@@ -1080,7 +1087,8 @@ class UIHandler(BaseHTTPRequestHandler):
         except PathOutsideRoot as exc:
             self._error(HTTPStatus.FORBIDDEN, str(exc))
             return None
-        if not target.is_file():
+        # `os.path.isfile`, because `Path.is_file` raises on a name too long for the filesystem.
+        if not os.path.isfile(target):
             self._error(HTTPStatus.NOT_FOUND, missing.format(rel=rel))
             return None
         return rel, target

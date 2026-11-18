@@ -358,6 +358,49 @@ def test_scan_does_not_read_through_a_link_that_leaves_the_folder(tmp_path: Path
     assert found.skipped == [{"path": "link.json", "why": "a link to a file outside this folder"}]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="creating a symlink needs a privilege on Windows")
+def test_scan_sets_aside_a_link_that_leads_back_to_itself(tmp_path: Path):
+    _write(tmp_path / "experiment.json", _experiment("a"))
+    (tmp_path / "loop.json").symlink_to(tmp_path / "loop.json")
+
+    found = discover(tmp_path)
+
+    assert [experiment["path"] for experiment in found.experiments] == ["experiment.json"]
+    assert found.skipped == [{"path": "loop.json", "why": "could not read: OSError"}]
+
+
+@pytest.mark.parametrize(
+    "document,listed",
+    _cases(
+        {
+            "a report whose results for a row are not a list": (
+                {**_report("a"), "detailed_results": [5]},
+                {"rows": 1, "failing": 0, "not_applicable": 0},
+            ),
+            "a report whose detailed results are not a list": (
+                {**_report("a", failing=("a",)), "detailed_results": {"a": 1}},
+                {"rows": 1, "failing": 1, "not_applicable": 0},
+            ),
+            "a session timed before any clock counts from": (
+                {
+                    "session_id": "s",
+                    "traces": [{"spans": [{"span_info": {"start_time": "0001-01-01T00:00:00", "end_time": "x"}}]}],
+                },
+                {"spans": 1, "seconds": None},
+            ),
+        }
+    ),
+)
+def test_a_file_of_a_known_shape_is_listed_whatever_its_values_are(tmp_path: Path, document, listed):
+    _write(tmp_path / "odd.json", document)
+
+    found = discover(tmp_path)
+
+    (entry,) = found.reports + found.sessions
+    assert {key: entry[key] for key in listed} == listed
+    assert found.skipped == []
+
+
 @pytest.mark.parametrize(
     "experiment,report,expected",
     [
@@ -532,6 +575,13 @@ def test_discover_optimizer_runs_needs_a_config_object_beside_an_event_log(tmp_p
         (tmp_path / name).write_text(text)
 
     assert discover_optimizer_runs(tmp_path) == []
+
+
+def test_discover_optimizer_runs_counts_iterations_that_are_not_numbers(tmp_path: Path):
+    ends = [{"event": "iteration_end", "iteration": value} for value in (0, 0, {"round": 1}, {"round": 1}, None)]
+    _optimizer_run(tmp_path / "run-a", *ends)
+
+    assert discover_optimizer_runs(tmp_path)[0]["iterations"] == 3
 
 
 def test_discover_optimizer_runs_says_whether_an_effects_model_sits_beside_the_run(tmp_path: Path):
@@ -747,6 +797,7 @@ HOST_REFUSAL = "this server only answers requests addressed to the host it is se
 TOKEN_REFUSAL = "missing or wrong token"
 LENGTH_REFUSAL = "send the body with a Content-Length"
 WRONG_TOKEN = {"X-Evals-Token": "wrong"}
+LONG_NAME = "a" * 300 + ".json"
 # Stands in a PUT body for the mtime its target has when the request is sent.
 LOADED = "the stamp the file was loaded with"
 SAVE = {"document": _experiment("a"), "modified": LOADED}
@@ -1196,10 +1247,14 @@ def test_events_endpoint_returns_the_log(client: Client):
         ("?path=%00", HTTPStatus.FORBIDDEN, "'\\x00' is not a path"),
         ("", HTTPStatus.FORBIDDEN, "no path given"),
         ("?path=nowhere/events.jsonl", HTTPStatus.NOT_FOUND, "nowhere/events.jsonl is not a file"),
+        (f"?path={LONG_NAME}", HTTPStatus.NOT_FOUND, f"{LONG_NAME} is not a file"),
+        ("?path=loop.json", HTTPStatus.NOT_FOUND, "loop.json is not a file"),
     ],
-    ids=["outside the root", "null byte", "no path", "missing file"],
+    ids=["outside the root", "null byte", "no path", "missing file", "a name too long to be one", "a link to itself"],
 )
 def test_reading_refuses_a_path_it_cannot_serve(client: Client, route, query, status, message):
+    (client.root / "loop.json").symlink_to(client.root / "loop.json")
+
     assert client.send("GET", route + query) == _refused(status, message.replace("{root}", client.settings["root"]))
 
 
@@ -1802,6 +1857,19 @@ def test_a_task_result_store_is_reported_and_its_files_are_neither_skipped_nor_c
 
     monkeypatch.setattr(_ui_server, "MAX_SCAN_FILES", 3)
     assert discover(tmp_path).truncated is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason="creating a symlink needs a privilege on Windows")
+def test_a_link_out_of_the_folder_is_not_counted_as_a_task_result(tmp_path: Path):
+    result = EvaluationData(input="q", actual_output="a")
+    LocalFileTaskResultStore(tmp_path / "outside").save("secret", result)
+    LocalFileTaskResultStore(tmp_path / "root" / "store").save("a", result)
+    (tmp_path / "root" / "store" / "b.json").symlink_to(tmp_path / "outside" / "secret.json")
+
+    found = discover(tmp_path / "root")
+
+    assert found.stores == [{"dir": "store", "files": 1}]
+    assert found.skipped == [{"path": "store/b.json", "why": "a link to a file outside this folder"}]
 
 
 def test_scan_endpoint_serves_sessions_diagnoses_and_stores(client: Client):
