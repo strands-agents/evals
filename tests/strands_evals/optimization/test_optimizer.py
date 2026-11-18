@@ -6,6 +6,7 @@ import threading
 import warnings
 from pathlib import Path
 
+import botocore.exceptions
 import pytest
 
 from strands_evals import Case
@@ -709,6 +710,33 @@ async def test_a_candidate_whose_agent_cant_be_built_is_invalid_and_costs_nothin
     assert [o.outcome for o in proposer.observed] == ["invalid", "feasible"]
     assert proposer.observed[0].reason == "the agent can't be built: ValueError: temperature 1.0 is not supported"
     assert optimizer._budget.spent == 16  # the baseline and the 0.5 candidate, nothing for the one that can't build
+
+
+async def test_a_factory_failing_on_infrastructure_is_not_invalid(tmp_path):
+    calls = {"0.5": 0}
+
+    @tunable(temperature=OneOf(0.0, 0.5, 1.0))
+    def expiring(temperature):
+        if temperature == 0.5:
+            calls["0.5"] += 1
+            if calls["0.5"] == 1:  # the build check: credentials expired, refreshed before the trials
+                raise botocore.exceptions.CredentialRetrievalError(provider="custom-process", error_msg="expired")
+        return (None, temperature)
+
+    proposer = Scripted({"temperature": 0.5})
+    optimizer = Optimizer(
+        _experiment(evaluators=[Temperature()]),
+        expiring,
+        rollout_fn=_temperature_rollout,
+        search=Search([Block(proposer, "temperature")], schedule=Joint()),
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path,
+    )
+    with pytest.warns(UserWarning, match=r"the agent couldn't be built \(CredentialRetrievalError"):
+        await _search(optimizer)
+    assert [o.outcome for o in proposer.observed] == ["feasible"]
 
 
 async def test_a_factory_needing_a_resource_is_not_build_checked(tmp_path):
