@@ -13,7 +13,7 @@ from typing import Any
 
 from scipy import stats
 
-from ..types.optimization import CandidateScores, PairedComparison, ValidationReport, Values
+from ..types.optimization import CandidateScores, PairedComparison, PickOutcome, ValidationReport, Values
 from .score_model.protocols import Fit
 from .score_model.ranking import LowerBound, Mean, PickRule, assess, label_candidate, pareto_front, rank
 from .scoring.objectives import Criteria, measured_metrics
@@ -107,12 +107,12 @@ def pick(
         finalist_ids: From `choose_finalists`.
         validation: Candidate id -> its validation scores.
         fit: A fresh fit on the validation runs of the baseline and finalists only (never the search fit);
-            None (fewer than 2 eligible, or the score model raised) -> measured means.
+            None (fewer than 2 eligible, or the score model raised) or a flagged fit -> measured means.
         values: Candidate id -> values.
         trial_counts: Candidate id -> validation trials that count.
         criteria: The objective, constraints, and feasibility threshold.
         rule: `FinalPick.rule`, passed to `assess`.
-        problem: Why `fit` is None, copied to `ValidationReport.problem`.
+        problem: Why `fit` is None or not used (flagged), copied to `ValidationReport.problem`.
     """
     ids = list(dict.fromkeys([baseline_id, *finalist_ids]))
     eligible = [c for c in ids if c in validation and validation[c].is_eligible]
@@ -135,9 +135,21 @@ def pick(
         estimates={c: dict(assessments[c].estimates) for c in ids if c in assessments},
         infeasible=infeasible,
         measured={c: measured_metrics(validation[c], criteria.registry) for c in ids if c in validation},
+        p_met={c: dict(assessments[c].p_met) for c in ids if c in assessments},
         problem=problem,
+        rule=rule.config(),
+        outcome=_pick_outcome(champion, baseline_id, finalist_ids, feasible),
         reason=_pick_reason(champion, baseline_id, finalist_ids, objectives, feasible),
     )
+
+
+def _pick_outcome(champion: str, baseline_id: str, finalist_ids: Sequence[str], feasible: Sequence[str]) -> PickOutcome:
+    """Which of `_pick_reason`'s cases the pick ended in."""
+    if not finalist_ids:
+        return "no_finalists"
+    if champion != baseline_id:
+        return "top_finalist"
+    return "baseline_best" if any(c != baseline_id for c in feasible) else "no_feasible_finalist"
 
 
 def _pick_reason(
