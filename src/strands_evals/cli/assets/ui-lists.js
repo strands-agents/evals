@@ -28,6 +28,10 @@ const FROM_CODE = '<span class="empty" data-tip="No experiment file holds these 
 /* The experiment a report was made from, as its list row and its page header both say it. */
 const madeFrom = r => (r.experiment ? `${openLink('experiment', r.experiment)} ${linkTag(r.link)}` : FROM_CODE);
 
+/* The reports made from an experiment that the folder still holds. */
+const reportsOf = e => e.reports.map(path => REPORTS.find(r => r.path === path)).filter(Boolean);
+const contents = e => `${plural(e.cases, 'case')} · ${plural((e.evaluators || []).length, 'evaluator')}`;
+
 const filed = m => `${m.dir && m.dir !== '.' ? `<span class="dim">${esc(m.dir)} /</span> ` : ''}${esc(m.name)}`
   + `<br><span class="path">${KB(m.size)}</span>`;
 
@@ -68,15 +72,13 @@ function renderLists() {
         <td class="ev">${when(r.modified)}</td></tr>`;
   }).join('') || nothing('report', docLink('cli/run/#experiment-file-run', 'empty-reports', 'How to run an experiment'))));
 
-  redraw($('experiments-rows'), failed + (EXPERIMENTS.map(e => {
-    const made = e.reports.map(path => REPORTS.find(r => r.path === path)).filter(Boolean);
-    return `<tr class="row${expMeta && expMeta.path === e.path ? ' on' : ''}" data-experiment="${esc(e.path)}" tabindex="0">
+  redraw($('experiments-rows'), failed + (EXPERIMENTS.map(e =>
+    `<tr class="row${expMeta && expMeta.path === e.path ? ' on' : ''}" data-experiment="${esc(e.path)}" tabindex="0">
         <td>${filed(e)}</td>
-        <td class="ev">${plural(e.cases, 'case')} · ${plural((e.evaluators || []).length, 'evaluator')}</td>
-        <td class="ev">${made.map(r => `${openLink('report', r.path, r.name)} ${fmt(r.overall_score)}`).join('<br>')
+        <td class="ev">${contents(e)}</td>
+        <td class="ev">${reportsOf(e).map(r => `${openLink('report', r.path, r.name)} ${fmt(r.overall_score)}`).join('<br>')
           || '<span class="empty">not run yet</span>'}</td>
-        <td class="ev">${when(e.modified)}</td></tr>`;
-  }).join('') || nothing('experiment', docLink('quickstart/#run-your-first-evaluation', 'empty-experiments', 'Create your first experiment'))));
+        <td class="ev">${when(e.modified)}</td></tr>`).join('') || nothing('experiment', docLink('quickstart/#run-your-first-evaluation', 'empty-experiments', 'Create your first experiment'))));
 
   $('skips').innerHTML = skipped.length
     ? `<details class="skips"><summary>${plural(skipped.length, 'file')} skipped</summary><ul>`

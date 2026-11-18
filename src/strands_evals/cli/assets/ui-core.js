@@ -170,23 +170,24 @@ async function api(path, opts) {
 
 /* ══════════ chrome ══════════ */
 
+/* Every view the page has: `show()` knows no other. */
 const SECTION_OF = {
   reports: 'evals', report: 'evals', compare: 'evals', experiments: 'evals', experiment: 'evals',
+  sessions: 'evals', session: 'evals',
   'opt-runs': 'optimization', 'opt-setup': 'optimization', 'opt-overview': 'optimization',
   'opt-progress': 'optimization', 'opt-candidates': 'optimization', 'opt-tunables': 'optimization',
   'opt-trade': 'optimization',
 };
-/* The list a page is opened from: the sidebar marks that, since the page itself is not in it. */
-const listOf = view => view === 'report' ? (repCand ? 'opt-runs' : 'reports')
-  : view === 'compare' ? 'reports'
-  : view === 'experiment' ? 'experiments'
-    : view === 'session' ? 'sessions'
-      : SECTION_OF[view] === 'optimization' ? 'opt-runs' : view;
 const VIEW_NAME = {
-  reports: 'Reports', report: 'Report', compare: 'Compare', experiments: 'Experiments', experiment: 'Cases', 'opt-runs': 'Runs',
+  reports: 'Reports', report: 'Report', compare: 'Compare', experiments: 'Experiments', experiment: 'Cases',
+  sessions: 'Sessions', session: 'Session', 'opt-runs': 'Runs',
   'opt-setup': 'Setup', 'opt-overview': 'Overview', 'opt-progress': 'Progress',
   'opt-candidates': 'Candidates', 'opt-tunables': 'Tunables', 'opt-trade': 'Trade-off',
 };
+/* The list a page is opened from: the sidebar marks that, since the page itself is not in it. */
+const LIST_OF = { report: 'reports', compare: 'reports', experiment: 'experiments', session: 'sessions' };
+const listOf = view => ((view === 'report' && repCand) || SECTION_OF[view] === 'optimization' ? 'opt-runs'
+  : LIST_OF[view] || view);
 /* Reports when there are any, since most folders hold results; a folder of experiments alone opens on those,
    and one of sessions alone on those. */
 const homeView = () => (REPORTS.length ? 'reports' : EXPERIMENTS.length ? 'experiments'
@@ -218,25 +219,15 @@ function show(view, opts) {
   $('folder').hidden = !lists;
   $('skips').hidden = !lists;
   $('stores').hidden = !lists;
-  const run = OPT_RUNS[optSel];
-  const folder = ROOT || folderLabel || 'no folder opened';
-  const where = {
-    reports: folder,
-    experiments: folder,
-    experiment: expMeta && expMeta.path,
-    report: repMeta && repMeta.path,
+  /* The bar names the file behind a page, and the folder behind a list. */
+  const run = OPT_RUNS[optSel] || {};
+  const config = run.dir === '.' ? 'run.json' : `${run.dir}/run.json`, log = run.events_path;
+  $('path').textContent = {
+    report: repMeta && repMeta.path, experiment: expMeta && expMeta.path, session: sesMeta && sesMeta.path,
     compare: `${CMP.length} reports`,
-    sessions: folder,
-    session: sesMeta && sesMeta.path,
-    'opt-runs': folder,
-    'opt-setup': (run && (run.dir === '.' ? 'run.json' : run.dir + '/run.json')) || 'no optimizer run loaded',
-    'opt-tunables': (run && (run.dir === '.' ? 'run.json' : run.dir + '/run.json')) || 'no optimizer run loaded',
-    'opt-overview': (run && run.events_path) || 'no optimizer run loaded',
-    'opt-progress': (run && run.events_path) || 'no optimizer run loaded',
-    'opt-candidates': (run && run.events_path) || 'no optimizer run loaded',
-    'opt-trade': (run && run.events_path) || 'no optimizer run loaded',
-  }[view];
-  $('path').textContent = where;
+    'opt-setup': config, 'opt-tunables': config,
+    'opt-overview': log, 'opt-progress': log, 'opt-candidates': log, 'opt-trade': log,
+  }[view] || ROOT || folderLabel;
   renderPageHead(view);
   renderGuide(view);
   if (opts && opts.silent) return;

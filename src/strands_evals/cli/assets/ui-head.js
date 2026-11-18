@@ -20,10 +20,10 @@ function reportHead() {
 
 function experimentHead() {
   const e = listed(EXPERIMENTS, expMeta);
-  const made = (e.reports || []).map(path => REPORTS.find(r => r.path === path)).filter(Boolean);
+  const made = reportsOf(e);
   const out = stem(e.name) ? `${stem(e.name)}.report.json` : 'report.json';
   return [[['Experiments', 'experiments'], [e.path]],
-    `${plural(e.cases, 'case')} · ${plural((e.evaluators || []).length, 'evaluator')} · `
+    `${contents(e)} · `
       + (made.length
         ? `${made.length === 1 ? 'Report' : 'Reports'}: ${made.map(r => `${openLink('report', r.path)} ${fmt(r.overall_score)}`).join(', ')}`
         : `<span class="empty">Not run yet.</span> To run it: <code>strands-evals run ${esc(e.name)} --agent module:attr -o ${esc(out)}</code>`
@@ -43,9 +43,9 @@ function renderPageHead(view) {
   const run = OPT_RUNS[optSel] && (view === 'report' ? repCand : SECTION_OF[view] === 'optimization' && view !== 'opt-runs');
   const head = run ? runHead(view)
     : view === 'report' && repMeta ? reportHead()
-      : view === 'compare' && CMP.length ? compareHead()
-      : view === 'experiment' && expMeta ? experimentHead()
-        : view === 'session' && sesMeta ? sessionHead() : null;
+    : view === 'compare' && CMP.length ? compareHead()
+    : view === 'experiment' && expMeta ? experimentHead()
+    : view === 'session' && sesMeta ? sessionHead() : null;
   $('pagehead').hidden = !head;
   $('opt-tabs').hidden = !run || view === 'report';
   renderCompareAction(view);
