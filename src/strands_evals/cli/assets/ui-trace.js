@@ -149,7 +149,8 @@ const costText = stats => !stats ? '' : [
   stats.seconds != null ? secondsText(stats.seconds) : '',
   stats.tokens != null ? `${compact(stats.tokens)} tokens` : '',
 ].filter(Boolean).join(' · ');
-const spansCost = spans => costText(traceStats({ traces: [{ spans }] }));
+/* Each of `groups` is timed on its own, as a trace is: the wait between two of them is not counted. */
+const spansCost = groups => costText(traceStats({ traces: groups.map(spans => ({ spans })) }));
 
 /** The turns of one trace: `{ turns: [{ agent, spans }], loose }`, or null when it holds fewer than two.
     A turn is an agent invocation that is not inside another one. A span belongs to the turn its
@@ -181,17 +182,17 @@ function traceTurns(spans) {
 function traceSection(trace, at, of, first) {
   const number = new Map(trace.spans.map((s, i) => [s, first + i]));
   const cards = spans => spans.map(s => spanCard(s, number.get(s))).join('');
-  const turn = (label, spans) => `<div class="tr-turn"><div class="tr-turnhead"><b>${label}</b>`
-    + `<span>${esc(spansCost(spans))}</span></div>${cards(spans)}</div>`;
+  const turn = (label, spans, timed = [spans]) => `<div class="tr-turn"><div class="tr-turnhead"><b>${label}</b>`
+    + `<span>${esc(spansCost(timed))}</span></div>${cards(spans)}</div>`;
   const turns = traceTurns(trace.spans);
-  const cost = spansCost(trace.spans);
+  const cost = spansCost([trace.spans]);
   return `<section class="tr-trace" data-trace="${esc(trace.id == null ? '' : trace.id)}">`
     + (of > 1 ? `<h4 class="tr-head">Trace ${at + 1} of ${of}<span class="path">${esc(trace.id == null ? '' : trace.id)}</span></h4>`
       + (cost ? `<div class="tr-sum">${esc(cost)}</div>` : '') : '')
     + (!trace.spans.length ? '<div class="empty">This trace was recorded with no spans in it.</div>'
       : !turns ? trace.spans.map((s, i) => spanCard(s, first + i)).join('')
         : turns.turns.map((t, k) => turn(`Turn ${k + 1} of ${turns.turns.length}`, [t.agent, ...t.spans])).join('')
-          + (turns.loose.length ? turn('Outside any turn', turns.loose) : ''))
+          + (turns.loose.length ? turn('Outside any turn', turns.loose, turns.loose.map(s => [s])) : ''))
     + '</section>';
 }
 

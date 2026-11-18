@@ -41,7 +41,7 @@ const TOGETHER = {
       model('M0', 0.5, 1.5, 'A0'), tool('T0', 1.5, 3, { agent: 'A0' }), agent('A0', 0, 4, 'first'),
       model('M1', 10.5, 11.5, 'A1'), tool('T1', 11.5, 13, { agent: 'A1' }), model('unlinked', 12, 12.5), agent('A1', 10, 14, 'second'),
       model('M2', 20.5, 21.5, 'A2'), agent('helper', 21, 23, 'delegated', 'A2'), tool('T2', 21.5, 22.5, { parent: 'helper' }),
-      agent('A2', 20, 24, 'third'), model('late', 100, 101),
+      agent('A2', 20, 24, 'third'), model('late', 100, 101), model('later', 200, 202),
     ],
   }],
 };
@@ -93,7 +93,7 @@ const found = p => {
   eq(p.text('#sessions-count'), '3 sessions · 2 diagnoses without their session', 'the list counts what it holds');
   eq(rowOf(p, 'a.json'), ['3 traces · 9 spans', '12s'],
     'a session is recognised whatever its file is called, and its duration leaves out the wait between traces');
-  eq(rowOf(p, 'turns.session.json'), ['1 trace · 12 spans · 1 failure found', '101s'], 'a diagnosis of a session is counted on its row');
+  eq(rowOf(p, 'turns.session.json'), ['1 trace · 13 spans · 1 failure found', '202s'], 'a diagnosis of a session is counted on its row');
   ok(p.text(cells(p, 'turns.session.json')[0]).startsWith('chat / turns.session.json'), 'a row names the file and its folder',
     p.text(cells(p, 'turns.session.json')[0]));
   ok(!p.$$('#sessions-rows tr.row').some(r => r.textContent.includes('turns.diagnosis.json')),
@@ -143,10 +143,10 @@ const found = p => {
   ok(p.$$('#ses-trace .tr-trace').length === 1 && !p.$('#ses-trace .tr-head'), 'a single trace needs no trace heading');
   eq(p.$$('#ses-trace .tr-turnhead').map(h => `${p.text(h.querySelector('b'))}: ${p.text(h.querySelector('span'))}`),
     ['Turn 1 of 3: 1 model call · 1 tool call · 4s', 'Turn 2 of 3: 2 model calls · 1 tool call · 4s',
-      'Turn 3 of 3: 1 model call · 1 tool call · 4s', 'Outside any turn: 1 model call · 1s'],
-    'a trace with several agent invocations reads as turns, each with what it cost');
+      'Turn 3 of 3: 1 model call · 1 tool call · 4s', 'Outside any turn: 2 model calls · 3s'],
+    'a trace with several agent invocations reads as turns, each with what it cost, the wait between spans outside any turn left out');
   const turns = p.$$('#ses-trace .tr-turn').map(t => [...t.querySelectorAll(':scope > .msg')].map(m => p.text(m.querySelector('.who span'))).join(' '));
-  eq(turns, ['#2 #0 #1', '#6 #3 #4 #5', '#10 #7 #8 #9', '#11'],
+  eq(turns, ['#2 #0 #1', '#6 #3 #4 #5', '#10 #7 #8 #9', '#11 #12'],
     'each turn opens on its agent invocation, then the spans it led to: by link, through a nested agent, or by when they ran');
   ok(p.text(p.$('#ses-trace .tr-turn .msg')).includes('first') && p.text(p.$$('#ses-trace .tr-turn')[2]).includes('delegated'),
     'the prompt leads its turn, and a delegated invocation stays inside the turn that made it');
