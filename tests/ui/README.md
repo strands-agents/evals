@@ -20,9 +20,9 @@ node standalone.mjs  # or one at a time
 npm run fixture      # what `npm test` does first, for running a suite on its own
 ```
 
-`server.mjs` and `parity.mjs` start the real `_ui_server` as a subprocess. `server.mjs` forwards the
-page's `fetch` to it, so it exercises the HTTP contract rather than a mock of it. Both need a Python
-that can import `strands_evals`; override with `PYTHON=/path/to/venv/bin/python npm test`. Point the
+`server.mjs`, `parity.mjs` and `markdown.mjs` start the real `_ui_server` as a subprocess. `server.mjs`
+and `markdown.mjs` forward the page's `fetch` to it, so they exercise the HTTP contract rather than a mock
+of it. All three need a Python that can import `strands_evals`; override with `PYTHON=/path/to/venv/bin/python npm test`. Point the
 suites at a different build of the page with `UI_HTML=path/to/ui.html`.
 
 `harness.mjs` holds what the suites share: `page()` builds the page in jsdom and returns helpers to
@@ -41,6 +41,7 @@ assertions.
 | `live.mjs` | Keeping up with the folder, against a `fakeServer()` whose tree the test changes: an unchanged folder costs one request, a new experiment appears, a re-run report is re-read on its own with the filter and open rows kept, a clean editor follows the file, unsaved edits are never replaced, and a hidden tab does not poll. |
 | `fidelity.mjs` | Nothing the page does not understand is misprinted or lost. A case's input and outputs of any shape in a report row and the editor: a dict or list as indented JSON, a list of role and content messages as a conversation, never `[object Object]`. A structured field edited as JSON, with JSON that does not parse marked and refused. Keys the editor has no field for, on the file, a case and an evaluator, written back by Save in the download and to the server. |
 | `parity.mjs` | The server's discovery and the page's folder reader run over one tree and compared field by field: which files are experiments and reports, how they pair, the failing and not-applicable counts, what is skipped and why, which directories are left out, and the optimizer run summary. |
+| `markdown.mjs` | What the page hands a coding agent, against the real server. Copy as Markdown for a report, a report row, an experiment, a case, a candidate, the optimizer result and a trace, each pinned to its text; the failing rows as one prompt; Copy path (absolute when served, relative with no server) and Copy command (the real `run` flags, names quoted for a shell); that a copy is confirmed on its button and a failed one says so. The addresses `/reports/<file>/rows/<case>/<evaluator>` and `/optimization/<dir>/candidates/<id>`: written as a row or a candidate opens, and followed to that row or candidate. The Markdown the server serves at `/reports/<file>.md` and `/experiments/<file>.md` compared with the page's own, over a report chosen for what is awkward to write (numbers and key order as JavaScript prints them, backticks, pipes, several outputs). |
 
 `fixtures/optimizer-run` is synthetic and not committed. `fixtures/make_optimizer_run.py` writes
 it deterministically (84 files, 80 of them transcripts named by content hash), and `npm test` runs

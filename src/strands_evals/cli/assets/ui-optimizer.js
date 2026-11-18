@@ -440,7 +440,7 @@ function candidateDetail(p, d, run) {
   return `<tr class="detail"><td colspan="5">${candidateSummary(p, d)}<dl class="kv">`
     + kv.map(([k, v]) => `<dt>${esc(k)}</dt>`
       + `<dd${k === 'Per case' ? ' class="m"' : ''}>${v}</dd>`).join('')
-    + '</dl></td></tr>';
+    + `</dl>${candidateActions(p)}</td></tr>`;
 }
 
 function renderCandidates() {
@@ -1006,6 +1006,7 @@ $('opt-cands').onclick = e => {
   const key = tr.dataset.k;
   optOpen.has(key) ? optOpen.delete(key) : optOpen.add(key);
   renderCandidates();
+  writeAddress('opt-candidates', true);
 };
 // Redrawing the whole view is cheap: the log is already parsed.
 $('opt-series-pick').onchange = e => { optSeries = e.target.value; renderOptimization(); };

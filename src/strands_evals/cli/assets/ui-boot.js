@@ -29,6 +29,10 @@ async function goTo(want, force) {
   const candidate = want.cand && OPT ? OPT.proposals.find(p => p.candidate_id === want.cand) : null;
   if (candidate && candidate.trials.length && repCand !== candidate.candidate_id) openCandidateReport(candidate);
   show(want.tab || homeView(), { silent: true });
+  const row = want.row == null ? null
+    : ROWS.find(r => r.name === want.row && (want.evaluator == null || String(r.evaluator) === want.evaluator));
+  if (row && !repCand) openReportRow(row.i);
+  if (want.candidate) openCandidate(want.candidate);
 }
 
 async function boot() {

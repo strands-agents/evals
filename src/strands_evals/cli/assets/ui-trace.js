@@ -150,12 +150,12 @@ function traceView(doc, rawLabel = 'the file as written') {
     if (!spans.length) {
       return '<div class="empty">This session was recorded with no spans in it.</div>' + raw;
     }
-    return `<div class="tr-count">${plural(spans.length, 'span')} of a recorded session</div>${sum}`
+    return `<div class="tr-count">${plural(spans.length, 'span')} of a recorded session</div>${sum}${traceCopy(doc)}`
       + spans.map((s, i) => spanCard(s, i)).join('') + raw;
   }
   if (Array.isArray(doc)) {
     if (!doc.length) return '<div class="empty">This transcript is an empty list.</div>' + raw;
-    return `<div class="tr-count">${plural(doc.length, 'message')}</div>${sum}`
+    return `<div class="tr-count">${plural(doc.length, 'message')}</div>${sum}${traceCopy(doc)}`
       + doc.map(m => messageCard(m)).join('') + raw;
   }
   return '<div class="empty">This file is neither a recorded session nor a list of messages, '

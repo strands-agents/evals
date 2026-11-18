@@ -229,7 +229,7 @@ function renderReport() {
       + `<dt class="judge-by">${esc(r.evaluator == null ? 'Evaluator' : r.evaluator)}</dt>`
       + `<dd class="judge-score">${r.na ? '' : scoreBar(r.score)}${verdictTag(r)}`
       + `${only && only !== r.evaluator ? `<span class="mono path">${esc(only)}</span>` : ''}</dd>`
-      + `${blocks(judged)}</dl></div></td></tr>`;
+      + `${blocks(judged)}</dl></div>${rowActions(r)}</td></tr>`;
   }).join('')).join('')
     || '<tr><td colspan="4" class="empty">No rows match</td></tr>';
 }
@@ -262,4 +262,5 @@ $('rep-rows').onclick = e => {
   const i = +tr.dataset.i;
   openRows.has(i) ? openRows.delete(i) : openRows.add(i);
   renderReport();
+  writeAddress('report', true);
 };
