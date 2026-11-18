@@ -1036,6 +1036,12 @@ def test_the_token_redirect_keeps_the_reports_a_comparison_names(client: Client)
     assert first.headers["Location"] == last.headers["Location"] == f"/reports/compare?{compared}"
 
 
+def test_the_token_redirect_drops_a_token_whose_name_is_encoded(client: Client):
+    redirect = client.send("GET", f"/reports/compare?%74={client.token}&r=one.json", headers={"X-Evals-Token": None})
+
+    assert redirect.headers["Location"] == "/reports/compare?r=one.json"
+
+
 @pytest.mark.parametrize("path", ["/reportsheet", "/runs", "/optimizations", "/favicon.ico", "/api"])
 def test_an_address_that_is_not_the_pages_is_not_found(client: Client, path):
     assert client.send("GET", path) == _refused(HTTPStatus.NOT_FOUND, f"no route for {path}")

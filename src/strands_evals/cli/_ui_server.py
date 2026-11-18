@@ -1347,7 +1347,7 @@ class UIHandler(BaseHTTPRequestHandler):
             cookie = f"{self._cookie_name()}={quote(self.config.token, safe='')}; Path=/; HttpOnly; SameSite=Lax"
             # The same address without the token, so a link into the page lands where it pointed.
             link = urlparse(self.path)
-            rest = "&".join(pair for pair in link.query.split("&") if pair and pair.split("=")[0] != "t")
+            rest = "&".join(pair for pair in link.query.split("&") if pair and unquote(pair.split("=")[0]) != "t")
             path = link.path + (f"?{rest}" if rest else "")
             where = path if PRINTABLE.fullmatch(path) else "/"
             self._send(HTTPStatus.SEE_OTHER, b"", html_type, headers={"Location": where, "Set-Cookie": cookie})
