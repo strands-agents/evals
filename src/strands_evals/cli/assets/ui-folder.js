@@ -343,6 +343,7 @@ async function showFolder(found) {
 }
 
 async function pickFolder() {
+  if (!await mayDiscard('open a folder')) return;
   if (window.showDirectoryPicker) {
     let dir;
     try { dir = await window.showDirectoryPicker(); } catch { return; }   // cancelled

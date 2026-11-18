@@ -353,6 +353,24 @@ const badges = p =>
   ok(!/never/.test(tools()) && !p.$('#form input[data-add-to]'), 'and Escape gives up without adding it', tools());
 }
 
+// ── opening a folder replaces what is open, so it asks before unsaved edits go with it ──
+{
+  const p = await opened(experiment(CASE));
+  let pickers = 0;
+  p.$('#dirinput').click = () => { pickers += 1; };
+  await p.click('[data-act="pick"]');
+  ok(pickers === 1 && !p.$('.ask'), 'Open folder goes straight to the picker when nothing is unsaved', pickers);
+  await p.type('#form [data-k="input"]', 'unsaved');
+  await p.click('[data-act="pick"]');
+  ok(/^1 unsaved change will be lost if you open a folder\./.test(p.text('.ask')) && pickers === 1,
+    'and asks first when something is', p.text('.ask'));
+  await p.click('.ask [data-answer="no"]');
+  ok(pickers === 1 && p.$('#form [data-k="input"]').value === 'unsaved', 'Stay opens no picker and keeps the edit', pickers);
+  await p.click('[data-act="pick"]');
+  await p.click('.ask [data-answer="yes"]');
+  ok(pickers === 2, 'Discard and open goes on to it', pickers);
+}
+
 // ── a long rubric: cut short on its chip, whole in a text block ──
 {
   const rubric = 'Score 1.0 when the reply is polite and names the policy. '.repeat(6).trim();
@@ -377,7 +395,7 @@ const badges = p =>
   const p = await open();
   await p.openFolder({
     'one/experiment.json': experiment(CASE, two), 'one/report.json': report(1, CASE),
-    'two/experiment.json': experiment({ name: 'b', session_id: 's-b', input: 'q' }),
+    'two/experiment.json': experiment(two),
   });
   const history = p.window.history;
   const at = () => `${p.$('.view.on').id} ${p.text('#path')}`;
@@ -435,6 +453,32 @@ const badges = p =>
 
   const fresh = await linked('/reports/report.json');
   ok(fresh.window.history.length === 1, 'opening a link adds no step of its own', fresh.window.history.length);
+}
+
+// ── history: Back pressed again before the step before it has loaded ──
+{
+  const reports = ['a.json', 'b.json'].map(path =>
+    ({ path, name: path, dir: '.', size: 1, modified: 5, rows: 1, overall_score: 1, experiment: null, link: null }));
+  const server = fakeServer({ scan: { reports }, file: path => ({ path, modified: 5, document: report(1, CASE) }) });
+  let slow = false, release;
+  const held = new Promise(resolve => { release = resolve; });
+  const p = await open({ fetchImpl: async (url, opts) => {
+    if (slow && String(url).includes('path=a.json')) await held;
+    return server(url, opts);
+  } });
+  await p.openReport('a.json');
+  await p.openReport('b.json');
+  const steps = p.window.history.length;
+  slow = true;
+  p.window.history.back();
+  await tick();
+  p.window.history.back();
+  await tick(6);
+  release();
+  await tick(6);
+  const at = `${p.$('.view.on').id} ${p.window.location.pathname}`;
+  ok(at === 'v-reports /reports' && p.window.history.length === steps,
+    'the page ends where the second Back went, not on the report the first was still loading', `${at}, ${p.window.history.length - steps} steps added`);
 }
 
 // ── served mode, against a fake server ──
