@@ -31,7 +31,7 @@ class Usage(BaseModel):
     """Model usage summed over `chat` spans (never `invoke_agent` spans, which carry running totals).
 
     For a trial: the last attempt's agent spans, judge spans excluded. The same type holds
-    `judge_usage`, `search_cost`, `judge_cost`, `retry_cost`, and `agent_cost`.
+    `judge_usage`, `Patch.usage`, and the run's cost by role and phase (`OptimizationResult.cost`).
 
     Field names differ from `types.trace.TokenUsage` on purpose: they are the user-facing metric names
     (`USAGE_METRICS`), and `input_tokens` here includes cache tokens, which `TokenUsage.input_tokens`

@@ -295,7 +295,7 @@ class TrialRunner:
         Each cost stays with what it bought. After a judge-only re-run, the new record keeps the reused
         output's usage and the judge spend of every score it holds; the replaced attempt keeps its
         rollout, no usage, and only its failed judges' spend. So the agent's tokens are counted once and
-        the retry cost holds only failed work.
+        an earlier attempt's judge spend is only failed work.
 
         With `rejudge`, a saved trial with failed evaluators (`evaluator_invalid`, or `completed` with
         some) has just those re-judged on its saved output, for 0 rollouts. Without it, cached trials are

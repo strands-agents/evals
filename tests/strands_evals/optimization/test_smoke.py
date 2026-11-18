@@ -11,6 +11,7 @@ One scenario per feature; each later PR adds its own.
 import json
 import random
 import shutil
+from collections import Counter
 from collections.abc import AsyncIterator
 
 from strands import Agent
@@ -25,6 +26,7 @@ from strands_evals.optimization import (
     Budget,
     FileText,
     Float,
+    InfrastructureError,
     Int,
     Joint,
     Maximize,
@@ -179,15 +181,67 @@ def test_a_component_swap_under_a_token_limit_ships_with_its_values_and_files(tm
 def test_the_judges_usage_is_kept_apart_from_the_agents(tmp_path):
     _, result = _run(tmp_path, budget=Budget(max_iterations=2))
     trials = [e["record"] for e in _events(result.run_dir) if e["event"] == "trial"]
-    assert result.judge_cost.tokens == JUDGE_TOKENS * len(trials)
+    assert sum(s.usage.tokens for s in result.cost.judges.values()) == JUDGE_TOKENS * len(trials)
     # Each trial: the agent's one model call on its own model, the judge's on the judge's, never mixed.
     assert all(t["usage"]["models"] == ["scripted-world"] and t["usage"]["model_calls"] == 1 for t in trials)
     assert all(t["judge_usage"]["Correct"]["models"] == ["scripted-judge"] for t in trials)
-    assert {split: usage.models for split, usage in result.agent_cost.items()} == {
+    assert {split: spend.usage.models for split, spend in result.cost.agent.items()} == {
         "train": ["scripted-world"],
         "validation": ["scripted-world"],
         "test": ["scripted-world"],
     }
+
+
+class CorrectOnSecondTry(Correct):
+    """`Correct`, except that its first judgment of `fails_on` raises after its model call."""
+
+    def __init__(self, fails_on: str) -> None:
+        super().__init__(name="Correct")
+        self.fails_on, self.failed = fails_on, False
+
+    async def evaluate_async(self, data):
+        if data.name == self.fails_on and not self.failed:
+            self.failed = True
+            await Agent(model=Verdict(), callback_handler=None).invoke_async("judge this")
+            raise ValueError("judge timed out")
+        return await super().evaluate_async(data)
+
+
+def test_retried_agent_and_judge_spend_counts_in_their_own_roles(tmp_path):
+    lost = []
+
+    async def rollout(agent_factory, case):
+        output = str(await agent_factory().invoke_async(case.input))
+        if case.name == "q00" and not lost:  # the agent ran, then its sandbox went away: run again
+            lost.append(case.name)
+            raise InfrastructureError("sandbox lost")
+        return output
+
+    judge = CorrectOnSecondTry(fails_on="q01")  # judged again on the saved output
+    optimizer = Optimizer(
+        Experiment(cases=_experiment().cases, evaluators=[judge]),
+        manager_agent,
+        objective=Maximize("Correct"),
+        rollout_fn=rollout,
+        budget=Budget(max_iterations=1),
+        max_workers=40,
+        base_dir=tmp_path / "runs",
+    )
+    result = optimizer.run()
+    records = [r for by_key in optimizer._records.values() for r in by_key.values()]
+    # One trial's agent ran again, another's judge judged again; no other trial has an earlier attempt.
+    assert Counter(len(r.previous_attempts) for r in records) == {0: len(records) - 2, 1: 2}
+
+    agent, judges = result.cost.agent.values(), result.cost.judges.values()
+    every_attempt = sum(r.usage.tokens + sum(a.usage.tokens for a in r.previous_attempts) for r in records)
+    assert sum(s.usage.tokens for s in agent) == every_attempt > sum(r.usage.tokens for r in records)
+    assert (sum(s.trials for s in agent), sum(s.attempts for s in agent)) == (len(records), len(records) + 1)
+    assert sum(s.failed for s in agent) == 1
+    # Every judgment, the failed one included, and nothing of the agent's.
+    assert sum(s.usage.tokens for s in judges) == JUDGE_TOKENS * (len(records) + 1)
+    assert sum(s.failed for s in judges) == 1
+    assert all(s.usage.models == ["scripted-judge"] for s in judges if s.usage.model_calls)
+    assert "failed attempts" in result.summary()
 
 
 # text, through a file, to a reviewable diff
