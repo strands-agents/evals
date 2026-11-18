@@ -3,7 +3,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
-from pydantic import BaseModel, field_serializer
+from pydantic import AwareDatetime, BaseModel, field_serializer
 from typing_extensions import Self, TypeVar
 
 from ..display.display_console import CollapsibleTableReportDisplay
@@ -16,13 +16,13 @@ class RunInfo(BaseModel):
 
     Attributes:
         run_id: Unique to one `run_evaluations` call, so two reports of one experiment can be told apart.
-        started_at: When the run began, in UTC.
-        ended_at: When the run finished evaluating its last case, in UTC.
+        started_at: When the run began. Timezone-aware; `Experiment` records it in UTC.
+        ended_at: When the run finished evaluating its last case. Timezone-aware, as above.
     """
 
     run_id: str
-    started_at: datetime
-    ended_at: datetime
+    started_at: AwareDatetime
+    ended_at: AwareDatetime
 
     @field_serializer("started_at", "ended_at")
     def _as_iso(self, value: datetime) -> str:

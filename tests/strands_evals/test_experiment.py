@@ -293,7 +293,8 @@ def test_experiment_run_evaluations_records_one_run_across_evaluators(simple_tas
     report = experiment.run_evaluations(simple_task)
 
     assert len({row["evaluator"] for row in report.cases}) == 2
-    assert report.run is not None
+    assert report.run.run_id
+    assert report.run.started_at <= report.run.ended_at
 
 
 def test_experiment_run_evaluations_task_executed_once():

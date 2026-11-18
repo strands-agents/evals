@@ -684,6 +684,7 @@ class Experiment(Generic[InputT, OutputT, ReportT]):
         if evaluation_data_store is not None:
             self._validate_case_names()
 
+        run_id = str(uuid.uuid4())
         started_at = datetime.now(timezone.utc)
         queue: asyncio.Queue[tuple[int, Case[InputT, OutputT]]] = asyncio.Queue()
         results: list[Any] = [None] * len(self._cases)
@@ -759,7 +760,7 @@ class Experiment(Generic[InputT, OutputT, ReportT]):
         # Each case row already carries its evaluator tag (see worker aggregation above), so
         # single-evaluator runs return as-is and multi-evaluator runs simply concatenate.
         report = reports[0] if len(reports) == 1 else self.report_cls.flatten(reports)
-        report.run = RunInfo(run_id=str(uuid.uuid4()), started_at=started_at, ended_at=datetime.now(timezone.utc))
+        report.run = RunInfo(run_id=run_id, started_at=started_at, ended_at=datetime.now(timezone.utc))
         return report
 
     def to_dict(self) -> dict:

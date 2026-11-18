@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
 from strands_evals.types.evaluation_report import EvaluationReport, RunInfo
@@ -564,6 +565,16 @@ class TestRunInfo:
             "ended_at": "2026-01-02T03:04:09+00:00",
         }
         assert EvaluationReport.from_file(str(file_path)).run == self.RUN
+
+    def test_a_timestamp_with_no_timezone_is_refused(self):
+        """Reports from different sources stay comparable only if every timestamp carries its offset."""
+        with pytest.raises(ValidationError, match="timezone"):
+            RunInfo(run_id="run-1", started_at=datetime(2026, 1, 2, 3, 4, 5), ended_at=self.RUN.ended_at)
+
+        data = self._report(run=self.RUN).to_dict()
+        data["run"]["ended_at"] = "2026-01-02T03:04:09"
+        with pytest.raises(ValidationError, match="timezone"):
+            EvaluationReport.from_dict(data)
 
     def test_a_report_written_before_the_field_existed_still_loads(self):
         data = self._report().to_dict()
