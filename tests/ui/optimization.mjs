@@ -194,12 +194,12 @@ eq(lines(p, '#opt-result .rtab tbody tr'),
   'a row per goal metric; one with no interval stops at the change');
 ok($$('#opt-result .delta').every(td => td.classList.contains('flat')),
   'no per-metric change is coloured: only the objective states a direction');
-eq(said(p), 'Objective +0.143, 95% interval [0.061, 0.225] — clear of zero on cases the search never saw.',
+eq(said(p), 'Objective +0.143, 95% interval [0.061, 0.225]: clear of zero on cases the search never saw.',
   'the verdict is the reading of the objective interval');
 eq(strip(p), ['Helpfulness ↑ / good / right of zero'],
   'one bar: the goal with an interval, the objective not drawn twice');
 eq($('#opt-result .rs-row title').textContent,
-  'Helpfulness: +0.143 [0.061, 0.225] — clear of no change, the way the goal wants',
+  'Helpfulness: +0.143 [0.061, 0.225] · clear of no change, the way the goal wants',
   'hovering the bar gives the figures and the reading');
 ok(/held-out cases/.test(stripNote(p)) && /nothing to draw for tokens \(no interval reported\)/.test(stripNote(p))
   && !$('#opt-result .rstrip').classList.contains('weak'),
@@ -376,14 +376,14 @@ eq(series().map(m => m.title), ['c0 · Helpfulness 0.51', 'c1 · Helpfulness 0.5
   'c3 · Helpfulness 0.61', 'c5 · Helpfulness 0.59', 'c6 · Helpfulness 0.64', 'c8 · Helpfulness 0.69',
   'c10 · Helpfulness 0.67'],
   'the recorded means (c0 0.51, where its trials average 0.52), and no mark for an unmeasured candidate');
-ok(axis().label === 'Helpfulness — higher is better' && Math.max(...axis().ticks) < 1,
+ok(axis().label === 'Helpfulness, higher is better' && Math.max(...axis().ticks) < 1,
   'the axis carries the goal direction and is scaled to the metric', JSON.stringify(axis()));
 eq($$('#opt-series-chart path.metric-line').map(el => pathPoints(el).length), [4, 2],
   'the joining line breaks at an unmeasured candidate rather than spanning it');
 await pick(p, '#opt-series-pick', 'm:tokens');
 eq([series()[0].title, series()[6].title, series()[6].cls], ['c0 · tokens 3180', 'c8 · tokens 4210', 'infeasible'],
   'a count keeps its decimals off, and c8 is infeasible here too');
-ok(axis().label === 'tokens — lower is better' && Math.min(...axis().ticks) > 1000,
+ok(axis().label === 'tokens, lower is better' && Math.min(...axis().ticks) > 1000,
   'the axis follows the picker, direction and units', JSON.stringify(axis()));
 
 // ── Progress: what each iteration cost ──
@@ -516,7 +516,7 @@ has(panel(p).Transcript, /transcripts\/4ed70e0cfecb415b\.json was not among the 
   'a pointer whose file the folder did not hold names that file');
 await openTrial(p, 'c2', 'train_case_05');
 eq(['Ended as', 'Attempts', 'Output', 'Transcript'].map(k => panel(p)[k]),
-  ['agent_failure ToolError the refund tool timed out', '2 — earlier: agent_failure', 'none recorded',
+  ['agent_failure ToolError the refund tool timed out', '2, earlier: agent_failure', 'none recorded',
     'this trial recorded no transcript'],
   'a failed trial: status and error, earlier attempts, no output, and no transcript pointer at all');
 await openTrial(p, 'c5', 'train_case_03');
@@ -998,17 +998,17 @@ const openResult = (report, { objective = 'Maximize(H)', extra, ...config } = {}
 
 for (const [name, objective, verdict, bar, listed] of [
   ['straddles zero', interval(0.1, -0.04, 0.24),
-    /\+0\.1, 95% interval \[-0\.04, 0\.24\] — includes zero, so this run has not shown an improvement/,
+    /\+0\.1, 95% interval \[-0\.04, 0\.24\]: includes zero, so this run has not shown an improvement/,
     'H ↑ / flat / across zero', '+0.1 held out · includes zero (flat)'],
   ['is below zero', interval(-0.08, -0.19, -0.02),
     /Objective -0\.08, .* below zero, so shipping the champion would be a regression/,
     'H ↑ / bad / left of zero', '-0.08 held out · below zero (down)'],
-  ['is narrowly clear', interval(0.1071, 0.004, 0.2103), /\[0\.004, 0\.2103\] — clear of zero/,
+  ['is narrowly clear', interval(0.1071, 0.004, 0.2103), /\[0\.004, 0\.2103\]: clear of zero/,
     'H ↑ / good / right of zero', '+0.1071 held out · clear of zero (up)'],
   ['is absent', { mean_diff: 0.1, n_cases: 6 }, /\+0\.1 against the baseline, with no interval in the report/,
     null, '+0.1 held out · no interval (flat)'],
   ['has no width', interval(0.7, 0.7, 0.7),
-    /\+0\.7 against the baseline — the same on every one of 6 test cases, so its 95% interval has no width/,
+    /\+0\.7 against the baseline, the same on every one of 6 test cases, so its 95% interval has no width/,
     null, '+0.7 held out · no width (flat)'],
 ]) {
   const q = await openResult(testReport(objective));
@@ -1166,7 +1166,7 @@ const TWO_GOALS = 'Pareto(Maximize(Quality), Minimize(tokens))';
   ok(at.c2.cy < at.c1.cy && at.c1.cx > at.c2.cx && at.c3.cx < at.c2.cx && at.c3.cy > at.c2.cy,
     'both axes are turned so better is up and right: fewer tokens is higher, and c3, worse on both, is below c2',
     JSON.stringify(at));
-  has(two.text('#opt-to-chart'), /fewer tokens is better — upward along this axis/,
+  has(two.text('#opt-to-chart'), /fewer tokens is better, upward along this axis/,
     'the minimised axis says which way better is');
   eq([ringed(two), at.c0.cls, at.c1.cls], ['c1,c2', 'baseline', 'champion'],
     'the recorded front is ringed, and the baseline and champion are marked');

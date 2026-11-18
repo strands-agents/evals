@@ -133,7 +133,7 @@ function resultStrip(d) {
       : kind === 'plain' ? 'changed' : kind === 'good' ? 'better' : 'worse';
     const arrow = row.dir ? `<tspan class="rs-dir"> ${row.dir === 'max' ? '↑' : '↓'}</tspan>` : '';
     body += `<g class="rs-row ${kind}${row.objective ? ' rs-obj' : ''}">`
-      + `<title>${esc(`${row.label}: ${signed(row.mean)} [${fine(row.lo)}, ${fine(row.hi)}] — ${reading}`)}`
+      + `<title>${esc(`${row.label}: ${signed(row.mean)} [${fine(row.lo)}, ${fine(row.hi)}] · ${reading}`)}`
       + `</title>`
       + `<text class="rs-lab" x="0" y="${cy}" dy="0.32em">${esc(row.label)}${arrow}</text>`
       + `<line class="rs-ci" x1="${x(row.lo)}" y1="${cy}" x2="${x(row.hi)}" y2="${cy}"/>`
@@ -152,7 +152,7 @@ function resultStrip(d) {
     + `${missing.length ? esc(` · nothing to draw for ${missing.map(missWhy).join(', ')}`) : ''}`
     + '</text>'
     + `<text class="rs-note" x="0" y="${height - 4}">each bar is the 95% interval of the change,`
-    + ' scaled to its own row — so widths do not compare</text>'
+    + ' scaled to its own row, so widths do not compare</text>'
     + body + '</svg></div>';
 }
 
@@ -212,14 +212,14 @@ function resultCard(d) {
   const o = r.objective, side = intervalSide(o);
   let verdict;
   if (!side) {
-    verdict = 'This report records no overall comparison against the baseline — only the per-metric '
-      + 'means above — so how much of the gap is real cannot be read off it.';
+    verdict = 'This report records no overall comparison against the baseline, only the per-metric '
+      + 'means above, so how much of the gap is real cannot be read off it.';
   } else if (side === 'none') {
     verdict = `Objective <b>${esc(signed(o.mean_diff))}</b> against the baseline, with no interval `
-      + 'in the report — so how certain that is cannot be read off it.';
+      + 'in the report, so how certain that is cannot be read off it.';
   } else if (side === 'point') {
     /* Every case reported the same difference: that is no interval, not a narrow one. */
-    verdict = `Objective <b>${esc(signed(o.mean_diff))}</b> against the baseline — the same on every `
+    verdict = `Objective <b>${esc(signed(o.mean_diff))}</b> against the baseline, the same on every `
       + `one of ${plural(r.cases || 0, 'test case')}, so its 95% interval has no width and says `
       + 'nothing about how far this would carry to other cases.';
   } else {
@@ -230,14 +230,14 @@ function resultCard(d) {
         ? 'below zero, so shipping the champion would be a regression.'
         : 'includes zero, so <b>this run has not shown an improvement</b>. More cases or more '
           + 'runs per case would narrow it.';
-    verdict = `Objective <b>${esc(signed(o.mean_diff))}</b>, ${span} — ${reading}`;
+    verdict = `Objective <b>${esc(signed(o.mean_diff))}</b>, ${span}: ${reading}`;
   }
   if (!r.heldOut && r.baselineId) {
     verdict += ' The gap is likely flattering.';
   }
   /* A `picked` report only carries figures for the finalists, and the baseline is rarely one. */
   if (!r.baselineId) {
-    verdict += ' It has no figures for the baseline, so the champion\'s numbers stand alone —'
+    verdict += ' It has no figures for the baseline, so the champion\'s numbers stand alone:'
       + ' there is nothing here to compare them against.';
   }
 
@@ -286,7 +286,7 @@ function winnerCard(d) {
     `<div class="setting"><span class="skey">${esc(s.key)}</span>`
     + `${w.baselineId ? '' : ' <span class="tag">no baseline to compare</span>'}`
     + settingDiff(s) + '</div>').join('')
-    || `<p class="unchanged">Nothing differs from ${esc(w.baselineId || 'the baseline')} — the run `
+    || `<p class="unchanged">Nothing differs from ${esc(w.baselineId || 'the baseline')}: the run `
       + 'ended with the configuration it started from.</p>';
   const unchanged = same
     ? `<p class="unchanged">${plural(same, 'other setting')} unchanged from `
@@ -315,7 +315,7 @@ $('opt-winner').onclick = async e => {
   if (act.dataset.act === 'copy-winner') {
     said.textContent = await copyText(text)
       ? `copied ${plural(Object.keys(values).length, 'setting')}`
-      : 'could not reach the clipboard — the configuration is above to select by hand';
+      : 'could not reach the clipboard: the configuration is above to select by hand';
   } else {
     const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
     Object.assign(document.createElement('a'), { href: url, download: 'champion.json' }).click();

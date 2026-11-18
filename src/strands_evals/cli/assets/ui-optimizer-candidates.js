@@ -83,7 +83,7 @@ function candidateDetail(p, d, run) {
     kv.push(['Configuration', `<span class="empty">this is the configuration the run started `
       + 'from, so there is nothing to diff it against</span>']);
   } else if (!p.settings) {
-    kv.push([vs, '<span class="empty">the log records no values for this candidate — only a '
+    kv.push([vs, '<span class="empty">the log records no values for this candidate: only a '
       + '<code>propose</code> event carries them</span>']);
   } else if (!changed.length) {
     kv.push([vs, `<span class="empty">identical to ${esc(d.baselineId || 'the baseline')} in every `
@@ -265,8 +265,8 @@ function transcriptSlot(run, t) {
       + '</span>';
   }
   if (got.state === 'unread') {
-    return `<span class="empty">${where} was not among the files read from the opened folder — `
-      + `the picker scans ${SCAN_DEPTH} levels down, so a run nested deeper keeps its transcripts `
+    return `<span class="empty">${where} was not among the files read from the opened folder. `
+      + `The picker scans ${SCAN_DEPTH} levels down, so a run nested deeper keeps its transcripts `
       + 'to itself. Serving the folder with <code>strands-evals ui</code> reads them on '
       + 'request.</span>';
   }
@@ -285,7 +285,7 @@ function trialPanel(t, run) {
   if (typeof t.attempts === 'number' && t.attempts > 1) {
     const before = (t.previous_attempts || []).map(a =>
       esc((a && (a.status || a.error_type)) || 'unrecorded')).join(', ');
-    kv.push(['Attempts', `${t.attempts}${before ? ` — earlier: ${before}` : ''}`]);
+    kv.push(['Attempts', `${t.attempts}${before ? `, earlier: ${before}` : ''}`]);
   }
 
   const scores = Object.entries(t.evaluations || {});

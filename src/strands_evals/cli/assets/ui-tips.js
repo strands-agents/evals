@@ -33,7 +33,7 @@ function tipLines(el) {
     if (native || !el.textContent.trim()) el.setAttribute('aria-label', el.dataset.tip);
     if (native) native.remove(); else el.removeAttribute('title');
   }
-  return isMark(el) ? el.dataset.tip.split(/ · |: | — /) : ['', el.dataset.tip];
+  return isMark(el) ? el.dataset.tip.split(/ · |: /) : ['', el.dataset.tip];
 }
 
 function showTip(el) {

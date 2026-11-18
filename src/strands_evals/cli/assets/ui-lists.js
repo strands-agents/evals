@@ -83,7 +83,7 @@ function renderLists() {
 
   $('skips').innerHTML = skipped.length
     ? `<details class="skips"><summary>${plural(skipped.length, 'file')} skipped</summary><ul>`
-      + skipped.map(s => `<li><code>${esc(s.path)}</code> — ${esc(s.why)}</li>`).join('')
+      + skipped.map(s => `<li><code>${esc(s.path)}</code>: ${esc(s.why)}</li>`).join('')
       + '</ul></details>'
     : '';
   renderComparePick();

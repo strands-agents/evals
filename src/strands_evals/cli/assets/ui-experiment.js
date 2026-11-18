@@ -107,7 +107,7 @@ function renderEvaluators() {
   $('evnotes').innerHTML = errs.length
     ? `<span class="tag warn">${plural(errs.length, 'evaluator problem')}</span> `
       + errs.map(n => `<code>${esc(n.evaluator_type)}</code> ${esc(n.message)}`).join(' · ')
-      + ' — <span class="path">the file saves, but <code>run</code> and <code>validate</code>'
+      + '. <span class="path">The file saves, but <code>run</code> and <code>validate</code>'
       + ' will fail to load it until this is fixed.</span>'
     : '';
   renderEvalForm();
@@ -150,7 +150,7 @@ function renderEvalForm() {
     + '</div>'
     + (frozen.length
       ? `<div class="hint">Not editable here: <code>${frozen.map(esc).join('</code>, <code>')}</code>`
-        + ' — structured values are left exactly as the file had them.</div>'
+        + '. Structured values are left exactly as the file had them.</div>'
       : '')
     + '<div class="hint">Only keys already in the file are shown; a key the '
     + 'constructor never accepted would make the experiment fail to load.</div>';
@@ -264,7 +264,7 @@ function renderForm() {
 function stepsControl(key, v) {
   if (v == null) {
     return `<div class="chips" data-chips="${key}">`
-      + '<span class="empty">none — a trajectory evaluator reports not_applicable</span>'
+      + '<span class="empty">none, so a trajectory evaluator reports not_applicable</span>'
       + `<button class="addchip" data-add="${key}">+ tool</button></div>`;
   }
   if (!Array.isArray(v)) {
@@ -336,7 +336,7 @@ function renderReview() {
   if (!review) { bar.hidden = true; return; }
   if (!drafts.length) {
     review = false; bar.hidden = true;
-    note('every draft is resolved — save to write it out');
+    note('every draft is resolved: save to write it out');
     return;
   }
   if (!drafts.includes(sel)) { sel = drafts[0]; renderForm(); return; }
@@ -491,7 +491,7 @@ $('add-case').onclick = () => {
   orig.push(NEW_CASE);
   sel = cases.length - 1;
   renderForm(); refreshDirty();
-  note(`added ${name} — fill in its input, then save`);
+  note(`added ${name}: fill in its input, then save`);
 };
 
 $('del-case').onclick = () => {
@@ -540,7 +540,7 @@ function preflight() {
   if ($('evform').querySelector('.invalid')) return 'an evaluator setting is not a number; fix it or revert before saving';
   for (const [i, c] of cases.entries()) {
     const bad = nonFinite(c, `cases[${i}]`);
-    if (bad) return `${bad} is not finite — the library's writer rejects it`;
+    if (bad) return `${bad} is not finite, and the library's writer rejects it`;
     if (c.input == null || valueText(c.input).trim() === '') {
       return `case ${c.name || i} has no input, which Case requires`;
     }

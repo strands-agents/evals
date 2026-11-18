@@ -208,8 +208,8 @@ function rowDetail(c, r) {
   const several = r.outputs.length > 1;
   const judged = [];
   if (!r.outputs.length) {
-    judged.push(['Verdict', '<span class="empty">evaluator returned no outputs — '
-      + '_default_aggregator scores that test_pass=false</span>']);
+    judged.push(['Verdict', '<span class="empty">evaluator returned no outputs, which '
+      + '_default_aggregator scores as test_pass=false</span>']);
   }
   r.outputs.forEach((o, n) => {
     const tag = several ? ` ${n + 1}/${r.outputs.length}` : '';

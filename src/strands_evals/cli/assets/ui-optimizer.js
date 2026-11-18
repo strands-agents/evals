@@ -294,7 +294,7 @@ function renderRunNotes(d, run) {
     notes.push(d.goals.length >= 2
       ? 'This run uses a Pareto objective, so a single best value understates it: its front is '
         + 'on the Trade-off tab.'
-      : 'This run uses a Pareto objective, so a single best value understates it — and '
+      : 'This run uses a Pareto objective, so a single best value understates it, and '
         + `${d.goals.length ? 'only one of its goals was' : 'none of its goals were'} measured, `
         + 'so there is no trade-off to plot.');
   }
@@ -318,11 +318,11 @@ function renderSeries(d) {
   const metric = optSeries.startsWith('m:') ? optSeries.slice(2) : null;
   $('opt-series-head').textContent = `${metric || 'Objective'} by candidate`;
   $('opt-series-cap').textContent = metric
-    ? `The mean recorded for ${metric} on each candidate it was measured on — the metric itself, `
+    ? `The mean recorded for ${metric} on each candidate it was measured on: the metric itself, `
       + 'not its contribution to the objective.'
     : 'One mark per proposal, in the order the search drew them. The candidate it built is under '
-      + 'its mark — by name, or by its number in the Candidates table where the name will not '
-      + 'fit — and the iterations are grouped under those. The line is the best feasible '
+      + 'its mark, by name or by its number in the Candidates table where the name will not '
+      + 'fit, and the iterations are grouped under those. The line is the best feasible '
       + 'objective so far, so it steps up where a candidate beat everything before it.';
   $('opt-series-chart').innerHTML = metric ? metricChart(d, metric) : objectiveChart(d);
   $('opt-series-legend').innerHTML = metric ? '' : ['feasible', 'infeasible', 'ineligible'].map(o =>
@@ -367,7 +367,7 @@ function renderTradeoff(d) {
   $('opt-to-cap').textContent = 'One mark per candidate, both axes turned so better is up and to '
     + 'the right: a mark above and right of another beats it on both goals. The step line is the '
     + 'edge of what ' + (stated
-      ? `the run itself called best — ${whose}.`
+      ? `the run itself called best: ${whose}.`
       : `${plural(ids.length, 'candidate')} dominate on this pair of goals, worked out here: the `
         + 'set the run recorded is a front over all '
         + `${d.goals.length} of them, which this chart cannot show.`);
@@ -512,7 +512,7 @@ function renderOptimizerSpace(d) {
   $('opt-space-sub').textContent = space.length
     ? `${plural(space.length, 'key')} the optimizer could set, as run.json declares them. `
       + 'A key with no candidate behind it was never varied.'
-    : 'This run.json declares no search space — it was written before the field existed. Setup '
+    : 'This run.json declares no search space: it was written before the field existed. Setup '
       + 'names the keys the log changed, which is as close as the record gets.';
   if (!space.length) {
     $('opt-space-note').textContent = '';

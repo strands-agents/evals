@@ -55,7 +55,7 @@ function objectiveChart(d) {
 
   const n = d.proposals.length;
   const x = i => PAD.l + (n === 1 ? IN_W / 2 : (i / (n - 1)) * IN_W);
-  const { y, out: axis } = yAxis(lo, hi, 'objective — higher is better');
+  const { y, out: axis } = yAxis(lo, hi, 'objective, higher is better');
 
   let marks = '';
   d.proposals.forEach((p, i) => {
@@ -125,7 +125,7 @@ function metricChart(d, metric) {
   const n = d.proposals.length;
   const x = i => PAD.l + (n === 1 ? IN_W / 2 : (i / (n - 1)) * IN_W);
   const dir = goalDir(d, metric);
-  const { y, out: axis } = yAxis(lo, hi, dir ? `${metric} — ${dir === 'min' ? 'lower' : 'higher'} is better` : metric);
+  const { y, out: axis } = yAxis(lo, hi, dir ? `${metric}, ${dir === 'min' ? 'lower' : 'higher'} is better` : metric);
 
   /* Joined only between consecutive measured candidates. */
   let marks = '', segments = '', run = [], champ = null;
@@ -194,7 +194,7 @@ function tradeoffChart(d, plotted, xg, yg, frontIds) {
     return goal.dir === 'min' ? [hi, lo] : [lo, hi];
   };
   const label = (goal, towards) =>
-    `${goal.dir === 'min' ? 'fewer' : 'higher'} ${goal.metric} is better — ${towards} this axis`;
+    `${goal.dir === 'min' ? 'fewer' : 'higher'} ${goal.metric} is better, ${towards} this axis`;
   const { x, out: xax } = xAxis(...span(xg), label(xg, 'rightward along'));
   const { y, out: yax } = yAxis(...span(yg), label(yg, 'upward along'));
 
