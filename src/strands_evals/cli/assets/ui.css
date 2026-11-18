@@ -62,7 +62,7 @@ body { margin: 0; }
 .app ::selection { background: var(--brand); color: var(--on-brand); }
 .mono { font-family: var(--mono); }
 /* Labels: the small uppercase mono used for section names, field names and column heads. */
-.field > label, table.rep th, table.rtab thead th, .result .rlabel, .winner .wlabel {
+.flabel > label, table.rep th, table.rtab thead th, .result .rlabel, .winner .wlabel {
   font-family: var(--mono); font-size: 11px; font-weight: 600;
   letter-spacing: .08em; text-transform: uppercase;
 }
@@ -71,6 +71,7 @@ h2, .chart h3, .pane > header .t, .hero .big, .stat .v, .winner .wid {
 }
 .btn:focus-visible, .tab:focus-visible, .sec:focus-visible, .seg button:focus-visible,
 .addchip:focus-visible, .more:focus-visible, .theme-toggle:focus-visible, .x:focus-visible,
+.help:focus-visible, .guide-toggle:focus-visible,
 .app [tabindex="0"]:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px;
 }
@@ -87,6 +88,19 @@ h2, .chart h3, .pane > header .t, .hero .big, .stat .v, .winner .wid {
 .brand { display: flex; align-items: center; }
 .brand svg { display: block; height: 24px; width: auto; color: var(--accent); }
 .bar .path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Links out to the docs, set like the site's own navigation. */
+.navlinks { display: flex; gap: 26px; margin-left: 14px; }
+.navlinks a, .nav-foot a { color: var(--ink1); text-decoration: none; }
+.navlinks a { font: 500 14px var(--mono); letter-spacing: .02em; }
+.navlinks a:hover, .nav-foot a:hover { color: var(--accent); }
+.navicon { display: inline-flex; flex: none; color: var(--ink1); }
+.navicon svg { width: 20px; height: 20px; }
+.navicon:hover { opacity: .7; }
+.guide-toggle {
+  appearance: none; flex: none; cursor: pointer; font: 500 12px var(--mono); padding: 4px 12px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--card); color: var(--ink1);
+}
+.app[data-guide="on"] .guide-toggle { background: var(--brand); border-color: var(--brand); color: var(--on-brand); }
 .theme-toggle {
   flex: none;
   appearance: none; border: 0; background: none; padding: 4px; color: var(--ink1);
@@ -103,7 +117,12 @@ h2, .chart h3, .pane > header .t, .hero .big, .stat .v, .winner .wid {
   display: flex; flex-direction: column; gap: 20px;
   padding: 28px 12px; border-right: 1px solid var(--hair);
 }
-.slug { font: 600 26px var(--mono); color: var(--evals); padding: 0 12px; }
+.slug { font: 600 26px var(--mono); color: var(--evals); padding: 0 12px; text-decoration: none; }
+.nav-foot {
+  margin-top: auto; padding: 16px 12px 0; border-top: 1px solid var(--hair);
+  display: flex; flex-direction: column; gap: 8px; font-size: 12.5px;
+}
+.nav-foot a { color: var(--ink2); }
 .sgroup { display: flex; flex-direction: column; gap: 2px; }
 .sec {
   appearance: none; border: 0; background: none; text-align: left; cursor: pointer;
@@ -143,7 +162,7 @@ h2 { font-size: 24px; font-weight: 600; margin: 0 0 8px; letter-spacing: .01em; 
 .sub { color: var(--ink3); font-size: 13.5px; line-height: 1.6; margin: 0 0 28px; max-width: 78ch; }
 
 /* ── experiment ───────────────────────────────────────── */
-.cols { display: grid; grid-template-columns: 264px 1fr; gap: 36px; align-items: start; }
+.cols { display: grid; grid-template-columns: 264px minmax(0, 1fr); gap: 36px; align-items: start; }
 .find {
   width: 100%; font: inherit; font-size: 13px; color: var(--ink1);
   padding: 7px 12px; border: 1px solid var(--line); border-radius: 999px;
@@ -175,7 +194,8 @@ h2 { font-size: 24px; font-weight: 600; margin: 0 0 8px; letter-spacing: .01em; 
 
 .field { margin-bottom: 24px; }
 .field:last-child { margin-bottom: 0; }
-.field > label { display: block; color: var(--ink2); margin-bottom: 6px; }
+.flabel { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.flabel > label { color: var(--ink2); }
 .field .hint { font-size: 12px; color: var(--ink3); margin-top: 5px; }
 input.f, textarea.f {
   width: 100%; font: inherit; font-size: 13.5px; color: var(--ink1); background: var(--bg);
@@ -305,13 +325,17 @@ tr.detail td { background: var(--hair2); }
 .del { color: var(--bad); }
 .ins { color: var(--good); }
 /* runs picker + evaluators strip */
-.evs { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 24px; }
+.evs { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 24px; min-width: 0; max-width: 100%; }
 .evchip {
   display: inline-flex; align-items: baseline; gap: 8px; padding: 5px 12px;
   border: 1px solid var(--line); border-radius: 999px; background: var(--card); font-size: 12.5px;
 }
 .evchip b { font-weight: 600; }
 .evchip .t, .evchip .c { color: var(--ink2); }
+/* One line, however long a rubric is: the whole value is in the form the chip opens. */
+.evchip { max-width: min(100%, 620px); }
+.evchip b, .evchip .t { flex: none; }
+.evchip .c { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .evchip .ck { color: var(--ink1); font-weight: 550; }
 tr.run { cursor: pointer; }
 tr.run:hover td, tr.run.on td { background: var(--hair2); }
@@ -365,6 +389,8 @@ details.skips code { font-family: var(--mono); color: var(--ink2); }
 .evform .hint { margin-top: 8px; }
 .evform label { font-size: 12.5px; color: var(--ink2); font-weight: 550; }
 .evform input.f { font-size: 13px; max-width: 420px; }
+.evform textarea.f { font-size: 13px; resize: vertical; min-height: 64px; }
+.evform .evlab.top { align-self: start; padding-top: 9px; }
 .evform input[type="checkbox"].f { width: auto; max-width: none; }
 .more {
   width: 100%; margin-top: 10px; text-align: center; font: 500 12.5px var(--mono); color: var(--ink2);
@@ -375,6 +401,49 @@ details.skips code { font-family: var(--mono); color: var(--ink2); }
 .scroll { overflow-x: auto; }
 
 /* optimization */
+/* ── the champion, at a glance ── */
+.champ {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px 36px; align-items: center;
+  margin: 0 0 22px; padding: 24px 28px; border: 1px solid var(--edge); border-radius: 14px;
+  border-left: 5px solid var(--hair); background: var(--card);
+}
+.champ.won { border-left-color: var(--brand); background: color-mix(in srgb, var(--brand) 7%, var(--card)); }
+.champ-k { display: block; font: 600 11px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--ink3); }
+.champ-name { display: block; font: 600 40px/1.15 var(--mono); color: var(--ink1); }
+.champ.won .champ-name { color: var(--accent); }
+.champ.none .champ-name, .champ.held .champ-name { font-size: 26px; }
+.champ-from { display: block; margin-top: 4px; font-size: 13px; color: var(--ink2); max-width: 60ch; }
+.champ-gain { text-align: right; }
+.champ-delta { display: block; font: 600 40px/1.15 var(--mono); color: var(--ink1); }
+.champ-gain.good .champ-delta { color: var(--good); }
+.champ-gain.bad .champ-delta { color: var(--bad); }
+.champ-what { font-size: 12.5px; color: var(--ink2); }
+.champ-read {
+  margin-left: 8px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line);
+  font: 600 11px var(--mono); color: var(--ink2);
+}
+.champ-gain.good .champ-read { color: var(--on-brand); background: var(--brand); border-color: var(--brand); }
+.champ-gain.bad .champ-read { color: var(--bad); border-color: var(--bad); }
+.champ-board { grid-column: 1 / -1; border-top: 1px solid var(--hair); padding-top: 6px; }
+.win {
+  display: grid; grid-template-columns: minmax(120px, 1.2fr) minmax(80px, 1.4fr) auto 96px minmax(0, 1fr);
+  gap: 4px 18px; align-items: center; padding: 9px 0; font-size: 13px;
+}
+.win + .win { border-top: 1px solid var(--hair2); }
+.win-name { font-weight: 600; color: var(--ink1); }
+.win-dir { display: block; font-weight: 400; font-size: 11.5px; color: var(--ink3); }
+.win-bars { display: grid; gap: 3px; }
+.win-bars i { display: block; height: 7px; min-width: 2px; border-radius: 4px; background: var(--track); }
+.win-bars .now { background: var(--ink2); }
+.win.up .win-bars .now { background: var(--good); }
+.win.down .win-bars .now { background: var(--bad); }
+.win-nums { font-family: var(--mono); color: var(--ink2); white-space: nowrap; }
+.win-nums b { color: var(--ink1); }
+.win-delta { font: 600 13px var(--mono); color: var(--ink2); white-space: nowrap; }
+.win.up .win-delta { color: var(--good); }
+.win.down .win-delta { color: var(--bad); }
+.win-cases { font-size: 12px; color: var(--ink3); text-align: right; }
+
 .result, .winner {
   background: var(--card); border: 1px solid var(--edge); border-radius: var(--r);
   padding: 24px 26px; margin: 0 0 22px;
@@ -465,7 +534,7 @@ table.trials tr:last-child td { border-bottom: 0; }
   font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere;
 }
 .kv.wide dd .path { display: block; margin-top: 2px; }
-.charts { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin: 8px 0 28px; }
+.charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; margin: 8px 0 28px; }
 .charts .wide { grid-column: 1 / -1; }
 .chart {
   background: var(--card); color: var(--ink1); border: 1px solid var(--edge); border-radius: 14px;
@@ -544,6 +613,32 @@ details.drawer .scroll { margin-bottom: 14px; }
 .legend .infrastructure_invalid, .legend .other { background: var(--ink3); }
 .legend .evaluator_invalid { background: var(--warn); }
 .legend .champion { background: var(--accent); }
+.legend .dot { background: var(--ink2); }
+.legend .pass, .legend .up { background: var(--good); }
+.legend .fail, .legend .down { background: var(--bad); }
+.legend .na, .legend .same { background: var(--ink3); opacity: .45; }
+
+/* ── row charts and the verdict grid ── */
+.rowlab { fill: var(--ink1); font-size: 10.5px; font-family: var(--sans); }
+.rowsub { fill: var(--ink3); }
+.hit { fill: transparent; }
+.hot > .hit { fill: var(--hair2); }
+.bell-l { stroke: var(--ink3); stroke-width: 2; }
+.bell-a { fill: var(--card); stroke: var(--ink2); stroke-width: 1.5; }
+.bell-b { fill: var(--ink2); }
+.bell.up .bell-l { stroke: var(--good); }
+.bell.up .bell-b { fill: var(--good); }
+.bell.down .bell-l { stroke: var(--bad); }
+.bell.down .bell-b { fill: var(--bad); }
+.hbin { fill: var(--data); opacity: .8; }
+.hmean { stroke: var(--ink1); stroke-width: 1.5; }
+.cell.pass { fill: var(--good); }
+.cell.fail { fill: var(--bad); }
+.cell.na { fill: var(--track); }
+.cell.hot { stroke: var(--ink1); stroke-width: 1.5; }
+.chart [data-row] { cursor: pointer; }
+/* Focus shows as the hover state does: the row lit, the cell outlined. */
+.chart [data-row]:focus { outline: none; }
 .bars { display: flex; height: 26px; border-radius: 6px; overflow: hidden; border: 1px solid var(--hair); }
 .bars span { display: block; height: 100%; }
 .bars .completed { background: var(--good); }
@@ -562,13 +657,14 @@ tr.tdetail > td { padding: 0 0 10px !important; }
   font-family: var(--sans);
 }
 .trial-panel .kv { grid-template-columns: 112px 1fr; }
-.trial-panel pre.out {
+.trial-panel pre.out, .trace pre.out {
   margin: 0; padding: 8px 10px; background: var(--bg); border: 1px solid var(--hair);
   border-radius: 7px; font-size: 11.5px; line-height: 1.5; white-space: pre-wrap;
   word-break: break-word; max-height: 240px; overflow: auto;
 }
 .trial-panel .why { color: var(--ink2); font-size: 12px; line-height: 1.5; margin-top: 2px; }
 .tr-count { font-size: 11.5px; color: var(--ink3); margin: 2px 0 6px; }
+.tr-sum { font: 11.5px var(--mono); color: var(--ink2); margin: 0 0 8px; }
 .msg {
   border: 1px solid var(--hair); border-radius: 8px; padding: 7px 10px; margin: 0 0 6px;
   background: var(--card);
@@ -593,7 +689,45 @@ tr.tdetail > td { padding: 0 0 10px !important; }
 .msg.nested { margin: 5px 0 0; }
 details.raw > summary { cursor: pointer; font-size: 11.5px; color: var(--ink3); padding: 4px 0; }
 
-/* ── chart hover ── */
+/* ── guidance: what a view, a field or a setting is, and the docs page that says more ── */
+a.doc { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+a.doc::after { content: " \2197"; }
+.guide {
+  max-width: 86ch; margin: 0 0 26px; background: var(--card); border: 1px solid var(--hair);
+  border-left: 3px solid var(--brand); border-radius: 0 var(--r) var(--r) 0;
+}
+.guide > summary {
+  cursor: pointer; padding: 10px 16px; color: var(--ink2);
+  font: 600 11.5px var(--mono); letter-spacing: .08em; text-transform: uppercase;
+}
+.guide ol { margin: 0; padding: 0 20px 4px 38px; font-size: 13.5px; line-height: 1.6; }
+.guide li { margin-bottom: 6px; }
+.guide code { padding: 1px 5px; border-radius: 4px; background: var(--hair2); font: 12px var(--mono); }
+.guide dl {
+  display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px;
+  margin: 8px 20px 4px; font-size: 12.5px; color: var(--ink2);
+}
+.guide dt { font-weight: 600; color: var(--ink1); }
+.guide dd { margin: 0; }
+.guide-links { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 20px 14px; font-size: 13px; }
+.help {
+  appearance: none; flex: none; width: 18px; height: 18px; padding: 0; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 50%; background: var(--card); color: var(--ink2);
+  font: 600 11px/1 var(--mono);
+}
+.help:hover, .help[aria-expanded="true"] { background: var(--ink1); border-color: var(--ink1); color: var(--bg); }
+.help-pop {
+  position: fixed; z-index: 40; width: 340px; padding: 14px 16px;
+  border: 1px solid var(--edge); border-radius: var(--r); background: var(--pop); box-shadow: var(--shadow);
+  font: 13px/1.55 var(--sans); letter-spacing: 0; text-transform: none; color: var(--ink2);
+}
+.help-pop b { display: block; margin-bottom: 4px; font: 600 13px var(--mono); color: var(--ink1); }
+.help-pop p { margin: 0 0 8px; }
+.help-pop .values { color: var(--ink3); }
+.evsum { margin: 0 0 14px; font-size: 13px; line-height: 1.55; color: var(--ink2); }
+.evlab { display: inline-flex; align-items: center; gap: 8px; }
+
+/* ── tooltips, and what a hovered chart mark does ── */
 .chart [data-cand] { cursor: pointer; }
 .col, .eff-row, .rs-row { transition: opacity .12s; }
 svg.hovering :is(.pt, .col, .eff-row, .rs-row):not(.hot) { opacity: .3; }
@@ -603,19 +737,30 @@ svg.hovering :is(.pt, .col, .eff-row, .rs-row):not(.hot) { opacity: .3; }
 .chart[data-focus] .pt { opacity: .2; }
 .chart[data-focus="feasible"] .pt.feasible, .chart[data-focus="infeasible"] .pt.infeasible,
 .chart[data-focus="ineligible"] .pt.ineligible, .chart[data-focus="champion"] .pt.champion { opacity: 1; }
-.chart-tip {
+.tip {
   position: fixed; z-index: 50; pointer-events: none; max-width: 340px;
   padding: 10px 13px; border: 1px solid var(--edge); border-radius: 8px;
   background: var(--pop); color: var(--ink2); font: 12px/1.5 var(--mono);
   box-shadow: var(--shadow); overflow-wrap: anywhere;
 }
-.chart-tip b { display: block; font-size: 13.5px; color: var(--ink1); }
-.chart-tip .hint { margin-top: 4px; color: var(--ink3); }
+.tip b { display: block; font-size: 13.5px; color: var(--ink1); }
+.tip .hint { margin-top: 4px; color: var(--ink3); }
+/* A label that explains itself on hover. */
+[data-term], th[data-tip], .stat[data-tip], .mode[data-tip] { cursor: help; }
+th[data-term], th[data-tip], .cap[data-term] {
+  text-decoration: underline dotted var(--line); text-underline-offset: 4px;
+}
 
 /* ── narrow screens: the sidebar becomes a strip under the bar ── */
 @media (max-width: 1080px) {
-  .charts { grid-template-columns: 1fr; }
-  .cols { grid-template-columns: 1fr; gap: 16px; }
+  .champ { grid-template-columns: minmax(0, 1fr); padding: 18px; }
+  .champ-gain { text-align: left; }
+  .champ-name, .champ-delta { font-size: 30px; }
+  .win { grid-template-columns: minmax(0, 1fr) auto; }
+  .win-bars { grid-column: 1 / -1; grid-row: 2; }
+  .win-cases { text-align: left; }
+  .charts { grid-template-columns: minmax(0, 1fr); }
+  .cols { grid-template-columns: minmax(0, 1fr); gap: 16px; }
   .list { max-height: 220px; overflow-y: auto; }
   .hero { flex-wrap: wrap; gap: 16px; }
   .stats { flex-wrap: wrap; gap: 18px; }
@@ -631,10 +776,17 @@ svg.hovering :is(.pt, .col, .eff-row, .rs-row):not(.hot) { opacity: .3; }
     gap: 6px 22px; padding: 12px 16px; border-right: 0; border-bottom: 1px solid var(--hair);
   }
   .slug { width: 100%; padding: 0; font-size: 18px; }
+  .navlinks { display: none; }
+  .nav-foot { flex-direction: row; flex-wrap: wrap; width: 100%; margin: 0; padding: 0; border-top: 0; gap: 4px 18px; }
   .tabs { flex-direction: row; flex-wrap: wrap; }
   .tab, .sections.lonely .tab { padding: 5px 10px; }
   .sec { padding: 2px 10px; }
   main { padding: 22px 16px 48px; }
+}
+
+/* ── short windows: the sidebar scrolls with the page, so it never takes the scroll for itself ── */
+@media (max-height: 720px) and (min-width: 1081px) {
+  .sections { position: static; height: auto; overflow-y: visible; }
 }
 
 @media (prefers-reduced-motion: reduce) {

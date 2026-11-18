@@ -47,12 +47,22 @@ const scoreBar = score => `<span class="bar2"><span class="num">${esc(fmt(score)
   + `<span class="fill" style="width:${Math.round(Math.max(0, Math.min(1, score || 0)) * 100)}%"></span>`
   + '</span></span>';
 
+/** Fill a picker, keeping `want` selected if it is still on offer. Returns what ended up chosen. */
+function fillPick(id, options, want) {
+  const chosen = options.some(o => o.value === want) ? want : (options[0] || {}).value;
+  $(id).innerHTML = options.map(o =>
+    `<option value="${esc(o.value)}"${o.value === chosen ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+  return chosen;
+}
+
 const json = v => `<span class="mono">${esc(JSON.stringify(v, null, 1))}</span>`;
 const pre = v => v == null ? '&mdash;' : json(v);
 
 /* ══════════ transport ══════════ */
 
-const TOKEN = new URLSearchParams(location.search).get('t') || '';
+/* The server writes the token into the document; a link opened with `?t=` still works without that. */
+const TOKEN = (document.querySelector('meta[name="strands-evals-token"]') || {}).content
+  || new URLSearchParams(location.search).get('t') || '';
 let MODE = 'standalone', ROOT = '', READONLY = true, DEPTH = null;
 
 async function api(path, opts) {
@@ -75,13 +85,10 @@ const SECTION_OF = {
   'opt-progress': 'optimization', 'opt-candidates': 'optimization', 'opt-tunables': 'optimization',
   'opt-trade': 'optimization',
 };
-/* Older view names that saved links may still carry. */
-const VIEW_ALIAS = { optimization: 'opt-overview', 'opt-results': 'opt-overview' };
-
 function show(view, opts) {
-  view = VIEW_ALIAS[view] || view;
-  if (!SECTION_OF[view]) view = 'runs';
+  if (!SECTION_OF[view] || (SECTION_OF[view] === 'optimization' && !OPT_RUNS.length)) view = 'runs';
   const section = SECTION_OF[view];
+  const moved = !$('v-' + view).classList.contains('on');
   app.querySelectorAll('.sec').forEach(s => s.classList.toggle('on', s.dataset.sec === section));
   app.querySelectorAll('.tab').forEach(t => {
     t.classList.toggle('on', t.dataset.view === view);
@@ -103,7 +110,10 @@ function show(view, opts) {
     'opt-trade': (run && run.events_path) || 'no optimizer run loaded',
   }[view];
   $('path').textContent = where;
-  if (!opts || !opts.silent) writeHash(view);
+  if (opts && opts.silent) return;
+  /* A view moved to starts at its top, where its heading and any notice are. */
+  if (moved) window.scrollTo(0, 0);
+  writeAddress(view);
 }
 app.querySelectorAll('.tab').forEach(t => t.onclick = () => show(t.dataset.view));
 app.querySelectorAll('.sec').forEach(s => s.onclick = () => {
@@ -117,30 +127,3 @@ app.addEventListener('keydown', e => {
   e.target.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 });
 const currentView = () => (app.querySelector('.tab.on') || {}).dataset?.view || 'runs';
-
-function writeHash(view) {
-  const parts = [];
-  if (view) parts.push('tab=' + view);
-  if (selRun >= 0 && RUNS[selRun]) parts.push('run=' + encodeURIComponent(RUNS[selRun].id));
-  if (cases[sel] && cases[sel].name) parts.push('case=' + encodeURIComponent(cases[sel].name));
-  if (SECTION_OF[view] === 'optimization' && OPT_RUNS[optSel]) {
-    parts.push('opt=' + encodeURIComponent(OPT_RUNS[optSel].id));
-  }
-  const hash = parts.length ? '#' + parts.join('&') : '';
-  if (hash === location.hash) return;
-  /* On file:// the origin is opaque and replaceState throws SecurityError: fall back to the hash. */
-  try {
-    history.replaceState(null, '', location.pathname + location.search + hash);
-  } catch {
-    if (hash) location.hash = hash;
-  }
-}
-function readHash() {
-  const out = {};
-  (location.hash.replace(/^#/, '').split('&')).forEach(pair => {
-    const eq = pair.indexOf('=');
-    if (eq <= 0) return;
-    try { out[pair.slice(0, eq)] = decodeURIComponent(pair.slice(eq + 1)); } catch { /* malformed escape */ }
-  });
-  return out;
-}

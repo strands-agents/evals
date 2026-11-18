@@ -1,95 +1,8 @@
 'use strict';
 
-/* ── charts ──
-   Hand-rolled SVG: the page must work with no server, no network and no build step. */
-
-/* `t` holds the axis title above the plot, `b` two rows under it: tick labels, then the axis name. */
-const W = 640, H = 244, PAD = { t: 26, r: 16, b: 46, l: 48 };
-const IN_W = W - PAD.l - PAD.r, IN_H = H - PAD.t - PAD.b;
-const FLOOR = PAD.t + IN_H;
-
-const svg = inner => `<svg viewBox="0 0 ${W} ${H}" role="img">`
-  + `<rect class="plot" x="${PAD.l}" y="${PAD.t}" width="${IN_W}" height="${IN_H}"/>${inner}</svg>`;
-
-/* Round steps (1, 2, 2.5 or 5 of a power of ten), with the domain widened out to them. */
-function niceTicks(lo, hi, want) {
-  if (!(isFinite(lo) && isFinite(hi))) return { lo: 0, hi: 1, step: 0.5, ticks: [0, 0.5, 1] };
-  if (hi <= lo) { const pad = Math.abs(hi) * 0.1 || 1; lo = hi - pad; hi = hi + pad; }
-  /* Divided by the tick count, not the gaps, so the smaller candidate step is chosen. */
-  const n = Math.max(2, want || 5);
-  const raw = (hi - lo) / n;
-  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
-  const step = ([1, 2, 2.5, 5, 10].find(m => m * mag >= raw * (1 - 1e-9)) || 10) * mag;
-  const first = Math.floor(lo / step + 1e-9) * step;
-  const last = Math.ceil(hi / step - 1e-9) * step;
-  const ticks = [];
-  for (let i = 0; first + i * step <= last + step * 1e-6; i++) {
-    const v = first + i * step;
-    // Avoids printing zero as "-0".
-    ticks.push(Math.abs(v) < step * 1e-9 ? 0 : v);
-  }
-  return { lo: first, hi: last, step, ticks };
-}
-
-/** How many decimals a step needs, so 0.25 labels as "0.25" and 20000 does not label as "20000.00". */
-const dpOf = step => {
-  const s = step.toPrecision(12).replace(/0+$/, '');
-  const dot = s.indexOf('.');
-  return dot < 0 || /e/i.test(s) ? 0 : Math.min(6, s.length - dot - 1);
-};
-const tickText = (v, step) => Math.abs(v) >= 1e4 ? compact(v) : v.toFixed(dpOf(step));
-
-/* `lo` greater than `hi` runs the axis backwards. */
-function yAxis(lo, hi, label) {
-  const t = niceTicks(Math.min(lo, hi), Math.max(lo, hi), 5);
-  const [from, to] = lo > hi ? [t.hi, t.lo] : [t.lo, t.hi];
-  const span = (to - from) || 1;
-  const y = v => FLOOR - ((v - from) / span) * IN_H;
-  let out = `<line class="ax" x1="${PAD.l}" y1="${PAD.t}" x2="${PAD.l}" y2="${FLOOR}"/>`;
-  for (const v of t.ticks) {
-    const yy = y(v);
-    out += `<line class="grid-l" x1="${PAD.l}" y1="${yy}" x2="${PAD.l + IN_W}" y2="${yy}"/>`
-      + `<text class="tick" x="${PAD.l - 7}" y="${yy + 3.5}" text-anchor="end">`
-      + `${esc(tickText(v, t.step))}</text>`;
-  }
-  if (label) out += `<text class="axlab" x="2" y="${PAD.t - 11}">${esc(label)}</text>`;
-  return { y, out, lo: from, hi: to };
-}
-
-/* `lo` greater than `hi` runs the axis backwards. */
-function xAxis(lo, hi, label) {
-  const back = lo > hi;
-  const t = niceTicks(Math.min(lo, hi), Math.max(lo, hi), 5);
-  const [from, to] = back ? [t.hi, t.lo] : [t.lo, t.hi];
-  const span = (to - from) || 1;
-  const x = v => PAD.l + ((v - from) / span) * IN_W;
-  let out = `<line class="ax" x1="${PAD.l}" y1="${FLOOR}" x2="${PAD.l + IN_W}" y2="${FLOOR}"/>`;
-  for (const v of t.ticks) {
-    const xx = x(v);
-    // Anchored by where it landed, not by its place in the list: the list may run right to left.
-    const anchor = xx <= PAD.l + 1 ? 'start' : xx >= PAD.l + IN_W - 1 ? 'end' : 'middle';
-    out += `<line class="grid-l" x1="${xx}" y1="${PAD.t}" x2="${xx}" y2="${FLOOR}"/>`
-      + `<text class="tick" x="${xx}" y="${FLOOR + 14}" text-anchor="${anchor}">`
-      + `${esc(tickText(v, t.step))}</text>`;
-  }
-  if (label) {
-    out += `<text class="axlab" x="${PAD.l + IN_W / 2}" y="${H - 6}" text-anchor="middle">`
-      + `${esc(label)}</text>`;
-  }
-  return { x, out, lo: from, hi: to };
-}
+/* ── the optimizer's charts ── */
 
 /* ── the bottom of a chart whose x axis is a list, not a scale ── */
-const shortId = id => {
-  const s = String(id == null ? '' : id);
-  return s.length <= 8 ? s : s.slice(0, 6) + '…';
-};
-
-/* The SVG is built as a string, so text cannot be measured. Label widths are estimated:
-   10.5px of the page's sans runs about 6.1px a glyph. */
-const GLYPH = 6.1;
-const labWidth = s => s.length * GLYPH + 8;
-
 function candLabel(p, slot) {
   const id = String(p.candidate_id == null ? '' : p.candidate_id);
   const num = p.number == null ? '' : `#${p.number}`;
@@ -128,15 +41,6 @@ function candAxis(items, x) {
     });
   }
   return out;
-}
-
-/** A figure written next to a mark, turned inward when the mark is near an edge. */
-function flag(px, py, label) {
-  const anchor = px > PAD.l + IN_W - 52 ? 'end' : px < PAD.l + 52 ? 'start' : 'middle';
-  const dx = anchor === 'end' ? 4 : anchor === 'start' ? -4 : 0;
-  const dy = py < PAD.t + 14 ? 15 : -9;      // under the mark when there is no room above it
-  return `<text class="vlab" x="${px + dx}" y="${py + dy}" text-anchor="${anchor}">`
-    + `${esc(label)}</text>`;
 }
 
 function objectiveChart(d) {
@@ -447,4 +351,47 @@ function statusChart(d) {
     .map(s => `${esc(s)} ${d.bySplit[s]}`).join(' · ');
   return `<div class="bars">${bars}</div><div class="legend">${legend}</div>`
     + (splits ? `<div class="legend"><span>${splits}</span></div>` : '');
+}
+
+/* ── case by case: the champion against the baseline ── */
+
+/** What both candidates' trials can be compared on: each evaluator's score, then what a trial cost. */
+function caseMeasures(d) {
+  const trials = [d.baselineId, d.champion].flatMap(id => d.trialsBy.get(id) || []);
+  const score = v => (v && typeof v === 'object' ? v.score : v);
+  const number = v => (typeof v === 'number' ? v : null);
+  const measures = [...new Set(trials.flatMap(t => Object.keys(t.evaluations || {})))].map(metric => {
+    const goal = d.goals.find(g => g.metric === metric);
+    return {
+      value: 'm:' + metric, label: metric, axis: metric,
+      better: goal && goal.dir === 'min' ? 'lower' : 'higher',
+      of: t => number(score((t.evaluations || {})[metric])),
+    };
+  });
+  for (const [key, label] of [['tokens', 'Tokens'], ['seconds', 'Seconds']]) {
+    if (!trials.some(t => (t.usage || {})[key] > 0)) continue;
+    measures.push({ value: 'u:' + key, label, axis: key, better: 'lower', of: t => number((t.usage || {})[key]) });
+  }
+  return measures;
+}
+
+/** `{ name, split, from, to }` per case: the mean of a measure under the baseline and under the champion,
+    over the trials that completed. Held-out cases come first. */
+function caseRows(d, measure) {
+  const means = id => {
+    const by = new Map();
+    for (const t of d.trialsBy.get(id) || []) {
+      const v = t.status && t.status !== 'completed' ? null : measure.of(t);
+      if (v == null) continue;
+      const key = `${t.split || ''}\u0000${t.case_name}`;
+      by.set(key, (by.get(key) || []).concat(v));
+    }
+    return new Map([...by].map(([key, vs]) => [key, vs.reduce((a, b) => a + b, 0) / vs.length]));
+  };
+  const before = means(d.baselineId), after = means(d.champion);
+  const rank = split => (['test', 'validation', 'train'].indexOf(split) + 1) || 4;
+  return [...new Set([...before.keys(), ...after.keys()])].map(key => {
+    const [split, name] = key.split('\u0000');
+    return { name, split, from: before.has(key) ? before.get(key) : null, to: after.has(key) ? after.get(key) : null };
+  }).sort((a, b) => rank(a.split) - rank(b.split) || a.name.localeCompare(b.name));
 }

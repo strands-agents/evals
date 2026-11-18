@@ -75,6 +75,7 @@ function deriveOptimization(events, config) {
   const measured = new Map();        // candidate -> {metric: mean}
   const fromTrials = new Map();      // candidate -> {metric: {sum, n}}
   const trialsBy = new Map();        // candidate -> [trial record], in log order
+  const labelled = new Map();        // candidate -> why the ranking labelled it as it did
   const metricNames = [];
   const seeMetric = name => { if (!metricNames.includes(name)) metricNames.push(name); };
 
@@ -118,6 +119,12 @@ function deriveOptimization(events, config) {
       }
       case 'label': {
         const label = e.label || {};
+        if (e.candidate_id) {
+          labelled.set(e.candidate_id, {
+            reason: typeof label.reason === 'string' ? label.reason : '',
+            unmet: Array.isArray(label.unmet_constraints) ? label.unmet_constraints.map(String) : [],
+          });
+        }
         if (!e.candidate_id || !label.measured || typeof label.measured !== 'object') break;
         const means = {};
         for (const [metric, value] of Object.entries(label.measured)) {
@@ -305,6 +312,7 @@ function deriveOptimization(events, config) {
 
   for (const p of proposals) {
     p.trials = trialsBy.get(p.candidate_id) || [];
+    p.label = labelled.get(p.candidate_id) || { reason: '', unmet: [] };
     p.splits = {};
     for (const t of p.trials) p.splits[t.split || 'unknown'] = (p.splits[t.split || 'unknown'] || 0) + 1;
     p.settings = diffSettings(p.candidate_id);
@@ -332,8 +340,8 @@ function deriveOptimization(events, config) {
   for (const b of ((cfg.search || {}).blocks || [])) {
     for (const key of ((b || {}).keys || [])) if (!blockOf.has(key)) blockOf.set(key, b.name || b.key);
   }
-  const space = (Array.isArray(cfg.space) ? cfg.space : []).map(row => {
-    const key = String((row || {}).key == null ? '' : row.key);
+  const space = (Array.isArray(cfg.space) ? cfg.space : []).filter(row => row && typeof row === 'object').map(row => {
+    const key = String(row.key == null ? '' : row.key);
     let active = 0, changed = 0;
     for (const p of points) {
       const values = valuesOf(p.candidate_id);
@@ -342,7 +350,7 @@ function deriveOptimization(events, config) {
     for (const p of proposals) if (p.changed_keys.includes(key)) changed++;
     return {
       key,
-      kind: (row || {}).kind || '',
+      kind: row.kind || '',
       min: typeof row.min_value === 'number' ? row.min_value : null,
       max: typeof row.max_value === 'number' ? row.max_value : null,
       log: !!row.log,
@@ -367,6 +375,7 @@ function deriveOptimization(events, config) {
     space,
     undeclared,
     baselineId,
+    trialsBy,
     config: cfg,
     proposals,
     points,

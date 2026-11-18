@@ -55,11 +55,13 @@ function note(msg, kind) {
   const el = $('saved');
   el.innerHTML = msg ? esc(msg) : '';
   el.classList.toggle('err', kind === 'err');
-  if (kind === 'stale') {
+  const offer = { stale: ['Reload from disk', () => selectRun(selRun, { force: true })],
+    gone: ['Download a copy', downloadExperiment] }[kind];
+  if (offer) {
     const btn = document.createElement('button');
     btn.className = 'btn reload';
-    btn.textContent = 'Reload from disk';
-    btn.onclick = () => selectRun(selRun, { force: true });
+    btn.textContent = offer[0];
+    btn.onclick = offer[1];
     el.appendChild(btn);
   }
 }
@@ -73,15 +75,25 @@ function evalNotes(index) {
   return index == null ? notes : notes.filter(n => n.index === index);
 }
 
+/* A chip names its settings and cuts a long value short: the whole of it is in the panel the chip opens. */
+const CHIP_VALUE = 44;
+const chipValue = v => {
+  const text = JSON.stringify(v);
+  return text.length > CHIP_VALUE ? text.slice(0, CHIP_VALUE).trimEnd() + '…' : text;
+};
+/* Prose settings get a text block to be read and edited in; the rest stay one line. */
+const isProse = (key, v) => typeof v === 'string' && (v.length > 60 || v.includes('\n') || key === 'rubric' || key === 'system_prompt');
+
 function renderEvaluators() {
   $('evs').innerHTML = evals.length ? evals.map((e, i) => {
     const type = e.evaluator_type || 'unknown';
     const cfg = CONFIG_KEYS(e)
-      .map(k => `<span class="ck">${esc(k)}</span>=${esc(JSON.stringify(e[k]))}`).join(' · ');
+      .map(k => `<span class="ck">${esc(k)}</span>=${esc(chipValue(e[k]))}`).join(' · ');
     const notes = evalNotes(i);
     const worst = notes.some(n => n.level === 'error') ? 'error' : (notes.length ? 'warning' : '');
     return `<span class="evchip edit${i === evOpen ? ' on' : ''}${worst ? ' ' + worst : ''}" tabindex="0" role="button"`
-      + ` data-ev="${i}" title="${worst ? esc(notes.map(n => n.message).join('; ')) : 'click to edit'}">`
+      + ` aria-expanded="${i === evOpen}" data-ev="${i}"`
+      + ` title="${worst ? esc(notes.map(n => n.message).join('; ')) : 'Select to read and edit its settings'}">`
       + `<b>${esc(e.name || type)}</b>`
       + (e.name ? `<span class="t">${esc(type)}</span>` : '')
       + (cfg ? `<span class="c mono">${cfg}</span>` : '')   // already escaped, per key and value
@@ -99,6 +111,12 @@ function renderEvaluators() {
   renderEvalForm();
 }
 
+/* What an evaluator checks, in the library's own words when the server supplied them, and its docs page. */
+function evaluatorSummary(type) {
+  const help = helpFor('evaluator', type);
+  return `<p class="evsum">${esc(help.text)} ${docLink(help.doc[0], help.doc[1], 'Read the docs')}</p>`;
+}
+
 /* Only keys already in the file are editable: `Experiment.from_dict` passes every key except
    `evaluator_type` to the constructor, so a new key would raise TypeError on load. */
 function renderEvalForm() {
@@ -112,14 +130,20 @@ function renderEvalForm() {
   box.innerHTML = `<div class="evhead"><b>${esc(e.name || e.evaluator_type)}</b>`
     + `<span class="path mono">${esc(e.evaluator_type)}</span><span class="grow"></span>`
     + '<button class="btn" data-evclose="1">Close</button></div>'
+    + evaluatorSummary(e.evaluator_type)
     + '<div class="grid">'
     + editable.map(k => {
       const v = e[k];
+      const prose = isProse(k, v);
       const type = typeof v === 'boolean' ? 'checkbox' : (typeof v === 'number' ? 'number' : 'text');
       const attrs = type === 'checkbox' ? (v ? 'checked' : '') : `value="${esc(v == null ? '' : v)}"`;
-      return `<label for="ev-${esc(k)}">${esc(k)}</label>`
-        + `<input class="f" id="ev-${esc(k)}" type="${type}" data-evk="${esc(k)}" ${attrs}`
-        + (k === 'name' ? ' placeholder="defaults to the class name"' : '') + '>';
+      const rows = prose ? Math.min(16, Math.max(3, Math.ceil(v.length / 95) + v.split('\n').length - 1)) : 0;
+      return `<span class="evlab${prose ? ' top' : ''}"><label for="ev-${esc(k)}">${esc(k)}</label>`
+        + `${helpFor('setting', `${e.evaluator_type}.${k}`) ? helpButton('setting', `${e.evaluator_type}.${k}`, k) : ''}</span>`
+        + (prose
+          ? `<textarea class="f" id="ev-${esc(k)}" rows="${rows}" data-evk="${esc(k)}">${esc(v)}</textarea>`
+          : `<input class="f" id="ev-${esc(k)}" type="${type}" data-evk="${esc(k)}" ${attrs}`
+            + (k === 'name' ? ' placeholder="defaults to the class name"' : '') + '>');
     }).join('')
     + '</div>'
     + (frozen.length
@@ -181,7 +205,7 @@ const PROP_GLYPHS = [['expected_output', 'O'], ['expected_assertion', 'A'],
 /* An empty dict or list means the same as an absent key to every evaluator. */
 const props = c => PROP_GLYPHS
   .filter(([k]) => c[k] != null && (typeof c[k] !== 'object' || Object.keys(c[k]).length))
-  .map(([k, g]) => `<span title="${k}">${g}</span>`).join('');
+  .map(([k, g]) => `<span title="This case sets ${k}.">${g}</span>`).join('');
 
 function renderList() {
   const q = $('case-find').value.trim().toLowerCase();
@@ -192,7 +216,7 @@ function renderList() {
     return `<li data-i="${i}" tabindex="0" class="${i === sel ? 'on' : ''}" title="${edited ? 'unsaved changes' : esc(c.name || '(unnamed)')}">`
       + `<span class="dot${edited ? ' edited' : ''}"></span>`
       + `<span class="nm">${esc(c.name || '(unnamed)')}</span>`
-      + (isDraft(c) ? '<span class="badge">draft</span>' : '')
+      + (isDraft(c) ? '<span class="badge" data-term="draft">draft</span>' : '')
       + `<span class="props mono">${props(c)}</span></li>`;
   }).join('') || '<li class="empty">No match</li>';
   const d = dirtyCases().length;
@@ -229,7 +253,8 @@ function renderForm() {
     } else {
       ctl = `<textarea class="f" rows="${f.rows}" data-k="${f.k}"${f.required ? ' data-required="1"' : ''} placeholder="empty">${esc(v == null ? '' : v)}</textarea>`;
     }
-    return `<div class="field" role="group" aria-labelledby="label-${f.k}"><label id="label-${f.k}">${f.l}</label>${ctl}`
+    return `<div class="field" role="group" aria-labelledby="label-${f.k}">`
+      + `<div class="flabel"><label id="label-${f.k}">${f.l}</label>${helpButton('field', f.k, f.l)}</div>${ctl}`
       + (f.hint ? `<div class="hint">${f.hint}</div>` : '') + '</div>';
   }).join('');
 }
@@ -353,7 +378,7 @@ $('review-bar').onclick = e => {
 };
 
 document.addEventListener('keydown', e => {
-  if (!review) return;
+  if (!review || currentView() !== 'experiment') return;
   const tag = (e.target.tagName || '').toLowerCase();
   if (tag === 'input' || tag === 'textarea' || tag === 'select') {
     if (e.key === 'Escape') e.target.blur();
@@ -370,7 +395,7 @@ $('case-list').onclick = e => {
   const li = e.target.closest('li[data-i]');
   if (!li) return;
   sel = +li.dataset.i;
-  renderForm(); writeHash(currentView());
+  renderForm(); writeAddress(currentView(), true);
 };
 
 $('form').addEventListener('input', e => {
@@ -536,7 +561,7 @@ $('save').onclick = async () => {
     } catch (err) {
       if (expMeta === meta) {
         refreshDirty();
-        note(err.message, err.status === 409 ? 'stale' : 'err');
+        note(err.message, { 409: 'stale', 404: 'gone' }[err.status] || 'err');
       }
     } finally {
       editor.inert = false;
@@ -544,17 +569,21 @@ $('save').onclick = async () => {
     return;
   }
 
-  const text = JSON.stringify(document_, null, 2) + '\n';
+  downloadExperiment();
+  markSaved();
+  refreshDirty();
+};
+
+function downloadExperiment() {
+  const text = JSON.stringify({ cases, evaluators: evals }, null, 2) + '\n';
   const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
   const a = Object.assign(document.createElement('a'), {
     href: url, download: (expMeta && expMeta.name) || 'experiment.json',
   });
   a.click();
   if (URL.revokeObjectURL) URL.revokeObjectURL(url);
-  markSaved();
-  refreshDirty();
   note(`downloaded ${a.download} · ${plural(cases.length, 'case')} · ${KB(text.length)}`);
-};
+}
 
 $('revert').onclick = () => {
   const d = countDirty();

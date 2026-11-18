@@ -17,11 +17,68 @@ function aimedMetrics(d) {
   return set;
 }
 
+/* `d.goals` holds only goals the trials measured. Directions here come from the record's goals. */
+const goalDir = (d, metric) => ((((d.facts || {}).goals || []).find(g => g.metric === metric) || {}).dir) || null;
+
+/* ── the champion, at a glance ── */
+
+/** How the objective's interval reads: `[kind, words]`, or null when the report has no objective. */
+function gainReading(o) {
+  if (!o || typeof o.mean_diff !== 'number') return null;
+  if (typeof o.ci_low !== 'number' || typeof o.ci_high !== 'number' || o.ci_low === o.ci_high) return ['flat', 'no interval'];
+  return o.ci_low > 0 ? ['good', 'clear of zero'] : o.ci_high < 0 ? ['bad', 'a regression'] : ['flat', 'not shown'];
+}
+
+/* One goal metric under the baseline and under the champion: bars to compare, the change, and how
+   many cases went the goal's way. */
+function winRow(d, m) {
+  const dir = goalDir(d, m.metric);
+  const delta = m.after - m.before;
+  const won = !delta || !dir ? 'same' : (delta > 0) === (dir === 'max') ? 'up' : 'down';
+  const show = v => Math.abs(v) >= 10 ? nice(v) : fine(v);
+  const most = Math.max(Math.abs(m.before), Math.abs(m.after)) || 1;
+  const bar = (cls, v) => `<i class="${cls}" style="width:${((Math.abs(v) / most) * 100).toFixed(1)}%"></i>`;
+  const measure = caseMeasures(d).find(x => x.value === 'm:' + m.metric || x.value === 'u:' + m.metric);
+  const both = measure ? caseRows(d, measure).filter(r => r.from != null && r.to != null) : [];
+  const better = both.filter(r => r.to !== r.from && (r.to > r.from) === (measure.better !== 'lower')).length;
+  return `<div class="win ${won}"><span class="win-name">${esc(m.metric)}`
+    + `${dir ? `<span class="win-dir">${dir === 'max' ? '↑ higher' : '↓ lower'} is better</span>` : ''}</span>`
+    + `<span class="win-bars">${bar('was', m.before)}${bar('now', m.after)}</span>`
+    + `<span class="win-nums">${esc(show(m.before))} → <b>${esc(show(m.after))}</b></span>`
+    + `<span class="win-delta">${won === 'up' ? '▲' : won === 'down' ? '▼' : ''} ${esc((delta > 0 ? '+' : '') + show(delta))}</span>`
+    + `<span class="win-cases">${both.length ? `better on ${better} of ${plural(both.length, 'case')}` : ''}</span></div>`;
+}
+
+function championHero(d) {
+  const r = d.result;
+  if (!d.champion || !r) {
+    const lead = d.bestCandidate;
+    return '<div class="champ none"><div class="champ-id"><span class="champ-k">Champion</span>'
+      + '<span class="champ-name">not picked yet</span><span class="champ-from">'
+      + (lead ? `Leading on training: <b>${esc(lead.candidate_id)}</b> at ${esc(fmt(lead.objective))}.`
+        : 'No candidate has been scored yet.') + '</span></div></div>';
+  }
+  const id = `<span class="champ-k">Champion</span><span class="champ-name">${esc(d.champion)}</span>`;
+  if (d.champion === d.baselineId) {
+    return `<div class="champ held"><div class="champ-id">${id}<span class="champ-from">The baseline held. Nothing `
+      + 'feasible beat it, so the run ends on the configuration it started from.</span></div></div>';
+  }
+  const from = !r.baselineId ? 'picked on the validation split; the report has no baseline to compare it with'
+    : r.heldOut ? `against ${esc(r.baselineId)}, the baseline, on ${plural(r.cases || 0, 'held-out case')}`
+      : `against ${esc(r.baselineId)}, the baseline, on the validation split the search chose on`;
+  const reading = gainReading(r.objective);
+  const gain = reading
+    ? `<div class="champ-gain ${reading[0]}"><span class="champ-delta">${esc(signed(r.objective.mean_diff))}</span>`
+      + `<span class="champ-what">objective<span class="champ-read">${esc(reading[1])}</span></span></div>` : '';
+  const aimed = aimedMetrics(d);
+  const rows = r.metrics.filter(m => m.before != null && m.after != null && (!aimed.size || aimed.has(m.metric)));
+  return `<div class="champ won"><div class="champ-id">${id}<span class="champ-from">${from}</span></div>${gain}`
+    + (rows.length ? `<div class="champ-board">${rows.map(m => winRow(d, m)).join('')}</div>` : '') + '</div>';
+}
+
 function resultStrip(d) {
   const r = d.result;
   if (!r) return '';
-  /* `d.goals` holds only goals the trials measured. Directions here come from the record's goals. */
-  const goalDir = m => ((((d.facts || {}).goals || []).find(g => g.metric === m) || {}).dir) || null;
   const rows = [];
   /* A `null` bound is no interval reported, and `ci_low === ci_high` has nothing to draw. */
   const interval = o => o && typeof o.ci_low === 'number' && typeof o.ci_high === 'number'
@@ -30,7 +87,7 @@ function resultStrip(d) {
     if (!interval(m.diff)) continue;      // only the goal metrics get a `difference` entry
     rows.push({
       label: m.metric,
-      dir: goalDir(m.metric),
+      dir: goalDir(d, m.metric),
       lo: m.diff.ci_low,
       hi: m.diff.ci_high,
       mean: typeof m.diff.mean_diff === 'number' ? m.diff.mean_diff : (m.diff.ci_low + m.diff.ci_high) / 2,
@@ -140,10 +197,10 @@ function resultCard(d) {
   const head = '<thead><tr><th>Metric</th><th>Baseline</th><th></th><th>Champion</th>'
     + '<th>Change</th><th title="of the change, resampled over the cases">95% interval</th>'
     + '<th title="champion ÷ baseline">× baseline</th></tr></thead>';
-  const table = `<table class="rtab">${head}<tbody>`
+  const table = `<div class="scroll"><table class="rtab">${head}<tbody>`
     + `${(lead.length ? lead : r.metrics).map(row).join('')}</tbody>`
     + (rest.length ? `<tbody class="rest" id="opt-rest" hidden>${rest.map(row).join('')}</tbody>` : '')
-    + '</table>'
+    + '</table></div>'
     + (rest.length
       ? `<button class="rmore" data-act="opt-rest">+ ${plural(rest.length, 'metric')} `
         + 'the run was not aiming at</button>'

@@ -39,3 +39,15 @@ strands-evals ui tests/ui/fixtures
 ```
 
 Point `ui` at any directory holding runs the optimizer wrote and it finds them the same way.
+
+## A folder with something in every view
+
+`make_ui_demo.py` writes a synthetic folder that fills every view of the page: a run with a report and
+last week's report to compare it against, recorded sessions, cases still in draft, a report that no
+longer matches its experiment, a report with no experiment, these example experiments unrun, two files
+the scan sets aside, a finished optimizer run and one still in progress.
+
+```bash
+python examples/make_ui_demo.py /tmp/evals-demo
+strands-evals ui /tmp/evals-demo
+```

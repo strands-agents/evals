@@ -16,14 +16,18 @@ function classify(o) {
 const stem = n => n.replace(/\.json$/i, '').replace(/(^|[._-])(experiment|exp|report|rep)$/i, '');
 
 function reportMeta(obj) {
-  const detailed = obj.detailed_results || [];
-  let failing = 0;
-  (obj.cases || []).forEach((_, i) => {
+  const detailed = obj.detailed_results || [], passes = obj.test_passes || [], rows = obj.cases || [];
+  let failing = 0, notApplicable = 0;
+  rows.forEach((_, i) => {
     const outs = detailed[i] || [];
     const declined = outs.length > 0 && outs.every(o => o && o.label === 'not_applicable' && o.test_pass);
-    if (!declined && (obj.test_passes || [])[i] === false) failing++;
+    if (declined) notApplicable++;
+    else if (i < passes.length && !passes[i]) failing++;
   });
-  return { overall_score: obj.overall_score, rows: (obj.cases || []).length, failing };
+  return {
+    overall_score: obj.overall_score, rows: rows.length, failing, not_applicable: notApplicable,
+    evaluators: [...new Set(rows.filter(r => r && typeof r === 'object').map(r => String(r.evaluator)))].sort(),
+  };
 }
 
 // Same pairing check as the server.
@@ -156,6 +160,7 @@ function optimizerRunsFrom(configs, logs, transcripts, effects) {
       /* Always a Map for a folder run, even empty: a served run reads transcripts on request. */
       transcripts: transcripts.get(dir) || new Map(),
       fromFolder: true,
+      has_effects: effects.has(dir),
       effectsDoc: (effects.get(dir) || {}).obj || null,
       ...logSummary(log.events),
       tuned_against: null,          // filled in by the caller, which holds the experiments
@@ -165,7 +170,25 @@ function optimizerRunsFrom(configs, logs, transcripts, effects) {
   return runs;
 }
 
-async function ingest(entries) {
+/* The directories the server's walk leaves out, to the same depth. `rootDepth` is 1 when every path
+   starts with the picked folder's own name, as a directory <input> reports them. */
+const SKIPPED_DIRS = ['node_modules', '__pycache__'];
+function scanned(path, rootDepth) {
+  const dirs = path.split('/').slice(rootDepth, -1);
+  return dirs.length <= SCAN_DEPTH && !dirs.some(d => d.startsWith('.') || SKIPPED_DIRS.includes(d));
+}
+
+/* A run directory's own storage, which the server prunes too. `transcripts/` is held aside below instead. */
+const RUN_OWN_DIRS = ['candidates', 'front'];
+function withoutRunStorage(entries) {
+  const dirsWith = name => new Set(entries.filter(e => e.path.split('/').pop() === name).map(e => dirOf(e.path)));
+  const logs = dirsWith('events.jsonl');
+  const runs = [...dirsWith('run.json')].filter(dir => logs.has(dir)).map(dir => (dir === '.' ? '' : dir + '/'));
+  return entries.filter(e => !runs.some(run => RUN_OWN_DIRS.some(own => e.path.startsWith(run + own + '/'))));
+}
+
+async function ingest(all, rootDepth = 0) {
+  const entries = withoutRunStorage(all.filter(e => scanned(e.path, rootDepth)));
   const found = [];
   skipped = [];
   const logs = new Map(), configs = new Map(), transcripts = new Map(), effects = new Map();
@@ -281,12 +304,12 @@ async function pickFolder() {
       for await (const [name, h] of handle.entries()) {
         if (h.kind === 'file') {
           if (/\.jsonl?$/i.test(name)) entries.push({ file: await h.getFile(), path: prefix + name });
-        } else if (depth < SCAN_DEPTH && !name.startsWith('.') && !['node_modules', '__pycache__'].includes(name)) {
+        } else if (depth < SCAN_DEPTH && scanned(prefix + name + '/x', 0)) {
           await walk(h, prefix + name + '/', depth + 1);
         }
       }
     };
-    await walk(dir, '', 1);
+    await walk(dir, '', 0);
     folderLabel = dir.name;
     showingSample = false;
     const found = await ingest(entries);
@@ -308,7 +331,8 @@ $('dirinput').onchange = async e => {
   const first = (files[0] && files[0].webkitRelativePath) || '';
   folderLabel = first.includes('/') ? first.slice(0, first.indexOf('/')) : 'selected folder';
   showingSample = false;
-  const found = await ingest(files.map(f => ({ file: f, path: f.webkitRelativePath || f.name })));
+  const rooted = first.includes('/') && files.every(f => (f.webkitRelativePath || '').startsWith(folderLabel + '/'));
+  const found = await ingest(files.map(f => ({ file: f, path: f.webkitRelativePath || f.name })), rooted ? 1 : 0);
   RUNS = found.runs;
   selRun = -1;
   renderRuns();

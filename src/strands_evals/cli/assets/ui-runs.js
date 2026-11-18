@@ -3,6 +3,7 @@
 let RUNS = [], selRun = -1, skipped = [], truncated = false, folderLabel = '';
 let showingSample = false;
 let scanError = '';                          // why the last scan failed, if it did
+let treeMark = null;                         // the server's fingerprint of the tree when it was last scanned
 
 /* ══════════ runs view ══════════ */
 
@@ -20,6 +21,9 @@ function renderRuns() {
     ? (READONLY ? 'served · read-only' : 'served · saves to disk')
     : 'standalone file · saves download';
   $('mode-tag').className = 'mode ' + (MODE === 'server' ? (READONLY ? 'ro' : 'live') : 'ro');
+  $('mode-tag').dataset.tip = MODE !== 'server' ? 'Opened without a server, so nothing can be written back. Save downloads a copy.'
+    : READONLY ? 'Served with --read-only. Cases can be read but not saved.'
+      : 'Served by strands-evals ui. Save writes the experiment file in place.';
   $('root-path').textContent = ROOT || folderLabel || '';
   $('runs-sub').textContent = MODE === 'server'
     ? `Everything ${DEPTH != null ? DEPTH + ' levels ' : ''}under the directory the CLI was started in.`
@@ -57,7 +61,8 @@ function renderRuns() {
   }).join('') : failed ? '' : blank(
     'Nothing to show here',
     MODE === 'server'
-      ? `No experiment or report JSON under ${esc(ROOT)}.`
+      ? `No experiment or report JSON under ${esc(ROOT)}. `
+        + docLink('quickstart/#run-your-first-evaluation', 'empty-runs', 'Create your first experiment')
       : 'Open a folder to look for experiments and reports.'));
 
   $('skips').innerHTML = skipped.length
@@ -93,10 +98,11 @@ async function rescan(keepSelection) {
   scanError = '';
   ROOT = res.root; DEPTH = res.depth; READONLY = res.read_only;
   RUNS = res.runs; skipped = res.skipped || []; truncated = !!res.truncated;
+  treeMark = res.fingerprint;
   selRun = keepSelection && previous ? RUNS.findIndex(r => r.id === previous) : -1;
   renderRuns();
 
-  await loadOptimizerRuns(res.optimizer_runs || []);
+  await loadOptimizerRuns(res.optimizer_runs || [], keepSelection);
   return res;
 }
 

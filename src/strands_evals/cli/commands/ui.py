@@ -10,7 +10,7 @@ import webbrowser
 from pathlib import Path
 
 from .._common import EXIT_BAD_INPUT, EXIT_OK, resolve_format
-from .._ui_server import DEFAULT_DEPTH, build_server, discover, server_url
+from .._ui_server import DEFAULT_DEPTH, build_server, discover, is_loopback, server_url
 
 TOKEN_ENV = "STRANDS_EVALS_UI_TOKEN"
 
@@ -75,6 +75,12 @@ def _run(args: argparse.Namespace) -> int:
         )
     else:
         print("  the token in that link is what authorizes the page; Ctrl-C to stop", file=sys.stderr)  # noqa: T201
+    if not is_loopback(args.host):
+        print(  # noqa: T201
+            f"  listening beyond this machine on {args.host}: anyone who can reach it and has that link can"
+            f" {'read' if args.read_only else 'read and write'} files under DIRECTORY, over unencrypted HTTP",
+            file=sys.stderr,
+        )
 
     if args.browser:
         # A headless box has no browser to open; the URL is already printed either way.
@@ -122,7 +128,8 @@ def add_subparser(
         default="127.0.0.1",
         help=(
             "address to bind (default: 127.0.0.1). This server reads and writes files in "
-            "DIRECTORY, so binding anything other than loopback exposes them to your network."
+            "DIRECTORY, so binding anything other than loopback exposes them to your network. "
+            "Use 0.0.0.0 inside a container, or a specific address to serve on one interface."
         ),
     )
     parser.add_argument(
@@ -140,8 +147,8 @@ def add_subparser(
         "--token",
         help=(
             f"authorize with this token instead of a fresh random one (or set ${TOKEN_ENV}). "
-            "With --port, keeps the URL the same across restarts so it can be bookmarked, at the cost "
-            "of being a secret you chose rather than one nobody can guess. Use a long value, and "
+            "With --port, keeps the printed link the same across restarts so that link can be bookmarked, "
+            "at the cost of being a secret you chose rather than one nobody can guess. Use a long value, and "
             "prefer --read-only if anyone else can reach loopback on this machine."
         ),
     )

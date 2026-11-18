@@ -10,23 +10,29 @@ Bound to loopback, but it reads and writes files under the served directory, so 
 
 from __future__ import annotations
 
+import functools
+import hashlib
+import html
 import inspect
+import ipaddress
 import json
 import logging
 import math
 import os
 import re
 import secrets
+import socket
 import stat
 import tempfile
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from http import HTTPStatus
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
 from typing import Any, TypeGuard
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from ..case import Case
 from ..experiment import _builtin_evaluator_types
@@ -36,7 +42,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_DEPTH = 3
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
 MAX_SCAN_FILES = 2000
-LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]", "::1"})
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]"})
+WILDCARD_HOSTS = frozenset({"", "0.0.0.0", "::"})
+
+# Where the served page finds its token. The address bar no longer carries it past the first request.
+TOKEN_SLOT = '<meta name="strands-evals-token" content="">'
+COOKIE_PREFIX = "strands_evals_ui_"
 
 # A refused request's body is read and dropped only within these bounds; past them the connection closes.
 DRAIN_LIMIT = 1024 * 1024
@@ -52,6 +63,9 @@ EVENT_LOG_NAME = "events.jsonl"
 RUN_CONFIG_NAME = "run.json"
 
 SKIPPED_DIRS = frozenset({"node_modules", "__pycache__"})
+# Where the page keeps its views: `/runs/<file>/report`, `/optimization/<directory>/overview`, and so on.
+PAGE_ROOTS = ("/runs", "/optimization")
+PRINTABLE = re.compile(r"[!-~]+")
 
 # A run directory's own storage. Scanning it would fill the skipped list and spend the file budget.
 RUN_OWN_DIRS = frozenset({"transcripts", "candidates", "front"})
@@ -82,6 +96,28 @@ def _walk(root: Path, depth: int) -> Iterator[tuple[Path, list[str]]]:
         dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d not in SKIPPED_DIRS)
         _prune_run_storage(filenames, dirnames)
         yield here, sorted(filenames)
+
+
+def is_page_path(path: str) -> bool:
+    """Whether a request path is one of the page's own addresses. They all serve the one document."""
+    return path in ("/", "/index.html") or any(path == root or path.startswith(f"{root}/") for root in PAGE_ROOTS)
+
+
+def fingerprint(root: Path, depth: int = DEFAULT_DEPTH) -> str:
+    """Digest the name, size and mtime of every file the page can show, so a change to the tree changes it."""
+    digest = hashlib.sha256()
+    for here, filenames in _walk(root, depth):
+        names = [name for name in filenames if name.lower().endswith((".json", ".jsonl"))]
+        if RUN_CONFIG_NAME in filenames and EVENT_LOG_NAME in filenames:
+            names += sorted(RUN_OWN_FILES)
+        for name in names:
+            try:
+                info = (here / name).stat()
+            except OSError:
+                continue
+            where = (here / name).relative_to(root).as_posix()
+            digest.update(f"{where}\0{info.st_size}\0{info.st_mtime_ns}\n".encode())
+    return digest.hexdigest()
 
 
 @dataclass
@@ -534,7 +570,10 @@ def discover_optimizer_runs(root: Path, depth: int = DEFAULT_DEPTH) -> list[dict
 
         relative = here.relative_to(root).as_posix() or "."
         log = read_event_log(events_path)
-        found.append(_optimizer_run_summary(relative, config, events_stat, config_stat, log))
+        summary = _optimizer_run_summary(relative, config, events_stat, config_stat, log)
+        # Most runs have no effects model, so the page is told rather than left to ask for a file that is not there.
+        summary["has_effects"] = (here / "effects.json").is_file()
+        found.append(summary)
 
     found.sort(key=lambda r: -r["modified"])
     return found
@@ -551,11 +590,10 @@ def resolve_within(root: Path, relative: str) -> Path:
     """
     if not relative:
         raise PathOutsideRoot("no path given")
+    if "\x00" in relative:
+        raise PathOutsideRoot(f"{relative!r} is not a path")
     root = root.resolve()
-    try:
-        candidate = (root / relative).resolve()
-    except ValueError as exc:  # an embedded null byte
-        raise PathOutsideRoot(f"{relative!r} is not a path") from exc
+    candidate = (root / relative).resolve()
     if not _inside(root, candidate):
         raise PathOutsideRoot(f"{relative} is outside {root}")
     return candidate
@@ -563,6 +601,23 @@ def resolve_within(root: Path, relative: str) -> Path:
 
 def _inside(root: Path, candidate: Path) -> bool:
     return candidate == root or root in candidate.parents
+
+
+def _same_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address, bound: str) -> bool:
+    try:
+        return address == ipaddress.ip_address(bound)
+    except ValueError:  # bound by name, e.g. a hostname: only loopback names are answered
+        return False
+
+
+def is_loopback(host: str) -> bool:
+    """Whether binding `host` keeps the server on this machine."""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _is_timestamp(value: Any) -> TypeGuard[float]:
@@ -664,6 +719,38 @@ def check_evaluators(evaluators: Any) -> list[dict]:
     return notes
 
 
+@functools.cache
+def evaluator_catalog() -> dict[str, dict]:
+    """What the page says about each built-in evaluator: its summary and its settings, read off the class.
+
+    Read from the library so that the page describes an evaluator added later without being edited.
+    """
+    catalog: dict[str, dict] = {}
+    for name, target in _builtin_evaluator_types().items():
+        try:
+            parameters = list(inspect.signature(target).parameters.values())
+        except (TypeError, ValueError):  # a builtin or C-implemented __init__
+            parameters = []
+        settings = [
+            {
+                "name": parameter.name,
+                "required": parameter.default is inspect.Parameter.empty,
+                "default": None if parameter.default is inspect.Parameter.empty else _shown(parameter.default),
+            }
+            for parameter in parameters
+            if parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        ]
+        summary = (inspect.getdoc(target) or "").strip().split("\n", 1)[0]
+        catalog[name] = {"summary": summary, "settings": settings}
+    return catalog
+
+
+def _shown(default: Any) -> str:
+    """A setting's default as a user would write it in the file, cut short when it is a long prompt."""
+    text = json.dumps(default) if isinstance(default, (str, int, float, bool, type(None))) else repr(default)
+    return text if len(text) <= 48 else text[:45] + "..."
+
+
 def write_json_atomic(target: Path, payload: dict) -> float:
     """Serialize, then replace the file in one step; returns the new mtime.
 
@@ -710,6 +797,8 @@ class UIConfig:
     asset: str = ""
     # True when `asset` came from the shipped file rather than a caller, so it can be re-read.
     reload_asset: bool = False
+    # The address the server was asked to bind, which decides which `Host` headers it answers.
+    bound_host: str = "127.0.0.1"
     # Carried by the page's own <style> and <script> tags; markup injected from a file cannot know it.
     nonce: str = field(default_factory=lambda: secrets.token_urlsafe(16))
 
@@ -749,15 +838,17 @@ class UIHandler(BaseHTTPRequestHandler):
         line = _TOKEN_IN_URL.sub(r"\1<redacted>", fmt % args)
         logger.debug("client=<%s> | %s", self.address_string(), line)
 
-    def _send(self, status: HTTPStatus, body: bytes, content_type: str, *, csp: str | None = None) -> None:
+    def _send(
+        self, status: HTTPStatus, body: bytes, content_type: str, *, headers: dict[str, str] | None = None
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        if csp:
-            self.send_header("Content-Security-Policy", csp)
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         if self.close_connection:
             self.send_header("Connection", "close")
         self.end_headers()
@@ -774,19 +865,48 @@ class UIHandler(BaseHTTPRequestHandler):
     def _error(self, status: HTTPStatus, message: str) -> None:
         self._json(status, {"error": message})
 
-    def _host_is_loopback(self) -> bool:
+    def _host_is_admitted(self) -> bool:
+        """Whether `Host` names this server, which is what stops DNS rebinding.
+
+        A rebinding request carries the attacker's hostname. Loopback names are always answered; a server
+        bound beyond loopback also answers to the address it was bound to, or to any IP literal when it was
+        bound to every interface.
+        """
         match = _HOST_HEADER.fullmatch((self.headers.get("Host") or "").strip())
-        return match is not None and match.group(1).lower() in LOOPBACK_HOSTS
+        if match is None:
+            return False
+        name = match.group(1).lower()
+        if name in LOOPBACK_HOSTS:
+            return True
+        try:
+            address = ipaddress.ip_address(name.strip("[]"))
+        except ValueError:
+            return False
+        bound = self.config.bound_host
+        return bound in WILDCARD_HOSTS or _same_address(address, bound)
+
+    def _is_token(self, supplied: str) -> bool:
+        # Compared as bytes: compare_digest rejects non-ASCII str, and the value is attacker-chosen.
+        return secrets.compare_digest(supplied.encode("utf-8", "replace"), self.config.token.encode("utf-8"))
 
     def _authorized(self, query: dict[str, list[str]]) -> bool:
-        supplied = (self.headers.get("X-Evals-Token") or "") or (query.get("t", [""])[0])
-        # Compared as bytes: compare_digest rejects non-ASCII str, and a header is attacker-chosen.
-        return secrets.compare_digest(supplied.encode("utf-8", "replace"), self.config.token.encode("utf-8"))
+        return self._is_token((self.headers.get("X-Evals-Token") or "") or (query.get("t", [""])[0]))
+
+    def _cookie_name(self) -> str:
+        # Cookies ignore the port, so two servers on one machine need two names.
+        return f"{COOKIE_PREFIX}{self.connection.getsockname()[1]}"
+
+    def _has_page_cookie(self) -> bool:
+        try:
+            morsel = SimpleCookie(self.headers.get("Cookie") or "").get(self._cookie_name())
+        except CookieError:
+            return False
+        return morsel is not None and self._is_token(unquote(morsel.value))
 
     def _refusal(self, query: dict[str, list[str]]) -> tuple[HTTPStatus, str] | None:
         """Why this request is not admitted, if it is not: the wrong Host or the wrong token."""
-        if not self._host_is_loopback():
-            return HTTPStatus.FORBIDDEN, "this server only answers requests addressed to localhost"
+        if not self._host_is_admitted():
+            return HTTPStatus.FORBIDDEN, "this server only answers requests addressed to the host it is serving on"
         if not self._authorized(query):
             return HTTPStatus.UNAUTHORIZED, "missing or wrong token"
         return None
@@ -794,7 +914,9 @@ class UIHandler(BaseHTTPRequestHandler):
     def _settings(self) -> dict:
         return {"root": str(self.config.root), "depth": self.config.depth, "read_only": self.config.read_only}
 
-    def _requested_file(self, query: dict[str, list[str]]) -> tuple[str, Path] | None:
+    def _requested_file(
+        self, query: dict[str, list[str]], missing: str = "{rel} is not a file"
+    ) -> tuple[str, Path] | None:
         """The `path` parameter resolved to a file inside the root, or None once the error is sent."""
         rel = query.get("path", [""])[0]
         try:
@@ -803,7 +925,7 @@ class UIHandler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.FORBIDDEN, str(exc))
             return None
         if not target.is_file():
-            self._error(HTTPStatus.NOT_FOUND, f"{rel} is not a file")
+            self._error(HTTPStatus.NOT_FOUND, missing.format(rel=rel))
             return None
         return rel, target
 
@@ -872,20 +994,26 @@ class UIHandler(BaseHTTPRequestHandler):
     # ── routes ──
 
     def _get_config(self, query: dict[str, list[str]]) -> None:
-        self._json(HTTPStatus.OK, self._settings())
+        self._json(HTTPStatus.OK, {**self._settings(), "evaluators": evaluator_catalog()})
 
     def _get_runs(self, query: dict[str, list[str]]) -> None:
+        # Taken before the scan, so a file written during it reads as a change afterwards.
+        mark = fingerprint(self.config.root, self.config.depth)
         result = discover(self.config.root, self.config.depth)
         self._json(
             HTTPStatus.OK,
             {
                 **self._settings(),
+                "fingerprint": mark,
                 "runs": result.runs,
                 "skipped": result.skipped,
                 "truncated": result.truncated,
                 "optimizer_runs": result.optimizer_runs,
             },
         )
+
+    def _get_changes(self, query: dict[str, list[str]]) -> None:
+        self._json(HTTPStatus.OK, {"fingerprint": fingerprint(self.config.root, self.config.depth)})
 
     def _get_events(self, query: dict[str, list[str]]) -> None:
         requested = self._requested_file(query)
@@ -928,7 +1056,7 @@ class UIHandler(BaseHTTPRequestHandler):
         if "document" not in body:
             self._error(HTTPStatus.BAD_REQUEST, "expected {'document': ..., 'modified': ...}")
             return
-        requested = self._requested_file(query)
+        requested = self._requested_file(query, missing="{rel} is no longer on disk, so it cannot be saved in place")
         if requested is None:
             return
         rel, target = requested
@@ -982,9 +1110,34 @@ class UIHandler(BaseHTTPRequestHandler):
             },
         )
 
+    def _get_page(self, query: dict[str, list[str]]) -> None:
+        """Serve the page to a request that proves it has the token.
+
+        The printed link carries the token once. It is answered with a cookie and a redirect to the bare
+        address, so the token is not left in the address bar, the history or a shared link. The cookie
+        only opens the page: every `/api` route still needs the token itself, which the page reads out
+        of the document it was served.
+        """
+        html_type = "text/html; charset=utf-8"
+        if "t" in query and self._authorized(query):
+            cookie = f"{self._cookie_name()}={quote(self.config.token, safe='')}; Path=/; HttpOnly; SameSite=Lax"
+            # The same address without the token, so a link into the page lands where it pointed.
+            path = urlparse(self.path).path
+            where = path if PRINTABLE.fullmatch(path) else "/"
+            self._send(HTTPStatus.SEE_OTHER, b"", html_type, headers={"Location": where, "Set-Cookie": cookie})
+            return
+        if not (self._authorized(query) or self._has_page_cookie()):
+            self._send(HTTPStatus.UNAUTHORIZED, UNAUTHORIZED_PAGE, html_type)
+            return
+        slot = TOKEN_SLOT.replace('""', f'"{html.escape(self.config.token, quote=True)}"')
+        page = self.config.page().replace(TOKEN_SLOT, slot, 1)
+        policy = {"Content-Security-Policy": self.config.content_security_policy()}
+        self._send(HTTPStatus.OK, page.encode("utf-8"), html_type, headers=policy)
+
     _GET_ROUTES: dict[str, Callable[[UIHandler, dict[str, list[str]]], None]] = {
         "/api/config": _get_config,
         "/api/runs": _get_runs,
+        "/api/changes": _get_changes,
         "/api/events": _get_events,
         "/api/file": _get_file,
     }
@@ -992,18 +1145,14 @@ class UIHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - name fixed by BaseHTTPRequestHandler
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
-        is_page = parsed.path in ("/", "/index.html")
+        is_page = is_page_path(parsed.path)
 
+        if is_page and self._host_is_admitted():
+            self._get_page(query)
+            return
         refusal = self._refusal(query)
         if refusal:
-            if is_page and refusal[0] is HTTPStatus.UNAUTHORIZED:
-                self._send(HTTPStatus.UNAUTHORIZED, UNAUTHORIZED_PAGE, "text/html; charset=utf-8")
-            else:
-                self._error(*refusal)
-            return
-        if is_page:
-            page = self.config.page().encode("utf-8")
-            self._send(HTTPStatus.OK, page, "text/html; charset=utf-8", csp=self.config.content_security_policy())
+            self._error(*refusal)
             return
 
         route = self._GET_ROUTES.get(parsed.path)
@@ -1039,6 +1188,8 @@ class _Server(ThreadingHTTPServer):
 
     def __init__(self, address: tuple[str, int], handler: type[BaseHTTPRequestHandler], config: UIConfig):
         self.config = config
+        if ":" in address[0]:
+            self.address_family = socket.AF_INET6
         super().__init__(address, handler)
 
 
@@ -1091,6 +1242,7 @@ def build_server(
         depth=depth,
         read_only=read_only,
         reload_asset=asset is None,
+        bound_host=host,
     )
     config.asset = asset if asset is not None else load_asset(config.nonce)
     try:
@@ -1101,7 +1253,7 @@ def build_server(
 
 def server_url(server: _Server) -> str:
     host, port = server.server_address[:2]
-    shown = "127.0.0.1" if host in ("0.0.0.0", "") else host
+    shown = "127.0.0.1" if host in ("0.0.0.0", "") else "::1" if host == "::" else host
     if isinstance(shown, bytes):  # pragma: no cover - AF_UNIX never happens here
         shown = shown.decode()
     if ":" in str(shown) and not str(shown).startswith("["):

@@ -396,6 +396,11 @@ def case_scores(objective: float, cases: list[str]) -> dict[str, float]:
     return out
 
 
+def judged(score: float) -> dict:
+    """One evaluator's `EvaluationOutput`, as a trial record serializes it."""
+    return {"score": score, "test_pass": score >= 0.5, "reason": "judged", "label": None, "metadata": None}
+
+
 def text_default(body: str) -> dict:
     """How a text key's default is recorded: a digest and a length, never the prompt itself."""
     return {"sha256": hashlib.sha256(body.encode()).hexdigest(), "length": len(body)}
@@ -737,7 +742,7 @@ def main() -> None:
                     "environment_state": None,
                     # An evaluator that raised is not an evaluator that scored zero: the trial
                     # completed and nothing was judged on it.
-                    "evaluations": {} if unjudged else {"Helpfulness": {"score": per_case[case], "reason": "judged"}},
+                    "evaluations": {} if unjudged else {"Helpfulness": judged(per_case[case])},
                     "details": {},
                     "evaluator_errors": (
                         {"Helpfulness": "the judge returned no score for this answer"} if unjudged else {}
@@ -844,7 +849,7 @@ def main() -> None:
                     "transcript": transcript(cid, case, "validation", f"<validation answer {case} / {cid}>"),
                     "interactions": None,
                     "environment_state": None,
-                    "evaluations": {"Helpfulness": {"score": validation_objectives[cid], "reason": "judged"}},
+                    "evaluations": {"Helpfulness": judged(validation_objectives[cid])},
                     "details": {},
                     "evaluator_errors": {},
                     "usage": {
@@ -899,7 +904,7 @@ def main() -> None:
                     "transcript": transcript(cid, case, "test", f"<test answer {case} / {cid}>"),
                     "interactions": None,
                     "environment_state": None,
-                    "evaluations": {"Helpfulness": {"score": 0.664 if cid == "c10" else 0.521, "reason": "judged"}},
+                    "evaluations": {"Helpfulness": judged(0.664 if cid == "c10" else 0.521)},
                     "details": {},
                     "evaluator_errors": {},
                     "usage": {

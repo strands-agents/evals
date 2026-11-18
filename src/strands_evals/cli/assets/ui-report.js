@@ -3,14 +3,14 @@
 let REP = null, repMeta = null;
 let ROWS = [], BY_CASE = [];
 let repFilter = 'all', repQuery = '', openRows = new Set(), repLimit = 300;
-/* `{ meta, doc }` while Optimization borrows the report panel, `{ meta: null }` when nothing
-   was displaced, null when not borrowed. */
+/* `{ meta, doc, cand }` while Optimization borrows the report panel for candidate `cand`, with
+   `meta` null when nothing was displaced; null when not borrowed. */
 let repDisplaced = null;
 
 /* ── the report panel, on loan ── */
 function borrowReport(what) {
   $('rep-borrowed').hidden = false;
-  $('rep-borrowed').innerHTML = what
+  $('rep-borrowed').innerHTML = `<span>${what}</span>`
     + '<button class="btn" data-act="unborrow">'
     + (repDisplaced && repDisplaced.meta ? 'Back to this run&rsquo;s report' : 'Back to Candidates')
     + '</button>';
@@ -30,16 +30,21 @@ app.querySelector('#rep-borrowed').onclick = e => {
   if (e.target.closest('[data-act="unborrow"]')) returnReport();
 };
 
-function loadReport(meta, doc) {
+/* `keep` re-reads the same report: the filter, the search and the open rows stay as they are. */
+function loadReport(meta, doc, keep) {
   repMeta = meta; REP = doc;
-  openRows = new Set(); repFilter = 'all'; repQuery = ''; repLimit = 300;
-  $('rep-find').value = '';
-  app.querySelectorAll('#rep-seg button').forEach(b => b.classList.toggle('on', b.dataset.f === 'all'));
-  buildRows(); renderHero(); renderReport();
+  if (!keep) {
+    openRows = new Set(); repFilter = 'all'; repQuery = ''; repLimit = 300;
+    $('rep-find').value = '';
+    app.querySelectorAll('#rep-seg button').forEach(b => b.classList.toggle('on', b.dataset.f === 'all'));
+    repOther = null;
+  }
+  buildRows(); renderHero(); renderReportCharts(); renderReport();
 }
 
 function clearReport() {
-  REP = null; repMeta = null; ROWS = []; BY_CASE = [];
+  REP = null; repMeta = null; ROWS = []; BY_CASE = []; repOther = null;
+  renderReportCharts();
   const score = $('r-score');
   score.textContent = '—'; score.classList.add('none');
   $('r-stats').innerHTML = '';
@@ -50,34 +55,40 @@ function clearReport() {
   $('rep-rows').innerHTML = blank('No report in this run',
     `This experiment has not been run yet, or its report is somewhere else. To run it: `
     + `strands-evals run ${esc(exp)} --agent module:attr -o ${esc(stem(exp) ? stem(exp) + '.report.json' : 'report.json')}, `
-    + 'then Rescan.');
+    + `then Rescan. ${docLink('cli/run/#experiment-file-run', 'empty-report', 'How to run an experiment')}`);
 }
 
 /* ══════════ report ══════════ */
 
-function buildRows() {
-  ROWS = (REP.cases || []).map((c, i) => ({
+/** One row per case and evaluator of a report document. */
+function reportRows(doc) {
+  const rows = (doc.cases || []).map((c, i) => ({
     i, case: c, evaluator: c.evaluator,
-    score: (REP.scores || [])[i],
-    pass: (REP.test_passes || [])[i],
-    reason: (REP.reasons || [])[i] || '',
+    name: c.name != null ? String(c.name) : `#${i}`,
+    score: (doc.scores || [])[i],
+    pass: (doc.test_passes || [])[i],
+    reason: (doc.reasons || [])[i] || '',
     // evaluate() returns a list of EvaluationOutput: a rubric judge has one per criterion.
-    outputs: (REP.detailed_results || [])[i] || [],
-    diagnosis: (REP.diagnoses || [])[i],
-    recommendation: (REP.recommendations || [])[i],
+    outputs: (doc.detailed_results || [])[i] || [],
+    diagnosis: (doc.diagnoses || [])[i],
+    recommendation: (doc.recommendations || [])[i],
   }));
 
   // Mirrors EvaluationReport.is_applicable: not applicable only when every output declined
   // to judge and passed. not_applicable with test_pass=false is a failure to judge.
-  ROWS.forEach(r => {
+  rows.forEach(r => {
     r.na = r.outputs.length > 0
       && r.outputs.every(o => o && o.label === 'not_applicable' && o.test_pass);
   });
+  return rows;
+}
 
+function buildRows() {
+  ROWS = reportRows(REP);
   BY_CASE = [];
   const index = new Map();
   ROWS.forEach(r => {
-    const key = r.case.name != null ? String(r.case.name) : `#${r.i}`;
+    const key = r.name;
     let g = index.get(key);
     if (!g) { g = { name: key, case: r.case, rows: [] }; index.set(key, g); BY_CASE.push(g); }
     g.rows.push(r);
@@ -94,11 +105,11 @@ function renderHero() {
   bar.title = `${passing} of ${plural(applicable.length, 'applicable row')} passing`;
   bar.firstElementChild.style.width = `${applicable.length ? (passing / applicable.length) * 100 : 0}%`;
   $('r-stats').innerHTML = [
-    [`${passing} / ${applicable.length}`, 'Rows passing'],
-    [BY_CASE.length, 'Cases'],
-    [new Set(ROWS.map(r => r.evaluator)).size, 'Evaluators'],
-    [ROWS.filter(r => r.na).length, 'Not applicable'],
-  ].map(([v, k]) => `<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join('');
+    [`${passing} / ${applicable.length}`, 'Rows passing', 'data-tip="A row is one case scored by one evaluator. It passes when that evaluator says so."'],
+    [BY_CASE.length, 'Cases', 'data-term="case"'],
+    [new Set(ROWS.map(r => r.evaluator)).size, 'Evaluators', 'data-term="evaluator"'],
+    [ROWS.filter(r => r.na).length, 'Not applicable', 'data-term="not_applicable"'],
+  ].map(([v, k, tip]) => `<div class="stat" ${tip}><div class="v">${v}</div><div class="k">${k}</div></div>`).join('');
 }
 
 const words = s => String(s == null ? '' : s).split(/\s+/);
@@ -123,7 +134,8 @@ function diff(expected, actual) {
 function trajectory(v, reference) {
   if (v == null) return '<span class="empty">none captured</span>';
   if (!Array.isArray(v)) {
-    return '<span class="path">recorded session, not a step list</span><br>' + json(v);
+    return sessionSpans(v) ? `<div class="trace">${traceView(v, 'the session as recorded')}</div>`
+      : '<span class="path">recorded session, not a step list</span><br>' + json(v);
   }
   if (!v.length) return '<span class="empty">empty list</span>';
   return '<span class="mono">' + v.map(t => {
@@ -161,7 +173,7 @@ const ASPECTS = [
 ];
 
 const verdictTag = r => r.na
-  ? '<span class="vb na"><i></i>not applicable</span>'
+  ? '<span class="vb na" data-term="not_applicable"><i></i>not applicable</span>'
   : (r.pass ? '<span class="vb pass"><i></i>pass</span>' : '<span class="vb fail"><i></i>fail</span>');
 
 function matches(g) {
@@ -236,6 +248,19 @@ $('rep-seg').onclick = e => {
   renderReport();
 };
 $('rep-more').onclick = () => { repLimit += 300; renderReport(); };
+/** Open one row of the table and bring it into view, clearing a filter that would hide it. */
+function openReportRow(i) {
+  repFilter = 'all'; repQuery = '';
+  $('rep-find').value = '';
+  app.querySelectorAll('#rep-seg button').forEach(b => b.classList.toggle('on', b.dataset.f === 'all'));
+  const at = BY_CASE.findIndex(g => g.rows.some(r => r.i === i));
+  repLimit = Math.max(repLimit, at + 1);
+  openRows.add(i);
+  renderReport();
+  const row = $('rep-rows').querySelector(`tr.case[data-i="${i}"]`);
+  if (row && row.scrollIntoView) row.scrollIntoView({ block: 'center' });
+}
+
 $('rep-rows').onclick = e => {
   const tr = e.target.closest('tr.case');
   if (!tr) return;
