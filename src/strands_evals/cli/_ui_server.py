@@ -37,7 +37,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from ..case import Case
 from ..experiment import _builtin_evaluator_types
-from ._ui_markdown import experiment_markdown, llms_text, report_markdown
+from ._ui_markdown import diagnosis_markdown, experiment_markdown, llms_text, report_markdown, session_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +69,8 @@ RUN_CONFIG_NAME = "run.json"
 SKIPPED_DIRS = frozenset({"node_modules", "__pycache__"})
 # Where the page keeps its views: `/reports/<file>`, `/experiments/<file>`, `/optimization/<directory>/overview`.
 PAGE_ROOTS = ("/reports", "/experiments", "/sessions", "/optimization")
-# A report or an experiment is also served as data: its page address with one of these forms added.
-DATA_ROOTS = {"/reports/": REPORT, "/experiments/": EXPERIMENT}
+# A report, an experiment or a session is also served as data: its page address with one of these forms added.
+DATA_ROOTS = {"/reports/": REPORT, "/experiments/": EXPERIMENT, "/sessions/": SESSION}
 DATA_FORMS = (".md", ".json")
 PRINTABLE = re.compile(r"[!-~]+")
 
@@ -115,7 +115,7 @@ def is_page_path(path: str) -> bool:
 
 
 def data_form(path: str) -> tuple[str, str, str] | None:
-    """`(kind, file, form)` when a request path is a report's or an experiment's address with a form added."""
+    """`(kind, file, form)` when a request path is the address of a file of that kind with a form added."""
     for root, kind in DATA_ROOTS.items():
         for form in DATA_FORMS:
             if path.startswith(root) and path.lower().endswith(f".json{form}"):
@@ -1154,7 +1154,7 @@ class UIHandler(BaseHTTPRequestHandler):
         self._json(HTTPStatus.OK, {**self._settings(), "evaluators": evaluator_catalog()})
 
     def _get_scan(self, query: dict[str, list[str]]) -> None:
-        """Every experiment, report and optimizer run found under the served folder, with a fingerprint."""
+        """Every experiment, report, session, diagnosis and optimizer run under the served folder, and a fingerprint."""
         # Taken before the scan, so a file written during it reads as a change afterwards.
         mark = fingerprint(self.config.root, self.config.depth)
         result = discover(self.config.root, self.config.depth)
@@ -1223,8 +1223,8 @@ class UIHandler(BaseHTTPRequestHandler):
         text = llms_text(routes, PAGE_ROOTS, DATA_ROOTS, DATA_FORMS)
         self._send(HTTPStatus.OK, text.encode("utf-8"), "text/plain; charset=utf-8")
 
-    def _get_data_form(self, kind: str, rel: str, form: str) -> None:
-        """A report or an experiment as Markdown or as JSON, for a reader with no browser."""
+    def _get_data_form(self, wanted: str, rel: str, form: str) -> None:
+        """A report, an experiment or a session as Markdown or as JSON, for a reader with no browser."""
         requested = self._requested_file({"path": [rel]})
         if requested is None:
             return
@@ -1234,23 +1234,38 @@ class UIHandler(BaseHTTPRequestHandler):
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{rel} could not be parsed: {exc}")
             return
-        if classify(obj) != kind:
-            self._error(HTTPStatus.NOT_FOUND, f"{rel} is not {'an' if kind == EXPERIMENT else 'a'} {kind}")
+        kind = classify(obj)
+        # A session's address also names a diagnosis: the page opens one there when its session is not in the folder.
+        if kind != wanted and (wanted, kind) != (SESSION, DIAGNOSIS):
+            self._error(HTTPStatus.NOT_FOUND, f"{rel} is not {'an' if wanted == EXPERIMENT else 'a'} {wanted}")
             return
         if form == ".json":
             self._json(HTTPStatus.OK, obj)
             return
         obj = _finite(obj)  # as the page is sent it, so both write the same Markdown
         # The path as the scan writes it, so the file is found in the listing however it was asked for.
-        path = target.relative_to(self.config.root.resolve()).as_posix()
+        root = self.config.root.resolve()
+        path = target.relative_to(root).as_posix()
         found = discover(self.config.root, self.config.depth)
-        listing = found.reports if kind == REPORT else found.experiments
-        entry = next((e for e in listing if e["path"] == path), {})
-        text = (
-            report_markdown(path, obj, entry.get("experiment"))
-            if kind == REPORT
-            else experiment_markdown(path, obj, entry.get("reports") or [])
-        )
+
+        def listed(entries: list[dict]) -> dict:
+            return next((entry for entry in entries if entry["path"] == path), {})
+
+        if kind == REPORT:
+            text = report_markdown(path, obj, listed(found.reports).get("experiment"))
+        elif kind == EXPERIMENT:
+            text = experiment_markdown(path, obj, listed(found.experiments).get("reports") or [])
+        elif kind == DIAGNOSIS:
+            text = diagnosis_markdown(path, obj, listed(found.diagnoses).get("session"))
+        else:
+            diagnoses = []
+            for made in listed(found.sessions).get("diagnoses") or []:
+                try:
+                    diagnoses.append((made, _finite(json.loads((root / made).read_text(encoding="utf-8")))))
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{made} could not be parsed: {exc}")
+                    return
+            text = session_markdown(path, obj, _session_summary(obj)["seconds"], diagnoses)
         self._send(HTTPStatus.OK, text.encode("utf-8", "replace"), "text/markdown; charset=utf-8")
 
     def _put_experiment(self, query: dict[str, list[str]], body: dict) -> None:

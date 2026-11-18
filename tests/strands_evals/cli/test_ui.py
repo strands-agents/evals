@@ -1383,9 +1383,8 @@ def test_the_data_at_a_page_address_says_when_the_file_is_not_json(client: Clien
 def test_llms_txt_describes_every_address_the_server_answers(client: Client):
     reply = client.send("GET", "/llms.txt")
     lines = reply.body.splitlines()
-    views = re.findall(
-        r"'opt-[a-z]+': '([a-z-]+)'", resources.files("strands_evals.cli.assets").joinpath("ui-route.js").read_text()
-    )
+    route_script = resources.files("strands_evals.cli.assets").joinpath("ui-route.js").read_text()
+    views = re.findall(r"'opt-[a-z]+': '([a-z-]+)'", route_script)
 
     assert reply.status == HTTPStatus.OK
     assert reply.headers["Content-Type"] == "text/plain; charset=utf-8"
@@ -1402,13 +1401,23 @@ def test_llms_txt_describes_every_address_the_server_answers(client: Client):
         "- `/experiments/<experiment file>.md`: its evaluators with their settings, then every case",
         "- `/reports/<report file>.json`: the report file's document",
         "- `/experiments/<experiment file>.json`: the experiment file's document",
+        "- `/sessions/<session file>.md`: what it recorded, each diagnosis made of it, then every span of every "
+        "trace: the prompts, the model's messages, the tool calls and their results",
+        "- `/sessions/<session file>.json`: the session file's document",
         "- `/reports/<report file>/rows/<case>/<evaluator>`: one row of it, opened and in view",
+        "- `/reports/<report file>/rows/<case>`: the same, for a row whose case has no evaluator named",
+        "- `/reports/compare?r=<report file>&r=<report file>`: two or more reports side by side, oldest first",
         "- `/experiments/<experiment file>/cases/<name>`: the same, on one case",
+        "- `/sessions/<session file>`: one session, trace by trace, under the diagnoses made of it",
         "- `/optimization/<run directory>/candidates/<id>`: one candidate of it, opened and in view",
+        "- `/optimization/<run directory>/candidates/<id>/report`: the cases that candidate ran, as a report",
     ):
         assert line in lines
+    # Every root the page's own route parser knows is listed, and none is listed with nothing said of it.
+    assert sorted(f"/{root}" for root in re.findall(r"root === '([a-z]+)'", route_script)) == sorted(PAGE_ROOTS)
     for root in PAGE_ROOTS:
         assert any(line.startswith(f"- `{root}`: ") for line in lines)
+    assert not any(line.endswith(": ") for line in lines)
     assert len(views) == 6
     view_line = next(line for line in lines if line.startswith("- `/optimization/<run directory>/<view>`: "))
     assert all(re.search(rf"\b{view}\b", view_line) for view in views)
@@ -1806,6 +1815,52 @@ def test_scan_endpoint_serves_sessions_diagnoses_and_stores(client: Client):
     assert body["stores"] == [{"dir": "store", "files": 1}]
     opened = client.send("GET", "/api/file?path=recorded/checkout.json").body
     assert opened["document"] == _session("s-1", [(0, 1)])
+
+
+def test_a_session_is_served_as_markdown_and_as_json_at_its_page_address(client: Client):
+    recorded = _session("s-1", [(0, 1.5)], [])
+    _write(client.root / "recorded" / "checkout.json", recorded)
+    _write(client.root / "recorded" / "checkout.diagnosis.json", _diagnosis("s-1"))
+    _write(client.root / "lost.diagnosis.json", _diagnosis("s-gone"))
+
+    session = client.send("GET", "/sessions/recorded/checkout.json.md")
+    lost = client.send("GET", "/sessions/lost.diagnosis.json.md")
+
+    assert session.headers["Content-Type"] == "text/markdown; charset=utf-8"
+    assert session.body.startswith(
+        "# Session: recorded/checkout.json\n\n- Session: s-1\n- Traces: 2\n- Spans: 1\n- Time: 1.50s\n"
+        "- Diagnoses: recorded/checkout.diagnosis.json\n\n"
+        "## Diagnosis: recorded/checkout.diagnosis.json\n\n```json\n{\n"
+    )
+    assert session.body.endswith(
+        "## Trace 1 of 2: s-1-0\n\n### Span 0: inference\n\n## Trace 2 of 2: s-1-1\n\nNo spans.\n"
+    )
+    assert lost.body.startswith(
+        "# Diagnosis: lost.diagnosis.json\n\n- Session: s-gone, which is not in the folder\n"
+        "- Failures: 1\n- Root causes: 1\n\n```json\n"
+    )
+    assert client.send("GET", "/sessions/recorded/checkout.json.json") == Reply(HTTPStatus.OK, recorded)
+    assert client.send("GET", "/sessions/lost.diagnosis.json.json") == Reply(HTTPStatus.OK, _diagnosis("s-gone"))
+
+
+def test_a_session_as_data_is_refused_without_the_token_and_for_a_file_that_is_not_one(client: Client):
+    _write(client.root / "recorded" / "checkout.json", _session("s-1", [(0, 1)]))
+    cookie = f"strands_evals_ui_{client.port}={client.token}"
+
+    for form in (".md", ".json"):
+        address = f"/sessions/recorded/checkout.json{form}"
+        assert client.send("GET", address, headers={"X-Evals-Token": None, "Cookie": cookie}) == _refused(
+            HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL
+        )
+        assert (
+            client.send("GET", f"{address}?t={client.token}", headers={"X-Evals-Token": None}).status == HTTPStatus.OK
+        )
+    assert client.send("GET", "/sessions/report.json.md") == _refused(
+        HTTPStatus.NOT_FOUND, "report.json is not a session"
+    )
+    assert client.send("GET", "/reports/recorded/checkout.json.md") == _refused(
+        HTTPStatus.NOT_FOUND, "recorded/checkout.json is not a report"
+    )
 
 
 def test_ui_list_names_sessions_and_task_result_stores(tmp_path: Path, capsys):

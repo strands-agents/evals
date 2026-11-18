@@ -6,7 +6,13 @@ import json
 
 import pytest
 
-from strands_evals.cli._ui_markdown import experiment_markdown, report_markdown, stringify, value_text
+from strands_evals.cli._ui_markdown import (
+    experiment_markdown,
+    report_markdown,
+    session_markdown,
+    stringify,
+    value_text,
+)
 
 
 @pytest.mark.parametrize(
@@ -122,3 +128,57 @@ def test_an_experiment_with_nothing_in_it_says_so():
         "# Experiment: e.json\n\n- Cases: 0\n- Evaluators: 0\n- Reports: none, so it has not been run\n\n"
         "## Evaluators\n\nNone.\n\n## Cases\n\nNone.\n"
     )
+
+
+@pytest.mark.parametrize(
+    "content,printed",
+    [
+        ("in transit", "in transit"),
+        ('{"status": "in transit", "items": [1, 2.0]}', '{\n "status": "in transit",\n "items": [\n  1,\n  2\n ]\n}'),
+        ('\ufeff {"output": "in transit"}\n', "in transit"),
+        ('{"output": 7}', '{\n "output": 7\n}'),
+        ('{"output": "a", "more": 1}', '{\n "output": "a",\n "more": 1\n}'),
+        ('{"half": ', '{"half": '),
+        ('{"n": NaN}', '{"n": NaN}'),
+        ("[] and then some", "[] and then some"),
+        ({"status": ["in transit"]}, '{\n "status": [\n  "in transit"\n ]\n}'),
+        (None, "null"),
+    ],
+)
+def test_tool_output_reads_as_the_page_reads_it(content, printed):
+    """Each expectation is what `blockText` in `assets/ui-trace.js` gives for the same tool result."""
+    span = {"span_type": "execute_tool", "tool_call": {"name": "lookup"}, "tool_result": {"content": content}}
+
+    text = session_markdown("s.json", {"session_id": "s", "traces": [{"spans": [span]}]}, None, [])
+
+    assert text.endswith(f"Tool result:\n\n```text\n{printed}\n```\n")
+
+
+@pytest.mark.parametrize(
+    "seconds,printed",
+    [(4, "- Time: 4s\n"), (4.25, "- Time: 4.25s\n"), (1.005, "- Time: 1.00s\n"), (123.5, "- Time: 124s\n"), (None, "")],
+)
+def test_a_session_gives_its_time_as_the_page_prints_it(seconds, printed):
+    """Each expectation is `nice(seconds)` in a browser; a session whose spans carry no times has no line for it."""
+    text = session_markdown("s.json", {"session_id": "s", "traces": []}, seconds, [])
+
+    assert text == f"# Session: s.json\n\n- Session: s\n- Traces: 0\n- Spans: 0\n{printed}- Diagnoses: none found\n"
+
+
+@pytest.mark.parametrize(
+    "usage,printed",
+    [
+        ({"inputTokens": 9999.5, "outputTokens": 0}, "10000 in · 0 out tokens"),
+        ({"inputTokens": 12345, "outputTokens": 1234567}, "12k in · 1.23M out tokens"),
+        ({"inputTokens": 5, "cacheReadInputTokens": 0}, "5 in tokens"),
+        ({"outputTokens": 2, "cacheReadInputTokens": 20500}, "2 out · 21k cache read tokens"),
+    ],
+)
+def test_token_counts_are_shortened_as_the_page_shortens_them(usage, printed):
+    """Each expectation is `usageLine` in `assets/ui-trace.js` for the same usage."""
+    message = {"role": "assistant", "content": [], "metadata": {"usage": usage}}
+    span = {"span_type": "inference", "messages": [message]}
+
+    text = session_markdown("s.json", {"session_id": "s", "traces": [{"spans": [span]}]}, None, [])
+
+    assert text.endswith(f"#### assistant\n\n{printed}\n")

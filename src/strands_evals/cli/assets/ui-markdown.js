@@ -2,8 +2,8 @@
 
 /* ── Markdown, and the copy actions that hand it over ──
    What is open, written to paste into a conversation with a coding agent. The server writes a
-   report and an experiment the same way (`_ui_markdown.py`), for a reader with no browser, and
-   `tests/ui/markdown.mjs` holds the two to the same text. */
+   report, an experiment and a session the same way (`_ui_markdown.py`), for a reader with no
+   browser, and `tests/ui/markdown.mjs` holds the two to the same text. */
 
 const mdPresent = v => v != null && v !== '';
 const mdLine = v => valueText(v).replace(/[ \t\r\n]+/g, ' ').replace(/^ | $/g, '');
@@ -259,10 +259,10 @@ function mdMessage(m, heading) {
   return [`${heading} ${(m && m.role) || 'unknown'}`, ...(usage ? [usage] : []), ...content.flatMap(mdContent)];
 }
 
-function mdSpan(s, i) {
+function mdSpan(s, i, h = '##') {
   const kind = (s && s.span_type) || 'span';
-  const head = name => `## Span ${i}: ${name}`;
-  if (kind === 'inference' && Array.isArray(s.messages)) return [head('inference'), ...s.messages.flatMap(m => mdMessage(m, '###'))];
+  const head = name => `${h} Span ${i}: ${name}`;
+  if (kind === 'inference' && Array.isArray(s.messages)) return [head('inference'), ...s.messages.flatMap(m => mdMessage(m, `${h}#`))];
   if (kind === 'execute_tool') {
     const call = s.tool_call || {}, res = s.tool_result || {};
     return [head('tool'), ...mdCall(call.name, call.arguments),
@@ -281,13 +281,70 @@ function traceMarkdown(doc) {
   const spans = sessionSpans(doc);
   if (spans) {
     return mdDocument([`# Trace: ${mdCount(spans.length, 'span')} of a recorded session`, ...(cost ? [cost] : []),
-      ...spans.flatMap(mdSpan)]);
+      ...spans.flatMap((s, i) => mdSpan(s, i))]);
   }
   if (Array.isArray(doc)) {
     return mdDocument([`# Trace: ${mdCount(doc.length, 'message')}`, ...(cost ? [cost] : []),
       ...doc.flatMap((m, i) => mdMessage(m, `## Message ${i + 1}:`))]);
   }
   return mdDocument(['# Trace', mdFence(doc)]);
+}
+
+/* ── a session, and a diagnosis whose session is not here ── */
+
+/** A session: what it holds, each diagnosis made of it, then every trace span by span. A span keeps
+    the number its card has on the page. `found` is the diagnoses, as `{ meta, doc }`. */
+function sessionMarkdown(path, doc, seconds, found) {
+  const traces = sessionTraces(doc);
+  const facts = [`- Session: ${mdLine(doc.session_id)}`, `- Traces: ${traces.length}`,
+    `- Spans: ${traces.reduce((n, tr) => n + tr.spans.length, 0)}`];
+  if (seconds != null) facts.push(`- Time: ${nice(seconds)}s`);
+  facts.push(`- Diagnoses: ${found.map(f => f.meta.path).join(', ') || 'none found'}`);
+  let first = 0;
+  return mdDocument([`# Session: ${path}`, facts.join('\n'),
+    ...found.flatMap(f => [`## Diagnosis: ${f.meta.path}`, mdFence(f.doc)]),
+    ...traces.flatMap((tr, at) => {
+      const spans = tr.spans.flatMap((s, i) => mdSpan(s, first + i, '###'));
+      first += tr.spans.length;
+      return [`## Trace ${at + 1} of ${traces.length}${mdPresent(tr.id) ? `: ${mdLine(tr.id)}` : ''}`,
+        ...(spans.length ? spans : ['No spans.'])];
+    })]);
+}
+
+function diagnosisMarkdown(path, doc) {
+  return mdDocument([`# Diagnosis: ${path}`, [
+    `- Session: ${mdPresent(doc.session_id) ? `${mdLine(doc.session_id)}, which is not in the folder` : 'not named'}`,
+    `- Failures: ${arrayOf(doc.failures).length}`, `- Root causes: ${arrayOf(doc.root_causes).length}`,
+  ].join('\n'), mdFence(doc)]);
+}
+
+/* ── a comparison ── */
+
+/** The open comparison: each report, each evaluator's mean in each, then what changed from the oldest to the newest. */
+function compareMarkdown() {
+  const no = CMP.map((_, i) => cmpNo(i)), last = CMP.length - 1;
+  const table = (columns, rows) => [`| ${columns.join(' | ')} |`, `|${' --- |'.repeat(columns.length)}`, ...rows].join('\n');
+  const reports = table(['#', 'Report', 'When', 'Overall score', 'Rows', 'Passing', 'Failing'], CMP.map((c, i) => {
+    const judged = c.rows.filter(r => !r.na), passing = judged.filter(r => r.pass).length;
+    return `| ${no[i]} | ${mdCell(c.meta.path)} | ${new Date(c.at).toISOString()}${c.dated ? '' : ', by file time'} | `
+      + `${mdScore(c.meta.overall_score)} | ${c.rows.length} | ${passing} | ${judged.length - passing} |`;
+  }));
+  const { names, means } = evaluatorMeans();
+  const evaluators = table(['Evaluator', ...no], names.map(name =>
+    `| ${mdCell(mdLine(name))} | ${means.map(m => (m.has(name) ? mdScore(m.get(name)) : 'no row')).join(' | ')} |`));
+  const c = compareEndRows();
+  /* A row that was not applicable at one end has no verdict to have kept. */
+  const verdict = m => (m.flip ? `now ${m.flip === 'fixed' ? 'passes' : 'fails'}`
+    : m.from == null || m.to == null ? mdVerdict(m.row) : `still ${m.row.pass ? 'passes' : 'fails'}`);
+  const moved = table(['Case', 'Evaluator', no[0], no[last], 'Verdict'], c.moved.map(m =>
+    `| ${mdCell(mdLine(m.row.name))} | ${mdCell(mdLine(evaluatorName(m.row)))} | ${mdScore(m.from)} | ${mdScore(m.to)} | ${verdict(m)} |`));
+  return mdDocument([`# Comparison of ${mdCount(CMP.length, 'report')}`,
+    'Oldest first. Rows are matched by case and evaluator, so reports of different experiments compare only where they hold the same rows.',
+    reports, '## Evaluator means', names.length ? evaluators : 'No row has a score.',
+    `## From ${no[0]} to ${no[last]}`,
+    [`- Now pass: ${c.fixed}`, `- Now fail: ${c.broke}`, `- Kept their verdict: ${c.same}`,
+      `- Only in ${no[last]}: ${c.added}`, `- Only in ${no[0]}: ${c.gone}`].join('\n'),
+    c.moved.length ? moved : c.fixed + c.broke + c.same ? 'Every row they share scored the same.' : 'The two share no case and evaluator.']);
 }
 
 /* ── the buttons ── */
@@ -303,7 +360,9 @@ function pageActions(view) {
       + (ROWS.some(r => mdVerdict(r) === 'failed') ? mdButton('failing', 'Copy failing rows as a prompt') : '')
       + (repCand ? '' : mdButton('path', 'Copy path', repMeta.path));
   }
+  if (view === 'compare' && CMP.length) return mdButton('compare', 'Copy as Markdown');
   if (view === 'experiment' && EXP) return mdButton('experiment', 'Copy as Markdown') + mdButton('path', 'Copy path', expMeta.path);
+  if (view === 'session' && SES) return mdButton('session', 'Copy as Markdown') + mdButton('path', 'Copy path', sesMeta.path);
   if (SECTION_OF[view] === 'optimization' && view !== 'opt-runs' && run) {
     return (OPT ? mdButton('result', 'Copy result as Markdown') : '') + mdButton('path', 'Copy path', run.dir || '.');
   }
@@ -340,6 +399,9 @@ const MD_COPY = {
   row: i => ROWS[i] && rowMarkdown(ROWS[i]),
   'row-link': i => ROWS[i] && addressOf(`/reports${idPath(repMeta.path)}${rowPath(ROWS[i])}`),
   'row-command': i => ROWS[i] && runCommand(openExperimentOf(), ROWS[i].case.name),
+  compare: () => CMP.length && compareMarkdown(),
+  session: () => SES && (sesMeta.traces == null ? diagnosisMarkdown(sesMeta.path, SES)
+    : sessionMarkdown(sesMeta.path, SES, listed(SESSIONS, sesMeta).seconds, sesFound)),
   experiment: () => EXP && experimentMarkdown(expMeta.path, experimentDocument(), listed(EXPERIMENTS, expMeta).reports || []),
   case: () => cases[sel] && caseMarkdown(cases[sel], sel),
   'case-command': () => cases[sel] && runCommand(expMeta.path, mdPresent(cases[sel].name) ? cases[sel].name : sel),

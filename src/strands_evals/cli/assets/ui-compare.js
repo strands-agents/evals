@@ -85,8 +85,8 @@ function compareSummary() {
   }).join('');
 }
 
-/* Each evaluator's mean over the rows it applied to, report by report. */
-function compareEvaluators() {
+/** Each evaluator's mean over the rows it applied to, report by report: `{ names, means }`. */
+function evaluatorMeans() {
   const means = CMP.map(c => {
     const by = new Map();
     for (const r of c.rows) {
@@ -95,7 +95,11 @@ function compareEvaluators() {
     }
     return new Map([...by].map(([name, scores]) => [name, scores.reduce((a, b) => a + b, 0) / scores.length]));
   });
-  const names = [...new Set(means.flatMap(m => [...m.keys()]))];
+  return { names: [...new Set(means.flatMap(m => [...m.keys()]))], means };
+}
+
+function compareEvaluators() {
+  const { names, means } = evaluatorMeans();
   const head = `<tr><th data-term="evaluator">Evaluator</th>`
     + `${CMP.map((c, i) => `<th data-tip="${esc(c.meta.path)}">${cmpNo(i)}</th>`).join('')}</tr>`;
   const body = names.map(name => `<tr><td>${esc(name)}</td>` + means.map((m, i) => {
@@ -130,12 +134,18 @@ function compareGrid() {
   });
 }
 
+/** The oldest against the newest, the rows that flipped first and then those whose score moved furthest. */
+function compareEndRows() {
+  const c = compareRows(CMP[0].rows, CMP[CMP.length - 1].rows);
+  c.moved.sort((a, b) => !!b.flip - !!a.flip
+    || Math.abs((b.to || 0) - (b.from || 0)) - Math.abs((a.to || 0) - (a.from || 0)));
+  return c;
+}
+
 /* The oldest against the newest: what flipped, what moved, and what only one of them holds. */
 function compareEnds() {
   const last = CMP.length - 1;
-  const c = compareRows(CMP[0].rows, CMP[last].rows);
-  const moved = c.moved.sort((a, b) => !!b.flip - !!a.flip
-    || Math.abs((b.to || 0) - (b.from || 0)) - Math.abs((a.to || 0) - (a.from || 0)));
+  const c = compareEndRows(), moved = c.moved;
   const several = new Set(CMP[last].rows.map(evaluatorName)).size > 1;
   const shared = c.fixed + c.broke + c.same;
   $('cmp-ends-head').textContent = `From ${cmpNo(0)} to ${cmpNo(last)}`;

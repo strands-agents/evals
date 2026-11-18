@@ -33,6 +33,7 @@ Object.assign(VIEW_GUIDE, {
       'Read it top to bottom. Each <b>trace</b> has its own heading and what it cost; the time between traces is not counted.',
       'A trace with several agent invocations is split into turns: the prompt and the reply first, then the model and tool calls behind them.',
       'No diagnosis yet? Make one, then Rescan: <code>strands-evals diagnose FILE -o NAME.diagnosis.json</code>',
+      '<b>Copy as Markdown</b> at the top copies the session and its diagnoses as text for a coding agent.',
     ],
     terms: ['session', 'trace', 'diagnosis'],
     links: [['detectors/', 'Diagnosing failures'], ['cli/', 'CLI reference']],

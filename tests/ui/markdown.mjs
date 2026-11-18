@@ -1,6 +1,6 @@
 /* What the page hands a coding agent: Markdown for what is open, the path and the command that go
-   with it, and an address for one report row or one candidate. The server writes a report and an
-   experiment as Markdown too, so the two are run over the same files here and compared. */
+   with it, and an address for one report row or one candidate. The server writes a report, an
+   experiment and a session as Markdown too, so the two are run over the same files here and compared. */
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -61,6 +61,35 @@ const REPORT = {
   diagnoses: [null, { category: 'prompt', detail: 'no policy text' }],
   recommendations: [null, 'Add the refund policy to the prompt.'],
 };
+/* A session chosen the same way: a trace with no spans, one with no id, tool output in each shape the
+   page unwraps, token counts in each size it shortens, a span of no known kind and one that is not a span. */
+const stamp = seconds => ({ start_time: '2026-11-03T09:00:00.000000Z', end_time: `2026-11-03T09:00:0${seconds}0000Z` });
+const RECORDED = {
+  session_id: 's-9',
+  traces: [
+    { trace_id: 't-1', spans: [
+      { span_type: 'invoke_agent', span_info: { span_id: 'agent', ...stamp('4.25') }, user_prompt: 'Refund order 7.', agent_response: 'Done.' },
+      { span_type: 'inference', span_info: { span_id: 'model', ...stamp('1.00') }, messages: [
+        { role: 'assistant', content: [{ content_type: 'tool_use', name: 'refund', arguments: { order: 7 } }],
+          metadata: { usage: { inputTokens: 12345, outputTokens: 30, cacheReadInputTokens: 2500000 } } },
+        { role: 'tool', content: [{ content_type: 'tool_result', content: '{"output": "refunded"}' }, { content_type: 'tool_result', error: 'timed out' }] },
+        { role: 'assistant', content: 'All done.' },
+        'not a message',
+      ] },
+      { span_type: 'execute_tool', span_info: { span_id: 'tool', ...stamp('2.00') }, tool_call: { name: 'refund', arguments: { order: 7 } },
+        tool_result: { content: ' [1, {"a": 2.0}] ' } },
+      { span_type: 'execute_tool', tool_call: {}, tool_result: { content: '{"a": NaN}', error: true } },
+    ] },
+    { trace_id: 't-2', spans: [] },
+    { spans: [{ span_type: 'custom', note: 'kept as written' }, null] },
+  ],
+};
+const DIAGNOSIS = {
+  session_id: 's-9',
+  failures: [{ span_id: 'tool', category: ['wrong_tool'], confidence: [0.9], evidence: ['It refunded twice.'] }],
+  root_causes: [{ failure_span_id: 'tool', location: 'model', root_cause_explanation: 'No limit is described.', fix_recommendation: 'Describe one.' }],
+};
+const LOST = { session_id: 's-gone', failures: [{ span_id: 'x', category: ['loop'] }], root_causes: [] };
 /* Written as text: keys out of JavaScript's order and numbers JSON.stringify would have rewritten. */
 const NUMBERS = '{"b": 1.0, "10": 2, "2": [1e21, 1e-7, 0.30000000000000004, 12345678901234567890, true, null, "é \\u0001 \\" \\\\"], "empty": {}, "none": []}';
 
@@ -71,8 +100,16 @@ const write = (rel, text) => {
 };
 write('support/support.experiment.json', JSON.stringify(EXPERIMENT));
 write('support/support.report.json', JSON.stringify(REPORT).replace('"__NUMBERS__"', NUMBERS));
-write('code/nightly.report.json', JSON.stringify({ overall_score: 1, cases: [{ name: 'a', evaluator: 'Equals' }], scores: [1], test_passes: [true] }));
+write('code/nightly.report.json', JSON.stringify({ overall_score: 1, cases: [{ name: 'a', evaluator: 'Equals' }, { name: 'b|c', evaluator: 'Equals' }],
+  scores: [1, 1], test_passes: [true, true] }));
+write('code/weekly.report.json', JSON.stringify({ overall_score: 0.25, run: { started_at: '2026-11-02T10:00:00Z' },
+  cases: [{ name: 'a', evaluator: 'Equals' }, { name: 'b|c', evaluator: 'Equals' }], scores: [0, 0.5], test_passes: [false, true] }));
+/* The older report says nothing of when it ran, so it is placed by its file's time. */
+fs.utimesSync(path.join(root, 'code/nightly.report.json'), Date.UTC(2026, 10, 1) / 1000, Date.UTC(2026, 10, 1) / 1000);
 write('empty/experiment.json', JSON.stringify({ cases: [], evaluators: [] }));
+write('sessions/refund.session.json', JSON.stringify(RECORDED));
+write('sessions/refund.diagnosis.json', JSON.stringify(DIAGNOSIS));
+write('sessions/lost.diagnosis.json', JSON.stringify(LOST));
 fs.cpSync(new URL('./fixtures/optimizer-run/', import.meta.url).pathname, path.join(root, 'tuning'), { recursive: true });
 const ROOT = fs.realpathSync(root);
 
@@ -225,6 +262,132 @@ Tool result:
 {
  "status": "in transit"
 }
+\`\`\`
+`;
+const SESSION_FILE = `# Session: sessions/refund.session.json
+
+- Session: s-9
+- Traces: 3
+- Spans: 6
+- Time: 4.25s
+- Diagnoses: sessions/refund.diagnosis.json
+
+## Diagnosis: sessions/refund.diagnosis.json
+
+\`\`\`json
+${JSON.stringify(DIAGNOSIS, null, 2)}
+\`\`\`
+
+## Trace 1 of 3: t-1
+
+### Span 0: invoke agent
+
+Prompt:
+
+\`\`\`text
+Refund order 7.
+\`\`\`
+
+Response:
+
+\`\`\`text
+Done.
+\`\`\`
+
+### Span 1: inference
+
+#### assistant
+
+12k in · 30 out · 2.50M cache read tokens
+
+Tool call \`refund\`:
+
+\`\`\`json
+{
+  "order": 7
+}
+\`\`\`
+
+#### tool
+
+Tool result:
+
+\`\`\`text
+refunded
+\`\`\`
+
+Tool result (error):
+
+\`\`\`text
+timed out
+\`\`\`
+
+#### assistant
+
+\`\`\`text
+All done.
+\`\`\`
+
+#### unknown
+
+\`\`\`text
+
+\`\`\`
+
+### Span 2: tool
+
+Tool call \`refund\`:
+
+\`\`\`json
+{
+  "order": 7
+}
+\`\`\`
+
+Tool result:
+
+\`\`\`text
+[
+ 1,
+ {
+  "a": 2
+ }
+]
+\`\`\`
+
+### Span 3: tool
+
+Tool call \`?\`:
+
+\`\`\`json
+null
+\`\`\`
+
+Tool result (error):
+
+\`\`\`text
+{"a": NaN}
+\`\`\`
+
+## Trace 2 of 3: t-2
+
+No spans.
+
+## Trace 3 of 3
+
+### Span 4: custom
+
+\`\`\`json
+{
+  "span_type": "custom",
+  "note": "kept as written"
+}
+\`\`\`
+
+### Span 5: span
+
+\`\`\`json
+
 \`\`\`
 `;
 const MESSAGE_TRACE = `# Trace: 4 messages
@@ -415,10 +578,22 @@ Expected interactions:
   await waitFor(() => row(linked, 3).getAttribute('aria-expanded') === 'true', 'the row the address names');
   is(shown.join(), '3', 'a row with no evaluator is addressed by its case alone, and is brought into view');
 
+  // ── a row's address while a lens groups the table and shows one group of it ──
+  await linked.click(linked.$$('#rep-group-pick button').find(b => b.textContent === 'condition, from the name'));
+  await linked.click(linked.$$('#rep-groups tr.group').find(tr => linked.text(tr.cells[0]) === 'policy'));
+  ok(row(linked, 1) && !row(linked, 4), 'with one group shown, the rows of the others are out of the table');
+  linked.window.history.pushState(null, '', '/reports/support/support.report.json/rows/unjudged/Equals');
+  linked.window.dispatchEvent(new linked.window.PopStateEvent('popstate'));
+  await waitFor(() => row(linked, 4) && row(linked, 4).getAttribute('aria-expanded') === 'true', 'the row outside the group shown');
+  ok(shown.pop() === '4' && linked.$$('#rep-rows tr.grouphead').length === 2 && !linked.$('#rep-groups tr.group.on'),
+    'the address of a row in another group opens it and brings it into view: the table stays grouped, with every group back in it');
+  await linked.click(row(linked, 0));
+  is(linked.window.location.pathname, '/reports/support/support.report.json/rows/refund%7Cpolicy/Equals', 'and a row opened in a grouped table is still the one the address names');
+
   // ── a report run from code has no experiment, so no command ──
   await p.click('.tab[data-view="reports"]');
   await p.openReport('nightly');
-  await waitFor(() => p.$$('#rep-rows tr.case').length === 1, 'the second report');
+  await waitFor(() => p.$$('#rep-rows tr.case').length === 2, 'the second report');
   is(labels(p, '#actions'), 'Copy as Markdown | Copy path', 'a report with nothing failing offers no prompt');
   ok((await p.copy('#actions [data-md="report"]')).includes('- Experiment: none found, so this report was run from code\n\n## Failing rows\n\nNone.\n'),
     'its Markdown says it was run from code and that nothing fails', p.copied);
@@ -542,6 +717,78 @@ Metadata:
   await p.openExperiment('empty');
   await waitFor(() => /No cases/.test(p.text('#form')), 'the empty experiment');
   ok(p.$('#case-acts').hidden, 'with no case there is nothing to copy, and no action offering to');
+
+  // ── a comparison ──
+  await p.click('.tab[data-view="reports"]');
+  await p.openReport('nightly');
+  await p.click('#cmp-with button[data-value="code/weekly.report.json"]');
+  await waitFor(() => p.$('#v-compare').classList.contains('on'), 'the comparison');
+  is(labels(p, '#actions'), 'Copy as Markdown', 'a comparison offers its Markdown');
+  ok(!p.$('#cmp-with').hidden && p.text('#cmp-with summary') === 'Add a report…', 'beside the control that adds a report to it', p.text('#cmp-with summary'));
+  is(await p.copy('#actions [data-md="compare"]'), `# Comparison of 2 reports
+
+Oldest first. Rows are matched by case and evaluator, so reports of different experiments compare only where they hold the same rows.
+
+| # | Report | When | Overall score | Rows | Passing | Failing |
+| --- | --- | --- | --- | --- | --- | --- |
+| #1 | code/nightly.report.json | 2026-11-01T00:00:00.000Z, by file time | 1.00 | 2 | 2 | 0 |
+| #2 | code/weekly.report.json | 2026-11-02T10:00:00.000Z | 0.25 | 2 | 1 | 1 |
+
+## Evaluator means
+
+| Evaluator | #1 | #2 |
+| --- | --- | --- |
+| Equals | 1.00 | 0.25 |
+
+## From #1 to #2
+
+- Now pass: 0
+- Now fail: 1
+- Kept their verdict: 1
+- Only in #2: 0
+- Only in #1: 0
+
+| Case | Evaluator | #1 | #2 | Verdict |
+| --- | --- | --- | --- | --- |
+| a | Equals | 1.00 | 0.00 | now fails |
+| b\\|c | Equals | 1.00 | 0.50 | still passes |
+`, 'which holds each report, each evaluator’s mean in each, then what flipped and what moved between the oldest and the newest');
+  await p.click('#cmp-with button[data-value="support/support.report.json"]');
+  await waitFor(() => p.$$('#pagehead .chip').length === 3, 'the third report');
+  const three = await p.copy('#actions [data-md="compare"]');
+  ok(three.startsWith('# Comparison of 3 reports\n') && three.includes('\n| Evaluator | #1 | #2 | #3 |\n| --- | --- | --- | --- |\n')
+    && /\n\| tone of voice \| no row \| no row \| 0\.13 \|\n/.test(three) && three.includes('\n## From #1 to #3\n')
+    && three.endsWith('- Only in #3: 5\n- Only in #1: 2\n\nThe two share no case and evaluator.\n'),
+  'a third report adds a column, an evaluator a report has no row from says so, and ends that share nothing say that', three);
+
+  // ── a session: the header's actions, and the server's Markdown for the same file ──
+  await p.click('.tab[data-view="sessions"]');
+  await p.openSession('refund.session');
+  await waitFor(() => p.$('#v-session').classList.contains('on'), 'the session');
+  is(labels(p, '#actions'), 'Copy as Markdown | Copy path', 'an open session offers its Markdown and its path');
+  const session = await p.copy('#actions [data-md="session"]');
+  is(session, await fromServer('/sessions/sessions/refund.session.json.md'), 'the page and the server write the same Markdown for a session');
+  is(session, SESSION_FILE, 'which holds what it recorded, the diagnosis made of it, then each trace span by span, numbered as on the page');
+  is(await p.copy('#actions [data-md="path"]'), `${ROOT}/sessions/refund.session.json`, 'its path is the session file’s');
+  is(JSON.stringify(JSON.parse(await fromServer('/sessions/sessions/refund.session.json.json'))), JSON.stringify(RECORDED), 'and as JSON the server answers with the file’s document');
+
+  await p.click('.tab[data-view="sessions"]');
+  await p.openSession('lost');
+  await waitFor(() => p.text('#crumbs').includes('lost.diagnosis.json'), 'the diagnosis on its own');
+  const lost = await p.copy('#actions [data-md="session"]');
+  is(lost, await fromServer('/sessions/sessions/lost.diagnosis.json.md'), 'the page and the server write the same Markdown for a diagnosis whose session is not here');
+  is(lost, `# Diagnosis: sessions/lost.diagnosis.json
+
+- Session: s-gone, which is not in the folder
+- Failures: 1
+- Root causes: 0
+
+\`\`\`json
+${JSON.stringify(LOST, null, 2)}
+\`\`\`
+`, 'which says so, and gives the diagnosis as it was written');
+  ok((await fromServer('/sessions/sessions/refund.diagnosis.json.md')).startsWith('# Diagnosis: sessions/refund.diagnosis.json\n\n- Session: s-9, in sessions/refund.session.json\n'),
+    'asked for by its own file, a diagnosis names the session file it was made from');
 
   // ── an optimizer run: its result, and one candidate ──
   await p.click('#sec-opt');

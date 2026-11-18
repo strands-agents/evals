@@ -183,17 +183,19 @@ with someone serving the same folder:
 | `/reports/<report file>/rows/<case>/<evaluator>` | One row of a report, opened and in view. |
 | `/optimization/<run directory>/candidates/<id>` | One candidate of a run, opened and in view. |
 
-The page is also written to be handed to a coding agent. A report, a report row, an experiment, a case, a
-candidate, an optimizer result and a trace each have a **Copy as Markdown** action, beside a **Copy path**
-for the file and a **Copy command** that runs one case again; a report with failing rows has **Copy failing
-rows as a prompt**, which bundles them with the file's path and one instruction. The same Markdown is
-served, so an agent can read what the page shows without a browser:
+The page is also written to be handed to a coding agent. A report, a report row, a comparison, an
+experiment, a case, a session, a candidate, an optimizer result and a trace each have a **Copy as Markdown**
+action, beside a **Copy path** for the file and a **Copy command** that runs one case again; a report with
+failing rows has **Copy failing rows as a prompt**, which bundles them with the file's path and one
+instruction. The same Markdown is served for a file, so an agent can read what the page shows without a
+browser:
 
 | Address | Returns |
 | --- | --- |
 | `/reports/<report file>.md` | The report as Markdown: its figures, each failing row with its input, expected and actual output and the evaluator's reason, then every row. |
 | `/experiments/<experiment file>.md` | The experiment as Markdown: its evaluators with their settings, then every case. |
-| `/reports/<report file>.json`, `/experiments/<experiment file>.json` | The file's document. |
+| `/sessions/<session file>.md` | The session as Markdown: what it recorded, each diagnosis made of it, then every span of every trace. A diagnosis file is read the same way. |
+| `/reports/<report file>.json`, `/experiments/<experiment file>.json`, `/sessions/<session file>.json` | The file's document. |
 | `/llms.txt` | What the server answers: these addresses, the `/api` routes and how the token is sent. |
 
 These need the token itself, as the `X-Evals-Token` header or as `?t=<token>`; the page's cookie does not
