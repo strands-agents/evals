@@ -26,14 +26,14 @@ function showMissing(route, list, title, body, ways) {
   show('missing');
 }
 
-/* The kinds of file an address can name: its key in a parsed address, what to call one, the files of
-   that kind the folder holds, and the list and address they are under. */
+/* The kinds of file an address can name. `key` is its name in a parsed address, `list` the list and
+   address its files are under. */
 const FILE_KINDS = [
-  ['report', 'a report', () => REPORTS, 'reports'],
-  ['experiment', 'an experiment', () => EXPERIMENTS, 'experiments'],
-  ['session', 'a session or a diagnosis', () => SESSIONS.concat(DIAGNOSES), 'sessions'],
+  { key: 'report', a: 'a report', files: () => REPORTS, list: 'reports' },
+  { key: 'experiment', a: 'an experiment', files: () => EXPERIMENTS, list: 'experiments' },
+  { key: 'session', a: 'a session or a diagnosis', files: () => SESSIONS.concat(DIAGNOSES), list: 'sessions' },
 ];
-const holds = (kind, path) => kind[2]().some(m => m.path === path);
+const holds = (kind, path) => kind.files().some(m => m.path === path);
 
 /* The report row and the candidate an address names, in what is open. */
 const rowNamed = want => ROWS.find(r => r.name === want.row
@@ -47,12 +47,12 @@ function notThere(want) {
       + 'The address may be mistyped, or from an older version of this page.', homeWays()];
   }
   for (const kind of FILE_KINDS) {
-    const [key, a, , list] = kind, path = want[key];
+    const { key, a, list } = kind, path = want[key];
     if (!path || holds(kind, path)) continue;
     const other = FILE_KINDS.find(k => holds(k, path));
     return other
-      ? [list, 'Wrong lily pad', `${named(path)} is ${other[1]}, not ${a}.`,
-        [wayTo(`/${other[3]}${idPath(path)}`, `Open it under ${VIEW_NAME[other[3]]}`), listWay(list)]]
+      ? [list, 'Wrong lily pad', `${named(path)} is ${other.a}, not ${a}.`,
+        [wayTo(`/${other.list}${idPath(path)}`, `Open it under ${VIEW_NAME[other.list]}`), listWay(list)]]
       : [list, `That ${key} hopped away`, `No ${key} named ${named(path)} is in this folder. ${GONE}`, [listWay(list)]];
   }
   const here = [...new Set(want.compare || [])].filter(path => holds(FILE_KINDS[0], path));
