@@ -69,7 +69,7 @@ PAGE_ROOTS = ("/reports", "/experiments", "/sessions", "/optimization")
 # A report, an experiment or a session is also served as data: its page address with one of these forms added.
 DATA_ROOTS = {"/reports/": REPORT, "/experiments/": EXPERIMENT, "/sessions/": SESSION}
 DATA_FORMS = (".md", ".json")
-PRINTABLE = re.compile(r"[!-~]+")
+_PRINTABLE = re.compile(r"[!-~]+")
 
 _LOCAL_ASSET = re.compile(r'<link rel="stylesheet" href="([\w.-]+)">|<script src="([\w.-]+)"></script>')
 _ANY_ASSET = re.compile(r"<script[^>]*\ssrc=|<link[^>]*\srel=\"stylesheet\"")
@@ -601,7 +601,7 @@ class UIHandler(BaseHTTPRequestHandler):
             link = urlparse(self.path)
             rest = "&".join(pair for pair in link.query.split("&") if pair and unquote(pair.split("=")[0]) != "t")
             path = link.path + (f"?{rest}" if rest else "")
-            where = path if PRINTABLE.fullmatch(path) else "/"
+            where = path if _PRINTABLE.fullmatch(path) else "/"
             self._send(HTTPStatus.SEE_OTHER, b"", html_type, headers={"Location": where, "Set-Cookie": cookie})
             return
         if not (self._authorized(query) or self._has_page_cookie()):
