@@ -66,6 +66,17 @@ function diffSeq(a, b) {
   return out;
 }
 
+/** Replace an element's markup without losing the keyboard's place in it: focus goes back to the
+    element of the same tag and data attributes, when there still is one. */
+function redraw(el, html) {
+  const had = el.contains(document.activeElement) ? document.activeElement : null;
+  el.innerHTML = html;
+  if (!had) return;
+  const mark = JSON.stringify(had.dataset);
+  const same = [...el.querySelectorAll(had.localName)].find(x => JSON.stringify(x.dataset) === mark);
+  if (same) same.focus();
+}
+
 /** Fill a picker, keeping `want` chosen if it is still on offer. Returns what ended up chosen.
     A few short choices sit side by side; more, or `asList`, open as a list under a button. */
 function fillPick(id, options, want, asList) {
@@ -106,10 +117,12 @@ function ask(message, yes, no) {
     box.innerHTML = `<div class="ask-card"><p>${esc(message)}</p><div class="ask-acts">`
       + `<button class="btn" data-answer="no">${esc(no)}</button>`
       + `<button class="btn pri" data-answer="yes">${esc(yes)}</button></div></div>`;
+    const asker = document.activeElement;
     const onKey = e => { if (e.key === 'Escape') done(false); };
     const done = answer => {
       box.remove();
       document.removeEventListener('keydown', onKey);
+      asker.focus();
       resolve(answer);
     };
     box.onclick = e => {

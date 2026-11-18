@@ -65,9 +65,11 @@ ok(asked() === '/api/changes', 'a poll over an unchanged folder asks only whethe
 // ── an experiment appears ──
 tree.experiments.push(listed('new/e.json', 5, { dir: 'new', reports: [] }));
 tree.mark += '+';
+rows()[0].focus();
 await poll();
 ok(rows().length === 2 && rows()[0].classList.contains('on'),
   'a new experiment shows up in the list with nothing clicked, and the open one stays marked', p.text('#experiments-rows'));
+ok(p.d.activeElement === rows()[0], 'and the keyboard is still on the row it was on', p.d.activeElement.tagName);
 ok(asked() === '/api/changes /api/scan', 'the open files are not fetched again when they did not change');
 
 // ── the open report is re-run: it is re-read, and the reader keeps their place ──

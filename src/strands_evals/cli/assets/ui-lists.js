@@ -57,7 +57,7 @@ function renderLists() {
   const nothing = (what, link) => (failed ? '' : blank(`No ${what} here`, MODE === 'server'
     ? `No ${what} JSON under ${esc(ROOT)}. ${link}` : 'Open a folder to look for experiments and reports.'));
 
-  $('reports-rows').innerHTML = failed + (REPORTS.map(r => {
+  redraw($('reports-rows'), failed + (REPORTS.map(r => {
     const open = !repCand && repMeta && repMeta.path === r.path;
     return `<tr class="row${open ? ' on' : ''}" data-report="${esc(r.path)}" tabindex="0">
         <td><label class="pickbox"><input type="checkbox" data-pick="${esc(r.path)}"${cmpPick.has(r.path) ? ' checked' : ''}
@@ -66,9 +66,9 @@ function renderLists() {
       + (r.failing ? ` · <span class="vb fail"><i></i>${r.failing} failing</span>` : '') + `</td>
         <td class="ev">${madeFrom(r)}</td>
         <td class="ev">${when(r.modified)}</td></tr>`;
-  }).join('') || nothing('report', docLink('cli/run/#experiment-file-run', 'empty-reports', 'How to run an experiment')));
+  }).join('') || nothing('report', docLink('cli/run/#experiment-file-run', 'empty-reports', 'How to run an experiment'))));
 
-  $('experiments-rows').innerHTML = failed + (EXPERIMENTS.map(e => {
+  redraw($('experiments-rows'), failed + (EXPERIMENTS.map(e => {
     const made = e.reports.map(path => REPORTS.find(r => r.path === path)).filter(Boolean);
     return `<tr class="row${expMeta && expMeta.path === e.path ? ' on' : ''}" data-experiment="${esc(e.path)}" tabindex="0">
         <td>${filed(e)}</td>
@@ -76,7 +76,7 @@ function renderLists() {
         <td class="ev">${made.map(r => `${openLink('report', r.path, r.name)} ${fmt(r.overall_score)}`).join('<br>')
           || '<span class="empty">not run yet</span>'}</td>
         <td class="ev">${when(e.modified)}</td></tr>`;
-  }).join('') || nothing('experiment', docLink('quickstart/#run-your-first-evaluation', 'empty-experiments', 'Create your first experiment')));
+  }).join('') || nothing('experiment', docLink('quickstart/#run-your-first-evaluation', 'empty-experiments', 'Create your first experiment'))));
 
   $('skips').innerHTML = skipped.length
     ? `<details class="skips"><summary>${plural(skipped.length, 'file')} skipped</summary><ul>`

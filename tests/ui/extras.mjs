@@ -98,11 +98,14 @@ const report = (score, ...cases) => ({
     edit());
 
   await experiments();
+  row('only-exp/experiment.json').focus();
   await p.click(row('only-exp/experiment.json'));
   ok(/^1 unsaved change will be lost if you open another experiment\./.test(p.text('.ask')), 'another experiment asks first',
     p.text('.ask'));
+  ok(p.d.activeElement.dataset.answer === 'no', 'with the keyboard on the answer that loses nothing', p.d.activeElement.textContent);
   await p.click('.ask [data-answer="no"]');
   ok(on() === 'v-experiments' && edit() === 'edited, not saved', 'Stay leaves the edit where it was', `${on()} ${edit()}`);
+  ok(p.d.activeElement === row('only-exp/experiment.json'), 'and puts the keyboard back on the row that asked', p.d.activeElement.tagName);
   await p.click(row('only-exp/experiment.json'));
   await p.click('.ask [data-answer="yes"]');
   ok(on() === 'v-experiment' && p.text('#facts code') === 'strands-evals run experiment.json --agent module:attr -o report.json'
