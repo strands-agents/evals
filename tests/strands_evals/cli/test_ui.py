@@ -183,26 +183,16 @@ def _snapshot(root: Path) -> dict[str, bytes]:
 
 @pytest.mark.parametrize(
     "obj,expected",
-    [
-        ({"cases": [], "evaluators": []}, "experiment"),
-        ({"overall_score": 0.5, "cases": [], "scores": [], "test_passes": []}, "report"),
-        ({"cases": []}, None),
-        ({"overall_score": 0.5, "cases": []}, None),
-        ({"overall_score": True, "cases": [], "scores": [], "test_passes": []}, None),
-        ({"name": "something else"}, None),
-        ([], None),
-        ("a string", None),
-    ],
-    ids=["experiment", "report", "cases alone", "score alone", "boolean score", "unrelated object", "list", "string"],
-)
-def test_classify_goes_by_shape_not_filename(obj, expected):
-    assert classify(obj) == expected
-
-
-@pytest.mark.parametrize(
-    "obj,expected",
     _cases(
         {
+            "experiment": ({"cases": [], "evaluators": []}, "experiment"),
+            "report": ({"overall_score": 0.5, "cases": [], "scores": [], "test_passes": []}, "report"),
+            "cases alone": ({"cases": []}, None),
+            "score alone": ({"overall_score": 0.5, "cases": []}, None),
+            "boolean score": ({"overall_score": True, "cases": [], "scores": [], "test_passes": []}, None),
+            "unrelated object": ({"name": "something else"}, None),
+            "list": ([], None),
+            "string": ("a string", None),
             "a fetched session": (_session("s", [(0, 1)]), "session"),
             "a session with no traces": ({"session_id": "s", "traces": []}, "session"),
             "traces that hold no spans": ({"session_id": "s", "traces": [{"trace_id": "t"}]}, None),
@@ -216,7 +206,7 @@ def test_classify_goes_by_shape_not_filename(obj, expected):
         }
     ),
 )
-def test_classify_knows_a_session_and_a_diagnosis_by_shape(obj, expected):
+def test_classify_goes_by_shape_not_filename(obj, expected):
     assert classify(obj) == expected
 
 
@@ -1001,6 +991,7 @@ HOST_REFUSAL = "this server only answers requests addressed to the host it is se
 TOKEN_REFUSAL = "missing or wrong token"
 LENGTH_REFUSAL = "send the body with a Content-Length"
 WRONG_TOKEN = {"X-Evals-Token": "wrong"}
+NO_TOKEN = {"X-Evals-Token": None}
 LONG_NAME = "a" * 300 + ".json"
 # Stands in a PUT body for the mtime its target has when the request is sent.
 LOADED = "the stamp the file was loaded with"
@@ -1029,6 +1020,8 @@ class Client:
         self.settings = {"root": str(root.resolve()), "depth": 3, "read_only": False}
         # What `/api/config` answers: the settings and the evaluator catalogue the page explains settings from.
         self.config = {**self.settings, "evaluators": evaluator_catalog()}
+        # What the printed link leaves in a browser.
+        self.cookie = f"strands_evals_ui_{self.port}={self.token}"
 
     def connect(self) -> HTTPConnection:
         return HTTPConnection(self.host, self.port, timeout=5)
@@ -1114,7 +1107,7 @@ def test_api_refuses_a_request_without_the_token(client: Client, path, token):
 
 
 def test_api_takes_the_token_from_the_query_too(client: Client):
-    reply = client.send("GET", f"/api/config?t={client.token}", headers={"X-Evals-Token": None})
+    reply = client.send("GET", f"/api/config?t={client.token}", headers=NO_TOKEN)
 
     assert reply == Reply(HTTPStatus.OK, client.config)
 
@@ -1179,21 +1172,17 @@ def test_a_generated_token_is_long_and_differs_between_servers(serve):
 
 
 def test_page_needs_the_token(client: Client):
-    assert client.send("GET", "/", headers={"X-Evals-Token": None}) == Reply(
-        HTTPStatus.UNAUTHORIZED, UNAUTHORIZED_PAGE.decode()
-    )
+    assert client.send("GET", "/", headers=NO_TOKEN) == Reply(HTTPStatus.UNAUTHORIZED, UNAUTHORIZED_PAGE.decode())
     assert client.send("GET", "/") == Reply(HTTPStatus.OK, PAGE)
 
 
 def test_the_printed_link_trades_its_token_for_a_cookie_and_a_clean_address(client: Client):
-    cookie = f"strands_evals_ui_{client.port}={client.token}"
-
-    redirect = client.send("GET", f"/?t={client.token}", headers={"X-Evals-Token": None})
-    page = client.send("GET", "/", headers={"X-Evals-Token": None, "Cookie": cookie})
+    redirect = client.send("GET", f"/?t={client.token}", headers=NO_TOKEN)
+    page = client.send("GET", "/", headers={**NO_TOKEN, "Cookie": client.cookie})
 
     assert redirect == Reply(HTTPStatus.SEE_OTHER)
     assert redirect.headers["Location"] == "/"
-    assert redirect.headers["Set-Cookie"] == f"{cookie}; Path=/; HttpOnly; SameSite=Lax"
+    assert redirect.headers["Set-Cookie"] == f"{client.cookie}; Path=/; HttpOnly; SameSite=Lax"
     assert page == Reply(HTTPStatus.OK, PAGE)
 
 
@@ -1205,7 +1194,7 @@ def test_the_printed_link_trades_its_token_for_a_cookie_and_a_clean_address(clie
 def test_the_page_is_refused_without_this_servers_cookie(client: Client, cookie):
     sent = cookie.format(port=client.port, token=client.token)
 
-    reply = client.send("GET", "/", headers={"X-Evals-Token": None, "Cookie": sent})
+    reply = client.send("GET", "/", headers={**NO_TOKEN, "Cookie": sent})
 
     assert reply == Reply(HTTPStatus.UNAUTHORIZED, UNAUTHORIZED_PAGE.decode())
 
@@ -1221,27 +1210,25 @@ def test_the_page_is_refused_without_this_servers_cookie(client: Client, cookie)
     ],
 )
 def test_every_address_of_the_page_serves_it_and_survives_the_token_redirect(client: Client, path):
-    cookie = f"strands_evals_ui_{client.port}={client.token}"
-
-    redirect = client.send("GET", f"{path}?t={client.token}", headers={"X-Evals-Token": None})
+    redirect = client.send("GET", f"{path}?t={client.token}", headers=NO_TOKEN)
 
     assert redirect.status == HTTPStatus.SEE_OTHER
     assert redirect.headers["Location"] == path
-    assert client.send("GET", path, headers={"X-Evals-Token": None, "Cookie": cookie}) == Reply(HTTPStatus.OK, PAGE)
-    assert client.send("GET", path, headers={"X-Evals-Token": None}).status == HTTPStatus.UNAUTHORIZED
+    assert client.send("GET", path, headers={**NO_TOKEN, "Cookie": client.cookie}) == Reply(HTTPStatus.OK, PAGE)
+    assert client.send("GET", path, headers=NO_TOKEN).status == HTTPStatus.UNAUTHORIZED
 
 
 def test_the_token_redirect_keeps_the_reports_a_comparison_names(client: Client):
     compared = "r=a%2Fone.report.json&r=b%2Ftwo.report.json"
 
-    first = client.send("GET", f"/reports/compare?t={client.token}&{compared}", headers={"X-Evals-Token": None})
-    last = client.send("GET", f"/reports/compare?{compared}&t={client.token}", headers={"X-Evals-Token": None})
+    first = client.send("GET", f"/reports/compare?t={client.token}&{compared}", headers=NO_TOKEN)
+    last = client.send("GET", f"/reports/compare?{compared}&t={client.token}", headers=NO_TOKEN)
 
     assert first.headers["Location"] == last.headers["Location"] == f"/reports/compare?{compared}"
 
 
 def test_the_token_redirect_drops_a_token_whose_name_is_encoded(client: Client):
-    redirect = client.send("GET", f"/reports/compare?%74={client.token}&r=one.json", headers={"X-Evals-Token": None})
+    redirect = client.send("GET", f"/reports/compare?%74={client.token}&r=one.json", headers=NO_TOKEN)
 
     assert redirect.headers["Location"] == "/reports/compare?r=one.json"
 
@@ -1252,16 +1239,14 @@ def test_an_address_that_is_not_the_pages_is_not_found(client: Client, path):
 
 
 def test_the_token_redirect_never_points_off_the_server(client: Client):
-    redirect = client.send("GET", f"//elsewhere.example/reports?t={client.token}", headers={"X-Evals-Token": None})
+    redirect = client.send("GET", f"//elsewhere.example/reports?t={client.token}", headers=NO_TOKEN)
 
     # Refused outright where the standard library collapses the leading slashes, and a local path where it does not.
     assert redirect.headers.get("Location") in (None, "/reports")
 
 
 def test_the_cookie_opens_the_page_but_not_the_api(client: Client):
-    cookie = f"strands_evals_ui_{client.port}={client.token}"
-
-    reply = client.send("GET", "/api/config", headers={"X-Evals-Token": None, "Cookie": cookie})
+    reply = client.send("GET", "/api/config", headers={**NO_TOKEN, "Cookie": client.cookie})
 
     assert reply == _refused(HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL)
 
@@ -1396,28 +1381,18 @@ def test_changes_endpoint_answers_the_fingerprint_a_scan_was_taken_at(client: Cl
 
 def test_scan_endpoint_serves_the_discovery_with_the_settings(client: Client):
     _optimizer_run(client.root / "opt", {"event": "config"}, {"event": "stop", "reason": "budget"})
+    _write(client.root / "recorded" / "checkout.json", _session("s-1", [(0, 1)]))
+    _write(client.root / "recorded" / "checkout.diagnosis.json", _diagnosis("s-1"))
+    LocalFileTaskResultStore(client.root / "store").save("a", EvaluationData(input="q", actual_output="a"))
     (client.root / "broken.json").write_text("{not json")
 
     reply = client.send("GET", "/api/scan")
 
-    found = discover(client.root)
-    assert [len(found.experiments), len(found.reports), len(found.optimizer_runs), len(found.skipped)] == [1, 1, 1, 1]
-    assert reply == Reply(HTTPStatus.OK, {**client.settings, "fingerprint": fingerprint(client.root), **asdict(found)})
-
-
-def test_scan_endpoint_serves_sessions_diagnoses_and_stores(client: Client):
-    _write(client.root / "recorded" / "checkout.json", _session("s-1", [(0, 1)]))
-    _write(client.root / "recorded" / "checkout.diagnosis.json", _diagnosis("s-1"))
-    LocalFileTaskResultStore(client.root / "store").save("a", EvaluationData(input="q", actual_output="a"))
-
-    body = client.send("GET", "/api/scan").body
-
-    found = discover(client.root)
-    assert [s["path"] for s in body["sessions"]] == ["recorded/checkout.json"]
-    assert (body["sessions"], body["diagnoses"], body["stores"]) == (found.sessions, found.diagnoses, found.stores)
-    assert body["stores"] == [{"dir": "store", "files": 1}]
-    opened = client.send("GET", "/api/file?path=recorded/checkout.json").body
-    assert opened["document"] == _session("s-1", [(0, 1)])
+    found = asdict(discover(client.root))
+    assert {name: len(listed) for name, listed in found.items() if name != "truncated"} == dict.fromkeys(
+        ("experiments", "reports", "skipped", "optimizer_runs", "sessions", "diagnoses", "stores"), 1
+    )
+    assert reply == Reply(HTTPStatus.OK, {**client.settings, "fingerprint": fingerprint(client.root), **found})
 
 
 def test_scan_endpoint_survives_a_report_holding_nan(client: Client):
@@ -1491,7 +1466,7 @@ def test_an_unknown_route_is_not_found(client: Client, method):
     assert reply.body == ({"error": "no route for /api/nothing"} if method == "GET" else "")
 
 
-# ── the server: a report or an experiment as Markdown and as JSON, and what the server says of itself ──
+# ── the server: a file as Markdown and as JSON, and what the server says of itself ──
 
 REPORT_MARKDOWN = """# Report: report.json
 
@@ -1548,6 +1523,8 @@ DATA_ADDRESSES = [
     "/reports/report.json.md",
     "/reports/report.json.json",
     "/experiments/experiment.json.md",
+    "/sessions/recorded/checkout.json.md",
+    "/sessions/recorded/checkout.json.json",
     "/llms.txt",
 ]
 
@@ -1623,41 +1600,19 @@ def test_markdown_survives_a_report_holding_nan(client: Client):
 
 @pytest.mark.parametrize("address", DATA_ADDRESSES)
 def test_the_data_at_a_page_address_needs_the_token_itself(client: Client, address):
-    cookie = f"strands_evals_ui_{client.port}={client.token}"
+    _write(client.root / "recorded" / "checkout.json", _session("s-1", [(0, 1)]))
 
-    assert client.send("GET", address, headers={"X-Evals-Token": None}) == _refused(
+    assert client.send("GET", address, headers=NO_TOKEN) == _refused(HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL)
+    assert client.send("GET", address, headers={**NO_TOKEN, "Cookie": client.cookie}) == _refused(
         HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL
     )
-    assert client.send("GET", address, headers={"X-Evals-Token": None, "Cookie": cookie}) == _refused(
-        HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL
-    )
-    assert client.send("GET", f"{address}?t=guessed", headers={"X-Evals-Token": None}) == _refused(
+    assert client.send("GET", f"{address}?t=guessed", headers=NO_TOKEN) == _refused(
         HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL
     )
     assert client.send("GET", address, headers={"Host": "evals.evil.example.com"}) == _refused(
         HTTPStatus.FORBIDDEN, HOST_REFUSAL
     )
-    assert client.send("GET", f"{address}?t={client.token}", headers={"X-Evals-Token": None}).status == HTTPStatus.OK
-
-
-def test_a_session_as_data_is_refused_without_the_token_and_for_a_file_that_is_not_one(client: Client):
-    _write(client.root / "recorded" / "checkout.json", _session("s-1", [(0, 1)]))
-    cookie = f"strands_evals_ui_{client.port}={client.token}"
-
-    for form in (".md", ".json"):
-        address = f"/sessions/recorded/checkout.json{form}"
-        assert client.send("GET", address, headers={"X-Evals-Token": None, "Cookie": cookie}) == _refused(
-            HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL
-        )
-        assert (
-            client.send("GET", f"{address}?t={client.token}", headers={"X-Evals-Token": None}).status == HTTPStatus.OK
-        )
-    assert client.send("GET", "/sessions/report.json.md") == _refused(
-        HTTPStatus.NOT_FOUND, "report.json is not a session"
-    )
-    assert client.send("GET", "/reports/recorded/checkout.json.md") == _refused(
-        HTTPStatus.NOT_FOUND, "recorded/checkout.json is not a report"
-    )
+    assert client.send("GET", f"{address}?t={client.token}", headers=NO_TOKEN).status == HTTPStatus.OK
 
 
 @pytest.mark.parametrize(
@@ -1675,6 +1630,8 @@ def test_a_session_as_data_is_refused_without_the_token_and_for_a_file_that_is_n
         ("/reports/nowhere.json.md", HTTPStatus.NOT_FOUND, "nowhere.json is not a file"),
         ("/reports/experiment.json.md", HTTPStatus.NOT_FOUND, "experiment.json is not a report"),
         ("/experiments/report.json.json", HTTPStatus.NOT_FOUND, "report.json is not an experiment"),
+        ("/sessions/report.json.md", HTTPStatus.NOT_FOUND, "report.json is not a session"),
+        ("/reports/recorded/checkout.json.md", HTTPStatus.NOT_FOUND, "recorded/checkout.json is not a report"),
         ("/reports/notes.json.json", HTTPStatus.NOT_FOUND, "notes.json is not a report"),
     ],
     ids=[
@@ -1686,6 +1643,8 @@ def test_a_session_as_data_is_refused_without_the_token_and_for_a_file_that_is_n
         "missing file",
         "an experiment asked for as a report",
         "a report asked for as an experiment",
+        "a report asked for as a session",
+        "a session asked for as a report",
         "neither",
     ],
 )
@@ -1693,6 +1652,7 @@ def test_the_data_at_a_page_address_is_refused_for_a_file_it_cannot_serve(client
     outside = _write(client.root.parent / "outside.json", _report("secret"))
     (client.root / "leak.json").symlink_to(outside)
     _write(client.root / "notes.json", {"just": "notes"})
+    _write(client.root / "recorded" / "checkout.json", _session("s-1", [(0, 1)]))
 
     reply = client.send("GET", address)
 
@@ -2001,6 +1961,11 @@ def _list_tree(root: Path) -> None:
         {"event": "stop", "iteration": 0, "reason": "budget"},
     )
     _optimizer_run(root / "tuning" / "unfinished")
+    _write(root / "recorded" / "checkout.json", _session("s-1", [(0, 1), (1, 2)], [(5, 6)]))
+    _write(root / "recorded" / "checkout.diagnosis.json", _diagnosis("s-1"))
+    _write(root / "recorded" / "quiet.json", _session("s-2", [(0, 1)]))
+    _write(root / "lost.diagnosis.json", _diagnosis("s-9"))
+    LocalFileTaskResultStore(root / "store").save("a", EvaluationData(input="q", actual_output="a"))
 
 
 def test_ui_list_prints_what_it_found_as_json(tmp_path: Path, capsys):
@@ -2008,9 +1973,17 @@ def test_ui_list_prints_what_it_found_as_json(tmp_path: Path, capsys):
 
     assert main(["--json", "ui", str(tmp_path), "--list"]) == 0
 
-    found = discover(tmp_path)
-    assert [len(found.experiments), len(found.reports), len(found.optimizer_runs), len(found.skipped)] == [2, 2, 2, 1]
-    assert json.loads(capsys.readouterr().out) == {"root": str(tmp_path.resolve()), **asdict(found)}
+    found = asdict(discover(tmp_path))
+    assert {name: len(listed) for name, listed in found.items() if name != "truncated"} == {
+        "experiments": 2,
+        "reports": 2,
+        "skipped": 1,
+        "optimizer_runs": 2,
+        "sessions": 2,
+        "diagnoses": 2,
+        "stores": 1,
+    }
+    assert json.loads(capsys.readouterr().out) == {"root": str(tmp_path.resolve()), **found}
 
 
 def test_ui_list_prints_what_it_found_as_text(tmp_path: Path, capsys):
@@ -2022,40 +1995,16 @@ def test_ui_list_prints_what_it_found_as_text(tmp_path: Path, capsys):
     printed = capsys.readouterr()
     assert sorted(printed.out.splitlines()) == [
         "(no experiment)  ->  code/nightly.json (1.00)",
+        "(no session)  ->  lost.diagnosis.json (1 failures)",
         "experiment.json (1 cases)  ->  report.json (1.00)",
         "optimizer run tuning (1 candidates, 1 iterations)  ->  champion c0, stopped: budget",
         "optimizer run tuning/unfinished (0 candidates, 0 iterations)  ->  no champion",
-        "spare/unrun.json (1 cases)  ->  (not run)",
-    ]
-    assert printed.err == f"skipped notes.json: {NOT_RECOGNISED}\n"
-
-
-def test_ui_list_names_sessions_and_task_result_stores(tmp_path: Path, capsys):
-    _write(tmp_path / "recorded" / "checkout.json", _session("s-1", [(0, 1), (1, 2)], [(5, 6)]))
-    _write(tmp_path / "recorded" / "checkout.diagnosis.json", _diagnosis("s-1"))
-    _write(tmp_path / "recorded" / "quiet.json", _session("s-2", [(0, 1)]))
-    _write(tmp_path / "lost.diagnosis.json", _diagnosis("s-9"))
-    LocalFileTaskResultStore(tmp_path / "store").save("a", EvaluationData(input="q", actual_output="a"))
-
-    assert main(["--rich", "ui", str(tmp_path), "--list"]) == 0
-
-    printed = capsys.readouterr()
-    assert sorted(printed.out.splitlines()) == [
-        "(no session)  ->  lost.diagnosis.json (1 failures)",
         "session recorded/checkout.json (2 traces, 3 spans)  ->  recorded/checkout.diagnosis.json",
         "session recorded/quiet.json (1 traces, 1 spans)  ->  (not diagnosed)",
+        "spare/unrun.json (1 cases)  ->  (not run)",
         "task result store store (1 results)",
     ]
-    assert printed.err == ""
-
-    assert main(["--json", "ui", str(tmp_path), "--list"]) == 0
-    found = discover(tmp_path)
-    listed = json.loads(capsys.readouterr().out)
-    assert (listed["sessions"], listed["diagnoses"], listed["stores"]) == (
-        found.sessions,
-        found.diagnoses,
-        found.stores,
-    )
+    assert printed.err == f"skipped notes.json: {NOT_RECOGNISED}\n"
 
 
 def test_ui_list_says_when_the_scan_stopped_at_the_file_cap(tmp_path: Path, capsys, monkeypatch):
