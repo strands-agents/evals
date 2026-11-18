@@ -215,7 +215,10 @@ strands-evals/
 │   │   ├── _entrypoint.py                    # `module:attr` resolver + classifier
 │   │   ├── _agent_task.py                    # synthesize_task_function (baggage-tagged)
 │   │   ├── _io.py                            # stdin/stdout/file helpers
-│   │   ├── _ui_server.py                     # loopback HTTP server behind `ui`: discovery, pairing, guarded writes
+│   │   ├── _ui_server.py                     # loopback HTTP server behind `ui`: token and Host rules, routes, guarded writes
+│   │   ├── _ui_discovery.py                  # what `ui` finds in a folder and how it pairs it; twin of assets/ui-folder.js
+│   │   ├── _ui_evaluators.py                 # the evaluator catalogue the `ui` editor offers
+│   │   ├── _ui_markdown.py                   # the `.md` form of a report, experiment or session; twin of assets/ui-markdown.js
 │   │   ├── assets/                           # the `ui` page; no build step, inlined into one document when served
 │   │   │   ├── ui.html                       # markup
 │   │   │   ├── ui.css                        # Strands theme tokens and components

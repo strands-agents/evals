@@ -12,7 +12,7 @@ let sesMark = '';                            // what was on disk when it was rea
 
 /* ══════════ reading a folder without the server ══════════
    `sessionMeta`, `diagnosisMeta`, `sessionOf` and `isTaskResult` mirror `_session_summary`,
-   `_diagnosis_summary`, `session_of` and `is_task_result` in `_ui_server.py`. */
+   `_diagnosis_summary`, `session_of` and `is_task_result` in `_ui_discovery.py`. */
 
 const sessionMeta = obj => ({
   session_id: obj.session_id, traces: sessionTraces(obj).length,

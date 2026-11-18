@@ -1,4 +1,4 @@
-/* The server's discovery (`_ui_server.py`) and the page's no-server folder reader (`ui-folder.js`)
+/* The server's discovery (`_ui_discovery.py`) and the page's no-server folder reader (`ui-folder.js`)
  * are two implementations of one contract. This runs both over the same tree and compares them. */
 import fs from 'node:fs';
 import os from 'node:os';

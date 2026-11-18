@@ -50,7 +50,7 @@ function stepsApart(left, right) {
 }
 
 /* The experiment a report was made from, or null when that cannot be told. Mirrors `experiment_of`
-   in `_ui_server.py`: beside it under the same name, else the nearest one holding all its cases. */
+   in `_ui_discovery.py`: the one beside it under the same name, else the nearest one holding all its cases. */
 function experimentOf(report, experiments, alone) {
   const beside = experiments.filter(e => e.dir === report.dir).sort(byPath);
   const named = beside.filter(e => stem(e.meta.name) === stem(report.meta.name));
@@ -88,7 +88,7 @@ function linkStatus(expObj, repObj) {
   return { status: 'partial', detail: `${missing.length} of ${rows.size} report case(s) are not in this experiment` };
 }
 
-/* JSON Lines. Kept in step with `read_event_log` in `_ui_server.py`. */
+/* JSON Lines. Kept in step with `read_event_log` in `_ui_discovery.py`. */
 function readEventLines(text) {
   const lines = String(text).split('\n');
   const complete = lines.length - 1;
