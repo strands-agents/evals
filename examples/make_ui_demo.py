@@ -445,6 +445,10 @@ def optimizer_runs(out: Path) -> None:
     kept = [event for event in events if event.get("iteration", 0) <= 3 and event["event"] not in done]
     (running / "events.jsonl").write_text("".join(json.dumps(event) + "\n" for event in kept))
 
+    started = out / "tuning" / "just-started"
+    write(started / "run.json", {**config, "run_id": "support-tuning-just-started"})
+    (started / "events.jsonl").write_text(json.dumps(events[0]) + "\n")
+
 
 def lens_reports(out: Path) -> None:
     """Reports to group and to read a diagnosis in: tagged cases, a chaos run and a red-team run."""

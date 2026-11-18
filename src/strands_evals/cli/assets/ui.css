@@ -579,7 +579,7 @@ table.trials tr:last-child td { border-bottom: 0; }
   margin: 0 0 8px; font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
   color: var(--accent);
 }
-.chead { display: flex; align-items: center; gap: 12px; }
+.chead { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
 .chead h3 { flex: 1; }
 /* A picker in a chart's heading: a few choices side by side, or a list under a button. */
 .pick { flex: none; position: relative; max-width: 100%; }

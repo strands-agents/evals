@@ -48,7 +48,7 @@ Point `ui` at any directory holding runs the optimizer wrote and it finds them t
 - cases still in draft, a report that no longer matches its experiment, and a report with no experiment;
 - reports to group by what their cases carry: tagged cases with diagnoses, a chaos run and a red-team run;
 - recorded sessions, one of them diagnosed;
-- a finished optimizer run, one still in progress, and the tuning cases run before and after tuning;
+- a finished optimizer run, one still in progress, one that has only just started, and the tuning cases run before and after tuning;
 - these example experiments unrun, and two files the scan sets aside.
 
 ```bash
