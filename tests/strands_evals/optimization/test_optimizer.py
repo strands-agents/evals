@@ -1,12 +1,18 @@
 import asyncio
 import hashlib
 import json
+import logging
 import shutil
+import tempfile
 import threading
 import warnings
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
+from strands import Agent
+from strands.tools import ToolProvider
 
 from strands_evals import Case
 from strands_evals.evaluators import Evaluator
@@ -45,13 +51,15 @@ from strands_evals.optimization import (
     component,
     tunable,
 )
+from strands_evals.optimization.candidate import Candidate
 from strands_evals.optimization.declaration.space import Space
-from strands_evals.optimization.optimizer import _slots_used
+from strands_evals.optimization.optimizer import _close_built, _slots_used
 from strands_evals.optimization.record.resume import load_state
 from strands_evals.optimization.record.run_directory import RunDirectory
 from strands_evals.optimization.search.blocks import _saved
 from strands_evals.optimization.selection.top_ranked import TopRanked
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
+from tests.strands_evals.optimization.scripted_model import ScriptedModel
 
 
 class Score(Evaluator):
@@ -730,6 +738,252 @@ async def test_a_factory_needing_a_resource_is_not_build_checked(tmp_path):
     )
     await _search(optimizer)
     assert [o.outcome for o in proposer.observed] == ["feasible"]
+
+
+class _Agent:
+    """Stands in for an agent holding a resource (an MCP client, a connection); records when it is released."""
+
+    def __init__(self, temperature, closed):
+        self.temperature, self.closed = temperature, closed
+
+
+class _Closes(_Agent):
+    def close(self):
+        self.closed.append(("close", self.temperature))
+
+
+class _AsyncCloses(_Agent):
+    async def aclose(self):
+        self.closed.append(("aclose", self.temperature))
+
+
+class _CleansUp(_Agent):
+    def cleanup(self):
+        self.closed.append(("cleanup", self.temperature))
+
+
+class _ClosesTwoWays(_Closes, _AsyncCloses):
+    pass
+
+
+class _Provider(ToolProvider):
+    """A tool provider with no tools that records its consumers, as an MCP client counts them."""
+
+    def __init__(self):
+        self.consumers, self.added = set(), 0
+
+    async def load_tools(self, **kwargs):
+        return []
+
+    def add_consumer(self, consumer_id, **kwargs):
+        self.consumers.add(consumer_id)
+        self.added += 1
+
+    def remove_consumer(self, consumer_id, **kwargs):
+        self.consumers.discard(consumer_id)
+
+
+def _candidate(optimizer, **updates):
+    return Candidate(values=optimizer._space.complete(updates), parent_id=None, origin=("test",), rationale="")
+
+
+def _checking(factory, tmp_path, **kwargs):
+    """An optimizer, set up, whose `_build_error` a test calls directly."""
+    optimizer = Optimizer(_experiment(), factory, base_dir=tmp_path / "runs", max_workers=64, **kwargs)
+    optimizer._setup()
+    return optimizer
+
+
+def _prompt_file(tmp_path):
+    prompt = tmp_path / "prompts" / "system.md"
+    prompt.parent.mkdir()
+    prompt.write_text("Be brief.\n")
+    return prompt
+
+
+def _scratch_tempdir(tmp_path, monkeypatch):
+    """Point `tempfile` at an empty folder, so a test can see every temp folder left behind."""
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    return scratch
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync_factory", "async_factory"])
+@pytest.mark.parametrize(
+    ("agent_type", "method"),
+    [(_Closes, "close"), (_AsyncCloses, "aclose"), (_CleansUp, "cleanup"), (_ClosesTwoWays, "aclose")],
+)
+async def test_the_build_check_closes_the_agent_it_builds(tmp_path, agent_type, method, is_async):
+    closed = []
+
+    def build(temperature):
+        return agent_type(temperature, closed)
+
+    async def build_async(temperature):
+        return agent_type(temperature, closed)
+
+    optimizer = _checking(
+        tunable(build_async if is_async else build, inject={"temperature": OneOf(0.0, 0.5, 1.0)}), tmp_path
+    )
+    assert await optimizer._build_error(_candidate(optimizer, temperature=0.5)) is None
+    assert closed == [(method, 0.5)]  # once, with the first of aclose, close, cleanup
+
+
+async def test_the_build_check_removes_a_strands_agent_from_its_tool_providers(tmp_path):
+    provider, built = _Provider(), []
+
+    @tunable(temperature=OneOf(0.0, 0.5, 1.0))
+    def make(temperature):
+        agent = Agent(model=ScriptedModel(["ok"]), tools=[provider], callback_handler=None)
+        built.append(agent)  # kept alive, so only an explicit cleanup() can remove the consumer
+        return agent
+
+    optimizer = _checking(make, tmp_path)
+    assert await optimizer._build_error(_candidate(optimizer)) is None
+    assert len(built) == 1 and provider.added == 1
+    assert provider.consumers == set()
+
+
+async def test_the_build_check_calls_only_a_close_method_the_type_defines(caplog):
+    proxy, called = MagicMock(), []
+    plain = SimpleNamespace(close=lambda: called.append("close"))
+    with caplog.at_level(logging.WARNING, logger="strands_evals.optimization.optimizer"):
+        for built in (proxy, plain, _Closes):  # a class's unbound close() would raise if it were called
+            await _close_built(built, "c0ffee")
+    assert proxy.mock_calls == [] and called == [] and caplog.records == []
+
+
+async def test_a_temp_folder_that_cant_be_made_makes_the_candidate_invalid(tmp_path, monkeypatch):
+    @tunable(prompt=FileText(_prompt_file(tmp_path), as_path=True))
+    def make(prompt):
+        return prompt
+
+    def no_space(*args, **kwargs):
+        raise OSError("no space left on device")
+
+    optimizer = _checking(make, tmp_path)
+    monkeypatch.setattr(tempfile, "mkdtemp", no_space)
+    error = await optimizer._build_error(_candidate(optimizer))
+    assert error == "the agent can't be built: OSError: no space left on device"
+
+
+async def test_the_build_check_closes_the_agent_before_removing_its_copy(tmp_path, monkeypatch):
+    scratch = _scratch_tempdir(tmp_path, monkeypatch)
+    closed = []
+
+    class Reads:
+        def __init__(self, prompt):
+            self.prompt = prompt
+
+        def close(self):
+            closed.append(self.prompt.read_text())
+
+    @tunable(prompt=FileText(_prompt_file(tmp_path), as_path=True))
+    def make(prompt):
+        return Reads(prompt)
+
+    optimizer = _checking(make, tmp_path)
+    assert await optimizer._build_error(_candidate(optimizer)) is None
+    assert closed == ["Be brief.\n"]  # the agent could still read its files while it closed
+    assert list(scratch.iterdir()) == []
+
+
+async def test_the_build_check_removes_its_copy_whatever_the_factory_does(tmp_path, monkeypatch):
+    scratch = _scratch_tempdir(tmp_path, monkeypatch)
+    prompt_file, read, closed = _prompt_file(tmp_path), [], []
+
+    @tunable(prompt=FileText(prompt_file, as_path=True), temperature=OneOf(0.0, 0.5, 1.0))
+    def make(prompt, temperature):
+        read.append(prompt.read_text())
+        if temperature == 1.0:
+            raise ValueError("temperature 1.0 is not supported")
+        return {"agent": _Closes(temperature, closed)}  # a dict can't be weakly referenced
+
+    optimizer = _checking(make, tmp_path)
+    assert await optimizer._build_error(_candidate(optimizer, temperature=0.5)) is None
+    error = await optimizer._build_error(_candidate(optimizer, temperature=1.0))
+    assert error == "the agent can't be built: ValueError: temperature 1.0 is not supported"
+    assert read == ["Be brief.\n", "Be brief.\n"]
+    assert closed == []  # what a returned dict holds may be shared with other agents, so it is left open
+
+    @tunable(prompt=FileText(prompt_file, as_path=True))
+    def sandboxed(prompt, sandbox):
+        return (sandbox, prompt)
+
+    optimizer = _checking(sandboxed, tmp_path, environment=lambda case: {"sandbox": "box"})
+    assert await optimizer._build_error(_candidate(optimizer)) is None  # needs a resource, so not checked
+    assert list(scratch.iterdir()) == []
+
+
+async def test_a_cancelled_build_check_removes_its_copy_once_the_copy_is_made(tmp_path, monkeypatch):
+    scratch = _scratch_tempdir(tmp_path, monkeypatch)
+    copying, release, copied = threading.Event(), threading.Event(), threading.Event()
+    real = Space.create_candidate_copy
+
+    def slow(self, values, directory):
+        copying.set()
+        release.wait(10)
+        try:
+            return real(self, values, directory)
+        finally:
+            copied.set()
+
+    monkeypatch.setattr(Space, "create_candidate_copy", slow)
+
+    @tunable(prompt=FileText(_prompt_file(tmp_path), as_path=True))
+    def make(prompt):
+        return prompt
+
+    optimizer = _checking(make, tmp_path)
+    check = asyncio.ensure_future(optimizer._build_error(_candidate(optimizer)))
+    assert await asyncio.to_thread(copying.wait, 10)
+    check.cancel()
+    finished, _ = await asyncio.wait({check}, timeout=0.1)
+    assert not finished  # the worker thread can't be stopped, so the check waits for the copy
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await check
+    assert copied.is_set()
+    assert list(scratch.iterdir()) == []
+
+
+async def test_a_build_check_cancelled_while_closing_still_removes_its_copy(tmp_path, monkeypatch):
+    scratch = _scratch_tempdir(tmp_path, monkeypatch)
+    closing = asyncio.Event()
+
+    class Hangs:
+        async def aclose(self):
+            closing.set()
+            await asyncio.Event().wait()
+
+    @tunable(prompt=FileText(_prompt_file(tmp_path), as_path=True))
+    def make(prompt):
+        return Hangs()
+
+    optimizer = _checking(make, tmp_path)
+    check = asyncio.ensure_future(optimizer._build_error(_candidate(optimizer)))
+    await asyncio.wait_for(closing.wait(), 10)
+    check.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await check
+    assert list(scratch.iterdir()) == []
+
+
+async def test_a_build_check_close_that_raises_only_warns(tmp_path, caplog):
+    class Breaks:
+        def close(self):
+            raise RuntimeError("connection already closed")
+
+    @tunable(temperature=OneOf(0.0, 0.5, 1.0))
+    def make(temperature):
+        return Breaks()
+
+    optimizer = _checking(make, tmp_path)
+    with caplog.at_level(logging.WARNING, logger="strands_evals.optimization.optimizer"):
+        assert await optimizer._build_error(_candidate(optimizer)) is None
+    assert "failed to close the agent built by the build check" in caplog.text
+    assert "connection already closed" in caplog.text
 
 
 async def test_a_proposer_that_raises_stops_the_run(tmp_path):
