@@ -63,8 +63,8 @@ EVENT_LOG_NAME = "events.jsonl"
 RUN_CONFIG_NAME = "run.json"
 
 SKIPPED_DIRS = frozenset({"node_modules", "__pycache__"})
-# Where the page keeps its views: `/runs/<file>/report`, `/optimization/<directory>/overview`, and so on.
-PAGE_ROOTS = ("/runs", "/optimization")
+# Where the page keeps its views: `/reports/<file>`, `/experiments/<file>`, `/optimization/<directory>/overview`.
+PAGE_ROOTS = ("/reports", "/experiments", "/optimization")
 PRINTABLE = re.compile(r"[!-~]+")
 
 # A run directory's own storage. Scanning it would fill the skipped list and spend the file budget.
@@ -141,7 +141,8 @@ class ScannedFile:
 
 @dataclass
 class Discovery:
-    runs: list[dict] = field(default_factory=list)
+    experiments: list[dict] = field(default_factory=list)
+    reports: list[dict] = field(default_factory=list)
     skipped: list[dict] = field(default_factory=list)
     truncated: bool = False
     optimizer_runs: list[dict] = field(default_factory=list)
@@ -290,7 +291,7 @@ def link_status(experiment_obj: dict, report_obj: dict) -> dict:
 
 
 def _report_summary(obj: dict) -> dict:
-    """Headline numbers for the run list, counted the way the library counts them."""
+    """Headline numbers for the Reports list, counted the way the library counts them."""
     detailed = obj.get("detailed_results") or []
     passes = obj.get("test_passes") or []
     failing = 0
@@ -382,59 +383,74 @@ def scan(root: Path, depth: int = DEFAULT_DEPTH) -> tuple[list[ScannedFile], lis
     return found, skipped, truncated
 
 
+def _steps_apart(left: str, right: str) -> int:
+    """How many directory steps separate two root-relative directories."""
+    a = [] if left == "." else left.split("/")
+    b = [] if right == "." else right.split("/")
+    shared = 0
+    while shared < min(len(a), len(b)) and a[shared] == b[shared]:
+        shared += 1
+    return len(a) + len(b) - 2 * shared
+
+
+def experiment_of(report: ScannedFile, experiments: Sequence[ScannedFile], alone: bool) -> ScannedFile | None:
+    """The experiment a report was made from, or `None` when that cannot be told.
+
+    Beside it under the same name first, or as the only pair in the directory when `alone`. Failing that, the
+    nearest experiment holding every case the report has. Two equally near are a tie, and a tie is not guessed.
+    """
+    beside = sorted((e for e in experiments if e.directory == report.directory), key=lambda e: e.path)
+    named = [e for e in beside if _stem(e.name) == _stem(report.name)]
+    if named:
+        return named[0]
+    if alone and len(beside) == 1:
+        return beside[0]
+
+    holding = [e for e in experiments if link_status(e.obj, report.obj)["status"] == "verified"]
+    if not holding:
+        return None
+    nearest = min(_steps_apart(e.directory, report.directory) for e in holding)
+    closest = [e for e in holding if _steps_apart(e.directory, report.directory) == nearest]
+    return closest[0] if len(closest) == 1 else None
+
+
+def _newest_first(scanned: ScannedFile) -> tuple[float, str]:
+    """Sort key for a list: most recently changed first, and by path where that ties."""
+    return (-scanned.modified, scanned.path)
+
+
 def discover(root: Path, depth: int = DEFAULT_DEPTH) -> Discovery:
-    """Group the tree into runs: an experiment, the report beside it, and how sure that is."""
+    """List the experiments and the reports in the tree, each report with the experiment it was made from.
+
+    A report made in code has no experiment file, and one experiment can have many reports.
+    """
     found, skipped, truncated = scan(root, depth)
+    scanned_experiments = [f for f in found if f.kind == EXPERIMENT]
+    scanned_reports = [f for f in found if f.kind == REPORT]
 
-    by_dir: dict[str, list[ScannedFile]] = {}
-    for scanned in found:
-        by_dir.setdefault(scanned.directory, []).append(scanned)
-
-    runs: list[dict] = []
-    for directory in sorted(by_dir):
-        files = by_dir[directory]
-        experiments = [f for f in files if f.kind == EXPERIMENT]
-        reports = [f for f in files if f.kind == REPORT]
-        taken: set[str] = set()
-
-        for experiment in experiments:
-            match = next(
-                (r for r in reports if r.path not in taken and _stem(r.name) == _stem(experiment.name)),
-                None,
-            )
-            if match is None and len(experiments) == 1 and len(reports) == 1:
-                match = reports[0]
-            if match is not None:
-                taken.add(match.path)
-            runs.append(
-                {
-                    "id": experiment.path,
-                    "dir": directory,
-                    "experiment": _file_entry(experiment),
-                    "report": _file_entry(match) if match else None,
-                    "link": link_status(experiment.obj, match.obj) if match else None,
-                }
-            )
-
-        for report in reports:
-            if report.path in taken:
-                continue
-            runs.append(
-                {"id": report.path, "dir": directory, "experiment": None, "report": _file_entry(report), "link": None}
-            )
-
-    runs.sort(
-        key=lambda r: (
-            -max(
-                (r["experiment"] or {}).get("modified", 0),
-                (r["report"] or {}).get("modified", 0),
-            )
+    reports: list[dict] = []
+    made_from: dict[str, list[str]] = {}
+    for report in sorted(scanned_reports, key=_newest_first):
+        alone = sum(1 for other in scanned_reports if other.directory == report.directory) == 1
+        experiment = experiment_of(report, scanned_experiments, alone)
+        if experiment is not None:
+            made_from.setdefault(experiment.path, []).append(report.path)
+        reports.append(
+            {
+                **_file_entry(report),
+                "dir": report.directory,
+                "experiment": experiment.path if experiment else None,
+                "link": link_status(experiment.obj, report.obj) if experiment else None,
+            }
         )
-    )
+
+    experiments = [
+        {**_file_entry(experiment), "dir": experiment.directory, "reports": made_from.get(experiment.path, [])}
+        for experiment in sorted(scanned_experiments, key=_newest_first)
+    ]
 
     optimizer_runs = discover_optimizer_runs(root, depth)
 
-    scanned_experiments = [f for f in found if f.kind == EXPERIMENT]
     for optimizer_run in optimizer_runs:
         split = (optimizer_run.get("config") or {}).get("split")
         optimizer_run["tuned_against"] = tuned_against(split, scanned_experiments)
@@ -447,7 +463,9 @@ def discover(root: Path, depth: int = DEFAULT_DEPTH) -> Discovery:
         if not (s["path"].rsplit("/", 1)[-1] == RUN_CONFIG_NAME and _dirname(s["path"]) in optimizer_dirs)
     ]
 
-    return Discovery(runs=runs, skipped=skipped, truncated=truncated, optimizer_runs=optimizer_runs)
+    return Discovery(
+        experiments=experiments, reports=reports, skipped=skipped, truncated=truncated, optimizer_runs=optimizer_runs
+    )
 
 
 def read_event_log(path: Path, max_lines: int = MAX_EVENT_LINES) -> EventLog:
@@ -996,7 +1014,7 @@ class UIHandler(BaseHTTPRequestHandler):
     def _get_config(self, query: dict[str, list[str]]) -> None:
         self._json(HTTPStatus.OK, {**self._settings(), "evaluators": evaluator_catalog()})
 
-    def _get_runs(self, query: dict[str, list[str]]) -> None:
+    def _get_scan(self, query: dict[str, list[str]]) -> None:
         # Taken before the scan, so a file written during it reads as a change afterwards.
         mark = fingerprint(self.config.root, self.config.depth)
         result = discover(self.config.root, self.config.depth)
@@ -1005,7 +1023,8 @@ class UIHandler(BaseHTTPRequestHandler):
             {
                 **self._settings(),
                 "fingerprint": mark,
-                "runs": result.runs,
+                "experiments": result.experiments,
+                "reports": result.reports,
                 "skipped": result.skipped,
                 "truncated": result.truncated,
                 "optimizer_runs": result.optimizer_runs,
@@ -1136,7 +1155,7 @@ class UIHandler(BaseHTTPRequestHandler):
 
     _GET_ROUTES: dict[str, Callable[[UIHandler, dict[str, list[str]]], None]] = {
         "/api/config": _get_config,
-        "/api/runs": _get_runs,
+        "/api/scan": _get_scan,
         "/api/changes": _get_changes,
         "/api/events": _get_events,
         "/api/file": _get_file,

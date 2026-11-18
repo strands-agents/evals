@@ -30,6 +30,27 @@ function reportMeta(obj) {
   };
 }
 
+/* How many directory steps separate two folders. */
+function stepsApart(left, right) {
+  const a = left === '.' ? [] : left.split('/'), b = right === '.' ? [] : right.split('/');
+  let shared = 0;
+  while (shared < Math.min(a.length, b.length) && a[shared] === b[shared]) shared++;
+  return a.length + b.length - 2 * shared;
+}
+
+/* The experiment a report was made from, or null when that cannot be told. Mirrors `experiment_of`
+   in `_ui_server.py`: beside it under the same name, else the nearest one holding all its cases. */
+function experimentOf(report, experiments, alone) {
+  const beside = experiments.filter(e => e.dir === report.dir).sort((a, b) => (a.meta.path < b.meta.path ? -1 : 1));
+  const named = beside.filter(e => stem(e.meta.name) === stem(report.meta.name));
+  if (named.length) return named[0];
+  if (alone && beside.length === 1) return beside[0];
+  const holding = experiments.filter(e => linkStatus(e.meta.obj, report.meta.obj).status === 'verified');
+  const nearest = Math.min(...holding.map(e => stepsApart(e.dir, report.dir)));
+  const closest = holding.filter(e => stepsApart(e.dir, report.dir) === nearest);
+  return closest.length === 1 ? closest[0] : null;
+}
+
 // Same pairing check as the server.
 function linkStatus(expObj, repObj) {
   const keys = new Set();
@@ -269,40 +290,32 @@ async function ingest(all, rootDepth = 0) {
     if (!paired.has(held.dir)) skipped.push({ path: held.path, why: 'not an experiment or a report' });
   });
 
-  const byDir = new Map();
-  found.forEach(f => { if (!byDir.has(f.dir)) byDir.set(f.dir, []); byDir.get(f.dir).push(f); });
-
-  const runs = [];
-  [...byDir.keys()].sort().forEach(dir => {
-    const files = byDir.get(dir);
-    const exps = files.filter(f => f.kind === 'experiment');
-    const reps = files.filter(f => f.kind === 'report');
-    const taken = new Set();
-    exps.forEach(e => {
-      let m = reps.find(r => !taken.has(r) && stem(r.meta.name) === stem(e.meta.name));
-      if (!m && exps.length === 1 && reps.length === 1) m = reps[0];
-      if (m) taken.add(m);
-      runs.push({
-        id: e.meta.path, dir, experiment: e.meta, report: m ? m.meta : null,
-        link: m ? linkStatus(e.meta.obj, m.meta.obj) : null,
-      });
+  const filesOf = kind => found.filter(f => f.kind === kind)
+    .sort((a, b) => b.meta.modified - a.meta.modified || (a.meta.path < b.meta.path ? -1 : 1));
+  const madeFrom = new Map();
+  const reports = filesOf('report').map(r => {
+    const alone = found.filter(f => f.kind === 'report' && f.dir === r.dir).length === 1;
+    const e = experimentOf(r, experiments, alone);
+    if (e) madeFrom.set(e.meta.path, (madeFrom.get(e.meta.path) || []).concat(r.meta.path));
+    return Object.assign(r.meta, {
+      dir: r.dir, experiment: e ? e.meta.path : null, link: e ? linkStatus(e.meta.obj, r.meta.obj) : null,
     });
-    reps.filter(r => !taken.has(r)).forEach(r =>
-      runs.push({ id: r.meta.path, dir, experiment: null, report: r.meta, link: null }));
   });
-  runs.sort((a, b) => Math.max((b.experiment || {}).modified || 0, (b.report || {}).modified || 0)
-    - Math.max((a.experiment || {}).modified || 0, (a.report || {}).modified || 0));
-  return { runs, optimizerRuns };
+  return {
+    experiments: filesOf('experiment').map(e =>
+      Object.assign(e.meta, { dir: e.dir, reports: madeFrom.get(e.meta.path) || [] })),
+    reports, optimizerRuns,
+  };
 }
 
 /* The folder replaces whatever was open, so nothing from before it may stay on screen. */
 async function showFolder(found) {
-  RUNS = found.runs;
-  selRun = -1;
-  clearExperiment(); clearReport();
-  renderRuns();
+  EXPERIMENTS = found.experiments;
+  REPORTS = found.reports;
+  clearExperiment(); clearReport(); closeCandidate();
+  renderLists();
   await loadOptimizerRuns(found.optimizerRuns);
-  show('runs');
+  show(homeView());
 }
 
 async function pickFolder() {

@@ -10,27 +10,29 @@ const OPT_SEGMENT = {
 };
 const OPT_VIEW = Object.fromEntries(Object.entries(OPT_SEGMENT).map(([view, segment]) => [segment, view]));
 
-/* A run is named by its file or directory under the root, kept as path segments. The root itself is `.`. */
+/* A file or a run directory is named by its path under the root, kept as path segments. The root itself is `.`. */
 const idPath = id => id === '.' ? '' : '/' + String(id).split('/').map(encodeURIComponent).join('/');
 const idOf = segments => segments.join('/') || '.';
 
 /** The path for a view, given what is open in it. */
 function routeFor(view) {
   const opt = OPT_RUNS[optSel];
-  if (view === 'report' && repDisplaced && opt) {
-    return `/optimization${idPath(opt.id)}/candidates/${encodeURIComponent(repDisplaced.cand)}/report`;
+  if (view === 'report' && repCand && opt) {
+    return `/optimization${idPath(opt.id)}/candidates/${encodeURIComponent(repCand)}/report`;
   }
   if (SECTION_OF[view] === 'optimization') {
     return opt && OPT_SEGMENT[view] ? `/optimization${idPath(opt.id)}/${OPT_SEGMENT[view]}` : '/optimization';
   }
-  const run = RUNS[selRun];
-  if (!run || (view !== 'experiment' && view !== 'report')) return '/runs';
-  const name = view === 'experiment' && cases[sel] && cases[sel].name;
-  return `/runs${idPath(run.id)}/${view}${name ? '/cases/' + encodeURIComponent(name) : ''}`;
+  if (view === 'report' && repMeta) return `/reports${idPath(repMeta.path)}`;
+  if (view === 'experiment' && expMeta) {
+    const name = cases[sel] && cases[sel].name;
+    return `/experiments${idPath(expMeta.path)}${name ? '/cases/' + encodeURIComponent(name) : ''}`;
+  }
+  return view === 'experiments' ? '/experiments' : '/reports';
 }
 
-/** What a path asks for: `{ tab, run, case, opt, cand }`, with only the parts it names. Anything
-    it cannot read is the run list. */
+/** What a path asks for: `{ tab, report, experiment, case, opt, cand }`, with only the parts it names.
+    A path that names nothing leaves `tab` out, for the page to choose its own first view. */
 function parseRoute(path) {
   const [root, ...rest] = path.split('/').filter(Boolean).map(segment => {
     try { return decodeURIComponent(segment); } catch { return segment; }
@@ -42,13 +44,15 @@ function parseRoute(path) {
     }
     return OPT_VIEW[last] ? { tab: OPT_VIEW[last], opt: idOf(rest.slice(0, -1)) } : { tab: 'opt-runs' };
   }
-  if (root === 'runs' && rest.length > 1) {
-    if (last === 'experiment' || last === 'report') return { tab: last, run: rest.slice(0, -1).join('/') };
-    if (rest.length > 3 && rest[rest.length - 2] === 'cases' && rest[rest.length - 3] === 'experiment') {
-      return { tab: 'experiment', run: rest.slice(0, -3).join('/'), case: last };
-    }
+  if (root === 'reports') return rest.length ? { tab: 'report', report: rest.join('/') } : { tab: 'reports' };
+  if (root === 'experiments') {
+    if (!rest.length) return { tab: 'experiments' };
+    /* A file's path ends in `.json`, so `cases` after one can only be the view of a single case. */
+    const named = rest.length > 2 && rest[rest.length - 2] === 'cases' && /\.json$/i.test(rest[rest.length - 3]);
+    return named ? { tab: 'experiment', experiment: rest.slice(0, -2).join('/'), case: last }
+      : { tab: 'experiment', experiment: rest.join('/') };
   }
-  return { tab: 'runs' };
+  return {};
 }
 
 const currentRoute = () => MODE === 'server' ? location.pathname : location.hash.slice(1);
@@ -57,7 +61,7 @@ const readAddress = () => parseRoute(currentRoute());
 /* The route the page last wrote or followed, and whether it is following one now. */
 let lastRoute = null, following = false;
 
-/* A move between views or runs is a step Back can undo. `replace` corrects the address in place,
+/* A move between pages is a step Back can undo. `replace` corrects the address in place,
    as does anything written before the page is ready. */
 function writeAddress(view, replace) {
   if (following) return;

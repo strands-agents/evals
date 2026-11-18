@@ -146,28 +146,49 @@ async function api(path, opts) {
 /* ══════════ chrome ══════════ */
 
 const SECTION_OF = {
-  runs: 'evals', experiment: 'evals', report: 'evals',
+  reports: 'evals', report: 'evals', experiments: 'evals', experiment: 'evals',
   'opt-runs': 'optimization', 'opt-setup': 'optimization', 'opt-overview': 'optimization',
   'opt-progress': 'optimization', 'opt-candidates': 'optimization', 'opt-tunables': 'optimization',
   'opt-trade': 'optimization',
 };
+/* The list a page is opened from: the sidebar marks that, since the page itself is not in it. */
+const listOf = view => view === 'report' ? (repCand ? 'opt-runs' : 'reports')
+  : view === 'experiment' ? 'experiments'
+    : SECTION_OF[view] === 'optimization' ? 'opt-runs' : view;
+const VIEW_NAME = {
+  reports: 'Reports', report: 'Report', experiments: 'Experiments', experiment: 'Cases', 'opt-runs': 'Runs',
+  'opt-setup': 'Setup', 'opt-overview': 'Overview', 'opt-progress': 'Progress',
+  'opt-candidates': 'Candidates', 'opt-tunables': 'Tunables', 'opt-trade': 'Trade-off',
+};
+/* Reports when there are any, since most folders hold results; a folder of experiments alone opens on those. */
+const homeView = () => (REPORTS.length || !EXPERIMENTS.length ? 'reports' : 'experiments');
+
 function show(view, opts) {
-  if (!SECTION_OF[view] || (SECTION_OF[view] === 'optimization' && !OPT_RUNS.length)) view = 'runs';
-  const section = SECTION_OF[view];
+  if (!SECTION_OF[view] || (SECTION_OF[view] === 'optimization' && !OPT_RUNS.length)) view = homeView();
+  /* A page with nothing open in it is its list. */
+  if (view === 'report' && !REP) view = 'reports';
+  if (view === 'experiment' && !EXP) view = 'experiments';
+  const section = SECTION_OF[listOf(view)];
   const moved = !$('v-' + view).classList.contains('on');
   app.querySelectorAll('.sec').forEach(s => s.classList.toggle('on', s.dataset.sec === section));
   app.querySelectorAll('.tab').forEach(t => {
-    t.classList.toggle('on', t.dataset.view === view);
-    if (t.dataset.view === view) t.setAttribute('aria-current', 'page');
+    const here = t.dataset.view === view;
+    t.classList.toggle('on', here || t.dataset.view === listOf(view));
+    if (here) t.setAttribute('aria-current', 'page');
     else t.removeAttribute('aria-current');
   });
   app.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.id === 'v-' + view));
+  const lists = view === 'reports' || view === 'experiments';
+  $('folder').hidden = !lists;
+  $('skips').hidden = !lists;
   const run = OPT_RUNS[optSel];
+  const folder = ROOT || folderLabel || 'no folder opened';
   const where = {
-    runs: ROOT || folderLabel || 'no folder opened',
-    experiment: (expMeta && expMeta.path) || 'no experiment loaded',
-    report: (repMeta && repMeta.path) || 'no report loaded',
-    'opt-runs': ROOT || folderLabel || 'no folder opened',
+    reports: folder,
+    experiments: folder,
+    experiment: expMeta && expMeta.path,
+    report: repMeta && repMeta.path,
+    'opt-runs': folder,
     'opt-setup': (run && (run.dir === '.' ? 'run.json' : run.dir + '/run.json')) || 'no optimizer run loaded',
     'opt-tunables': (run && (run.dir === '.' ? 'run.json' : run.dir + '/run.json')) || 'no optimizer run loaded',
     'opt-overview': (run && run.events_path) || 'no optimizer run loaded',
@@ -176,18 +197,14 @@ function show(view, opts) {
     'opt-trade': (run && run.events_path) || 'no optimizer run loaded',
   }[view];
   $('path').textContent = where;
+  renderPageHead(view);
   renderGuide(view);
   if (opts && opts.silent) return;
   /* A view moved to starts at its top, where its heading and any notice are. */
   if (moved) window.scrollTo(0, 0);
   writeAddress(view);
 }
-/* With no run open, Experiment and Report open the first run that has one rather than an empty view. */
-function openTab(view) {
-  const first = (view === 'experiment' || view === 'report') && selRun < 0 ? RUNS.findIndex(r => r[view]) : -1;
-  return first >= 0 ? selectRun(first, { view }) : show(view);
-}
-app.querySelectorAll('.tab').forEach(t => t.onclick = () => openTab(t.dataset.view));
+app.querySelectorAll('.tab').forEach(t => t.onclick = () => show(t.dataset.view));
 app.querySelectorAll('.sec').forEach(s => s.onclick = () => {
   const first = [...app.querySelectorAll('.tab')].find(t => t.dataset.sec === s.dataset.sec && !t.hidden);
   if (first) show(first.dataset.view);
@@ -198,4 +215,4 @@ app.addEventListener('keydown', e => {
   e.preventDefault();
   e.target.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 });
-const currentView = () => (app.querySelector('.tab.on') || {}).dataset?.view || 'runs';
+const currentView = () => app.querySelector('.view.on').id.slice(2);

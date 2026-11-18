@@ -32,8 +32,7 @@ async function open(files) {
   const p = await page();
   pages.push(p);
   await p.openFolder(files);
-  await p.click(p.$$('#runs-rows tr.run').find(r => /now/.test(r.textContent)));
-  await p.click('.tab[data-view="report"]');
+  await p.openReport('now /');
   return p;
 }
 const tips = (p, selector) => p.$$(selector).map(el => el.querySelector('title').textContent);
@@ -116,8 +115,8 @@ ok(detail && p.text(detail.querySelector('.tr-count')) === '3 spans of a recorde
   const q = await page();
   pages.push(q);
   await q.openFolder({ 'now/experiment.json': experiment });
-  await q.click('#runs-rows tr.run');
-  ok(q.$('#rep-charts').hidden, 'a run with no report shows no charts');
+  await q.openExperiment();
+  ok(q.$('#rep-charts').hidden, 'an experiment with no report shows no charts');
 }
 
 done(pages.flatMap(q => q.errs));

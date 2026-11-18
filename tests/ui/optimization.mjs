@@ -140,15 +140,15 @@ await p.openFolder({
   'demo/run.json': CONFIG, 'demo/events.jsonl': jsonl(EVENTS), 'demo/effects.json': EFFECTS, ...TRANSCRIPTS,
 });
 ok(!$('#sec-opt').hidden && !$('#sections').classList.contains('lonely'), 'a run directory shows the section');
-eq($$('.tab:not([hidden])').map(t => t.dataset.view).join(),
-  'runs,experiment,report,opt-runs,opt-setup,opt-overview,opt-progress,opt-candidates,opt-tunables,opt-trade',
-  'its seven tabs beside the three Evals tabs');
+eq($$('#sections .tab:not([hidden])').map(t => t.dataset.view).join(), 'reports,experiments,opt-runs',
+  'and the sidebar gains Runs, beside the two lists of Evals');
 eq(skips(p), [], 'the transcripts and effects.json of a run are not reported as unusable files');
 
 // ── Runs ──
 await click('#sec-opt');
 eq([$$('.sec.on').map(s => s.dataset.sec).join(), $$('.tab.on').map(t => t.dataset.view).join()],
   ['optimization', 'opt-runs'], 'the section opens on its run list');
+ok($('#pagehead').hidden, 'which is a list, so no page header names anything');
 eq(rows(p, '#opt-runs-rows tr[data-opt-run]').map(r => r.slice(0, 5)),
   [[`${RUN_ID} / support-tuning demo`, '+0.143 held out · clear of zero', 'c10', '10 candidates 6 iterations',
     'iterations']],
@@ -160,6 +160,12 @@ ok(delta.className === 'delta up' && /\[0\.061, 0\.225\]/.test(delta.title),
 await click('#opt-runs-rows tr[data-opt-run]');
 ok($('#v-opt-overview').classList.contains('on') && text('#path') === 'demo/events.jsonl',
   'a run row opens Overview on its event log', text('#path'));
+eq([text('#crumbs'), text('#facts'), $$('#opt-tabs .tab:not([hidden])').map(t => t.dataset.view).join(), text('#opt-tabs .tab.on')],
+  [`Runs/${RUN_ID}`, 'stopped: iterations · champion c10', 'opt-setup,opt-overview,opt-progress,opt-candidates,opt-tunables,opt-trade',
+    'Overview'],
+  'the page header names the run and holds its six views as a tab strip, the open one marked');
+eq([$$('#sections .tab.on').map(t => t.dataset.view).join(), $('.tab[aria-current="page"]').dataset.view], ['opt-runs', 'opt-overview'],
+  'while the sidebar stays on Runs, the list the run was opened from');
 eq([text('#opt-sub'), $('#opt-sub').title], [`${RUN_ID} · stopped: iterations`, 'reached max_iterations=6'],
   'the subtitle is the run and its stop reason, with the stop message on hover');
 eq(text('#opt-method-sum'),
@@ -555,9 +561,9 @@ await p.type('#opt-find', '');
 // ── Candidates: open as report ──
 const repDetail = () => flat($('#rep-rows tr.detail'));
 await click('#opt-cands [data-open]');
-eq([text('.tab.on'), text('#path'), text('#rep-count'), text('#r-score')],
-  ['Report', `${RUN_ID} · c10`, '15 of 15 rows', '0.67'],
-  'a candidate opens in the Report tab over its trials, named by run and candidate');
+eq([$('.view.on').id, text('#path'), text('#rep-count'), text('#r-score')],
+  ['v-report', `${RUN_ID} · c10`, '15 of 15 rows', '0.67'],
+  'a candidate opens in the report page over its trials, named by run and candidate');
 eq(lines(p, '#rep-rows tr.case')[0], 'train_case_01 | Helpfulness | 0.49 | fail',
   'a row per trial: case, evaluator, score, verdict');
 await click('#rep-rows tr.case');
@@ -604,13 +610,13 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
   eq([q.text('#opt-method-sum').replace(/^.*? · /, ''), kv(q, '#opt-setup-kv').Cases, q.text('#opt-source')],
     ['8 train · 4 validation · 3 test', '8 train · 4 validation · 3 test split with seed 0', whole],
     'a split recorded as fractions, with the names under split.cases, is counted and matched by those names');
-  await q.click('#opt-source a[data-exp]');
+  await q.click('#opt-source a[data-experiment]');
   ok(q.$('#v-experiment').classList.contains('on') && q.text('#path') === 'cases/experiment.json'
-    && q.$$('#case-list li[data-i]').length === 15 && !!q.$('#runs-rows tr.run.on'),
-    'the named experiment is a link to its cases on the Experiment tab, with its run marked', q.text('#path'));
+    && q.$$('#case-list li[data-i]').length === 15 && !!q.$('#experiments-rows tr.row.on'),
+    'the named experiment is a link to its cases, with its row marked in Experiments', q.text('#path'));
 }
 
-// ── the report panel is borrowed by a candidate, and given back ──
+// ── a candidate's cases take the report page, under the run they came from ──
 {
   const cases = [{ name: 'a', session_id: 's-a', input: 'q', expected_output: 'yes' },
     { name: 'b', session_id: 's-b', input: 'q2', expected_output: 'no' }];
@@ -623,53 +629,56 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
       detailed_results: cases.map(() => [{ score: 1, test_pass: true, label: 'match' }]),
     },
   };
-  const borrow = async q => {
-    await q.click('#runs-rows tr.run');
+  const candidate = async q => {
     await go(q, 'candidates');
     await openCand(q, 'c10');
     await q.click('#opt-cands [data-open]');
   };
 
   const q = await openFixture({ files: { ...experiment, ...report } });
-  await q.click('#runs-rows tr.run');
-  ok(q.text('#rep-count') === '2 of 2 rows' && q.$('#rep-borrowed').hidden,
-    'Evals has its own report open, and nothing is on loan', q.text('#rep-count'));
-  await borrow(q);
-  ok(!q.$('#rep-borrowed').hidden && q.text('#rep-count') === '15 of 15 rows'
-    && new RegExp(`c10 of ${RUN_ID}.*Back to this run’s report`).test(q.text('#rep-borrowed')),
-    'a candidate in the panel is announced by candidate and run, offering back the report it displaced',
-    q.text('#rep-borrowed'));
+  await q.openReport();
+  eq([q.text('#rep-count'), q.$('#rep-borrowed').hidden, q.text('#crumbs')], ['2 of 2 rows', true, 'Reports/evals/report.json'],
+    'a report from the folder is open under Reports, with no candidate announced');
+  await candidate(q);
+  eq([q.text('#rep-count'), q.text('#rep-borrowed')], ['15 of 15 rows', `Candidate c10 of ${RUN_ID}, from Optimization.Back to Candidates`],
+    'a candidate on the page is announced by candidate and run, with the way back');
+  eq([q.text('#crumbs'), q.$$('#crumbs a').map(a => a.dataset.go).join(), q.text('.tab.on'), q.$('#opt-tabs').hidden],
+    [`Runs/${RUN_ID}/Candidates/c10`, 'opt-runs,opt-overview,opt-candidates', 'Runs', true],
+    'the header names it Runs / run / Candidates / id, each part a way back, and the sidebar is on Runs');
   eq([texts(q, '#rep-cost-pick button'), q.$$('#rep-cost g.rbar').length, q.$$('#rep-heat rect.cell').length],
     [['Seconds', 'Tokens'], 15, 15],
     'and charted like any report, its cost per case read off what each trial recorded');
-  await q.click('#rep-borrowed [data-act="unborrow"]');
-  ok(q.$('#rep-borrowed').hidden && q.text('#rep-count') === '2 of 2 rows' && q.text('#path') === 'evals/report.json'
-    && q.$('#runs-rows tr.run').classList.contains('on'),
-    'giving it back restores the Evals report, its path and its marked run', q.text('#path'));
+  ok(!q.$('#reports-rows tr.row.on'), 'no report in the Reports list is marked open while a candidate has the page');
+  await q.click(q.$$('#crumbs a')[2]);
+  ok(q.$('#v-opt-candidates').classList.contains('on') && !q.$('#opt-tabs').hidden, 'the Candidates crumb goes back to the run’s candidates',
+    q.$('.view.on').id);
+  await q.openReport();
+  eq([q.text('#rep-count'), q.$('#rep-borrowed').hidden, q.text('#path'), q.$('#reports-rows tr.row').classList.contains('on')],
+    ['2 of 2 rows', true, 'evals/report.json', true],
+    'opening the folder’s report again shows it, with its path, its row marked and the candidate gone');
 
   const q2 = await openFixture({ files: experiment });
-  await borrow(q2);
-  has(q2.text('#rep-borrowed'), /Back to Candidates/, 'with no report displaced, the way back is the Candidates tab');
+  await candidate(q2);
 
   // The address tells the two apart, so Back and Forward land on the report each step was showing.
   const h = await openFixture({ files: { ...experiment, ...report } });
-  await h.click('#runs-rows tr.run');
-  await h.click('.tab[data-view="report"]');
-  await go(h, 'candidates');
-  await openCand(h, 'c10');
-  await h.click('#opt-cands [data-open]');
+  await h.openReport();
+  await candidate(h);
   const showing = () => `${h.text('#rep-count')} ${h.$('#rep-borrowed').hidden ? 'own' : 'candidate'}`;
   const travel = async delta => { h.window.history.go(delta); await tick(6); return `${h.$('.view.on').id} ${showing()}`; };
-  eq(h.window.location.hash, '#/optimization/demo/candidates/c10/report', 'a candidate in the Report view is named in the address');
+  eq(h.window.location.hash, '#/optimization/demo/candidates/c10/report', 'a candidate on the report page is named in the address');
   eq([await travel(-2), await travel(2)], ['v-report 2 of 2 rows own', 'v-report 15 of 15 rows candidate'],
-    'Back to the run\'s own report shows that report, and Forward brings the candidate\'s cases back');
+    'Back to the folder\'s report shows that report, and Forward brings the candidate\'s cases back');
   const reopened = await openFixture({ files: { ...experiment, ...report } });
   reopened.window.location.hash = h.window.location.hash;
   await tick(6);
-  eq(`${reopened.$('.view.on').id} ${reopened.text('#rep-count')}`, 'v-report 15 of 15 rows', 'and the address alone reopens them');
+  eq([`${reopened.$('.view.on').id} ${reopened.text('#rep-count')}`, reopened.text('#crumbs')],
+    ['v-report 15 of 15 rows', `Runs/${RUN_ID}/Candidates/c10`], 'and the address alone reopens them');
   await q2.click('#rep-borrowed [data-act="unborrow"]');
   ok(q2.$('#v-opt-candidates').classList.contains('on') && q2.text('#rep-count') === '',
-    'and it goes there, leaving no report loaded', q2.text('#rep-count'));
+    'Back to Candidates goes there, leaving no report loaded', q2.text('#rep-count'));
+  await q2.click('.tab[data-view="reports"]');
+  ok(q2.$('#v-reports').classList.contains('on') && q2.$('#pagehead').hidden, 'so Reports is the list again, with no header', q2.$('.view.on').id);
 }
 
 // ── partial and malformed logs ──

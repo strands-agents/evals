@@ -170,12 +170,18 @@ with someone serving the same folder:
 
 | Address | Shows |
 | --- | --- |
-| `/runs` | The experiments and reports found. |
-| `/runs/<experiment file>/experiment` | Its cases; add `/cases/<name>` for one case. |
-| `/runs/<experiment file>/report` | Its report. |
+| `/reports` | Every report found, each with the experiment it was made from. |
+| `/reports/<report file>` | One report. |
+| `/experiments` | Every experiment file found, each with the reports made from it. |
+| `/experiments/<experiment file>` | Its cases; add `/cases/<name>` for one case. |
 | `/optimization` | The optimizer runs found. |
 | `/optimization/<run directory>/<view>` | One run: `setup`, `overview`, `progress`, `candidates`, `tunables` or `trade-off`. |
 | `/optimization/<run directory>/candidates/<id>/report` | One candidate's cases, as a report. |
+
+A report is listed whether or not an experiment file sits beside it, so one made in code with
+`run_evaluations()` and saved with `to_file()` shows up too, marked as run from code. A report is matched to
+the experiment of the same name in its directory, or failing that to the one experiment that holds all of
+its cases, and one experiment can have many reports.
 
 To see every view with data in it, `python examples/make_ui_demo.py DIR` writes a synthetic folder to serve.
 Pass `--read-only` to browse without the Save path at all, and `--host` to serve beyond this machine

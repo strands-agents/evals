@@ -11,7 +11,7 @@ const linked = route => open({ url: `http://127.0.0.1:9999/#${route}` });
 const opened = async (experiment, report) => {
   const p = await open();
   await p.openFolder({ 'run/experiment.json': experiment, ...(report && { 'run/report.json': report }) });
-  await p.click('#runs-rows tr.run');
+  await p.openExperiment();
   return p;
 };
 const experiment = (...cases) => ({ cases, evaluators: [] });
@@ -25,7 +25,7 @@ const report = (score, ...cases) => ({
 {
   const cases = Array.from({ length: 420 }, (_, i) => ({ name: `case_${i}`, session_id: `sid-${i}`, input: `q${i}` }));
   const p = await opened(experiment(...cases), report(1, ...cases));
-  await p.click('.tab[data-view="report"]');
+  await p.openReport();
   const shown = () => p.$$('#rep-rows tr.case').length;
   ok(shown() === 300, 'the first page is capped at 300 rows', shown());
   ok(!p.$('#rep-more').hidden && /120 more/.test(p.text('#rep-more')), 'with a button naming how many are left',
@@ -38,7 +38,7 @@ const report = (score, ...cases) => ({
 // ── report table: a report with only its required arrays ──
 {
   const p = await opened(experiment(CASE), report(1, { ...CASE, actual_output: 'yes' }));
-  await p.click('.tab[data-view="report"]');
+  await p.openReport();
   ok(p.$$('#rep-rows tr.case').length === 1 && p.text('#r-score') === '1.00', 'renders its row and score',
     p.text('#v-report'));
   await p.click('#rep-rows tr.case');
@@ -46,7 +46,7 @@ const report = (score, ...cases) => ({
     'and says the row has no outputs rather than inventing a verdict', p.text('#rep-rows tr.detail'));
 }
 
-// ── run list: pairing, half-present runs, and the cells that jump to a tab ──
+// ── the two lists: what each report was made from, and what each experiment has made ──
 {
   const p = await open();
   await p.openFolder({
@@ -55,73 +55,86 @@ const report = (score, ...cases) => ({
     'paired/experiment.saved.json': experiment(CASE),
     'mismatch/experiment.json': experiment(CASE),
     'mismatch/report.json': report(0, { name: 'somebody-elses-case', session_id: 's-z' }),
-    'only-report/report.json': report(0.4, { name: 'a' }),
+    'only-report/report.json': report(0.4, { name: 'nobody-holds-this' }),
     'only-exp/experiment.json': experiment(CASE),
   });
-  const PAIRED = 'paired / experiment.json', ONLY_EXP = 'only-exp / experiment.json';
-  const row = label => p.$$('#runs-rows tr.run').find(r => p.text(r.children[0]) === label);
-  const cell = (label, i) => row(label).children[i];
-  const shows = (label, i, what) => what.test(p.text(cell(label, i)));
-  const runs = () => p.click('.tab[data-view="runs"]');
+  const row = path => p.$$('tr.row').find(r => (r.dataset.report || r.dataset.experiment) === path);
+  const says = path => p.text(row(path).children[2]);
+  const on = () => p.$('.view.on').id;
+  const edit = () => p.$('#form [data-k="expected_output"]').value;
+  const experiments = () => p.click('.tab[data-view="experiments"]');
 
-  ok(shows(PAIRED, 2, /pairing verified/), 'experiment.json pairs with the report.json beside it', p.text(row(PAIRED)));
-  ok(shows('paired / experiment.saved.json', 2, /not run yet/), 'leaving the other experiment in the folder unpaired',
-    p.text('#runs-rows'));
-  ok(shows('mismatch / experiment.json', 2, /does not match/), 'a report for other cases is flagged', p.text('#runs-rows'));
-  ok(shows('only-report / report.json', 1, /none/), 'a report alone is a run with no experiment', p.text('#runs-rows'));
-  const jumps = label => [...row(label).children].map(td => td.dataset.goto || '-').join();
-  ok(jumps(PAIRED) === '-,experiment,report,-' && jumps(ONLY_EXP) === '-,experiment,-,-',
-    'only a cell with something behind it is marked as a jump', `${jumps(PAIRED)} | ${jumps(ONLY_EXP)}`);
+  ok(p.text('#reports-count') === '3 reports' && p.text('#experiments-count') === '4 experiments',
+    'every report and every experiment file is listed once', `${p.text('#reports-count')} ${p.text('#experiments-count')}`);
+  ok(says('paired/report.json') === 'paired/experiment.json pairing verified', 'report.json is of the experiment.json beside it',
+    says('paired/report.json'));
+  ok(says('paired/experiment.json') === 'report.json 0.25' && says('paired/experiment.saved.json') === 'not run yet',
+    'which lists it with its score, leaving the other experiment in the folder not run', says('paired/experiment.json'));
+  ok(says('mismatch/report.json') === 'mismatch/experiment.json does not match', 'a report for other cases is flagged',
+    says('mismatch/report.json'));
+  ok(says('only-report/report.json') === 'run from code', 'a report no experiment file holds was run from code',
+    says('only-report/report.json'));
 
-  await p.click(row('only-report / report.json'));
-  ok(p.text('.tab.on') === 'Report' && p.text('#r-score') === '0.40', 'a report-only run opens on its report',
-    p.text('.tab.on'));
-  await p.click('.tab[data-view="experiment"]');
-  ok(/No experiment in this run/.test(p.text('#form')) && p.$('#save').disabled && p.$('#add-case').disabled,
-    'and its editor says why it is empty, with nothing to press', p.text('#form'));
+  await p.click(row('only-report/report.json'));
+  ok(on() === 'v-report' && p.text('#r-score') === '0.40' && p.text('.tab.on') === 'Reports',
+    'a row opens its report, with the sidebar still on Reports', `${on()} ${p.text('.tab.on')}`);
 
-  await runs();
-  await p.click(cell(ONLY_EXP, 2));
-  ok(p.text('.tab.on') === 'Experiment', 'a cell that is not a jump does what the row does', p.text('.tab.on'));
-  await p.click('.tab[data-view="report"]');
-  ok(/No report in this run/.test(p.text('#rep-rows')), 'and a run with no report says so', p.text('#rep-rows'));
+  await p.click(row('paired/report.json').querySelector('a[data-experiment]'));
+  ok(on() === 'v-experiment' && p.text('#crumbs') === 'Experiments/paired/experiment.json' && p.text('.tab.on') === 'Experiments',
+    'the experiment named in a report’s row opens the experiment, not the report', `${on()} ${p.text('#crumbs')}`);
+  ok(p.text('#facts') === '1 case · 0 evaluators · Report: paired/report.json 0.25', 'whose header links the report made from it',
+    p.text('#facts'));
+  await p.click('#facts a[data-report]');
+  ok(on() === 'v-report' && p.text('#facts') === '0.25 overall · 1 row · 1 failing · of paired/experiment.json pairing verified',
+    'and the report’s header links back to the experiment it is of', p.text('#facts'));
 
-  await runs();
-  await p.click(cell(PAIRED, 2));
-  ok(p.text('.tab.on') === 'Report' && p.text('#r-score') === '0.25', 'the report cell opens a run on its report',
-    p.text('.tab.on'));
-  await runs();
-  await p.click(cell(PAIRED, 2));
-  ok(p.text('.tab.on') === 'Report', 'also when that run is the one already open', p.text('.tab.on'));
-
-  // Re-reading the open run would drop the edit without asking.
-  await p.click('.tab[data-view="experiment"]');
+  await p.click('#facts a[data-experiment]');
   await p.type('#form [data-k="expected_output"]', 'edited, not saved');
-  await runs();
-  await p.click(cell(PAIRED, 3));
-  ok(p.$('#v-experiment').classList.contains('on') && p.$('#form [data-k="expected_output"]').value === 'edited, not saved',
-    'the open run’s row goes back to it with the unsaved edit intact', p.$('#form [data-k="expected_output"]').value);
+  await p.click('#facts a[data-report]');
+  ok(on() === 'v-report' && !p.$('.ask'), 'opening a report asks nothing: an unsaved edit is not in its way', on());
+  await experiments();
+  await p.click(row('paired/experiment.json'));
+  ok(on() === 'v-experiment' && edit() === 'edited, not saved', 'and the open experiment’s row goes back to it with the edit intact',
+    edit());
+
+  await experiments();
+  await p.click(row('only-exp/experiment.json'));
+  ok(/^1 unsaved change will be lost if you open another experiment\./.test(p.text('.ask')), 'another experiment asks first',
+    p.text('.ask'));
+  await p.click('.ask [data-answer="no"]');
+  ok(on() === 'v-experiments' && edit() === 'edited, not saved', 'Stay leaves the edit where it was', `${on()} ${edit()}`);
+  await p.click(row('only-exp/experiment.json'));
+  await p.click('.ask [data-answer="yes"]');
+  ok(on() === 'v-experiment' && p.text('#facts code') === 'strands-evals run experiment.json --agent module:attr -o report.json'
+    && /· Not run yet\. To run it: /.test(p.text('#facts')),
+  'Discard and open opens it, and an experiment with no report says how to run it', p.text('#facts'));
 }
 
 // ── deep links ──
 {
-  const p = await linked('/runs/experiment.json/experiment/cases/refund_edge_case');
-  ok(p.text('.tab.on') === 'Experiment' && p.text('#case-list li.on .nm') === 'refund_edge_case',
-    'an address opens the view and the case it names', `${p.text('.tab.on')} ${p.text('#case-list li.on')}`);
-  await p.click('.tab[data-view="report"]');
-  ok(p.window.location.hash === '#/runs/experiment.json/report', 'and another view of the same run is a path beside it',
-    p.window.location.hash);
+  const p = await linked('/experiments/experiment.json/cases/refund_edge_case');
+  ok(p.$('.view.on').id === 'v-experiment' && p.text('#case-list li.on .nm') === 'refund_edge_case',
+    'an address opens the experiment and the case it names', `${p.$('.view.on').id} ${p.text('#case-list li.on')}`);
+  await p.click('#facts a[data-report]');
+  ok(p.window.location.hash === '#/reports/report.json', 'and its report has an address of its own', p.window.location.hash);
 }
 for (const [route, view, rewritten, what] of [
-  ['/nope/at/all', 'runs', '/runs', 'an address the page does not have falls back to the run list'],
-  ['/runs/experiment.json/experiment/cases/%E0%A4%A', 'experiment', '/runs/experiment.json/experiment/cases/order_status_lookup',
+  ['/reports', 'reports', '/reports', 'the list of reports'],
+  ['/experiments', 'experiments', '/experiments', 'the list of experiments'],
+  ['/reports/report.json', 'report', '/reports/report.json', 'one report'],
+  ['/experiments/experiment.json', 'experiment', '/experiments/experiment.json/cases/order_status_lookup',
+    'one experiment, on its first case'],
+  ['/nope/at/all', 'reports', '/reports', 'an address the page does not have falls back to Reports'],
+  ['/reports/gone.json', 'reports', '/reports', 'a report that is not in the folder falls back to the list'],
+  ['/experiments/gone.json', 'experiments', '/experiments', 'as does an experiment that is not'],
+  ['/experiments/experiment.json/cases/%E0%A4%A', 'experiment', '/experiments/experiment.json/cases/order_status_lookup',
     'a malformed escape names no case, so the first is shown'],
-  ['/optimization/tuning/overview', 'runs', '/runs', 'an Optimization address with no optimizer run falls back to the run list'],
+  ['/optimization/tuning/overview', 'reports', '/reports', 'an Optimization address with no optimizer run falls back to Reports'],
 ]) {
   const p = await linked(route);
   const on = p.$$('.view.on').map(v => v.id).join();
   ok(p.$('.app').dataset.ready === '1' && on === `v-${view}` && p.window.location.hash === '#' + rewritten,
-    `${route}: ${what}, and the address is rewritten to match`, `${on} ${p.window.location.hash}`);
+    `${route}: ${what}, and the address says so`, `${on} ${p.window.location.hash}`);
 }
 
 // ── case editor: deleting a case ──
@@ -259,27 +272,63 @@ const badges = p =>
   ok(badges(p) === '' && bar.hidden, 'Accept all resolves every draft and ends the pass', badges(p));
 }
 
-// ── review pass: its shortcuts belong to the Experiment view ──
+// ── review pass: its shortcuts belong to the experiment page ──
 {
   const p = await opened(experiment({ ...CASE, metadata: { status: 'draft' } }, { name: 'b', session_id: 's-b', input: 'q' }));
   await p.click('#review-case');
-  await p.click('.tab[data-view="runs"]');
+  await p.click('.tab[data-view="experiments"]');
   await p.key('d');
-  await p.click('.tab[data-view="experiment"]');
+  await p.openExperiment();
   ok(p.$$('#case-list li[data-i]').length === 2, 'd pressed on another view drops nothing', p.$$('#case-list li[data-i]').length);
 }
 
-// ── with no run open, Experiment and Report open the first run that has one ──
+// ── a report with no experiment of its name is paired by its cases, or not at all ──
 {
+  const T = { name: 't', session_id: 's-t', input: 'q' };
   const p = await open();
-  await p.openFolder({ 'bare/experiment.json': experiment(CASE), 'full/experiment.json': experiment(CASE), 'full/report.json': report(1, CASE) });
-  await p.click('.tab[data-view="report"]');
-  ok(p.text('#path') === 'full/report.json' && p.text('#rep-count') === '1 of 1 row', 'Report opens the first run with a report, not an empty view',
-    `${p.text('#path')} ${p.text('#rep-count')}`);
-  const none = await open();
-  await none.openFolder({ 'bare/experiment.json': experiment(CASE) });
-  await none.click('.tab[data-view="report"]');
-  ok(/No report in this run/.test(none.text('#rep-rows')), 'and says so when no run has one', none.text('#rep-rows').slice(0, 60));
+  await p.openFolder({
+    'suite/checkout.json': experiment(CASE),
+    'suite/billing.json': experiment({ name: 'z', session_id: 's-z', input: 'q' }),
+    'suite/checkout.report.json': report(1, CASE),
+    'suite/tuesday.report.json': report(0.5, CASE),
+    'solo/cases.json': experiment(T),
+    'solo/last-night.json': report(0.75, { name: 'somebody-elses-case' }),
+    'twins/left/e.json': experiment(T),
+    'twins/right/e.json': experiment(T),
+    'twins/shared.report.json': report(1, T),
+    'code/adhoc.report.json': report(0.25, { name: 'made-in-code', session_id: 's-code' }),
+  });
+  const from = path => p.text(p.$(`#reports-rows tr.row[data-report="${path}"]`).children[2]);
+  const made = path => p.$$(`#experiments-rows tr.row[data-experiment="${path}"] a[data-report]`).map(a => a.textContent).join();
+
+  ok(from('suite/tuesday.report.json') === 'suite/checkout.json pairing verified',
+    'a second report goes to the experiment that holds its cases, not to another one beside it', from('suite/tuesday.report.json'));
+  ok(made('suite/checkout.json') === 'checkout.report.json,tuesday.report.json' && made('suite/billing.json') === '',
+    'so one experiment lists both of its reports and the other none', `${made('suite/checkout.json')} | ${made('suite/billing.json')}`);
+  ok(from('solo/last-night.json') === 'solo/cases.json does not match',
+    'the only report and the only experiment in a folder go together, and a mismatch is said', from('solo/last-night.json'));
+  ok(from('twins/shared.report.json') === 'run from code' && made('twins/left/e.json') + made('twins/right/e.json') === '',
+    'two experiments equally near that both hold the cases are a tie, which is not guessed', from('twins/shared.report.json'));
+
+  await p.openReport('adhoc');
+  ok(p.$('.view.on').id === 'v-report' && p.text('#crumbs') === 'Reports/code/adhoc.report.json' && p.text('#r-score') === '0.25',
+    'a report made in code opens on its own, named in the page header', `${p.text('#crumbs')} ${p.text('#r-score')}`);
+  ok(p.text('#facts') === '0.25 overall · 1 row · 1 failing · run from code' && !p.$('#facts a'),
+    'which says it was run from code and links no experiment', p.text('#facts'));
+  await p.click('.tab[data-view="experiments"]');
+  ok(!p.$('#experiments-rows tr.row.on') && p.text('#experiments-count') === '5 experiments', 'and opens no experiment with it',
+    p.text('#experiments-count'));
+
+  await p.openExperiment('checkout');
+  const links = p.$$('#facts a[data-report]').map(a => a.textContent).join();
+  ok(links === 'suite/checkout.report.json,suite/tuesday.report.json' && /^1 case · 0 evaluators · Reports: /.test(p.text('#facts')),
+    'an experiment’s header links each report made from it', p.text('#facts'));
+  await p.click(p.$$('#facts a[data-report]')[1]);
+  ok(p.text('#crumbs') === 'Reports/suite/tuesday.report.json' && p.text('#r-score') === '0.50', 'and each link opens that report',
+    p.text('#crumbs'));
+  await p.click('#crumbs a');
+  ok(p.$('.view.on').id === 'v-reports' && p.$('#reports-rows tr.row.on').dataset.report === 'suite/tuesday.report.json',
+    'the header’s first crumb leads back to the list, where the open report is marked', p.$('.view.on').id);
 }
 
 // ── delete and add-a-tool need no dialog: one is undone, the other typed in place ──
@@ -322,7 +371,7 @@ const badges = p =>
   ok(saved === 'Score 1.0 when correct.\nScore 0 otherwise.', 'what is typed there is saved, line break included', saved);
 }
 
-// ── history: a move between views or runs is a step, and Back and Forward retrace them ──
+// ── history: a move between pages is a step, and Back and Forward retrace them ──
 {
   const two = { name: 'a2', session_id: 's-a2', input: 'q' };
   const p = await open();
@@ -331,67 +380,75 @@ const badges = p =>
     'two/experiment.json': experiment({ name: 'b', session_id: 's-b', input: 'q' }),
   });
   const history = p.window.history;
-  const run = name => p.$$('#runs-rows tr.run').find(r => r.textContent.includes(name));
   const at = () => `${p.$('.view.on').id} ${p.text('#path')}`;
   const travel = async delta => { history.go(delta); await tick(6); return at(); };
+  const experiments = () => p.click('.tab[data-view="experiments"]');
   const start = history.length;
-  await p.click(run('one'));
+  await p.openExperiment('one /');
   const scrolls = p.window.__scrolls;
-  await p.click('.tab[data-view="report"]');
-  await p.click('.tab[data-view="report"]');
-  ok(p.window.__scrolls === scrolls + 1, 'a view moved to starts at its top; the one already open stays put', p.window.__scrolls - scrolls);
-  await p.click('.tab[data-view="runs"]');
-  await p.click(run('two'));
-  ok(history.length === start + 4, 'each move between views or runs adds a step', history.length - start);
+  await p.click('#facts a[data-report]');
+  await p.openReport('one /');
+  ok(p.window.__scrolls === scrolls + 1, 'a page moved to starts at its top; the one already open stays put', p.window.__scrolls - scrolls);
+  await experiments();
+  const list = at();
+  await p.openExperiment('two /');
+  ok(history.length === start + 4, 'each move between pages adds a step', history.length - start);
   const retraced = [await travel(-1), await travel(-1), await travel(-1), await travel(3)];
-  ok(retraced.join() === 'v-runs one,v-report one/report.json,v-experiment one/experiment.json,v-experiment two/experiment.json',
-    'Back walks them in reverse, across runs, and Forward returns', retraced.join());
+  ok(retraced.join() === `${list},v-report one/report.json,v-experiment one/experiment.json,v-experiment two/experiment.json`
+    && /^v-experiments /.test(list),
+  'Back walks them in reverse, across reports and experiments, and Forward returns', retraced.join());
 
   await travel(-3);
   const steps = history.length;
   await p.click(p.$$('#case-list li[data-i]')[1]);
-  ok(history.length === steps && p.window.location.hash === '#/runs/one/experiment.json/experiment/cases/a2',
+  ok(history.length === steps && p.window.location.hash === '#/experiments/one/experiment.json/cases/a2',
     'picking a case corrects the address without adding a step', p.window.location.hash);
 
-  await p.click('.tab[data-view="runs"]');
-  await p.click(run('two'));
+  await experiments();
+  await p.openExperiment('two /');
   const reread = [await travel(-2), p.$('#form [data-k="name"]').value, await travel(2)];
   ok(reread.join() === 'v-experiment one/experiment.json,a2,v-experiment two/experiment.json',
     'Back reopens the case that was being read, and the way Forward is still there', reread.join());
 
-  p.window.location.hash = '#/runs/one/experiment.json/report';
+  p.window.location.hash = '#/reports/one/report.json';
   await tick(6);
   ok(at() === 'v-report one/report.json', 'an address typed into the open page is followed', at());
 
-  await p.click(run('two'));
+  await experiments();
+  await p.openExperiment('one /');
   await p.type('#form [data-k="input"]', 'unsaved');
+  const back = await travel(-2);
+  ok(back === 'v-report one/report.json' && !p.$('.ask'), 'Back to a report asks nothing: unsaved edits are not in its way', back);
   await travel(-1);
-  ok(/1 unsaved change will be lost if you switch run\./.test(p.text('.ask')), 'Back to another run asks before dropping unsaved edits',
-    p.text('.ask'));
+  ok(/1 unsaved change will be lost if you open another experiment\./.test(p.text('.ask')),
+    'Back to another experiment asks before dropping them', p.text('.ask'));
   await p.click('.ask [data-answer="no"]');
-  ok(!p.$('.ask') && p.$('#form [data-k="input"]').value === 'unsaved' && p.window.location.hash === '#/runs/two/experiment.json/report',
-    'Stay keeps them, and the address says where the page still is', p.window.location.hash);
-  await p.click(run('one'));
+  ok(!p.$('.ask') && p.$('#form [data-k="input"]').value === 'unsaved'
+    && p.window.location.hash === '#/experiments/one/experiment.json/cases/a',
+  'Stay keeps them, and the address says where the page still is', p.window.location.hash);
+  await experiments();
+  await p.openExperiment('two /');
   await p.click('.ask [data-answer="yes"]');
   await tick(6);
-  ok(!p.$('.ask') && /^one\//.test(p.text('#path')), 'choosing another run asks too, and Discard and switch opens it', p.text('#path'));
+  ok(!p.$('.ask') && p.text('#path') === 'two/experiment.json', 'choosing another experiment asks too, and Discard and open opens it',
+    p.text('#path'));
 
-  const fresh = await linked('/runs/experiment.json/report');
+  const fresh = await linked('/reports/report.json');
   ok(fresh.window.history.length === 1, 'opening a link adds no step of its own', fresh.window.history.length);
 }
 
 // ── served mode, against a fake server ──
 const served = put => fakeServer({
-  runs: [{ id: 'e.json', dir: '.', report: null, link: null,
-    experiment: { path: 'e.json', name: 'e.json', size: 1, modified: 5, cases: 1, evaluators: [] } }],
+  scan: { experiments: [{ path: 'e.json', name: 'e.json', dir: '.', size: 1, modified: 5, cases: 1, evaluators: [], reports: [] }] },
   file: { path: 'e.json', modified: 5, document: experiment({ name: 'a', input: 'q' }) },
   put,
 });
 {
-  const p = await open({ fetchImpl: fakeServer({ runs: () => [{ error: 'scan blew up' }, 500] }) });
-  ok(/^served/.test(p.text('#mode-tag')) && !p.$('#runs-rows tr.run'),
+  const p = await open({ fetchImpl: fakeServer({ scan: () => [{ error: 'scan blew up' }, 500] }) });
+  ok(/^served/.test(p.text('#mode-tag')) && !p.$('tr.row'),
     'a failed scan leaves the page in served mode, not on the sample', p.text('#mode-tag'));
-  ok(/scan blew up/.test(p.text('#runs-rows')), 'and is reported', p.text('#runs-rows'));
+  ok(/scan blew up/.test(p.text('#reports-rows')) && /scan blew up/.test(p.text('#experiments-rows')),
+    'and is reported on both lists', p.text('#reports-rows'));
 }
 {
   let release;
@@ -401,7 +458,7 @@ const served = put => fakeServer({
     () => [{ error: 'e.json is no longer on disk' }, 404],
   ];
   const p = await open({ fetchImpl: served(() => answers.shift()()) });
-  await p.click('#runs-rows tr.run');
+  await p.openExperiment();
   await p.type('#form [data-k="input"]', 'changed');
   await p.click('#save');
   ok(p.$('#v-experiment').inert === true, 'the editor is inert while a save is in flight');
@@ -422,18 +479,20 @@ const served = put => fakeServer({
 {
   const server = served();
   const p = await open({ fetchImpl: server, url: 'http://127.0.0.1:9999/', token: 'from-the-document' });
-  await p.click('#runs-rows tr.run');
+  await p.openExperiment();
   const tokens = [...new Set(server.sent.map(r => r.headers['X-Evals-Token']))].join();
   ok(tokens === 'from-the-document', 'with no token in the link, every request carries the one in the document', tokens);
 }
 
-// ── keyboard, the current view, and the theme ──
+// ── keyboard, the current page, and the theme ──
 {
   const p = await open();
-  await p.key('Enter', p.$('#runs-rows tr.run'));
-  const current = p.$$('.tab[aria-current="page"]').map(t => t.dataset.view).join();
+  await p.key('Enter', p.$('#experiments-rows tr.row'));
+  const marked = () => `${p.$$('.tab.on').map(t => t.dataset.view).join()} | ${p.$$('.tab[aria-current="page"]').map(t => t.dataset.view).join()}`;
   ok(p.$('#v-experiment').classList.contains('on'), 'Enter on a row opens it');
-  ok(current === 'experiment', 'and only the open view is marked as current', current);
+  ok(marked() === 'experiments | ', 'the sidebar marks the list an open page came from, without calling it the current page', marked());
+  await p.click('.tab[data-view="experiments"]');
+  ok(marked() === 'experiments | experiments', 'which it is once the list itself is showing', marked());
 
   const root = p.d.documentElement;
   const luminance = hex => {

@@ -86,7 +86,7 @@ function compareRows(before, after) {
 }
 
 function renderReportCompare() {
-  const others = RUNS.map(r => r.report).filter(m => m && (!repMeta || m.path !== repMeta.path));
+  const others = REPORTS.filter(m => !repMeta || m.path !== repMeta.path);
   const set = (cap, chart, legend) => {
     $('rep-cmp-cap').textContent = cap;
     $('rep-cmp').innerHTML = chart || '';
@@ -130,7 +130,7 @@ function renderReportCompare() {
 
 $('rep-cmp-pick').onchange = async e => {
   const path = e.target.value, asked = repMeta;
-  const meta = RUNS.map(r => r.report).find(m => m && m.path === path);
+  const meta = REPORTS.find(m => m.path === path);
   let other = null;
   if (meta) {
     try { other = { path, rows: reportRows(await document_for(meta)) }; }

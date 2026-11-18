@@ -43,8 +43,7 @@ function clearExperiment() {
   $('evform').hidden = true;
   $('form-title').textContent = '—';
   $('form-sid').textContent = '';
-  $('form').innerHTML = '<div class="nores"><b>No experiment in this run</b>'
-    + 'This folder had a report but no experiment file beside it.</div>';
+  $('form').innerHTML = '';
   $('case-list').innerHTML = '';
   $('case-count').textContent = '';
   $('exp-sub').textContent = '';
@@ -56,7 +55,7 @@ function note(msg, kind, offer) {
   const el = $('saved');
   el.innerHTML = msg ? esc(msg) : '';
   el.classList.toggle('err', kind === 'err');
-  offer = offer || { stale: ['Reload from disk', () => selectRun(selRun, { force: true })],
+  offer = offer || { stale: ['Reload from disk', () => openExperiment(expMeta.path, { force: true })],
     gone: ['Download a copy', downloadExperiment] }[kind];
   if (offer) {
     const btn = document.createElement('button');
@@ -233,7 +232,7 @@ function renderForm() {
     $('form-sid').textContent = '';
     $('form').innerHTML = EXP
       ? '<div class="nores"><b>No cases</b>This experiment’s case list is empty. Use <b>+ Case</b> to add one.</div>'
-      : '<div class="nores"><b>No experiment loaded</b>Pick a run on the Runs tab.</div>';
+      : '';
     return;
   }
   $('form-title').textContent = c.name || '(unnamed)';

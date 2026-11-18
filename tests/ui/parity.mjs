@@ -40,6 +40,16 @@ const TREE = {
   'partial/experiment.json': experiment('p1', 'p2'),
   'partial/report.json': report(['p1', 'gone']),
   'orphan/report.json': report(['o1']),
+  'many/suite.json': experiment('q1', 'q2'),
+  'many/other.json': experiment('r1'),
+  'many/suite.report.json': report(['q1', 'q2']),
+  'many/monday.report.json': report(['q1']),
+  'near/suite.json': experiment('k1'),
+  'near/runs/k.report.json': report(['k1']),
+  'far/copy.json': experiment('k1'),
+  'tie/left/e.json': experiment('t1'),
+  'tie/right/e.json': experiment('t1'),
+  'tie/shared.report.json': report(['t1']),
   'split-source/experiment.json': experiment('train_case_01', 'train_case_02', 'val_case_01', 'test_case_01'),
   'notes.json': { just: 'notes' },
   'broken.json': '{"cases": [',
@@ -83,33 +93,40 @@ await new Promise((resolve, reject) => {
 
 /* Only what both sides decide. Sizes, mtimes and in-memory documents differ by construction. */
 const pick = (obj, keys) => obj && Object.fromEntries(keys.map(k => [k, obj[k] === undefined ? null : obj[k]]));
-const normalize = ({ runs, skipped, optimizer }) => ({
-  runs: runs.map(r => ({
-    id: r.id, dir: r.dir,
-    experiment: pick(r.experiment, ['path', 'name', 'cases', 'evaluators']),
-    report: pick(r.report, ['path', 'name', 'overall_score', 'rows', 'failing', 'not_applicable', 'evaluators']),
+const byPath = (a, b) => a.path.localeCompare(b.path);
+const normalize = ({ experiments, reports, skipped, optimizer }) => ({
+  /* Each side lists newest first by its own clock, so the order is not compared. */
+  experiments: experiments.map(e => ({ ...pick(e, ['path', 'name', 'dir', 'cases', 'evaluators']), reports: [...e.reports].sort() }))
+    .sort(byPath),
+  reports: reports.map(r => ({
+    ...pick(r, ['path', 'name', 'dir', 'overall_score', 'rows', 'failing', 'not_applicable', 'evaluators', 'experiment']),
     link: pick(r.link, ['status', 'detail']),
-  })).sort((a, b) => a.id.localeCompare(b.id)),
+  })).sort(byPath),
   /* The two JSON parsers word a syntax error differently; that it was one is what must agree. */
   skipped: skipped.map(s => ({ path: s.path, why: s.why.replace(/^(invalid JSON).*/, '$1') }))
-    .sort((a, b) => a.path.localeCompare(b.path)),
+    .sort(byPath),
   optimizer: optimizer.map(r => pick(r, ['id', 'dir', 'run_id', 'name', 'objective', 'constraints', 'is_pareto',
     'budget', 'events_path', 'events', 'iterations', 'candidates', 'trials', 'champion_id', 'result', 'stop_reason',
     'bad_lines', 'truncated', 'tuned_against'])).sort((a, b) => a.id.localeCompare(b.id)),
 });
 
 try {
-  const served = await (await fetch(`http://127.0.0.1:${port}/api/runs`, { headers: { 'X-Evals-Token': TOKEN } })).json();
+  const served = await (await fetch(`http://127.0.0.1:${port}/api/scan`, { headers: { 'X-Evals-Token': TOKEN } })).json();
   const p = await page();
   await p.openFolder(picked);
-  const folder = JSON.parse(p.window.eval('JSON.stringify({ runs: RUNS, skipped, optimizer: OPT_RUNS })'));
+  const folder = JSON.parse(p.window.eval('JSON.stringify({ experiments: EXPERIMENTS, reports: REPORTS, skipped, optimizer: OPT_RUNS })'));
 
-  const server = normalize({ runs: served.runs, skipped: served.skipped, optimizer: served.optimizer_runs });
+  const server = normalize({ ...served, optimizer: served.optimizer_runs });
   const client = normalize(folder);
-  ok(server.runs.length >= 8 && server.optimizer.length === 1, 'the tree exercises pairing and a run directory',
-    `${server.runs.length} runs, ${server.optimizer.length} optimizer runs`);
+  ok(server.experiments.length >= 12 && server.reports.length >= 9 && server.optimizer.length === 1,
+    'the tree exercises pairing and a run directory',
+    `${server.experiments.length} experiments, ${server.reports.length} reports, ${server.optimizer.length} optimizer runs`);
+  const of = Object.fromEntries(server.reports.map(r => [r.path, r.experiment]));
+  const paired = ['many/monday.report.json', 'near/runs/k.report.json', 'tie/shared.report.json', 'orphan/report.json'].map(r => of[r]).join();
+  ok(paired === 'many/suite.json,near/suite.json,,', 'by cases a report goes to the one experiment that holds them, the nearer of two, and to none on a tie',
+    paired);
   const key = entry => entry.id || entry.path;
-  for (const part of ['runs', 'skipped', 'optimizer']) {
+  for (const part of ['experiments', 'reports', 'skipped', 'optimizer']) {
     const keys = list => list.map(key).join(' ');
     ok(keys(server[part]) === keys(client[part]), `${part}: both sides find the same entries`,
       `\n  server: ${keys(server[part])}\n  page:   ${keys(client[part])}`);

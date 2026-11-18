@@ -77,15 +77,15 @@ try {
   const { $, $$, text, click, type, window, errs } = p;
 
   // ── mode, and the discovery the server did ──
-  ok(/served · saves to disk/.test(text('#mode-tag')) && text('.tab.on') === 'Runs',
-    'boots on the run list, in a mode that saves to disk', text('#mode-tag'));
+  ok(/served · saves to disk/.test(text('#mode-tag')) && text('.tab.on') === 'Reports',
+    'boots on Reports, in a mode that saves to disk', text('#mode-tag'));
   ok(text('#root-path') === fs.realpathSync(root), 'shows the served directory', text('#root-path'));
   ok(!$('[data-act="rescan"]').hidden && $('[data-act="pick"]').hidden, 'Rescan is offered in place of the folder picker');
 
-  const rows = $$('#runs-rows tr.run');
-  const paired = rows.find(r => /experiment.json/.test(r.textContent) && !/nested/.test(r.textContent));
-  ok(rows.length === 2 && /pairing verified/.test(text(paired)) && /1 failing/.test(text(paired)),
-    'two runs discovered, the pair verified by session_id and its failing row counted', text('#runs-rows'));
+  const found = $$('#reports-rows tr.row');
+  ok(found.length === 1 && $$('#experiments-rows tr.row').length === 2
+    && /experiment\.json pairing verified/.test(text(found[0])) && /1 failing/.test(text(found[0])),
+  'one report and two experiments discovered, the report paired by session_id and its failing row counted', text('#reports-rows'));
 
   const skipped = Object.fromEntries($$('#skips li').map(li => [li.querySelector('code').textContent, text(li)]));
   ok(Object.keys(skipped).sort().join() === 'half-written.json,notes.json'
@@ -146,14 +146,14 @@ try {
     && /fitted to 48 observations/.test(text('#opt-eff-cap')),
     'the effects drawer shows the estimates out of the fetched file, and what they were fitted to',
     `${estimates} | ${text('#opt-eff-cap')}`);
-  await click('.tab[data-view="runs"]');
+  await click('.tab[data-view="experiments"]');
 
-  // ── selecting a run fetches both documents ──
-  await click(paired);
+  // ── opening an experiment fetches its document ──
+  await click('#experiments-rows tr.row[data-experiment="experiment.json"]');
   await waitFor(() => $$('#case-list li[data-i]').length > 0, 'the loaded cases');
   ok($$('#case-list li[data-i]').length === 2 && /Edits save back to experiment.json/.test(text('#exp-sub')),
     'the cases load over HTTP, and the page says where a save goes', text('#exp-sub'));
-  ok(window.location.pathname === '/runs/experiment.json/experiment/cases/alpha', 'the address is a path naming the run, the view and the case',
+  ok(window.location.pathname === '/experiments/experiment.json/cases/alpha', 'the address is a path naming the experiment and the case',
     window.location.pathname);
 
   // ── the server checked each evaluator against the real registry and constructor ──
@@ -167,13 +167,16 @@ try {
     && !/RubricEvaluator/.test(notes), 'and only the error is listed below, with its evaluator and the fix', notes);
 
   // ── a Session-shaped actual_trajectory must not read as absent ──
-  await click('.tab[data-view="report"]');
+  await click('#facts a[data-report]');
+  await waitFor(() => $$('#rep-rows tr.case').length > 0, 'the loaded report');
+  ok(window.location.pathname === '/reports/report.json' && text('#crumbs') === 'Reports/report.json',
+    'its report, linked from the header, is fetched and has a path of its own', window.location.pathname);
   await click($$('#rep-rows tr.case').find(r => /beta/.test(r.textContent)));
   ok(/Actual trajectory ?1 span of a recorded session/.test(text('#rep-rows tr.detail')),
     'a Session trajectory in a report is drawn as a trace', text('#rep-rows tr.detail').slice(0, 300));
 
   // ── Save writes the real file ──
-  await click('.tab[data-view="experiment"]');
+  await click('#facts a[data-experiment]');
   await click($$('#case-list li[data-i]')[0]);
   await type('#form [data-k="expected_output"]', 'an edited expectation');
   await click('#save');
@@ -220,8 +223,17 @@ try {
     body: JSON.stringify({ document: { cases: [{ name: 'no-input' }], evaluators: [] } }),
   });
   ok(invalid.status === 422, 'the server rejects a case with no input', invalid.status);
-  const noToken = await fetch(`${base}/api/runs`);
+  const noToken = await fetch(`${base}/api/scan`);
   ok(noToken.status === 401, 'and a request without the token', noToken.status);
+
+  // ── a link naming a report, or a case of an experiment, opens it ──
+  const direct = await served('/reports/report.json');
+  ok(direct.$('#v-report').classList.contains('on') && direct.text('#crumbs') === 'Reports/report.json' && direct.text('#r-score') === '0.50',
+    'a path naming a report opens that report', direct.text('#crumbs'));
+  ok(!direct.$('#experiments-rows tr.row.on'), 'and reads no experiment with it');
+  const onCase = await served('/experiments/experiment.json/cases/beta');
+  ok(onCase.$('#v-experiment').classList.contains('on') && onCase.text('#case-list li.on .nm') === 'beta',
+    'a path naming a case of an experiment opens it on that case', onCase.text('#case-list li.on'));
 
   // ── the link names the open optimizer run, and a link naming one opens it ──
   const older = path.join(root, 'older-tuning');
@@ -268,7 +280,7 @@ try {
   await live.click(live.$$('#opt-cands tr.case').find(r => r.textContent.includes('c10')));
   await live.click(live.$$('#opt-cands tr.trial').find(r => r.children[0].textContent.includes('train_case_01')));
   await waitFor(() => !!live.$('#opt-cands tr.tdetail .msg'), 'the transcript');
-  const nested = () => live.text(live.$$('#runs-rows tr.run').find(r => /nested/.test(r.textContent)));
+  const nested = () => live.text('#experiments-rows tr.row[data-experiment="nested/experiment.json"]');
   const seen = () => [live.$$('#opt-cands tr.trial').length, !!live.$('#opt-cands tr.tdetail .msg'), /not run yet/.test(nested())];
   asked.length = 0;
   await live.window.pollNow();
@@ -281,11 +293,12 @@ try {
   fs.appendFileSync(path.join(root, 'tuning/events.jsonl'), JSON.stringify(late) + '\n');
   fs.writeFileSync(path.join(root, 'nested/report.json'), JSON.stringify(report));
   await live.window.pollNow();
-  ok(String(seen()) === '16,true,false' && /2 rows/.test(nested()),
+  const written = live.text('#reports-rows tr.row[data-report="nested/report.json"]') || '';
+  ok(String(seen()) === '16,true,false' && /report\.json 0\.50/.test(nested()) && /2 rows/.test(written) && /nested\/experiment\.json/.test(written),
     'a trial appended to the log and a report written beside an experiment both show on the next poll, '
-    + 'with the open transcript still open', `${seen()} | ${nested()}`);
+    + 'with the open transcript still open', `${seen()} | ${nested()} | ${written}`);
 
-  done(errs.concat(picking.errs, linked.errs, live.errs));
+  done(errs.concat(direct.errs, onCase.errs, picking.errs, linked.errs, live.errs));
 } finally {
   proc.kill();
   fs.rmSync(root, { recursive: true, force: true });

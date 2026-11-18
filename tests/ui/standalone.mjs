@@ -2,25 +2,40 @@
 import { page, runner } from './harness.mjs';
 
 const { ok, done } = runner('standalone');
-const { $, $$, text, click, type, saved, openFolder, errs } = await page();   // no fetch, so /api/config fails
+const { $, $$, text, click, type, saved, openFolder, openExperiment, openReport, errs } = await page();   // no fetch, so /api/config fails
 const caseCount = () => $$('#case-list li[data-i]').length;
+const on = () => $('.view.on').id;
 
-// ── boot: the bundled sample, already open ──
-ok(text('.tab.on') === 'Runs' && $$('.view.on').length === 1, 'lands on Runs, the one view showing', text('.tab.on'));
+// ── boot: the bundled sample ──
+ok(text('.tab.on') === 'Reports' && $$('.view.on').length === 1, 'lands on Reports, the one view showing', text('.tab.on'));
 ok(/standalone.*download/.test(text('#mode-tag')), 'the mode tag says standalone, and that saves download', text('#mode-tag'));
 ok($('[data-act="rescan"]').hidden && !$('[data-act="pick"]').hidden, 'Open folder is offered in place of Rescan');
-ok(/sample/.test(text('#runs-sub')), 'and the page says it is showing its sample', text('#runs-sub'));
+ok(/sample/.test(text('#reports-sub')), 'and the page says it is showing its sample', text('#reports-sub'));
 
-const run = text('#runs-rows');
-ok($$('#runs-rows tr.run').length === 1 && /13 cases · 3 evaluators/.test(run),
-  'the sample is one run, its cases and evaluators counted', run);
-ok(/0\.92/.test(run) && /5 failing/.test(run) && /pairing verified/.test(run),
-  'its report summarised and the pairing checked', run);
-ok(caseCount() === 13 && text('#r-score') === '0.92', 'and it is loaded before anything is clicked',
-  `${caseCount()} cases, score ${text('#r-score')}`);
+const report = text('#reports-rows'), experiment = text('#experiments-rows');
+ok($$('#reports-rows tr.row').length === 1 && /0\.92/.test(report) && /5 failing/.test(report)
+  && /experiment\.json ?pairing verified/.test(report),
+'the sample is one report, summarised, naming the experiment it was made from with the pairing checked', report);
+ok($$('#experiments-rows tr.row').length === 1 && /13 cases · 3 evaluators/.test(experiment) && /report\.json 0\.92/.test(experiment),
+  'and one experiment, its cases and evaluators counted and its report beside it', experiment);
+ok($('#pagehead').hidden && caseCount() === 0 && text('#r-score') === '—', 'nothing is open until it is asked for');
+
+// ── a report opens on its own page, and names the experiment it was made from ──
+await openReport();
+ok(on() === 'v-report' && text('#crumbs') === 'Reports/report.json' && text('#r-score') === '0.92' && caseCount() === 0,
+  'opening a report shows it under a header that says what it is, and loads nothing else', text('#crumbs'));
+ok(text('.tab.on') === 'Reports' && /^0\.92 overall · 39 rows · 5 failing · of experiment\.json ?pairing verified$/.test(text('#facts')),
+  'the sidebar still marks the list it came from, and the header says how it went', text('#facts'));
 const stats = $$('#r-stats .stat').map(s => `${s.querySelector('.v').textContent} ${s.querySelector('.k').textContent}`);
 ok(stats[0] === '31 / 36 Rows passing' && stats[3] === '3 Not applicable',
   'rows an evaluator declined are counted apart from the rows passing', stats.join(', '));
+await click('#facts a[data-experiment]');
+ok(on() === 'v-experiment' && text('#crumbs') === 'Experiments/experiment.json' && caseCount() === 13
+  && /^13 cases · 3 evaluators · Report: report\.json 0\.92$/.test(text('#facts')),
+'the experiment named there opens its cases, under a header that links back to its report', text('#facts'));
+await click('#crumbs a');
+ok(on() === 'v-experiments', 'and the first part of the header leads back to the list', on());
+await openExperiment();
 
 // ── evaluators and their settings ──
 const chips = () => $$('#evs .evchip').map(c => [...c.children].map(el => el.textContent).join(' '));
@@ -73,9 +88,10 @@ await openFolder({
     evaluators: [{ evaluator_type: 'ToolTrajectoryEvaluator' }],
   },
 });
-ok($$('#runs-rows tr.run').length === 1 && /folder you opened/.test(text('#runs-sub')),
-  'an opened folder replaces the sample, and the page says so', text('#runs-sub'));
-await click('#runs-rows tr.run');
+ok($$('#experiments-rows tr.row').length === 1 && !$('#reports-rows tr.row') && /folder you opened/.test(text('#experiments-sub'))
+  && on() === 'v-experiments' && caseCount() === 0,
+'an opened folder replaces the sample, and with no reports in it the page opens on its experiments', text('#experiments-sub'));
+await openExperiment();
 const trajectory = () => text('[aria-labelledby="label-expected_trajectory"]');
 ok(caseCount() === 3 && /search\(q="rome"\)/.test(trajectory()) && /reply\(\)/.test(trajectory()),
   'a recorded call reads as its name and arguments, not [object Object]', trajectory());

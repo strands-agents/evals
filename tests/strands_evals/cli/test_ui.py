@@ -91,14 +91,23 @@ def _write(path: Path, obj: Any) -> Path:
 
 
 def _listed(root: Path, relative: str) -> dict:
-    """The part of a run's file entry that comes from the file itself."""
+    """The part of a file's entry that comes from the file itself."""
     info = (root / relative).stat()
     return {"path": relative, "name": relative.rsplit("/", 1)[-1], "size": info.st_size, "modified": info.st_mtime}
 
 
 def _pairs(root: Path) -> set[tuple[str | None, str | None]]:
-    """Each discovered run as (experiment path, report path)."""
-    return {((run["experiment"] or {}).get("path"), (run["report"] or {}).get("path")) for run in discover(root).runs}
+    """Each (experiment path, report path) discovery pairs, with `None` on the side that has no partner."""
+    found = discover(root)
+    made = {(report["experiment"], report["path"]) for report in found.reports}
+    unrun = {(experiment["path"], None) for experiment in found.experiments if not experiment["reports"]}
+    return made | unrun
+
+
+def _found(root: Path) -> list[str]:
+    """Every experiment and report path discovery lists."""
+    found = discover(root)
+    return sorted(entry["path"] for entry in found.experiments + found.reports)
 
 
 def _cases(table: dict[str, tuple]) -> list:
@@ -139,38 +148,66 @@ def test_scan_names_the_files_it_could_not_use(tmp_path: Path):
 
     result = discover(tmp_path)
 
-    assert [run["id"] for run in result.runs] == ["experiment.json"]
+    assert _found(tmp_path) == ["experiment.json"]
     reasons = {skip["path"]: skip["why"] for skip in result.skipped}
     # The tail of the invalid-JSON reason is the json module's wording.
     assert reasons.pop("broken.json").startswith("invalid JSON at line 1: ")
     assert reasons == {"binary.json": "could not read: UnicodeDecodeError", "unrelated.json": NOT_RECOGNISED}
 
 
-def test_discover_describes_a_paired_run(tmp_path: Path):
+def test_discover_describes_an_experiment_and_the_report_made_from_it(tmp_path: Path):
     _write(tmp_path / "nightly" / "experiment.json", _experiment("a", "b"))
     _write(tmp_path / "nightly" / "report.json", _report("a", "b"))
 
-    assert discover(tmp_path).runs == [
+    found = discover(tmp_path)
+
+    assert found.experiments == [
         {
-            "id": "nightly/experiment.json",
+            **_listed(tmp_path, "nightly/experiment.json"),
+            "cases": 2,
+            "evaluators": [{"evaluator_type": "OutputEvaluator"}],
+            "evaluator_notes": [MISSING_RUBRIC],
             "dir": "nightly",
-            "experiment": {
-                **_listed(tmp_path, "nightly/experiment.json"),
-                "cases": 2,
-                "evaluators": [{"evaluator_type": "OutputEvaluator"}],
-                "evaluator_notes": [MISSING_RUBRIC],
-            },
-            "report": {
-                **_listed(tmp_path, "nightly/report.json"),
-                "overall_score": 1.0,
-                "rows": 2,
-                "failing": 0,
-                "not_applicable": 0,
-                "evaluators": ["OutputEvaluator"],
-            },
+            "reports": ["nightly/report.json"],
+        }
+    ]
+    assert found.reports == [
+        {
+            **_listed(tmp_path, "nightly/report.json"),
+            "overall_score": 1.0,
+            "rows": 2,
+            "failing": 0,
+            "not_applicable": 0,
+            "evaluators": ["OutputEvaluator"],
+            "dir": "nightly",
+            "experiment": "nightly/experiment.json",
             "link": {"status": "verified", "detail": "all 2 report case(s) exist in this experiment"},
         }
     ]
+
+
+def test_discover_lists_a_report_made_in_code_with_no_experiment(tmp_path: Path):
+    _write(tmp_path / "nightly.report.json", _report("a"))
+
+    found = discover(tmp_path)
+
+    assert found.experiments == []
+    assert [(report["path"], report["experiment"], report["link"]) for report in found.reports] == [
+        ("nightly.report.json", None, None)
+    ]
+
+
+def test_discover_lists_newest_first_and_gives_an_experiment_every_report_made_from_it(tmp_path: Path):
+    _write(tmp_path / "support.experiment.json", _experiment("a", "b"))
+    for age, name in enumerate(("support.report.json", "second-try.json", "runs/third.json")):
+        made = _write(tmp_path / name, _report("a", "b"))
+        os.utime(made, (1_000 - age, 1_000 - age))
+
+    found = discover(tmp_path)
+
+    assert [report["path"] for report in found.reports] == ["support.report.json", "second-try.json", "runs/third.json"]
+    assert {report["experiment"] for report in found.reports} == {"support.experiment.json"}
+    assert found.experiments[0]["reports"] == ["support.report.json", "second-try.json", "runs/third.json"]
 
 
 def test_report_summary_counts_declined_rows_apart_from_failing_ones(tmp_path: Path):
@@ -179,13 +216,16 @@ def test_report_summary_counts_declined_rows_apart_from_failing_ones(tmp_path: P
     report["detailed_results"][1] = [{"score": 0.0, "test_pass": False, "label": "not_applicable"}]
     _write(tmp_path / "report.json", report)
 
-    assert discover(tmp_path).runs[0]["report"] == {
+    assert discover(tmp_path).reports[0] == {
         **_listed(tmp_path, "report.json"),
         "overall_score": 0.5,
         "rows": 3,
         "failing": 1,
         "not_applicable": 1,
         "evaluators": ["OutputEvaluator"],
+        "dir": ".",
+        "experiment": None,
+        "link": None,
     }
 
 
@@ -214,21 +254,50 @@ def test_report_summary_counts_declined_rows_apart_from_failing_ones(tmp_path: P
                 ["results.json"],
                 {("cases.json", None), ("more.json", None), (None, "results.json")},
             ),
-            "never across directories": (
+            "elsewhere in the tree, by the cases it holds": (
                 ["a/experiment.json"],
                 ["b/report.json"],
-                {("a/experiment.json", None), (None, "b/report.json")},
+                {("a/experiment.json", "b/report.json")},
+            ),
+            "a second report of one experiment": (
+                ["support.experiment.json", "other/unrelated.json"],
+                ["support.report.json", "support-v2.json"],
+                {
+                    ("support.experiment.json", "support.report.json"),
+                    ("support.experiment.json", "support-v2.json"),
+                    ("other/unrelated.json", None),
+                },
+            ),
+            "the nearer of two that hold its cases": (
+                ["near/experiment.json", "far/away/experiment.json"],
+                ["near/runs/latest.json"],
+                {("near/experiment.json", "near/runs/latest.json"), ("far/away/experiment.json", None)},
+            ),
+            "equally near is a tie, and a tie is not guessed": (
+                ["left/experiment.json", "right/experiment.json"],
+                ["latest.json"],
+                {("left/experiment.json", None), ("right/experiment.json", None), (None, "latest.json")},
             ),
         }
     ),
 )
-def test_discover_pairs_a_report_with_the_experiment_beside_it(tmp_path: Path, experiments, reports, expected):
+def test_discover_pairs_a_report_with_the_experiment_it_was_made_from(tmp_path: Path, experiments, reports, expected):
     for name in experiments:
-        _write(tmp_path / name, _experiment("a"))
+        _write(tmp_path / name, _experiment("b" if "unrelated" in name else "a"))
     for name in reports:
         _write(tmp_path / name, _report("a"))
 
     assert _pairs(tmp_path) == expected
+
+
+def test_discover_pairs_a_report_beside_an_experiment_of_the_same_name_even_when_the_cases_differ(tmp_path: Path):
+    _write(tmp_path / "nightly.experiment.json", _experiment("a"))
+    _write(tmp_path / "nightly.report.json", _report("z"))
+    _write(tmp_path / "elsewhere" / "experiment.json", _experiment("z"))
+
+    report = discover(tmp_path).reports[0]
+
+    assert (report["experiment"], report["link"]["status"]) == ("nightly.experiment.json", "mismatch")
 
 
 def test_discover_stops_at_the_depth_limit(tmp_path: Path):
@@ -238,8 +307,8 @@ def test_discover_stops_at_the_depth_limit(tmp_path: Path):
 
     shallow, full = discover(tmp_path, depth=2), discover(tmp_path, depth=4)
 
-    assert (shallow.runs, shallow.optimizer_runs) == ([], [])
-    assert [run["id"] for run in full.runs] == ["one/two/three/experiment.json"]
+    assert (shallow.experiments, shallow.optimizer_runs) == ([], [])
+    assert [experiment["path"] for experiment in full.experiments] == ["one/two/three/experiment.json"]
     assert [run["dir"] for run in full.optimizer_runs] == ["one/two/three/opt"]
 
 
@@ -250,7 +319,7 @@ def test_discover_skips_hidden_and_dependency_directories(tmp_path: Path):
 
     result = discover(tmp_path)
 
-    assert [run["id"] for run in result.runs] == ["kept/experiment.json"]
+    assert [experiment["path"] for experiment in result.experiments] == ["kept/experiment.json"]
     assert [skip["path"] for skip in result.skipped] == ["kept/broken.json"]
 
 
@@ -263,8 +332,8 @@ def test_scan_stops_at_the_file_cap_and_says_so(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(_ui_server, "MAX_SCAN_FILES", 4)
     whole = discover(tmp_path)
 
-    assert (capped.truncated, {run["id"] for run in capped.runs}) == (True, {"a.json", "b.json"})
-    assert (whole.truncated, len(whole.runs)) == (False, 4)
+    assert (capped.truncated, {experiment["path"] for experiment in capped.experiments}) == (True, {"a.json", "b.json"})
+    assert (whole.truncated, len(whole.experiments)) == (False, 4)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="creating a symlink needs a privilege on Windows")
@@ -276,7 +345,7 @@ def test_scan_does_not_read_through_a_link_that_leaves_the_folder(tmp_path: Path
 
     found = discover(root)
 
-    assert found.runs == []
+    assert found.experiments == []
     assert found.skipped == [{"path": "link.json", "why": "a link to a file outside this folder"}]
 
 
@@ -765,10 +834,10 @@ def client(serve) -> Client:
 @pytest.mark.parametrize(
     "path,token",
     [
-        ("/api/runs", "guessed"),
-        ("/api/runs?t=guessed", None),
-        ("/api/runs?t=%C3%A9", None),
-        ("/api/runs", None),
+        ("/api/scan", "guessed"),
+        ("/api/scan?t=guessed", None),
+        ("/api/scan?t=%C3%A9", None),
+        ("/api/scan", None),
         ("/api/changes", None),
     ],
     ids=["wrong header", "wrong query", "not ASCII", "none", "none, asking what changed"],
@@ -878,7 +947,12 @@ def test_the_page_is_refused_without_this_servers_cookie(client: Client, cookie)
 
 @pytest.mark.parametrize(
     "path",
-    ["/runs", "/runs/support/support.experiment.json/report", "/optimization/tuning/run-1/candidates/c8/report"],
+    [
+        "/reports",
+        "/reports/support/support.report.json",
+        "/experiments/support/support.experiment.json/cases/a%20case",
+        "/optimization/tuning/run-1/candidates/c8/report",
+    ],
 )
 def test_every_address_of_the_page_serves_it_and_survives_the_token_redirect(client: Client, path):
     cookie = f"strands_evals_ui_{client.port}={client.token}"
@@ -891,16 +965,16 @@ def test_every_address_of_the_page_serves_it_and_survives_the_token_redirect(cli
     assert client.send("GET", path, headers={"X-Evals-Token": None}).status == HTTPStatus.UNAUTHORIZED
 
 
-@pytest.mark.parametrize("path", ["/runsheet", "/optimizations", "/favicon.ico", "/api"])
+@pytest.mark.parametrize("path", ["/reportsheet", "/runs", "/optimizations", "/favicon.ico", "/api"])
 def test_an_address_that_is_not_the_pages_is_not_found(client: Client, path):
     assert client.send("GET", path) == _refused(HTTPStatus.NOT_FOUND, f"no route for {path}")
 
 
 def test_the_token_redirect_never_points_off_the_server(client: Client):
-    redirect = client.send("GET", f"//elsewhere.example/runs?t={client.token}", headers={"X-Evals-Token": None})
+    redirect = client.send("GET", f"//elsewhere.example/reports?t={client.token}", headers={"X-Evals-Token": None})
 
     # Refused outright where the standard library collapses the leading slashes, and a local path where it does not.
-    assert redirect.headers.get("Location") in (None, "/runs")
+    assert redirect.headers.get("Location") in (None, "/reports")
 
 
 def test_the_cookie_opens_the_page_but_not_the_api(client: Client):
@@ -1028,7 +1102,7 @@ def test_fingerprint_moves_when_something_the_page_shows_does(tmp_path: Path, ch
 
 
 def test_changes_endpoint_answers_the_fingerprint_a_scan_was_taken_at(client: Client):
-    scanned = client.send("GET", "/api/runs").body["fingerprint"]
+    scanned = client.send("GET", "/api/scan").body["fingerprint"]
     assert client.send("GET", "/api/changes") == Reply(HTTPStatus.OK, {"fingerprint": scanned})
 
     _write(client.root / "report.json", _report("alpha"))
@@ -1039,26 +1113,26 @@ def test_changes_endpoint_answers_the_fingerprint_a_scan_was_taken_at(client: Cl
 # ── the server: reading ──
 
 
-def test_runs_endpoint_serves_the_discovery_with_the_settings(client: Client):
+def test_scan_endpoint_serves_the_discovery_with_the_settings(client: Client):
     _optimizer_run(client.root / "opt", {"event": "config"}, {"event": "stop", "reason": "budget"})
     (client.root / "broken.json").write_text("{not json")
 
-    reply = client.send("GET", "/api/runs")
+    reply = client.send("GET", "/api/scan")
 
     found = discover(client.root)
-    assert [len(found.runs), len(found.optimizer_runs), len(found.skipped)] == [1, 1, 1]
+    assert [len(found.experiments), len(found.reports), len(found.optimizer_runs), len(found.skipped)] == [1, 1, 1, 1]
     assert reply == Reply(HTTPStatus.OK, {**client.settings, "fingerprint": fingerprint(client.root), **asdict(found)})
 
 
-def test_runs_endpoint_survives_a_report_holding_nan(client: Client):
+def test_scan_endpoint_survives_a_report_holding_nan(client: Client):
     (client.root / "odd").mkdir()
     (client.root / "odd" / "report.json").write_text(json.dumps({**_report("alpha"), "overall_score": float("nan")}))
 
-    reply = client.send("GET", "/api/runs")
+    reply = client.send("GET", "/api/scan")
 
     assert reply.status == HTTPStatus.OK
-    assert {run["id"]: run["report"]["overall_score"] for run in reply.body["runs"]} == {
-        "experiment.json": 0.5,
+    assert {report["path"]: report["overall_score"] for report in reply.body["reports"]} == {
+        "report.json": 0.5,
         "odd/report.json": None,
     }
 
@@ -1341,6 +1415,8 @@ def test_evaluator_catalog_describes_each_built_in_from_the_class():
 def _list_tree(root: Path) -> None:
     _write(root / "experiment.json", _experiment("alpha"))
     _write(root / "report.json", _report("alpha"))
+    _write(root / "spare" / "unrun.json", _experiment("beta"))
+    _write(root / "code" / "nightly.json", _report("gamma"))
     _write(root / "notes.json", {"hello": "world"})
     _optimizer_run(
         root / "tuning",
@@ -1352,22 +1428,23 @@ def _list_tree(root: Path) -> None:
     _optimizer_run(root / "tuning" / "unfinished")
 
 
-def test_ui_list_prints_runs_and_optimizer_runs_as_json(tmp_path: Path, capsys):
+def test_ui_list_prints_what_it_found_as_json(tmp_path: Path, capsys):
     _list_tree(tmp_path)
 
     assert main(["--json", "ui", str(tmp_path), "--list"]) == 0
 
     found = discover(tmp_path)
-    assert [len(found.runs), len(found.optimizer_runs), len(found.skipped)] == [1, 2, 1]
+    assert [len(found.experiments), len(found.reports), len(found.optimizer_runs), len(found.skipped)] == [2, 2, 2, 1]
     assert json.loads(capsys.readouterr().out) == {
         "root": str(tmp_path.resolve()),
-        "runs": found.runs,
+        "experiments": found.experiments,
+        "reports": found.reports,
         "optimizer_runs": found.optimizer_runs,
         "skipped": found.skipped,
     }
 
 
-def test_ui_list_prints_runs_and_optimizer_runs_as_text(tmp_path: Path, capsys):
+def test_ui_list_prints_what_it_found_as_text(tmp_path: Path, capsys):
     _list_tree(tmp_path)
 
     # `--rich` because stdout is not a TTY under capsys, which would otherwise pick JSON.
@@ -1375,9 +1452,11 @@ def test_ui_list_prints_runs_and_optimizer_runs_as_text(tmp_path: Path, capsys):
 
     printed = capsys.readouterr()
     assert sorted(printed.out.splitlines()) == [
+        "(no experiment)  ->  code/nightly.json (1.00)",
         "experiment.json (1 cases)  ->  report.json (1.00)",
         "optimizer run tuning (1 candidates, 1 iterations)  ->  champion c0, stopped: budget",
         "optimizer run tuning/unfinished (0 candidates, 0 iterations)  ->  no champion",
+        "spare/unrun.json (1 cases)  ->  (not run)",
     ]
     assert printed.err == f"skipped notes.json: {NOT_RECOGNISED}\n"
 

@@ -27,7 +27,7 @@ const TERMS = {
   verdict: ['Verdict', 'Pass or fail as the evaluator itself decided. This page applies no threshold of its own.', 'evaluators/#choose-an-evaluator'],
   not_applicable: ['Not applicable', 'The evaluator had nothing to judge on this case, for example no expected output. These rows are left out of the overall score.', 'evaluators/#choose-an-evaluator'],
   trajectory: ['Trajectory', 'What the agent did along the way: a list such as the tools it called, or a Session holding the full trace.', 'how-evaluation-works/#what-an-evaluation-is-made-of'],
-  pairing: ['Pairing', 'A report is matched to the experiment beside it by file name. Verified means every case in the report is in that experiment.', 'how-to/serialization/'],
+  pairing: ['Pairing', 'A report is matched to an experiment beside it with the same name, or else to the nearest one holding all its cases. Verified means every case in the report is in that experiment.', 'how-to/serialization/'],
   overall: ['Overall score', 'The mean score over every row that applied. Rows an evaluator marked not applicable are left out.', 'how-evaluation-works/#the-levels-an-evaluator-scores-at'],
   draft: ['Draft', 'A case whose metadata says status: draft. Review drafts steps through them so each can be accepted or dropped.', 'how-to/experiment_management/#using-metadata-for-organization'],
   iteration: ['Iteration', 'One round of the search: candidates are proposed, run on the training cases, and ranked.', ''],
@@ -99,14 +99,23 @@ function evaluatorDoc(type) {
 /* ══════════ how to use each view ══════════ */
 
 const VIEW_GUIDE = {
-  runs: {
+  reports: {
     steps: [
-      'Each row is an <b>experiment</b> found in this folder and, when it has been run, the <b>report</b> beside it.',
-      'Select a row to open its cases. Select the Report cell to go straight to its results.',
-      'No report yet? Run the experiment, then Rescan: <code>strands-evals run FILE --agent module:attr -o NAME.report.json</code>',
+      'Each row is a <b>report</b>: the result of one run. It names the <b>experiment</b> file it was made from, or says it was run from code.',
+      'Select a row to open the report. Select the experiment beside it to open its cases.',
+      'No report yet? Run an experiment, then Rescan: <code>strands-evals run FILE --agent module:attr -o NAME.report.json</code>',
     ],
-    terms: ['experiment', 'report', 'pairing'],
-    links: [['quickstart/', 'Quickstart'], ['cli/run/#experiment-file-run', 'Running an experiment file'], ['cli/generate/', 'Generating a starter experiment']],
+    terms: ['report', 'experiment', 'pairing'],
+    links: [['quickstart/', 'Quickstart'], ['cli/run/#experiment-file-run', 'Running an experiment file'], ['cli/report/', 'The report command']],
+  },
+  experiments: {
+    steps: [
+      'Each row is an <b>experiment</b> file: the cases and evaluators a run uses, and the reports made from it.',
+      'Select a row to open its cases. Select a report beside it to open that report.',
+      'An experiment built in code and never saved has no file here. Its reports are still under Reports.',
+    ],
+    terms: ['experiment', 'case', 'evaluator'],
+    links: [['how-to/serialization/', 'Experiment files'], ['cli/generate/', 'Generating a starter experiment'], ['quickstart/', 'Quickstart']],
   },
   experiment: {
     steps: [
@@ -131,7 +140,7 @@ const VIEW_GUIDE = {
   'opt-runs': {
     steps: [
       'Each row is one optimizer run in this folder: what it achieved, the configuration it picked, and why it stopped.',
-      'Select a run to open its result. The other tabs all show the run marked here.',
+      'Select a run to open its result. Its other views are the tabs at the top of its page.',
     ],
     terms: ['champion', 'rollout'],
   },
@@ -194,7 +203,7 @@ function renderGuide(view) {
     `<dt>${esc(TERMS[key][0])}</dt><dd>${esc(TERMS[key][1])}</dd>`).join('');
   const links = (guide.links || [['', 'Evals documentation']]).map(([path, label]) =>
     docLink(path, `guide-${view}`, label)).join('');
-  $('guide-body').innerHTML = `<h2>${esc(app.querySelector(`.tab[data-view="${view}"]`).textContent)}</h2>`
+  $('guide-body').innerHTML = `<h2>${esc(VIEW_NAME[view])}</h2>`
     + `<ol>${guide.steps.map(step => `<li>${step}</li>`).join('')}</ol>`
     + (terms ? `<dl>${terms}</dl>` : '')
     + `<p class="guide-links">${links}</p>`;

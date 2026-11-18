@@ -56,10 +56,10 @@ const helpLink = p => parse(p.$('.help-pop a'));
   await p.click('[data-guide-toggle]');
   ok(state() === 'false,on,true' && p.d.cookie.includes('strands-evals-guide=on'),
     'the Guide switch opens it beside the content and remembers', `${state()} ${p.d.cookie}`);
-  ok(p.text('#guide-body h2') === 'Runs' && p.$$('#guide-body ol li').length === 3 && p.$$('#guide-body dt').length === 3
-    && parse(p.$('#guide-body a')) === 'quickstart/|guide-runs|',
+  ok(p.text('#guide-body h2') === 'Reports' && p.$$('#guide-body ol li').length === 3 && p.$$('#guide-body dt').length === 3
+    && parse(p.$('#guide-body a')) === 'quickstart/|guide-reports|',
   'it explains the view that is open: what to do, the terms it uses, and where the docs say more', p.text('#guide-body').slice(0, 120));
-  await p.click('.tab[data-view="report"]');
+  await p.openReport();
   ok(p.text('#guide-body h2') === 'Report'
     && parse(p.$('#guide-body a')) === 'how-evaluation-works/|guide-report|#the-levels-an-evaluator-scores-at',
   'and follows to the next view, its links naming the view they are for', p.text('#guide-body h2'));
@@ -68,7 +68,7 @@ const helpLink = p => parse(p.$('.help-pop a'));
     `${state()} ${p.d.cookie}`);
 
   const later = await open({ cookie: 'strands-evals-guide=on' });
-  ok(!later.$('#guide').hidden && later.text('#guide-body h2') === 'Runs', 'a page opened after it was left open starts with it open',
+  ok(!later.$('#guide').hidden && later.text('#guide-body h2') === 'Reports', 'a page opened after it was left open starts with it open',
     later.$('#guide').hidden);
 }
 
@@ -76,7 +76,7 @@ const helpLink = p => parse(p.$('.help-pop a'));
 {
   const p = await open();
   await p.openFolder({ 'run/experiment.json': EXPERIMENT });
-  await p.click('#runs-rows tr.run');
+  await p.openExperiment();
   const fields = p.$$('#form .help').map(b => b.dataset.help);
   ok(JSON.stringify(fields) === JSON.stringify(['name', 'input', 'expected_output', 'expected_assertion',
     'expected_trajectory', 'expected_interactions', 'expected_environment_state', 'metadata'].map(k => `field:${k}`)),
@@ -101,12 +101,12 @@ const helpLink = p => parse(p.$('.help-pop a'));
   const catalog = { Contains: { summary: 'Checks if actual_output contains a substring.', settings: [
     { name: 'value', required: true, default: null }, { name: 'case_sensitive', required: false, default: 'true' },
   ] } };
-  const run = { id: 'e.json', dir: '.', report: null, link: null,
-    experiment: { path: 'e.json', name: 'e.json', size: 1, modified: 5, cases: 1, evaluators: EXPERIMENT.evaluators } };
+  const listed = { path: 'e.json', name: 'e.json', dir: '.', size: 1, modified: 5, cases: 1, evaluators: EXPERIMENT.evaluators, reports: [] };
   const p = await open({ fetchImpl: fakeServer({
-    config: { root: '/served', depth: 3, read_only: false, evaluators: catalog }, runs: [run], file: { path: 'e.json', modified: 5, document: EXPERIMENT },
+    config: { root: '/served', depth: 3, read_only: false, evaluators: catalog },
+    scan: { experiments: [listed] }, file: { path: 'e.json', modified: 5, document: EXPERIMENT },
   }) });
-  await p.click('#runs-rows tr.run');
+  await p.openExperiment();
   await p.click(p.$$('#evs .evchip')[0]);
   ok(/Checks if actual_output contains a substring\./.test(p.text('#evform .evsum')), 'the form says what the evaluator checks',
     p.text('#evform .evsum'));
@@ -126,7 +126,7 @@ const helpLink = p => parse(p.$('.help-pop a'));
 {
   const p = await open();
   await p.openFolder({ 'run/experiment.json': { ...EXPERIMENT, evaluators: [{ evaluator_type: 'ToolSelectionAccuracyEvaluator' }, { evaluator_type: 'HelpfulnessEvaluator' }] } });
-  await p.click('#runs-rows tr.run');
+  await p.openExperiment();
   const pagesFor = [];
   for (const chip of [0, 1]) {
     await p.click(p.$$('#evs .evchip')[chip]);
@@ -137,9 +137,8 @@ const helpLink = p => parse(p.$('.help-pop a'));
     'evaluators/helpfulness_evaluator/|evaluator-HelpfulnessEvaluator|',
   ]), 'with no server, a built-in still links to its own page', pagesFor.join(' , '));
 
-  await p.click('.tab[data-view="report"]');
-  ok(parse(p.$('#rep-rows a')) === 'cli/run/|empty-report|#experiment-file-run', 'an experiment with no report links to how to run it',
-    parse(p.$('#rep-rows a')));
+  ok(parse(p.$('#facts a')) === 'cli/run/|unrun-experiment|#experiment-file-run', 'an experiment with no report links to how to run it',
+    parse(p.$('#facts a')));
 }
 
 // ── tooltips: a label explains itself on hover or focus, from the glossary or its own text ──
@@ -153,24 +152,23 @@ const helpLink = p => parse(p.$('.help-pop a'));
   };
   ok(tip.hidden, 'nothing shows until something is pointed at');
 
-  await p.click('.tab[data-view="report"]');
   await over(p.$('#v-report th[data-term="score"]'));
   ok(!tip.hidden && tip.querySelector('b').textContent === 'Score' && /usually from 0 to 1/.test(tip.textContent),
     'a column head shows its glossary entry', tip.textContent);
   await over(p.$('#rep-find'));
   ok(tip.hidden, 'and it goes when the pointer moves on');
 
-  await p.click('#runs-rows tr.run');
+  await p.openExperiment();
   const chip = p.$('#evs .evchip');
   const title = chip.title;
   await over(chip);
   ok(title && tip.textContent === title && !chip.hasAttribute('title'),
     'a plain title is shown the same way, and not a second time by the browser', `${title} / ${tip.textContent}`);
 
-  const tab = p.$('.tab[data-view="experiment"]');
+  const tab = p.$('.tab[data-view="experiments"]');
   tab.dispatchEvent(new p.window.FocusEvent('focusin', { bubbles: true }));
   await tick();
-  ok(!tip.hidden && /cases and evaluators of the open experiment/.test(tip.textContent), 'focus shows it too', tip.textContent);
+  ok(!tip.hidden && /Every experiment file found in this folder/.test(tip.textContent), 'focus shows it too', tip.textContent);
   await p.key('Escape');
   ok(tip.hidden, 'and Escape dismisses it');
 

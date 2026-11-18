@@ -3,31 +3,26 @@
 let REP = null, repMeta = null;
 let ROWS = [], BY_CASE = [];
 let repFilter = 'all', repQuery = '', openRows = new Set(), repLimit = 300;
-/* `{ meta, doc, cand }` while Optimization borrows the report panel for candidate `cand`, with
-   `meta` null when nothing was displaced; null when not borrowed. */
-let repDisplaced = null;
+/* The candidate whose cases the report page shows in place of a report file, or null. */
+let repCand = null;
 
-/* ── the report panel, on loan ── */
-function borrowReport(what) {
+/* ── a candidate's cases on the report page ── */
+function noteCandidate(what) {
   $('rep-borrowed').hidden = false;
-  $('rep-borrowed').innerHTML = `<span>${what}</span>`
-    + '<button class="btn" data-act="unborrow">'
-    + (repDisplaced && repDisplaced.meta ? 'Back to this run&rsquo;s report' : 'Back to Candidates')
-    + '</button>';
+  $('rep-borrowed').innerHTML = `<span>${what}</span><button class="btn" data-act="unborrow">Back to Candidates</button>`;
 }
 
-function returnReport() {
-  const had = repDisplaced;
-  repDisplaced = null;
+function closeCandidate() {
+  repCand = null;
   $('rep-borrowed').hidden = true;
   $('rep-borrowed').innerHTML = '';
-  if (!had || !had.meta) { clearReport(); return show('opt-candidates'); }
-  loadReport(had.meta, had.doc);
-  show('report');
 }
 
 app.querySelector('#rep-borrowed').onclick = e => {
-  if (e.target.closest('[data-act="unborrow"]')) returnReport();
+  if (!e.target.closest('[data-act="unborrow"]')) return;
+  closeCandidate();
+  clearReport();
+  show('opt-candidates');
 };
 
 /* `keep` re-reads the same report: the filter, the search and the open rows stay as they are. */
@@ -51,11 +46,7 @@ function clearReport() {
   $('r-passbar').hidden = true;
   $('rep-count').textContent = '';
   $('rep-more').hidden = true;
-  const exp = (expMeta && expMeta.name) || 'experiment.json';
-  $('rep-rows').innerHTML = blank('No report in this run',
-    `This experiment has not been run yet, or its report is somewhere else. To run it: `
-    + `strands-evals run ${esc(exp)} --agent module:attr -o ${esc(stem(exp) ? stem(exp) + '.report.json' : 'report.json')}, `
-    + `then Rescan. ${docLink('cli/run/#experiment-file-run', 'empty-report', 'How to run an experiment')}`);
+  $('rep-rows').innerHTML = '';
 }
 
 /* ══════════ report ══════════ */

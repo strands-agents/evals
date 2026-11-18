@@ -23,7 +23,7 @@ const TRANSCRIPTS = new Map();
 function sourceLine(run) {
   const t = run && run.tuned_against;
   if (!t) return '';
-  const link = `<a data-exp="${esc(t.path)}" tabindex="0" role="link">${esc(t.path)}</a>`;
+  const link = openLink('experiment', t.path);
   return t.status === 'verified'
     ? `Its ${plural(t.split_cases, 'case')} are cases of ${link}.`
     : `${t.matched} of its ${plural(t.split_cases, 'case')} are cases of ${link}.`;
@@ -251,9 +251,9 @@ function trialVerdict(t) {
 
 /* The cases an optimizer run was given, by name, when the experiment holding them is in this folder. */
 async function sourceCases(run) {
-  const named = run.tuned_against && RUNS.find(r => r.experiment && r.experiment.path === run.tuned_against.path);
+  const named = run.tuned_against && EXPERIMENTS.find(e => e.path === run.tuned_against.path);
   try {
-    const doc = named ? await document_for(named.experiment) : null;
+    const doc = named ? await document_for(named) : null;
     return doc ? new Map((doc.cases || []).map(c => [c.name, c])) : null;
   } catch {
     return null;
@@ -309,12 +309,10 @@ function candidateReport(p, source) {
   };
 }
 
-/** Put one candidate's cases in the Report view, holding on to the report they displace. */
+/** Put one candidate's cases on the report page, in place of whatever report was there. */
 function openCandidateReport(p) {
   const run = OPT_RUNS[optSel] || {};
-  /* Saved once: a second candidate must not overwrite the Evals report being held. */
-  if (!repDisplaced) repDisplaced = { meta: repMeta, doc: REP };
-  repDisplaced.cand = p.candidate_id;
+  repCand = p.candidate_id;
   const meta = { path: `${run.run_id || 'run'} · ${p.candidate_id}` };
   loadReport(meta, candidateReport(p, run.sourceCases));
   if (run.sourceCases === undefined) {
@@ -325,8 +323,9 @@ function openCandidateReport(p) {
     });
   }
   const why = outcomeWhy(p);
-  borrowReport(`Candidate <b>${esc(p.candidate_id)}</b> of ${esc(run.run_id || 'this run')}, `
+  noteCandidate(`Candidate <b>${esc(p.candidate_id)}</b> of ${esc(run.run_id || 'this run')}, `
     + 'from Optimization.' + (why ? ` <span class="tag warn">${esc(p.outcome)}</span> ${esc(why)}` : ''));
+  renderLists();
 }
 
 /** Open one candidate's row on the Candidates tab, clearing any filter that would hide it. */
@@ -536,6 +535,7 @@ function renderTradeoff(d) {
 function renderOptimization() {
   const run = OPT_RUNS[optSel];
   renderOptimizerRuns();
+  renderPageHead(currentView());
   if (!run || !OPT) {
     $('opt-sub').textContent = optError || (OPT_RUNS.length
       ? 'Pick a run on the Runs tab.'
@@ -798,7 +798,7 @@ function renderOptimizerRuns() {
     ? `No directory under ${esc(ROOT)} holds a run.json with an events.jsonl beside it.`
     : 'Open a folder that holds an optimizer run directory.');
 
-  if (!any && SECTION_OF[currentView()] === 'optimization') show('runs');
+  if (!any && SECTION_OF[currentView()] === 'optimization') show(homeView());
 }
 
 $('opt-runs-rows').onclick = e => {
@@ -1006,15 +1006,6 @@ $('opt-cands').onclick = e => {
   const key = tr.dataset.k;
   optOpen.has(key) ? optOpen.delete(key) : optOpen.add(key);
   renderCandidates();
-};
-$('opt-source').onclick = e => {
-  const link = e.target.closest('a[data-exp]');
-  if (!link) return;
-  e.preventDefault();
-  const i = RUNS.findIndex(r => r.experiment && r.experiment.path === link.dataset.exp);
-  if (i < 0) return;
-  if (i === selRun) return show('experiment');
-  selectRun(i, { view: 'experiment' });
 };
 // Redrawing the whole view is cheap: the log is already parsed.
 $('opt-series-pick').onchange = e => { optSeries = e.target.value; renderOptimization(); };

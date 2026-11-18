@@ -37,21 +37,14 @@
     <div class="sgroup">
       <button class="sec on" data-sec="evals">Evals</button>
       <div class="tabs">
-        <button class="tab on" data-view="runs" data-sec="evals" data-tip="Experiments and reports found in this folder.">Runs</button>
-        <button class="tab" data-view="experiment" data-sec="evals" data-tip="The cases and evaluators of the open experiment. Edit and save them here.">Experiment</button>
-        <button class="tab" data-view="report" data-sec="evals" data-tip="How each case scored the last time the open experiment was run.">Report</button>
+        <button class="tab on" data-view="reports" data-sec="evals" data-tip="Every report found in this folder, whether or not an experiment file sits beside it.">Reports</button>
+        <button class="tab" data-view="experiments" data-sec="evals" data-tip="Every experiment file found in this folder, and the reports made from each.">Experiments</button>
       </div>
     </div>
     <div class="sgroup" id="sgroup-opt" hidden>
       <button class="sec" data-sec="optimization" id="sec-opt" hidden>Optimization</button>
       <div class="tabs">
         <button class="tab" data-view="opt-runs" data-sec="optimization" hidden data-tip="Optimizer runs found in this folder.">Runs</button>
-        <button class="tab" data-view="opt-setup" data-sec="optimization" hidden data-tip="What the open run was told to do.">Setup</button>
-        <button class="tab" data-view="opt-overview" data-sec="optimization" hidden data-tip="The result, and the configuration the run picked.">Overview</button>
-        <button class="tab" data-view="opt-progress" data-sec="optimization" hidden data-tip="How the search went, candidate by candidate.">Progress</button>
-        <button class="tab" data-view="opt-candidates" data-sec="optimization" hidden data-tip="Every configuration the run tried, and how each case went.">Candidates</button>
-        <button class="tab" data-view="opt-tunables" data-sec="optimization" hidden data-tip="The settings the run could change, and which ones mattered.">Tunables</button>
-        <button class="tab" data-view="opt-trade" data-sec="optimization" data-multi hidden data-tip="One goal plotted against another.">Trade-off</button>
       </div>
     </div>
     <div class="nav-foot">
@@ -62,30 +55,67 @@
   </nav>
 
   <main>
-    <section class="view on" id="v-runs">
-      <h2>Experiments in this folder</h2>
-      <p class="sub" id="runs-sub"></p>
-      <div class="roots">
-        <span class="mode" id="mode-tag"></span>
-        <span class="path mono" id="root-path"></span>
+    <!-- What is open: where it came from, what it is, and the views that belong to it. -->
+    <header class="pagehead" id="pagehead" hidden>
+      <nav class="crumbs" id="crumbs" aria-label="Where this is"></nav>
+      <div class="headrow">
+        <p class="facts" id="facts"></p>
+        <div class="actions" id="actions"></div>
       </div>
+      <div class="ptabs" id="opt-tabs" hidden>
+        <button class="tab" data-view="opt-setup" data-sec="optimization" hidden data-tip="What the open run was told to do.">Setup</button>
+        <button class="tab" data-view="opt-overview" data-sec="optimization" hidden data-tip="The result, and the configuration the run picked.">Overview</button>
+        <button class="tab" data-view="opt-progress" data-sec="optimization" hidden data-tip="How the search went, candidate by candidate.">Progress</button>
+        <button class="tab" data-view="opt-candidates" data-sec="optimization" hidden data-tip="Every configuration the run tried, and how each case went.">Candidates</button>
+        <button class="tab" data-view="opt-tunables" data-sec="optimization" hidden data-tip="The settings the run could change, and which ones mattered.">Tunables</button>
+        <button class="tab" data-view="opt-trade" data-sec="optimization" data-multi hidden data-tip="One goal plotted against another.">Trade-off</button>
+      </div>
+    </header>
+
+    <!-- The folder being read: shown over both lists. -->
+    <div class="folder" id="folder">
+      <span class="mode" id="mode-tag"></span>
+      <span class="path mono" id="root-path"></span>
+      <span class="grow"></span>
+      <button class="btn" data-act="rescan" data-tip="Read the folder again for new or changed files.">Rescan</button>
+      <button class="btn" data-act="pick">Open folder&hellip;</button>
+      <input type="file" id="dirinput" webkitdirectory directory multiple hidden>
+    </div>
+
+    <section class="view on" id="v-reports">
+      <h2>Reports</h2>
+      <p class="sub" id="reports-sub"></p>
       <div class="ctl">
-        <button class="btn" data-act="rescan" data-tip="Read the folder again for new or changed files.">Rescan</button>
-        <button class="btn" data-act="pick">Open folder&hellip;</button>
         <span class="grow"></span>
-        <span class="path" id="runs-count"></span>
+        <span class="path" id="reports-count"></span>
       </div>
       <div class="scroll">
         <table class="rep">
           <thead><tr>
-            <th style="width:30%" data-tip="The folder and file this experiment or report was found in.">Run</th><th style="width:24%" data-term="experiment">Experiment</th>
-            <th style="width:30%" data-term="report">Report</th><th data-tip="When the experiment or its report last changed on disk.">Modified</th>
+            <th style="width:34%" data-term="report">Report</th><th style="width:26%" data-term="score">Score</th>
+            <th style="width:26%" data-tip="The experiment file this report was made from. A report made in code has none.">Experiment</th><th data-tip="When the report last changed on disk.">Modified</th>
           </tr></thead>
-          <tbody id="runs-rows"></tbody>
+          <tbody id="reports-rows"></tbody>
         </table>
       </div>
-      <div id="skips"></div>
-      <input type="file" id="dirinput" webkitdirectory directory multiple hidden>
+    </section>
+
+    <section class="view" id="v-experiments">
+      <h2>Experiments</h2>
+      <p class="sub" id="experiments-sub"></p>
+      <div class="ctl">
+        <span class="grow"></span>
+        <span class="path" id="experiments-count"></span>
+      </div>
+      <div class="scroll">
+        <table class="rep">
+          <thead><tr>
+            <th style="width:34%" data-term="experiment">Experiment</th><th style="width:22%" data-term="case">Cases</th>
+            <th style="width:30%" data-tip="The reports made from this experiment, newest first.">Reports</th><th data-tip="When the experiment last changed on disk.">Modified</th>
+          </tr></thead>
+          <tbody id="experiments-rows"></tbody>
+        </table>
+      </div>
     </section>
 
     <section class="view" id="v-experiment">
@@ -382,6 +412,7 @@
         </div>
       </div>
     </section>
+    <div id="skips"></div>
   </main>
   <aside class="guide-panel" id="guide" aria-label="How to use this view" hidden>
     <div class="guide-head">
@@ -400,7 +431,8 @@
 <script src="ui-guide.js"></script>
 <script src="ui-plot.js"></script>
 <script src="ui-trace.js"></script>
-<script src="ui-runs.js"></script>
+<script src="ui-lists.js"></script>
+<script src="ui-head.js"></script>
 <script src="ui-experiment.js"></script>
 <script src="ui-report.js"></script>
 <script src="ui-report-charts.js"></script>

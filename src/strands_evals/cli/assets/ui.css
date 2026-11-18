@@ -149,8 +149,6 @@ h2, .chart h3, .pane > header .t, .hero .big, .stat .v, .winner .wid {
 .borrowed b { color: var(--ink1); font-weight: 600; }
 .borrowed .btn { margin-left: auto; flex: none; }
 .source { margin: -10px 0 18px; }
-.source a { color: var(--ink1); text-decoration: none; border-bottom: 1px dashed var(--hair); cursor: pointer; }
-.source a:hover { border-bottom-color: var(--accent); }
 .path { color: var(--ink3); font-size: 12.5px; }
 .path b { color: var(--ink2); font-weight: 500; }
 
@@ -360,12 +358,15 @@ tr.detail td { background: var(--hair2); }
 .evchip b, .evchip .t { flex: none; }
 .evchip .c { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .evchip .ck { color: var(--ink1); font-weight: 550; }
-tr.run { cursor: pointer; }
-tr.run:hover td, tr.run.on td { background: var(--hair2); }
-tr.run td:first-child { font-weight: 550; }
-tr.run .dim { color: var(--ink3); font-weight: 400; }
-tr.run td.goto:hover { box-shadow: inset 0 -2px 0 var(--accent); }
-tr.run td.goto:hover .path { color: var(--accent); }
+tr.run, tr.row { cursor: pointer; }
+tr.run:hover td, tr.run.on td, tr.row:hover td, tr.row.on td { background: var(--hair2); }
+tr.run td:first-child, tr.row td:first-child { font-weight: 550; }
+tr.run .dim, tr.row .dim { color: var(--ink3); font-weight: 400; }
+/* A link that opens a report or an experiment, wherever it is written. */
+a[data-report], a[data-experiment] {
+  color: var(--ink1); text-decoration: none; border-bottom: 1px dashed var(--line); cursor: pointer;
+}
+a[data-report]:hover, a[data-experiment]:hover { color: var(--accent); border-bottom-color: var(--accent); }
 .nores { padding: 28px 12px; text-align: center; color: var(--ink3); }
 .nores b { display: block; color: var(--ink1); font-weight: 600; margin-bottom: 3px; }
 .caret {
@@ -377,7 +378,26 @@ tr.run td.goto:hover .path { color: var(--accent); }
 tr.case:hover .caret, tr.trial:hover .caret { color: var(--ink1); }
 
 /* ── additions: provenance, skipped files, narrow screens ── */
-.roots { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 0 0 24px; }
+/* The folder being read, over both lists. */
+.folder { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 28px; }
+.folder .grow { flex: 1; }
+/* The page header: what is open, where it came from, and the views that belong to it. */
+.pagehead { margin: 0 0 28px; padding-bottom: 16px; border-bottom: 1px solid var(--hair); }
+.crumbs { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font: 13px var(--mono); color: var(--ink3); }
+.crumbs a { color: var(--ink2); text-decoration: none; cursor: pointer; }
+.crumbs a:hover { color: var(--accent); }
+.crumbs b { color: var(--ink1); font-weight: 600; overflow-wrap: anywhere; }
+.headrow { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-top: 8px; }
+.facts { flex: 1; min-width: 0; margin: 0; font-size: 13.5px; line-height: 1.7; color: var(--ink2); overflow-wrap: anywhere; }
+.facts b { color: var(--ink1); }
+.facts code { padding: 1px 5px; border-radius: 4px; background: var(--hair2); font: 12px var(--mono); }
+.facts:empty { display: none; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.ptabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 16px 0 -17px; }
+.ptabs .tab {
+  padding: 7px 14px; border-radius: 0; border-bottom: 2px solid transparent; font-size: 13.5px;
+}
+.ptabs .tab.on { background: none; color: var(--ink1); border-bottom-color: var(--brand); }
 .mode {
   font-size: 11.5px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--hair);
   color: var(--ink2); background: var(--card); white-space: nowrap;

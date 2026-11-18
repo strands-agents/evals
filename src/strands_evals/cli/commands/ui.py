@@ -28,7 +28,8 @@ def _run(args: argparse.Namespace) -> int:
                 json.dumps(
                     {
                         "root": str(root.resolve()),
-                        "runs": result.runs,
+                        "experiments": result.experiments,
+                        "reports": result.reports,
                         "optimizer_runs": result.optimizer_runs,
                         "skipped": result.skipped,
                     },
@@ -36,12 +37,13 @@ def _run(args: argparse.Namespace) -> int:
                 )
             )
         else:
-            for run in result.runs:
-                experiment = run["experiment"]
-                report = run["report"]
-                left = f"{experiment['path']} ({experiment['cases']} cases)" if experiment else "(no experiment)"
-                right = f"{report['path']} ({report['overall_score']:.2f})" if report else "(not run)"
-                print(f"{left}  ->  {right}")  # noqa: T201
+            scored = {r["path"]: f"{r['path']} ({r['overall_score']:.2f})" for r in result.reports}
+            for experiment in result.experiments:
+                made = ", ".join(scored[path] for path in experiment["reports"]) or "(not run)"
+                print(f"{experiment['path']} ({experiment['cases']} cases)  ->  {made}")  # noqa: T201
+            for report in result.reports:
+                if report["experiment"] is None:
+                    print(f"(no experiment)  ->  {scored[report['path']]}")  # noqa: T201
             for run in result.optimizer_runs:
                 search = f"{run['candidates']} candidates, {run['iterations']} iterations"
                 champion = f"champion {run['champion_id']}" if run.get("champion_id") else "no champion"

@@ -72,6 +72,8 @@ export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok', to
   window.addEventListener('error', e => errs.push(String((e.error && e.error.message) || e.error)));
   const d = window.document;
   await tick();
+  const listed = (rows, match) => [...d.querySelectorAll(`${rows} tr.row`)]
+    .find(row => !match || row.textContent.includes(match));
   const api = {
     window, d, errs, dom,
     $: s => d.querySelector(s),
@@ -89,6 +91,10 @@ export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok', to
       el.dispatchEvent(new window.Event('input', { bubbles: true }));
       await tick();
     },
+    /** Open an experiment's cases from the Experiments list: the first, or the one whose row says `match`. */
+    openExperiment: match => api.click(listed('#experiments-rows', match)),
+    /** Open a report from the Reports list: the first, or the one whose row says `match`. */
+    openReport: match => api.click(listed('#reports-rows', match)),
     /** The parsed document behind the page's most recent download. */
     saved: async () => {
       const blob = window.__blobs[window.__blobs.length - 1];
@@ -127,18 +133,19 @@ const answer = (body, status = 200) =>
   ({ ok: status < 400, status, statusText: '', json: async () => JSON.parse(JSON.stringify(body)) });
 
 /** A `fetchImpl` that answers as the server would, recording each request in `.sent`.
-    `runs` and `put` may be functions returning `[body, status]`, to fail a scan or hold a save.
-    `file` may be a function of the path asked for; `mark` returns the tree's fingerprint. */
-export function fakeServer({ config = { root: '/served', depth: 3, read_only: false }, runs = [], file, put, mark } = {}) {
+    `scan` is what the folder holds (`{ experiments, reports }`), or a function returning `[body, status]`
+    to fail a scan; `put` is such a function too, to hold a save. `file` may be a function of the path
+    asked for; `mark` returns the tree's fingerprint. */
+export function fakeServer({ config = { root: '/served', depth: 3, read_only: false }, scan = {}, file, put, mark } = {}) {
   const sent = [];
   const fetchImpl = async (url, opts = {}) => {
     sent.push({ url: String(url), method: opts.method || 'GET', headers: opts.headers || {} });
     const path = String(url).split('?')[0];
     if (path === '/api/config') return answer(config);
     if (path === '/api/changes') return answer({ fingerprint: mark ? mark() : 'still' });
-    if (path === '/api/runs') {
-      return typeof runs === 'function' ? answer(...runs())
-        : answer({ ...config, fingerprint: mark ? mark() : 'still', runs, skipped: [], optimizer_runs: [] });
+    if (path === '/api/scan') {
+      return typeof scan === 'function' ? answer(...scan())
+        : answer({ ...config, fingerprint: mark ? mark() : 'still', experiments: [], reports: [], skipped: [], optimizer_runs: [], ...scan });
     }
     if (opts.method === 'PUT') return answer(...await put(JSON.parse(opts.body)));
     return answer(typeof file === 'function' ? file(new URL(String(url), 'http://x').searchParams.get('path')) : file);
