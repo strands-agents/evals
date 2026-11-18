@@ -61,6 +61,7 @@ body { margin: 0; }
 }
 .app ::selection { background: var(--brand); color: var(--on-brand); }
 .mono { font-family: var(--mono); }
+pre.val { margin: 0; font: 12.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 /* Labels: the small uppercase mono used for section names, field names and column heads. */
 .flabel > label, table.rep th, table.rtab thead th, .result .rlabel, .winner .wlabel {
   font-family: var(--mono); font-size: 11px; font-weight: 600;

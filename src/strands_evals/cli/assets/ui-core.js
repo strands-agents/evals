@@ -122,6 +122,17 @@ function ask(message, yes, no) {
 }
 
 const json = v => `<span class="mono">${esc(JSON.stringify(v, null, 1))}</span>`;
+/* A case's input and outputs are whatever the task takes and returns: text, a dict, a list. */
+const valueText = v => v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+const isConversation = v => Array.isArray(v) && v.length > 0
+  && v.every(m => m && typeof m === 'object' && typeof m.role === 'string' && 'content' in m);
+/** A value of any shape as markup: text as it is, a conversation or a recorded session as one,
+    anything else as indented JSON. */
+function showValue(v) {
+  if (typeof v === 'string') return esc(v);
+  if (isConversation(v) || sessionSpans(v)) return `<div class="trace">${traceView(v, 'the value as recorded')}</div>`;
+  return `<pre class="val">${esc(valueText(v))}</pre>`;
+}
 const pre = v => v == null ? '&mdash;' : json(v);
 
 /* ══════════ transport ══════════ */

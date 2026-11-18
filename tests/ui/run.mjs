@@ -11,7 +11,7 @@ if (gen.status !== 0) {
   process.exit(1);
 }
 
-const suites = ['standalone.mjs', 'fileorigin.mjs', 'extras.mjs', 'optimization.mjs', 'server.mjs', 'parity.mjs', 'guide.mjs', 'charts.mjs', 'live.mjs'];
+const suites = ['standalone.mjs', 'fileorigin.mjs', 'extras.mjs', 'optimization.mjs', 'server.mjs', 'parity.mjs', 'guide.mjs', 'charts.mjs', 'live.mjs', 'fidelity.mjs'];
 let failed = 0;
 
 for (const suite of suites) {

@@ -128,10 +128,15 @@ function trajectory(v, reference) {
 const ASPECTS = [
   {
     has: c => c.expected_output != null || c.actual_output != null,
-    rows: c => c.expected_output == null
-      ? [['Actual output', esc(c.actual_output == null ? '—' : c.actual_output)]]
-      : [['Expected output', esc(c.expected_output)],
-         ['Actual output · diff', diff(c.expected_output, c.actual_output == null ? '' : c.actual_output)]],
+    rows: c => {
+      const actual = c.actual_output == null ? '—' : showValue(c.actual_output);
+      if (c.expected_output == null) return [['Actual output', actual]];
+      /* Words can be compared only where both sides are text. */
+      const worded = typeof c.expected_output === 'string' && (c.actual_output == null || typeof c.actual_output === 'string');
+      return [['Expected output', showValue(c.expected_output)], worded
+        ? ['Actual output · diff', diff(c.expected_output, c.actual_output == null ? '' : c.actual_output)]
+        : ['Actual output', actual]];
+    },
   },
   {
     has: c => c.expected_trajectory != null || c.actual_trajectory != null,
@@ -158,7 +163,7 @@ function matches(g) {
   if (repFilter === 'fail' && g.rows.every(r => r.pass || r.na)) return false;
   if (repFilter === 'na' && !g.rows.some(r => r.na)) return false;
   if (!repQuery) return true;
-  const hay = [g.name, g.case.input, g.case.expected_output, g.case.expected_assertion, g.case.actual_output]
+  const hay = [g.name, g.case.input, g.case.expected_output, g.case.expected_assertion, g.case.actual_output].map(valueText)
     .concat(g.rows.map(r => [r.reason, r.evaluator]
       .concat(r.outputs.map(o => `${(o && o.label) || ''} ${(o && o.reason) || ''}`)).join(' ')))
     .join(' ').toLowerCase();
@@ -189,7 +194,7 @@ function renderReport() {
     const c = g.case;
     /* Optimizer trial records carry no input. */
     const asked = [['Input', c.input == null
-      ? '<span class="empty">not recorded in this report</span>' : esc(c.input)]];
+      ? '<span class="empty">not recorded in this report</span>' : showValue(c.input)]];
     if (c.expected_assertion) asked.push(['Assertion', esc(c.expected_assertion)]);
     ASPECTS.filter(a => a.has(c)).forEach(a => a.rows(c).forEach(row => asked.push(row)));
 

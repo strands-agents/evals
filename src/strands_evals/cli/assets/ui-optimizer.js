@@ -214,9 +214,9 @@ function trialPanel(t, run) {
 
   kv.push(['Output', t.output == null
     ? '<span class="empty">none recorded</span>'
-    : (String(t.output).trim() === ''
+    : (valueText(t.output).trim() === ''
       ? '<span class="empty">empty</span>'
-      : `<pre class="out">${clip(t.output, 4000)}</pre>`)]);
+      : `<pre class="out">${clip(valueText(t.output), 4000)}</pre>`)]);
 
   kv.push(['Transcript', transcriptSlot(run, t)]);
 
