@@ -882,6 +882,38 @@ th[data-term], th[data-tip], .cap[data-term] {
   .sections { position: static; height: auto; overflow-y: visible; }
 }
 
+/* ── report lenses: rows grouped by what the cases carry, and a diagnosis read as one ── */
+.lens { margin: 0 0 22px; padding: 16px 18px 6px; border: 1px solid var(--hair); border-radius: var(--r); background: var(--card); }
+.lens h3 { margin: 0; font: 600 11px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--ink2); }
+.lens .cap { margin: 8px 0 10px; font-size: 12.5px; color: var(--ink3); }
+table.groups { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 10px; }
+table.groups th {
+  text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--hair);
+  font: 600 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--ink3);
+}
+table.groups td { padding: 8px 10px; border-bottom: 1px solid var(--hair2); overflow-wrap: anywhere; }
+table.groups td:first-child { min-width: 18ch; }
+tr.group { cursor: pointer; }
+tr.group:hover td { background: var(--hair2); }
+tr.group.on td { background: color-mix(in srgb, var(--brand) 14%, var(--card)); font-weight: 600; }
+tr.grouphead td { padding: 16px 12px 6px; font-weight: 600; border-bottom: 1px solid var(--hair); overflow-wrap: anywhere; }
+.diag { grid-column: 1 / -1; padding: 16px 16px 6px; border: 1px solid var(--hair); border-radius: 10px; background: var(--card); font-size: 13px; }
+.diag h4 { margin: 0 0 2px; font: 600 14px var(--sans); }
+.diag h5 { margin: 14px 0 6px; font: 600 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--ink3); }
+.diag ul { margin: 0; padding: 0; list-style: none; }
+.diag li { padding: 8px 0; border-top: 1px solid var(--hair2); line-height: 1.55; overflow-wrap: anywhere; }
+.diag li:first-child { border-top: 0; padding-top: 0; }
+.diag p { margin: 4px 0 0; }
+.diag-at { color: var(--ink2); }
+.diag-cat { margin-top: 6px; }
+.diag-cat .path { margin-left: 8px; }
+.spanref {
+  appearance: none; cursor: pointer; padding: 1px 8px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--card); color: var(--ink1); font: 12px var(--mono);
+}
+.spanref:hover, .spanref:focus-visible { border-color: var(--accent); }
+.msg.lit { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 @media (prefers-reduced-motion: reduce) {
   .app * { transition: none !important; }
 }

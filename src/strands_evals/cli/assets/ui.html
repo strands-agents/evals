@@ -237,12 +237,21 @@
           </div>
         </div>
       </details>
+      <div class="lens" id="rep-lens" hidden>
+        <div class="chead">
+          <h3>Group by</h3>
+          <div class="pick" id="rep-group-pick" role="group" aria-label="Group the rows by"></div>
+        </div>
+        <p class="cap" id="rep-group-cap"></p>
+        <div id="rep-groups"></div>
+      </div>
       <div class="ctl">
         <input class="find" id="rep-find" placeholder="Search cases and reasons" aria-label="Search cases and reasons" autocomplete="off">
         <div class="seg" id="rep-seg">
           <button class="on" data-f="all">All</button>
           <button data-f="fail" data-tip="Cases where at least one evaluator failed.">Failing</button>
           <button data-f="na" data-term="not_applicable">Not applicable</button>
+          <button data-f="diag" data-tip="Cases with a diagnosis of what went wrong recorded." hidden>Diagnosed</button>
         </div>
         <span class="grow"></span>
         <span class="path" id="rep-count"></span>
@@ -471,6 +480,7 @@
 <script src="ui-report.js"></script>
 <script src="ui-report-charts.js"></script>
 <script src="ui-compare.js"></script>
+<script src="ui-report-lenses.js"></script>
 <script src="ui-folder.js"></script>
 <script src="ui-optimizer-record.js"></script>
 <script src="ui-charts.js"></script>

@@ -134,6 +134,7 @@ const VIEW_GUIDE = {
       'Filter to Failing to see what to fix first. Rows marked not applicable are left out of the overall score.',
       'The charts show where the failures sit, how scores are spread, and what each case took. Select a mark to open its row.',
       'Compare with, at the top, sets this report beside another one.',
+      'Group by lets you split the rows by anything the cases carry, such as a tag, a red-team category or a chaos condition. A row with a diagnosis says what failed, why, and what to change.',
     ],
     terms: ['score', 'verdict', 'not_applicable'],
     links: [['how-evaluation-works/#the-levels-an-evaluator-scores-at', 'How evaluators score'], ['detectors/', 'Diagnosing failures'], ['cli/report/', 'The report command']],
