@@ -120,7 +120,14 @@ function ask(message, yes, no) {
       + `<button class="btn" data-answer="no">${esc(no)}</button>`
       + `<button class="btn pri" data-answer="yes">${esc(yes)}</button></div></div>`;
     const asker = document.activeElement;
-    const onKey = e => { if (e.key === 'Escape') done(false); };
+    const onKey = e => {
+      if (e.key === 'Escape') return done(false);
+      if (e.key !== 'Tab') return;
+      /* Nothing behind the question can be reached while it is up: Tab goes from one answer to the other. */
+      e.preventDefault();
+      const answers = [...box.querySelectorAll('[data-answer]')];
+      answers[(answers.indexOf(document.activeElement) + 1) % answers.length].focus();
+    };
     const done = answer => {
       box.remove();
       document.removeEventListener('keydown', onKey);

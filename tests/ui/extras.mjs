@@ -101,6 +101,11 @@ const report = (score, ...cases) => ({
   ok(/^1 unsaved change will be lost if you open another experiment\./.test(p.text('.ask')), 'another experiment asks first',
     p.text('.ask'));
   ok(p.d.activeElement.dataset.answer === 'no', 'with the keyboard on the answer that loses nothing', p.d.activeElement.textContent);
+  await p.key('Tab');
+  const second = p.d.activeElement.dataset.answer;
+  await p.key('Tab');
+  ok(`${second} ${p.d.activeElement.dataset.answer}` === 'yes no', 'Tab moves between the two answers and never out of the question',
+    `${second} ${p.d.activeElement.dataset.answer}`);
   await p.click('.ask [data-answer="no"]');
   ok(on() === 'v-experiments' && edit() === 'edited, not saved', 'Stay leaves the edit where it was', `${on()} ${edit()}`);
   ok(p.d.activeElement === row('only-exp/experiment.json'), 'and puts the keyboard back on the row that asked', p.d.activeElement.tagName);
