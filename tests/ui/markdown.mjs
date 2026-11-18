@@ -392,7 +392,7 @@ No spans.
 `;
 const MESSAGE_TRACE = `# Trace: 4 messages
 
-2 model calls · 1 tool call · 15 tokens
+2 assistant messages · 1 tool call · 15 tokens
 
 ## Message 1: user
 

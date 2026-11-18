@@ -115,7 +115,8 @@ const spanEnd = s => Date.parse(((s && s.span_info) || {}).end_time);
 
 /** What a trace says it cost: `{ seconds, tokens, modelCalls, toolCalls }`, each null where it is not
     recorded, or null when `doc` is not a trace. A session's seconds are what its traces took, added up:
-    the wait between two traces is nobody's cost. */
+    the wait between two traces is nobody's cost. A message list has `replies`, its assistant messages,
+    in place of `modelCalls`, which it does not record. */
 function traceStats(doc) {
   const traces = sessionTraces(doc);
   if (traces) {
@@ -136,7 +137,7 @@ function traceStats(doc) {
   return {
     seconds: null,
     tokens: used.length ? used.reduce((sum, u) => sum + (u.inputTokens || 0) + (u.outputTokens || 0), 0) : null,
-    modelCalls: doc.filter(m => m && m.role === 'assistant').length,
+    replies: doc.filter(m => m && m.role === 'assistant').length,
     toolCalls: doc.reduce((n, m) => n + (Array.isArray(m && m.content) ? m.content.filter(b => b && b.toolUse).length : 0), 0),
   };
 }
@@ -145,6 +146,7 @@ const secondsText = seconds => `${nice(seconds)}s`;
 /** `2 model calls · 1 tool call · 4.2s · 3.1k tokens`, leaving out what was not recorded. */
 const costText = stats => !stats ? '' : [
   stats.modelCalls ? plural(stats.modelCalls, 'model call') : '',
+  stats.replies ? plural(stats.replies, 'assistant message') : '',
   stats.toolCalls ? plural(stats.toolCalls, 'tool call') : '',
   stats.seconds != null ? secondsText(stats.seconds) : '',
   stats.tokens != null ? `${compact(stats.tokens)} tokens` : '',
