@@ -231,7 +231,7 @@ function renderForm() {
     $('form-title').textContent = '—';
     $('form-sid').textContent = '';
     $('form').innerHTML = EXP
-      ? '<div class="nores"><b>No cases</b>This experiment’s case list is empty. Use <b>+ Case</b> to add one.</div>'
+      ? emptyState('No cases on this lily pad yet', 'This experiment’s case list is empty. Use <b>+ Case</b> to add one.')
       : '';
     return;
   }

@@ -101,6 +101,14 @@ function evaluatorDoc(type) {
 /* ══════════ how to use each view ══════════ */
 
 const VIEW_GUIDE = {
+  missing: {
+    steps: [
+      'The address names something this folder does not hold, or that could not be read. The page says what it looked for.',
+      'Use a link on the page or the sidebar to go to a list of what is here.',
+      'Served, the page reads the folder again every few seconds and opens what the address names once it is there.',
+    ],
+    terms: ['report', 'experiment'],
+  },
   reports: {
     steps: [
       'Each row is a <b>report</b>: the result of one run. It names the <b>experiment</b> file it was made from, or says it was run from code.',

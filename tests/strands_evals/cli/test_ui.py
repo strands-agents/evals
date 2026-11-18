@@ -1317,6 +1317,38 @@ def test_an_address_that_is_not_the_pages_is_not_found(client: Client, path):
     assert client.send("GET", path) == _refused(HTTPStatus.NOT_FOUND, f"no route for {path}")
 
 
+@pytest.mark.parametrize("path", ["/nope", "/reportsheet", "/runs/old-link", "/favicon.ico"])
+def test_a_browser_at_an_address_that_is_not_the_pages_gets_the_page_to_say_so(client: Client, path):
+    held = {**NO_TOKEN, "Cookie": client.cookie}
+    link = f"{path}?t={client.token}"
+
+    assert client.send("GET", path, headers=held) == Reply(HTTPStatus.NOT_FOUND, PAGE)
+    # The token in such a link is not traded for a cookie: the redirect would echo a path the server does not know.
+    assert client.send("GET", link, headers=held) == Reply(HTTPStatus.NOT_FOUND, PAGE)
+    assert client.send("GET", link, headers=NO_TOKEN) == _refused(HTTPStatus.NOT_FOUND, f"no route for {path}")
+
+
+@pytest.mark.parametrize(
+    ("path", "headers", "refusal"),
+    [
+        ("/nope", {}, (HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL)),
+        ("/nope?t=guessed", {}, (HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL)),
+        ("/nope", {"Cookie": "strands_evals_ui_{port}=wrong"}, (HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL)),
+        ("/nope", {"Cookie": "{cookie}", "Host": "evals.evil.example.com"}, (HTTPStatus.FORBIDDEN, HOST_REFUSAL)),
+        ("/api", {"Cookie": "{cookie}"}, (HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL)),
+        ("/api/nothing", {"Cookie": "{cookie}"}, (HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL)),
+        ("/reports/gone.json.md", {"Cookie": "{cookie}"}, (HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL)),
+    ],
+    ids=["no cookie", "wrong token", "wrong cookie", "another host", "the api root", "an api route", "a data form"],
+)
+def test_the_not_found_page_is_for_a_browser_this_server_opened_and_never_for_the_api(
+    client: Client, path, headers, refusal
+):
+    sent = {name: value.format(port=client.port, cookie=client.cookie) for name, value in headers.items()}
+
+    assert client.send("GET", path, headers={**NO_TOKEN, **sent}) == _refused(*refusal)
+
+
 def test_the_token_redirect_never_points_off_the_server(client: Client):
     redirect = client.send("GET", f"//elsewhere.example/reports?t={client.token}", headers=NO_TOKEN)
 

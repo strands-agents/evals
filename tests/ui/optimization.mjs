@@ -1150,7 +1150,7 @@ const TWO_GOALS = 'Pareto(Maximize(Quality), Minimize(tokens))';
 {
   const one = await openLog({ objective: 'Maximize(Quality)' }, goalLog(FRONT));
   ok(one.$('#opt-tradeoff').hidden && one.$('.tab[data-view="opt-trade"]').hidden
-    && /one goal — Quality — so it has a best value/.test(one.text('#opt-to-none')),
+    && /^One goal, so nothing to trade offThis run optimized one goal, Quality, so it has a best value/.test(one.text('#opt-to-none')),
     'a run with one goal has no trade-off chart and no tab for it, and the view says why', one.text('#opt-to-none'));
 
   const two = await openLog({ objective: TWO_GOALS }, goalLog(FRONT));

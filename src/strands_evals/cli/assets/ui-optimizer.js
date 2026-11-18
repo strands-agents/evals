@@ -12,8 +12,11 @@ let optCases = null;
 
 /* ── the run list, and the run that is open ── */
 
-const optBlank = (title, body) =>
-  `<tr><td colspan="6"><div class="nores"><b>${title}</b>${body}</div></td></tr>`;
+/* A view of the open run with nothing to draw says why in place of its content. */
+function optNothing(view, html) {
+  $('v-' + view).classList.toggle('blank', !!html);
+  $('v-' + view).querySelector('.optnone').innerHTML = html || '';
+}
 
 /* The objective's interval as the run list reads it: `[tone, words]` by where it sits. The tone
    follows the interval, not the delta: one that straddles zero has shown nothing. */
@@ -60,11 +63,12 @@ function renderOptimizerRuns() {
         ? `<span class="tag">${esc(r.stop_reason)}</span>`
         : '<span class="empty">still running</span>'}</td>
         <td class="ev">${when(r.modified)}</td></tr>`;
-  }).join('') : optBlank('No optimizer run here', MODE === 'server'
+  }).join('') : `<tr><td colspan="6">${emptyState('No optimizer runs in this pond yet', MODE === 'server'
     ? `No directory under ${esc(ROOT)} holds a run.json with an events.jsonl beside it.`
-    : 'Open a folder that holds an optimizer run directory.');
+    : 'Open a folder that holds an optimizer run directory.')}</td></tr>`;
 
-  if (!any && SECTION_OF[currentView()] === 'optimization') show(homeView());
+  /* The list can be shown empty; a view of one run cannot outlive the run. */
+  if (!any && SECTION_OF[currentView()] === 'optimization' && currentView() !== 'opt-runs') show(homeView());
 }
 
 $('opt-runs-rows').onclick = e => {
@@ -148,6 +152,8 @@ function renderOptimization() {
     ['opt-setup-sub', 'opt-cand-sub', 'opt-cand-count'].forEach(id => { $(id).textContent = ''; });
     ['opt-source', 'opt-mech', 'opt-tradeoff', 'opt-to-none', 'opt-effects', 'opt-space-wrap', 'opt-cost', 'opt-cases']
       .forEach(id => { $(id).hidden = true; });
+    Object.keys(OPT_SEGMENT).forEach(view => optNothing(view, optError && emptyState('This run would not surface',
+      `${esc(optError)}<span class="ways">${listWay('opt-runs')}</span>`)));
     return;
   }
 
@@ -186,13 +192,28 @@ function renderOptimization() {
 
   $('opt-tradeoff').hidden = d.goals.length < 2;
   $('opt-to-none').hidden = d.goals.length >= 2;
-  $('opt-to-none').textContent = d.goals.length >= 2 ? ''
-    : `This run optimized one goal${d.goals.length ? ` — ${d.goals[0].metric} — ` : ', '}`
-      + 'so it has a best value rather than a trade-off. Progress charts it by candidate.';
+  $('opt-to-none').innerHTML = d.goals.length >= 2 ? '' : emptyState('One goal, so nothing to trade off',
+    `This run optimized one goal${d.goals.length ? `, ${esc(d.goals[0].metric)}, ` : ', '}`
+      + 'so it has a best value rather than a trade-off. Progress charts it by candidate.');
   if (d.goals.length >= 2) renderTradeoff(d);
 
   renderOptimizerSetup(d, run);
   renderEffects();
+  Object.keys(OPT_SEGMENT).forEach(view => optNothing(view, ''));
+  if (!Object.keys(d.config).length) {
+    optNothing('opt-setup', emptyState('No setup on this lily pad',
+      'This run’s run.json is empty, so there is no record of what the run was told to do.'));
+  }
+  if (!d.proposals.length && !d.iterations.length) {
+    optNothing('opt-progress', emptyState('The search has not made its first hop',
+      'No candidate has been proposed and no iteration has finished, so there is nothing to chart. '
+        + (d.stop ? `The run stopped: ${esc(d.stop.reason)}.` : 'This fills in as the run writes to its log.')));
+  }
+  if (!d.space.length && $('opt-effects').hidden) {
+    optNothing('opt-tunables', emptyState('No tunables on record',
+      'This run.json declares no search space: it was written before the field existed. Setup names the keys '
+        + 'the log changed, which is as close as the record gets.'));
+  }
   $('opt-cand-sub').textContent = 'Each one is a configuration the optimizer built and ran your cases against.';
   renderCandidates();
 }

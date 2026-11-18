@@ -41,6 +41,7 @@ async function rereadFolder() {
   if (!await rescan(true)) return;
   try { await refreshOpen(); await refreshCompare(); } catch (err) { scanError = `could not re-read: ${err.message}`; }
   renderLists();
+  await retryMissing();
 }
 
 async function pollNow() {

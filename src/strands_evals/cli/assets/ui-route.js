@@ -22,6 +22,7 @@ const comparedIn = query => new URLSearchParams(query).getAll('r');
 
 /** The path for a view, given what is open in it. */
 function routeFor(view) {
+  if (view === 'missing') return MISSING.route;
   const opt = OPT_RUNS[optSel];
   if (view === 'report' && repCand && opt) {
     return `/optimization${idPath(opt.id)}/candidates/${encodeURIComponent(repCand)}/report`;
@@ -43,7 +44,8 @@ function routeFor(view) {
 
 /** What a path asks for: `{ tab, report, row, evaluator, compare, experiment, case, session, opt, cand, candidate }`,
     with only the parts it names.
-    A path that names nothing leaves `tab` out, for the page to choose its own first view. */
+    A path that names nothing leaves `tab` out, for the page to choose its own first view; one that
+    names no page the app has gives `missing`. */
 function parseRoute(route) {
   const [path, query = ''] = route.split('?');
   if (path.replace(/\/+$/, '') === '/reports/compare') return { tab: 'compare', compare: comparedIn(query) };
@@ -56,8 +58,11 @@ function parseRoute(route) {
       return { tab: 'report', opt: idOf(rest.slice(0, -3)), cand: rest[rest.length - 2] };
     }
     if (OPT_VIEW[last]) return { tab: OPT_VIEW[last], opt: idOf(rest.slice(0, -1)) };
-    return rest.length >= 2 && rest[rest.length - 2] === 'candidates'
-      ? { tab: 'opt-candidates', opt: idOf(rest.slice(0, -2)), candidate: last } : { tab: 'opt-runs' };
+    if (rest.length >= 2 && rest[rest.length - 2] === 'candidates') {
+      return { tab: 'opt-candidates', opt: idOf(rest.slice(0, -2)), candidate: last };
+    }
+    /* A run directory with no view named opens on its Overview. */
+    return rest.length ? { tab: 'opt-overview', opt: idOf(rest) } : { tab: 'opt-runs' };
   }
   if (root === 'reports') {
     /* As with a case below: `rows` after a file's `.json` can only be one row of it, with or without an evaluator. */
@@ -73,7 +78,8 @@ function parseRoute(route) {
     return named ? { tab: 'experiment', experiment: rest.slice(0, -2).join('/'), case: last }
       : { tab: 'experiment', experiment: rest.join('/') };
   }
-  return {};
+  /* Served, `/index.html` is the page itself. Anything else names no page. */
+  return !root || root === 'index.html' ? {} : { tab: 'missing' };
 }
 
 const currentRoute = () => MODE === 'server'

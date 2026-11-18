@@ -9,7 +9,7 @@ let treeMark = null;                         // the server's fingerprint of the 
 
 /* ══════════ the two lists ══════════ */
 
-const blank = (title, body) => `<tr><td colspan="4"><div class="nores"><b>${title}</b>${body}</div></td></tr>`;
+const blank = (title, body) => `<tr><td colspan="4">${emptyState(title, body)}</td></tr>`;
 
 const LINK_TAG = {
   verified: ['ok', 'pairing verified'],
@@ -58,7 +58,7 @@ function renderLists() {
   $('reports-count').innerHTML = plural(REPORTS.length, 'report') + capped;
   $('experiments-count').innerHTML = plural(EXPERIMENTS.length, 'experiment') + capped;
   const failed = scanError ? `<tr><td colspan="4"><span class="tag warn">${esc(scanError)}</span></td></tr>` : '';
-  const nothing = (what, link) => (failed ? '' : blank(`No ${what} here`, MODE === 'server'
+  const nothing = (what, link) => (failed ? '' : blank(`No ${what}s in this pond yet`, MODE === 'server'
     ? `No ${what} JSON under ${esc(ROOT)}. ${link}` : 'Open a folder to look for experiments and reports.'));
 
   redraw($('reports-rows'), failed + (REPORTS.map(r => {
@@ -127,11 +127,11 @@ async function rescan(keepOpen) {
   return res;
 }
 
-/* A file that will not load says so on the lists, which is where the page goes back to. */
+/* A file that will not load says so on a page of its own, at the address that names the file. */
 function openFailed(path, err) {
-  scanError = `could not load ${path}: ${err.message}`;
-  renderLists();
-  show(homeView());
+  const list = REPORTS.some(r => r.path === path) ? 'reports' : EXPERIMENTS.some(e => e.path === path) ? 'experiments' : 'sessions';
+  showMissing(`/${list}${idPath(path)}`, list, 'This one would not surface',
+    `${named(path)} could not be read: ${esc(err.message)}`, [listWay(list)]);
 }
 
 /* What `read` loads for the file at `path`, or null when it would not load or the page moved on while it did. */

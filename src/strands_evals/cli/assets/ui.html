@@ -315,6 +315,7 @@
     <!-- ── Optimization · Setup ── -->
     <section class="view" id="v-opt-setup">
       <h2>Setup</h2>
+      <div class="optnone"></div>
       <p class="sub" id="opt-setup-sub"></p>
       <p class="explain" id="opt-explain"></p>
       <!-- Source experiment is matched by case id: the run record does not name it. -->
@@ -329,6 +330,7 @@
     <!-- ── Optimization · Overview ── -->
     <section class="view" id="v-opt-overview">
       <h2>Overview</h2>
+      <div class="optnone"></div>
       <p class="sub" id="opt-sub"></p>
       <p class="sub methodline" id="opt-method-sum"></p>
 
@@ -375,6 +377,7 @@
     <!-- ── Optimization · Progress ── -->
     <section class="view" id="v-opt-progress">
       <h2>Progress</h2>
+      <div class="optnone"></div>
       <p class="sub">What the search did, in the order it did it &mdash; <span id="opt-search-sum"></span>.</p>
       <div class="charts">
         <div class="chart wide">
@@ -399,6 +402,7 @@
     <!-- ── Optimization · Candidates ── -->
     <section class="view" id="v-opt-candidates">
       <h2>Candidates</h2>
+      <div class="optnone"></div>
       <p class="sub" id="opt-cand-sub"></p>
       <div class="ctl">
         <input class="find" id="opt-find" placeholder="Search candidates, settings and rationales" aria-label="Search candidates, settings and rationales" autocomplete="off">
@@ -427,6 +431,7 @@
     <!-- ── Optimization · Tunables ── -->
     <section class="view" id="v-opt-tunables">
       <h2>Tunables</h2>
+      <div class="optnone"></div>
       <p class="sub" id="opt-space-sub"></p>
       <div id="opt-space-wrap" hidden>
         <div class="scroll">
@@ -461,8 +466,8 @@
     <!-- ── Optimization · Trade-off ── -->
     <section class="view" id="v-opt-trade">
       <h2>Trade-off</h2>
-      <!-- Reachable by a saved hash on a single-goal run, where the tab itself is hidden. -->
-      <p class="sub" id="opt-to-none" hidden></p>
+      <div class="optnone"></div>
+      <div id="opt-to-none" hidden></div>
       <div id="opt-tradeoff" hidden>
         <p class="sub">What one goal cost the other: <span id="opt-to-sum"></span></p>
         <div class="charts">
@@ -479,6 +484,9 @@
           </div>
         </div>
       </div>
+    </section>
+    <section class="view" id="v-missing">
+      <div id="missing"></div>
     </section>
     <div id="stores"></div>
     <div id="skips"></div>
@@ -503,6 +511,7 @@
 <script src="ui-diagnosis.js"></script>
 <script src="ui-lists.js"></script>
 <script src="ui-head.js"></script>
+<script src="ui-missing.js"></script>
 <script src="ui-experiment.js"></script>
 <script src="ui-report.js"></script>
 <script src="ui-report-charts.js"></script>

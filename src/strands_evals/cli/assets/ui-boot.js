@@ -20,21 +20,28 @@ function bundled() {
 
 /* Open what an address names, then show its view. `force` opens without asking about unsaved edits. */
 async function goTo(want, force) {
+  /* Opening things on the way can move the address, and a not-found page keeps the one asked for. */
+  const asked = currentRoute(), was = MISSING;
+  const lost = notThere(want);
+  if (lost) return showMissing(asked, ...lost);
   if (want.report && (repCand || !repMeta || repMeta.path !== want.report)) await openReport(want.report);
   if (want.experiment && (!expMeta || expMeta.path !== want.experiment)) await openExperiment(want.experiment, { force });
   if (want.compare) await openCompare(want.compare, true);
   if (want.session && (!sesMeta || sesMeta.path !== want.session)) await openSession(want.session);
+  if (MISSING && MISSING !== was) return;      // one of them would not load, and the page says so
   const opt = want.opt ? OPT_RUNS.findIndex(r => r.id === want.opt) : -1;
   if (opt >= 0 && opt !== optSel) await selectOptimizerRun(opt);
+  const inside = notInside(want);
+  if (inside) return showMissing(asked, ...inside);
   /* Unsaved edits may have kept another experiment open: the case is picked only in the one the address names. */
   const here = want.case && expMeta && expMeta.path === want.experiment;
   const at = here ? cases.findIndex(c => c.name === want.case) : -1;
   if (at >= 0 && at !== sel) { sel = at; renderForm(); }
-  const candidate = want.cand && OPT ? OPT.proposals.find(p => p.candidate_id === want.cand) : null;
-  if (candidate && candidate.trials.length && repCand !== candidate.candidate_id) openCandidateReport(candidate);
-  show(want.tab || homeView(), { silent: true });
-  const row = want.row == null ? null
-    : ROWS.find(r => r.name === want.row && (want.evaluator == null || String(r.evaluator) === want.evaluator));
+  const candidate = want.cand && OPT ? candidateNamed(want.cand) : null;
+  if (candidate && repCand !== candidate.candidate_id) openCandidateReport(candidate);
+  /* A run that could not be read has no candidate to report on: its own views say why. */
+  show(want.cand && !candidate ? 'opt-candidates' : want.tab || homeView(), { silent: true });
+  const row = want.row == null ? null : rowNamed(want);
   if (row && !repCand) openReportRow(row.i);
   if (want.candidate) openCandidate(want.candidate);
 }
@@ -53,6 +60,7 @@ async function boot() {
     folderLabel = 'bundled sample';
     showingSample = true;
     ({ experiments: EXPERIMENTS, reports: REPORTS } = bundled());
+    setSessions({});
     renderLists();
   }
 
@@ -80,6 +88,16 @@ async function followAddress() {
 /* One at a time: a step taken while the one before it is still loading waits its turn. */
 let followed = Promise.resolve();
 const followInTurn = () => { followed = followed.then(followAddress, followAddress); };
+/** Go to an address of the page as if it had been typed: a step Back can undo. */
+function visit(route) {
+  try {
+    history.pushState(null, '', MODE === 'server' ? route : `${location.pathname}${location.search}#${route}`);
+  } catch {
+    location.hash = route;                     // file://, where the change of hash is what gets followed
+    return;
+  }
+  followInTurn();
+}
 window.addEventListener('popstate', followInTurn);
 window.addEventListener('hashchange', followInTurn);
 

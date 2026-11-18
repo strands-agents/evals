@@ -144,8 +144,7 @@ same([p.view(), compared(p)], ['v-compare', ['#1 a/report.json', '#2 b/report.js
   'an address naming two reports opens their comparison, oldest first whatever order it names them in');
 ok(p.window.location.hash === '#' + address('a/report.json', 'b/report.json'), 'and is corrected to that order', p.window.location.hash);
 for (const [named, what] of [
-  [['a/report.json'], 'one report'], [['a/report.json', 'gone.json'], 'only one report that is in the folder'],
-  [['a/report.json', 'a/report.json'], 'the same report twice'], [[], 'none'],
+  [['a/report.json'], 'one report'], [['a/report.json', 'a/report.json'], 'the same report twice'], [[], 'none'],
 ]) {
   p.window.location.hash = '#' + address(...named);
   await tick();
@@ -286,8 +285,8 @@ ok(p.$('#cmp-with').hidden, 'and with every report compared there is nothing lef
   await s.click('#cmp-with button[data-value="late.json"]');
   unread.add('late.json');
   await s.click('#cmp-ends g.bell');
-  ok(s.view() === 'v-reports' && /could not load late\.json/.test(s.text('#reports-rows')),
-    'a mark whose report cannot be read goes to the list, which says so', s.text('#reports-rows').slice(0, 80));
+  ok(s.view() === 'v-missing' && s.text('#missing') === 'This one would not surfacelate.json could not be read: no such fileAll reports',
+    'a mark whose report cannot be read says so on a page of its own', s.text('#missing'));
   s.window.history.back();
   await tick();
   s.window.history.back();

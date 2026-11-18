@@ -86,7 +86,11 @@ function renderSessions() {
       : '<span class="tag" data-tip="A diagnosis whose session is not in this folder. It opens on its own.">diagnosis</span> '
         + diagnosisHolds(m)) + `</td>
         <td class="ev">${m.seconds == null ? '—' : secondsText(m.seconds)}</td>
-        <td class="ev">${when(m.modified)}</td></tr>`).join('');
+        <td class="ev">${when(m.modified)}</td></tr>`).join('')
+    || blank('No sessions in this pond yet', (MODE === 'server' ? `No recorded session or diagnosis under ${esc(ROOT)}. `
+      : 'No recorded session or diagnosis among the files that were read. ')
+      + 'Save one with <code>strands-evals fetch ... -o FILE</code>'
+      + `${MODE === 'server' ? ', then Rescan' : ''}. ${docLink('cli/', 'empty-sessions', 'CLI reference')}`);
   $('stores').innerHTML = STORES.length
     ? `<p class="stores">${STORES.length === 1 ? 'A task result store was' : `${STORES.length} task result stores were`} found: `
       + STORES.map(s => `<code>${esc(s.dir)}</code> holds ${plural(s.files, 'saved result')}`).join(', ')

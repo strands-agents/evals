@@ -160,10 +160,9 @@ function renderCandidates() {
       + `<td class="mono">${esc(p.changed_keys.join(', ') || '—')}</td></tr>`;
     return on ? head + candidateDetail(p, d, run) : head;
   }).join('')
-    || `<tr><td colspan="5"><div class="nores">${d.proposals.length
-      ? '<b>No candidate matches</b>Try a different filter, or clear the search.'
-      : '<b>No candidate yet</b>Candidates appear here as each iteration finishes.'}`
-      + '</div></td></tr>';
+    || `<tr><td colspan="5">${d.proposals.length
+      ? emptyState('No candidate matches', 'Try a different filter, or clear the search.')
+      : emptyState('No candidate yet', 'Candidates appear here as each iteration finishes.')}</td></tr>`;
 }
 
 /** Open one candidate's row on the Candidates tab, clearing any filter that would hide it. */

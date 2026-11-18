@@ -160,10 +160,10 @@ function resultCard(d) {
   if (!d.result) {
     const why = d.stop
       ? 'This run recorded no end-phase report, so there is no champion to compare.'
-      : 'No candidate has been picked yet — the comparison appears once the run reaches its end phase.';
+      : 'No candidate has been picked yet. The comparison appears once the run reaches its end phase.';
     const far = d.best == null ? '' : ` Best feasible objective so far: <b>${esc(fmt(d.best))}</b>`
       + `${d.bestCandidate ? ` (${esc(d.bestCandidate.candidate_id)})` : ''}, on the training split.`;
-    return `<p class="rlabel">No result yet</p><p class="verdict">${why}${far}</p>`;
+    return emptyState('No result yet', why + far);
   }
 
   const r = d.result;
