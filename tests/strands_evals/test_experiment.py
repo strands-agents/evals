@@ -1,7 +1,7 @@
 import asyncio
 import inspect
 import random
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -269,6 +269,31 @@ def test_experiment_run_evaluations(mock_evaluator):
         by_evaluator[row["evaluator"]].append(score)
     assert by_evaluator["MockEvaluator"] == [1.0, 0.0]  # match, no_match
     assert by_evaluator["MockEvaluator2"] == [0.5, 0.5]  # always 0.5
+
+
+def test_experiment_run_evaluations_records_the_run(mock_evaluator, simple_task):
+    """Two runs of one experiment are told apart by id and ordered by time."""
+    experiment = Experiment(cases=[Case(name="a", input="x", expected_output="x")], evaluators=[mock_evaluator])
+
+    before = datetime.now(timezone.utc)
+    first = experiment.run_evaluations(simple_task)
+    second = experiment.run_evaluations(simple_task)
+    after = datetime.now(timezone.utc)
+
+    assert first.run.run_id != second.run.run_id
+    assert before <= first.run.started_at <= first.run.ended_at <= second.run.started_at <= second.run.ended_at <= after
+
+
+def test_experiment_run_evaluations_records_one_run_across_evaluators(simple_task):
+    """The reports of several evaluators are merged into one, which is still one run."""
+    experiment = Experiment(
+        cases=[Case(name="a", input="x", expected_output="x")], evaluators=[MockEvaluator(), MockEvaluator2()]
+    )
+
+    report = experiment.run_evaluations(simple_task)
+
+    assert len({row["evaluator"] for row in report.cases}) == 2
+    assert report.run is not None
 
 
 def test_experiment_run_evaluations_task_executed_once():

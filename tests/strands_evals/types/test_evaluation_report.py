@@ -1,11 +1,12 @@
 import json
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
-from strands_evals.types.evaluation_report import EvaluationReport
+from strands_evals.types.evaluation_report import EvaluationReport, RunInfo
 
 
 class TestNotApplicableLabel:
@@ -533,3 +534,45 @@ class TestToFileStrictJson:
 
         assert "café ☕".encode("utf-8") in file_path.read_bytes()
         assert EvaluationReport.from_file(str(file_path)).cases[0]["name"] == "café ☕"
+
+
+class TestRunInfo:
+    """Which run produced a report, and when."""
+
+    RUN = RunInfo(
+        run_id="run-1",
+        started_at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+        ended_at=datetime(2026, 1, 2, 3, 4, 9, tzinfo=timezone.utc),
+    )
+
+    def _report(self, **kwargs) -> EvaluationReport:
+        return EvaluationReport(
+            overall_score=1.0, scores=[1.0], cases=[{"name": "a", "evaluator": "Eval"}], test_passes=[True], **kwargs
+        )
+
+    def test_a_report_built_by_hand_has_no_run(self):
+        assert self._report().run is None
+
+    def test_run_is_written_as_iso_timestamps_and_reads_back(self, tmp_path):
+        file_path = tmp_path / "report.json"
+
+        self._report(run=self.RUN).to_file(str(file_path))
+
+        assert json.loads(file_path.read_text())["run"] == {
+            "run_id": "run-1",
+            "started_at": "2026-01-02T03:04:05+00:00",
+            "ended_at": "2026-01-02T03:04:09+00:00",
+        }
+        assert EvaluationReport.from_file(str(file_path)).run == self.RUN
+
+    def test_a_report_written_before_the_field_existed_still_loads(self):
+        data = self._report().to_dict()
+        del data["run"]
+
+        assert EvaluationReport.from_dict(data).run is None
+
+    def test_flatten_does_not_carry_a_run(self):
+        """A merged report is not the product of one run."""
+        merged = EvaluationReport.flatten([self._report(run=self.RUN), self._report(run=self.RUN)])
+
+        assert merged.run is None
