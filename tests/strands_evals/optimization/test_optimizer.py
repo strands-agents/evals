@@ -151,6 +151,12 @@ def test_build_task_builds_its_space_at_construction():
         ("rerun_passes", -1, ValueError),
         ("runs_per_candidate", 1.0, TypeError),
         ("seed", True, TypeError),
+        ("trial_timeout", 0, ValueError),
+        ("trial_timeout", -1.0, ValueError),
+        ("trial_timeout", float("nan"), ValueError),
+        ("trial_timeout", float("inf"), ValueError),
+        ("trial_timeout", "60", TypeError),
+        ("trial_timeout", True, TypeError),
     ],
 )
 def test_settings_are_checked(argument, value, error):
@@ -1483,6 +1489,74 @@ def test_resume_warns_when_numpy_or_optuna_changed(tmp_path):
     log.write_text("".join(json.dumps(e) + "\n" for e in events))
     with pytest.warns(UserWarning, match=r"optuna 0\.0\.1 -> "):
         _resume(optimizer._run.root)
+
+
+def test_resume_keeps_the_saved_trial_timeout_unless_given_one(tmp_path):
+    optimizer = _default_search(tmp_path, trial_timeout=30)
+    optimizer._setup()
+    root = optimizer._run.root
+    assert json.loads((root / "run.json").read_text())["trial_timeout"] == 30
+    assert _resume(root)._trial_timeout == 30
+    assert _resume(root, trial_timeout=5)._trial_timeout == 5
+    events = _events_at(root)
+    del events[0]["config"]["trial_timeout"]  # a run written before the setting existed
+    (root / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+    assert _resume(root)._trial_timeout is None
+
+
+async def test_a_trial_that_never_returns_times_out_and_the_run_finishes(tmp_path):
+    hung = set()
+
+    async def rollout(agent_factory, case):
+        if case.name in hung:
+            await asyncio.Event().wait()  # never set
+        return await _temperature_rollout(agent_factory, case)
+
+    optimizer = _optimizer(
+        _experiment(evaluators=[Temperature()]),
+        rollout_fn=rollout,
+        max_workers=64,
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=2,
+        trial_timeout=1.0,
+    )
+    hung.add(optimizer._case_split.validation[0])
+
+    result = await optimizer.run_async()
+
+    timed_out = [e["record"] for e in _events(optimizer) if e["event"] == "trial" and e["record"]["case_name"] in hung]
+    assert {r["candidate_id"] for r in timed_out} == set(result.validation.objectives)  # once per validated candidate
+    assert {(r["status"], r["error_type"]) for r in timed_out} == {("agent_failure", "TimeoutError")}
+    assert result.test is not None
+
+
+async def test_a_run_stalled_on_a_trial_resumes_past_it_with_a_trial_timeout(tmp_path):
+    original_optimizer = _default_search(tmp_path / "runs", budget=Budget(max_iterations=1))
+    await original_optimizer.run_async()
+    # As a run stalled on a validation trial and then killed leaves it: the log ends at the finalists.
+    copy = _killed(original_optimizer._run.root, tmp_path, lambda events: _index(events, "finalists"))
+    hung = original_optimizer._case_split.validation[0]
+
+    async def rollout(agent_factory, case):
+        if case.name == hung:
+            await asyncio.Event().wait()  # never set
+        return await _temperature_rollout(agent_factory, case)
+
+    resumed = Optimizer.resume(
+        copy,
+        experiment=_experiment(evaluators=[Temperature()]),
+        factory=create_agent,
+        rollout_fn=rollout,
+        trial_timeout=1.0,
+    )
+    result = await resumed.run_async()
+
+    assert json.loads((copy / "run.json").read_text())["trial_timeout"] is None  # started without one
+    assert [e["trial_timeout"] for e in _events_at(copy) if e["event"] == "resume"] == [1.0]
+    timed_out = [e["record"] for e in _events_at(copy) if e["event"] == "trial" and e["record"]["case_name"] == hung]
+    assert timed_out and {r["error_type"] for r in timed_out} == {"TimeoutError"}
+    assert result.test is not None
 
 
 # fixes from the gap review and #532

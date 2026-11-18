@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import threading
+from contextlib import asynccontextmanager
 
 import opentelemetry.trace as trace_api
 import pytest
@@ -95,7 +96,7 @@ def _cases(*names):
     return [Case(name=name, input=f"question {name}") for name in names]
 
 
-def _runner(traces, cache, cases, evaluators, *, max_workers=4, rerun_passes=2):
+def _runner(traces, cache, cases, evaluators, *, max_workers=4, rerun_passes=2, trial_timeout=None):
     return TrialRunner(
         cases,
         evaluators,
@@ -104,6 +105,7 @@ def _runner(traces, cache, cases, evaluators, *, max_workers=4, rerun_passes=2):
         split_of={case.name: "train" for case in cases},
         max_workers=max_workers,
         rerun_passes=rerun_passes,
+        trial_timeout=trial_timeout,
     )
 
 
@@ -464,6 +466,71 @@ async def test_a_cancelled_call_still_exits_a_sync_environment(traces):
     assert events == ["enter", "exit"]
 
 
+async def test_a_sync_trial_past_the_timeout_doesnt_hold_up_the_call(traces):
+    release, returned = threading.Event(), threading.Event()
+
+    def task(case):  # sync, so it runs on the call's pool, where it can't be stopped
+        if case.name == "b":
+            release.wait(10)
+            returned.set()
+        return "ok"
+
+    runner = _runner(traces, MemoryCache(), _cases("a", "b"), [Fixed()], trial_timeout=1.0)
+    try:
+        records, _ = await runner.run("cand", task, ["a", "b"], runs=1, allowance=0)
+        assert not returned.is_set()  # `run` returned while b's thread still runs
+    finally:
+        release.set()
+
+    assert [r.status for r in records] == [TrialStatus.COMPLETED, TrialStatus.AGENT_FAILURE]
+    assert records[1].error_type == "TimeoutError"
+
+
+async def test_a_thread_left_running_by_a_timeout_doesnt_starve_the_next_trial(traces):
+    release = threading.Event()
+
+    def task(case):
+        if case.name == "a":
+            release.wait(10)
+        return "ok"
+
+    runner = _runner(traces, MemoryCache(), _cases("a", "b"), [Fixed()], max_workers=1, trial_timeout=1.0)
+    try:
+        records, _ = await runner.run("cand", task, ["a", "b"], runs=1, allowance=0)
+    finally:
+        release.set()
+
+    # b runs after a, while a's thread still runs; without a thread of its own it would time out unstarted
+    assert [r.status for r in records] == [TrialStatus.AGENT_FAILURE, TrialStatus.COMPLETED]
+
+
+async def test_every_re_run_of_a_timed_out_setup_gets_a_thread(traces):
+    release, calls = threading.Event(), []
+
+    def environment(case):  # sync: a timeout leaves each hung call running in its thread
+        calls.append(case.name)
+        if len(calls) <= 2:
+            release.wait(10)  # the first two sandboxes never start
+        return {}
+
+    @tunable(prompt=TextValue(default="p"))
+    def build(prompt):
+        return prompt
+
+    async def rollout(agent_factory, case):
+        return {"output": "ok"}
+
+    task = make_task(build.bind({}), rollout, environment=environment)
+    runner = _runner(traces, MemoryCache(), _cases("a"), [Fixed()], max_workers=1, rerun_passes=2, trial_timeout=1.0)
+    try:
+        records, spent = await runner.run("cand", task, ["a"], runs=1, allowance=5)
+    finally:
+        release.set()
+
+    assert records[0].status is TrialStatus.COMPLETED  # the second re-run found a free thread
+    assert spent == 3
+
+
 # statuses
 
 
@@ -611,6 +678,52 @@ async def test_an_agent_failure_is_recorded_without_evaluations(traces):
     assert records[0].evaluations == {}
     assert evaluator.calls == 0
     assert spent == 1  # agent failures aren't re-run
+
+
+async def test_a_trial_past_the_timeout_is_an_agent_failure_and_not_re_run(traces):
+    async def task(case):
+        if case.name == "b":
+            await asyncio.Event().wait()  # never set
+        return "ok"
+
+    evaluator = Fixed()
+    runner = _runner(traces, MemoryCache(), _cases("a", "b"), [evaluator], trial_timeout=1.0)
+
+    records, spent = await runner.run("cand", task, ["a", "b"], runs=1, allowance=5)
+
+    assert [r.status for r in records] == [TrialStatus.COMPLETED, TrialStatus.AGENT_FAILURE]
+    assert (records[1].error_type, records[1].error) == ("TimeoutError", "the trial ran longer than trial_timeout=1.0s")
+    assert records[1].attempts == 1  # Experiment doesn't retry it as throttling
+    assert spent == 2  # nor is it re-run as infrastructure
+    assert evaluator.calls == 1
+
+
+async def test_a_timeout_during_the_environments_setup_is_re_run(traces):
+    starts = []
+
+    @asynccontextmanager
+    async def environment(case):
+        starts.append(case.name)
+        if len(starts) == 1:
+            await asyncio.Event().wait()  # the first sandbox never starts
+        yield {}
+
+    @tunable(prompt=TextValue(default="p"))
+    def build(prompt):
+        return prompt
+
+    async def rollout(agent_factory, case):
+        return {"output": "ok"}
+
+    task = make_task(build.bind({}), rollout, environment=environment)
+    runner = _runner(traces, MemoryCache(), _cases("a"), [Fixed()], trial_timeout=1.0)
+
+    records, spent = await runner.run("cand", task, ["a"], runs=1, allowance=5)
+
+    assert records[0].status is TrialStatus.COMPLETED
+    assert spent == 2
+    (first,) = records[0].previous_attempts
+    assert (first.status, first.error_type) == (TrialStatus.INFRASTRUCTURE_INVALID, "TimeoutError")
 
 
 # attempts and re-run passes

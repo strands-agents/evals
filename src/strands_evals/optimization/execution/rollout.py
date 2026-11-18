@@ -29,10 +29,27 @@ EnvironmentFn = Callable[
     Mapping[str, Any] | AbstractContextManager[Mapping[str, Any]] | AbstractAsyncContextManager[Mapping[str, Any]],
 ]
 
-# The pool sync functions run in, set by `TrialRunner.run` for its call and sized to its `max_workers`:
-# asyncio's shared pool holds at most min(32, cpus + 4) threads, which would cap the sync trials running
-# at once. None (outside a `TrialRunner` call) -> that shared pool.
+# The pool sync functions run in, set by `TrialRunner.run` for its call and sized to its `max_workers` (plus
+# room for the threads a `trial_timeout` leaves running): asyncio's shared pool holds at most
+# min(32, cpus + 4) threads, which would cap the sync trials running at once. None (outside a `TrialRunner`
+# call) -> that shared pool.
 _THREAD_POOL: contextvars.ContextVar[Executor | None] = contextvars.ContextVar("trial_thread_pool", default=None)
+
+
+@dataclass
+class _Phase:
+    """Where a timed attempt of `make_task`'s task is, as the task marks it: setting its environment up,
+    or exiting it after the rollout returned `result`."""
+
+    setting_up: bool = False
+    exiting: bool = False
+    result: Any = None
+
+
+# Set by `instrument` for an attempt under a timeout, so a timeout during the environment's setup is an
+# infrastructure failure and one during its exit keeps the trial's result, as an error there would.
+# None (no timeout) -> nothing to mark.
+_PHASE: contextvars.ContextVar[_Phase | None] = contextvars.ContextVar("trial_phase", default=None)
 
 
 @dataclass
@@ -118,13 +135,14 @@ def make_task(
     declared marker, a call kwarg the function doesn't accept, or a required parameter left unsupplied.
     An error creating or entering the environment is raised as `InfrastructureError(...) from error`, so
     `classify` makes it `infrastructure_invalid` whatever its type. An error exiting it after the rollout
-    returned only warns, and the trial keeps its result. A sync `rollout_fn`, a sync `environment`, and a
-    sync context manager's `__enter__` / `__exit__` run in a worker thread (in a `TrialRunner` call, its
-    pool of `max_workers` threads), so a slow setup doesn't stall concurrent trials. Setup and teardown
-    may run on different threads, so a thread-bound resource (e.g. a sqlite connection) must allow that,
-    or come from an async context manager, which runs on the event loop. A trial cancelled while a sync
-    `__enter__` runs waits for it to finish, exits the environment, then re-raises the cancellation (a
-    second cancellation during that wait leaves the environment entered).
+    returned only warns, and the trial keeps its result (so does a `trial_timeout` that cuts the exit
+    short). A sync `rollout_fn`, a sync `environment`, and a sync context manager's `__enter__` / `__exit__`
+    run in a worker thread (in a `TrialRunner` call, the call's own pool), so a slow setup doesn't stall
+    concurrent trials. Setup and teardown may run on different threads, so a thread-bound resource (e.g. a
+    sqlite connection) must allow that, or come from an async context manager, which runs on the event loop.
+    A trial cancelled while a sync `__enter__` runs (a `trial_timeout` included) waits for it to finish,
+    exits the environment, then re-raises the cancellation (a second cancellation during that wait leaves
+    the environment entered).
 
     Args:
         agent_factory: The candidate's bound factory.
@@ -138,6 +156,9 @@ def make_task(
     async def task(case: Case) -> Any:
         if environment is None:
             return await _rollout(rollout_fn, agent_factory, case)
+        phase = _PHASE.get()
+        if phase is not None:
+            phase.setting_up = True
         env_context = contextvars.copy_context()
         try:
             provided = await _in_thread(env_context.run, environment, case)
@@ -157,6 +178,8 @@ def make_task(
                 resources = provided
         except Exception as error:
             raise InfrastructureError(f"environment setup failed for case {case.name!r}: {error}") from error
+        if phase is not None:
+            phase.setting_up = False
         try:
             if not isinstance(resources, Mapping):
                 if inspect.iscoroutine(resources):
@@ -168,6 +191,8 @@ def make_task(
         except BaseException as error:
             await _exit_environment(provided, env_context, case, error)
             raise
+        if phase is not None:
+            phase.exiting, phase.result = True, result
         await _exit_environment(provided, env_context, case, None)
         return result
 
@@ -215,7 +240,42 @@ async def _in_thread(fn: Callable[..., Any], *args: Any) -> Any:
     return await asyncio.get_running_loop().run_in_executor(pool, call)
 
 
-def instrument(task: TaskFn, log: TrialLog, traces: TraceCapture) -> TaskFn:
+async def _timed(seconds: float | None, task: TaskFn, case: Case) -> Any:
+    """Run `task(case)`; past `seconds`, cancel it, wait until it unwinds, and raise `TimeoutError`.
+
+    While `make_task`'s environment is still being set up, the timeout is raised as
+    `InfrastructureError(...) from TimeoutError(...)`, as any other setup error is; while it exits after
+    the rollout returned, the rollout's result is returned with a warning, as after an error exiting it.
+    The task runs as its own asyncio task, so what it raises or returns itself, a `TimeoutError` of its
+    own included, passes through unchanged. None waits without a limit.
+    """
+    if seconds is None:
+        return await _call(task, case)
+    phase = _Phase()
+    token = _PHASE.set(phase)
+    try:
+        running = asyncio.ensure_future(_call(task, case))  # runs in a copy of this context, `phase` included
+    finally:
+        _PHASE.reset(token)
+    try:
+        return await asyncio.wait_for(running, seconds)
+    except asyncio.TimeoutError:
+        if not running.cancelled():
+            return running.result()  # it finished on its own: its own error, or a result as the time ran out
+        if phase.exiting:
+            logger.warning(
+                "case=<%s>, trial_timeout=<%s> | environment exit cut short by the timeout, trial keeps its result",
+                case.name,
+                seconds,
+            )
+            return phase.result
+        if phase.setting_up:
+            error = TimeoutError(f"the environment's setup ran longer than trial_timeout={seconds}s")
+            raise InfrastructureError(f"environment setup timed out for case {case.name!r}") from error
+        raise TimeoutError(f"the trial ran longer than trial_timeout={seconds}s") from None
+
+
+def instrument(task: TaskFn, log: TrialLog, traces: TraceCapture, *, timeout: float | None = None) -> TaskFn:
     """Open one span per attempt, classify and re-raise errors, and attach the `Session` as trajectory.
 
     Called by `TrialRunner.run`, once per trial (one case, one run) with a fresh `TrialLog`. A setup error is stored as
@@ -225,12 +285,18 @@ def instrument(task: TaskFn, log: TrialLog, traces: TraceCapture) -> TaskFn:
     a returned dict without one gets a copy with the `Session` added, never the dict itself changed;
     a non-dict return becomes `{"output": value, "trajectory": session}`. No agent spans -> trajectory None.
     Attempts `Experiment` retried on throttling go into `TrialLogEntry.previous_attempts`. An
-    `InfrastructureError` raised from another error records that error's type and message.
+    `InfrastructureError` raised from another error records that error's type and message. With
+    `timeout`, an attempt whose task is still running after that many seconds is cancelled and, once it
+    has unwound, raises `TimeoutError`, recorded as `agent_failure`; while `make_task`'s environment is
+    still being set up it raises `InfrastructureError` from it (`infrastructure_invalid`), and while the
+    environment exits after the rollout returned, the attempt keeps the rollout's result (see `_timed`).
+    A sync call it is waiting on in a worker thread can't be stopped and runs on in that thread.
 
     Args:
         task: The task from `make_task` or `build_task`.
         log: A fresh log for this run.
         traces: The run's trace capture.
+        timeout: Seconds each attempt's task may run; None for no limit.
 
     Returns:
         The wrapped task that `Experiment` calls.
@@ -278,7 +344,7 @@ def instrument(task: TaskFn, log: TrialLog, traces: TraceCapture) -> TaskFn:
                 )
 
             try:
-                output = await _call(task, case)
+                output = await _timed(timeout, task, case)
             except _FactoryArgumentError as error:
                 log.setup_error = log.setup_error or error
                 raise

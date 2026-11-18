@@ -116,7 +116,8 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
     `config()`, redraws), selection (name and `config()`), score model (name and `config()`).
     Read (never passed again, rebuilt from `run.json`): split (settings, seed used, and case lists),
     `runs_per_candidate`, `agent_failure_score`, `feasibility_threshold`, seed, `proposals_per_iteration`,
-    `rerun_passes`, and the final pick (`FinalPick.from_config`). Budget, `max_workers`, and `on_iteration` may differ.
+    `rerun_passes`, and the final pick (`FinalPick.from_config`). Budget, `max_workers`, `trial_timeout`, and
+    `on_iteration` may differ.
 
     Args:
         run: The reopened run directory.

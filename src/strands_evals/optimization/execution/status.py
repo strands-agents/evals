@@ -67,12 +67,13 @@ def classify(error: BaseException) -> TrialStatus:
        `getattr`, so it also covers botocore `EventStreamError` in a streamed response):
        `internalserverexception`, `serviceunavailableexception`, `modelstreamerrorexception`,
        `modelnotreadyexception`, `throttlingexception` -> `INFRASTRUCTURE_INVALID`.
-    6. Anything else -> `AGENT_FAILURE`, a user's own deadline (`asyncio.TimeoutError`) included, so a
-       slow agent never sheds its hard cases by being re-run.
+    6. Anything else -> `AGENT_FAILURE`, a user's own deadline (`asyncio.TimeoutError`) and the
+       optimizer's `trial_timeout` included, so a slow agent never sheds its hard cases by being re-run.
 
     Only these two come from an exception: `make_task` raises an environment setup error as
-    `InfrastructureError` (rule 2) whatever its type, and `TrialRunner` sets `EVALUATOR_INVALID` when every
-    evaluator is in `evaluator_errors`. Under `agent_failure_score="worst"` an infrastructure failure misread as
+    `InfrastructureError` (rule 2) whatever its type (`instrument` does the same for a `trial_timeout`
+    during the setup), and `TrialRunner` sets `EVALUATOR_INVALID` when every evaluator is in
+    `evaluator_errors`. Under `agent_failure_score="worst"` an infrastructure failure misread as
     `AGENT_FAILURE` would score the worst end instead of being re-run.
     """
     cause = error

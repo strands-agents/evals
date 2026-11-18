@@ -530,6 +530,225 @@ async def test_a_sync_task_is_instrumented(traces):
     assert log.records()["case-1"].status is TrialStatus.COMPLETED
 
 
+# instrument's timeout
+
+
+async def test_an_attempt_within_the_timeout_completes_with_its_session(traces):
+    log = TrialLog()
+
+    out = await _run(instrument(make_task(_agent_factory(), default_rollout), log, traces, timeout=5), _case(), traces)
+
+    assert out["output"].strip() == "answer"
+    assert isinstance(out["trajectory"], Session)  # the agent's spans are still under the attempt span
+    assert log.records()["case-1"].status is TrialStatus.COMPLETED
+
+
+async def test_an_attempt_past_the_timeout_is_an_agent_failure_and_exits_its_environment(traces):
+    log, events = TrialLog(), []
+
+    @contextmanager
+    def environment(case):
+        events.append("enter")
+        try:
+            yield {}
+        finally:
+            events.append("exit")
+
+    async def rollout(agent_factory, case):
+        await asyncio.Event().wait()  # never set
+
+    task = make_task(_build.bind({}), rollout, environment)
+    with pytest.raises(TimeoutError, match=r"ran longer than trial_timeout=0\.05s"):
+        await _run(instrument(task, log, traces, timeout=0.05), _case(), traces)
+
+    entry = log.records()["case-1"]
+    assert entry.status is TrialStatus.AGENT_FAILURE
+    assert (entry.error_type, entry.error) == ("TimeoutError", "the trial ran longer than trial_timeout=0.05s")
+    assert events == ["enter", "exit"]  # exited before the attempt was recorded
+
+
+async def test_a_trial_cancelled_within_the_timeout_is_cancelled_not_timed_out(traces):
+    log, events, started = TrialLog(), [], asyncio.Event()
+
+    @contextmanager
+    def environment(case):
+        try:
+            yield {}
+        finally:
+            events.append("exit")
+
+    async def rollout(agent_factory, case):
+        started.set()
+        await asyncio.Event().wait()  # never set
+
+    task = make_task(_build.bind({}), rollout, environment)
+    trial = asyncio.create_task(_run(instrument(task, log, traces, timeout=5), _case(), traces))
+    await started.wait()
+    trial.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await trial
+
+    assert events == ["exit"]
+    assert log.records() == {}  # a cancelled attempt records nothing, as without a timeout
+
+
+async def test_a_sync_rollout_past_the_timeout_is_an_agent_failure_while_its_thread_runs_on(traces):
+    log, release, returned = TrialLog(), threading.Event(), threading.Event()
+
+    def rollout(agent_factory, case):
+        release.wait(10)
+        returned.set()
+        return {"output": "late"}
+
+    try:
+        with pytest.raises(TimeoutError):
+            await _run(instrument(make_task(_agent_factory(), rollout), log, traces, timeout=0.05), _case(), traces)
+        assert not returned.is_set()  # a thread can't be stopped: the attempt ended without it
+    finally:
+        release.set()
+
+    assert log.records()["case-1"].status is TrialStatus.AGENT_FAILURE
+
+
+async def test_a_timeout_during_the_environments_setup_is_infrastructure(traces):
+    log = TrialLog()
+
+    @asynccontextmanager
+    async def environment(case):
+        await asyncio.Event().wait()  # the sandbox never starts
+        yield {}
+
+    task = make_task(_build.bind({}), _built, environment)
+    with pytest.raises(InfrastructureError):
+        await _run(instrument(task, log, traces, timeout=0.05), _case(), traces)
+
+    entry = log.records()["case-1"]
+    assert entry.status is TrialStatus.INFRASTRUCTURE_INVALID
+    assert (entry.error_type, entry.error) == (
+        "TimeoutError",
+        "the environment's setup ran longer than trial_timeout=0.05s",
+    )
+
+
+async def test_a_timeout_waits_for_a_sync_enter_then_exits_the_environment(traces):
+    log, events, release = TrialLog(), [], threading.Event()
+
+    class Sandbox:
+        def __enter__(self):
+            release.wait(5)
+            events.append("enter")
+            return {}
+
+        def __exit__(self, *exc_info):
+            events.append("exit")
+
+    async def release_later():
+        await asyncio.sleep(0.5)  # well past the timeout
+        events.append("released")
+        release.set()
+
+    releasing = asyncio.create_task(release_later())
+    task = make_task(_build.bind({}), _built, lambda case: Sandbox())
+    with pytest.raises(InfrastructureError):
+        await _run(instrument(task, log, traces, timeout=0.05), _case(), traces)
+    events.append("raised")
+    await releasing
+
+    assert events == ["released", "enter", "exit", "raised"]  # the attempt ended only once `__enter__` returned
+    assert log.records()["case-1"].status is TrialStatus.INFRASTRUCTURE_INVALID
+
+
+async def test_a_timeout_during_the_environments_exit_keeps_the_rollouts_result(traces, caplog):
+    log = TrialLog()
+
+    @asynccontextmanager
+    async def environment(case):
+        yield {}
+        await asyncio.Event().wait()  # the sandbox never stops
+
+    async def rollout(agent_factory, case):
+        return {"output": "done"}
+
+    task = make_task(_build.bind({}), rollout, environment)
+    with caplog.at_level(logging.WARNING):
+        out = await _run(instrument(task, log, traces, timeout=0.05), _case(), traces)
+
+    assert out["output"] == "done"
+    assert log.records()["case-1"].status is TrialStatus.COMPLETED
+    assert "environment exit cut short by the timeout" in caplog.text
+
+
+async def test_a_timeout_during_a_sync_exit_keeps_the_result_while_the_exit_runs_on(traces):
+    log, release, exited = TrialLog(), threading.Event(), threading.Event()
+
+    class Sandbox:
+        def __enter__(self):
+            return {}
+
+        def __exit__(self, *exc_info):
+            release.wait(10)  # the sandbox is slow to stop
+            exited.set()
+
+    async def rollout(agent_factory, case):
+        return {"output": "done"}
+
+    task = make_task(_build.bind({}), rollout, lambda case: Sandbox())
+    try:
+        out = await _run(instrument(task, log, traces, timeout=0.05), _case(), traces)
+        assert not exited.is_set()  # the attempt ended while `__exit__` still runs in its thread
+    finally:
+        release.set()
+
+    assert out["output"] == "done"
+    assert log.records()["case-1"].status is TrialStatus.COMPLETED
+
+
+async def test_a_task_that_catches_the_cancellation_keeps_what_it_returns(traces):
+    log = TrialLog()
+
+    async def task(case):
+        try:
+            await asyncio.Event().wait()  # never set
+        except asyncio.CancelledError:
+            return {"output": "late"}
+
+    out = await _run(instrument(task, log, traces, timeout=0.05), _case(), traces)
+
+    assert out["output"] == "late"
+    assert log.records()["case-1"].status is TrialStatus.COMPLETED
+
+
+async def test_a_task_that_finishes_as_the_time_runs_out_keeps_its_result(traces, monkeypatch):
+    async def finished_at_the_deadline(running, timeout):
+        await running
+        raise asyncio.TimeoutError  # the deadline fired before the caller resumed
+
+    monkeypatch.setattr("strands_evals.optimization.execution.rollout.asyncio.wait_for", finished_at_the_deadline)
+    log = TrialLog()
+
+    async def task(case):
+        return {"output": "in time"}
+
+    out = await _run(instrument(task, log, traces, timeout=5), _case(), traces)
+
+    assert out["output"] == "in time"
+    assert log.records()["case-1"].status is TrialStatus.COMPLETED
+
+
+async def test_a_tasks_own_timeout_error_keeps_its_message(traces):
+    log = TrialLog()
+
+    async def task(case):
+        raise TimeoutError("read timed out")
+
+    with pytest.raises(TimeoutError, match="read timed out"):
+        await _run(instrument(task, log, traces, timeout=5), _case(), traces)
+
+    entry = log.records()["case-1"]
+    assert entry.status is TrialStatus.AGENT_FAILURE
+    assert (entry.error_type, entry.error) == ("TimeoutError", "read timed out")
+
+
 # Through Experiment
 
 
@@ -587,6 +806,25 @@ async def test_experiment_throttling_retry_keeps_the_earlier_attempt(traces, no_
     assert error_type == "ModelThrottledException"
     assert traces.usage(entry.trace_id, entry.attempt_span_id).model_calls == 1
     assert traces.usage(entry.trace_id, span_id).tokens == 0
+
+
+async def test_experiment_throttling_retry_gets_the_full_timeout_again(traces, no_retry_delay):
+    log = TrialLog()
+    attempts = []
+
+    async def task(case):
+        attempts.append(case.name)
+        await asyncio.sleep(0.3)  # three attempts take longer than one timeout; each fits in it
+        if len(attempts) < 3:
+            raise ModelThrottledException("slow down")
+        return {"output": "ok"}
+
+    experiment = Experiment(cases=[_case()], evaluators=[_SeesSession()])
+    await experiment.run_evaluations_async(instrument(task, log, traces, timeout=0.75))
+
+    entry = log.records()["case-1"]
+    assert entry.status is TrialStatus.COMPLETED
+    assert entry.attempts == 3
 
 
 async def test_experiment_agent_failure_is_logged(traces):

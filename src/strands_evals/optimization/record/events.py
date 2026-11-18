@@ -68,8 +68,8 @@ class EventLog:
       for spend no returned patch carries, and by the optimizer for the returned patches' `usage` (also in
       their `observe` events, which `search_cost` doesn't read).
     - `screened`: `block`, `key`, `reason`.
-    - `resume`: `spent`, `budget`, `code` (`code_version()` of the resuming code: strands-evals version, git commit,
-      dirty, numpy and optuna versions).
+    - `resume`: `spent`, `budget`, `trial_timeout`, `code` (`code_version()` of the resuming code: strands-evals
+      version, git commit, dirty, numpy and optuna versions).
     - `stop`: `reason` (a `stop_reason`, or `"setup"` when the baseline can't be a parent: ineligible, no
       completed train trial, or a goal metric never measured), `message`.
     - `observe`: `block`, `candidate_id` (None for an invalid patch), `observation` (`Observation`).
