@@ -309,6 +309,12 @@ class Optimizer:
         self._records: dict[str, dict[tuple[str, int], TrialRecord]] = {}
         self._rollouts: dict[tuple[str, SplitName], int] = {}  # a _score call's spend, until its event
 
+    @property
+    def run_dir(self) -> Path | None:
+        """The run's folder: None until `run()` / `run_async()` creates it, before the baseline is scored; after
+        `resume`, the reopened folder."""
+        return self._run.root if self._run is not None else None
+
     def _config(self) -> dict[str, Any]:
         """`run.json`'s contents but `schema_version` and `code` (added by `RunDirectory.create`).
 
