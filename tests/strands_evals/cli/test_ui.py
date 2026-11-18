@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import runpy
 import socket
 import threading
 from dataclasses import asdict, dataclass, field
@@ -631,11 +632,12 @@ def test_tuned_against_names_the_experiment_whose_cases_the_split_holds(tmp_path
     assert discover(tmp_path).optimizer_runs[0]["tuned_against"] == expected
 
 
-def test_browser_fixture_run_is_readable():
+def test_browser_fixture_run_is_readable(tmp_path: Path):
     """The run the browser tests chart, read by the real reader."""
-    fixture = Path(__file__).parents[2] / "ui" / "fixtures" / "optimizer-run"
+    generator = Path(__file__).parents[2] / "ui" / "fixtures" / "make_optimizer_run.py"
+    runpy.run_path(str(generator))["main"](tmp_path)
 
-    log = read_event_log(fixture / "events.jsonl")
+    log = read_event_log(tmp_path / "events.jsonl")
 
     assert (log.bad_lines, log.truncated) == ([], False)
     assert log.events[0]["event"] == "config"

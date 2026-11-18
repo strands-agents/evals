@@ -332,15 +332,15 @@ def optimizer_runs(out: Path) -> None:
     spec = importlib.util.spec_from_file_location("make_optimizer_run", path)
     fixture = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fixture)
-    fixture.OUT = out / "tuning" / "support-prompt-tuning"
-    fixture.main()
+    finished = out / "tuning" / "support-prompt-tuning"
+    fixture.main(finished)
 
     names = fixture.TRAIN + fixture.VALIDATION + fixture.TEST
     cases = [
         case(100 + i, name, fixture.conversation(name)[0], fixture.answer("c10", name)) for i, name in enumerate(names)
     ]
     judge = [{"evaluator_type": "OutputEvaluator", "name": "Helpfulness", "rubric": "Score how helpful the reply is."}]
-    events = [json.loads(line) for line in (fixture.OUT / "events.jsonl").read_text().splitlines()]
+    events = [json.loads(line) for line in (finished / "events.jsonl").read_text().splitlines()]
 
     # The cases the run was tuned on, run before and after: two reports of one experiment to compare.
     for folder, candidate in (("agent-before-tuning", "c0"), ("agent-after-tuning", "c10")):
@@ -350,8 +350,8 @@ def optimizer_runs(out: Path) -> None:
         )
 
     running = out / "tuning" / "still-running"
-    shutil.copytree(fixture.OUT / "transcripts", running / "transcripts", dirs_exist_ok=True)
-    config = json.loads((fixture.OUT / "run.json").read_text())
+    shutil.copytree(finished / "transcripts", running / "transcripts", dirs_exist_ok=True)
+    config = json.loads((finished / "run.json").read_text())
     write(running / "run.json", {**config, "run_id": "support-tuning-still-running"})
     done = ("finalists", "picked", "test", "stop")
     kept = [event for event in events if event.get("iteration", 0) <= 3 and event["event"] not in done]

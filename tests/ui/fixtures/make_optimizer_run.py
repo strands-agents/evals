@@ -670,8 +670,8 @@ EFFECTS = {
 }
 
 
-def main() -> None:
-    OUT.mkdir(parents=True, exist_ok=True)
+def main(out: Path = OUT) -> None:
+    out.mkdir(parents=True, exist_ok=True)
     clock = [START]
 
     def stamp(seconds: int = 7) -> str:
@@ -702,7 +702,7 @@ def main() -> None:
         "agent_failure_score": "worst",
         "feasibility_threshold": 0.9,
     }
-    (OUT / "run.json").write_text(json.dumps(config, indent=2) + "\n")
+    (out / "run.json").write_text(json.dumps(config, indent=2) + "\n")
     emit("config", 0, **config)
 
     by_iteration: dict[int, list[dict]] = {}
@@ -1010,11 +1010,11 @@ def main() -> None:
     emit("stop", 5, reason="iterations", message="reached max_iterations=6")
 
     lines = "".join(json.dumps(e) + "\n" for e in events)
-    (OUT / "events.jsonl").write_text(lines)
+    (out / "events.jsonl").write_text(lines)
 
     # `transcripts/<hash>.json`, one per distinct trajectory, as the run directory holds them.
     # Rewritten from scratch so a hash that no trial points at any more does not linger.
-    held = OUT / "transcripts"
+    held = out / "transcripts"
     for stale in sorted(held.glob("*.json")) if held.is_dir() else []:
         stale.unlink()
     held.mkdir(exist_ok=True)
@@ -1025,12 +1025,12 @@ def main() -> None:
         (held / f"{digest}.json").write_text(json.dumps(document, indent=1) + "\n")
 
     # `effects.json`, fitted after the fact, which is why a run can have a record and no model.
-    (OUT / "effects.json").write_text(json.dumps(EFFECTS, indent=2) + "\n")
+    (out / "effects.json").write_text(json.dumps(EFFECTS, indent=2) + "\n")
 
-    print(f"wrote {OUT}/events.jsonl: {len(events)} events, {len(lines)} bytes")
-    print(f"      {OUT}/run.json")
-    print(f"      {OUT}/transcripts/: {len(DOCUMENTS) - 1} files, 1 pointer left unwritten on purpose")
-    print(f"      {OUT}/effects.json: {len(EFFECTS['effects'])} estimates over {len(EFFECTS['goals'])} goals")
+    print(f"wrote {out}/events.jsonl: {len(events)} events, {len(lines)} bytes")
+    print(f"      {out}/run.json")
+    print(f"      {out}/transcripts/: {len(DOCUMENTS) - 1} files, 1 pointer left unwritten on purpose")
+    print(f"      {out}/effects.json: {len(EFFECTS['effects'])} estimates over {len(EFFECTS['goals'])} goals")
     print(f"      rollouts spent {spent} of {MAX_ROLLOUTS}, champion c10")
 
 
